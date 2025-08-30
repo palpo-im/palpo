@@ -16,6 +16,7 @@ html-matrix = []
 markdown = ["dep:pulldown-cmark"]
 
 ring-compat = ["dep:subslice"]
+compat-empty-string-null = []
 
 # unstable: by using any of these, you opt out of all semver guarantees Ruma
 #           otherwise provides!
@@ -76,12 +77,13 @@ unstable-msc4171 = []
 unstable-msc4186 = []
 unstable-msc4203 = []
 unstable-msc4230 = []
+unstable-msc4268 = []
 unstable-msc4274 = []
+unstable-msc4278 = []
 unstable-pdu = []
 unstable-unspecified = []
 
 [dependencies]
-
 as_variant = { workspace = true }
 async-trait = { workspace = true }
 base64.workspace = true
@@ -125,7 +127,6 @@ sanitize-filename = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-smallstr = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 subslice = { workspace = true, optional = true }

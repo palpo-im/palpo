@@ -162,10 +162,10 @@ fn select_events(
             events.push(e);
         }
 
-        if let OutgoingKind::Normal(server_name) = outgoing_kind {
-            if let Ok((select_edus, _last_count)) = select_edus(server_name) {
-                events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-            }
+        if let OutgoingKind::Normal(server_name) = outgoing_kind
+            && let Ok((select_edus, _last_count)) = select_edus(server_name)
+        {
+            events.extend(select_edus.into_iter().map(SendingEventType::Edu));
         }
     }
 
@@ -379,16 +379,16 @@ pub fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
         select_edus_device_changes(server_name, since_sn, &max_edu_sn, &events_len)?;
 
     let mut events = device_changes;
-    if conf.read_receipt.allow_outgoing {
-        if let Some(receipts) = select_edus_receipts(server_name, since_sn, &max_edu_sn)? {
-            events.push(receipts);
-        }
+    if conf.read_receipt.allow_outgoing
+        && let Some(receipts) = select_edus_receipts(server_name, since_sn, &max_edu_sn)?
+    {
+        events.push(receipts);
     }
 
-    if conf.presence.allow_outgoing {
-        if let Some(presence) = select_edus_presence(server_name, since_sn, &max_edu_sn)? {
-            events.push(presence);
-        }
+    if conf.presence.allow_outgoing
+        && let Some(presence) = select_edus_presence(server_name, since_sn, &max_edu_sn)?
+    {
+        events.push(presence);
     }
 
     Ok((events, max_edu_sn))

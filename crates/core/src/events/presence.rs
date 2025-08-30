@@ -1,17 +1,15 @@
 //! A presence event is represented by a struct with a set content field.
 //!
 //! The only content valid for this event is `PresenceEventContent`.
-
-use crate::macros::{Event, EventContent};
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, ser::SerializeStruct};
+use serde::{Deserialize, Serialize};
 
-use super::EventContent;
 use crate::{OwnedMxcUri, OwnedUserId, presence::PresenceState};
 
 /// Presence event.
-#[derive(ToSchema, Clone, Debug, Event)]
+#[derive(ToSchema, Serialize, Deserialize, Clone, Debug)]
 #[allow(clippy::exhaustive_structs)]
+#[serde(tag = "type", rename = "m.presence")]
 pub struct PresenceEvent {
     /// Data specific to the event type.
     pub content: PresenceEventContent,
@@ -20,24 +18,10 @@ pub struct PresenceEvent {
     pub sender: OwnedUserId,
 }
 
-impl Serialize for PresenceEvent {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut state = serializer.serialize_struct("PresenceEvent", 3)?;
-        state.serialize_field("type", &self.content.event_type())?;
-        state.serialize_field("content", &self.content)?;
-        state.serialize_field("sender", &self.sender)?;
-        state.end()
-    }
-}
-
 /// Informs the room of members presence.
 ///
 /// This is the only type a `PresenceEvent` can contain as its `content` field.
-#[derive(ToSchema, Deserialize, Serialize, Clone, Debug, EventContent)]
-#[palpo_event(type = "m.presence")]
+#[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 pub struct PresenceEventContent {
     /// The current avatar URL for this user.
     #[serde(

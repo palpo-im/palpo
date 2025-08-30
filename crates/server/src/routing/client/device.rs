@@ -162,10 +162,10 @@ async fn delete_device(
     };
 
     if let Err(e) = crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info) {
-        if let AppError::Matrix(e) = e {
-            if let ErrorKind::Forbidden { .. } = e.kind {
-                return Err(e.into());
-            }
+        if let AppError::Matrix(e) = e
+            && let ErrorKind::Forbidden { .. } = e.kind
+        {
+            return Err(e.into());
         }
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
         uiaa_info.auth_error = Some(AuthError::new(

@@ -1,6 +1,6 @@
 //! Client secret identifier.
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 
 /// A client secret.
 ///
@@ -12,7 +12,7 @@ use crate::macros::IdZst;
 /// that function is not available for you, you need to activate this crate's
 /// `rand` Cargo feature.
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst)]
 #[palpo_id(validate = palpo_identifiers_validation::client_secret::validate)]
 pub struct ClientSecret(str);
 

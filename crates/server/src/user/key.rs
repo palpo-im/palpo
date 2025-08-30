@@ -77,10 +77,10 @@ pub async fn query_keys<F: Fn(&UserId) -> bool>(
         {
             self_signing_keys.insert(user_id.to_owned(), self_signing_key);
         }
-        if Some(&**user_id) == sender_id {
-            if let Some(user_signing_key) = crate::user::get_user_signing_key(user_id)? {
-                user_signing_keys.insert(user_id.to_owned(), user_signing_key);
-            }
+        if Some(&**user_id) == sender_id
+            && let Some(user_signing_key) = crate::user::get_user_signing_key(user_id)?
+        {
+            user_signing_keys.insert(user_id.to_owned(), user_signing_key);
         }
     }
 

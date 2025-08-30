@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     OwnedRoomId,
     events::{
-        EmptyStateKey, EventContent, EventContentFromType, PossiblyRedactedStateEventContent,
-        StateEventType, StaticEventContent,
+        EmptyStateKey, PossiblyRedactedStateEventContent, StateEventType, StaticEventContent,
     },
-    serde::RawJsonValue,
 };
 
 /// The content of an `m.room.tombstone` event.
@@ -59,24 +57,15 @@ pub struct PossiblyRedactedRoomTombstoneEventContent {
     pub replacement_room: Option<OwnedRoomId>,
 }
 
-impl EventContent for PossiblyRedactedRoomTombstoneEventContent {
-    type EventType = StateEventType;
+impl PossiblyRedactedStateEventContent for PossiblyRedactedRoomTombstoneEventContent {
+    type StateKey = EmptyStateKey;
 
-    fn event_type(&self) -> Self::EventType {
+    fn event_type(&self) -> StateEventType {
         StateEventType::RoomTombstone
     }
 }
 
-impl PossiblyRedactedStateEventContent for PossiblyRedactedRoomTombstoneEventContent {
-    type StateKey = EmptyStateKey;
-}
-
 impl StaticEventContent for PossiblyRedactedRoomTombstoneEventContent {
-    const TYPE: &'static str = "m.room.tombstone";
-}
-
-impl EventContentFromType for PossiblyRedactedRoomTombstoneEventContent {
-    fn from_parts(_ev_type: &str, content: &RawJsonValue) -> serde_json::Result<Self> {
-        serde_json::from_str(content.get())
-    }
+    const TYPE: &'static str = RoomTombstoneEventContent::TYPE;
+    type IsPrefix = <RoomTombstoneEventContent as StaticEventContent>::IsPrefix;
 }

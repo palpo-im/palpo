@@ -1,8 +1,15 @@
-use std::{borrow::Borrow, collections::BTreeMap};
+use std::{
+    borrow::Borrow,
+    collections::BTreeMap,
+    ops::{Deref, DerefMut},
+};
 
 use serde::{Deserialize, Serialize};
 
-use super::{OwnedDeviceId, OwnedKeyName, OwnedServerName, OwnedSigningKeyId, OwnedUserId};
+use super::{
+    Base64PublicKeyOrDeviceId, DeviceId, KeyName, OwnedServerName, OwnedSigningKeyId, OwnedUserId,
+    ServerSigningKeyVersion,
+};
 
 /// Map of key identifier to signature values.
 pub type EntitySignatures<K> = BTreeMap<OwnedSigningKeyId<K>, String>;
@@ -18,11 +25,11 @@ pub type EntitySignatures<K> = BTreeMap<OwnedSigningKeyId<K>, String>;
 ///     "YbJva03ihSj5mPk+CHMJKUKlCXCPFXjXOK6VqBnN9nA2evksQcTGn6hwQfrgRHIDDXO2le49x7jnWJHMJrJoBQ";
 /// signatures.insert(server_name, key_identifier, signature.into());
 /// ```
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Signatures<E: Ord, K: ?Sized>(BTreeMap<E, EntitySignatures<K>>);
+pub struct Signatures<E: Ord, K: KeyName + ?Sized>(BTreeMap<E, EntitySignatures<K>>);
 
-impl<E: Ord, K: ?Sized> Signatures<E, K> {
+impl<E: Ord, K: KeyName + ?Sized> Signatures<E, K> {
     /// Creates an empty signature map.
     pub fn new() -> Self {
         Self(BTreeMap::new())
@@ -53,8 +60,138 @@ impl<E: Ord, K: ?Sized> Signatures<E, K> {
     }
 }
 
-/// Map of server signatures for an event, grouped by server.
-pub type ServerSignatures = Signatures<OwnedServerName, OwnedKeyName>;
+/// Map of server signatures, grouped by server.
+pub type ServerSignatures = Signatures<OwnedServerName, ServerSigningKeyVersion>;
 
-/// Map of device signatures for an event, grouped by user.
-pub type DeviceSignatures = Signatures<OwnedUserId, OwnedDeviceId>;
+/// Map of device signatures, grouped by user.
+pub type DeviceSignatures = Signatures<OwnedUserId, DeviceId>;
+
+/// Map of cross-signing or device signatures, grouped by user.
+pub type CrossSigningOrDeviceSignatures = Signatures<OwnedUserId, Base64PublicKeyOrDeviceId>;
+
+impl<E, K> Clone for Signatures<E, K>
+where
+    E: Ord + Clone,
+    K: KeyName + ?Sized,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<E: Ord, K: KeyName + ?Sized> Default for Signatures<E, K> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<E: Ord, K: KeyName + ?Sized> Deref for Signatures<E, K> {
+    type Target = BTreeMap<E, EntitySignatures<K>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<E: Ord, K: KeyName + ?Sized> DerefMut for Signatures<E, K> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<E: Ord, K: KeyName + ?Sized, const N: usize> From<[(E, OwnedSigningKeyId<K>, String); N]>
+    for Signatures<E, K>
+{
+    fn from(value: [(E, OwnedSigningKeyId<K>, String); N]) -> Self {
+        value.into_iter().collect()
+    }
+}
+
+impl<E: Ord, K: KeyName + ?Sized> FromIterator<(E, OwnedSigningKeyId<K>, String)>
+    for Signatures<E, K>
+{
+    fn from_iter<T: IntoIterator<Item = (E, OwnedSigningKeyId<K>, String)>>(iter: T) -> Self {
+        iter.into_iter()
+            .fold(Self::new(), |mut acc, (entity, key_identifier, value)| {
+                acc.insert(entity, key_identifier, value);
+                acc
+            })
+    }
+}
+
+impl<E: Ord, K: KeyName + ?Sized> Extend<(E, OwnedSigningKeyId<K>, String)> for Signatures<E, K> {
+    fn extend<T: IntoIterator<Item = (E, OwnedSigningKeyId<K>, String)>>(&mut self, iter: T) {
+        for (entity, key_identifier, value) in iter {
+            self.insert(entity, key_identifier, value);
+        }
+    }
+}
+
+impl<E: Ord + Clone, K: KeyName + ?Sized> IntoIterator for Signatures<E, K> {
+    type Item = (E, OwnedSigningKeyId<K>, String);
+    type IntoIter = IntoIter<E, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            outer: self.0.into_iter(),
+            inner: None,
+            entity: None,
+        }
+    }
+}
+
+pub struct IntoIter<E: Clone, K: KeyName + ?Sized> {
+    outer: std::collections::btree_map::IntoIter<E, BTreeMap<OwnedSigningKeyId<K>, String>>,
+    inner: Option<std::collections::btree_map::IntoIter<OwnedSigningKeyId<K>, String>>,
+    entity: Option<E>,
+}
+
+impl<E: Clone, K: KeyName + ?Sized> Iterator for IntoIter<E, K> {
+    type Item = (E, OwnedSigningKeyId<K>, String);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(inner) = &mut self.inner
+                && let Some((k, v)) = inner.next()
+                && let Some(entity) = self.entity.clone()
+            {
+                return Some((entity, k, v));
+            }
+
+            if let Some((e, map)) = self.outer.next() {
+                self.inner = Some(map.into_iter());
+                self.entity = Some(e);
+            } else {
+                return None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn signatures_into_iter() {
+        use crate::{
+            ServerSigningKeyId, Signatures, SigningKeyAlgorithm, owned_server_name,
+            server_signing_key_version,
+        };
+        let key_identifier = ServerSigningKeyId::from_parts(
+            SigningKeyAlgorithm::Ed25519,
+            server_signing_key_version!("1"),
+        );
+        let mut signatures = Signatures::new();
+        let server_name = owned_server_name!("example.org");
+        let signature = "YbJva03ihSj5mPk+CHMJKUKlCXCPFXjXOK6VqBnN9nA2evksQcTGn6hwQfrgRHIDDXO2le49x7jnWJHMJrJoBQ";
+        signatures.insert_signature(server_name, key_identifier, signature.into());
+
+        let mut more_signatures = Signatures::new();
+        more_signatures.extend(signatures.clone());
+
+        assert_eq!(more_signatures.0, signatures.0);
+
+        let mut iter = more_signatures.into_iter();
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_none());
+    }
+}

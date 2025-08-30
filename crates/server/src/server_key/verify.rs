@@ -5,7 +5,6 @@ use crate::core::identifiers::*;
 use crate::core::serde::canonical_json::{CanonicalJsonObject, CanonicalJsonValue};
 use crate::core::signatures::{self, Verified};
 use crate::event::gen_event_id_canonical_json;
-use crate::server_key::required_keys_exist;
 use crate::{AppError, AppResult};
 
 pub async fn validate_and_add_event_id(
@@ -32,11 +31,6 @@ pub async fn validate_and_add_event_id_no_fetch(
     room_version: &RoomVersionId,
 ) -> AppResult<(OwnedEventId, CanonicalJsonObject)> {
     let (event_id, mut value) = gen_event_id_canonical_json(pdu, room_version)?;
-    if !required_keys_exist(&value, room_version) {
-        return Err(AppError::public(format!(
-            "Event {event_id} cannot be verified: missing keys."
-        )));
-    }
 
     if let Err(e) = verify_event(&value, Some(room_version)).await {
         return Err(AppError::public(format!(
@@ -57,8 +51,9 @@ pub async fn verify_event(
     room_version: Option<&RoomVersionId>,
 ) -> AppResult<Verified> {
     let room_version = room_version.unwrap_or(&RoomVersionId::V11);
-    let keys = get_event_keys(event, room_version).await?;
-    signatures::verify_event(&keys, event, room_version).map_err(Into::into)
+    let room_rules = crate::room::get_rules(room_version)?;
+    let keys = get_event_keys(event, &room_rules).await?;
+    signatures::verify_event(&keys, event, &room_rules).map_err(Into::into)
 }
 
 pub async fn verify_json(
@@ -66,6 +61,8 @@ pub async fn verify_json(
     room_version: Option<&RoomVersionId>,
 ) -> AppResult<()> {
     let room_version = room_version.unwrap_or(&RoomVersionId::V11);
-    let keys = get_event_keys(event, room_version).await?;
+    let room_rules = crate::room::get_rules(room_version)?;
+
+    let keys = get_event_keys(event, &room_rules).await?;
     signatures::verify_json(&keys, event).map_err(Into::into)
 }

@@ -20,11 +20,11 @@ use super::{
 use crate::{
     OwnedEventId, UnixMillis,
     events::{
-        EventContent, EventContentFromType, MessageLikeEventContent, MessageLikeEventType,
-        RedactContent, RedactedMessageLikeEventContent, StaticEventContent, relation::Replacement,
+        MessageLikeEventContent, MessageLikeEventType, RedactContent,
+        RedactedMessageLikeEventContent, StaticEventContent, relation::Replacement,
         room::message::RelationWithoutReplacement,
     },
-    serde::RawJsonValue,
+    room_version_rules::RedactionRules,
 };
 
 /// The payload for an unstable poll start event.
@@ -62,7 +62,7 @@ impl UnstablePollStartEventContent {
 impl RedactContent for UnstablePollStartEventContent {
     type Redacted = RedactedUnstablePollStartEventContent;
 
-    fn redact(self, _version: &crate::RoomVersionId) -> Self::Redacted {
+    fn redact(self, _rules: &RedactionRules) -> Self::Redacted {
         RedactedUnstablePollStartEventContent::default()
     }
 }
@@ -150,19 +150,16 @@ impl NewUnstablePollStartEventContent {
     }
 }
 
-impl EventContent for NewUnstablePollStartEventContent {
-    type EventType = MessageLikeEventType;
+impl StaticEventContent for NewUnstablePollStartEventContent {
+    const TYPE: &'static str = UnstablePollStartEventContent::TYPE;
+    type IsPrefix = <UnstablePollStartEventContent as StaticEventContent>::IsPrefix;
+}
 
-    fn event_type(&self) -> Self::EventType {
+impl MessageLikeEventContent for NewUnstablePollStartEventContent {
+    fn event_type(&self) -> MessageLikeEventType {
         MessageLikeEventType::UnstablePollStart
     }
 }
-
-impl StaticEventContent for NewUnstablePollStartEventContent {
-    const TYPE: &'static str = "org.matrix.msc3381.poll.start";
-}
-
-impl MessageLikeEventContent for NewUnstablePollStartEventContent {}
 
 /// Form of [`NewUnstablePollStartEventContent`] without relation.
 ///
@@ -239,20 +236,15 @@ impl ReplacementUnstablePollStartEventContent {
         }
     }
 }
-
-impl EventContent for ReplacementUnstablePollStartEventContent {
-    type EventType = MessageLikeEventType;
-
-    fn event_type(&self) -> Self::EventType {
+impl StaticEventContent for ReplacementUnstablePollStartEventContent {
+    const TYPE: &'static str = UnstablePollStartEventContent::TYPE;
+    type IsPrefix = <UnstablePollStartEventContent as StaticEventContent>::IsPrefix;
+}
+impl MessageLikeEventContent for ReplacementUnstablePollStartEventContent {
+    fn event_type(&self) -> MessageLikeEventType {
         MessageLikeEventType::UnstablePollStart
     }
 }
-
-impl StaticEventContent for ReplacementUnstablePollStartEventContent {
-    const TYPE: &'static str = "org.matrix.msc3381.poll.start";
-}
-
-impl MessageLikeEventContent for ReplacementUnstablePollStartEventContent {}
 
 /// Redacted form of UnstablePollStartEventContent
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
@@ -265,23 +257,14 @@ impl RedactedUnstablePollStartEventContent {
     }
 }
 
-impl EventContent for RedactedUnstablePollStartEventContent {
-    type EventType = MessageLikeEventType;
-
-    fn event_type(&self) -> Self::EventType {
-        MessageLikeEventType::UnstablePollStart
-    }
-}
-
 impl StaticEventContent for RedactedUnstablePollStartEventContent {
-    const TYPE: &'static str = "org.matrix.msc3381.poll.start";
+    const TYPE: &'static str = UnstablePollStartEventContent::TYPE;
+    type IsPrefix = <UnstablePollStartEventContent as StaticEventContent>::IsPrefix;
 }
 
-impl RedactedMessageLikeEventContent for RedactedUnstablePollStartEventContent {}
-
-impl EventContentFromType for RedactedUnstablePollStartEventContent {
-    fn from_parts(_ev_type: &str, content: &RawJsonValue) -> serde_json::Result<Self> {
-        serde_json::from_str(content.get())
+impl RedactedMessageLikeEventContent for RedactedUnstablePollStartEventContent {
+    fn event_type(&self) -> MessageLikeEventType {
+        MessageLikeEventType::UnstablePollStart
     }
 }
 

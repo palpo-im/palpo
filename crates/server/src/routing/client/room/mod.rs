@@ -31,9 +31,10 @@ use crate::core::events::receipt::{
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::create::RoomCreateEventContent;
 use crate::core::events::room::guest_access::{GuestAccess, RoomGuestAccessEventContent};
-use crate::core::events::room::history_visibility::HistoryVisibility;
-use crate::core::events::room::history_visibility::RoomHistoryVisibilityEventContent;
-use crate::core::events::room::join_rule::{JoinRule, RoomJoinRulesEventContent};
+use crate::core::events::room::history_visibility::{
+    HistoryVisibility, RoomHistoryVisibilityEventContent,
+};
+use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::name::RoomNameEventContent;
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
@@ -41,7 +42,8 @@ use crate::core::events::room::tombstone::RoomTombstoneEventContent;
 use crate::core::events::room::topic::RoomTopicEventContent;
 use crate::core::events::{RoomAccountDataEventType, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
-use crate::core::room::Visibility;
+use crate::core::room::{JoinRule, Visibility};
+use crate::core::room_version_rules::AuthorizationRules;
 use crate::core::serde::{CanonicalJsonObject, JsonValue, RawJson};
 use crate::data;
 use crate::event::PduBuilder;
@@ -318,7 +320,7 @@ async fn upgrade(
 
     let conf = config::get();
     // Create a replacement room
-    let replacement_room = RoomId::new(&conf.server_name);
+    let replacement_room = RoomId::new_v1(&conf.server_name);
     room::ensure_room(&replacement_room, &conf.default_room_version)?;
 
     let state_lock = room::lock_state(&room_id).await;
@@ -563,7 +565,7 @@ pub(super) async fn create_room(
 ) -> JsonResult<CreateRoomResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let room_id = RoomId::new(&config::get().server_name);
+    let room_id = RoomId::new_v1(&config::get().server_name);
 
     let conf = config::get();
     let state_lock = room::lock_state(&room_id).await;
@@ -600,6 +602,7 @@ pub(super) async fn create_room(
         }
         None => conf.default_room_version.clone(),
     };
+    let room_rules = crate::room::get_rules(&room_version)?;
 
     let content = match &body.creation_content {
         Some(content) => {
@@ -709,6 +712,7 @@ pub(super) async fn create_room(
     }
 
     let power_levels_content = default_power_levels_content(
+        &room_rules.authorization,
         body.power_level_content_override.as_ref(),
         &body.visibility,
         users,
@@ -893,13 +897,14 @@ pub(super) async fn create_room(
 
 /// creates the power_levels_content for the PDU builder
 fn default_power_levels_content(
+    auth_rules: &AuthorizationRules,
     power_level_content_override: Option<&RawJson<RoomPowerLevelsEventContent>>, // must be raw_json
     visibility: &Visibility,
     users: BTreeMap<OwnedUserId, i64>,
 ) -> AppResult<serde_json::Value> {
     let mut power_levels_content = serde_json::to_value(RoomPowerLevelsEventContent {
         users,
-        ..Default::default()
+        ..RoomPowerLevelsEventContent::new(auth_rules)
     })
     .expect("event is valid, we just created it");
 

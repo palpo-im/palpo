@@ -3,7 +3,7 @@ use std::io;
 use std::string::FromUtf8Error;
 
 use async_trait::async_trait;
-use palpo_core::MatrixError;
+use palpo_core::serde::duration::ms;
 use salvo::http::{StatusCode, StatusError};
 use salvo::oapi::{self, EndpointOutRegister, ToSchema};
 use salvo::prelude::{Depot, Request, Response, Writer};
@@ -11,12 +11,20 @@ use thiserror::Error;
 // use crate::User;
 // use crate::DepotExt;
 
+use crate::core::MatrixError;
+use crate::core::events::room::power_levels::PowerLevelsError;
+use crate::core::state::StateError;
+
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("public: `{0}`")]
     Public(String),
     #[error("internal: `{0}`")]
     Internal(String),
+    #[error("state: `{0}`")]
+    State(#[from] StateError),
+    #[error("power levels: `{0}`")]
+    PowerLevels(#[from] PowerLevelsError),
     // #[error("local unable process: `{0}`")]
     // LocalUnableProcess(String),
     #[error("salvo internal error: `{0}`")]
@@ -116,6 +124,17 @@ impl Writer for AppError {
             Self::Internal(_msg) => MatrixError::unknown("Unknown error."),
             // Self::LocalUnableProcess(msg) => MatrixError::unrecognized(msg),
             Self::Matrix(e) => e,
+            Self::State(e) => {
+                if let StateError::Forbidden(msg) = e {
+                    tracing::error!(error = ?msg, "forbidden error.");
+                    MatrixError::forbidden(msg, None)
+                } else if let StateError::AuthEvent(msg) = e {
+                    tracing::error!(error = ?msg, "forbidden error.");
+                    MatrixError::forbidden(msg, None)
+                } else {
+                    MatrixError::unknown(e.to_string())
+                }
+            }
             Self::Uiaa(uiaa) => {
                 use crate::core::client::uiaa::ErrorKind;
                 if res.status_code.map(|c| c.is_success()).unwrap_or(true) {

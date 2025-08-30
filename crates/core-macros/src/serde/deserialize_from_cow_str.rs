@@ -15,7 +15,7 @@ pub fn expand_deserialize_from_cow_str(ident: &Ident) -> syn::Result<TokenStream
             {
                 type CowStr<'a> = ::std::borrow::Cow<'a, ::std::primitive::str>;
 
-                let cow = palpo_core::serde::deserialize_cow_str(deserializer)?;
+                let cow = #palpo_core::serde::deserialize_cow_str(deserializer)?;
                 Ok(::std::convert::From::<CowStr<'_>>::from(cow))
             }
         }

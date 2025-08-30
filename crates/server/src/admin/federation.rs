@@ -111,9 +111,9 @@ pub(super) async fn remote_user_in_rooms(ctx: &Context<'_>, user_id: OwnedUserId
         .iter()
         .map(
             |RoomInfo {
-                id,
-                joined_members,
-                name,
+                 id,
+                 joined_members,
+                 name,
              }| format!("{id} | Members: {joined_members} | Name: {name}"),
         )
         .collect::<Vec<_>>()

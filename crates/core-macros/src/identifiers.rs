@@ -23,7 +23,7 @@ impl Parse for IdentifierInput {
     }
 }
 
-pub fn expand_id_zst(input: ItemStruct) -> syn::Result<TokenStream> {
+pub fn expand_id_dst(input: ItemStruct) -> syn::Result<TokenStream> {
     let id = &input.ident;
     let owned = format_ident!("Owned{id}");
 
@@ -33,11 +33,11 @@ pub fn expand_id_zst(input: ItemStruct) -> syn::Result<TokenStream> {
         .attrs
         .iter()
         .filter(|attr| attr.path().is_ident("palpo_id"))
-        .try_fold(IdZstMeta::default(), |meta, attr| {
-            let list: Punctuated<IdZstMeta, Token![,]> =
+        .try_fold(IdDstMeta::default(), |meta, attr| {
+            let list: Punctuated<IdDstMeta, Token![,]> =
                 attr.parse_args_with(Punctuated::parse_terminated)?;
 
-            list.into_iter().try_fold(meta, IdZstMeta::merge)
+            list.into_iter().try_fold(meta, IdDstMeta::merge)
         })?;
 
     let extra_impls = if let Some(validate) = meta.validate {
@@ -829,12 +829,12 @@ mod kw {
 }
 
 #[derive(Default)]
-struct IdZstMeta {
+struct IdDstMeta {
     validate: Option<Path>,
 }
 
-impl IdZstMeta {
-    fn merge(self, other: IdZstMeta) -> syn::Result<Self> {
+impl IdDstMeta {
+    fn merge(self, other: IdDstMeta) -> syn::Result<Self> {
         let validate = match (self.validate, other.validate) {
             (None, None) => None,
             (Some(val), None) | (None, Some(val)) => Some(val),
@@ -849,7 +849,7 @@ impl IdZstMeta {
     }
 }
 
-impl Parse for IdZstMeta {
+impl Parse for IdDstMeta {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let _: kw::validate = input.parse()?;
         let _: Token![=] = input.parse()?;

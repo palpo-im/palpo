@@ -32,6 +32,11 @@ event_enum! {
         "m.push_rules" => super::push_rules,
         "m.secret_storage.default_key" => super::secret_storage::default_key,
         "m.secret_storage.key.*" => super::secret_storage::key,
+         #[cfg(feature = "unstable-msc4278")]
+        "m.media_preview_config" => super::media_preview_config,
+        #[cfg(feature = "unstable-msc4278")]
+        #[palpo_enum(ident = UnstableMediaPreviewConfig)]
+        "io.element.msc4278.media_preview_config" => super::media_preview_config,
         #[cfg(feature = "unstable-msc2545")]
         #[palpo_enum(ident = AccountImagePack, alias = "m.image_pack")]
         "im.ponies.user_emotes" => super::image_pack,
@@ -48,6 +53,11 @@ event_enum! {
         #[cfg(feature = "unstable-msc2867")]
         #[palpo_enum(ident = UnstableMarkedUnread)]
         "com.famedly.marked_unread" => super::marked_unread,
+        #[cfg(feature = "unstable-msc4278")]
+        "m.media_preview_config" => super::media_preview_config,
+        #[cfg(feature = "unstable-msc4278")]
+        #[palpo_enum(ident = UnstableMediaPreviewConfig)]
+        "io.element.msc4278.media_preview_config" => super::media_preview_config,
     }
 
     /// Any ephemeral room event.
@@ -169,7 +179,11 @@ event_enum! {
     enum ToDevice {
         "m.dummy" => super::dummy,
         "m.room_key" => super::room_key,
+        #[cfg(feature = "unstable-msc4268")]
+        #[palpo_enum(alias = "m.room_key_bundle")]
+        "io.element.msc4268.room_key_bundle" => super::room_key_bundle,
         "m.room_key_request" => super::room_key_request,
+        "m.room_key.withheld" => super::room_key::withheld,
         "m.forwarded_room_key" => super::forwarded_room_key,
         "m.key.verification.request" => super::key::verification::request,
         "m.key.verification.ready" => super::key::verification::ready,

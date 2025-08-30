@@ -296,18 +296,18 @@ async fn make_knock(
     // }
 
     let state_lock = room::lock_state(&args.room_id).await;
-    if let Ok(member) = room::get_member(&args.room_id, &args.user_id) {
-        if member.membership == MembershipState::Ban {
-            warn!(
-                "Remote user {} is banned from {} but attempted to knock",
-                &args.user_id, &args.room_id
-            );
-            return Err(MatrixError::forbidden(
-                "You cannot knock on a room you are banned from.",
-                None,
-            )
-            .into());
-        }
+    if let Ok(member) = room::get_member(&args.room_id, &args.user_id)
+        && member.membership == MembershipState::Ban
+    {
+        warn!(
+            "Remote user {} is banned from {} but attempted to knock",
+            &args.user_id, &args.room_id
+        );
+        return Err(MatrixError::forbidden(
+            "You cannot knock on a room you are banned from.",
+            None,
+        )
+        .into());
     }
 
     let (_pdu, mut pdu_json, _event_guard) = timeline::create_hash_and_sign_event(
@@ -318,7 +318,8 @@ async fn make_knock(
         &args.user_id,
         &args.room_id,
         &state_lock,
-    )?;
+    )
+    .await?;
     drop(state_lock);
 
     // room v3 and above removed the "event_id" field from remote PDU format

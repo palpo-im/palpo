@@ -41,12 +41,12 @@ async fn history(
 
     let mut events = Vec::with_capacity(all_events.len());
     for (_, pdu) in all_events {
-        if state::server_can_see_event(origin, &args.room_id, &pdu.event_id)? {
-            if let Some(pdu_json) = timeline::get_pdu_json(&pdu.event_id)? {
-                events.push(crate::sending::convert_to_outgoing_federation_event(
-                    pdu_json,
-                ));
-            }
+        if state::server_can_see_event(origin, &args.room_id, &pdu.event_id)?
+            && let Some(pdu_json) = timeline::get_pdu_json(&pdu.event_id)?
+        {
+            events.push(crate::sending::convert_to_outgoing_federation_event(
+                pdu_json,
+            ));
         }
     }
 

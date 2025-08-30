@@ -2,10 +2,11 @@ use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
-use crate::core::events::room::join_rule::{JoinRule, RoomJoinRulesEventContent};
+use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{AnyStateEventContent, StateEventType};
 use crate::core::identifiers::*;
+use crate::core::room::JoinRule;
 use crate::core::serde::RawJson;
 use crate::event::PduBuilder;
 use crate::room::timeline;
@@ -61,35 +62,31 @@ fn allowed_to_send_state_event(
         }
         // admin room is a sensitive room, it should not ever be made public
         StateEventType::RoomJoinRules => {
-            if crate::room::is_admin_room(room_id)? {
-                if let Ok(join_rule) =
+            if crate::room::is_admin_room(room_id)?
+                && let Ok(join_rule) =
                     serde_json::from_str::<RoomJoinRulesEventContent>(json.inner().get())
-                {
-                    if join_rule.join_rule == JoinRule::Public {
-                        return Err(MatrixError::forbidden(
-                            "Admin room is a sensitive room, it cannot be made public",
-                            None,
-                        )
-                        .into());
-                    }
-                }
+                && join_rule.join_rule == JoinRule::Public
+            {
+                return Err(MatrixError::forbidden(
+                    "Admin room is a sensitive room, it cannot be made public",
+                    None,
+                )
+                .into());
             }
         }
         // admin room is a sensitive room, it should not ever be made world readable
         StateEventType::RoomHistoryVisibility => {
             if let Ok(visibility_content) =
                 serde_json::from_str::<RoomHistoryVisibilityEventContent>(json.inner().get())
+                && crate::room::is_admin_room(room_id)?
+                && visibility_content.history_visibility == HistoryVisibility::WorldReadable
             {
-                if crate::room::is_admin_room(room_id)?
-                    && visibility_content.history_visibility == HistoryVisibility::WorldReadable
-                {
-                    return Err(MatrixError::forbidden(
-                        "Admin room is a sensitive room, it cannot be made world readable \
+                return Err(MatrixError::forbidden(
+                    "Admin room is a sensitive room, it cannot be made world readable \
 							 (public room history).",
-                        None,
-                    )
-                    .into());
-                }
+                    None,
+                )
+                .into());
             }
         }
         StateEventType::RoomCanonicalAlias => {

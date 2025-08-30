@@ -1,9 +1,9 @@
 //! Matrix event identifiers.
 
-use crate::macros::IdZst;
 use diesel::expression::AsExpression;
 
 use super::ServerName;
+use crate::macros::IdDst;
 
 /// A Matrix [event ID].
 ///
@@ -39,7 +39,7 @@ use super::ServerName;
 /// [event ID]: https://spec.matrix.org/latest/appendices/#event-ids
 /// [room versions]: https://spec.matrix.org/latest/rooms/#complete-list-of-room-versions
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::event_id::validate)]
 pub struct EventId(str);

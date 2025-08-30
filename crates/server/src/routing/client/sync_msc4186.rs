@@ -54,14 +54,14 @@ pub(super) async fn sync_events_v5(
         .and_then(|string| string.parse().ok())
         .unwrap_or_default();
 
-    if global_since_sn == 0 {
-        if let Some(conn_id) = &body.conn_id {
-            crate::sync_v5::forget_sync_request_connection(
-                sender_id.to_owned(),
-                authed.device_id().to_owned(),
-                conn_id.to_owned(),
-            )
-        }
+    if global_since_sn == 0
+        && let Some(conn_id) = &body.conn_id
+    {
+        crate::sync_v5::forget_sync_request_connection(
+            sender_id.to_owned(),
+            authed.device_id().to_owned(),
+            conn_id.to_owned(),
+        )
     }
 
     // Get sticky parameters from cache
@@ -597,31 +597,27 @@ fn collect_e2ee<'a>(
                             error!("Pdu in state not found: {id}");
                             continue;
                         };
-                        if pdu.event_ty == TimelineEventType::RoomMember {
-                            if let Some(Ok(user_id)) = pdu.state_key.as_deref().map(UserId::parse) {
-                                if user_id == sender_id {
-                                    continue;
-                                }
+                        if pdu.event_ty == TimelineEventType::RoomMember
+                            && let Some(Ok(user_id)) = pdu.state_key.as_deref().map(UserId::parse)
+                        {
+                            if user_id == sender_id {
+                                continue;
+                            }
 
-                                let content: RoomMemberEventContent = pdu.get_content()?;
-                                match content.membership {
-                                    MembershipState::Join => {
-                                        // A new user joined an encrypted room
-                                        if !share_encrypted_room(
-                                            sender_id,
-                                            &user_id,
-                                            Some(room_id),
-                                        )? {
-                                            device_list_changes.insert(user_id.to_owned());
-                                        }
+                            let content: RoomMemberEventContent = pdu.get_content()?;
+                            match content.membership {
+                                MembershipState::Join => {
+                                    // A new user joined an encrypted room
+                                    if !share_encrypted_room(sender_id, &user_id, Some(room_id))? {
+                                        device_list_changes.insert(user_id.to_owned());
                                     }
-                                    MembershipState::Leave => {
-                                        // Write down users that have left encrypted rooms we
-                                        // are in
-                                        left_encrypted_users.insert(user_id.to_owned());
-                                    }
-                                    _ => {}
                                 }
+                                MembershipState::Leave => {
+                                    // Write down users that have left encrypted rooms we
+                                    // are in
+                                    left_encrypted_users.insert(user_id.to_owned());
+                                }
+                                _ => {}
                             }
                         }
                     }

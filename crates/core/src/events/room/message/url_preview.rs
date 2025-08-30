@@ -133,8 +133,8 @@ impl UrlPreview {
 //     use assert_matches2::assert_matches;
 //     use assign::assign;
 //     use js_int::uint;
-//     use ruma_common::{owned_mxc_uri, serde::Base64};
-//     use ruma_events::room::message::{MessageType, RoomMessageEventContent};
+//     use palpo_core::{owned_mxc_uri, serde::Base64};
+//     use crate::events::room::message::{MessageType, RoomMessageEventContent};
 //     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
 //     use super::{super::text::TextMessageEventContent, *};

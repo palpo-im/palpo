@@ -4,7 +4,7 @@
 
 use std::{fmt, num::NonZeroU8};
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use palpo_identifiers_validation::{error::MxcUriError, mxc_uri::validate};
 use serde::{Serialize, Serializer};
 
@@ -16,7 +16,7 @@ type Result<T, E = MxcUriError> = std::result::Result<T, E>;
 ///
 /// [MXC URI]: https://spec.matrix.org/latest/client-server-api/#matrix-content-mxc-uris
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst)]
 pub struct MxcUri(str);
 
 impl MxcUri {

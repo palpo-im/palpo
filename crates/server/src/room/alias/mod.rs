@@ -7,7 +7,6 @@ use crate::core::appservice::query::{QueryRoomAliasReqArgs, query_room_alias_req
 use crate::core::client::room::AliasResBody;
 use crate::core::events::TimelineEventType;
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
-use crate::core::events::room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent};
 use crate::core::federation::query::directory_request;
 use crate::core::identifiers::*;
 use crate::data::connect;
@@ -87,26 +86,26 @@ pub fn resolve_local_alias(alias_id: &RoomAliasId) -> AppResult<OwnedRoomId> {
 
 async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRoomId> {
     for appservice in crate::appservice::all()?.values() {
-        if appservice.aliases.is_match(room_alias.as_str()) {
-            if let Some(url) = &appservice.registration.url {
-                let request = query_room_alias_request(
-                    url,
-                    QueryRoomAliasReqArgs {
-                        room_alias: room_alias.to_owned(),
-                    },
-                )?
-                .into_inner();
-                if matches!(
-                    crate::sending::send_appservice_request::<Option<()>>(
-                        appservice.registration.clone(),
-                        request
-                    )
-                    .await,
-                    Ok(Some(_opt_result))
-                ) {
-                    return resolve_local_alias(room_alias)
-                        .map_err(|_| MatrixError::not_found("Room does not exist.").into());
-                }
+        if appservice.aliases.is_match(room_alias.as_str())
+            && let Some(url) = &appservice.registration.url
+        {
+            let request = query_room_alias_request(
+                url,
+                QueryRoomAliasReqArgs {
+                    room_alias: room_alias.to_owned(),
+                },
+            )?
+            .into_inner();
+            if matches!(
+                crate::sending::send_appservice_request::<Option<()>>(
+                    appservice.registration.clone(),
+                    request
+                )
+                .await,
+                Ok(Some(_opt_result))
+            ) {
+                return resolve_local_alias(room_alias)
+                    .map_err(|_| MatrixError::not_found("Room does not exist.").into());
             }
         }
     }
@@ -214,7 +213,7 @@ pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<Alias
 #[tracing::instrument]
 pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()> {
     let room_id = resolve_local_alias(alias_id)?;
-    if user_can_remove_alias(alias_id, user)? {
+    if user_can_remove_alias(alias_id, user).await? {
         let state_alias = super::get_canonical_alias(&room_id);
 
         if state_alias.is_ok() {
@@ -245,7 +244,7 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
     }
 }
 #[tracing::instrument]
-fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<bool> {
+async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<bool> {
     let room_id = resolve_local_alias(alias_id)?;
 
     let alias = room_aliases::table
@@ -261,14 +260,8 @@ fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<boo
     {
         Ok(true)
         // Checking whether the user is able to change canonical aliases of the room
-    } else if let Ok(content) = super::get_state_content::<RoomPowerLevelsEventContent>(
-        &room_id,
-        &StateEventType::RoomPowerLevels,
-        "",
-        None,
-    ) {
-        Ok(RoomPowerLevels::from(content)
-            .user_can_send_state(&user.id, StateEventType::RoomCanonicalAlias))
+    } else if let Ok(power_levels) = super::get_power_levels(&room_id).await {
+        Ok(power_levels.user_can_send_state(&user.id, StateEventType::RoomCanonicalAlias))
     // If there is no power levels event, only the room creator can change canonical aliases
     } else if let Ok(event) = super::get_state(&room_id, &StateEventType::RoomCreate, "", None) {
         Ok(event.sender == user.id)

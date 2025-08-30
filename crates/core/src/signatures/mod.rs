@@ -50,12 +50,12 @@ pub use self::{
     error::{Error, JsonError, ParseError, VerificationError},
     functions::{
         canonical_json, content_hash, hash_and_sign_event, reference_hash, required_keys,
-        sign_json, verify_event, verify_json,
+        sign_json, verify_canonical_json_bytes, verify_event, verify_json,
     },
     keys::{Ed25519KeyPair, KeyPair, PublicKeyMap, PublicKeySet},
     verification::Verified,
 };
-use crate::serde::{AsRefStr, Base64, base64::Standard, DisplayAsRefStr};
+use crate::serde::{AsRefStr, Base64, DisplayAsRefStr, base64::Standard};
 
 mod error;
 mod functions;
@@ -186,7 +186,6 @@ impl Signature {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -194,8 +193,9 @@ mod tests {
     use pkcs8::{PrivateKeyInfo, der::Decode};
     use serde_json::{from_str as from_json_str, to_string as to_json_string};
 
-    use super::{Signature,
-        Ed25519KeyPair, canonical_json, hash_and_sign_event, sign_json, verify_event, verify_json,
+    use super::{
+        Ed25519KeyPair, Signature, canonical_json, hash_and_sign_event, sign_json, verify_event,
+        verify_json,
     };
     use crate::{
         RoomVersionId,

@@ -22,7 +22,7 @@ pub async fn invite_user(
         )
         .into());
     }
-    if !room::user_can_invite(room_id, inviter_id, invitee_id) {
+    if !room::user_can_invite(room_id, inviter_id, invitee_id).await {
         return Err(
             MatrixError::forbidden("You are not allowed to invite this user.", None).into(),
         );
@@ -48,7 +48,8 @@ pub async fn invite_user(
                 inviter_id,
                 room_id,
                 &state_lock,
-            )?;
+            )
+            .await?;
             drop(state_lock);
 
             let invite_room_state = state::summary_stripped(&pdu)?;

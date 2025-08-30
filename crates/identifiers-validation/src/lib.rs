@@ -1,6 +1,7 @@
 #![doc(html_favicon_url = "https://palpo.io/favicon.ico")]
 #![doc(html_logo_url = "https://palpo.io/images/logo.png")]
 
+pub mod base64_public_key;
 pub mod client_secret;
 pub mod device_key_id;
 pub mod error;

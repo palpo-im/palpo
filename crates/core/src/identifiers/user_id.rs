@@ -3,9 +3,12 @@
 use std::{rc::Rc, sync::Arc};
 
 use diesel::expression::AsExpression;
+use palpo_identifiers_validation::MAX_BYTES;
+
+pub use palpo_identifiers_validation::user_id::localpart_is_fully_conforming;
 
 use super::{IdParseError, MatrixToUri, MatrixUri, ServerName, matrix_uri::UriAction};
-use palpo_identifiers_validation::MAX_BYTES;
+use crate::macros::IdDst;
 
 /// A Matrix [user ID].
 ///
@@ -19,7 +22,7 @@ use palpo_identifiers_validation::MAX_BYTES;
 ///
 /// [user ID]: https://spec.matrix.org/latest/appendices/#user-identifiers
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::user_id::validate)]
 pub struct UserId(str);
@@ -201,9 +204,6 @@ impl UserId {
         self.as_str().find(':').unwrap()
     }
 }
-
-use crate::macros::IdZst;
-pub use palpo_identifiers_validation::user_id::localpart_is_fully_conforming;
 
 #[cfg(test)]
 mod tests {

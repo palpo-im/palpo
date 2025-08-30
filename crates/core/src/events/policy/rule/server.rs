@@ -7,12 +7,7 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{PolicyRuleEventContent, PossiblyRedactedPolicyRuleEventContent};
-use crate::{
-    events::{
-        EventContent, EventContentFromType, PossiblyRedactedStateEventContent, StateEventType,
-    },
-    serde::RawJsonValue,
-};
+use crate::events::{PossiblyRedactedStateEventContent, StateEventType, StaticEventContent};
 
 /// The content of an `m.policy.rule.server` event.
 ///
@@ -30,20 +25,15 @@ pub struct PolicyRuleServerEventContent(pub PolicyRuleEventContent);
 #[allow(clippy::exhaustive_structs)]
 pub struct PossiblyRedactedPolicyRuleServerEventContent(pub PossiblyRedactedPolicyRuleEventContent);
 
-impl EventContent for PossiblyRedactedPolicyRuleServerEventContent {
-    type EventType = StateEventType;
+impl PossiblyRedactedStateEventContent for PossiblyRedactedPolicyRuleServerEventContent {
+    type StateKey = String;
 
-    fn event_type(&self) -> Self::EventType {
+    fn event_type(&self) -> StateEventType {
         StateEventType::PolicyRuleServer
     }
 }
 
-impl PossiblyRedactedStateEventContent for PossiblyRedactedPolicyRuleServerEventContent {
-    type StateKey = String;
-}
-
-impl EventContentFromType for PossiblyRedactedPolicyRuleServerEventContent {
-    fn from_parts(_ev_type: &str, content: &RawJsonValue) -> serde_json::Result<Self> {
-        serde_json::from_str(content.get())
-    }
+impl StaticEventContent for PossiblyRedactedPolicyRuleServerEventContent {
+    const TYPE: &'static str = PolicyRuleServerEventContent::TYPE;
+    type IsPrefix = <PolicyRuleServerEventContent as StaticEventContent>::IsPrefix;
 }

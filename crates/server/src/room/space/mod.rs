@@ -3,7 +3,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use lru_cache::LruCache;
 
 use crate::core::client::space::SpaceHierarchyRoomsChunk;
-use crate::core::events::room::join_rule::{JoinRule, RoomJoinRulesEventContent};
+use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::events::space::child::HierarchySpaceChildEvent;
 use crate::core::events::{StateEventType, space::child::SpaceChildEventContent};
 use crate::core::federation::space::{
@@ -11,6 +11,7 @@ use crate::core::federation::space::{
     hierarchy_request,
 };
 use crate::core::identifiers::*;
+use crate::core::room::JoinRule;
 use crate::core::serde::RawJson;
 use crate::core::{OwnedRoomId, RoomId, UserId, space::SpaceRoomJoinRule};
 use crate::event::handler;
@@ -107,16 +108,16 @@ async fn get_summary_and_children_federation(
         )?
         .into_inner();
 
-        if let Ok(respone) = crate::sending::send_federation_request(server, request).await {
-            if let Ok(body) = respone.json::<HierarchyResBody>().await {
-                ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap().insert(
-                    current_room.to_owned(),
-                    Some(CachedSpaceHierarchySummary {
-                        summary: body.room.clone(),
-                    }),
-                );
-                res_body = Some(body);
-            }
+        if let Ok(respone) = crate::sending::send_federation_request(server, request).await
+            && let Ok(body) = respone.json::<HierarchyResBody>().await
+        {
+            ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap().insert(
+                current_room.to_owned(),
+                Some(CachedSpaceHierarchySummary {
+                    summary: body.room.clone(),
+                }),
+            );
+            res_body = Some(body);
         }
         if res_body.is_some() {
             break;
@@ -167,10 +168,10 @@ fn get_stripped_space_child_events(
         .into_iter()
         .filter_map(|((state_event_type, state_key), pdu)| {
             if state_event_type == StateEventType::SpaceChild {
-                if let Ok(content) = pdu.get_content::<SpaceChildEventContent>() {
-                    if content.via.is_empty() {
-                        return None;
-                    }
+                if let Ok(content) = pdu.get_content::<SpaceChildEventContent>()
+                    && content.via.is_empty()
+                {
+                    return None;
                 }
 
                 if RoomId::parse(&state_key).is_ok() {
@@ -260,19 +261,18 @@ fn is_accessible_child(
     identifier: &Identifier<'_>,
     allowed_room_ids: &[OwnedRoomId],
 ) -> bool {
-    if let Identifier::ServerName(server_name) = identifier {
-        // Checks if ACLs allow for the server to participate
-        if handler::acl_check(server_name, current_room).is_err() {
-            return false;
-        }
+    // Checks if ACLs allow for the server to participate
+    if let Identifier::ServerName(server_name) = identifier
+        && handler::acl_check(server_name, current_room).is_err()
+    {
+        return false;
     }
 
-    if let Identifier::UserId(user_id) = identifier {
-        if crate::room::user::is_joined(user_id, current_room).unwrap_or(false)
-            || crate::room::user::is_invited(user_id, current_room).unwrap_or(false)
-        {
-            return true;
-        }
+    if let Identifier::UserId(user_id) = identifier
+        && (crate::room::user::is_joined(user_id, current_room).unwrap_or(false)
+            || crate::room::user::is_invited(user_id, current_room).unwrap_or(false))
+    {
+        return true;
     }
 
     match join_rule {

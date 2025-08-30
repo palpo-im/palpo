@@ -1,4 +1,4 @@
-use futures_util::FutureExt;
+use palpo_core::state::room_version;
 
 use crate::admin::{Context, get_room_info, parse_active_local_user_id, parse_local_user_id};
 use crate::core::{
@@ -43,12 +43,12 @@ pub(super) async fn create_user(
     let user_id = parse_local_user_id(&username)?;
     let conf = config::get();
 
-    if let Err(e) = user_id.validate_strict() {
-        if conf.emergency_password.is_none() {
-            return Err(AppError::public(format!(
-                "Username {user_id} contains disallowed characters or spaces: {e}"
-            )));
-        }
+    if let Err(e) = user_id.validate_strict()
+        && conf.emergency_password.is_none()
+    {
+        return Err(AppError::public(format!(
+            "Username {user_id} contains disallowed characters or spaces: {e}"
+        )));
     }
 
     if data::user::user_exists(&user_id)? {
@@ -181,9 +181,7 @@ pub(super) async fn deactivate(
 
         let all_joined_rooms: Vec<OwnedRoomId> = data::user::joined_rooms(&user_id)?;
 
-        full_user_deactivate(&user_id, &all_joined_rooms)
-            .boxed()
-            .await?;
+        full_user_deactivate(&user_id, &all_joined_rooms).await?;
 
         data::user::set_display_name(&user_id, None)?;
         data::user::set_avatar_url(&user_id, None)?;
@@ -295,9 +293,7 @@ pub(super) async fn deactivate_all(
                     info!("Forcing user {user_id} to leave all rooms apart of deactivate-all");
                     let all_joined_rooms = data::user::joined_rooms(&user_id)?;
 
-                    full_user_deactivate(&user_id, &all_joined_rooms)
-                        .boxed()
-                        .await?;
+                    full_user_deactivate(&user_id, &all_joined_rooms).await?;
 
                     data::user::set_display_name(&user_id, None)?;
                     data::user::set_avatar_url(&user_id, None)?;
@@ -588,13 +584,12 @@ pub(super) async fn force_demote(
 ) -> AppResult<()> {
     let user_id = parse_local_user_id(&user_id)?;
     let room_id = crate::room::alias::resolve(&room_id).await?;
+    let room_version = crate::room::get_version(&room_id)?;
+    let room_rule = crate::room::get_rules(&room_version)?;
 
     assert!(user_id.is_local(), "parsed user_id must be a local user");
-
     let state_lock = crate::room::lock_state(&room_id).await;
-
-    let room_power_levels: Option<RoomPowerLevelsEventContent> =
-        crate::room::get_state_content(&room_id, &StateEventType::RoomPowerLevels, "", None).ok();
+    let room_power_levels = crate::room::get_power_levels(&room_id).await.ok();
 
     let user_can_demote_self = room_power_levels
         .as_ref()
@@ -611,7 +606,10 @@ pub(super) async fn force_demote(
         ));
     }
 
-    let mut power_levels_content = room_power_levels.unwrap_or_default();
+    let mut power_levels_content: RoomPowerLevelsEventContent = room_power_levels
+        .map(TryInto::try_into)
+        .transpose()?
+        .unwrap_or_else(|| RoomPowerLevelsEventContent::new(&room_rule.authorization));
     power_levels_content.users.remove(&user_id);
 
     let event = timeline::build_and_append_pdu(

@@ -55,39 +55,36 @@ pub async fn banned_room_check(
                 MatrixError::forbidden("This room is banned on this homeserver.", None).into(),
             );
         }
-    } else if let Some(server_name) = server_name {
-        if conf
+    } else if let Some(server_name) = server_name
+        && conf
             .forbidden_remote_server_names
             .is_match(server_name.host())
-        {
-            warn!(
-                "User {user_id} who is not an admin tried joining a room which has the server \
+    {
+        warn!(
+            "User {user_id} who is not an admin tried joining a room which has the server \
 				 name {server_name} that is globally forbidden. Rejecting.",
-            );
+        );
 
-            if conf.auto_deactivate_banned_room_attempts {
-                warn!(
-                    "Automatically deactivating user {user_id} due to attempted banned room join"
-                );
-                if conf.admin.room_notices {
-                    crate::admin::send_message(RoomMessageEventContent::text_plain(format!(
-                        "Automatically deactivating user {user_id} due to attempted banned \
+        if conf.auto_deactivate_banned_room_attempts {
+            warn!("Automatically deactivating user {user_id} due to attempted banned room join");
+            if conf.admin.room_notices {
+                crate::admin::send_message(RoomMessageEventContent::text_plain(format!(
+                    "Automatically deactivating user {user_id} due to attempted banned \
 							 room join from IP {client_addr}"
-                    )))
-                    .await
-                    .ok();
-                }
-
-                let all_joined_rooms = data::user::joined_rooms(user_id)?;
-                crate::user::full_user_deactivate(user_id, &all_joined_rooms).await?;
+                )))
+                .await
+                .ok();
             }
 
-            return Err(MatrixError::forbidden(
-                "This remote server is banned on this homeserver.",
-                None,
-            )
-            .into());
+            let all_joined_rooms = data::user::joined_rooms(user_id)?;
+            crate::user::full_user_deactivate(user_id, &all_joined_rooms).await?;
         }
+
+        return Err(MatrixError::forbidden(
+            "This remote server is banned on this homeserver.",
+            None,
+        )
+        .into());
     }
     Ok(())
 }

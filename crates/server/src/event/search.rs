@@ -97,7 +97,7 @@ pub fn search_pdus(
         .into_iter()
         .filter_map(|(rank, event_id, _, _)| {
             let pdu = timeline::get_pdu(&event_id).ok()?;
-            if state::user_can_see_event(user_id, &pdu.room_id, &pdu.event_id).unwrap_or(false) {
+            if state::user_can_see_event(user_id, &pdu.event_id).unwrap_or(false) {
                 Some((rank, pdu))
             } else {
                 None
@@ -139,19 +139,17 @@ fn calc_event_context(
     let after_pdus =
         timeline::get_pdus_forward(user_id, room_id, event_sn + 1, None, None, after_limit)?;
     let mut profile = BTreeMap::new();
-    if include_profile {
-        if let Ok(frame_id) = crate::event::get_frame_id(room_id, event_sn) {
-            let RoomMemberEventContent {
-                display_name,
-                avatar_url,
-                ..
-            } = state::get_state_content(frame_id, &StateEventType::RoomMember, user_id.as_str())?;
-            if let Some(display_name) = display_name {
-                profile.insert("displayname".to_string(), display_name);
-            }
-            if let Some(avatar_url) = avatar_url {
-                profile.insert("avatar_url".to_string(), avatar_url.to_string());
-            }
+    if include_profile && let Ok(frame_id) = crate::event::get_frame_id(room_id, event_sn) {
+        let RoomMemberEventContent {
+            display_name,
+            avatar_url,
+            ..
+        } = state::get_state_content(frame_id, &StateEventType::RoomMember, user_id.as_str())?;
+        if let Some(display_name) = display_name {
+            profile.insert("displayname".to_string(), display_name);
+        }
+        if let Some(avatar_url) = avatar_url {
+            profile.insert("avatar_url".to_string(), avatar_url.to_string());
         }
     }
 

@@ -5,7 +5,7 @@ use palpo_core::push::PusherIds;
 
 use crate::core::UnixMillis;
 use crate::core::events::AnySyncTimelineEvent;
-use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
+use crate::core::events::room::power_levels::RoomPowerLevels;
 use crate::core::identifiers::*;
 use crate::core::push::{
     Action, PushConditionPowerLevelsCtx, PushConditionRoomCtx, Pusher, PusherKind, Ruleset,
@@ -103,7 +103,7 @@ pub fn get_pushers(user_id: &UserId) -> DataResult<Vec<DbPusher>> {
 pub fn get_actions<'a>(
     user: &UserId,
     ruleset: &'a Ruleset,
-    power_levels: &RoomPowerLevelsEventContent,
+    power_levels: &RoomPowerLevels,
     pdu: &RawJson<AnySyncTimelineEvent>,
     room_id: &RoomId,
 ) -> DataResult<&'a [Action]> {
@@ -111,6 +111,7 @@ pub fn get_actions<'a>(
         users: power_levels.users.clone(),
         users_default: power_levels.users_default,
         notifications: power_levels.notifications.clone(),
+        rules: power_levels.rules.clone(),
     };
     let ctx = PushConditionRoomCtx {
         room_id: room_id.to_owned(),

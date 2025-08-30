@@ -1,6 +1,6 @@
 //! Matrix room alias identifiers.
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 use super::{MatrixToUri, MatrixUri, OwnedEventId, matrix_uri::UriAction, server_name::ServerName};
@@ -17,7 +17,7 @@ use super::{MatrixToUri, MatrixUri, OwnedEventId, matrix_uri::UriAction, server_
 ///
 /// [room alias ID]: https://spec.matrix.org/latest/appendices/#room-aliases
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::room_alias_id::validate)]
 pub struct RoomAliasId(str);

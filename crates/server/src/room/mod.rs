@@ -15,19 +15,21 @@ use crate::core::events::room::guest_access::{GuestAccess, RoomGuestAccessEventC
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
-use crate::core::events::room::join_rule::{JoinRule, RoomJoinRulesEventContent};
+use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::name::RoomNameEventContent;
 use crate::core::events::room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent};
 use crate::core::identifiers::*;
-use crate::core::room::RoomType;
+use crate::core::room::{JoinRule, RoomType};
+use crate::core::room_version_rules::RoomVersionRules;
+use crate::core::state::events::RoomCreateEvent;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::room::{DbRoomCurrent, NewDbRoom};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::{
-    APPSERVICE_IN_ROOM_CACHE, AppResult, IsRemoteOrLocal, RoomMutexGuard, RoomMutexMap, SnPduEvent,
-    config, data, membership, room, utils,
+    APPSERVICE_IN_ROOM_CACHE, AppError, AppResult, IsRemoteOrLocal, RoomMutexGuard, RoomMutexMap,
+    SnPduEvent, config, data, membership, room, utils,
 };
 
 pub mod alias;
@@ -262,7 +264,7 @@ pub fn is_room_exists(room_id: &RoomId) -> AppResult<bool> {
     )
     .map_err(Into::into)
 }
-pub fn should_join_on_remote_servers(
+pub async fn should_join_on_remote_servers(
     sender_id: &UserId,
     room_id: &RoomId,
     servers: &[OwnedServerName],
@@ -281,7 +283,8 @@ pub fn should_join_on_remote_servers(
         return Ok((false, servers.to_vec()));
     }
     let users =
-        membership::get_users_can_issue_invite(room_id, sender_id, &join_rule.restriction_rooms())?;
+        membership::get_users_can_issue_invite(room_id, sender_id, &join_rule.restriction_rooms())
+            .await?;
     let mut allowed_servers = crate::get_servers_from_users(&users);
     if let Ok(room_server) = room_id.server_name() {
         let room_server = room_server.to_owned();
@@ -490,6 +493,10 @@ where
     state::get_state_content(frame_id, event_type, state_key)
 }
 
+pub fn get_create(room_id: &RoomId) -> AppResult<RoomCreateEvent<SnPduEvent>> {
+    get_state(room_id, &StateEventType::RoomCreate, "", None).map(RoomCreateEvent::new)
+}
+
 pub fn get_name(room_id: &RoomId) -> AppResult<String> {
     get_state_content::<RoomNameEventContent>(room_id, &StateEventType::RoomName, "", None)
         .map(|c| c.name)
@@ -530,8 +537,15 @@ pub fn get_join_rule(room_id: &RoomId) -> AppResult<JoinRule> {
     )
     .map(|c| c.join_rule)
 }
-pub fn get_power_levels(room_id: &RoomId) -> AppResult<RoomPowerLevels> {
-    get_power_levels_event_content(room_id).map(RoomPowerLevels::from)
+pub async fn get_power_levels(room_id: &RoomId) -> AppResult<RoomPowerLevels> {
+    let create = get_create(room_id)?;
+    let room_version = create.room_version()?;
+    let rules = crate::room::get_rules(&room_version)?;
+    let creators = create.creators(&rules.authorization)?;
+
+    let content = get_power_levels_event_content(room_id)?;
+    let power_levels = RoomPowerLevels::new(content.into(), &rules.authorization, creators);
+    Ok(power_levels)
 }
 pub fn get_power_levels_event_content(room_id: &RoomId) -> AppResult<RoomPowerLevelsEventContent> {
     get_state_content::<RoomPowerLevelsEventContent>(
@@ -573,7 +587,7 @@ pub fn guest_can_join(room_id: &RoomId) -> bool {
     .unwrap_or(false)
 }
 
-pub fn user_can_invite(room_id: &RoomId, sender_id: &UserId, _target_user: &UserId) -> bool {
+pub async fn user_can_invite(room_id: &RoomId, sender_id: &UserId, _target_user: &UserId) -> bool {
     // let content = to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Invite))?;
 
     // let new_event = PduBuilder {
@@ -584,7 +598,7 @@ pub fn user_can_invite(room_id: &RoomId, sender_id: &UserId, _target_user: &User
     // };
     // Ok(timeline::create_hash_and_sign_event(new_event, sender, room_id).is_ok())
 
-    if let Ok(power_levels) = get_power_levels(room_id) {
+    if let Ok(power_levels) = get_power_levels(room_id).await {
         power_levels.user_can_invite(sender_id)
     } else {
         let create_content = get_state_content::<RoomCreateEventContent>(
@@ -695,4 +709,12 @@ pub fn ban_room(room_id: &RoomId, banned: bool) -> AppResult<()> {
             .map(|_| ())
             .map_err(Into::into)
     }
+}
+
+pub fn get_rules(room_version: &RoomVersionId) -> AppResult<RoomVersionRules> {
+    room_version.rules().ok_or_else(|| {
+        AppError::public(format!(
+            "Cannot verify event for unknown room version {room_version:?}."
+        ))
+    })
 }

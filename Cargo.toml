@@ -6,7 +6,7 @@ resolver = "2"
 version = "0.1.1"
 authors = ["Chrislearn Young <chris@acroidea.com>"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = """
 Matrix server implementation
 """
@@ -90,18 +90,17 @@ rustyline-async = { version = "0.4.7" }
 regex = "1.6.0"
 reqwest = { version = "0.12.23", features = ["json"] }
 ring = "0.17.14"
-salvo = { version = "0.82.0" }
+salvo = { version = "0.83.0" }
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.0"
 secrecy = "0.10.3"
-serde = { version = "1.0.118", features = ["derive"] }
-serde_json = { version = "1.0.142" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.143" }
 serde_yaml = { version = "0.9.32" }
 serde_regex = { version = "1.1.0" }
 smallvec = { version = "1.15.1" }
 sha2 = "0.10.8"
 sha1 = "0.10.6"
-smallstr = "0.3.1"
 strum = "0.27.2"
 strum_macros = "0.27.2"
 subslice = "0.2.3"

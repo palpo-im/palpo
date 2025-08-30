@@ -17,10 +17,12 @@ pub mod power_levels;
 pub mod presence;
 pub mod push;
 pub mod room;
+pub mod room_version_rules;
 pub mod serde;
 pub mod signatures;
 pub mod space;
 pub mod third_party;
+pub mod third_party_invite;
 mod time;
 pub mod to_device;
 pub mod version;
@@ -35,6 +37,7 @@ pub mod http_headers;
 pub mod media;
 pub mod state;
 pub mod user;
+pub mod utils;
 
 pub use palpo_core_macros as macros;
 

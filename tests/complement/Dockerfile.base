@@ -6,7 +6,7 @@ FROM rust:latest
 # deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware
 # EOF
 RUN sed -i 's|deb.debian.org/debian|mirrors.aliyun.com/debian|g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && apt-get upgrade && apt-get install -y --no-install-recommends \
+    apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     libclang-dev postgresql postgresql-contrib debian-keyring \
     debian-archive-keyring apt-transport-https \
     curl \

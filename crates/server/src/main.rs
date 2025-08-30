@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let args = Args::parse();
-    tracing::info!("Args: {:?}", args);
+    println!("Args: {:?}", args);
 
     let config_path = if let Some(config) = &args.config {
         config

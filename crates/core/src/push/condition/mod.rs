@@ -9,7 +9,7 @@ use wildmatch::WildMatch;
 use crate::macros::StringEnum;
 use crate::{
     OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId,
-    power_levels::NotificationPowerLevels,
+    power_levels::NotificationPowerLevels, room_version_rules::RoomPowerLevelsRules,
 };
 
 mod flattened_json;
@@ -53,6 +53,7 @@ impl RoomVersionFeature {
             | RoomVersionId::V9
             | RoomVersionId::V10
             | RoomVersionId::V11
+            // | RoomVersionId::V12
             | RoomVersionId::_Custom(_) => vec![],
         }
     }
@@ -269,6 +270,26 @@ pub struct PushConditionPowerLevelsCtx {
 
     /// The notification power levels of the room.
     pub notifications: NotificationPowerLevels,
+
+    /// The tweaks for determining the power level of a user.
+    pub rules: RoomPowerLevelsRules,
+}
+
+impl PushConditionPowerLevelsCtx {
+    /// Create a new `PushConditionPowerLevelsCtx`.
+    pub fn new(
+        users: BTreeMap<OwnedUserId, i64>,
+        users_default: i64,
+        notifications: NotificationPowerLevels,
+        rules: RoomPowerLevelsRules,
+    ) -> Self {
+        Self {
+            users,
+            users_default,
+            notifications,
+            rules,
+        }
+    }
 }
 
 /// Additional functions for character matching.

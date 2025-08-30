@@ -36,13 +36,13 @@ pub(super) async fn get_hierarchy(
         .and_then(|s| PaginationToken::from_str(s).ok());
 
     // Should prevent unexpeded behaviour in (bad) clients
-    if let Some(token) = &pagination_token {
-        if token.suggested_only != args.suggested_only || token.max_depth != max_depth {
-            return Err(MatrixError::invalid_param(
-                "suggested_only and max_depth cannot change on paginated requests",
-            )
-            .into());
-        }
+    if let Some(token) = &pagination_token
+        && (token.suggested_only != args.suggested_only || token.max_depth != max_depth)
+    {
+        return Err(MatrixError::invalid_param(
+            "suggested_only and max_depth cannot change on paginated requests",
+        )
+        .into());
     }
 
     let room_sns = pagination_token.map(|p| p.room_sns).unwrap_or_default();

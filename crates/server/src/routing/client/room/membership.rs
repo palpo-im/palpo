@@ -96,10 +96,10 @@ fn membership_filter(
     not_membership: Option<&MembershipEventFilter>,
     until_sn: Option<Seqnum>,
 ) -> Option<SnPduEvent> {
-    if let Some(until_sn) = until_sn {
-        if pdu.event_sn > until_sn {
-            return None;
-        }
+    if let Some(until_sn) = until_sn
+        && pdu.event_sn > until_sn
+    {
+        return None;
     }
 
     let membership_state_filter = match for_membership {

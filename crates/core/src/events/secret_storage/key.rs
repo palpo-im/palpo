@@ -56,7 +56,7 @@ fn is_default_bits(val: &u64) -> bool {
 }
 
 /// A key description encrypted using a specified algorithm.
-#[derive(ToSchema, Clone, Debug, Serialize, Deserialize, EventContent)]
+#[derive(ToSchema, Clone, Debug, Serialize, EventContent)]
 #[palpo_event(type = "m.secret_storage.key.*", kind = GlobalAccountData)]
 pub struct SecretStorageKeyEventContent {
     /// The ID of the key.

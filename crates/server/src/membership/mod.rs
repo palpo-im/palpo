@@ -38,16 +38,7 @@ async fn validate_and_add_event_id(
     room_version: &RoomVersionId,
     _pub_key_map: &RwLock<BTreeMap<String, SigningKeys>>,
 ) -> AppResult<(OwnedEventId, CanonicalJsonObject)> {
-    let mut value: CanonicalJsonObject = serde_json::from_str(pdu.get()).map_err(|e| {
-        error!("Invalid PDU in server response: {:?}: {:?}", pdu, e);
-        AppError::public("Invalid PDU in server response")
-    })?;
-    let event_id = EventId::parse(format!(
-        "${}",
-        crate::core::signatures::reference_hash(&value, room_version)
-            .expect("palpo can calculate reference hashes")
-    ))
-    .expect("palpo's reference hash~es are valid event ids");
+    let (event_id, mut value) = crate::event::gen_event_id_canonical_json(pdu, room_version)?;
 
     // TODO
     // let back_off = |id| match crate::BAD_EVENT_RATE_LIMITER.write().unwrap().entry(id) {

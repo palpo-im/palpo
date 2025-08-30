@@ -2,6 +2,7 @@
 
 use ed25519_dalek::{Verifier as _, VerifyingKey};
 
+use crate::SigningKeyAlgorithm;
 use crate::signatures::{Error, ParseError, VerificationError};
 
 /// A digital signature verifier.
@@ -67,4 +68,14 @@ pub enum Verified {
     ///
     /// This may indicate a redacted event.
     Signatures,
+}
+
+/// Get the verifier for the given algorithm, if it is supported.
+pub(crate) fn verifier_from_algorithm(
+    algorithm: &SigningKeyAlgorithm,
+) -> Option<impl Verifier + use<>> {
+    match algorithm {
+        SigningKeyAlgorithm::Ed25519 => Some(Ed25519Verifier),
+        _ => None,
+    }
 }

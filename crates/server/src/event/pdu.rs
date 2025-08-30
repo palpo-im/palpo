@@ -13,9 +13,9 @@ use crate::core::events::room::member::{MembershipState, RoomMemberEventContent}
 use crate::core::events::room::redaction::RoomRedactionEventContent;
 use crate::core::events::space::child::HierarchySpaceChildEvent;
 use crate::core::events::{
-    AnyEphemeralRoomEvent, AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent,
-    AnySyncStateEvent, AnySyncTimelineEvent, AnyTimelineEvent, EventContent, MessageLikeEventType,
-    StateEvent, StateEventType, TimelineEventType,
+    AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
+    AnySyncTimelineEvent, AnyTimelineEvent, MessageLikeEventContent, StateEvent, StateEventContent,
+    StateEventType, TimelineEventType,
 };
 use crate::core::identifiers::*;
 use crate::core::serde::{
@@ -226,16 +226,20 @@ impl crate::core::state::Event for SnPduEvent {
         self.state_key.as_deref()
     }
 
-    fn prev_events(&self) -> Box<dyn DoubleEndedIterator<Item = &Self::Id> + '_> {
-        Box::new(self.prev_events.iter())
+    fn prev_events(&self) -> &[Self::Id] {
+        self.prev_events.deref()
     }
 
-    fn auth_events(&self) -> Box<dyn DoubleEndedIterator<Item = &Self::Id> + '_> {
-        Box::new(self.auth_events.iter())
+    fn auth_events(&self) -> &[Self::Id] {
+        self.auth_events.deref()
     }
 
     fn redacts(&self) -> Option<&Self::Id> {
         self.redacts.as_ref()
+    }
+
+    fn rejected(&self) -> bool {
+        self.rejection_reason.is_some()
     }
 }
 
@@ -385,31 +389,6 @@ impl PduEvent {
         }
 
         serde_json::from_value(json).expect("RawJson::from_value always works")
-    }
-
-    /// This only works for events that are also AnyRoomEvents.
-    #[tracing::instrument]
-    pub fn to_any_event(&self) -> RawJson<AnyEphemeralRoomEvent> {
-        let mut data = json!({
-            "content": self.content,
-            "type": self.event_ty,
-            "event_id": *self.event_id,
-            "sender": self.sender,
-            "origin_server_ts": self.origin_server_ts,
-            "room_id": self.room_id,
-        });
-
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
-        }
-        if let Some(state_key) = &self.state_key {
-            data["state_key"] = json!(state_key);
-        }
-        if let Some(redacts) = &self.redacts {
-            data["redacts"] = json!(redacts);
-        }
-
-        serde_json::from_value(data).expect("RawJson::from_value always works")
     }
 
     #[tracing::instrument]
@@ -606,20 +585,20 @@ impl PduEvent {
             return false;
         }
 
-        if let Some(rooms) = &filter.rooms {
-            if !rooms.contains(&self.room_id) {
-                return false;
-            }
+        if let Some(rooms) = &filter.rooms
+            && !rooms.contains(&self.room_id)
+        {
+            return false;
         }
-        if let Some(senders) = &filter.senders {
-            if !senders.contains(&self.sender) {
-                return false;
-            }
+        if let Some(senders) = &filter.senders
+            && !senders.contains(&self.sender)
+        {
+            return false;
         }
-        if let Some(types) = &filter.types {
-            if !types.contains(&self.event_ty.to_string()) {
-                return false;
-            }
+        if let Some(types) = &filter.types
+            && !types.contains(&self.event_ty.to_string())
+        {
+            return false;
         }
         // TODO: url filter
         // if let Some(url_filter) = &filter.url_filter {
@@ -664,16 +643,20 @@ impl crate::core::state::Event for PduEvent {
         self.state_key.as_deref()
     }
 
-    fn prev_events(&self) -> Box<dyn DoubleEndedIterator<Item = &Self::Id> + '_> {
-        Box::new(self.prev_events.iter())
+    fn prev_events(&self) -> &[Self::Id] {
+        self.prev_events.deref()
     }
 
-    fn auth_events(&self) -> Box<dyn DoubleEndedIterator<Item = &Self::Id> + '_> {
-        Box::new(self.auth_events.iter())
+    fn auth_events(&self) -> &[Self::Id] {
+        self.auth_events.deref()
     }
 
     fn redacts(&self) -> Option<&Self::Id> {
         self.redacts.as_ref()
+    }
+
+    fn rejected(&self) -> bool {
+        self.rejection_reason.is_some()
     }
 }
 
@@ -713,7 +696,7 @@ pub struct PduBuilder {
 impl PduBuilder {
     pub fn state<T>(state_key: String, content: &T) -> Self
     where
-        T: EventContent<EventType = StateEventType>,
+        T: StateEventContent,
     {
         Self {
             event_type: content.event_type().into(),
@@ -726,7 +709,7 @@ impl PduBuilder {
 
     pub fn timeline<T>(content: &T) -> Self
     where
-        T: EventContent<EventType = MessageLikeEventType>,
+        T: MessageLikeEventContent,
     {
         Self {
             event_type: content.event_type().into(),

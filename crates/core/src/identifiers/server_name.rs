@@ -4,7 +4,7 @@ use std::net::Ipv4Addr;
 
 use diesel::expression::AsExpression;
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 
 /// A Matrix-spec compliant [server name].
 ///
@@ -13,7 +13,7 @@ use crate::macros::IdZst;
 ///
 /// [server name]: https://spec.matrix.org/latest/appendices/#server-name
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::server_name::validate)]
 pub struct ServerName(str);

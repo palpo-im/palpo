@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use state::DbRoomStateField;
 
 use crate::core::identifiers::*;
+use crate::core::room_version_rules::StateResolutionV2Rules;
+use crate::core::state::StateError;
 use crate::core::state::{StateMap, resolve};
 use crate::event::PduEvent;
 use crate::room::{state, timeline};
@@ -91,7 +93,7 @@ pub(super) async fn state_at_incoming_resolved(
                 //        is updated to use StateEventType
                 state.insert((event_ty.to_string().into(), state_key), id.clone());
             } else {
-                warn!("Failed to get_state_key_id.");
+                warn!("failed to get_state_key_id.");
             }
             starting_events.push(id);
         }
@@ -107,21 +109,26 @@ pub(super) async fn state_at_incoming_resolved(
     }
 
     let state_lock = room::lock_state(room_id).await;
+    let room_rules = crate::room::get_rules(room_version_id)?;
     let result = resolve(
-        room_version_id,
+        &room_rules.authorization,
+        room_rules
+            .state_resolution
+            .v2_rules()
+            .unwrap_or(StateResolutionV2Rules::V2_0),
         &fork_states,
         auth_chain_sets
             .iter()
             .map(|set| set.iter().map(|id| id.to_owned()).collect::<HashSet<_>>())
             .collect::<Vec<_>>(),
-        |id| {
-            let res = timeline::get_pdu(id);
-            if let Err(e) = &res {
-                error!("LOOK AT ME Failed to fetch event: {}", e);
-            }
-            res.ok()
+        &async |event_id| {
+            timeline::get_pdu(&event_id)
+                .map(|s| s.pdu)
+                .map_err(|_| StateError::other("missing PDU"))
         },
-    );
+        |_| None, //TODO
+    )
+    .await;
     drop(state_lock);
 
     match result {

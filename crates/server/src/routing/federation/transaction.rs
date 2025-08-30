@@ -117,10 +117,10 @@ async fn process_pdus(
     }
 
     for (id, result) in &resolved_map {
-        if let Err(e) = result {
-            if matches!(e, AppError::Matrix(_)) {
-                warn!("incoming PDU failed {id}: {e:?}");
-            }
+        if let Err(e) = result
+            && matches!(e, AppError::Matrix(_))
+        {
+            warn!("incoming PDU failed {id}: {e:?}");
         }
     }
 

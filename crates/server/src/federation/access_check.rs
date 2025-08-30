@@ -20,10 +20,10 @@ pub fn access_check(
     // acknowledge bans or leaves
     // let user_is_knocking = crate::room::members_knocked(room_id).count();
 
-    if let Some(event_id) = event_id {
-        if !state::server_can_see_event(origin, room_id, event_id)? {
-            return Err(MatrixError::forbidden("Server is not allowed to see event.", None).into());
-        }
+    if let Some(event_id) = event_id
+        && !state::server_can_see_event(origin, room_id, event_id)?
+    {
+        return Err(MatrixError::forbidden("Server is not allowed to see event.", None).into());
     }
 
     Ok(())

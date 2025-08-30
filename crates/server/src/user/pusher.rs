@@ -4,8 +4,7 @@ use url::Url;
 
 use crate::core::UnixMillis;
 use crate::core::client::push::{PusherAction, PusherPostData};
-use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
-use crate::core::events::{StateEventType, TimelineEventType};
+use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
 use crate::core::push::push_gateway::{
     Device, Notification, NotificationCounts, NotificationPriority, SendEventNotificationReqBody,
@@ -144,13 +143,7 @@ pub async fn send_push_notice(
 ) -> AppResult<()> {
     let mut notify = None;
     let mut tweaks = Vec::new();
-    let power_levels = room::get_state_content::<RoomPowerLevelsEventContent>(
-        &pdu.room_id,
-        &StateEventType::RoomPowerLevels,
-        "",
-        None,
-    )
-    .unwrap_or_default();
+    let power_levels = room::get_power_levels(&pdu.room_id).await?;
 
     for action in data::user::pusher::get_actions(
         user,

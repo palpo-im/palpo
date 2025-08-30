@@ -5,12 +5,9 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    OwnedRoomAliasId, OwnedServerName, RoomVersionId,
-    events::{
-        EventContent, EventContentFromType, RedactContent, RedactedStateEventContent,
-        StateEventType,
-    },
-    serde::RawJsonValue,
+    OwnedRoomAliasId, OwnedServerName,
+    events::{RedactContent, RedactedStateEventContent, StateEventType, StaticEventContent},
+    room_version_rules::RedactionRules,
 };
 
 /// The content of an `m.room.aliases` event.
@@ -33,18 +30,8 @@ impl RoomAliasesEventContent {
 impl RedactContent for RoomAliasesEventContent {
     type Redacted = RedactedRoomAliasesEventContent;
 
-    fn redact(self, version: &RoomVersionId) -> RedactedRoomAliasesEventContent {
-        // We compare the long way to avoid pre version 6 behavior if/when
-        // a new room version is introduced.
-        let aliases = match version {
-            RoomVersionId::V1
-            | RoomVersionId::V2
-            | RoomVersionId::V3
-            | RoomVersionId::V4
-            | RoomVersionId::V5 => Some(self.aliases),
-            _ => None,
-        };
-
+    fn redact(self, rules: &RedactionRules) -> RedactedRoomAliasesEventContent {
+        let aliases = rules.keep_room_aliases_aliases.then_some(self.aliases);
         RedactedRoomAliasesEventContent { aliases }
     }
 }
@@ -78,20 +65,15 @@ impl RedactedRoomAliasesEventContent {
     }
 }
 
-impl EventContent for RedactedRoomAliasesEventContent {
-    type EventType = StateEventType;
+impl RedactedStateEventContent for RedactedRoomAliasesEventContent {
+    type StateKey = OwnedServerName;
 
     fn event_type(&self) -> StateEventType {
         StateEventType::RoomAliases
     }
 }
 
-impl RedactedStateEventContent for RedactedRoomAliasesEventContent {
-    type StateKey = OwnedServerName;
-}
-
-impl EventContentFromType for RedactedRoomAliasesEventContent {
-    fn from_parts(_ev_type: &str, content: &RawJsonValue) -> serde_json::Result<Self> {
-        serde_json::from_str(content.get())
-    }
+impl StaticEventContent for RedactedRoomAliasesEventContent {
+    const TYPE: &'static str = RoomAliasesEventContent::TYPE;
+    type IsPrefix = <RoomAliasesEventContent as StaticEventContent>::IsPrefix;
 }

@@ -2,10 +2,12 @@
 //!
 //! [`m.room_key`]: https://spec.matrix.org/latest/client-server-api/#mroom_key
 
-use crate::macros::EventContent;
+pub mod withheld;
+
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
 use crate::{EventEncryptionAlgorithm, OwnedRoomId};
 
 /// The content of an `m.room_key` event.

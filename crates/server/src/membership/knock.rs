@@ -7,7 +7,6 @@ use salvo::http::StatusError;
 
 use crate::core::UnixMillis;
 use crate::core::events::StateEventType;
-use crate::core::events::room::join_rule::JoinRule;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::federation::event::{EventReqArgs, EventResBody, event_request};
 use crate::core::federation::knock::{
@@ -15,6 +14,7 @@ use crate::core::federation::knock::{
     send_knock_request,
 };
 use crate::core::identifiers::*;
+use crate::core::room::JoinRule;
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, to_canonical_value};
 use crate::data::room::NewDbEvent;
 use crate::event::{PduBuilder, PduEvent, ensure_event_sn, gen_event_id, handler};
@@ -54,15 +54,15 @@ pub async fn knock_room(
         return Ok(());
     }
 
-    if let Ok(memeber) = room::get_member(room_id, sender_id) {
-        if memeber.membership == MembershipState::Ban {
-            warn!("{sender_id} is banned from {room_id} but attempted to knock");
-            return Err(MatrixError::forbidden(
-                "You cannot knock on a room you are banned from.",
-                None,
-            )
-            .into());
-        }
+    if let Ok(memeber) = room::get_member(room_id, sender_id)
+        && memeber.membership == MembershipState::Ban
+    {
+        warn!("{sender_id} is banned from {room_id} but attempted to knock");
+        return Err(MatrixError::forbidden(
+            "You cannot knock on a room you are banned from.",
+            None,
+        )
+        .into());
     }
 
     if room::is_server_joined(&config::get().server_name, room_id).unwrap_or(false) {

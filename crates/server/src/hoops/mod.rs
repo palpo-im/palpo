@@ -27,10 +27,10 @@ pub async fn limit_size(
     ctrl: &mut FlowCtrl,
 ) {
     let mut max_size = 1024 * 1024 * 16;
-    if let Some(ctype) = req.content_type() {
-        if ctype.type_() == mime::MULTIPART {
-            max_size = 1024 * 1024 * 1024;
-        }
+    if let Some(ctype) = req.content_type()
+        && ctype.type_() == mime::MULTIPART
+    {
+        max_size = 1024 * 1024 * 1024;
     }
     let limiter = size_limiter::max_size(max_size);
     limiter.handle(req, depot, res, ctrl).await;

@@ -13,7 +13,6 @@ use crate::macros::admin_command_dispatch;
 pub(crate) enum ServerCommand {
     // /// - Time elapsed since startup
     // Uptime,
-
     /// - Show configuration values
     ShowConfig,
 

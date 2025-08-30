@@ -1,6 +1,6 @@
 //! Matrix session ID.
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 use super::IdParseError;
@@ -10,7 +10,7 @@ use super::IdParseError;
 /// Session IDs in Matrix are opaque character sequences of `[0-9a-zA-Z.=_-]`.
 /// Their length must must not exceed 255 characters.
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = validate_session_id)]
 pub struct SessionId(str);

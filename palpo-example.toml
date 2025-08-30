@@ -1157,91 +1157,85 @@
 
 # [oidc]
 
-# Enable OIDC authentication
+# Enable OIDC/OAuth authentication
 #
-# When enabled, users can authenticate using external OIDC providers
-# like Google, GitHub, etc. instead of Matrix passwords.
+# Allows users to sign in using external providers (Google, GitHub, etc.)
+# instead of Matrix passwords
 #
 # enable = false
 
-# OIDC provider configuration
+# Provider configurations
 #
-# Configure one or more OIDC providers for authentication.
-# Each provider must have a unique name as the key.
+# Map of provider name to configuration. Each provider needs:
+# - issuer: Provider base URL
+# - client_id: OAuth app ID
+# - client_secret: OAuth app secret  
+# - redirect_uri: Callback URL (must match provider settings)
+# - scopes (optional): Permissions to request
+# - display_name (optional): UI display text
 #
-# example:
-# [oidc.providers.google]
-# issuer = "https://accounts.google.com"
-# client_id = "your-client-id.apps.googleusercontent.com"
-# client_secret = "your-client-secret"
-# redirect_uri = "https://your-server.com/_matrix/client/oidc/callback"
-#
+# GitHub example:
+# ```toml
 # [oidc.providers.github]
 # issuer = "https://github.com"
-# client_id = "your-github-oauth-app-id"
-# client_secret = "your-github-oauth-app-secret"
-# redirect_uri = "https://your-server.com/_matrix/client/oidc/callback"
+# client_id = "your_app_id"
+# client_secret = "your_secret"
+# redirect_uri = "https://server/_matrix/client/oidc/callback"
 # scopes = ["read:user", "user:email"]
+# ```
 #
 # providers = {}
 
-# Default provider to use when multiple providers are configured
+# Default provider name
 #
-# This provider will be used for the main login flow.
-# If not specified, the first provider in alphabetical order is used.
+# Used when accessing /oidc/auth without specifying provider
 #
-# example: "google"
+# example: "github"
 #
-# default_provider = None
+# default_provider = None (first alphabetically)
 
-# Allow automatic user registration from OIDC
+# Auto-create new users on first login
 #
-# When enabled, new users will be automatically created when they
-# authenticate with OIDC for the first time. When disabled, only
-# existing users can authenticate via OIDC.
+# When true: New accounts created automatically
+# When false: Only existing Matrix users can use OAuth login
 #
 # allow_registration = true
 
-# User ID mapping strategy
+# User ID generation strategy (deprecated - auto-detected now)
 #
-# Controls how Matrix user IDs are generated from OIDC user information:
-# - "email" - Use the email address localpart (requires public email)
-# - "sub" - Use the OIDC subject identifier (recommended for GitHub)
-# - "preferred_username" - Use the preferred_username claim
+# The system now automatically chooses the best identifier:
+# 1. Username (GitHub login, preferred_username)
+# 2. Email prefix (john from john@example.com)
+# 3. Provider ID with "user" prefix
 #
-# Note: For GitHub, use "sub" since users may have private emails
+# This field is kept for backwards compatibility
 #
 # user_mapping = "email"
 
-# User ID prefix for OIDC users
+# Prefix for OAuth user IDs
 #
-# All OIDC-created users will have this prefix added to their localpart
-# to distinguish them from regular Matrix users.
+# Adds prefix to distinguish OAuth users from regular Matrix users
+# Empty string for cleaner usernames
 #
-# example: "oidc_" (results in @oidc_john:example.com)
+# example: "gh_" → @gh_username:server
 #
 # user_prefix = ""
 
-# Require email verification
+# Require verified email for login
 #
-# When enabled, only users with verified email addresses can authenticate.
-# The email_verified claim from the OIDC provider is checked.
-#
-# Note: Set to false for GitHub if users have private emails,
-# as private emails will cause authentication to fail.
+# Set to false for GitHub users with private emails
+# Set to true for providers where email verification is critical
 #
 # require_email_verified = true
 
-# Session timeout in seconds
+# OAuth session timeout (seconds)
 #
-# How long OIDC authentication state is kept in memory.
-# After this time, users need to restart the authentication flow.
+# Time limit for completing the OAuth flow
 #
 # session_timeout = 600 (10 minutes)
 
-# Enable PKCE (Proof Key for Code Exchange)
+# Enable PKCE security extension
 #
-# Enables PKCE for additional security in the OAuth flow.
-# Recommended for all deployments, especially mobile/SPA clients.
+# Adds extra security to OAuth flow (recommended)
 #
 # enable_pkce = true

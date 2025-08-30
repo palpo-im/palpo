@@ -3,11 +3,11 @@ use salvo::prelude::*;
 use serde_json::value::to_raw_value;
 use ulid::Ulid;
 
-use crate::core::events::room::join_rule::JoinRule;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::federation::membership::*;
 use crate::core::identifiers::*;
+use crate::core::room::JoinRule;
 use crate::core::room::RoomEventReqArgs;
 use crate::core::serde::{CanonicalJsonValue, JsonObject};
 use crate::event::handler;
@@ -92,6 +92,7 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
                     &args.user_id,
                     &join_rule.restriction_rooms(),
                 )
+                .await
                 .ok()
             } else {
                 return Err(MatrixError::unable_to_grant_join(
@@ -124,7 +125,8 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
         &args.user_id,
         &args.room_id,
         &state_lock,
-    )?;
+    )
+    .await?;
     drop(state_lock);
     maybe_strip_event_id(&mut pdu_json, &room_version_id);
     let body = MakeJoinResBody {
@@ -267,7 +269,8 @@ async fn make_leave(args: MakeLeaveReqArgs, depot: &mut Depot) -> JsonResult<Mak
         &args.user_id,
         &args.room_id,
         &state_lock,
-    )?;
+    )
+    .await?;
     drop(state_lock);
 
     // room v3 and above removed the "event_id" field from remote PDU format

@@ -123,10 +123,10 @@ impl TryFrom<&[u8]> for ContentDisposition {
                         // We can stop parsing, this is the only parameter that we need.
                         break;
                     }
-                } else if param.name.eq_ignore_ascii_case(b"filename") {
-                    if let Some(value) = param.decode_value() {
-                        filename = Some(value);
-                    }
+                } else if param.name.eq_ignore_ascii_case(b"filename")
+                    && let Some(value) = param.decode_value()
+                {
+                    filename = Some(value);
                 }
             }
         }

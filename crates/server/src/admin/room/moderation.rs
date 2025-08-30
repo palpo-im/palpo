@@ -1,5 +1,4 @@
 use clap::Subcommand;
-use futures_util::FutureExt;
 
 use crate::admin::{Context, get_room_info};
 use crate::core::{OwnedRoomId, OwnedRoomOrAliasId, RoomAliasId, RoomId, RoomOrAliasId};
@@ -46,10 +45,10 @@ async fn ban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()> 
 
     let admin_room_alias = config::admin_alias();
 
-    if let Ok(admin_room_id) = crate::room::get_admin_room() {
-        if room.to_string().eq(&admin_room_id) || room.to_string().eq(admin_room_alias) {
-            return Err(AppError::public("Not allowed to ban the admin room."));
-        }
+    if let Ok(admin_room_id) = crate::room::get_admin_room()
+        && (room.to_string().eq(&admin_room_id) || room.to_string().eq(admin_room_alias))
+    {
+        return Err(AppError::public("Not allowed to ban the admin room."));
     }
 
     let room_id = if room.is_room_id() {
@@ -193,11 +192,11 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
     for &room in &rooms_s {
         match <&RoomOrAliasId>::try_from(room) {
             Ok(room_alias_or_id) => {
-                if let Ok(admin_room_id) = crate::room::get_admin_room() {
-                    if room.to_owned().eq(&admin_room_id) || room.to_owned().eq(admin_room_alias) {
-                        warn!("User specified admin room in bulk ban list, ignoring");
-                        continue;
-                    }
+                if let Ok(admin_room_id) = crate::room::get_admin_room()
+                    && (room.to_owned().eq(&admin_room_id) || room.to_owned().eq(admin_room_alias))
+                {
+                    warn!("User specified admin room in bulk ban list, ignoring");
+                    continue;
                 }
 
                 if room_alias_or_id.is_room_id() {
@@ -290,10 +289,7 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
 				 evicting admins too)",
             );
 
-            if let Err(e) = membership::leave_room(user_id, &room_id, None)
-                .boxed()
-                .await
-            {
+            if let Err(e) = membership::leave_room(user_id, &room_id, None).await {
                 warn!("Failed to leave room: {e}");
             }
 

@@ -3,8 +3,9 @@ use crate::core::directory::{
     PublicRoomFilter, PublicRoomJoinRule, PublicRoomsChunk, PublicRoomsResBody, RoomNetwork,
 };
 use crate::core::events::StateEventType;
-use crate::core::events::room::join_rule::{JoinRule, RoomJoinRulesEventContent};
+use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::federation::directory::{PublicRoomsReqBody, public_rooms_request};
+use crate::core::room::JoinRule;
 use crate::exts::*;
 use crate::{AppError, AppResult, MatrixError, config, room};
 
@@ -105,22 +106,22 @@ fn get_local_public_rooms(
                 .as_ref()
                 .map(|q| q.to_lowercase())
             {
-                if let Some(name) = &chunk.name {
-                    if name.as_str().to_lowercase().contains(&query) {
-                        return true;
-                    }
+                if let Some(name) = &chunk.name
+                    && name.as_str().to_lowercase().contains(&query)
+                {
+                    return true;
                 }
 
-                if let Some(topic) = &chunk.topic {
-                    if topic.to_lowercase().contains(&query) {
-                        return true;
-                    }
+                if let Some(topic) = &chunk.topic
+                    && topic.to_lowercase().contains(&query)
+                {
+                    return true;
                 }
 
-                if let Some(canonical_alias) = &chunk.canonical_alias {
-                    if canonical_alias.as_str().to_lowercase().contains(&query) {
-                        return true;
-                    }
+                if let Some(canonical_alias) = &chunk.canonical_alias
+                    && canonical_alias.as_str().to_lowercase().contains(&query)
+                {
+                    return true;
                 }
 
                 false

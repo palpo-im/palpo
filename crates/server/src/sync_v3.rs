@@ -248,10 +248,10 @@ pub async fn sync_events(
             }
         }
         for joined_user in &joined_users {
-            if !presence_updates.contains_key(joined_user) {
-                if let Ok(presence) = data::user::last_presence(joined_user) {
-                    presence_updates.insert(joined_user.to_owned(), presence);
-                }
+            if !presence_updates.contains_key(joined_user)
+                && let Ok(presence) = data::user::last_presence(joined_user)
+            {
+                presence_updates.insert(joined_user.to_owned(), presence);
             }
         }
     }
@@ -440,10 +440,10 @@ async fn load_joined_room(
                     if timeline_pdu_ids.contains(&event_id) {
                         continue;
                     }
-                    if let Some(state_limit) = filter.room.state.limit {
-                        if state_events.len() >= state_limit {
-                            break;
-                        }
+                    if let Some(state_limit) = filter.room.state.limit
+                        && state_events.len() >= state_limit
+                    {
+                        break;
                     }
                     let DbRoomStateField {
                         event_ty,
@@ -523,10 +523,10 @@ async fn load_joined_room(
                     let since_state_ids = state::get_full_state_ids(since_frame_id)?;
 
                     for (key, id) in current_state_ids {
-                        if let Some(state_limit) = filter.room.state.limit {
-                            if state_events.len() >= state_limit {
-                                break;
-                            }
+                        if let Some(state_limit) = filter.room.state.limit
+                            && state_events.len() >= state_limit
+                        {
+                            break;
                         }
                         if full_state || since_state_ids.get(&key) != Some(&id) {
                             let pdu = match timeline::get_pdu(&id) {
@@ -557,31 +557,30 @@ async fn load_joined_room(
                 }
 
                 for (_, event) in &timeline_pdus {
-                    if let Some(state_limit) = filter.room.state.limit {
-                        if state_events.len() >= state_limit {
-                            break;
-                        }
+                    if let Some(state_limit) = filter.room.state.limit
+                        && state_events.len() >= state_limit
+                    {
+                        break;
                     }
                     if lazy_loaded.contains(&event.sender) {
                         continue;
                     }
-                    if !room::lazy_loading::lazy_load_was_sent_before(
+                    if (!room::lazy_loading::lazy_load_was_sent_before(
                         sender_id,
                         device_id,
                         room_id,
                         &event.sender,
-                    )? || lazy_load_send_redundant
-                    {
-                        if let Ok(member_event) = room::get_state(
+                    )? || lazy_load_send_redundant)
+                        && let Ok(member_event) = room::get_state(
                             room_id,
                             &StateEventType::RoomMember,
                             event.sender.as_str(),
                             None,
-                        ) {
-                            lazy_loaded.insert(event.sender.clone());
-                            if member_event.can_pass_filter(&filter.room.state) {
-                                state_events.push(member_event);
-                            }
+                        )
+                    {
+                        lazy_loaded.insert(event.sender.clone());
+                        if member_event.can_pass_filter(&filter.room.state) {
+                            state_events.push(member_event);
                         }
                     }
                 }
@@ -688,10 +687,10 @@ async fn load_joined_room(
     device_list_updates.extend(room::keys_changed_users(room_id, since_sn, None)?);
 
     let mut limited = limited || joined_since_last_sync;
-    if let Some((_, first_event)) = timeline_pdus.first() {
-        if first_event.event_ty == TimelineEventType::RoomCreate {
-            limited = false;
-        }
+    if let Some((_, first_event)) = timeline_pdus.first()
+        && first_event.event_ty == TimelineEventType::RoomCreate
+    {
+        limited = false;
     }
     let prev_batch = if limited {
         timeline_pdus.first().map(|(sn, _)| sn.to_string())
@@ -874,10 +873,10 @@ async fn load_left_room(
     left_state_ids.insert(leave_state_key_id, left_event_id.clone());
 
     for (key, event_id) in left_state_ids {
-        if let Some(state_limit) = filter.room.state.limit {
-            if state_events.len() >= state_limit {
-                break;
-            }
+        if let Some(state_limit) = filter.room.state.limit
+            && state_events.len() >= state_limit
+        {
+            break;
         }
         if timeline_pdu_ids.contains(&event_id) {
             continue;
@@ -899,10 +898,10 @@ async fn load_left_room(
         }
     }
 
-    if let Some((_, first_event)) = timeline_pdus.first() {
-        if first_event.event_ty == TimelineEventType::RoomCreate {
-            limited = false;
-        }
+    if let Some((_, first_event)) = timeline_pdus.first()
+        && first_event.event_ty == TimelineEventType::RoomCreate
+    {
+        limited = false;
     }
     let prev_batch = if limited {
         timeline_pdus.first().map(|(sn, _)| sn.to_string())

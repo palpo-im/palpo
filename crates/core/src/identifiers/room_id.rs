@@ -5,8 +5,8 @@ use diesel::expression::AsExpression;
 use super::{
     MatrixToUri, MatrixUri, OwnedEventId, OwnedServerName, ServerName, matrix_uri::UriAction,
 };
-use crate::RoomOrAliasId;
-use crate::macros::IdZst;
+use crate::macros::IdDst;
+use crate::{IdParseError, RoomOrAliasId};
 
 /// A Matrix [room ID].
 ///
@@ -20,19 +20,52 @@ use crate::macros::IdZst;
 ///
 /// [room ID]: https://spec.matrix.org/latest/appendices/#room-ids
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::room_id::validate)]
 pub struct RoomId(str);
 
 impl RoomId {
-    /// Attempts to generate a `RoomId` for the given origin server with a
-    /// localpart consisting of 18 random ASCII characters.
+    /// Attempts to generate a `RoomId` for the given origin server with a localpart consisting of
+    /// 18 random ASCII alphanumeric characters, as recommended in the spec.
     ///
-    /// Fails if the given homeserver cannot be parsed as a valid host.
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(server_name: &ServerName) -> OwnedRoomId {
+    /// This generates a room ID matching the [`RoomIdFormatVersion::V1`] variant of the
+    /// `room_id_format` field of [`RoomVersionRules`]. To construct a room ID matching the
+    /// [`RoomIdFormatVersion::V2`] variant, use [`RoomId::new_v2()`] instead.
+    ///
+    /// [`RoomIdFormatVersion::V1`]: crate::room_version_rules::RoomIdFormatVersion::V1
+    /// [`RoomIdFormatVersion::V2`]: crate::room_version_rules::RoomIdFormatVersion::V2
+    /// [`RoomVersionRules`]: crate::room_version_rules::RoomVersionRules
+    pub fn new_v1(server_name: &ServerName) -> OwnedRoomId {
         Self::from_borrowed(&format!("!{}:{server_name}", super::generate_localpart(18))).to_owned()
+    }
+
+    /// Construct an `OwnedRoomId` using the reference hash of the `m.room.create` event of the
+    /// room.
+    ///
+    /// This generates a room ID matching the [`RoomIdFormatVersion::V2`] variant of the
+    /// `room_id_format` field of [`RoomVersionRules`]. To construct a room ID matching the
+    /// [`RoomIdFormatVersion::V1`] variant, use [`RoomId::new_v1()`] instead.
+    ///
+    /// Returns an error if the given string contains a NUL byte or is too long.
+    ///
+    /// [`RoomIdFormatVersion::V1`]: crate::room_version_rules::RoomIdFormatVersion::V1
+    /// [`RoomIdFormatVersion::V2`]: crate::room_version_rules::RoomIdFormatVersion::V2
+    /// [`RoomVersionRules`]: crate::room_version_rules::RoomVersionRules
+    pub fn new_v2(room_create_reference_hash: &str) -> Result<OwnedRoomId, IdParseError> {
+        Self::parse(format!("!{room_create_reference_hash}"))
+    }
+
+    /// Returns the room ID without the initial `!` sigil.
+    ///
+    /// For room versions using [`RoomIdFormatVersion::V2`], this is the reference hash of the
+    /// `m.room.create` event of the room.
+    ///
+    /// [`RoomIdFormatVersion::V2`]: crate::room_version_rules::RoomIdFormatVersion::V2
+    pub fn strip_sigil(&self) -> &str {
+        self.as_str()
+            .strip_prefix('!')
+            .expect("sigil should be checked during construction")
     }
 
     /// Returns the server name of the room ID.

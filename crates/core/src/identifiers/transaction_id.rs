@@ -1,4 +1,4 @@
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 /// A Matrix transaction ID.
@@ -11,7 +11,7 @@ use diesel::expression::AsExpression;
 /// is not available for you, you need to activate this crate's `rand` Cargo
 /// feature.
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 pub struct TransactionId(str);
 

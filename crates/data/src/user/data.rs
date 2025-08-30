@@ -45,10 +45,10 @@ pub fn set_data(
             .filter(user_datas::data_type.eq(event_type))
             .first::<DbUserData>(&mut connect()?)
             .optional()?;
-        if let Some(user_data) = user_data {
-            if user_data.json_data == json_data {
-                return Ok(user_data);
-            }
+        if let Some(user_data) = user_data
+            && user_data.json_data == json_data
+        {
+            return Ok(user_data);
         }
     } else {
         let user_data = user_datas::table
@@ -57,10 +57,10 @@ pub fn set_data(
             .filter(user_datas::data_type.eq(event_type))
             .first::<DbUserData>(&mut connect()?)
             .optional()?;
-        if let Some(user_data) = user_data {
-            if user_data.json_data == json_data {
-                return Ok(user_data);
-            }
+        if let Some(user_data) = user_data
+            && user_data.json_data == json_data
+        {
+            return Ok(user_data);
         }
     }
 

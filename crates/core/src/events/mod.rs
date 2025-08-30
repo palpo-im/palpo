@@ -142,9 +142,10 @@ pub mod key;
 #[cfg(feature = "unstable-msc3488")]
 pub mod location;
 pub mod marked_unread;
+#[cfg(feature = "unstable-msc4278")]
+pub mod media_preview_config;
 #[cfg(feature = "unstable-msc4171")]
 pub mod member_hints;
-#[cfg(feature = "unstable-msc1767")]
 pub mod message;
 // pub mod pdu;
 pub mod policy;
@@ -157,6 +158,8 @@ pub mod receipt;
 pub mod relation;
 pub mod room;
 pub mod room_key;
+#[cfg(feature = "unstable-msc4268")]
+pub mod room_key_bundle;
 pub mod room_key_request;
 pub mod secret;
 pub mod secret_storage;
@@ -173,7 +176,6 @@ use std::collections::BTreeSet;
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize, Serializer, de::IgnoredAny};
-use smallstr::SmallString;
 
 pub use self::{
     content::*,
@@ -183,9 +185,9 @@ pub use self::{
     state_key::EmptyStateKey,
     unsigned::{MessageLikeUnsigned, RedactedUnsigned, StateUnsigned, UnsignedRoomRedactionEvent},
 };
-use crate::{EventEncryptionAlgorithm, OwnedUserId, RoomVersionId};
+use crate::room_version_rules::RedactionRules;
+use crate::{EventEncryptionAlgorithm, OwnedUserId};
 
-pub type StateKey = SmallString<[u8; INLINE_SIZE]>;
 const INLINE_SIZE: usize = 48;
 
 /// Trait to define the behavior of redact an event's content object.
@@ -193,12 +195,11 @@ pub trait RedactContent {
     /// The redacted form of the event's content.
     type Redacted;
 
-    /// Transform `self` into a redacted form (removing most or all fields)
-    /// according to the spec.
+    /// Transform `self` into a redacted form (removing most or all fields) according to the spec.
     ///
-    /// A small number of events have room-version specific redaction behavior,
-    /// so a version has to be specified.
-    fn redact(self, version: &RoomVersionId) -> Self::Redacted;
+    /// A small number of events have room-version specific redaction behavior, so a
+    /// [`RedactionRules`] has to be specified.
+    fn redact(self, rules: &RedactionRules) -> Self::Redacted;
 }
 
 /// Helper struct to determine the event kind from a

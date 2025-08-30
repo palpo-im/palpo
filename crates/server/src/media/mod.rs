@@ -132,10 +132,10 @@ pub fn get_media_path(server_name: &ServerName, media_id: &str) -> PathBuf {
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> AppResult<()> {
     data::media::delete_media(server_name, media_id)?;
     let path = get_media_path(server_name, media_id);
-    if path.exists() {
-        if let Err(e) = tokio::fs::remove_file(path).await {
-            tracing::error!("failed to delete media file: {e}");
-        }
+    if path.exists()
+        && let Err(e) = tokio::fs::remove_file(path).await
+    {
+        tracing::error!("failed to delete media file: {e}");
     }
     Ok(())
 }

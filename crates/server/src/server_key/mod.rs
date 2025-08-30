@@ -15,6 +15,7 @@ use crate::core::serde::{Base64, CanonicalJsonObject, JsonValue, RawJson};
 use crate::core::signatures::{self, PublicKeyMap, PublicKeySet};
 use crate::core::{
     OwnedServerSigningKeyId, RoomVersionId, ServerName, ServerSigningKeyId, UnixMillis,
+    room_version_rules::RoomVersionRules,
 };
 use crate::data::connect;
 use crate::data::misc::DbServerSigningKeys;
@@ -61,24 +62,6 @@ fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<()> {
     Ok(())
 }
 
-pub fn required_keys_exist(object: &CanonicalJsonObject, version: &RoomVersionId) -> bool {
-    use signatures::required_keys;
-
-    let Ok(required_keys) = required_keys(object, version) else {
-        return false;
-    };
-
-    let key_ids = required_keys
-        .iter()
-        .flat_map(|(server, key_ids)| key_ids.iter().map(move |key_id| (server, key_id)));
-    for (server, key_id) in key_ids {
-        if !verify_key_exists(server, key_id).unwrap_or(false) {
-            return false;
-        }
-    }
-    true
-}
-
 pub fn verify_key_exists(server: &ServerName, key_id: &ServerSigningKeyId) -> AppResult<bool> {
     type KeysMap<'a> = BTreeMap<&'a str, &'a RawJsonValue>;
 
@@ -93,16 +76,16 @@ pub fn verify_key_exists(server: &ServerName, key_id: &ServerSigningKeyId) -> Ap
     };
     let keys: RawJson<ServerSigningKeys> = RawJson::from_value(&keys)?;
 
-    if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys") {
-        if verify_keys.contains_key(&key_id.as_str()) {
-            return Ok(true);
-        }
+    if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys")
+        && verify_keys.contains_key(&key_id.as_str())
+    {
+        return Ok(true);
     }
 
-    if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys") {
-        if old_verify_keys.contains_key(&key_id.as_str()) {
-            return Ok(true);
-        }
+    if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys")
+        && old_verify_keys.contains_key(&key_id.as_str())
+    {
+        return Ok(true);
     }
 
     Ok(false)
@@ -167,7 +150,7 @@ fn key_exists(keys: &ServerSigningKeys, key_id: &ServerSigningKeyId) -> bool {
 
 pub async fn get_event_keys(
     object: &CanonicalJsonObject,
-    version: &RoomVersionId,
+    version: &RoomVersionRules,
 ) -> AppResult<PubKeyMap> {
     let required = match signatures::required_keys(object, version) {
         Ok(required) => required,
@@ -224,22 +207,16 @@ pub async fn get_verify_key(
         return Ok(result);
     }
 
-    if notary_first {
-        if let Ok(result) = get_verify_key_from_notaries(origin, key_id).await {
-            return Ok(result);
-        }
+    if notary_first && let Ok(result) = get_verify_key_from_notaries(origin, key_id).await {
+        return Ok(result);
     }
 
-    if !notary_only {
-        if let Ok(result) = get_verify_key_from_origin(origin, key_id).await {
-            return Ok(result);
-        }
+    if !notary_only && let Ok(result) = get_verify_key_from_origin(origin, key_id).await {
+        return Ok(result);
     }
 
-    if !notary_first {
-        if let Ok(result) = get_verify_key_from_notaries(origin, key_id).await {
-            return Ok(result);
-        }
+    if !notary_first && let Ok(result) = get_verify_key_from_notaries(origin, key_id).await {
+        return Ok(result);
     }
 
     tracing::error!(?key_id, ?origin, "Failed to fetch federation signing-key");
@@ -294,11 +271,13 @@ pub fn sign_json(object: &mut CanonicalJsonObject) -> AppResult<()> {
 pub fn hash_and_sign_event(
     object: &mut CanonicalJsonObject,
     room_version: &RoomVersionId,
-) -> Result<(), crate::core::signatures::Error> {
+) -> AppResult<()> {
+    let room_rules = crate::room::get_rules(room_version)?;
     signatures::hash_and_sign_event(
         config::get().server_name.as_str(),
         config::keypair(),
         object,
-        room_version,
-    )
+        &room_rules.redaction,
+    )?;
+    Ok(())
 }

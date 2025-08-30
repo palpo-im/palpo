@@ -32,8 +32,7 @@ pub(super) async fn list_threads(
     let threads = events
         .into_iter()
         .filter(|(_, pdu)| {
-            state::user_can_see_event(authed.user_id(), &args.room_id, &pdu.event_id)
-                .unwrap_or(false)
+            state::user_can_see_event(authed.user_id(), &pdu.event_id).unwrap_or(false)
         })
         .collect::<Vec<_>>();
 

@@ -5,6 +5,7 @@ mod auth;
 mod device;
 mod directory;
 mod key;
+mod oidc;
 mod presence;
 mod profile;
 mod push_rule;
@@ -21,7 +22,6 @@ mod unstable;
 mod user;
 mod user_directory;
 mod voip;
-mod oidc;
 
 pub(crate) mod media;
 
@@ -115,7 +115,7 @@ pub fn router() -> Router {
                 .push(Router::with_path("status").get(oidc::oidc_status))
                 .push(Router::with_path("auth").get(oidc::oidc_auth))
                 .push(Router::with_path("callback").get(oidc::oidc_callback))
-                .push(Router::with_path("login").post(oidc::oidc_login))
+                .push(Router::with_path("login").post(oidc::oidc_login)),
         )
         .push(unstable::router())
 }

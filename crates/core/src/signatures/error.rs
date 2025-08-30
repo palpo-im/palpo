@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    EventId, OwnedEventId, OwnedServerName, RoomVersionId,
+    EventId, OwnedEventId, RoomVersionId,
     serde::{
         Base64DecodeError,
         canonical_json::{JsonType, RedactionError},
@@ -155,30 +155,46 @@ impl JsonError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum VerificationError {
-    /// For when a signature cannot be found for a `target`.
-    #[error("Could not find signatures for {0:?}")]
-    SignatureNotFound(OwnedServerName),
+    /// The signature uses an unsupported algorithm.
+    #[error("signature uses an unsupported algorithm")]
+    UnsupportedAlgorithm,
+
+    /// The signatures for an entity cannot be found in the signatures map.
+    #[error("Could not find signatures for entity {0:?}")]
+    NoSignaturesForEntity(String),
+
+    /// The public keys for an entity cannot be found in the public keys map.
+    #[error("Could not find public keys for entity {0:?}")]
+    NoPublicKeysForEntity(String),
 
     /// For when a public key cannot be found for a `target`.
-    #[error("Could not find public key for {0:?}")]
-    PublicKeyNotFound(OwnedServerName),
+    #[error("Could not find public key for {entity:?}")]
+    PublicKeyNotFound {
+        /// The entity for which the key is missing.
+        entity: String,
 
-    /// For when no public key matches the signature given.
-    #[error("Not signed with any of the given public keys")]
-    UnknownPublicKeysForSignature,
+        /// The identifier of the key that is missing.
+        key_id: String,
+    },
 
-    /// For when [`ed25519_dalek`] cannot verify a signature.
+    /// No signature with a supported algorithm was found for the given entity.
+    #[error("Could not find supported signature for entity {0:?}")]
+    NoSupportedSignatureForEntity(String),
+
+    /// The signature verification failed.
     #[error("Could not verify signature: {0}")]
     Signature(#[source] ed25519_dalek::SignatureError),
 }
 
 impl VerificationError {
-    pub(crate) fn signature_not_found(target: OwnedServerName) -> Error {
-        Self::SignatureNotFound(target).into()
-    }
-
-    pub(crate) fn public_key_not_found(target: OwnedServerName) -> Error {
-        Self::PublicKeyNotFound(target).into()
+    pub(crate) fn public_key_not_found(
+        entity: impl Into<String>,
+        key_id: impl Into<String>,
+    ) -> Self {
+        Self::PublicKeyNotFound {
+            entity: entity.into(),
+            key_id: key_id.into(),
+        }
     }
 }
 
@@ -193,6 +209,11 @@ pub enum ParseError {
     /// For event ID parsing errors.
     #[error("Could not parse Event ID: {0}")]
     EventId(#[source] palpo_core::IdParseError),
+
+    /// For when an event ID, coupled with a specific room version, doesn't have a server name
+    /// embedded.
+    #[error("Event ID {0:?} should have a server name for the given room version")]
+    ServerNameFromEventId(OwnedEventId),
 
     /// For when an event ID, coupled with a specific room version, doesn't have
     /// a server name embedded.
@@ -248,6 +269,10 @@ pub enum ParseError {
 }
 
 impl ParseError {
+    pub(crate) fn server_name_from_event_id(event_id: OwnedEventId) -> Error {
+        Self::ServerNameFromEventId(event_id).into()
+    }
+
     pub(crate) fn from_event_id_by_room_version(
         event_id: &EventId,
         room_version: &RoomVersionId,

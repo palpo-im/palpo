@@ -1,4 +1,4 @@
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 use super::generate_localpart;
@@ -28,7 +28,7 @@ use super::generate_localpart;
 /// assert_eq!(owned_id.as_str(), "ijklmnop");
 /// ```
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 pub struct DeviceId(str);
 

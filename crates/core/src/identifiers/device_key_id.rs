@@ -1,13 +1,13 @@
 //! Identifiers for device keys for end-to-end encryption.
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 use super::{DeviceId, crypto_algorithms::DeviceKeyAlgorithm};
 
 /// A key algorithm and a device id, combined with a ':'.
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::device_key_id::validate)]
 pub struct DeviceKeyId(str);

@@ -6,8 +6,10 @@ pub mod answer;
 pub mod candidates;
 pub mod hangup;
 pub mod invite;
+#[cfg(feature = "unstable-msc3401")]
 pub mod member;
 pub mod negotiate;
+#[cfg(feature = "unstable-msc4075")]
 pub mod notify;
 pub mod reject;
 pub mod sdp_stream_metadata_changed;

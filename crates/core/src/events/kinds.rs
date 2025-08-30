@@ -6,16 +6,17 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Deserializer, Serialize, ser::SerializeStruct};
 
 use super::{
-    AnyInitialStateEvent, EmptyStateKey, EphemeralRoomEventContent, EventContent,
-    EventContentFromType, GlobalAccountDataEventContent, MessageLikeEventContent,
-    MessageLikeEventType, MessageLikeUnsigned, PossiblyRedactedStateEventContent, RedactContent,
+    AnyInitialStateEvent, EmptyStateKey, EphemeralRoomEventContent, EventContentFromType,
+    GlobalAccountDataEventContent, MessageLikeEventContent, MessageLikeEventType,
+    MessageLikeUnsigned, PossiblyRedactedStateEventContent, RedactContent,
     RedactedMessageLikeEventContent, RedactedStateEventContent, RedactedUnsigned,
     RedactionDeHelper, RoomAccountDataEventContent, StateEventContent, StateEventType,
     StaticStateEventContent, ToDeviceEventContent,
 };
 use crate::{
-    EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomVersionId, UnixMillis, UserId,
+    EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UnixMillis, UserId,
     events::{AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, receipt::ReceiptEventContent},
+    room_version_rules::RedactionRules,
     serde::{RawJson, RawJsonValue, from_raw_json_value},
 };
 
@@ -659,9 +660,9 @@ where
     ///
     /// A small number of events have room-version specific redaction behavior,
     /// so a version has to be specified.
-    pub fn redact(self, version: &RoomVersionId) -> C::Redacted {
+    pub fn redact(self, rules: &RedactionRules) -> C::Redacted {
         match self {
-            FullStateEventContent::Original { content, .. } => content.redact(version),
+            FullStateEventContent::Original { content, .. } => content.redact(rules),
             FullStateEventContent::Redacted(content) => content,
         }
     }

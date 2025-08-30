@@ -2,11 +2,12 @@
 
 use std::{cmp::Ordering, str::FromStr};
 
-use crate::macros::DisplayAsRefStr;
 use salvo::oapi::{Components, RefOr, Schema, ToSchema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::IdParseError;
+use crate::macros::DisplayAsRefStr;
+use crate::room_version_rules::RoomVersionRules;
 
 /// A Matrix [room version] ID.
 ///
@@ -60,6 +61,8 @@ pub enum RoomVersionId {
     /// A version 11 room.
     V11,
 
+    // /// A version 12 room.
+    // V12,
     #[doc(hidden)]
     _Custom(CustomRoomVersion),
 }
@@ -81,6 +84,7 @@ impl RoomVersionId {
             Self::V9 => "9",
             Self::V10 => "10",
             Self::V11 => "11",
+            // Self::V12 => "12",
             Self::_Custom(version) => version.as_str(),
         }
     }
@@ -89,23 +93,39 @@ impl RoomVersionId {
     pub fn as_bytes(&self) -> &[u8] {
         self.as_str().as_bytes()
     }
+
+    /// Get the [`RoomVersionRules`] for this `RoomVersionId`, if it matches a supported room
+    /// version.
+    ///
+    /// All known variants are guaranteed to return `Some(_)`.
+    pub fn rules(&self) -> Option<RoomVersionRules> {
+        Some(match self {
+            Self::V1 => RoomVersionRules::V1,
+            Self::V2 => RoomVersionRules::V2,
+            Self::V3 => RoomVersionRules::V3,
+            Self::V4 => RoomVersionRules::V4,
+            Self::V5 => RoomVersionRules::V5,
+            Self::V6 => RoomVersionRules::V6,
+            Self::V7 => RoomVersionRules::V7,
+            Self::V8 => RoomVersionRules::V8,
+            Self::V9 => RoomVersionRules::V9,
+            Self::V10 => RoomVersionRules::V10,
+            Self::V11 => RoomVersionRules::V11,
+            // #[cfg(feature = "unstable-hydra")]
+            // Self::HydraV11 => RoomVersionRules::HYDRA_V11,
+            // Self::V12 => RoomVersionRules::V12,
+            // #[cfg(feature = "unstable-msc2870")]
+            // Self::MSC2870 => RoomVersionRules::MSC2870,
+            Self::_Custom(_) => return None,
+        })
+    }
 }
 
 impl From<RoomVersionId> for String {
     fn from(id: RoomVersionId) -> Self {
         match id {
-            RoomVersionId::V1 => "1".to_owned(),
-            RoomVersionId::V2 => "2".to_owned(),
-            RoomVersionId::V3 => "3".to_owned(),
-            RoomVersionId::V4 => "4".to_owned(),
-            RoomVersionId::V5 => "5".to_owned(),
-            RoomVersionId::V6 => "6".to_owned(),
-            RoomVersionId::V7 => "7".to_owned(),
-            RoomVersionId::V8 => "8".to_owned(),
-            RoomVersionId::V9 => "9".to_owned(),
-            RoomVersionId::V10 => "10".to_owned(),
-            RoomVersionId::V11 => "11".to_owned(),
             RoomVersionId::_Custom(version) => version.into(),
+            id => id.as_str().to_owned(),
         }
     }
 }
@@ -190,6 +210,7 @@ where
         "9" => RoomVersionId::V9,
         "10" => RoomVersionId::V10,
         "11" => RoomVersionId::V11,
+        // "12" => RoomVersionId::V12,
         custom => {
             palpo_identifiers_validation::room_version_id::validate(custom)?;
             RoomVersionId::_Custom(CustomRoomVersion(room_version_id.into()))

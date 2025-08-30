@@ -27,9 +27,9 @@ ENV LOG_FORMAT=text
 
 # RUN echo "log = \"warn,_=off,sled=off\"" >> palpo.toml
 # RUN sed -i "s/listen_addr = \"127.0.0.1:8008\"/listen_addr = \"0.0.0.0:8008\"/g" palpo.toml
-RUN sed -i "s%127.0.0.1/32            md5%127.0.0.1/32            trust%g" /etc/postgresql/15/main/pg_hba.conf && \
+RUN sed -i "s%127.0.0.1/32            md5%127.0.0.1/32            trust%g" /etc/postgresql/17/main/pg_hba.conf && \
     # Bump up max conns for moar concurrency
-    sed -i 's/max_connections = 100/max_connections = 2000/g' /etc/postgresql/15/main/postgresql.conf && \
+    sed -i 's/max_connections = 100/max_connections = 2000/g' /etc/postgresql/17/main/postgresql.conf && \
     chmod +x /work/startup.sh
 
 # This entry script starts postgres, waits for it to be up then starts palpo

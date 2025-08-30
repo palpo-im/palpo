@@ -261,12 +261,12 @@ pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
 
 async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
     let client = client();
-    if let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated")) {
-        if !config::valid_cidr_range(&ip) {
-            return Err(
-                MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
-            );
-        }
+    if let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated"))
+        && !config::valid_cidr_range(&ip)
+    {
+        return Err(
+            MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
+        );
     }
 
     let response = client.get(url.clone()).send().await?;
@@ -281,14 +281,12 @@ async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
             ?url,
             "URL preview response remote address: {:?}", remote_addr
         );
-        if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string()) {
-            if !config::valid_cidr_range(&ip) {
-                return Err(MatrixError::forbidden(
-                    "Requesting from this address is forbidden.",
-                    None,
-                )
-                .into());
-            }
+        if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string())
+            && !config::valid_cidr_range(&ip)
+        {
+            return Err(
+                MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
+            );
         }
     }
 

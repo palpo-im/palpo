@@ -60,19 +60,19 @@ pub async fn join_room(
         });
     }
 
-    if let Ok(membership) = room::get_member(room_id, sender_id) {
-        if membership.membership == MembershipState::Ban {
-            tracing::warn!(
-                "{} is banned from {room_id} but attempted to join",
-                sender_id
-            );
-            return Err(MatrixError::forbidden("You are banned from the room.", None).into());
-        }
+    if let Ok(membership) = room::get_member(room_id, sender_id)
+        && membership.membership == MembershipState::Ban
+    {
+        tracing::warn!(
+            "{} is banned from {room_id} but attempted to join",
+            sender_id
+        );
+        return Err(MatrixError::forbidden("You are banned from the room.", None).into());
     }
 
     // Ask a remote server if we are not participating in this room
     let (should_remote, servers) =
-        room::should_join_on_remote_servers(sender_id, room_id, servers)?;
+        room::should_join_on_remote_servers(sender_id, room_id, servers).await?;
 
     if !should_remote {
         info!("We can join locally");
@@ -91,6 +91,7 @@ pub async fn join_room(
                 sender_id,
                 &join_rule.restriction_rooms(),
             )
+            .await
             .ok(),
             extra_data: extra_data.clone(),
         };
@@ -451,8 +452,7 @@ pub async fn join_room(
         once(join_event_id.borrow()),
         &state_lock,
     )
-    .await
-    .unwrap();
+    .await?;
     let frame_id_after_join = state::append_to_state(&join_pdu)?;
     drop(event_guard);
 
@@ -483,7 +483,7 @@ pub async fn join_room(
     Ok(JoinRoomResBody::new(room_id.to_owned()))
 }
 
-pub fn get_first_user_can_issue_invite(
+pub async fn get_first_user_can_issue_invite(
     room_id: &RoomId,
     invitee_id: &UserId,
     restriction_rooms: &[OwnedRoomId],
@@ -493,7 +493,7 @@ pub fn get_first_user_can_issue_invite(
     }) {
         for joined_user in room::joined_users(room_id, None)? {
             if joined_user.server_name() == config::get().server_name
-                && room::user_can_invite(room_id, &joined_user, invitee_id)
+                && room::user_can_invite(room_id, &joined_user, invitee_id).await
             {
                 return Ok(joined_user);
             }
@@ -501,7 +501,7 @@ pub fn get_first_user_can_issue_invite(
     }
     Err(MatrixError::not_found("No user can issue invite in this room.").into())
 }
-pub fn get_users_can_issue_invite(
+pub async fn get_users_can_issue_invite(
     room_id: &RoomId,
     invitee_id: &UserId,
     restriction_rooms: &[OwnedRoomId],
@@ -512,7 +512,7 @@ pub fn get_users_can_issue_invite(
     }) {
         for joined_user in room::joined_users(room_id, None)? {
             if joined_user.server_name() == config::get().server_name
-                && room::user_can_invite(room_id, &joined_user, invitee_id)
+                && room::user_can_invite(room_id, &joined_user, invitee_id).await
             {
                 users.push(joined_user);
             }

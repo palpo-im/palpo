@@ -65,10 +65,10 @@ impl Executor {
         let ignore_errors = conf.admin.execute_errors_ignore;
 
         for (i, command) in commands.iter().enumerate() {
-            if let Err(e) = self.execute_command(i, command.clone()).await {
-                if !ignore_errors {
-                    return Err(e);
-                }
+            if let Err(e) = self.execute_command(i, command.clone()).await
+                && !ignore_errors
+            {
+                return Err(e);
             }
 
             tokio::task::yield_now().await;

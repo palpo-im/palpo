@@ -4,20 +4,20 @@
 
 use std::collections::BTreeMap;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::macros::EventContent;
 use crate::serde::JsonValue;
 use crate::{
     PrivOwnedStr,
     events::{
-        AnyStrippedStateEvent, BundledStateRelations, EventContent, EventContentFromType,
-        PossiblyRedactedStateEventContent, RedactContent, RedactedStateEventContent,
-        StateEventType,
+        AnyStrippedStateEvent, BundledStateRelations, PossiblyRedactedStateEventContent,
+        RedactContent, RedactedStateEventContent, StateEventType, StaticEventContent,
     },
     identifiers::*,
-    serde::{CanBeEmpty, RawJson, RawJsonValue, StringEnum},
+    room_version_rules::RedactionRules,
+    serde::{CanBeEmpty, RawJson, StringEnum},
 };
 
 mod change;
@@ -241,21 +241,13 @@ impl RoomMemberEventContent {
 impl RedactContent for RoomMemberEventContent {
     type Redacted = RedactedRoomMemberEventContent;
 
-    fn redact(self, version: &RoomVersionId) -> RedactedRoomMemberEventContent {
+    fn redact(self, rules: &RedactionRules) -> RedactedRoomMemberEventContent {
         RedactedRoomMemberEventContent {
             membership: self.membership,
-            third_party_invite: self.third_party_invite.and_then(|i| i.redact(version)),
-            join_authorized_via_users_server: match version {
-                RoomVersionId::V1
-                | RoomVersionId::V2
-                | RoomVersionId::V3
-                | RoomVersionId::V4
-                | RoomVersionId::V5
-                | RoomVersionId::V6
-                | RoomVersionId::V7
-                | RoomVersionId::V8 => None,
-                _ => self.join_authorized_via_users_server,
-            },
+            third_party_invite: self.third_party_invite.and_then(|i| i.redact(rules)),
+            join_authorized_via_users_server: self
+                .join_authorized_via_users_server
+                .filter(|_| rules.keep_room_member_join_authorised_via_users_server),
         }
     }
 }
@@ -268,6 +260,10 @@ pub type PossiblyRedactedRoomMemberEventContent = RoomMemberEventContent;
 
 impl PossiblyRedactedStateEventContent for RoomMemberEventContent {
     type StateKey = OwnedUserId;
+
+    fn event_type(&self) -> StateEventType {
+        StateEventType::RoomMember
+    }
 }
 
 /// A member event that has been redacted.
@@ -339,22 +335,17 @@ impl RedactedRoomMemberEventContent {
     }
 }
 
-impl EventContent for RedactedRoomMemberEventContent {
-    type EventType = StateEventType;
+impl RedactedStateEventContent for RedactedRoomMemberEventContent {
+    type StateKey = OwnedUserId;
 
     fn event_type(&self) -> StateEventType {
         StateEventType::RoomMember
     }
 }
 
-impl RedactedStateEventContent for RedactedRoomMemberEventContent {
-    type StateKey = OwnedUserId;
-}
-
-impl EventContentFromType for RedactedRoomMemberEventContent {
-    fn from_parts(_ev_type: &str, content: &RawJsonValue) -> serde_json::Result<Self> {
-        serde_json::from_str(content.get())
-    }
+impl StaticEventContent for RedactedRoomMemberEventContent {
+    const TYPE: &'static str = RoomMemberEventContent::TYPE;
+    type IsPrefix = <RoomMemberEventContent as StaticEventContent>::IsPrefix;
 }
 
 impl RoomMemberEvent {
@@ -433,22 +424,12 @@ impl ThirdPartyInvite {
     ///
     /// Returns `None` if the field for this object was redacted in the given
     /// room version, otherwise returns the redacted form.
-    fn redact(self, version: &RoomVersionId) -> Option<RedactedThirdPartyInvite> {
-        match version {
-            RoomVersionId::V1
-            | RoomVersionId::V2
-            | RoomVersionId::V3
-            | RoomVersionId::V4
-            | RoomVersionId::V5
-            | RoomVersionId::V6
-            | RoomVersionId::V7
-            | RoomVersionId::V8
-            | RoomVersionId::V9
-            | RoomVersionId::V10 => None,
-            _ => Some(RedactedThirdPartyInvite {
+    fn redact(self, rules: &RedactionRules) -> Option<RedactedThirdPartyInvite> {
+        rules
+            .keep_room_member_third_party_invite_signed
+            .then_some(RedactedThirdPartyInvite {
                 signed: self.signed,
-            }),
-        }
+            })
     }
 }
 
@@ -699,251 +680,3 @@ impl CanBeEmpty for RoomMemberUnsigned {
             && self.relations.is_empty()
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use crate::{mxc_uri, owned_server_signing_key_id, serde::CanBeEmpty,
-// server_name, user_id, UnixMillis};     use assert_matches2::assert_matches;
-//     use maplit::btreemap;
-//     use serde_json::{from_value as from_json_value, json};
-
-//     use super::{MembershipState, RoomMemberEventContent};
-//     use crate::OriginalStateEvent;
-
-//     #[test]
-//     fn serde_with_no_prev_content() {
-//         let json = json!({
-//             "type": "m.room.member",
-//             "content": {
-//                 "membership": "join"
-//             },
-//             "event_id": "$h29iv0s8:example.com",
-//             "origin_server_ts": 1,
-//             "room_id": "!n8f893n9:example.com",
-//             "sender": "@carl:example.com",
-//             "state_key": "@carl:example.com"
-//         });
-
-//         let ev =
-// from_json_value::<OriginalStateEvent<RoomMemberEventContent>>(json).unwrap();
-//         assert_eq!(ev.event_id, "$h29iv0s8:example.com");
-//         assert_eq!(ev.origin_server_ts, UnixMillis(u1));
-//         assert_eq!(ev.room_id, "!n8f893n9:example.com");
-//         assert_eq!(ev.sender, "@carl:example.com");
-//         assert_eq!(ev.state_key, "@carl:example.com");
-//         assert!(ev.unsigned.is_empty());
-
-//         assert_eq!(ev.content.avatar_url, None);
-//         assert_eq!(ev.content.display_name, None);
-//         assert_eq!(ev.content.is_direct, None);
-//         assert_eq!(ev.content.membership, MembershipState::Join);
-//         assert_matches!(ev.content.third_party_invite, None);
-//     }
-
-//     #[test]
-//     fn serde_with_prev_content() {
-//         let json = json!({
-//             "type": "m.room.member",
-//             "content": {
-//                 "membership": "join"
-//             },
-//             "event_id": "$h29iv0s8:example.com",
-//             "origin_server_ts": 1,
-//             "room_id": "!n8f893n9:example.com",
-//             "sender": "@carl:example.com",
-//             "state_key": "@carl:example.com",
-//             "unsigned": {
-//                 "prev_content": {
-//                     "membership": "join"
-//                 },
-//             },
-//         });
-
-//         let ev =
-// from_json_value::<OriginalStateEvent<RoomMemberEventContent>>(json).unwrap();
-//         assert_eq!(ev.event_id, "$h29iv0s8:example.com");
-//         assert_eq!(ev.origin_server_ts, UnixMillis(1));
-//         assert_eq!(ev.room_id, "!n8f893n9:example.com");
-//         assert_eq!(ev.sender, "@carl:example.com");
-//         assert_eq!(ev.state_key, "@carl:example.com");
-
-//         assert_eq!(ev.content.avatar_url, None);
-//         assert_eq!(ev.content.display_name, None);
-//         assert_eq!(ev.content.is_direct, None);
-//         assert_eq!(ev.content.membership, MembershipState::Join);
-//         assert_matches!(ev.content.third_party_invite, None);
-
-//         let prev_content = ev.unsigned.prev_content.unwrap();
-//         assert_eq!(prev_content.avatar_url, None);
-//         assert_eq!(prev_content.display_name, None);
-//         assert_eq!(prev_content.is_direct, None);
-//         assert_eq!(prev_content.membership, MembershipState::Join);
-//         assert_matches!(prev_content.third_party_invite, None);
-//     }
-
-//     #[test]
-//     fn serde_with_content_full() {
-//         let json = json!({
-//             "type": "m.room.member",
-//             "content": {
-//                 "avatar_url": "mxc://example.org/SEsfnsuifSDFSSEF",
-//                 "display_name": "Alice Margatroid",
-//                 "is_direct": true,
-//                 "membership": "invite",
-//                 "third_party_invite": {
-//                     "display_name": "alice",
-//                     "signed": {
-//                         "mxid": "@alice:example.org",
-//                         "signatures": {
-//                             "magic.forest": {
-//                                 "ed25519:3": "foobar"
-//                             }
-//                         },
-//                         "token": "abc123"
-//                     }
-//                 }
-//             },
-//             "event_id": "$143273582443PhrSn:example.org",
-//             "origin_server_ts": 233,
-//             "room_id": "!jEsUZKDJdhlrceRyVU:example.org",
-//             "sender": "@alice:example.org",
-//             "state_key": "@alice:example.org"
-//         });
-
-//         let ev =
-// from_json_value::<OriginalStateEvent<RoomMemberEventContent>>(json).unwrap();
-//         assert_eq!(ev.event_id, "$143273582443PhrSn:example.org");
-//         assert_eq!(ev.origin_server_ts, UnixMillis(u233));
-//         assert_eq!(ev.room_id, "!jEsUZKDJdhlrceRyVU:example.org");
-//         assert_eq!(ev.sender, "@alice:example.org");
-//         assert_eq!(ev.state_key, "@alice:example.org");
-//         assert!(ev.unsigned.is_empty());
-
-//         assert_eq!(
-//             ev.content.avatar_url.as_deref(),
-//             Some(mxc_uri!("mxc://example.org/SEsfnsuifSDFSSEF"))
-//         );
-//         assert_eq!(ev.content.display_name.as_deref(), Some("Alice
-// Margatroid"));         assert_eq!(ev.content.is_direct, Some(true));
-//         assert_eq!(ev.content.membership, MembershipState::Invite);
-
-//         let third_party_invite = ev.content.third_party_invite.unwrap();
-//         assert_eq!(third_party_invite.display_name, "alice");
-//         assert_eq!(third_party_invite.signed.mxid, "@alice:example.org");
-//         assert_eq!(
-//             third_party_invite.signed.signatures,
-//             btreemap! {
-//                 server_name!("magic.forest").to_owned() => btreemap! {
-//                     owned_server_signing_key_id!("ed25519:3") =>
-// "foobar".to_owned()                 }
-//             }
-//         );
-//         assert_eq!(third_party_invite.signed.token, "abc123");
-//     }
-
-//     #[test]
-//     fn serde_with_prev_content_full() {
-//         let json = json!({
-//             "type": "m.room.member",
-//             "content": {
-//                 "membership": "join",
-//             },
-//             "event_id": "$143273582443PhrSn:example.org",
-//             "origin_server_ts": 233,
-//             "room_id": "!jEsUZKDJdhlrceRyVU:example.org",
-//             "sender": "@alice:example.org",
-//             "state_key": "@alice:example.org",
-//             "unsigned": {
-//                 "prev_content": {
-//                     "avatar_url": "mxc://example.org/SEsfnsuifSDFSSEF",
-//                     "display_name": "Alice Margatroid",
-//                     "is_direct": true,
-//                     "membership": "invite",
-//                     "third_party_invite": {
-//                         "display_name": "alice",
-//                         "signed": {
-//                             "mxid": "@alice:example.org",
-//                             "signatures": {
-//                                 "magic.forest": {
-//                                     "ed25519:3": "foobar",
-//                                 },
-//                             },
-//                             "token": "abc123"
-//                         },
-//                     },
-//                 },
-//             },
-//         });
-
-//         let ev =
-// from_json_value::<OriginalStateEvent<RoomMemberEventContent>>(json).unwrap();
-//         assert_eq!(ev.event_id, "$143273582443PhrSn:example.org");
-//         assert_eq!(ev.origin_server_ts, UnixMillis(u233));
-//         assert_eq!(ev.room_id, "!jEsUZKDJdhlrceRyVU:example.org");
-//         assert_eq!(ev.sender, "@alice:example.org");
-//         assert_eq!(ev.state_key, "@alice:example.org");
-
-//         assert_eq!(ev.content.avatar_url, None);
-//         assert_eq!(ev.content.display_name, None);
-//         assert_eq!(ev.content.is_direct, None);
-//         assert_eq!(ev.content.membership, MembershipState::Join);
-//         assert_matches!(ev.content.third_party_invite, None);
-
-//         let prev_content = ev.unsigned.prev_content.unwrap();
-//         assert_eq!(
-//             prev_content.avatar_url.as_deref(),
-//             Some(mxc_uri!("mxc://example.org/SEsfnsuifSDFSSEF"))
-//         );
-//         assert_eq!(prev_content.display_name.as_deref(), Some("Alice
-// Margatroid"));         assert_eq!(prev_content.is_direct, Some(true));
-//         assert_eq!(prev_content.membership, MembershipState::Invite);
-
-//         let third_party_invite = prev_content.third_party_invite.unwrap();
-//         assert_eq!(third_party_invite.display_name, "alice");
-//         assert_eq!(third_party_invite.signed.mxid, "@alice:example.org");
-//         assert_eq!(
-//             third_party_invite.signed.signatures,
-//             btreemap! {
-//                 server_name!("magic.forest").to_owned() => btreemap! {
-//                     owned_server_signing_key_id!("ed25519:3") =>
-// "foobar".to_owned()                 }
-//             }
-//         );
-//         assert_eq!(third_party_invite.signed.token, "abc123");
-//     }
-
-//     #[test]
-//     fn serde_with_join_authorized() {
-//         let json = json!({
-//             "type": "m.room.member",
-//             "content": {
-//                 "membership": "join",
-//                 "join_authorised_via_users_server": "@notcarl:example.com"
-//             },
-//             "event_id": "$h29iv0s8:example.com",
-//             "origin_server_ts": 1,
-//             "room_id": "!n8f893n9:example.com",
-//             "sender": "@carl:example.com",
-//             "state_key": "@carl:example.com"
-//         });
-
-//         let ev =
-// from_json_value::<OriginalStateEvent<RoomMemberEventContent>>(json).unwrap();
-//         assert_eq!(ev.event_id, "$h29iv0s8:example.com");
-//         assert_eq!(ev.origin_server_ts, UnixMillis(u1));
-//         assert_eq!(ev.room_id, "!n8f893n9:example.com");
-//         assert_eq!(ev.sender, "@carl:example.com");
-//         assert_eq!(ev.state_key, "@carl:example.com");
-//         assert!(ev.unsigned.is_empty());
-
-//         assert_eq!(ev.content.avatar_url, None);
-//         assert_eq!(ev.content.display_name, None);
-//         assert_eq!(ev.content.is_direct, None);
-//         assert_eq!(ev.content.membership, MembershipState::Join);
-//         assert_matches!(ev.content.third_party_invite, None);
-//         assert_eq!(
-//             ev.content.join_authorized_via_users_server.as_deref(),
-//             Some(user_id!("@notcarl:example.com"))
-//         );
-//     }
-// }

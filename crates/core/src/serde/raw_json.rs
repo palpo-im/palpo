@@ -277,6 +277,15 @@ impl<T> Serialize for RawJson<T> {
     }
 }
 
+/// Marker trait for restricting the types [`Raw::deserialize_as`], [`Raw::cast`] and
+/// [`Raw::cast_ref`] can be called with.
+///
+/// Implementing this trait for a type `U` means that it is safe to cast from `U` to `T` because `T`
+/// can be deserialized from the same JSON as `U`.
+pub trait JsonCastable<T> {}
+
+impl<T> JsonCastable<JsonValue> for T {}
+
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;

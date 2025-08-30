@@ -3,7 +3,7 @@
 
 use std::hint::unreachable_unchecked;
 
-use crate::macros::IdZst;
+use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 use super::{OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId, server_name::ServerName};
@@ -28,7 +28,7 @@ use super::{OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId, server_name::Ser
 /// [room ID]: https://spec.matrix.org/latest/appendices/#room-ids
 /// [room alias ID]: https://spec.matrix.org/latest/appendices/#room-aliases
 #[repr(transparent)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdZst, AsExpression)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst, AsExpression)]
 #[diesel(not_sized, sql_type = diesel::sql_types::Text)]
 #[palpo_id(validate = palpo_identifiers_validation::room_id_or_alias_id::validate)]
 pub struct RoomOrAliasId(str);
