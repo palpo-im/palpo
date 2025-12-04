@@ -22,6 +22,8 @@ pub use key_backup::*;
 pub mod session;
 pub use session::*;
 pub mod presence;
+pub mod external_id;
+pub use external_id::*;
 use std::mem;
 
 use diesel::dsl;
@@ -57,6 +59,7 @@ pub struct DbUser {
     pub locked_at: Option<UnixMillis>,
     pub locked_by: Option<OwnedUserId>,
     pub created_at: UnixMillis,
+    pub suspended_at: Option<UnixMillis>,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
@@ -367,4 +370,15 @@ pub fn set_ignored_users(user_id: &UserId, ignored_ids: &[OwnedUserId]) -> DataR
             .execute(&mut connect()?)?;
     }
     Ok(())
+}
+
+/// Get user_id by third party ID (email, phone, etc.)
+pub fn get_user_by_threepid(medium: &str, address: &str) -> DataResult<Option<OwnedUserId>> {
+    user_threepids::table
+        .filter(user_threepids::medium.eq(medium))
+        .filter(user_threepids::address.eq(address))
+        .select(user_threepids::user_id)
+        .first::<OwnedUserId>(&mut connect()?)
+        .optional()
+        .map_err(Into::into)
 }
