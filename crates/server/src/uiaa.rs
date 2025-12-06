@@ -122,7 +122,7 @@ pub fn try_auth(
             let Ok(user) = data::user::get_user(&auth_user_id) else {
                 return Err(MatrixError::unauthorized("User not found.").into());
             };
-            crate::user::vertify_password(&user, password)?;
+            crate::user::verify_password(&user, password)?;
         }
         AuthData::RegistrationToken(t) => {
             if Some(t.token.trim()) == conf.registration_token.as_deref() {

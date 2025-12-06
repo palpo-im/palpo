@@ -8,7 +8,7 @@ use crate::data::schema::*;
 use crate::data::user::NewDbPassword;
 use crate::{AppResult, MatrixError, data, utils};
 
-pub fn vertify_password(user: &DbUser, password: &str) -> AppResult<()> {
+pub fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
     if user.deactivated_at.is_some() {
         return Err(MatrixError::user_deactivated("The user has been deactivated").into());
     }
