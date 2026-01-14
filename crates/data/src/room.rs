@@ -11,6 +11,7 @@ use crate::{DataResult, connect};
 
 pub mod event;
 pub mod receipt;
+pub mod timeline;
 
 #[derive(Insertable, Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = rooms)]
@@ -218,7 +219,7 @@ impl DbEventData {
     }
 }
 
-#[derive(Identifiable, Insertable, Queryable, AsChangeset, Debug, Clone)]
+#[derive(Identifiable, Insertable, Queryable, AsChangeset, Debug, Clone, serde::Serialize)]
 #[diesel(table_name = events, primary_key(id))]
 pub struct DbEvent {
     pub id: OwnedEventId,
@@ -382,6 +383,14 @@ pub struct NewDbBannedRoom {
 pub fn is_banned(room_id: &RoomId) -> DataResult<bool> {
     let query = banned_rooms::table.filter(banned_rooms::room_id.eq(room_id));
     Ok(diesel_exists!(query, &mut connect()?)?)
+}
+
+pub fn is_public(room_id: &RoomId) -> DataResult<bool> {
+    rooms::table
+        .filter(rooms::id.eq(room_id))
+        .select(rooms::is_public)
+        .first(&mut connect()?)
+        .map_err(Into::into)
 }
 
 #[derive(Insertable, Debug, Clone)]

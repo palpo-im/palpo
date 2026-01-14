@@ -1,4 +1,5 @@
 mod event;
+mod event_report;
 mod federation;
 mod media;
 mod register;
@@ -33,6 +34,7 @@ pub fn router() -> Router {
                 .hoop(require_admin)
                 .get(home)
                 .push(event::router())
+                .push(event_report::router())
                 .push(federation::router())
                 .push(media::router())
                 .push(register::router())
