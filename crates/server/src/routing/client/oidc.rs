@@ -109,7 +109,6 @@
 //! - No username/email → `@user_123456:server`
 
 use cookie::time::Duration;
-use reqwest;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
