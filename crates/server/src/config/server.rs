@@ -827,8 +827,8 @@ impl ServerConfig {
         //     .allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure
         // {
         //     tracing::warn!(
-        //         "\n\nWARNING: \n\nTLS CERTIFICATE VALIDATION IS DISABLED, THIS IS HIGHLY INSECURE AND SHOULD NOT BE USED IN PRODUCTION.\n\n"
-        //     );
+        //         "\n\nWARNING: \n\nTLS CERTIFICATE VALIDATION IS DISABLED, THIS IS HIGHLY INSECURE
+        // AND SHOULD NOT BE USED IN PRODUCTION.\n\n"     );
         // }
 
         self.warn_deprecated();
@@ -847,8 +847,8 @@ impl ServerConfig {
         //     not(target_env = "msvc")
         // )) {
         //     tracing::warn!(
-        //         "hardened_malloc and jemalloc compile-time features are both enabled, this causes \
-        //          jemalloc to be used."
+        //         "hardened_malloc and jemalloc compile-time features are both enabled, this causes
+        // \          jemalloc to be used."
         //     );
         // }
 
@@ -877,32 +877,32 @@ impl ServerConfig {
         //                  container."
         //             );
 
-        //             if Path::new("/proc/vz").exists() /* Guest */ && !Path::new("/proc/bz").exists()
-        //             /* Host */
+        //             if Path::new("/proc/vz").exists() /* Guest */ &&
+        // !Path::new("/proc/bz").exists()             /* Host */
         //             {
         //                 error!(
         //                     "You are detected using OpenVZ with a loopback/localhost listening \
-        //                      address of {addr}. If you are using OpenVZ for containers and you use \
-        //                      NAT-based networking to communicate with the host and guest, this will \
-        //                      NOT work. Please change this to \"0.0.0.0\". If this is expected, you \
-        //                      can ignore.",
+        //                      address of {addr}. If you are using OpenVZ for containers and you
+        // use \                      NAT-based networking to communicate with the host and
+        // guest, this will \                      NOT work. Please change this to
+        // \"0.0.0.0\". If this is expected, you \                      can ignore.",
         //                 );
         //             } else if Path::new("/.dockerenv").exists() {
         //                 error!(
         //                     "You are detected using Docker with a loopback/localhost listening \
-        //                      address of {addr}. If you are using a reverse proxy on the host and \
-        //                      require communication to palpo in the Docker container via \
-        //                      NAT-based networking, this will NOT work. Please change this to \
-        //                      \"0.0.0.0\". If this is expected, you can ignore.",
-        //                 );
+        //                      address of {addr}. If you are using a reverse proxy on the host and
+        // \                      require communication to palpo in the Docker container via
+        // \                      NAT-based networking, this will NOT work. Please change
+        // this to \                      \"0.0.0.0\". If this is expected, you can
+        // ignore.",                 );
         //             } else if Path::new("/run/.containerenv").exists() {
         //                 error!(
         //                     "You are detected using Podman with a loopback/localhost listening \
-        //                      address of {addr}. If you are using a reverse proxy on the host and \
-        //                      require communication to palpo in the Podman container via \
-        //                      NAT-based networking, this will NOT work. Please change this to \
-        //                      \"0.0.0.0\". If this is expected, you can ignore.",
-        //                 );
+        //                      address of {addr}. If you are using a reverse proxy on the host and
+        // \                      require communication to palpo in the Podman container via
+        // \                      NAT-based networking, this will NOT work. Please change
+        // this to \                      \"0.0.0.0\". If this is expected, you can
+        // ignore.",                 );
         //             }
         //         }
         //     });
@@ -967,17 +967,19 @@ impl ServerConfig {
         }
 
         //     if self.allow_registration
-        //         && !self.yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse
+        //         &&
+        // !self.yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse
         //         && self.registration_token.is_none()
         //         && self.registration_token_file.is_none()
         //     {
         //         return Err(AppError::internal(
-        //             "!! You have `allow_registration` enabled without a token configured in your config \
-        //              which means you are allowing ANYONE to register on your palpo instance without \
-        //              any 2nd-step (e.g. registration token). If this is not the intended behaviour, \
-        //              please set a registration token. For security and safety reasons, palpo will \
-        //              shut down. If you are extra sure this is the desired behaviour you want, please \
-        //              set the following config option to true:
+        //             "!! You have `allow_registration` enabled without a token configured in your
+        // config \              which means you are allowing ANYONE to register on your
+        // palpo instance without \              any 2nd-step (e.g. registration token). If
+        // this is not the intended behaviour, \              please set a registration
+        // token. For security and safety reasons, palpo will \              shut down. If
+        // you are extra sure this is the desired behaviour you want, please \              
+        // set the following config option to true:
         // `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse`",
         //         ));
         //     }
@@ -989,10 +991,10 @@ impl ServerConfig {
         // {
         //     warn!(
         //         "Open registration is enabled via setting \
-        //          `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse` and \
-        //          `allow_registration` to true without a registration token configured. You are \
-        //          expected to be aware of the risks now. If this is not the desired behaviour, \
-        //          please set a registration token."
+        //          `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse` and
+        // \          `allow_registration` to true without a registration token configured.
+        // You are \          expected to be aware of the risks now. If this is not the
+        // desired behaviour, \          please set a registration token."
         //     );
         // }
 
@@ -1014,8 +1016,8 @@ impl ServerConfig {
         //     }
         // }
 
-        // if !Server::available_room_versions().any(|(version, _)| version == self.default_room_version) {
-        //     return Err(AppError::internal(formmat!(
+        // if !Server::available_room_versions().any(|(version, _)| version ==
+        // self.default_room_version) {     return Err(AppError::internal(formmat!(
         //         "Room version {:?} is not available",
         //         self.default_room_version
         //     )));
@@ -1050,7 +1052,7 @@ impl ServerConfig {
     fn warn_unknown_key(&self) {
         debug!("Checking for unknown config keys");
         for key in self.catch_others.keys().filter(
-            |key| "config".to_owned().ne(key.to_owned()), /* "config" is expected */
+            |key| "config".to_owned().ne(key.to_owned()), // "config" is expected
         ) {
             warn!(
                 "Config parameter \"{}\" is unknown to palpo, ignoring.",

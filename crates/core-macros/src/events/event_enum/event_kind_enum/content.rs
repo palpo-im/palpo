@@ -3,13 +3,9 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::{
-    events::{
-        common::EventContentTraitVariation,
-        event_enum::{EventEnum, EventEnumKind},
-    },
-    util::NameSpace,
-};
+use crate::events::common::EventContentTraitVariation;
+use crate::events::event_enum::{EventEnum, EventEnumKind};
+use crate::util::NameSpace;
 
 impl EventEnum<'_> {
     /// Generate the `Any*EventContent` enum for this kind.

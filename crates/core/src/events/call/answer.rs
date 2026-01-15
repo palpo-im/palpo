@@ -2,13 +2,13 @@
 //!
 //! [`m.call.answer`]: https://spec.matrix.org/latest/client-server-api/#mcallanswer
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "unstable-msc2747")]
 use super::CallCapabilities;
 use super::SessionDescription;
+use crate::macros::EventContent;
 use crate::{OwnedVoipId, VoipVersionId};
 
 /// The content of an `m.call.answer` event.

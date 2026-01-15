@@ -2,14 +2,16 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value as JsonValue;
 
 use super::{InReplyTo, Relation, RelationWithoutReplacement, Replacement, Thread};
-use crate::{OwnedEventId, events::relation::CustomRelation, serde::JsonObject};
+use crate::OwnedEventId;
+use crate::events::relation::CustomRelation;
+use crate::serde::JsonObject;
 
 /// Deserialize an event's `relates_to` field.
 ///
 /// Use it like this:
 /// ```
-/// use serde::{Deserialize, Serialize};
 /// use palpo_core::events::room::message::{MessageType, Relation, deserialize_relation};
+/// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Deserialize, Serialize)]
 /// struct MyEventContent {

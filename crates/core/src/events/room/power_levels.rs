@@ -2,10 +2,8 @@
 //!
 //! [`m.room.power_levels`]: https://spec.matrix.org/latest/client-server-api/#mroompower_levels
 
-use std::{
-    cmp::{Ordering, max},
-    collections::BTreeMap,
-};
+use std::cmp::{Ordering, max};
+use std::collections::BTreeMap;
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
@@ -15,12 +13,10 @@ use crate::events::{
     StaticEventContent, TimelineEventType,
 };
 use crate::macros::EventContent;
-use crate::{
-    OwnedUserId, UserId,
-    power_levels::{NotificationPowerLevels, default_power_level},
-    push::PushConditionPowerLevelsCtx,
-    room_version_rules::{AuthorizationRules, RedactionRules, RoomPowerLevelsRules},
-};
+use crate::power_levels::{NotificationPowerLevels, default_power_level};
+use crate::push::PushConditionPowerLevelsCtx;
+use crate::room_version_rules::{AuthorizationRules, RedactionRules, RoomPowerLevelsRules};
+use crate::{OwnedUserId, UserId};
 
 /// The content of an `m.room.power_levels` event.
 ///
@@ -532,7 +528,8 @@ impl RoomPowerLevels {
                 rules: RoomPowerLevelsRules::new(rules, creators),
             },
             // events_default, users_default and invite having a default of 0 while the others have
-            // a default of 50 is not an oversight, these defaults are from the Matrix specification.
+            // a default of 50 is not an oversight, these defaults are from the Matrix
+            // specification.
             RoomPowerLevelsSource::None => Self {
                 ban: default_power_level(),
                 events: BTreeMap::new(),
@@ -952,8 +949,8 @@ pub enum PowerLevelUserAction {
 //     use serde_json::{json, to_value as to_json_value};
 
 //     use super::{
-//         default_power_level, NotificationPowerLevels, RoomPowerLevels, RoomPowerLevelsEventContent,
-//         RoomPowerLevelsSource,
+//         default_power_level, NotificationPowerLevels, RoomPowerLevels,
+// RoomPowerLevelsEventContent,         RoomPowerLevelsSource,
 //     };
 
 //     #[test]

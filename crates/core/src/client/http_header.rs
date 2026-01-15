@@ -1,7 +1,8 @@
 //! Helpers for HTTP headers with the `http` crate.
 #![allow(clippy::declare_interior_mutable_const)]
 
-use http::{HeaderValue, header::HeaderName};
+use http::HeaderValue;
+use http::header::HeaderName;
 use web_time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::{HeaderDeserializationError, HeaderSerializationError};

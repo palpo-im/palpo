@@ -1,8 +1,6 @@
-use std::{
-    fmt,
-    ops::{Bound, RangeBounds, RangeFrom, RangeTo, RangeToInclusive},
-    str::FromStr,
-};
+use std::fmt;
+use std::ops::{Bound, RangeBounds, RangeFrom, RangeTo, RangeToInclusive};
+use std::str::FromStr;
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

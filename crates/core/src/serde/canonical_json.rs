@@ -9,7 +9,8 @@ use serde_json::Value as JsonValue;
 mod value;
 
 pub use self::value::{CanonicalJsonObject, CanonicalJsonValue};
-use crate::{room_version_rules::RedactionRules, serde::RawJson};
+use crate::room_version_rules::RedactionRules;
+use crate::serde::RawJson;
 
 const CANONICALJSON_MAX_INT: i64 = (2i64.pow(53)) - 1;
 const CANONICALJSON_MIN_INT: i64 = -CANONICALJSON_MAX_INT;
@@ -208,11 +209,9 @@ pub trait RedactionEvent {}
 /// # Parameters
 ///
 /// * `object`: A JSON object to redact.
-/// * `version`: The room version, determines which keys to keep for a few event
-///   types.
-/// * `redacted_because`: If this is set, an `unsigned` object with a
-///   `redacted_because` field set to the given value is added to the event
-///   after redaction.
+/// * `version`: The room version, determines which keys to keep for a few event types.
+/// * `redacted_because`: If this is set, an `unsigned` object with a `redacted_because` field set
+///   to the given value is added to the event after redaction.
 ///
 /// # Errors
 ///
@@ -481,9 +480,8 @@ mod tests {
         from_str as from_json_str, json, to_string as to_json_string, to_value as to_json_value,
     };
 
-    use super::{
-        redact_in_place, to_canonical_value, try_from_json_map, value::CanonicalJsonValue,
-    };
+    use super::value::CanonicalJsonValue;
+    use super::{redact_in_place, to_canonical_value, try_from_json_map};
     use crate::room_version_rules::RedactionRules;
 
     #[test]

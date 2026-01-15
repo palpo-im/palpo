@@ -2,13 +2,15 @@
 //!
 //! [MXC URI]: https://spec.matrix.org/latest/client-server-api/#matrix-content-mxc-uris
 
-use std::{fmt, num::NonZeroU8};
+use std::fmt;
+use std::num::NonZeroU8;
 
-use crate::macros::IdDst;
-use palpo_identifiers_validation::{error::MxcUriError, mxc_uri::validate};
+use palpo_identifiers_validation::error::MxcUriError;
+use palpo_identifiers_validation::mxc_uri::validate;
 use serde::{Serialize, Serializer};
 
 use super::ServerName;
+use crate::macros::IdDst;
 
 type Result<T, E = MxcUriError> = std::result::Result<T, E>;
 
@@ -151,7 +153,8 @@ mod tests {
     // #[test]
     // fn deserialize_mxc_uri() {
     //     let mxc =
-    //         serde_json::from_str::<OwnedMxcUri>(r#""mxc://server/1234id""#).expect("Failed to convert JSON to MxcUri");
+    //         serde_json::from_str::<OwnedMxcUri>(r#""mxc://server/1234id""#).expect("Failed to
+    // convert JSON to MxcUri");
 
     //     assert_eq!(mxc.as_str(), "mxc://server/1234id");
     //     assert!(mxc.is_valid());

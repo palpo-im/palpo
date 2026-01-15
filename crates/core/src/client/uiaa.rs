@@ -2,8 +2,10 @@
 //!
 //! [uiaa]: https://spec.matrix.org/latest/client-server-api/#user-interactive-authentication-api
 
+use std::borrow::Cow;
 use std::error::Error as StdError;
-use std::{borrow::Cow, fmt, marker::PhantomData};
+use std::fmt;
+use std::marker::PhantomData;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue as RawJsonValue;
@@ -17,7 +19,8 @@ mod auth_data;
 mod auth_params;
 pub mod get_uiaa_fallback_page;
 
-pub use self::{auth_data::*, auth_params::*};
+pub use self::auth_data::*;
+pub use self::auth_params::*;
 
 /// The type of an authentication stage.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
@@ -83,7 +86,8 @@ pub struct UiaaInfo {
     /// Authentication parameters required for the client to complete authentication.
     ///
     /// To create a `Box<RawJsonValue>`, use `serde_json::value::to_raw_value`.
-    // #[serde(skip_serializing_if = "Option::is_none")] // commented for complement test DELETE TestDeviceManagement/DELETE_/device/{deviceId}
+    // #[serde(skip_serializing_if = "Option::is_none")] // commented for complement test DELETE
+    // TestDeviceManagement/DELETE_/device/{deviceId}
     pub params: Option<Box<RawJsonValue>>,
 
     /// Session key for client to use to complete authentication.
@@ -117,7 +121,7 @@ impl UiaaInfo {
     /// # Example
     ///
     /// ```
-    /// use palpo_core::client::uiaa::{AuthType, UiaaInfo, LoginTermsParams};
+    /// use palpo_core::client::uiaa::{AuthType, LoginTermsParams, UiaaInfo};
     ///
     /// # let uiaa_info = UiaaInfo::new(Vec::new());
     /// let login_terms_params = uiaa_info.params::<LoginTermsParams>(&AuthType::Terms)?;

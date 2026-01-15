@@ -2,10 +2,8 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use super::EventEnumKind;
-use crate::{
-    events::common::{EventContentTraitVariation, EventVariation},
-    util::NameSpace,
-};
+use crate::events::common::{EventContentTraitVariation, EventVariation};
+use crate::util::NameSpace;
 
 /// Generate `palpo_core::serde::JsonCastable` implementations for all compatible types.
 pub(super) fn expand_json_castable_impl(

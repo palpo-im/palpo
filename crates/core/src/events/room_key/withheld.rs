@@ -8,12 +8,9 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize, de};
 use serde_json::value::RawValue as RawJsonValue;
 
-use crate::PrivOwnedStr;
 use crate::macros::{EventContent, StringEnum};
-use crate::{
-    EventEncryptionAlgorithm, OwnedRoomId,
-    serde::{Base64, JsonObject, from_raw_json_value},
-};
+use crate::serde::{Base64, JsonObject, from_raw_json_value};
+use crate::{EventEncryptionAlgorithm, OwnedRoomId, PrivOwnedStr};
 
 /// The content of an [`m.room_key.withheld`] event.
 ///
@@ -250,7 +247,8 @@ mod tests {
     use super::{
         RoomKeyWithheldCodeInfo, RoomKeyWithheldSessionData, ToDeviceRoomKeyWithheldEventContent,
     };
-    use crate::{EventEncryptionAlgorithm, owned_room_id, serde::Base64};
+    use crate::serde::Base64;
+    use crate::{EventEncryptionAlgorithm, owned_room_id};
 
     const PUBLIC_KEY: &[u8] = b"key";
     const BASE64_ENCODED_PUBLIC_KEY: &str = "a2V5";

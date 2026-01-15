@@ -240,7 +240,6 @@ pub enum ResponseType {
 ///
 /// The values are specified in [OAuth 2.0 Multiple Response Type Encoding Practices].
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
-///
 /// [OAuth 2.0 Multiple Response Type Encoding Practices]: https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html
 #[derive(Clone, StringEnum)]
 #[palpo_enum(rename_all = "lowercase")]
@@ -300,7 +299,6 @@ pub enum CodeChallengeMethod {
 ///
 /// The values are specified in [MSC 4191].
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
-///
 /// [MSC 4191]: https://github.com/matrix-org/matrix-spec-proposals/pull/4191
 #[cfg(feature = "unstable-msc4191")]
 #[derive(Clone, StringEnum)]

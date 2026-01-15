@@ -2,16 +2,14 @@
 //!
 //! [`m.room.tombstone`]: https://spec.matrix.org/latest/client-server-api/#mroomtombstone
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedRoomId,
-    events::{
-        EmptyStateKey, PossiblyRedactedStateEventContent, StateEventType, StaticEventContent,
-    },
+use crate::OwnedRoomId;
+use crate::events::{
+    EmptyStateKey, PossiblyRedactedStateEventContent, StateEventType, StaticEventContent,
 };
+use crate::macros::EventContent;
 
 /// The content of an `m.room.tombstone` event.
 ///

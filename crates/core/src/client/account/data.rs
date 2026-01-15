@@ -1,10 +1,8 @@
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    events::{AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent},
-    serde::RawJson,
-};
+use crate::events::{AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent};
+use crate::serde::RawJson;
 
 /// Response type for the `get_global_account_data` endpoint.
 #[derive(ToSchema, Serialize, Debug)]

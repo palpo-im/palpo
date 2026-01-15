@@ -1,5 +1,4 @@
-use crate::core::federation::query::RoomInfoResBody;
-use crate::core::federation::query::directory_request;
+use crate::core::federation::query::{RoomInfoResBody, directory_request};
 use crate::core::identifiers::*;
 use crate::{AppResult, GetUrlOrigin, MatrixError};
 

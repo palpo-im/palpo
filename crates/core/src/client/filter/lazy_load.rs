@@ -1,5 +1,6 @@
 use salvo::prelude::*;
-use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct as _};
+use serde::ser::SerializeStruct as _;
+use serde::{Deserialize, Serialize, Serializer};
 
 /// Specifies options for [lazy-loading membership events][lazy-loading] on
 /// supported endpoints

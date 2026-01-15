@@ -1,7 +1,6 @@
 //! Endpoints for handling keys for end-to-end encryption
 use std::collections::BTreeMap;
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use salvo::prelude::*;
 

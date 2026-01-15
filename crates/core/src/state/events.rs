@@ -6,22 +6,19 @@ pub(crate) mod member;
 pub(crate) mod power_levels;
 mod third_party_invite;
 
-pub use self::{
-    create::RoomCreateEvent,
-    join_rules::RoomJoinRulesEvent,
-    member::RoomMemberEvent,
-    power_levels::{RoomPowerLevelsEvent, RoomPowerLevelsIntField},
-    third_party_invite::RoomThirdPartyInviteEvent,
-};
+use std::borrow::Borrow;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
+use std::sync::Arc;
 
-use std::{
-    borrow::Borrow,
-    fmt::{Debug, Display},
-    hash::Hash,
-    sync::Arc,
-};
-
-use crate::{EventId, RoomId, UnixMillis, UserId, events::TimelineEventType, serde::RawJsonValue};
+pub use self::create::RoomCreateEvent;
+pub use self::join_rules::RoomJoinRulesEvent;
+pub use self::member::RoomMemberEvent;
+pub use self::power_levels::{RoomPowerLevelsEvent, RoomPowerLevelsIntField};
+pub use self::third_party_invite::RoomThirdPartyInviteEvent;
+use crate::events::TimelineEventType;
+use crate::serde::RawJsonValue;
+use crate::{EventId, RoomId, UnixMillis, UserId};
 
 /// Abstraction of a PDU so users can have their own PDU types.
 pub trait Event: Debug {

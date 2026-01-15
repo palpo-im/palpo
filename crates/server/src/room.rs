@@ -168,14 +168,14 @@ pub fn update_currents(room_id: &RoomId) -> AppResult<()> {
 
     let current = DbRoomCurrent {
         room_id: room_id.to_owned(),
-        state_events: 0, //TODO: fixme
+        state_events: 0, // TODO: fixme
         joined_members,
         invited_members,
         left_members,
         banned_members,
         knocked_members,
-        local_users_in_room: 0,       //TODO: fixme
-        completed_delta_stream_id: 0, //TODO: fixme
+        local_users_in_room: 0,       // TODO: fixme
+        completed_delta_stream_id: 0, // TODO: fixme
     };
     diesel::insert_into(stats_room_currents::table)
         .values(&current)

@@ -8,8 +8,7 @@ use crate::{AppError, AppResult, IsRemoteOrLocal, config, membership};
 #[admin_command_dispatch]
 #[derive(Debug, Subcommand)]
 pub(crate) enum RoomModerationCommand {
-    /// - Bans a room from local users joining and evicts all our local users
-    ///   (including server
+    /// - Bans a room from local users joining and evicts all our local users (including server
     /// admins)
     ///   from the room. Also blocks any invites (local and remote) for the
     ///   banned room, and disables federation entirely with it.
@@ -19,9 +18,8 @@ pub(crate) enum RoomModerationCommand {
         room: OwnedRoomOrAliasId,
     },
 
-    /// - Bans a list of rooms (room IDs and room aliases) from a newline
-    ///   delimited codeblock similar to `user deactivate-all`. Applies the same
-    ///   steps as ban-room
+    /// - Bans a list of rooms (room IDs and room aliases) from a newline delimited codeblock
+    ///   similar to `user deactivate-all`. Applies the same steps as ban-room
     BanListOfRooms,
 
     /// - Unbans a room to allow local users to join again

@@ -4,7 +4,8 @@ use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, value::to_raw_value};
+use serde_json::json;
+use serde_json::value::to_raw_value;
 use ulid::Ulid;
 
 use crate::core::client::filter::RoomEventFilter;
@@ -21,15 +22,15 @@ use crate::core::events::{
 };
 use crate::core::identifiers::*;
 use crate::core::room_version_rules::RoomIdFormatVersion;
-use crate::core::serde::to_canonical_object;
 use crate::core::serde::{
     CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, default_false,
+    to_canonical_object, to_canonical_value, validate_canonical_json,
 };
-use crate::core::serde::{to_canonical_value, validate_canonical_json};
 use crate::core::state::{StateError, event_auth};
 use crate::core::{Seqnum, UnixMillis, UserId};
+use crate::data::connect;
 use crate::data::room::{DbEventData, NewDbEvent};
-use crate::data::{connect, schema::*};
+use crate::data::schema::*;
 use crate::event::{BatchToken, SeqnumQueueGuard};
 use crate::room::timeline::get_pdu;
 use crate::room::{get_state, state};
@@ -370,7 +371,8 @@ pub struct PduEvent {
     pub unsigned: BTreeMap<String, Box<RawJsonValue>>,
     pub hashes: EventHash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signatures: Option<Box<RawJsonValue>>, // BTreeMap<Box<ServerName>, BTreeMap<ServerSigningKeyId, String>>
+    pub signatures: Option<Box<RawJsonValue>>, /* BTreeMap<Box<ServerName>,
+                                                * BTreeMap<ServerSigningKeyId, String>> */
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_data: BTreeMap<String, JsonValue>,
 
@@ -704,8 +706,8 @@ impl PduEvent {
         // if let Some(url_filter) = &filter.url_filter {
         //     match url_filter {
         //         UrlFilter::EventsWithUrl => if !self.events::contains_url.eq(true)),
-        //         UrlFilter::EventsWithoutUrl => query = query.filter(events::contains_url.eq(false)),
-        //     }
+        //         UrlFilter::EventsWithoutUrl => query =
+        // query.filter(events::contains_url.eq(false)),     }
         // }
 
         true

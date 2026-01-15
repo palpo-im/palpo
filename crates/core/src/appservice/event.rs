@@ -12,17 +12,17 @@ use reqwest::Url;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::events::AnyTimelineEvent;
 use crate::events::presence::PresenceEvent;
 use crate::events::receipt::ReceiptEvent;
 use crate::events::typing::TypingEvent;
 #[cfg(feature = "unstable-msc4203")]
 use crate::events::{AnyToDeviceEvent, AnyToDeviceEventContent, ToDeviceEventType};
-use crate::{
-    OwnedDeviceId, OwnedUserId, UserId,
-    events::AnyTimelineEvent,
-    sending::{SendRequest, SendResult},
-    serde::{JsonCastable, JsonObject, JsonValue, RawJson, RawJsonValue, from_raw_json_value},
+use crate::sending::{SendRequest, SendResult};
+use crate::serde::{
+    JsonCastable, JsonObject, JsonValue, RawJson, RawJsonValue, from_raw_json_value,
 };
+use crate::{OwnedDeviceId, OwnedUserId, UserId};
 
 // /// `PUT /_matrix/app/*/transactions/{txn_id}`
 // ///
@@ -76,8 +76,8 @@ pub struct PushEventsReqBody {
     //     skip_serializing_if = "BTreeMap::is_empty",
     //     rename = "org.matrix.msc3202.device_one_time_keys_count"
     // )]
-    // pub device_one_time_keys_count: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, BTreeMap<DeviceKeyAlgorithm,
-    // u64>>>,
+    // pub device_one_time_keys_count: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId,
+    // BTreeMap<DeviceKeyAlgorithm, u64>>>,
 
     // /// A list of key algorithms for which the server has an unused fallback key for the
     // /// device.
@@ -86,7 +86,8 @@ pub struct PushEventsReqBody {
     //     skip_serializing_if = "BTreeMap::is_empty",
     //     rename = "org.matrix.msc3202.device_unused_fallback_key_types"
     // )]
-    // pub device_unused_fallback_key_types: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, Vec<DeviceKeyAlgorithm>>>,
+    // pub device_unused_fallback_key_types: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId,
+    // Vec<DeviceKeyAlgorithm>>>,
 
     // /// A list of EDUs.
     // #[serde(

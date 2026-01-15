@@ -6,11 +6,10 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::value::to_raw_value;
 
-use crate::core::client::membership::MembershipEventFilter;
 use crate::core::client::membership::{
     BanUserReqBody, InvitationRecipient, InviteUserReqBody, JoinRoomReqBody, JoinRoomResBody,
     JoinedMembersResBody, JoinedRoomsResBody, KickUserReqBody, LeaveRoomReqBody, MembersReqArgs,
-    MembersResBody, RoomMember, UnbanUserReqBody,
+    MembersResBody, MembershipEventFilter, RoomMember, UnbanUserReqBody,
 };
 use crate::core::client::room::{KnockReqArgs, KnockReqBody};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
@@ -166,8 +165,8 @@ pub(super) fn joined_members(
     //     if let Ok(leave_sn) = crate::room::user::leave_sn(sender_id, &room_id) {
     //         Some(leave_sn)
     //     } else {
-    //         return Err(MatrixError::forbidden("you don't have permission to view this room", None).into());
-    //     }
+    //         return Err(MatrixError::forbidden("you don't have permission to view this room",
+    // None).into());     }
     // } else {
     //     None
     // };
@@ -210,7 +209,8 @@ pub(crate) async fn joined_rooms(
 /// #POST /_matrix/client/r0/rooms/{room_id}/forget
 /// Forgets about a room.
 ///
-/// - If the sender user currently left the room: Stops sender user from receiving information about the room
+/// - If the sender user currently left the room: Stops sender user from receiving information about
+///   the room
 ///
 /// Note: Other devices of the user have no way of knowing the room was forgotten, so this has to
 /// be called from every device
@@ -348,7 +348,8 @@ pub(crate) async fn join_room_by_id_or_alias(
     //
     // When serializing, this field is mapped to both `server_name` and `via` with identical values.
     //
-    // When deserializing, the value is read from `via` if it's not missing or empty and `server_name` otherwise.
+    // When deserializing, the value is read from `via` if it's not missing or empty and
+    // `server_name` otherwise.
     let via = via
         .into_inner()
         .unwrap_or_else(|| server_name.into_inner().unwrap_or_default());
@@ -476,7 +477,8 @@ pub(super) async fn ban_user(
             .get_content::<RoomMemberEventContent>()
             .map_err(|_| AppError::internal("invalid member event in database."))?;
 
-        // If they are already banned and the reason is unchanged, there isn't any point in sending a new event.
+        // If they are already banned and the reason is unchanged, there isn't any point in sending
+        // a new event.
         if event.membership == MembershipState::Ban && event.reason == body.reason {
             return empty_ok();
         }

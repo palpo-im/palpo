@@ -1,18 +1,16 @@
 use salvo::oapi::ToSchema;
 use serde::Serialize;
 
-use crate::{
-    events::{
-        EphemeralRoomEventContent, EphemeralRoomEventType, EventContentFromType,
-        GlobalAccountDataEventContent, GlobalAccountDataEventType, MessageLikeEventContent,
-        MessageLikeEventType, MessageLikeUnsigned, PossiblyRedactedStateEventContent,
-        RedactContent, RedactedMessageLikeEventContent, RedactedStateEventContent,
-        RoomAccountDataEventContent, RoomAccountDataEventType, StateEventContent, StateEventType,
-        StaticStateEventContent, ToDeviceEventContent, ToDeviceEventType,
-    },
-    room_version_rules::RedactionRules,
-    serde::RawJsonValue,
+use crate::events::{
+    EphemeralRoomEventContent, EphemeralRoomEventType, EventContentFromType,
+    GlobalAccountDataEventContent, GlobalAccountDataEventType, MessageLikeEventContent,
+    MessageLikeEventType, MessageLikeUnsigned, PossiblyRedactedStateEventContent, RedactContent,
+    RedactedMessageLikeEventContent, RedactedStateEventContent, RoomAccountDataEventContent,
+    RoomAccountDataEventType, StateEventContent, StateEventType, StaticStateEventContent,
+    ToDeviceEventContent, ToDeviceEventType,
 };
+use crate::room_version_rules::RedactionRules;
+use crate::serde::RawJsonValue;
 
 macro_rules! custom_event_content {
     ($i:ident, $evt:ident) => {

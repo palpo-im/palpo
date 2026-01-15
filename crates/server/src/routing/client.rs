@@ -31,14 +31,12 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
 use crate::config;
-use crate::core::client::discovery::{
-    capabilities::{
-        Capabilities, CapabilitiesResBody, ChangePasswordCapability, RoomVersionStability,
-        RoomVersionsCapability, SetAvatarUrlCapability, SetDisplayNameCapability,
-        ThirdPartyIdChangesCapability,
-    },
-    versions::VersionsResBody,
+use crate::core::client::discovery::capabilities::{
+    Capabilities, CapabilitiesResBody, ChangePasswordCapability, RoomVersionStability,
+    RoomVersionsCapability, SetAvatarUrlCapability, SetDisplayNameCapability,
+    ThirdPartyIdChangesCapability,
 };
+use crate::core::client::discovery::versions::VersionsResBody;
 use crate::core::client::search::{ResultCategories, SearchReqArgs, SearchReqBody, SearchResBody};
 use crate::routing::prelude::*;
 

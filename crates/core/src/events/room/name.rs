@@ -2,11 +2,11 @@
 //!
 //! [`m.room.name`]: https://spec.matrix.org/latest/client-server-api/#mroomname
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::events::EmptyStateKey;
+use crate::macros::EventContent;
 
 /// The content of an `m.room.name` event.
 ///

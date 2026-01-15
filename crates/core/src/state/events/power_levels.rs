@@ -1,26 +1,22 @@
 //! Types to deserialize `m.room.power_levels` events.
 
-use std::{
-    collections::{BTreeMap, HashSet},
-    ops::Deref,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::collections::{BTreeMap, HashSet};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde_json::{Error, from_value as from_json_value};
 
 use super::Event;
-use crate::events::{TimelineEventType, room::power_levels::UserPowerLevel};
-use crate::state::{StateError, StateResult};
-use crate::{
-    OwnedUserId, UserId,
-    room_version_rules::AuthorizationRules,
-    serde::{
-        DebugAsRefStr, DisplayAsRefStr, EqAsRefStr, JsonObject, OrdAsRefStr,
-        btreemap_deserialize_v1_power_level_values, deserialize_v1_power_level,
-        from_raw_json_value,
-    },
+use crate::events::TimelineEventType;
+use crate::events::room::power_levels::UserPowerLevel;
+use crate::room_version_rules::AuthorizationRules;
+use crate::serde::{
+    DebugAsRefStr, DisplayAsRefStr, EqAsRefStr, JsonObject, OrdAsRefStr,
+    btreemap_deserialize_v1_power_level_values, deserialize_v1_power_level, from_raw_json_value,
 };
+use crate::state::{StateError, StateResult};
+use crate::{OwnedUserId, UserId};
 
 /// The default value of the creator's power level.
 const DEFAULT_CREATOR_POWER_LEVEL: i32 = 100;

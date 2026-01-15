@@ -26,15 +26,18 @@ use crate::{AuthArgs, DepotExt, JsonResult, json_ok};
 /// not in the state at `since`
 /// - If the state we send contains a member event: Joined and invited member counts, heroes
 /// - Device list updates that happened after `since`
-/// - If there are events in the timeline we send or the user send updated his read mark: Notification counts
+/// - If there are events in the timeline we send or the user send updated his read mark:
+///   Notification counts
 /// - EDUs that are active now (read receipts, typing updates, presence)
 /// - TODO: Allow multiple sync streams to support Pantalaimon
 ///
 /// For invited rooms:
-/// - If the user was invited after `since`: A subset of the state of the room at the point of the invite
+/// - If the user was invited after `since`: A subset of the state of the room at the point of the
+///   invite
 ///
 /// For left rooms:
-/// - If the user left after `since`: prev_batch token, empty state (TODO: subset of the state at the point of the leave)
+/// - If the user left after `since`: prev_batch token, empty state (TODO: subset of the state at
+///   the point of the leave)
 ///
 /// - Sync is handled in an async task, multiple requests from the same device with the same
 /// `since` will be cached

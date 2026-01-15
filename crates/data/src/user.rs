@@ -23,11 +23,11 @@ pub mod session;
 pub use session::*;
 pub mod external_id;
 pub mod presence;
-pub use external_id::*;
 use std::mem;
 
 use diesel::dsl;
 use diesel::prelude::*;
+pub use external_id::*;
 pub use presence::*;
 
 use crate::core::events::AnyStrippedStateEvent;

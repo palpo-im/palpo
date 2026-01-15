@@ -2,10 +2,12 @@ use std::fmt::Debug;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-use base64::{Engine as _, engine::general_purpose};
+use base64::Engine as _;
+use base64::engine::general_purpose;
 use diesel::prelude::*;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
+use reqwest_retry::RetryTransientMiddleware;
+use reqwest_retry::policies::ExponentialBackoff;
 use serde::Deserialize;
 use serde_json::value::to_raw_value;
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -71,7 +73,7 @@ impl OutgoingKind {
     pub fn name(&self) -> &'static str {
         match self {
             OutgoingKind::Appservice(_) => "appservice",
-            OutgoingKind::Push(_, _) => "push",
+            OutgoingKind::Push(..) => "push",
             OutgoingKind::Normal(_) => "normal",
         }
     }
@@ -338,7 +340,10 @@ async fn send_events(
                         ),
                     )
                 })?;
-            let req_body = PushEventsReqBody { events: pdu_jsons, to_device: vec![] };
+            let req_body = PushEventsReqBody {
+                events: pdu_jsons,
+                to_device: vec![],
+            };
 
             let txn_id = &*general_purpose::URL_SAFE_NO_PAD.encode(utils::hash_keys(
                 events.iter().filter_map(|e| match e {
@@ -723,8 +728,8 @@ pub fn convert_to_outgoing_federation_event(
     // TODO: another option would be to convert it to a canonical string to validate size
     // and return a Result<RawJson<...>>
     // serde_json::from_str::<RawJson<_>>(
-    //     crate::core::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is valid serde_json::Value"),
-    // )
+    //     crate::core::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is valid
+    // serde_json::Value"), )
     // .expect("RawJson::from_value always works")
 
     to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")

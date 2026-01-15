@@ -10,10 +10,10 @@ use std::time::Duration;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::PrivOwnedStr;
-use crate::UnixMillis;
-use crate::events::{Mentions, relation::Reference};
+use crate::events::Mentions;
+use crate::events::relation::Reference;
 use crate::macros::{EventContent, StringEnum};
+use crate::{PrivOwnedStr, UnixMillis};
 
 /// The content of an `m.rtc.notification` event.
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize, EventContent)]

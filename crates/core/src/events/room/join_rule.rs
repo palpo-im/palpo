@@ -2,13 +2,12 @@
 //!
 //! [`m.room.join_rules`]: https://spec.matrix.org/latest/client-server-api/#mroomjoin_rules
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, de::Deserializer};
+use serde::de::Deserializer;
+use serde::{Deserialize, Serialize};
 
+use crate::events::EmptyStateKey;
 use crate::macros::EventContent;
-use crate::{
-    events::EmptyStateKey,
-    room::{AllowRule, JoinRule, Restricted},
-};
+use crate::room::{AllowRule, JoinRule, Restricted};
 
 /// The content of an `m.room.join_rules` event.
 ///

@@ -1,4 +1,5 @@
-use crate::{Error, error::VoipVersionIdError};
+use crate::Error;
+use crate::error::VoipVersionIdError;
 
 pub fn validate(u: u64) -> Result<(), Error> {
     if u != 0 {

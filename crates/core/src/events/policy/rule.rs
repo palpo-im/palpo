@@ -7,7 +7,8 @@ pub mod user;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{PrivOwnedStr, serde::StringEnum};
+use crate::PrivOwnedStr;
+use crate::serde::StringEnum;
 
 /// The payload for policy rule events.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

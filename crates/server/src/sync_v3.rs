@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use indexmap::IndexMap;
 use state::DbRoomStateField;
@@ -19,9 +20,9 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::serde::RawJson;
 use crate::core::{Seqnum, UnixMillis};
-use crate::data::{connect, schema::*};
-use crate::event::BatchToken;
-use crate::event::{EventHash, PduEvent, SnPduEvent};
+use crate::data::connect;
+use crate::data::schema::*;
+use crate::event::{BatchToken, EventHash, PduEvent, SnPduEvent};
 use crate::room::{state, timeline};
 use crate::{AppError, AppResult, config, data, extract_variant, room};
 
@@ -178,7 +179,8 @@ pub async fn sync_events(
                             .is_ok()
                     })
                     .all(|encrypted| !encrypted);
-            // If the user doesn't share an encrypted room with the target anymore, we need to tell them.
+            // If the user doesn't share an encrypted room with the target anymore, we need to tell
+            // them.
             if dont_share_encrypted_room {
                 device_list_left.insert(user_id);
             }
@@ -193,7 +195,8 @@ pub async fn sync_events(
                         .is_ok()
                 })
                 .all(|encrypted| !encrypted);
-        // If the user doesn't share an encrypted room with the target anymore, we need to tell them.
+        // If the user doesn't share an encrypted room with the target anymore, we need to tell
+        // them.
         if dont_share_encrypted_room {
             device_list_left.insert(user_id);
         }
@@ -403,8 +406,8 @@ async fn load_joined_room(
                 let mut heroes = Vec::new();
 
                 if joined_member_count + invited_member_count <= 5 {
-                    // Go through all PDUs and for each member event, check if the user is still joined or
-                    // invited until we have 5 or we reach the end
+                    // Go through all PDUs and for each member event, check if the user is still
+                    // joined or invited until we have 5 or we reach the end
                     for hero in timeline::stream::load_all_pdus(Some(sender_id), room_id, until_tk)?
                         .into_iter() // Ignore all broken pdus
                         .filter(|(_, pdu)| pdu.event_ty == TimelineEventType::RoomMember)
@@ -472,7 +475,8 @@ async fn load_joined_room(
                         ..
                     } = state::get_field(state_key_id)?;
 
-                    // skip room name type is just for pass TestSyncOmitsStateChangeOnFilteredEvents test
+                    // skip room name type is just for pass TestSyncOmitsStateChangeOnFilteredEvents
+                    // test
                     if timeline_pdu_ids.contains(&event_id) && event_ty != StateEventType::RoomName
                     {
                         continue;
@@ -514,7 +518,8 @@ async fn load_joined_room(
 
                 // Reset lazy loading because this is an initial sync
                 room::lazy_loading::lazy_load_reset(sender_id, device_id, room_id)?;
-                // The state_events above should contain all timeline_users, let's mark them as lazy loaded.
+                // The state_events above should contain all timeline_users, let's mark them as lazy
+                // loaded.
                 room::lazy_loading::lazy_load_mark_sent(
                     sender_id,
                     device_id,
@@ -533,10 +538,13 @@ async fn load_joined_room(
                 // })
                 // .collect();
                 device_list_updates.extend(
-                    joined_users.clone().into_iter(), // .filter(|user_id| {
-                                                      // Only send keys if the sender doesn't share an encrypted room with the target already
-                                                      // !share_encrypted_room(sender_id, user_id, &room_id).unwrap_or(false)
-                                                      // }),
+                    joined_users.clone().into_iter(), /* .filter(|user_id| {
+                                                       * Only send keys if the sender doesn't
+                                                       * share an encrypted room with the target
+                                                       * already
+                                                       * !share_encrypted_room(sender_id,
+                                                       * user_id, &room_id).unwrap_or(false)
+                                                       * }), */
                 );
                 (
                     heroes,
@@ -690,10 +698,12 @@ async fn load_joined_room(
                             .filter(|user_id| {
                                 // Don't send key updates from the sender to the sender
                                 sender_id != user_id
-                            }), // .filter(|user_id| {
-                                // Only send keys if the sender doesn't share an encrypted room with the target already
-                                // !share_encrypted_room(sender_id, user_id, &room_id).unwrap_or(false)
-                                // }),
+                            }), /* .filter(|user_id| {
+                                 * Only send keys if the sender doesn't share an encrypted room
+                                 * with the target already
+                                 * !share_encrypted_room(sender_id, user_id,
+                                 * &room_id).unwrap_or(false)
+                                 * }), */
                     );
                 }
 

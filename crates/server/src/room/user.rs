@@ -14,7 +14,8 @@ use crate::data::room::{DbEventPushSummary, DbRoomTag, NewDbRoomTag};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
-use crate::{AppResult, MatrixError, OptionalExtension, exts::*};
+use crate::exts::*;
+use crate::{AppResult, MatrixError, OptionalExtension};
 
 #[derive(Debug, Clone)]
 pub struct UserNotifySummary {

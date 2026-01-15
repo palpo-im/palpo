@@ -34,12 +34,12 @@ impl RtcDeclineEventContent {
 
 #[cfg(test)]
 mod tests {
-    use crate::owned_event_id;
     use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::RtcDeclineEventContent;
     use crate::events::{AnyMessageLikeEvent, MessageLikeEvent};
+    use crate::owned_event_id;
 
     #[test]
     fn decline_event_serialization() {

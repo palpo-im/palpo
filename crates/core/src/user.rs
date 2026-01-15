@@ -1,10 +1,9 @@
 use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedMxcUri, OwnedRoomId, OwnedUserId, PrivOwnedStr, events::GlobalAccountDataEventType,
-    serde::StringEnum,
-};
+use crate::events::GlobalAccountDataEventType;
+use crate::serde::StringEnum;
+use crate::{OwnedMxcUri, OwnedRoomId, OwnedUserId, PrivOwnedStr};
 
 /// Profile fields to specify in query.
 ///

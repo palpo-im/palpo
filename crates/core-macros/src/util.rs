@@ -1,9 +1,10 @@
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use syn::{
-    Attribute, Field, Ident, LitStr, meta::ParseNestedMeta, punctuated::Punctuated, visit::Visit,
-};
+use syn::meta::ParseNestedMeta;
+use syn::punctuated::Punctuated;
+use syn::visit::Visit;
+use syn::{Attribute, Field, Ident, LitStr};
 
 pub(crate) struct NameSpace;
 impl NameSpace {

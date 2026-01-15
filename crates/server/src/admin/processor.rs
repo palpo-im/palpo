@@ -1,35 +1,29 @@
-use std::{
-    fmt::Write,
-    mem::take,
-    panic::AssertUnwindSafe,
-    sync::{Arc, Mutex},
-    time::SystemTime,
-};
+use std::fmt::Write;
+use std::mem::take;
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use clap::{CommandFactory, Parser};
-use futures_util::{AsyncWriteExt, future::FutureExt, io::BufWriter};
+use futures_util::AsyncWriteExt;
+use futures_util::future::FutureExt;
+use futures_util::io::BufWriter;
 use tracing::Level;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 
 use crate::admin::{
     AdminCommand, CommandInput, CommandOutput, Context, ProcessorFuture, ProcessorResult,
 };
-use crate::core::{
-    EventId,
-    events::{
-        relation::InReplyTo,
-        room::message::{Relation::Reply, RoomMessageEventContent},
-    },
-};
-use crate::{
-    AppError, AppResult, config,
-    logging::{
-        capture,
-        capture::Capture,
-        fmt::{markdown_table, markdown_table_head},
-    },
-    utils::string::{collect_stream, common_prefix},
-};
+use crate::core::EventId;
+use crate::core::events::relation::InReplyTo;
+use crate::core::events::room::message::Relation::Reply;
+use crate::core::events::room::message::RoomMessageEventContent;
+use crate::logging::capture;
+use crate::logging::capture::Capture;
+use crate::logging::fmt::{markdown_table, markdown_table_head};
+use crate::utils::string::{collect_stream, common_prefix};
+use crate::{AppError, AppResult, config};
 
 #[must_use]
 pub(super) fn complete(line: &str) -> String {

@@ -1,13 +1,11 @@
-use std::{
-    cmp::Ordering,
-    hash::{Hash, Hasher},
-    marker::PhantomData,
-};
+use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 
+use super::crypto_algorithms::SigningKeyAlgorithm;
 use super::{
     Base64PublicKey, Base64PublicKeyOrDeviceId, DeviceId, DeviceKeyAlgorithm, KeyName,
     OneTimeKeyAlgorithm, OneTimeKeyName, ServerSigningKeyVersion,
-    crypto_algorithms::SigningKeyAlgorithm,
 };
 use crate::macros::IdDst;
 
@@ -87,7 +85,7 @@ impl<A: KeyAlgorithm, K: KeyName + ?Sized> KeyId<A, K> {
     /// # Example
     ///
     /// ```
-    /// use palpo_core::{device_id, DeviceKeyId};
+    /// use palpo_core::{DeviceKeyId, device_id};
     ///
     /// let k = DeviceKeyId::parse("ed25519:DEV1").unwrap();
     /// assert_eq!(k.key_name(), device_id!("DEV1"));

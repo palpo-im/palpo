@@ -1,4 +1,5 @@
-use std::{fs::read_to_string, path::PathBuf};
+use std::fs::read_to_string;
+use std::path::PathBuf;
 
 use proc_macro::{Span, TokenStream};
 use quote::quote;

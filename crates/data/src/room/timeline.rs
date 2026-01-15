@@ -32,10 +32,7 @@ pub fn get_pdus_by_room(
         query = query.order(events::sn.asc());
     }
 
-    query
-        .limit(limit)
-        .load(&mut connect()?)
-        .map_err(Into::into)
+    query.limit(limit).load(&mut connect()?).map_err(Into::into)
 }
 
 /// Get PDU by timestamp
@@ -64,8 +61,5 @@ pub fn get_pdu_by_timestamp(
             .order(events::origin_server_ts.asc());
     }
 
-    query
-        .first(&mut connect()?)
-        .optional()
-        .map_err(Into::into)
+    query.first(&mut connect()?).optional().map_err(Into::into)
 }

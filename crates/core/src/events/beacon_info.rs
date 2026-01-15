@@ -5,11 +5,12 @@
 
 use std::time::{Duration, SystemTime};
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedUserId, UnixMillis, events::location::AssetContent};
+use crate::events::location::AssetContent;
+use crate::macros::EventContent;
+use crate::{OwnedUserId, UnixMillis};
 
 /// The content of a beacon_info state.
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize, EventContent)]

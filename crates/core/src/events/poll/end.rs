@@ -1,18 +1,15 @@
 //! Types for the `m.poll.end` event.
 
-use std::{
-    collections::{BTreeMap, btree_map},
-    ops::Deref,
-};
+use std::collections::{BTreeMap, btree_map};
+use std::ops::Deref;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedEventId,
-    events::{message::TextContentBlock, relation::Reference},
-};
+use crate::OwnedEventId;
+use crate::events::message::TextContentBlock;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
 
 /// The payload for a poll end event.
 ///

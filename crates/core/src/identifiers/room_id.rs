@@ -2,9 +2,8 @@
 
 use diesel::expression::AsExpression;
 
-use super::{
-    MatrixToUri, MatrixUri, OwnedEventId, OwnedServerName, ServerName, matrix_uri::UriAction,
-};
+use super::matrix_uri::UriAction;
+use super::{MatrixToUri, MatrixUri, OwnedEventId, OwnedServerName, ServerName};
 use crate::macros::IdDst;
 use crate::{IdParseError, RoomOrAliasId};
 
@@ -15,7 +14,10 @@ use crate::{IdParseError, RoomOrAliasId};
 ///
 /// ```
 /// # use palpo_core::RoomId;
-/// assert_eq!(<&RoomId>::try_from("!n8f893n9:example.com").unwrap(), "!n8f893n9:example.com");
+/// assert_eq!(
+///     <&RoomId>::try_from("!n8f893n9:example.com").unwrap(),
+///     "!n8f893n9:example.com"
+/// );
 /// ```
 ///
 /// [room ID]: https://spec.matrix.org/latest/appendices/#room-ids
@@ -85,7 +87,9 @@ impl RoomId {
     /// use palpo_core::{room_id, server_name};
     ///
     /// assert_eq!(
-    ///     room_id!("!somewhere:example.org").matrix_to_uri().to_string(),
+    ///     room_id!("!somewhere:example.org")
+    ///         .matrix_to_uri()
+    ///         .to_string(),
     ///     "https://matrix.to/#/!somewhere:example.org"
     /// );
     /// ```
@@ -109,7 +113,10 @@ impl RoomId {
     ///
     /// assert_eq!(
     ///     room_id!("!somewhere:example.org")
-    ///         .matrix_to_uri_via([&*server_name!("example.org"), &*server_name!("alt.example.org")])
+    ///         .matrix_to_uri_via([
+    ///             &*server_name!("example.org"),
+    ///             &*server_name!("alt.example.org")
+    ///         ])
     ///         .to_string(),
     ///     "https://matrix.to/#/!somewhere:example.org?via=example.org&via=alt.example.org"
     /// );
@@ -168,7 +175,9 @@ impl RoomId {
     /// use palpo_core::{room_id, server_name};
     ///
     /// assert_eq!(
-    ///     room_id!("!somewhere:example.org").matrix_uri(false).to_string(),
+    ///     room_id!("!somewhere:example.org")
+    ///         .matrix_uri(false)
+    ///         .to_string(),
     ///     "matrix:roomid/somewhere:example.org"
     /// );
     /// ```
@@ -195,7 +204,10 @@ impl RoomId {
     /// assert_eq!(
     ///     room_id!("!somewhere:example.org")
     ///         .matrix_uri_via(
-    ///             [&*server_name!("example.org"), &*server_name!("alt.example.org")],
+    ///             [
+    ///                 &*server_name!("example.org"),
+    ///                 &*server_name!("alt.example.org")
+    ///             ],
     ///             true
     ///         )
     ///         .to_string(),

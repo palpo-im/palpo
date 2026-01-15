@@ -26,11 +26,10 @@ pub struct MediaConfig {
     pub freeze_legacy: bool,
 
     /// Check consistency of the media directory at startup:
-    /// 1. When `media_compat_file_link` is enabled, this check will upgrade
-    ///    media when switching back and forth between Conduit and palpo.
-    ///    Both options must be enabled to handle this.
-    /// 2. When media is deleted from the directory, this check will also delete
-    ///    its database entry.
+    /// 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
+    ///    back and forth between Conduit and palpo. Both options must be enabled to handle this.
+    /// 2. When media is deleted from the directory, this check will also delete its database
+    ///    entry.
     ///
     /// If none of these checks apply to your use cases, and your media
     /// directory is significantly large setting this to false may reduce

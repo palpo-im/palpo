@@ -2,13 +2,17 @@
 //!
 //! [`m.tag`]: https://spec.matrix.org/latest/client-server-api/#mtag
 
-use std::{collections::BTreeMap, error::Error, fmt, str::FromStr};
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
+use std::str::FromStr;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{PrivOwnedStr, serde::deserialize_cow_str};
+use crate::PrivOwnedStr;
+use crate::macros::EventContent;
+use crate::serde::deserialize_cow_str;
 
 /// Map of tag names to tag info.
 pub type Tags = BTreeMap<TagName, TagInfo>;

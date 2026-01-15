@@ -73,7 +73,7 @@ async fn check_federation_enabled() -> AppResult<()> {
 
 #[endpoint]
 async fn get_versions(_aa: AuthArgs) -> EmptyResult {
-    //TODO: https://github.com/matrix-org/matrix-spec-proposals/pull/3723
+    // TODO: https://github.com/matrix-org/matrix-spec-proposals/pull/3723
     empty_ok()
 }
 /// #GET /_matrix/federation/v1/version

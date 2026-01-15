@@ -2,16 +2,14 @@
 //!
 //! [`m.room.create`]: https://spec.matrix.org/latest/client-server-api/#mroomcreate
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::events::{EmptyStateKey, RedactContent, RedactedStateEventContent, StateEventType};
+use crate::macros::EventContent;
+use crate::room::RoomType;
 use crate::room_version_rules::RedactionRules;
-use crate::{
-    OwnedRoomId, OwnedUserId, RoomVersionId,
-    events::{EmptyStateKey, RedactContent, RedactedStateEventContent, StateEventType},
-    room::RoomType,
-};
+use crate::{OwnedRoomId, OwnedUserId, RoomVersionId};
 
 /// The content of an `m.room.create` event.
 ///
@@ -146,10 +144,10 @@ fn default_room_version_id() -> RoomVersionId {
 ///
 /// The redaction rules of this event changed with room version 11:
 ///
-/// - In room versions 1 through 10, the `creator` field was preserved during
-///   redaction, starting from room version 11 the field is removed.
-/// - In room versions 1 through 10, all the other fields were redacted,
-///   starting from room version 11 all the fields are preserved.
+/// - In room versions 1 through 10, the `creator` field was preserved during redaction, starting
+///   from room version 11 the field is removed.
+/// - In room versions 1 through 10, all the other fields were redacted, starting from room version
+///   11 all the fields are preserved.
 pub type RedactedRoomCreateEventContent = RoomCreateEventContent;
 
 impl RedactedStateEventContent for RedactedRoomCreateEventContent {

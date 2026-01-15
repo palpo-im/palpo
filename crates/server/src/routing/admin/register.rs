@@ -24,7 +24,8 @@ pub fn router() -> Router {
 struct AvailableResBody {
     available: bool,
 }
-/// An admin API to check if a given username is available, regardless of whether registration is enabled.
+/// An admin API to check if a given username is available, regardless of whether registration is
+/// enabled.
 #[endpoint]
 fn check_username_available(
     _aa: AuthArgs,

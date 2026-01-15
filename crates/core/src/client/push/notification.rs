@@ -7,7 +7,10 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedRoomId, UnixMillis, events::AnySyncTimelineEvent, push::Action, serde::RawJson};
+use crate::events::AnySyncTimelineEvent;
+use crate::push::Action;
+use crate::serde::RawJson;
+use crate::{OwnedRoomId, UnixMillis};
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,

@@ -1,9 +1,8 @@
 mod cmd;
-use cmd::*;
-
 use std::path::PathBuf;
 
 use clap::Subcommand;
+use cmd::*;
 
 use crate::AppResult;
 use crate::macros::admin_command_dispatch;

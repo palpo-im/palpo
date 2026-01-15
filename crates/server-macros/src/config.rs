@@ -1,17 +1,21 @@
-use std::{collections::HashSet, fmt::Write as _, fs::OpenOptions, io::Write as _};
+use std::collections::HashSet;
+use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, quote};
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{
     Error, Expr, ExprLit, Field, Fields, FieldsNamed, ItemStruct, Lit, Meta, MetaList,
-    MetaNameValue, Type, TypePath, parse::Parser, punctuated::Punctuated, spanned::Spanned,
+    MetaNameValue, Type, TypePath,
 };
 
-use crate::{
-    Result,
-    utils::{get_simple_settings, is_cargo_build, is_cargo_test},
-};
+use crate::Result;
+use crate::utils::{get_simple_settings, is_cargo_build, is_cargo_test};
 
 const UNDOCUMENTED: &str = "# This item is undocumented. Please contribute documentation for it.";
 

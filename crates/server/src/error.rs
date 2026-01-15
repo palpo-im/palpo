@@ -7,9 +7,9 @@ use salvo::http::{StatusCode, StatusError};
 use salvo::oapi::{self, EndpointOutRegister, ToSchema};
 use salvo::prelude::{Depot, Request, Response, Writer};
 use thiserror::Error;
+
 // use crate::User;
 // use crate::DepotExt;
-
 use crate::core::MatrixError;
 use crate::core::events::room::power_levels::PowerLevelsError;
 use crate::core::state::StateError;

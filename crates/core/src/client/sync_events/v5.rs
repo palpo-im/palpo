@@ -5,27 +5,27 @@
 //!
 //! [MSC]: https://github.com/matrix-org/matrix-doc/blob/kegan/sync-v3/proposals/3575-sync.md
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use salvo::prelude::*;
-use serde::{Deserialize, Serialize, de::Error as _};
+use serde::de::Error as _;
+use serde::{Deserialize, Serialize};
 
 use super::UnreadNotificationsCount;
 use crate::device::DeviceLists;
+use crate::directory::RoomTypeFilter;
 use crate::events::receipt::SyncReceiptEvent;
 use crate::events::typing::SyncTypingEvent;
-use crate::events::{AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, AnyToDeviceEvent};
-use crate::{
-    OwnedMxcUri, Seqnum,
-    directory::RoomTypeFilter,
-    events::{AnyStrippedStateEvent, AnySyncStateEvent, AnySyncTimelineEvent, StateEventType},
-    identifiers::*,
-    serde::{RawJson, deserialize_cow_str, duration::opt_ms},
-    state::TypeStateKey,
+use crate::events::{
+    AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, AnyStrippedStateEvent, AnySyncStateEvent,
+    AnySyncTimelineEvent, AnyToDeviceEvent, StateEventType,
 };
+use crate::identifiers::*;
+use crate::serde::duration::opt_ms;
+use crate::serde::{RawJson, deserialize_cow_str};
+use crate::state::TypeStateKey;
+use crate::{OwnedMxcUri, Seqnum};
 
 #[derive(Copy, Clone, Debug)]
 pub struct SyncInfo<'a> {

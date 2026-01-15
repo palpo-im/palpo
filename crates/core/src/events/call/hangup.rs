@@ -2,11 +2,12 @@
 //!
 //! [`m.call.hangup`]: https://spec.matrix.org/latest/client-server-api/#mcallhangup
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedVoipId, PrivOwnedStr, VoipVersionId, serde::StringEnum};
+use crate::macros::EventContent;
+use crate::serde::StringEnum;
+use crate::{OwnedVoipId, PrivOwnedStr, VoipVersionId};
 
 /// The content of an `m.call.hangup` event.
 ///

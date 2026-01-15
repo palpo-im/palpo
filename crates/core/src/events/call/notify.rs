@@ -2,12 +2,12 @@
 //!
 //! [MSC4075]: https://github.com/matrix-org/matrix-spec-proposals/pull/4075
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::member::Application;
 use crate::events::Mentions;
+use crate::macros::EventContent;
 
 /// The content of an `m.call.notify` event.
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize, EventContent)]

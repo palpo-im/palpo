@@ -7,8 +7,7 @@ use crate::core::OwnedDeviceId;
 use crate::core::client::device::{
     DeleteDeviceReqBody, DeleteDevicesReqBody, DeviceResBody, DevicesResBody, UpdatedDeviceReqBody,
 };
-use crate::core::client::uiaa::AuthError;
-use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+use crate::core::client::uiaa::{AuthError, AuthFlow, AuthType, UiaaInfo};
 use crate::core::error::ErrorKind;
 use crate::data::connect;
 use crate::data::schema::*;
@@ -225,7 +224,7 @@ async fn delete_devices(
 
 #[endpoint]
 pub(super) async fn dehydrated(_aa: AuthArgs) -> EmptyResult {
-    //TODO: Later
+    // TODO: Later
     empty_ok()
 }
 
@@ -238,6 +237,6 @@ pub(super) async fn delete_dehydrated(_aa: AuthArgs, depot: &mut Depot) -> Empty
 
 #[endpoint]
 pub(super) async fn upsert_dehydrated(_aa: AuthArgs) -> EmptyResult {
-    //TODO: Later
+    // TODO: Later
     empty_ok()
 }

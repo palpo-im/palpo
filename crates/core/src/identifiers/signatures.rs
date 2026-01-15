@@ -1,8 +1,6 @@
-use std::{
-    borrow::Borrow,
-    collections::BTreeMap,
-    ops::{Deref, DerefMut},
-};
+use std::borrow::Borrow;
+use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};

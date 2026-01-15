@@ -10,12 +10,12 @@
 // https://github.com/rust-lang/rust-clippy/issues/9029
 #![allow(clippy::derive_partial_eq_without_eq)]
 
-use proc_macro::TokenStream;
-use quote::quote;
 use palpo_identifiers_validation::{
     base64_public_key, event_id, mxc_uri, room_alias_id, room_id, room_version_id, server_name,
     server_signing_key_version, user_id,
 };
+use proc_macro::TokenStream;
+use quote::quote;
 use syn::{DeriveInput, ItemEnum, ItemStruct, parse_macro_input};
 
 mod events;
@@ -23,22 +23,21 @@ mod identifiers;
 mod serde;
 mod util;
 
-use self::{
-    events::{
-        event::expand_event,
-        event_content::expand_event_content,
-        event_enum::{EventEnumInput, expand_event_enum},
-        event_enum_from_event::expand_event_enum_from_event,
-    },
-    identifiers::{constructor::IdentifierConstructor, id_dst::expand_id_dst},
-    serde::{
-        as_str_as_ref_str::expand_as_str_as_ref_str, debug_as_ref_str::expand_debug_as_ref_str,
-        deserialize_from_cow_str::expand_deserialize_from_cow_str,
-        display_as_ref_str::expand_display_as_ref_str, enum_as_ref_str::expand_enum_as_ref_str,
-        enum_from_string::expand_enum_from_string, eq_as_ref_str::expand_eq_as_ref_str,
-        ord_as_ref_str::expand_ord_as_ref_str, serialize_as_ref_str::expand_serialize_as_ref_str,
-    },
-};
+use self::events::event::expand_event;
+use self::events::event_content::expand_event_content;
+use self::events::event_enum::{EventEnumInput, expand_event_enum};
+use self::events::event_enum_from_event::expand_event_enum_from_event;
+use self::identifiers::constructor::IdentifierConstructor;
+use self::identifiers::id_dst::expand_id_dst;
+use self::serde::as_str_as_ref_str::expand_as_str_as_ref_str;
+use self::serde::debug_as_ref_str::expand_debug_as_ref_str;
+use self::serde::deserialize_from_cow_str::expand_deserialize_from_cow_str;
+use self::serde::display_as_ref_str::expand_display_as_ref_str;
+use self::serde::enum_as_ref_str::expand_enum_as_ref_str;
+use self::serde::enum_from_string::expand_enum_from_string;
+use self::serde::eq_as_ref_str::expand_eq_as_ref_str;
+use self::serde::ord_as_ref_str::expand_ord_as_ref_str;
+use self::serde::serialize_as_ref_str::expand_serialize_as_ref_str;
 
 /// Generates enums to represent the various Matrix event types.
 ///
@@ -439,9 +438,9 @@ pub fn derive_from_event_to_enum(input: TokenStream) -> TokenStream {
 ///
 /// This macro generates an `Owned*` wrapper type for the identifier type. This wrapper type is
 /// variable, by default it'll use [`Box`], but it can be changed at compile time
-/// by setting `--cfg=palpo_identifiers_storage=...` using `RUSTFLAGS` or `.cargo/config.toml` (under
-/// `[build]` -> `rustflags = ["..."]`). Currently the only supported value is `Arc`, that uses
-/// [`Arc`](std::sync::Arc) as a wrapper type.
+/// by setting `--cfg=palpo_identifiers_storage=...` using `RUSTFLAGS` or `.cargo/config.toml`
+/// (under `[build]` -> `rustflags = ["..."]`). Currently the only supported value is `Arc`, that
+/// uses [`Arc`](std::sync::Arc) as a wrapper type.
 ///
 /// This macro implements:
 ///
@@ -568,7 +567,6 @@ pub fn base64_public_key(input: TokenStream) -> TokenStream {
 /// The enum can contain unit variants, or tuple or struct variants containing a single field
 /// which is a newtype struct around a type implementing `Deref` with a `Target` of `str`.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/palpo_enum_attributes.md"))]
-///
 /// ## Example
 ///
 /// ```
@@ -606,9 +604,9 @@ pub fn derive_enum_as_ref_str(input: TokenStream) -> TokenStream {
 /// variants to be converted to it. If there is a difference of case, it will match the fallback
 /// variant instead.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/palpo_enum_attributes.md"))]
-/// * `#[palpo_enum(alias = "value")]` - Allow this variant to be converted from a string that is not
-///   its main string representation, which is `value`. This attribute can be used several times to
-///   match more strings.
+/// * `#[palpo_enum(alias = "value")]` - Allow this variant to be converted from a string that is
+///   not its main string representation, which is `value`. This attribute can be used several times
+///   to match more strings.
 ///
 /// _Note that for this macro, there is no difference between `rename` and `alias`. It only matters
 /// when used with [`AsRefStr`]._
@@ -726,9 +724,9 @@ pub fn derive_eq_as_ref_str(input: TokenStream) -> TokenStream {
 ///   representation of a unit variants to be converted to it. If there is a difference of case, it
 ///   will match the fallback variant instead.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/palpo_enum_attributes.md"))]
-/// * `#[palpo_enum(alias = "value")]` - Allow this variant to be converted from a string that is not
-///   its main string representation, which is `value`. This attribute can be used several times to
-///   match more strings.
+/// * `#[palpo_enum(alias = "value")]` - Allow this variant to be converted from a string that is
+///   not its main string representation, which is `value`. This attribute can be used several times
+///   to match more strings.
 ///
 /// ## Example
 ///

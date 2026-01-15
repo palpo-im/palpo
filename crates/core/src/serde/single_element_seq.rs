@@ -1,9 +1,7 @@
 //! De-/serialization functions to and from single element sequences.
 
-use serde::{
-    de::{Deserialize, Deserializer},
-    ser::{Serialize, Serializer},
-};
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Serialize, Serializer};
 
 /// Serialize the given value as a list of just that value.
 pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>

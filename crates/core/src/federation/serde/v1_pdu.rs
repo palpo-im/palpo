@@ -8,12 +8,11 @@
 //!
 //! [issue]: https://github.com/matrix-org/matrix-spec-proposals/issues/2541
 
-use std::{fmt, marker::PhantomData};
+use std::fmt;
+use std::marker::PhantomData;
 
-use serde::{
-    de::{Deserialize, Deserializer, Error, IgnoredAny, SeqAccess, Visitor},
-    ser::{Serialize, SerializeSeq, Serializer},
-};
+use serde::de::{Deserialize, Deserializer, Error, IgnoredAny, SeqAccess, Visitor};
+use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 pub(crate) fn serialize<T, S>(val: &T, serializer: S) -> Result<S::Ok, S::Error>
 where

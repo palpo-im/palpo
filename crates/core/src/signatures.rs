@@ -46,16 +46,15 @@
 //! verify the signatures and hashes on an event, use the `verify_event`
 //! function. See the documentation for these respective functions for more
 //! details and full examples of use.
-pub use self::{
-    error::{Error, JsonError, ParseError, VerificationError},
-    functions::{
-        canonical_json, content_hash, hash_and_sign_event, reference_hash, required_keys,
-        sign_json, verify_canonical_json_bytes, verify_event, verify_json,
-    },
-    keys::{Ed25519KeyPair, KeyPair, PublicKeyMap, PublicKeySet},
-    verification::Verified,
+pub use self::error::{Error, JsonError, ParseError, VerificationError};
+pub use self::functions::{
+    canonical_json, content_hash, hash_and_sign_event, reference_hash, required_keys, sign_json,
+    verify_canonical_json_bytes, verify_event, verify_json,
 };
-use crate::serde::{Base64, base64::Standard};
+pub use self::keys::{Ed25519KeyPair, KeyPair, PublicKeyMap, PublicKeySet};
+pub use self::verification::Verified;
+use crate::serde::Base64;
+use crate::serde::base64::Standard;
 use crate::{AnyKeyName, IdParseError, OwnedSigningKeyId, SigningKeyAlgorithm, SigningKeyId};
 
 mod error;

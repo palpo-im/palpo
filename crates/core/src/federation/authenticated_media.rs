@@ -2,8 +2,9 @@
 //!
 //! [MSC3916]: https://github.com/matrix-org/matrix-spec-proposals/pull/3916
 
-use crate::http_headers::ContentDisposition;
 use serde::{Deserialize, Serialize};
+
+use crate::http_headers::ContentDisposition;
 
 pub mod get_content;
 pub mod get_content_thumbnail;
@@ -157,8 +158,7 @@ impl Content {
 // ) -> Result<
 //     (ContentMetadata, FileOrLocation),
 //     crate::api::error::FromHttpResponseError<crate::api::error::MatrixError>,
-// > {
-//     use crate::api::error::{HeaderDeserializationError, MultipartMixedDeserializationError};
+// > { use crate::api::error::{HeaderDeserializationError, MultipartMixedDeserializationError};
 
 //     // First, get the boundary from the content type header.
 //     let body_content_type = http_response
@@ -221,8 +221,8 @@ impl Content {
 //     let (_raw_metadata_headers, serialized_metadata) =
 //         parse_multipart_body_part(body, metadata_start, metadata_end)?;
 
-//     // Don't search for anything in the headers, just deserialize the content that should be JSON.
-//     let metadata = serde_json::from_slice(serialized_metadata)?;
+//     // Don't search for anything in the headers, just deserialize the content that should be
+// JSON.     let metadata = serde_json::from_slice(serialized_metadata)?;
 
 //     // Look at the part containing the media content now.
 //     let content_start = metadata_end + full_boundary.len();
@@ -234,7 +234,8 @@ impl Content {
 //                 found: 1,
 //             })?;
 
-//     let (raw_content_headers, file) = parse_multipart_body_part(body, content_start, content_end)?;
+//     let (raw_content_headers, file) = parse_multipart_body_part(body, content_start,
+// content_end)?;
 
 //     // Parse the headers to retrieve the content type and content disposition.
 //     let mut content_headers = [httparse::EMPTY_HEADER; MAX_HEADERS_COUNT];
@@ -286,8 +287,8 @@ impl Content {
 
 // /// Parse the multipart body part in the given bytes, starting and ending at the given positions.
 // ///
-// /// Returns a `(headers_bytes, content_bytes)` tuple. Returns an error if the separation between the
-// /// headers and the content could not be found.
+// /// Returns a `(headers_bytes, content_bytes)` tuple. Returns an error if the separation between
+// the /// headers and the content could not be found.
 // #[cfg(feature = "client")]
 // fn parse_multipart_body_part(
 //     bytes: &[u8],
@@ -296,8 +297,8 @@ impl Content {
 // ) -> Result<(&[u8], &[u8]), crate::api::error::MultipartMixedDeserializationError> {
 //     use crate::api::error::MultipartMixedDeserializationError;
 
-//     // The part should start with a newline after the boundary. We need to ignore characters before
-//     // it in case of extra whitespaces, and for compatibility it might not have a CR.
+//     // The part should start with a newline after the boundary. We need to ignore characters
+// before     // it in case of extra whitespaces, and for compatibility it might not have a CR.
 //     let headers_start = memchr::memchr(b'\n', &bytes[start..end])
 //         .expect("the end boundary contains a newline")
 //         + start
@@ -417,8 +418,8 @@ impl Content {
 //     #[test]
 //     fn multipart_mixed_deserialize_invalid() {
 //         // Missing boundary in headers.
-//         let body = "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
+//         let body = "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome
+// plain text\r\n--abcdef--";         let response = http::Response::builder()
 //             .header(http::header::CONTENT_TYPE, "multipart/mixed")
 //             .body(body)
 //             .unwrap();
@@ -426,8 +427,8 @@ impl Content {
 //         try_from_multipart_mixed_response(response).unwrap_err();
 
 //         // Wrong boundary.
-//         let body = "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
+//         let body = "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome
+// plain text\r\n--abcdef--";         let response = http::Response::builder()
 //             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=012345",
@@ -439,8 +440,8 @@ impl Content {
 
 //         // Missing boundary in body.
 //         let body =
-//             "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome plain text";
-//         let response = http::Response::builder()
+//             "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome plain
+// text";         let response = http::Response::builder()
 //             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
@@ -451,8 +452,8 @@ impl Content {
 //         try_from_multipart_mixed_response(response).unwrap_err();
 
 //         // Missing header and content empty line separator in body part.
-//         let body = "\r\n--abcdef\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
+//         let body = "\r\n--abcdef\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\n\r\nsome plain
+// text\r\n--abcdef--";         let response = http::Response::builder()
 //             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
@@ -463,8 +464,9 @@ impl Content {
 //         try_from_multipart_mixed_response(response).unwrap_err();
 
 //         // Control character in header.
-//         let body = "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type: text/plain\r\nContent-Disposition: inline; filename=\"my\nfile\"\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
+//         let body = "\r\n--abcdef\r\n\r\n{}\r\n--abcdef\r\nContent-Type:
+// text/plain\r\nContent-Disposition: inline; filename=\"my\nfile\"\r\nsome plain
+// text\r\n--abcdef--";         let response = http::Response::builder()
 //             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
@@ -490,8 +492,9 @@ impl Content {
 //     #[test]
 //     fn multipart_mixed_deserialize_valid() {
 //         // Simple.
-//         let body = "\r\n--abcdef\r\ncontent-type: application/json\r\n\r\n{}\r\n--abcdef\r\ncontent-type: text/plain\r\n\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
+//         let body = "\r\n--abcdef\r\ncontent-type:
+// application/json\r\n\r\n{}\r\n--abcdef\r\ncontent-type: text/plain\r\n\r\nsome plain
+// text\r\n--abcdef--";         let response = http::Response::builder()
 //             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
@@ -507,9 +510,10 @@ impl Content {
 //         assert_eq!(file_content.content_disposition, None);
 
 //         // Case-insensitive headers.
-//         let body = "\r\n--abcdef\r\nCONTENT-type: application/json\r\n\r\n{}\r\n--abcdef\r\nCONTENT-TYPE: text/plain\r\ncoNtenT-disPosItioN: attachment; filename=my_file.txt\r\n\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
-//             .header(
+//         let body = "\r\n--abcdef\r\nCONTENT-type:
+// application/json\r\n\r\n{}\r\n--abcdef\r\nCONTENT-TYPE: text/plain\r\ncoNtenT-disPosItioN:
+// attachment; filename=my_file.txt\r\n\r\nsome plain text\r\n--abcdef--";         let response =
+// http::Response::builder()             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
 //             )
@@ -529,9 +533,9 @@ impl Content {
 //         assert_eq!(content_disposition.filename.unwrap(), "my_file.txt");
 
 //         // Extra whitespace.
-//         let body = "   \r\n--abcdef\r\ncontent-type:   application/json   \r\n\r\n {} \r\n--abcdef\r\ncontent-type: text/plain  \r\n\r\nsome plain text\r\n--abcdef--  ";
-//         let response = http::Response::builder()
-//             .header(
+//         let body = "   \r\n--abcdef\r\ncontent-type:   application/json   \r\n\r\n {}
+// \r\n--abcdef\r\ncontent-type: text/plain  \r\n\r\nsome plain text\r\n--abcdef--  ";         let
+// response = http::Response::builder()             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
 //             )
@@ -546,8 +550,8 @@ impl Content {
 //         assert_eq!(file_content.content_disposition, None);
 
 //         // Missing CR except in boundaries.
-//         let body = "\r\n--abcdef\ncontent-type: application/json\n\n{}\r\n--abcdef\ncontent-type: text/plain  \n\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
+//         let body = "\r\n--abcdef\ncontent-type: application/json\n\n{}\r\n--abcdef\ncontent-type:
+// text/plain  \n\nsome plain text\r\n--abcdef--";         let response = http::Response::builder()
 //             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
@@ -616,9 +620,10 @@ impl Content {
 //         assert_eq!(file_content.content_disposition, None);
 
 //         // Raw UTF-8 filename (some kind of compatibility with multipart/form-data).
-//         let body = "\r\n--abcdef\r\ncontent-type: application/json\r\n\r\n{}\r\n--abcdef\r\ncontent-type: text/plain\r\ncontent-disposition: inline; filename=\"ȵ⌾Ⱦԩ💈Ňɠ\"\r\n\r\nsome plain text\r\n--abcdef--";
-//         let response = http::Response::builder()
-//             .header(
+//         let body = "\r\n--abcdef\r\ncontent-type:
+// application/json\r\n\r\n{}\r\n--abcdef\r\ncontent-type: text/plain\r\ncontent-disposition:
+// inline; filename=\"ȵ⌾Ⱦԩ💈Ňɠ\"\r\n\r\nsome plain text\r\n--abcdef--";         let response =
+// http::Response::builder()             .header(
 //                 http::header::CONTENT_TYPE,
 //                 "multipart/mixed; boundary=abcdef",
 //             )

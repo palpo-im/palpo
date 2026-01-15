@@ -1,11 +1,13 @@
 //! Types to deserialize `m.room.third_party_invite` events.
 
-use std::{collections::BTreeSet, ops::Deref};
+use std::collections::BTreeSet;
+use std::ops::Deref;
 
 use serde::Deserialize;
 
+use crate::serde::from_raw_json_value;
 use crate::state::Event;
-use crate::{serde::from_raw_json_value, third_party_invite::IdentityServerBase64PublicKey};
+use crate::third_party_invite::IdentityServerBase64PublicKey;
 
 /// A helper type for an [`Event`] of type `m.room.third_party_invite`.
 ///

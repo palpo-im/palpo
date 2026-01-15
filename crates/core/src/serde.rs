@@ -6,15 +6,14 @@
 //!
 //! [serde_urlencoded]: https://github.com/nox/serde_urlencoded
 
-use std::{fmt, marker::PhantomData};
+use std::fmt;
+use std::marker::PhantomData;
 
-use serde::{
-    Deserialize, Deserializer,
-    de::{self, SeqAccess, DeserializeOwned, Visitor},
-};
-pub use serde_json::{
-    json,
-    value::{RawValue as RawJsonValue, Value as JsonValue, to_raw_value as to_raw_json_value},
+use serde::de::{self, DeserializeOwned, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+pub use serde_json::json;
+pub use serde_json::value::{
+    RawValue as RawJsonValue, Value as JsonValue, to_raw_value as to_raw_json_value,
 };
 
 pub mod base64;
@@ -34,18 +33,16 @@ pub use canonical_json::{
     to_canonical_object, to_canonical_value, validate_canonical_json,
 };
 
-pub use self::{
-    base64::{Base64, Base64DecodeError},
-    buf::{json_to_buf, slice_to_buf},
-    can_be_empty::{CanBeEmpty, is_empty},
-    cow::deserialize_cow_str,
-    raw_json::{JsonCastable, RawJson},
-    strings::{
-        btreemap_deserialize_v1_power_level_values, deserialize_as_f64_or_string,
-        deserialize_as_optional_f64_or_string, deserialize_v1_power_level, empty_string_as_none,
-        none_as_empty_string, vec_deserialize_int_power_level_values,
-        vec_deserialize_v1_power_level_values,
-    },
+pub use self::base64::{Base64, Base64DecodeError};
+pub use self::buf::{json_to_buf, slice_to_buf};
+pub use self::can_be_empty::{CanBeEmpty, is_empty};
+pub use self::cow::deserialize_cow_str;
+pub use self::raw_json::{JsonCastable, RawJson};
+pub use self::strings::{
+    btreemap_deserialize_v1_power_level_values, deserialize_as_f64_or_string,
+    deserialize_as_optional_f64_or_string, deserialize_v1_power_level, empty_string_as_none,
+    none_as_empty_string, vec_deserialize_int_power_level_values,
+    vec_deserialize_v1_power_level_values,
 };
 
 /// The inner type of [`JsonValue::Object`].
@@ -137,10 +134,12 @@ where
         }
     };
 
-    Ok(from_raw_json_value(&value).unwrap_or_else(|error: D::Error| {
-        debug!("deserialization error, using default value: {error}");
-        T::default()
-    }))
+    Ok(
+        from_raw_json_value(&value).unwrap_or_else(|error: D::Error| {
+            debug!("deserialization error, using default value: {error}");
+            T::default()
+        }),
+    )
 }
 
 /// Helper function for ignoring invalid items in a `Vec`, instead letting them cause the entire

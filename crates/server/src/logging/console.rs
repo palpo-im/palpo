@@ -1,18 +1,13 @@
-use std::{env, io, sync::LazyLock};
+use std::sync::LazyLock;
+use std::{env, io};
 
-use tracing::{
-    Event, Subscriber,
-    field::{Field, Visit},
-};
-use tracing_subscriber::{
-    field::RecordFields,
-    fmt,
-    fmt::{
-        FmtContext, FormatEvent, FormatFields, MakeWriter,
-        format::{Compact, DefaultVisitor, Format, Json, Pretty, Writer},
-    },
-    registry::LookupSpan,
-};
+use tracing::field::{Field, Visit};
+use tracing::{Event, Subscriber};
+use tracing_subscriber::field::RecordFields;
+use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::format::{Compact, DefaultVisitor, Format, Json, Pretty, Writer};
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, MakeWriter};
+use tracing_subscriber::registry::LookupSpan;
 
 use crate::config::LoggerConfig;
 

@@ -3,7 +3,8 @@
 use as_variant::as_variant;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
-use syn::{meta::ParseNestedMeta, parse_quote};
+use syn::meta::ParseNestedMeta;
+use syn::parse_quote;
 
 use super::IdDst;
 use crate::util::NameSpace;

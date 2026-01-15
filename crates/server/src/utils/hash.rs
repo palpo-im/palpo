@@ -34,7 +34,7 @@ pub fn hash_data_sha2_256(data: &[u8]) -> Result<Checksum, std::io::Error> {
     Ok(Checksum(digest.as_bytes().to_vec()))
 }
 
-//https://docs.rs/crate/checksums/0.6.0/source/src/hashing/mod.rs
+// https://docs.rs/crate/checksums/0.6.0/source/src/hashing/mod.rs
 pub fn hash_string(bytes: &[u8]) -> String {
     let mut result = String::with_capacity(bytes.len() * 2);
     for b in bytes {

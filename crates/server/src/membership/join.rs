@@ -1,4 +1,3 @@
-
 use std::collections::{BTreeMap, HashMap};
 
 use diesel::prelude::*;
@@ -421,8 +420,8 @@ pub async fn join_room(
     //     warn!("Auth check failed when running send_json auth check: {e}");
     //     MatrixError::invalid_param("Auth check failed when running send_json auth check")
     // })? {
-    //     return Err(MatrixError::invalid_param("Auth check failed when running send_json auth check").into());
-    // }
+    //     return Err(MatrixError::invalid_param("Auth check failed when running send_json auth
+    // check").into()); }
 
     // info!("saving state from send_join");
     // let DeltaInfo {

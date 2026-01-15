@@ -2,11 +2,12 @@
 //!
 //! [`m.room.canonical_alias`]: https://spec.matrix.org/latest/client-server-api/#mroomcanonical_alias
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedRoomAliasId, events::EmptyStateKey};
+use crate::OwnedRoomAliasId;
+use crate::events::EmptyStateKey;
+use crate::macros::EventContent;
 
 /// The content of an `m.room.canonical_alias` event.
 ///

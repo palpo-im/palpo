@@ -1,6 +1,7 @@
 //! System utilities related to compute/processing
 
-use std::{path::PathBuf, sync::LazyLock};
+use std::path::PathBuf;
+use std::sync::LazyLock;
 
 type Id = usize;
 

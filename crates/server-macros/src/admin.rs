@@ -3,7 +3,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, quote};
 use syn::{Error, Fields, Ident, ItemEnum, Meta, Variant};
 
-use crate::{Result, utils::camel_to_snake_string};
+use crate::Result;
+use crate::utils::camel_to_snake_string;
 
 pub(super) fn command_dispatch(item: ItemEnum, _args: &[Meta]) -> Result<TokenStream> {
     let name = &item.ident;

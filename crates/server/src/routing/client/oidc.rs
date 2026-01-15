@@ -9,8 +9,8 @@
 //! accounts from external identity providers (Google, GitHub, etc.), eliminating
 //! the need for separate Matrix passwords. The implementation supports both:
 //! - Standard OIDC providers (Google) with discovery endpoints
-//! - Pure OAuth 2.0 providers (GitHub) with custom user info endpoints
-//!   Both follow the OAuth 2.0 Authorization Code flow with optional PKCE support.
+//! - Pure OAuth 2.0 providers (GitHub) with custom user info endpoints Both follow the OAuth 2.0
+//!   Authorization Code flow with optional PKCE support.
 //!
 //! ## Authentication Flow Diagram
 //!
@@ -108,22 +108,19 @@
 //! - Google user john@gmail.com → `@john_456789:server`
 //! - No username/email → `@user_123456:server`
 
+use std::collections::HashMap;
+
 use cookie::time::Duration;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::collections::HashMap;
 use url::Url;
 
-use crate::{
-    AppResult, JsonResult,
-    config::{self, OidcProviderConfig},
-    core::{MatrixError, OwnedDeviceId, UnixMillis},
-    data,
-    data::user::DbUser,
-    exts::*,
-    json_ok,
-};
+use crate::config::{self, OidcProviderConfig};
+use crate::core::{MatrixError, OwnedDeviceId, UnixMillis};
+use crate::data::user::DbUser;
+use crate::exts::*;
+use crate::{AppResult, JsonResult, data, json_ok};
 
 /// OIDC session state for tracking authentication flow
 ///
@@ -358,7 +355,8 @@ fn generate_random_string(length: usize) -> String {
 /// Returns (code_verifier, code_challenge) tuple
 /// Implements proper SHA256 hashing as required by OAuth 2.0 PKCE spec
 fn generate_pkce_challenge() -> (String, String) {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     // Generate 128-bit random verifier (43-128 characters per RFC 7636)
     let code_verifier = generate_random_string(96);
@@ -461,14 +459,14 @@ async fn discover_provider_endpoints(
 /// selected OIDC provider for authentication. This is step 1 of the OIDC flow.
 ///
 /// ## Request Parameters
-/// - `provider` (optional): Name of the OIDC provider to use. If not specified,
-///   uses the default provider from configuration.
+/// - `provider` (optional): Name of the OIDC provider to use. If not specified, uses the default
+///   provider from configuration.
 ///
 /// ## Security Features
-/// - **CSRF Protection**: Generates a random `state` parameter and stores it in
-///   an HTTP-only cookie for validation on callback.
-/// - **PKCE Support**: Optionally generates code_verifier/code_challenge for
-///   enhanced security (enabled by default).
+/// - **CSRF Protection**: Generates a random `state` parameter and stores it in an HTTP-only cookie
+///   for validation on callback.
+/// - **PKCE Support**: Optionally generates code_verifier/code_challenge for enhanced security
+///   (enabled by default).
 /// - **Secure Cookies**: Uses appropriate security flags for production deployment.
 ///
 /// ## Response
@@ -621,7 +619,7 @@ pub async fn oidc_auth(req: &mut Request, res: &mut Response) -> AppResult<()> {
 /// ## Error Handling
 /// Comprehensive error handling for all failure scenarios:
 /// - Invalid/missing parameters → 400 Bad Request
-/// - CSRF token mismatch → 403 Forbidden  
+/// - CSRF token mismatch → 403 Forbidden
 /// - Session expired → 401 Unauthorized
 /// - Provider communication failures → 502 Bad Gateway
 /// - User creation failures → 500 Internal Server Error
@@ -757,7 +755,7 @@ pub async fn oidc_callback(req: &mut Request) -> JsonResult<OidcLoginResponse> {
 /// ## Implementation Status
 /// This endpoint is planned for future implementation and would provide:
 /// - Direct JWT ID token validation
-/// - Mobile app integration support  
+/// - Mobile app integration support
 /// - Reduced redirect-based flow complexity
 /// - Support for native app authentication
 ///
@@ -773,7 +771,6 @@ pub async fn oidc_login(_depot: &mut Depot) -> JsonResult<OidcLoginResponse> {
     Err(MatrixError::unknown("Direct JWT authentication not yet implemented - use authorization code flow via /oidc/auth").into())
 }
 
-//
 // =================== HELPER FUNCTIONS ===================
 //
 
@@ -936,11 +933,12 @@ async fn get_user_info_from_provider(
 
             OidcUserInfo {
                 sub: id.to_string(),
-                email: user_info_response["email"].as_str().map(String::from), // May be None for private emails
+                email: user_info_response["email"].as_str().map(String::from), /* May be None for private emails */
                 name: user_info_response["name"].as_str().map(String::from),
                 picture: user_info_response["avatar_url"].as_str().map(String::from),
-                email_verified: Some(true), // GitHub verifies primary email, but it may not be visible
-                preferred_username: user_info_response["login"].as_str().map(String::from), // GitHub username
+                email_verified: Some(true), /* GitHub verifies primary email, but it may not be
+                                             * visible */
+                preferred_username: user_info_response["login"].as_str().map(String::from), /* GitHub username */
             }
         }
         ProviderType::Google | ProviderType::Generic => {
@@ -1098,10 +1096,11 @@ async fn create_or_get_user(
     user_info: &OidcUserInfo,
     oidc_config: &crate::config::OidcConfig,
 ) -> AppResult<DbUser> {
+    use diesel::prelude::*;
+
     use crate::core::identifiers::UserId;
     use crate::data::connect;
     use crate::data::schema::*;
-    use diesel::prelude::*;
 
     let parsed_user_id = UserId::parse(user_id)
         .map_err(|_| MatrixError::invalid_param("Invalid Matrix user ID format"))?;
@@ -1119,9 +1118,9 @@ async fn create_or_get_user(
         //
         // Alternative: You could add a config option to control this behavior:
         // if oidc_config.update_profile_on_login {
-        //     if let Err(e) = set_user_profile(&exist_user.id, display_name, user_info.picture.as_deref()).await {
-        //         tracing::warn!("Failed to update profile for existing user: {}", e);
-        //     }
+        //     if let Err(e) = set_user_profile(&exist_user.id, display_name,
+        // user_info.picture.as_deref()).await {         tracing::warn!("Failed to update
+        // profile for existing user: {}", e);     }
         // }
 
         return Ok(exist_user);
@@ -1179,9 +1178,10 @@ async fn create_or_get_user(
 /// - Device metadata tracking (user agent, timestamps)
 /// - Proper database transaction handling
 async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResult<String> {
+    use diesel::prelude::*;
+
     use crate::data::connect;
     use crate::data::schema::*;
-    use diesel::prelude::*;
 
     let parsed_device_id: OwnedDeviceId = device_id.into();
 
@@ -1228,7 +1228,6 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
     Ok(access_token)
 }
 
-//
 // =================== DATA STRUCTURES ===================
 //
 

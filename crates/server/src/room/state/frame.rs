@@ -20,7 +20,8 @@ pub struct FrameInfo {
     pub disposed: Arc<CompressedState>,
 }
 
-/// Returns a stack with info on state_hash, full state, added diff and removed diff for the selected state_hash and each parent layer.
+/// Returns a stack with info on state_hash, full state, added diff and removed diff for the
+/// selected state_hash and each parent layer.
 pub fn load_frame_info(frame_id: i64) -> AppResult<Vec<FrameInfo>> {
     if let Some(r) = STATE_INFO_CACHE.lock().unwrap().get_mut(&frame_id) {
         return Ok(r.clone());

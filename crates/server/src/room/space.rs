@@ -5,9 +5,9 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use lru_cache::LruCache;
 
 use crate::core::client::space::SpaceHierarchyRoomsChunk;
+use crate::core::events::StateEventType;
 use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
-use crate::core::events::space::child::HierarchySpaceChildEvent;
-use crate::core::events::{StateEventType, space::child::SpaceChildEventContent};
+use crate::core::events::space::child::{HierarchySpaceChildEvent, SpaceChildEventContent};
 use crate::core::federation::space::{
     HierarchyReqArgs, HierarchyResBody, SpaceHierarchyChildSummary, SpaceHierarchyParentSummary,
     hierarchy_request,
@@ -15,7 +15,8 @@ use crate::core::federation::space::{
 use crate::core::identifiers::*;
 use crate::core::room::{JoinRule, RoomType};
 use crate::core::serde::RawJson;
-use crate::core::{self, OwnedRoomId, RoomId, UserId, space::SpaceRoomJoinRule};
+use crate::core::space::SpaceRoomJoinRule;
+use crate::core::{self, OwnedRoomId, RoomId, UserId};
 use crate::event::handler;
 use crate::room::state;
 use crate::{AppResult, GetUrlOrigin, MatrixError};

@@ -5,7 +5,8 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{message::TextContentBlock, room::message::Relation};
+use super::message::TextContentBlock;
+use super::room::message::Relation;
 use crate::macros::EventContent;
 
 /// The payload for an extensible emote message.

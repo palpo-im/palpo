@@ -4,11 +4,13 @@
 
 use std::collections::BTreeMap;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedTransactionId, events::relation::Reference, serde::Base64};
+use crate::OwnedTransactionId;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
+use crate::serde::Base64;
 
 /// The content of a to-device `m.key.verification.` event.
 ///

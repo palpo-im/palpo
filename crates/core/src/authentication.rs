@@ -2,7 +2,8 @@
 
 use salvo::prelude::*;
 
-use crate::{PrivOwnedStr, serde::StringEnum};
+use crate::PrivOwnedStr;
+use crate::serde::StringEnum;
 
 /// Access token types.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]

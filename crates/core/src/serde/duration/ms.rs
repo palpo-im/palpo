@@ -2,10 +2,8 @@
 //! represented as milliseconds.
 use std::time::Duration;
 
-use serde::{
-    de::{Deserialize, Deserializer},
-    ser::{Error, Serialize, Serializer},
-};
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Error, Serialize, Serializer};
 
 /// Serializes a Duration to an integer representing seconds.
 ///

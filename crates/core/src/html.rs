@@ -14,19 +14,18 @@
 
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-use std::{
-    cell::RefCell,
-    collections::BTreeSet,
-    fmt, io,
-    iter::FusedIterator,
-    rc::{Rc, Weak},
-};
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::iter::FusedIterator;
+use std::rc::{Rc, Weak};
+use std::{fmt, io};
 
 use as_variant::as_variant;
 use html5ever::serialize::{Serialize, SerializeOpts, Serializer, TraversalScope, serialize};
+pub use html5ever::tendril::StrTendril;
 use html5ever::tendril::TendrilSink;
 use html5ever::tree_builder::{NodeOrText, TreeSink};
-pub use html5ever::{Attribute, LocalName, Namespace, Prefix, QualName, tendril::StrTendril};
+pub use html5ever::{Attribute, LocalName, Namespace, Prefix, QualName};
 use html5ever::{ParseOpts, local_name, ns, parse_fragment};
 
 mod helpers;
@@ -34,7 +33,8 @@ mod sanitizer_config;
 
 pub mod matrix;
 
-pub use self::{helpers::*, sanitizer_config::*};
+pub use self::helpers::*;
+pub use self::sanitizer_config::*;
 
 /// What [HTML elements and attributes] should be kept by the sanitizer.
 ///

@@ -1,12 +1,9 @@
 use crate::admin::{Context, get_room_info, parse_active_local_user_id, parse_local_user_id};
-use crate::core::{
-    OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId,
-    events::{
-        RoomAccountDataEventType, StateEventType,
-        room::{power_levels::RoomPowerLevelsEventContent, redaction::RoomRedactionEventContent},
-        tag::{TagEventContent, TagInfo},
-    },
-};
+use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
+use crate::core::events::room::redaction::RoomRedactionEventContent;
+use crate::core::events::tag::{TagEventContent, TagInfo};
+use crate::core::events::{RoomAccountDataEventType, StateEventType};
+use crate::core::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId};
 use crate::room::timeline;
 use crate::user::full_user_deactivate;
 use crate::{

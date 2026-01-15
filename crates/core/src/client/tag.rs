@@ -1,10 +1,8 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedRoomId, OwnedUserId,
-    events::tag::{TagInfo, Tags},
-};
+use crate::events::tag::{TagInfo, Tags};
+use crate::{OwnedRoomId, OwnedUserId};
 
 // /// `GET /_matrix/client/*/user/{user_id}/rooms/{room_id}/tags`
 // ///

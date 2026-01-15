@@ -4,16 +4,14 @@
 
 use std::ops::Deref;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    file::{CaptionContentBlock, EncryptedContent, FileContentBlock},
-    message::TextContentBlock,
-    room::message::Relation,
-};
+use super::file::{CaptionContentBlock, EncryptedContent, FileContentBlock};
+use super::message::TextContentBlock;
+use super::room::message::Relation;
 use crate::OwnedMxcUri;
+use crate::macros::EventContent;
 
 /// The payload for an extensible image message.
 ///

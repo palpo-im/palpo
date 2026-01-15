@@ -3,10 +3,8 @@ use std::borrow::Cow;
 use salvo::oapi::ToSchema;
 use serde::Deserialize;
 
-use crate::{
-    events::relation::{CustomRelation, InReplyTo, RelationType, Replacement, Thread},
-    serde::JsonObject,
-};
+use crate::events::relation::{CustomRelation, InReplyTo, RelationType, Replacement, Thread};
+use crate::serde::JsonObject;
 
 /// Message event relationship.
 #[derive(ToSchema, Deserialize, Clone, Debug)]

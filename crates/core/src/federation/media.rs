@@ -4,17 +4,13 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use reqwest::Url;
-use salvo::{
-    oapi::{ToParameters, ToSchema},
-    prelude::*,
-};
+use salvo::oapi::{ToParameters, ToSchema};
+use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    http_headers::ContentDisposition,
-    media::ResizeMethod,
-    sending::{SendRequest, SendResult},
-};
+use crate::http_headers::ContentDisposition;
+use crate::media::ResizeMethod;
+use crate::sending::{SendRequest, SendResult};
 
 /// The `multipart/mixed` mime "essence".
 const MULTIPART_MIXED: &str = "multipart/mixed";

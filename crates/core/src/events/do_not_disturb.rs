@@ -96,7 +96,8 @@ mod tests {
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::DoNotDisturbEventContent;
-    use crate::events::{AnyGlobalAccountDataEvent, do_not_disturb::DoNotDisturbRoomKey};
+    use crate::events::AnyGlobalAccountDataEvent;
+    use crate::events::do_not_disturb::DoNotDisturbRoomKey;
     use crate::owned_room_id;
 
     #[test]

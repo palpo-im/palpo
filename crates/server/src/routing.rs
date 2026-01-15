@@ -9,22 +9,22 @@ use salvo::serve_static::StaticDir;
 use url::Url;
 
 use crate::core::MatrixError;
-use crate::core::client::discovery::{
-    client::{ClientResBody, HomeServerInfo},
-    support::{Contact, SupportResBody},
-};
+use crate::core::client::discovery::client::{ClientResBody, HomeServerInfo};
+use crate::core::client::discovery::support::{Contact, SupportResBody};
 use crate::core::federation::directory::ServerResBody;
 use crate::{AppResult, JsonResult, config, hoops, json_ok};
 
 pub mod prelude {
+    pub use salvo::prelude::*;
+
     pub use crate::core::MatrixError;
     pub use crate::core::identifiers::*;
     pub use crate::core::serde::{JsonValue, RawJson};
+    pub use crate::exts::*;
     pub use crate::{
         AppError, AppResult, AuthArgs, DepotExt, EmptyResult, JsonResult, OptionalExtension,
-        config, empty_ok, exts::*, hoops, json_ok,
+        config, empty_ok, hoops, json_ok,
     };
-    pub use salvo::prelude::*;
 }
 
 pub fn root() -> Router {

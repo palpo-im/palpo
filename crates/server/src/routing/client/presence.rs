@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use salvo::oapi::extract::JsonBody;
-use salvo::oapi::extract::*;
+use salvo::oapi::extract::{JsonBody, *};
 use salvo::prelude::*;
 
 use crate::core::OwnedUserId;

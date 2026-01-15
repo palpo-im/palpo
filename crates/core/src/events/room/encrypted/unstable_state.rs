@@ -2,10 +2,11 @@
 //!
 //! [msc]: https://github.com/matrix-org/matrix-spec-proposals/pull/4362
 use palpo_core_macros::EventContent;
-use serde::{Deserialize, Serialize};use salvo::oapi::ToSchema;
+use salvo::oapi::ToSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::events::{PossiblyRedactedStateEventContent, StateEventType, StaticEventContent};
 use crate::events::room::encrypted::EncryptedEventScheme;
+use crate::events::{PossiblyRedactedStateEventContent, StateEventType, StaticEventContent};
 
 /// The content of an `m.room.encrypted` state event.
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize, EventContent)]

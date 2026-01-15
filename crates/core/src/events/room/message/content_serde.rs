@@ -2,14 +2,10 @@
 
 use serde::{Deserialize, de};
 
-use super::{
-    MessageType, RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
-    relation_serde::deserialize_relation,
-};
-use crate::{
-    events::Mentions,
-    serde::{RawJsonValue, from_raw_json_value},
-};
+use super::relation_serde::deserialize_relation;
+use super::{MessageType, RoomMessageEventContent, RoomMessageEventContentWithoutRelation};
+use crate::events::Mentions;
+use crate::serde::{RawJsonValue, from_raw_json_value};
 
 impl<'de> Deserialize<'de> for RoomMessageEventContent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -89,14 +85,10 @@ impl<'de> Deserialize<'de> for MessageType {
 pub(in super::super) mod msc3488 {
     use serde::{Deserialize, Serialize};
 
-    use crate::{
-        UnixMillis,
-        events::{
-            location::{AssetContent, LocationContent},
-            message::MessageContentBlock,
-            room::message::{LocationInfo, LocationMessageEventContent},
-        },
-    };
+    use crate::UnixMillis;
+    use crate::events::location::{AssetContent, LocationContent};
+    use crate::events::message::MessageContentBlock;
+    use crate::events::room::message::{LocationInfo, LocationMessageEventContent};
 
     /// Deserialize helper type for `LocationMessageEventContent` with unstable
     /// fields from msc3488.

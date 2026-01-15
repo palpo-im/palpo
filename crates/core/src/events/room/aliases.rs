@@ -1,14 +1,12 @@
 //! Types for the `m.room.aliases` event.
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedRoomAliasId, OwnedServerName,
-    events::{RedactContent, RedactedStateEventContent, StateEventType, StaticEventContent},
-    room_version_rules::RedactionRules,
-};
+use crate::events::{RedactContent, RedactedStateEventContent, StateEventType, StaticEventContent};
+use crate::macros::EventContent;
+use crate::room_version_rules::RedactionRules;
+use crate::{OwnedRoomAliasId, OwnedServerName};
 
 /// The content of an `m.room.aliases` event.
 ///

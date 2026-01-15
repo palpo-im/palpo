@@ -1,7 +1,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 
-use super::util::{RenameAll, PalpoEnumAttrs, UnitVariant, VariantWithSingleField};
+use super::util::{PalpoEnumAttrs, RenameAll, UnitVariant, VariantWithSingleField};
 
 /// Generate the `From<T> where T: AsRef<str> + Into<Box<str>>` implementation for the given enum.
 pub fn expand_enum_from_string(input: &syn::ItemEnum) -> syn::Result<TokenStream> {

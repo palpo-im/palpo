@@ -2,18 +2,19 @@
 //!
 //! [`m.room.encrypted`]: https://spec.matrix.org/latest/client-server-api/#mroomencrypted
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::message;
-use crate::{
-    OwnedEventId,
-    events::relation::{Annotation, CustomRelation, InReplyTo, Reference, RelationType, Thread},
-    serde::JsonObject,
+use crate::OwnedEventId;
+use crate::events::relation::{
+    Annotation, CustomRelation, InReplyTo, Reference, RelationType, Thread,
 };
+use crate::macros::EventContent;
+use crate::serde::JsonObject;
 
 mod relation_serde;
 #[cfg(feature = "unstable-msc4362")]

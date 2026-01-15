@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::identifiers::*;
 use crate::room::TimestampToEventReqArgs;
 use crate::sending::{SendRequest, SendResult};
-use crate::{Direction, UnixMillis, serde::RawJsonValue};
+use crate::serde::RawJsonValue;
+use crate::{Direction, UnixMillis};
 
 // /// `GET /_matrix/federation/*/timestamp_to_event/{room_id}`
 // ///
@@ -20,9 +21,9 @@ use crate::{Direction, UnixMillis, serde::RawJsonValue};
 //     rate_limited: false,
 //     authentication: ServerSignatures,
 //     history: {
-//         unstable => "/_matrix/federation/unstable/org.matrix.msc3030/timestamp_to_event/:room_id",
-//         1.6 => "/_matrix/federation/v1/timestamp_to_event/:room_id",
-//     }
+//         unstable =>
+// "/_matrix/federation/unstable/org.matrix.msc3030/timestamp_to_event/:room_id",         1.6 =>
+// "/_matrix/federation/v1/timestamp_to_event/:room_id",     }
 // };
 
 pub fn timestamp_to_event_request(

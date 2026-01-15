@@ -2,11 +2,13 @@
 //!
 //! [`m.key.verification.cancel`]: https://spec.matrix.org/latest/client-server-api/#mkeyverificationcancel
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedTransactionId, PrivOwnedStr, events::relation::Reference, serde::StringEnum};
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
+use crate::serde::StringEnum;
+use crate::{OwnedTransactionId, PrivOwnedStr};
 
 /// The content of a to-device `m.key.verification.cancel` event.
 ///

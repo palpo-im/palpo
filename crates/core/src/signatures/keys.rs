@@ -1,20 +1,16 @@
 //! Public and private key pairs.
 
-use std::{
-    collections::BTreeMap,
-    fmt::{Debug, Formatter, Result as FmtResult},
-};
+use std::collections::BTreeMap;
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-use ed25519_dalek::{PUBLIC_KEY_LENGTH, SecretKey, Signer, SigningKey, pkcs8::ALGORITHM_OID};
-use pkcs8::{
-    DecodePrivateKey, EncodePrivateKey, ObjectIdentifier, PrivateKeyInfo, der::zeroize::Zeroizing,
-};
+use ed25519_dalek::pkcs8::ALGORITHM_OID;
+use ed25519_dalek::{PUBLIC_KEY_LENGTH, SecretKey, Signer, SigningKey};
+use pkcs8::der::zeroize::Zeroizing;
+use pkcs8::{DecodePrivateKey, EncodePrivateKey, ObjectIdentifier, PrivateKeyInfo};
 
-use crate::{
-    SigningKeyAlgorithm, SigningKeyId,
-    serde::Base64,
-    signatures::{Error, ParseError, Signature},
-};
+use crate::serde::Base64;
+use crate::signatures::{Error, ParseError, Signature};
+use crate::{SigningKeyAlgorithm, SigningKeyId};
 
 #[cfg(feature = "ring-compat")]
 mod compat;
@@ -104,11 +100,11 @@ impl Ed25519KeyPair {
     ///
     /// # Parameters
     ///
-    /// * document: PKCS#8 v1/v2 DER-formatted document containing the private
-    ///   (and optionally public) key.
-    /// * version: The "version" of the key used for this signature. Versions
-    ///   are used as an identifier to distinguish signatures generated from
-    ///   different keys but using the same algorithm on the same homeserver.
+    /// * document: PKCS#8 v1/v2 DER-formatted document containing the private (and optionally
+    ///   public) key.
+    /// * version: The "version" of the key used for this signature. Versions are used as an
+    ///   identifier to distinguish signatures generated from different keys but using the same
+    ///   algorithm on the same homeserver.
     ///
     /// # Errors
     ///

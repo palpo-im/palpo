@@ -4,10 +4,8 @@
 //!
 //! [MSC3381]: https://github.com/matrix-org/matrix-spec-proposals/pull/3381
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ops::Deref,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Deref;
 
 use indexmap::IndexMap;
 

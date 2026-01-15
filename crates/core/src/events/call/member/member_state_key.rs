@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
 use salvo::oapi::ToSchema;
-use serde::{
-    Serialize, Serializer,
-    de::{self, Deserialize, Deserializer, Unexpected},
-};
+use serde::de::{self, Deserialize, Deserializer, Unexpected};
+use serde::{Serialize, Serializer};
 
 use crate::{OwnedUserId, UserId};
 

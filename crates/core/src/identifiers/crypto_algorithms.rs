@@ -1,9 +1,9 @@
 //! Key algorithms used in Matrix spec.
 
-use crate::macros::StringEnum;
 use salvo::prelude::*;
 
 use crate::PrivOwnedStr;
+use crate::macros::StringEnum;
 
 /// The basic key algorithms in the specification.
 #[derive(ToSchema, Clone, StringEnum)]

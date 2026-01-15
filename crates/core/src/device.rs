@@ -3,13 +3,11 @@ use std::collections::BTreeMap;
 use salvo::prelude::*;
 use serde::{self, Deserialize, Serialize};
 
-use crate::{
-    OwnedDeviceId, OwnedTransactionId, OwnedUserId,
-    encryption::DeviceKeys,
-    events::{AnyToDeviceEventContent, ToDeviceEventType},
-    serde::RawJson,
-    to_device::DeviceIdOrAllDevices,
-};
+use crate::encryption::DeviceKeys;
+use crate::events::{AnyToDeviceEventContent, ToDeviceEventType};
+use crate::serde::RawJson;
+use crate::to_device::DeviceIdOrAllDevices;
+use crate::{OwnedDeviceId, OwnedTransactionId, OwnedUserId};
 
 /// Information on E2E device updates.
 #[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]

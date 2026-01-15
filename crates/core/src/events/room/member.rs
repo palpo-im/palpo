@@ -7,18 +7,15 @@ use std::collections::BTreeMap;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::macros::EventContent;
-use crate::serde::JsonValue;
-use crate::{
-    PrivOwnedStr,
-    events::{
-        AnyStrippedStateEvent, BundledStateRelations, PossiblyRedactedStateEventContent,
-        RedactContent, RedactedStateEventContent, StateEventType, StaticEventContent,
-    },
-    identifiers::*,
-    room_version_rules::RedactionRules,
-    serde::{CanBeEmpty, RawJson, StringEnum},
+use crate::PrivOwnedStr;
+use crate::events::{
+    AnyStrippedStateEvent, BundledStateRelations, PossiblyRedactedStateEventContent, RedactContent,
+    RedactedStateEventContent, StateEventType, StaticEventContent,
 };
+use crate::identifiers::*;
+use crate::macros::EventContent;
+use crate::room_version_rules::RedactionRules;
+use crate::serde::{CanBeEmpty, JsonValue, RawJson, StringEnum};
 
 mod change;
 

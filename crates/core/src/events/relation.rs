@@ -5,13 +5,12 @@
 use std::fmt::Debug;
 
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::AnyMessageLikeEvent;
-use crate::{
-    OwnedEventId, PrivOwnedStr,
-    serde::{JsonObject, RawJson, StringEnum},
-};
+use crate::serde::{JsonObject, RawJson, StringEnum};
+use crate::{OwnedEventId, PrivOwnedStr};
 
 /// Information about the event a [rich reply] is replying to.
 ///

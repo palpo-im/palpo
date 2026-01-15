@@ -1,10 +1,8 @@
 //! De-/serialization functions for `Option<MediaSource>` objects representing a
 //! thumbnail source.
 
-use serde::{
-    Deserialize, Deserializer,
-    ser::{SerializeStruct, Serializer},
-};
+use serde::ser::{SerializeStruct, Serializer};
+use serde::{Deserialize, Deserializer};
 
 use super::{EncryptedFile, MediaSource};
 use crate::OwnedMxcUri;

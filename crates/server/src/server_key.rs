@@ -2,7 +2,8 @@ mod acquire;
 mod request;
 mod verify;
 use std::borrow::Borrow;
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 pub use acquire::*;
 use diesel::prelude::*;
@@ -11,17 +12,18 @@ use serde_json::value::RawValue as RawJsonValue;
 pub use verify::*;
 
 use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
+use crate::core::room_version_rules::RoomVersionRules;
 use crate::core::serde::{Base64, CanonicalJsonObject, JsonValue, RawJson};
 use crate::core::signatures::{self, PublicKeyMap, PublicKeySet};
 use crate::core::{
     OwnedServerSigningKeyId, RoomVersionId, ServerName, ServerSigningKeyId, UnixMillis,
-    room_version_rules::RoomVersionRules,
 };
 use crate::data::connect;
 use crate::data::misc::DbServerSigningKeys;
 use crate::data::schema::*;
+use crate::exts::*;
 use crate::utils::timepoint_from_now;
-use crate::{AppError, AppResult, config, exts::*};
+use crate::{AppError, AppResult, config};
 
 pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;

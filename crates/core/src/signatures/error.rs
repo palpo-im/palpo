@@ -1,12 +1,8 @@
 use thiserror::Error;
 
-use crate::{
-    EventId, OwnedEventId, RoomVersionId,
-    serde::{
-        Base64DecodeError,
-        canonical_json::{JsonType, RedactionError},
-    },
-};
+use crate::serde::Base64DecodeError;
+use crate::serde::canonical_json::{JsonType, RedactionError};
+use crate::{EventId, OwnedEventId, RoomVersionId};
 
 /// `palpo-signature`'s error type, wraps a number of other error types.
 #[derive(Debug, Error)]

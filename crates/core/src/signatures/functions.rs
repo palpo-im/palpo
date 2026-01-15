@@ -1,32 +1,29 @@
 //! Functions for signing and verifying JSON and events.
 
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
-    mem,
-};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
 
 use base64::{Engine, alphabet};
 use serde_json::to_string as to_json_string;
-use sha2::{Sha256, digest::Digest};
+use sha2::Sha256;
+use sha2::digest::Digest;
 
 #[cfg(test)]
 mod tests;
 
-use crate::signatures::{
-    Error, JsonError, ParseError, VerificationError,
-    keys::{KeyPair, PublicKeyMap},
-    verification::{Verified, Verifier, verifier_from_algorithm},
+use crate::room_version_rules::{
+    EventIdFormatVersion, RedactionRules, RoomVersionRules, SignaturesRules,
 };
+use crate::serde::base64::Standard;
+use crate::serde::canonical_json::{JsonType, redact};
+use crate::serde::{Base64, CanonicalJsonObject, CanonicalJsonValue};
+use crate::signatures::keys::{KeyPair, PublicKeyMap};
+use crate::signatures::verification::{Verified, Verifier, verifier_from_algorithm};
+use crate::signatures::{Error, JsonError, ParseError, VerificationError};
 use crate::{
     AnyKeyName, OwnedEventId, OwnedServerName, OwnedServerSigningKeyId, SigningKeyAlgorithm,
     SigningKeyId, UserId,
-    room_version_rules::{EventIdFormatVersion, RedactionRules, RoomVersionRules, SignaturesRules},
-    serde::{
-        Base64, CanonicalJsonObject, CanonicalJsonValue,
-        base64::Standard,
-        canonical_json::{JsonType, redact},
-    },
 };
 
 /// The [maximum size allowed] for a PDU.
@@ -219,7 +216,10 @@ pub fn canonical_json(object: &CanonicalJsonObject) -> Result<String, Error> {
 ///
 /// // Create the `PublicKeyMap` that will inform `verify_json` which signatures to verify.
 /// let mut public_key_set = BTreeMap::new();
-/// public_key_set.insert("ed25519:1".into(), Base64::parse(PUBLIC_KEY.to_owned()).unwrap());
+/// public_key_set.insert(
+///     "ed25519:1".into(),
+///     Base64::parse(PUBLIC_KEY.to_owned()).unwrap(),
+/// );
 /// let mut public_key_map = BTreeMap::new();
 /// public_key_map.insert("domain".into(), public_key_set);
 ///
@@ -523,8 +523,9 @@ pub fn reference_hash(
 /// .unwrap();
 ///
 /// // Get the rules for the version of the current room.
-/// let rules =
-///     RoomVersionId::V1.rules().expect("The rules should be known for a supported room version");
+/// let rules = RoomVersionId::V1
+///     .rules()
+///     .expect("The rules should be known for a supported room version");
 ///
 /// // Hash and sign the JSON with the key pair.
 /// assert!(hash_and_sign_event("domain", &key_pair, &mut object, &rules.redaction).is_ok());
@@ -650,13 +651,17 @@ where
 ///
 /// // Create the `PublicKeyMap` that will inform `verify_json` which signatures to verify.
 /// let mut public_key_set = BTreeMap::new();
-/// public_key_set.insert("ed25519:1".into(), Base64::parse(PUBLIC_KEY.to_owned()).unwrap());
+/// public_key_set.insert(
+///     "ed25519:1".into(),
+///     Base64::parse(PUBLIC_KEY.to_owned()).unwrap(),
+/// );
 /// let mut public_key_map = BTreeMap::new();
 /// public_key_map.insert("domain".into(), public_key_set);
 ///
 /// // Get the redaction rules for the version of the current room.
-/// let rules =
-///     RoomVersionId::V6.rules().expect("The rules should be known for a supported room version");
+/// let rules = RoomVersionId::V6
+///     .rules()
+///     .expect("The rules should be known for a supported room version");
 ///
 /// // Verify at least one signature for each entity in `public_key_map`.
 /// let verification_result = verify_event(&public_key_map, &object, &rules);

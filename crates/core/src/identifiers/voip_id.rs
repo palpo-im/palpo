@@ -1,7 +1,8 @@
 //! VoIP identifier.
 
-use crate::macros::IdDst;
 use diesel::expression::AsExpression;
+
+use crate::macros::IdDst;
 
 /// A VoIP identifier.
 ///

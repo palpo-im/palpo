@@ -35,11 +35,12 @@ impl ToDeviceRoomKeyBundleEventContent {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::{owned_mxc_uri, owned_room_id, serde::Base64};
     use serde_json::json;
 
     use super::ToDeviceRoomKeyBundleEventContent;
     use crate::events::room::{EncryptedFile, JsonWebKey};
+    use crate::serde::Base64;
+    use crate::{owned_mxc_uri, owned_room_id};
 
     #[test]
     fn serialization() {

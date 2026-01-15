@@ -412,8 +412,8 @@ async fn upgrade(
 
     let new_create_event = RoomCreateEvent::new(new_create_event.pdu);
 
-    // Send a m.room.tombstone event to the old room to indicate that it is not intended to be used any further
-    // Fail if the sender does not have the required permissions
+    // Send a m.room.tombstone event to the old room to indicate that it is not intended to be used
+    // any further Fail if the sender does not have the required permissions
     timeline::build_and_append_pdu(
         PduBuilder {
             event_type: TimelineEventType::RoomTombstone,
@@ -1133,7 +1133,7 @@ async fn create_create_event(
 fn default_power_levels_content(
     auth_rules: &AuthorizationRules,
     preset: Option<&RoomPreset>,
-    power_level_content_override: Option<&RawJson<RoomPowerLevelsEventContent>>, // must be raw_json
+    power_level_content_override: Option<&RawJson<RoomPowerLevelsEventContent>>, /* must be raw_json */
     visibility: &Visibility,
     users: BTreeMap<OwnedUserId, i64>,
 ) -> AppResult<serde_json::Value> {

@@ -1,11 +1,10 @@
 //! Custom Serialize / Deserialize implementations for the authentication parameters types.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{
-    Deserialize, Deserializer,
-    de::{self, Error},
-};
+use serde::de::{self, Error};
+use serde::{Deserialize, Deserializer};
 
 use super::{PolicyDefinition, PolicyTranslation};
 

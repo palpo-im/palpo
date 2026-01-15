@@ -21,7 +21,8 @@ use indexmap::Equivalent;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::push::{Action, push_rule::PushRule};
+use crate::push::Action;
+use crate::push::push_rule::PushRule;
 
 /// A push rule is a single rule that states under what conditions an event
 /// should be passed onto a push gateway and how the notification should be

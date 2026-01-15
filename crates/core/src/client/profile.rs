@@ -317,10 +317,10 @@ pub struct CustomProfileFieldValue {
 
 #[cfg(test)]
 mod tests {
-    use crate::owned_mxc_uri;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::ProfileFieldValue;
+    use crate::owned_mxc_uri;
 
     #[test]
     fn serialize_profile_field_value() {

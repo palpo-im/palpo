@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::macros::EventContent;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::StreamMetadata;
+use crate::macros::EventContent;
 use crate::{OwnedVoipId, VoipVersionId};
 
 /// The content of an `m.call.sdp_stream_metadata_changed` event.

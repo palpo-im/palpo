@@ -18,13 +18,11 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedRoomId, OwnedUserId, PrivOwnedStr,
-    push::{
-        Action, NewConditionalPushRule, NewPatternedPushRule, NewSimplePushRule, PushCondition,
-    },
-    serde::StringEnum,
+use crate::push::{
+    Action, NewConditionalPushRule, NewPatternedPushRule, NewSimplePushRule, PushCondition,
 };
+use crate::serde::StringEnum;
+use crate::{OwnedRoomId, OwnedUserId, PrivOwnedStr};
 
 /// The kinds of push rules that are available.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]

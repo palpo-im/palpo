@@ -2,10 +2,10 @@
 //!
 //! [`m.space.parent`]: https://spec.matrix.org/latest/client-server-api/#mspaceparent
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
 use crate::{OwnedRoomId, OwnedServerName};
 
 /// The content of an `m.space.parent` event.

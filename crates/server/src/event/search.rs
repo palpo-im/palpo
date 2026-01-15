@@ -6,9 +6,8 @@ use palpo_core::Seqnum;
 use crate::core::client::search::{
     Criteria, EventContextResult, OrderBy, ResultRoomEvents, SearchResult,
 };
-use crate::core::events::StateEventType;
-use crate::core::events::TimelineEventType;
 use crate::core::events::room::member::RoomMemberEventContent;
+use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonObject;
 use crate::core::serde::canonical_json::CanonicalJsonValue;
@@ -96,7 +95,7 @@ pub fn search_pdus(
 
     let results: Vec<_> = items
         .into_iter()
-        .filter_map(|(rank, event_id, _, _)| {
+        .filter_map(|(rank, event_id, ..)| {
             let pdu = timeline::get_pdu(&event_id).ok()?;
             if state::user_can_see_event(user_id, &pdu.event_id).unwrap_or(false) {
                 Some((rank, pdu))

@@ -1,9 +1,11 @@
 //! Matrix room alias identifiers.
 
-use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
-use super::{MatrixToUri, MatrixUri, OwnedEventId, matrix_uri::UriAction, server_name::ServerName};
+use super::matrix_uri::UriAction;
+use super::server_name::ServerName;
+use super::{MatrixToUri, MatrixUri, OwnedEventId};
+use crate::macros::IdDst;
 
 /// A Matrix [room alias ID].
 ///
@@ -12,7 +14,10 @@ use super::{MatrixToUri, MatrixUri, OwnedEventId, matrix_uri::UriAction, server_
 ///
 /// ```
 /// # use palpo_core::RoomAliasId;
-/// assert_eq!(<&RoomAliasId>::try_from("#palpo:example.com").unwrap(), "#palpo:example.com");
+/// assert_eq!(
+///     <&RoomAliasId>::try_from("#palpo:example.com").unwrap(),
+///     "#palpo:example.com"
+/// );
 /// ```
 ///
 /// [room alias ID]: https://spec.matrix.org/latest/appendices/#room-aliases

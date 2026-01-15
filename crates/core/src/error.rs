@@ -1,11 +1,12 @@
 //! Errors that can be sent from the homeserver.
 
-use std::{error::Error as StdError, fmt, iter::FromIterator, num::ParseIntError};
+use std::error::Error as StdError;
+use std::fmt;
+use std::iter::FromIterator;
+use std::num::ParseIntError;
 
-use salvo::{
-    http::{Response, StatusCode, header},
-    writing::Scribe,
-};
+use salvo::http::{Response, StatusCode, header};
+use salvo::writing::Scribe;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 

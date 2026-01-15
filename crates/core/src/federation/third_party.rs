@@ -13,10 +13,9 @@ use std::collections::BTreeMap;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedRoomId, OwnedServerName, OwnedServerSigningKeyId, OwnedUserId, events::StateEventType,
-    third_party::Medium,
-};
+use crate::events::StateEventType;
+use crate::third_party::Medium;
+use crate::{OwnedRoomId, OwnedServerName, OwnedServerSigningKeyId, OwnedUserId};
 // const METADATA: Metadata = metadata! {
 //     method: PUT,
 //     rate_limited: false,

@@ -1,5 +1,4 @@
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use base64::Engine;
 use hmac::{Hmac, Mac};

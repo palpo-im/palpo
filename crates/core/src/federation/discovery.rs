@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedServerName, OwnedServerSigningKeyId, UnixMillis, serde::Base64};
+use crate::serde::Base64;
+use crate::{OwnedServerName, OwnedServerSigningKeyId, UnixMillis};
 
 /// Public key of the homeserver for verifying digital signatures.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

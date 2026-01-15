@@ -2,11 +2,11 @@
 //!
 //! [MSC3956]: https://github.com/matrix-org/matrix-spec-proposals/pull/3956
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::room::encrypted::{EncryptedEventScheme, Relation};
+use crate::macros::EventContent;
 
 /// The payload for an extensible encrypted message.
 ///

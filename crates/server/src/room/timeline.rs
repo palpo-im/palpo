@@ -32,7 +32,8 @@ pub use backfill::*;
 
 pub static LAST_TIMELINE_COUNT_CACHE: LazyLock<Mutex<HashMap<OwnedRoomId, i64>>> =
     LazyLock::new(Default::default);
-// pub static PDU_CACHE: LazyLock<Mutex<LruCache<OwnedRoomId, Arc<PduEvent>>>> = LazyLock::new(Default::default);
+// pub static PDU_CACHE: LazyLock<Mutex<LruCache<OwnedRoomId, Arc<PduEvent>>>> =
+// LazyLock::new(Default::default);
 
 #[tracing::instrument]
 pub fn first_pdu_in_room(room_id: &RoomId) -> AppResult<Option<PduEvent>> {
@@ -290,7 +291,8 @@ pub async fn append_pdu(
         let rel_type = content.relates_to.rel_type();
         match content.relates_to {
             Relation::Reply { in_reply_to } => {
-                // We need to do it again here, because replies don't have event_id as a top level field
+                // We need to do it again here, because replies don't have event_id as a top level
+                // field
                 super::pdu_metadata::add_relation(
                     &pdu.room_id,
                     &in_reply_to.event_id,

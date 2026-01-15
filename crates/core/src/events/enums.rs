@@ -1,13 +1,11 @@
-use crate::macros::{EventEnumFromEvent, event_enum};
 use salvo::prelude::*;
 use serde::{Deserialize, de};
 
 use super::room::encrypted;
-use crate::{
-    UnixMillis,
-    identifiers::*,
-    serde::{RawJsonValue, from_raw_json_value},
-};
+use crate::UnixMillis;
+use crate::identifiers::*;
+use crate::macros::{EventEnumFromEvent, event_enum};
+use crate::serde::{RawJsonValue, from_raw_json_value};
 
 /// Event types that servers should send as [stripped state] to help clients
 /// identify a room when they can't access the full room state.
@@ -399,12 +397,13 @@ impl AnyMessageLikeEventContent {
     pub fn relation(&self) -> Option<encrypted::Relation> {
         #[cfg(feature = "unstable-msc3489")]
         use super::beacon::BeaconEventContent;
-        use super::key::verification::{
-            accept::KeyVerificationAcceptEventContent, cancel::KeyVerificationCancelEventContent,
-            done::KeyVerificationDoneEventContent, key::KeyVerificationKeyEventContent,
-            mac::KeyVerificationMacEventContent, ready::KeyVerificationReadyEventContent,
-            start::KeyVerificationStartEventContent,
-        };
+        use super::key::verification::accept::KeyVerificationAcceptEventContent;
+        use super::key::verification::cancel::KeyVerificationCancelEventContent;
+        use super::key::verification::done::KeyVerificationDoneEventContent;
+        use super::key::verification::key::KeyVerificationKeyEventContent;
+        use super::key::verification::mac::KeyVerificationMacEventContent;
+        use super::key::verification::ready::KeyVerificationReadyEventContent;
+        use super::key::verification::start::KeyVerificationStartEventContent;
         #[cfg(feature = "unstable-msc3381")]
         use super::poll::{
             end::PollEndEventContent, response::PollResponseEventContent,

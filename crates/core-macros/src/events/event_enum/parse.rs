@@ -3,10 +3,8 @@
 use std::collections::BTreeMap;
 
 use proc_macro2::Span;
-use syn::{
-    meta::ParseNestedMeta,
-    parse::{Parse, ParseStream},
-};
+use syn::meta::ParseNestedMeta;
+use syn::parse::{Parse, ParseStream};
 
 use super::{EventEnumData, EventEnumEntry, EventEnumInput};
 use crate::events::common::{CommonEventKind, EventType, EventTypes};

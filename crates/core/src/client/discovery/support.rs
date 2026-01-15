@@ -6,7 +6,8 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedUserId, PrivOwnedStr, serde::StringEnum};
+use crate::serde::StringEnum;
+use crate::{OwnedUserId, PrivOwnedStr};
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,

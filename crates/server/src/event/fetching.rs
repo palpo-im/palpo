@@ -16,10 +16,11 @@ use crate::data::diesel_exists;
 use crate::data::schema::*;
 use crate::event::handler::{process_pulled_pdu, process_to_outlier_pdu};
 use crate::event::{connect, parse_fetched_pdu, seen_event_ids};
+use crate::exts::*;
 use crate::room::state::ensure_field_id;
 use crate::room::timeline;
 use crate::sending::send_federation_request;
-use crate::{AppResult, PduEvent, SnPduEvent, exts::*, room};
+use crate::{AppResult, PduEvent, SnPduEvent, room};
 
 pub struct FetchedState {
     pub state_events: IndexMap<i64, OwnedEventId>,

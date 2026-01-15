@@ -3,10 +3,8 @@
 //! several crates, lower-level information is supplied from each crate during
 //! static initialization.
 
-use std::{
-    collections::BTreeMap,
-    sync::{Mutex, OnceLock},
-};
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
 // Capture rustc version during compilation.
 crate::macros::rustc_version! {}

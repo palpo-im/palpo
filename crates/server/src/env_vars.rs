@@ -7,11 +7,10 @@ use anyhow::{Context, anyhow};
 ///
 /// Compared to [std::env::var] there are a couple of differences:
 ///
-/// - [var] uses [dotenvy] which loads the `.env` file from the current or
-///   parent directories before returning the value.
+/// - [var] uses [dotenvy] which loads the `.env` file from the current or parent directories before
+///   returning the value.
 ///
-/// - [var] returns `Ok(None)` (instead of `Err`) if an environment variable
-///   wasn't set.
+/// - [var] returns `Ok(None)` (instead of `Err`) if an environment variable wasn't set.
 #[track_caller]
 pub fn var(key: &str) -> anyhow::Result<Option<String>> {
     match dotenvy::var(key) {
@@ -26,8 +25,8 @@ pub fn var(key: &str) -> anyhow::Result<Option<String>> {
 ///
 /// Compared to [std::env::var] there are a couple of differences:
 ///
-/// - [var] uses [dotenvy] which loads the `.env` file from the current or
-///   parent directories before returning the value.
+/// - [var] uses [dotenvy] which loads the `.env` file from the current or parent directories before
+///   returning the value.
 #[track_caller]
 pub fn required_var(key: &str) -> anyhow::Result<String> {
     required(var(key), key)
@@ -38,11 +37,10 @@ pub fn required_var(key: &str) -> anyhow::Result<String> {
 ///
 /// Compared to [std::env::var] there are a couple of differences:
 ///
-/// - [var] uses [dotenvy] which loads the `.env` file from the current or
-///   parent directories before returning the value.
+/// - [var] uses [dotenvy] which loads the `.env` file from the current or parent directories before
+///   returning the value.
 ///
-/// - [var] returns `Ok(None)` (instead of `Err`) if an environment variable
-///   wasn't set.
+/// - [var] returns `Ok(None)` (instead of `Err`) if an environment variable wasn't set.
 #[track_caller]
 pub fn var_parsed<R>(key: &str) -> anyhow::Result<Option<R>>
 where
@@ -65,8 +63,8 @@ where
 ///
 /// Compared to [std::env::var] there are a couple of differences:
 ///
-/// - [var] uses [dotenvy] which loads the `.env` file from the current or
-///   parent directories before returning the value.
+/// - [var] uses [dotenvy] which loads the `.env` file from the current or parent directories before
+///   returning the value.
 #[track_caller]
 pub fn required_var_parsed<R>(key: &str) -> anyhow::Result<R>
 where

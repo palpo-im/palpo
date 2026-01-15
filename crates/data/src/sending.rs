@@ -48,8 +48,7 @@ pub fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
 
 /// Check if a destination is known
 pub fn is_destination_known(server: &ServerName) -> DataResult<bool> {
-    let query = outgoing_requests::table
-        .filter(outgoing_requests::server_id.eq(server));
+    let query = outgoing_requests::table.filter(outgoing_requests::server_id.eq(server));
     Ok(diesel_exists!(query, &mut connect()?)?)
 }
 

@@ -4,17 +4,16 @@
 
 use std::time::Duration;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
+
 mod amplitude_serde;
 
-use super::{
-    file::{CaptionContentBlock, FileContentBlock},
-    message::TextContentBlock,
-    room::message::Relation,
-};
+use super::file::{CaptionContentBlock, FileContentBlock};
+use super::message::TextContentBlock;
+use super::room::message::Relation;
 
 /// The payload for an extensible audio message.
 ///

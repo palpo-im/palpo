@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -16,8 +15,9 @@ use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
 use crate::core::presence::{PresenceContent, PresenceUpdate};
 use crate::core::{Seqnum, device_id};
+use crate::exts::*;
 use crate::room::state;
-use crate::{AppResult, data, exts::*, room};
+use crate::{AppResult, data, room};
 
 pub fn start() {
     let (sender, receiver) = mpsc::unbounded_channel();

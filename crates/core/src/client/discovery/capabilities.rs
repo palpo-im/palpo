@@ -5,7 +5,8 @@
 //!
 //! [spec]: https://spec.matrix.org/latest/client-server-api/#capabilities-negotiation
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use maplit::btreemap;
 use salvo::prelude::*;
@@ -13,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, from_value as from_json_value, to_value as to_json_value};
 
 use crate::client::profile::ProfileFieldName;
-use crate::{PrivOwnedStr, RoomVersionId, serde::StringEnum};
+use crate::serde::StringEnum;
+use crate::{PrivOwnedStr, RoomVersionId};
 
 // /// `/v3/` ([spec])
 // ///

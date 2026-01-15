@@ -1,11 +1,12 @@
 //! Types for the `org.matrix.msc3381.poll.end` event, the unstable version of
 //! `m.poll.end`.
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedEventId, events::relation::Reference};
+use crate::OwnedEventId;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
 
 /// The payload for an unstable poll end event.
 ///

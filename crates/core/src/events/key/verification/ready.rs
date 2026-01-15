@@ -2,12 +2,13 @@
 //!
 //! [`m.key.verification.ready`]: https://spec.matrix.org/latest/client-server-api/#mkeyverificationready
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::VerificationMethod;
-use crate::{OwnedDeviceId, OwnedTransactionId, events::relation::Reference};
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
+use crate::{OwnedDeviceId, OwnedTransactionId};
 
 /// The content of a to-device `m.m.key.verification.ready` event.
 ///

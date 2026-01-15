@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::util::{RenameAll, PalpoEnumAttrs, UnitVariant, VariantWithSingleField};
+use super::util::{PalpoEnumAttrs, RenameAll, UnitVariant, VariantWithSingleField};
 
 /// Generate the `AsRef<str>` implementation for the given enum.
 pub fn expand_enum_as_ref_str(input: &syn::ItemEnum) -> syn::Result<TokenStream> {
@@ -35,7 +35,8 @@ pub fn expand_enum_as_ref_str(input: &syn::ItemEnum) -> syn::Result<TokenStream>
     })
 }
 
-/// A parsed enum with `palpo_enum` attributes and any [`UnitVariant`] or [`VariantWithSingleField`].
+/// A parsed enum with `palpo_enum` attributes and any [`UnitVariant`] or
+/// [`VariantWithSingleField`].
 pub(crate) struct PalpoEnumWithAnyVariants {
     /// The unit variants of the enum.
     unit_variants: Vec<UnitVariant>,

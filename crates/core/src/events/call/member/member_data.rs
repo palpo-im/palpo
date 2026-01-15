@@ -9,9 +9,8 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::focus::{ActiveFocus, ActiveLivekitFocus, Focus};
-use crate::PrivOwnedStr;
 use crate::macros::StringEnum;
-use crate::{DeviceId, OwnedDeviceId, UnixMillis};
+use crate::{DeviceId, OwnedDeviceId, PrivOwnedStr, UnixMillis};
 
 /// The data object that contains the information for one membership.
 ///
@@ -255,9 +254,8 @@ impl CallApplicationContent {
     ///
     /// # Arguments
     ///
-    /// * `call_id` - An identifier for calls. All members using the same
-    ///   `call_id` will end up in the same call. Does not need to be a uuid.
-    ///   `""` is used for room scoped calls.
+    /// * `call_id` - An identifier for calls. All members using the same `call_id` will end up in
+    ///   the same call. Does not need to be a uuid. `""` is used for room scoped calls.
     /// * `scope` - Who owns/joins/controls (can modify) the call.
     pub fn new(call_id: String, scope: CallScope) -> Self {
         Self { call_id, scope }

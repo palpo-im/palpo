@@ -4,10 +4,8 @@ use proc_macro2::Span;
 use syn::meta::ParseNestedMeta;
 
 use super::{Event, EventField, EventKind};
-use crate::{
-    events::common::EventVariation,
-    util::{NameSpace, ParseNestedMetaExt},
-};
+use crate::events::common::EventVariation;
+use crate::util::{NameSpace, ParseNestedMetaExt};
 
 impl Event {
     /// Parse the given input as an `Event`.

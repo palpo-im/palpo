@@ -4,29 +4,24 @@ use tracing::debug;
 
 // #[cfg(test)]
 // mod tests;
-
 use super::FetchStateExt;
-use crate::events::{StateEventType, room::member::MembershipState};
-use crate::state::{
-    Event, StateError, StateResult,
-    events::{
-        RoomCreateEvent, RoomMemberEvent,
-        member::ThirdPartyInvite,
-        power_levels::{RoomPowerLevelsEventOptionExt, RoomPowerLevelsIntField},
-    },
-};
-use crate::{
-    AnyKeyName, SigningKeyId, UserId,
-    room::JoinRuleKind,
-    room_version_rules::AuthorizationRules,
-    serde::{Base64, base64::Standard},
-    signatures::verify_canonical_json_bytes,
-};
+use crate::events::StateEventType;
+use crate::events::room::member::MembershipState;
+use crate::room::JoinRuleKind;
+use crate::room_version_rules::AuthorizationRules;
+use crate::serde::Base64;
+use crate::serde::base64::Standard;
+use crate::signatures::verify_canonical_json_bytes;
+use crate::state::events::member::ThirdPartyInvite;
+use crate::state::events::power_levels::{RoomPowerLevelsEventOptionExt, RoomPowerLevelsIntField};
+use crate::state::events::{RoomCreateEvent, RoomMemberEvent};
+use crate::state::{Event, StateError, StateResult};
+use crate::{AnyKeyName, SigningKeyId, UserId};
 
 /// Check whether the given event passes the `m.room.roomber` authorization rules.
 ///
-/// This assumes that `palpo_core::signatures::verify_event()` was called previously, as some authorization
-/// rules depend on the signatures being valid on the event.
+/// This assumes that `palpo_core::signatures::verify_event()` was called previously, as some
+/// authorization rules depend on the signatures being valid on the event.
 pub(super) async fn check_room_member<Pdu, Fetch, Fut>(
     room_member_event: RoomMemberEvent<&Pdu>,
     auth_rules: &AuthorizationRules,
@@ -279,8 +274,8 @@ where
 
     let current_target_user_membership = fetch_state.user_membership(target_user).await?;
 
-    // Since v1, if target user’s current membership state is join or ban, reject??? complement test looks failed.
-    // TestRestrictedRoomsRemoteJoinInMSC3787Room/Join_should_succeed_when_invited
+    // Since v1, if target user’s current membership state is join or ban, reject??? complement test
+    // looks failed. TestRestrictedRoomsRemoteJoinInMSC3787Room/Join_should_succeed_when_invited
     if matches!(
         current_target_user_membership,
         MembershipState::Join | MembershipState::Ban

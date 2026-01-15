@@ -2,11 +2,11 @@
 //!
 //! [`m.fully_read`]: https://spec.matrix.org/latest/client-server-api/#mfully_read
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::OwnedEventId;
+use crate::macros::EventContent;
 
 /// The content of an `m.fully_read` event.
 ///

@@ -16,13 +16,12 @@
 //! - underride rules
 
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, de, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, de};
 use serde_json::value::from_value as from_json_value;
 
-use crate::{
-    push::PushFormat,
-    serde::{JsonObject, JsonValue, RawJsonValue, from_raw_json_value},
-};
+use crate::push::PushFormat;
+use crate::serde::{JsonObject, JsonValue, RawJsonValue, from_raw_json_value};
 
 /// Information for a pusher using the Push Gateway API.
 #[derive(ToSchema, Serialize, Deserialize, Clone, Debug)]
@@ -215,7 +214,6 @@ impl<'de> Deserialize<'de> for Pusher {
 #[derive(ToSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// A unique identifier for the pusher.
 pub struct PusherIds {
-    ///
     /// The maximum allowed length is 512 bytes.
     pub pushkey: String,
 

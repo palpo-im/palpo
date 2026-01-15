@@ -3,7 +3,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 
 use crate::AppResult;
 use crate::core::Seqnum;

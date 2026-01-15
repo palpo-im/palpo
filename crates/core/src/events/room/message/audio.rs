@@ -3,10 +3,8 @@ use std::time::Duration;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedMxcUri,
-    events::room::{EncryptedFile, MediaSource},
-};
+use crate::OwnedMxcUri;
+use crate::events::room::{EncryptedFile, MediaSource};
 
 /// The payload for an audio message.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

@@ -2,11 +2,12 @@
 //!
 //! [MSC3488]: https://github.com/matrix-org/matrix-spec-proposals/pull/3488
 
-use crate::macros::{EventContent, StringEnum};
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{message::TextContentBlock, room::message::Relation};
+use super::message::TextContentBlock;
+use super::room::message::Relation;
+use crate::macros::{EventContent, StringEnum};
 use crate::{PrivOwnedStr, UnixMillis};
 
 /// The payload for an extensible location message.

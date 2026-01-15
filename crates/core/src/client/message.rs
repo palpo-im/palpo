@@ -1,12 +1,10 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Direction, OwnedEventId, OwnedRoomId, OwnedTransactionId, UnixMillis,
-    client::filter::RoomEventFilter,
-    events::{AnyStateEvent, AnyTimelineEvent, MessageLikeEventType},
-    serde::RawJson,
-};
+use crate::client::filter::RoomEventFilter;
+use crate::events::{AnyStateEvent, AnyTimelineEvent, MessageLikeEventType};
+use crate::serde::RawJson;
+use crate::{Direction, OwnedEventId, OwnedRoomId, OwnedTransactionId, UnixMillis};
 
 // /// `GET /_matrix/client/*/rooms/{room_id}/messages`
 // ///

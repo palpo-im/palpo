@@ -5,16 +5,12 @@ use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use salvo::prelude::*;
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, Unexpected},
-};
+use serde::de::{self, Unexpected};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{
-    OwnedDeviceId, OwnedTransactionId, OwnedUserId,
-    events::{AnyToDeviceEventContent, ToDeviceEventType},
-    serde::RawJson,
-};
+use crate::events::{AnyToDeviceEventContent, ToDeviceEventType};
+use crate::serde::RawJson;
+use crate::{OwnedDeviceId, OwnedTransactionId, OwnedUserId};
 
 /// Represents one or all of a user's devices.
 #[derive(ToSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

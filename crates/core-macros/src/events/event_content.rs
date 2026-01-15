@@ -12,10 +12,7 @@ mod parse;
 use super::common::{
     CommonEventKind, EventContentTraitVariation, EventType, EventTypes, EventVariation,
 };
-use crate::util::{
-    PrivateField, SerdeMetaItem, StructFieldExt,
-    TypeExt, NameSpace
-};
+use crate::util::{NameSpace, PrivateField, SerdeMetaItem, StructFieldExt, TypeExt};
 
 /// `EventContent` derive macro code generation.
 pub(crate) fn expand_event_content(input: syn::DeriveInput) -> syn::Result<TokenStream> {
@@ -159,7 +156,7 @@ impl EventContent {
             return None;
         }
 
-    let serde = NameSpace::serde();
+        let serde = NameSpace::serde();
 
         let ident = &self.ident;
         let vis = &self.vis;
@@ -778,7 +775,7 @@ impl EventContentKind {
 
 /// Implement `JsonCastable<JsonObject> for {ident}` and `JsonCastable<{ident}> for {other}`.
 fn generate_json_castable_impl(ident: &syn::Ident, others: &[&syn::Ident]) -> TokenStream {
-        let palpo_core = NameSpace::palpo_core();
+    let palpo_core = NameSpace::palpo_core();
 
     let mut json_castable_impls = quote! {
         #[automatically_derived]

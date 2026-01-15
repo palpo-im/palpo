@@ -141,14 +141,15 @@ struct AuthorizationServerMetadataDeHelper {
 #[cfg(test)]
 mod tests {
     use as_variant::as_variant;
-    use serde_json::{Value as JsonValue, from_value as from_json_value, value::Map as JsonMap};
+    use serde_json::value::Map as JsonMap;
+    use serde_json::{Value as JsonValue, from_value as from_json_value};
     use url::Url;
 
     #[cfg(feature = "unstable-msc4191")]
     use crate::client::discovery::auth_metadata::AccountManagementAction;
+    use crate::client::discovery::auth_metadata::tests::authorization_server_metadata_json;
     use crate::client::discovery::auth_metadata::{
         AuthorizationServerMetadata, CodeChallengeMethod, GrantType, ResponseMode, ResponseType,
-        tests::authorization_server_metadata_json,
     };
 
     /// A valid `AuthorizationServerMetadata` with all fields and values, as a JSON object.

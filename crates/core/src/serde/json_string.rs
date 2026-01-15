@@ -1,10 +1,8 @@
 //! De-/serialization functions to and from json strings, allows the type to be
 //! used as a query string.
 
-use serde::{
-    de::{DeserializeOwned, Deserializer, Error as _},
-    ser::{Error as _, Serialize, Serializer},
-};
+use serde::de::{DeserializeOwned, Deserializer, Error as _};
+use serde::ser::{Error as _, Serialize, Serializer};
 
 /// Serialize the given value as a JSON string.
 pub fn serialize<T, S>(value: T, serializer: S) -> Result<S::Ok, S::Error>

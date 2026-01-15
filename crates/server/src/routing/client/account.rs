@@ -8,9 +8,9 @@ use crate::core::client::account::{
     DeactivateReqBody, DeactivateResBody, ThirdPartyIdRemovalStatus, WhoamiResBody,
 };
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+use crate::exts::*;
 use crate::{
-    AuthArgs, EmptyResult, JsonResult, MatrixError, SESSION_ID_LENGTH, data, exts::*, hoops,
-    json_ok, utils,
+    AuthArgs, EmptyResult, JsonResult, MatrixError, SESSION_ID_LENGTH, data, hoops, json_ok, utils,
 };
 
 pub fn public_router() -> Router {
@@ -55,7 +55,8 @@ pub fn authed_router() -> Router {
 }
 
 /// #POST /_matrix/client/v3/account/3pid/email/requestToken
-/// "This API should be used to request validation tokens when adding an email address to an account"
+/// "This API should be used to request validation tokens when adding an email address to an
+/// account"
 ///
 /// - 403 signals that The homeserver does not allow the third party identifier as a contact option.
 #[endpoint]

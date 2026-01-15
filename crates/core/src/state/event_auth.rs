@@ -1,7 +1,5 @@
-use std::{
-    borrow::Borrow,
-    collections::{BTreeMap, BTreeSet, HashSet},
-};
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::value::RawValue as RawJsonValue;
 use tracing::{debug, info, instrument};
@@ -11,23 +9,20 @@ mod room_member;
 // mod tests;
 
 use self::room_member::check_room_member;
-use crate::{
-    OwnedEventId, OwnedUserId, UserId,
-    events::{
-        StateEventType, TimelineEventType,
-        room::{member::MembershipState, power_levels::UserPowerLevel},
-    },
-    room::JoinRuleKind,
-    room_version_rules::AuthorizationRules,
-    state::events::{
-        RoomCreateEvent, RoomJoinRulesEvent, RoomMemberEvent, RoomPowerLevelsEvent,
-        RoomThirdPartyInviteEvent,
-        member::{RoomMemberEventContent, RoomMemberEventOptionExt},
-        power_levels::{RoomPowerLevelsEventOptionExt, RoomPowerLevelsIntField},
-    },
-    state::{Event, StateError, StateResult},
-    utils::RoomIdExt,
+use crate::events::room::member::MembershipState;
+use crate::events::room::power_levels::UserPowerLevel;
+use crate::events::{StateEventType, TimelineEventType};
+use crate::room::JoinRuleKind;
+use crate::room_version_rules::AuthorizationRules;
+use crate::state::events::member::{RoomMemberEventContent, RoomMemberEventOptionExt};
+use crate::state::events::power_levels::{RoomPowerLevelsEventOptionExt, RoomPowerLevelsIntField};
+use crate::state::events::{
+    RoomCreateEvent, RoomJoinRulesEvent, RoomMemberEvent, RoomPowerLevelsEvent,
+    RoomThirdPartyInviteEvent,
 };
+use crate::state::{Event, StateError, StateResult};
+use crate::utils::RoomIdExt;
+use crate::{OwnedEventId, OwnedUserId, UserId};
 
 /// Get the list of [relevant auth events] required to authorize the event of the given type.
 ///
@@ -309,8 +304,8 @@ where
 /// The `fetch_state` closure should gather state from a state snapshot. We need to know if the
 /// event passes auth against some state not a recursive collection of auth_events fields.
 ///
-/// This assumes that `palpo_core::signatures::verify_event()` was called previously, as some authorization
-/// rules depend on the signatures being valid on the event.
+/// This assumes that `palpo_core::signatures::verify_event()` was called previously, as some
+/// authorization rules depend on the signatures being valid on the event.
 ///
 /// # Errors
 ///

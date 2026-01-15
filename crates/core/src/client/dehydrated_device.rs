@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{PrivOwnedStr, serde::StringEnum};
+use crate::PrivOwnedStr;
+use crate::serde::StringEnum;
 
 /// Data for a dehydrated device.
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -3,8 +3,7 @@ use serde::Deserialize;
 
 use crate::core::events::StateEventType;
 use crate::core::identifiers::*;
-use crate::core::serde::CanonicalJsonObject;
-use crate::core::serde::{JsonValue, default_false};
+use crate::core::serde::{CanonicalJsonObject, JsonValue, default_false};
 use crate::core::{MatrixError, Seqnum, UnixMillis};
 use crate::schema::*;
 use crate::{DataResult, connect};
@@ -464,8 +463,8 @@ pub fn get_timeline_gaps(
 //     diesel::update(room_tags::table.filter(room_tags::room_id.eq(old_room_id)))
 //         .set(room_tags::room_id.eq(new_room_id))
 //         .execute(conn)?;
-//     diesel::update(stats_room_currents::table.filter(stats_room_currents::room_id.eq(old_room_id)))
-//         .set(stats_room_currents::room_id.eq(new_room_id))
+//     diesel::update(stats_room_currents::table.filter(stats_room_currents::room_id.
+// eq(old_room_id)))         .set(stats_room_currents::room_id.eq(new_room_id))
 //         .execute(conn)?;
 //     diesel::update(events::table.filter(events::room_id.eq(old_room_id)))
 //         .set(events::room_id.eq(new_room_id))
@@ -492,8 +491,8 @@ pub fn get_timeline_gaps(
 //     .set(event_backward_extremities::room_id.eq(new_room_id))
 //     .execute(conn)?;
 //     diesel::update(
-//         event_forward_extremities::table.filter(event_forward_extremities::room_id.eq(old_room_id)),
-//     )
+//         event_forward_extremities::table.filter(event_forward_extremities::room_id.
+// eq(old_room_id)),     )
 //     .set(event_forward_extremities::room_id.eq(new_room_id))
 //     .execute(conn)?;
 //     diesel::update(room_users::table.filter(room_users::room_id.eq(old_room_id)))
@@ -530,8 +529,8 @@ pub fn get_timeline_gaps(
 //     )
 //     .set(lazy_load_deliveries::room_id.eq(new_room_id))
 //     .execute(conn)?;
-//     diesel::update(room_lookup_servers::table.filter(room_lookup_servers::room_id.eq(old_room_id)))
-//         .set(room_lookup_servers::room_id.eq(new_room_id))
+//     diesel::update(room_lookup_servers::table.filter(room_lookup_servers::room_id.
+// eq(old_room_id)))         .set(room_lookup_servers::room_id.eq(new_room_id))
 //         .execute(conn)?;
 //     diesel::update(event_push_actions::table.filter(event_push_actions::room_id.eq(old_room_id)))
 //         .set(event_push_actions::room_id.eq(new_room_id))

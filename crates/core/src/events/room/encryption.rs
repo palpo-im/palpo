@@ -2,11 +2,11 @@
 //!
 //! [`m.room.encryption`]: https://spec.matrix.org/latest/client-server-api/#mroomencryption
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::events::{EmptyStateKey, EventEncryptionAlgorithm};
+use crate::macros::EventContent;
 
 /// The content of an `m.room.encryption` event.
 ///

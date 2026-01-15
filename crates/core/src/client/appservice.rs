@@ -9,7 +9,8 @@ use std::time::Duration;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedTransactionId, room::Visibility};
+use crate::OwnedTransactionId;
+use crate::room::Visibility;
 
 // const METADATA: Metadata = metadata! {
 //     method: POST,

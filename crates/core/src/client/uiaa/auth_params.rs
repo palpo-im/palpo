@@ -44,7 +44,10 @@ pub struct PolicyDefinition {
 impl PolicyDefinition {
     /// Construct a new `PolicyDefinition` with the given version and translations.
     pub fn new(version: String, translations: BTreeMap<String, PolicyTranslation>) -> Self {
-        Self { version, translations }
+        Self {
+            version,
+            translations,
+        }
     }
 }
 
@@ -188,10 +191,16 @@ mod tests {
         assert_eq!(policy.translations.len(), 2);
         let translation = policy.translations.get("en").unwrap();
         assert_eq!(translation.name, "Privacy Policy");
-        assert_eq!(translation.url, "https://example.org/somewhere/privacy-1.2-en.html");
+        assert_eq!(
+            translation.url,
+            "https://example.org/somewhere/privacy-1.2-en.html"
+        );
         let translation = policy.translations.get("fr").unwrap();
         assert_eq!(translation.name, "Politique de confidentialité");
-        assert_eq!(translation.url, "https://example.org/somewhere/privacy-1.2-fr.html");
+        assert_eq!(
+            translation.url,
+            "https://example.org/somewhere/privacy-1.2-fr.html"
+        );
 
         let policy = params.policies.get("terms_of_service").unwrap();
         assert_eq!(policy.version, "1.2");

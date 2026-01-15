@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 /// Get the child events for a given parent event which relate to the parent
 /// using the given `rel_type` and having the given `event_type`.
 use crate::events::{AnyMessageLikeEvent, TimelineEventType, relation::RelationType};
-use crate::{Direction, OwnedEventId, OwnedRoomId, serde::RawJson};
+use crate::serde::RawJson;
+use crate::{Direction, OwnedEventId, OwnedRoomId};
 // /// `/v1/` ([spec])
 // ///
 // /// [spec]: https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventidreltypeeventtype
@@ -17,9 +18,9 @@ use crate::{Direction, OwnedEventId, OwnedRoomId, serde::RawJson};
 //     rate_limited: false,
 //     authentication: AccessToken,
 //     history: {
-//         unstable => "/_matrix/client/unstable/rooms/:room_id/relations/:event_id/:rel_type/:event_type",
-//         1.3 => "/_matrix/client/v1/rooms/:room_id/relations/:event_id/:rel_type/:event_type",
-//     }
+//         unstable =>
+// "/_matrix/client/unstable/rooms/:room_id/relations/:event_id/:rel_type/:event_type",         1.3
+// => "/_matrix/client/v1/rooms/:room_id/relations/:event_id/:rel_type/:event_type",     }
 // };
 
 /// Request type for the `get_relating_events_with_rel_type_and_event_type`

@@ -2,17 +2,13 @@
 
 use as_variant::as_variant;
 use proc_macro2::{Span, TokenStream};
-use syn::{
-    meta::ParseNestedMeta,
-    parse::{Parse, ParseStream},
-    parse_quote,
-};
+use syn::meta::ParseNestedMeta;
+use syn::parse::{Parse, ParseStream};
+use syn::parse_quote;
 
 use super::{EventContent, EventContentField, EventContentKind};
-use crate::{
-    events::common::{CommonEventKind, EventType, EventTypes},
-    util::{NameSpace, ParseNestedMetaExt, SerdeMetaItem, StructFieldExt},
-};
+use crate::events::common::{CommonEventKind, EventType, EventTypes};
+use crate::util::{NameSpace, ParseNestedMetaExt, SerdeMetaItem, StructFieldExt};
 
 impl EventContent {
     pub(super) fn parse(input: syn::DeriveInput) -> syn::Result<Self> {

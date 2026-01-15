@@ -2,10 +2,10 @@
 //!
 //! [`m.space.child`]: https://spec.matrix.org/latest/client-server-api/#mspacechild
 
-use crate::macros::{Event, EventContent};
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::{Event, EventContent};
 use crate::{OwnedRoomId, OwnedServerName, OwnedUserId, UnixMillis};
 
 /// The content of an `m.space.child` event.

@@ -1,6 +1,7 @@
 use std::num::NonZeroU8;
 
-use crate::{error::MxcUriError, server_name};
+use crate::error::MxcUriError;
+use crate::server_name;
 
 const PROTOCOL: &str = "mxc://";
 

@@ -8,8 +8,6 @@ mod suppress;
 
 use std::sync::{Arc, OnceLock};
 
-use tracing_subscriber::{Layer, Registry, layer::SubscriberExt};
-
 pub use capture::Capture;
 pub use console::{ConsoleFormat, ConsoleWriter, is_systemd_mode};
 pub use reload::{LogLevelReloadHandles, ReloadHandle};
@@ -17,6 +15,8 @@ pub use suppress::Suppress;
 pub use tracing::Level;
 pub use tracing_core::{Event, Metadata};
 pub use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{Layer, Registry};
 
 use crate::AppResult;
 

@@ -1,6 +1,7 @@
 use super::{IdParseError, KeyName};
 use crate::macros::IdDst;
-use crate::serde::{Base64, Base64DecodeError, base64::Standard};
+use crate::serde::base64::Standard;
+use crate::serde::{Base64, Base64DecodeError};
 
 /// A public key encoded using unpadded base64, used as an identifier for [cross-signing] keys.
 ///

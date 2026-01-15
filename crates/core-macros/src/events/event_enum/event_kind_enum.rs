@@ -5,11 +5,12 @@ use quote::{format_ident, quote};
 
 mod content;
 
-use super::{EventEnumData, EventEnumEntry, EventEnumKind, util::expand_json_castable_impl};
-use crate::{
-    events::common::{CommonEventField, EventContentTraitVariation, EventType, EventVariation},
-    util::NameSpace,
+use super::util::expand_json_castable_impl;
+use super::{EventEnumData, EventEnumEntry, EventEnumKind};
+use crate::events::common::{
+    CommonEventField, EventContentTraitVariation, EventType, EventVariation,
 };
+use crate::util::NameSpace;
 
 /// Cache for [`EventEnum`] data that is used in several places.
 pub(super) struct EventEnum<'a> {
@@ -263,8 +264,7 @@ impl EventEnumVariation<'_> {
         let deserialize_impl = self.expand_deserialize_impl();
         let field_accessor_impl = self.expand_accessor_methods()?;
         let from_impl = self.expand_from_impl(ident, event_types);
-        let json_castable_impl =
-            expand_json_castable_impl(ident, kind, self.variation, palpo_core);
+        let json_castable_impl = expand_json_castable_impl(ident, kind, self.variation, palpo_core);
 
         Ok(quote! {
             #( #attrs )*

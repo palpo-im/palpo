@@ -6,7 +6,8 @@ use salvo::prelude::*;
 
 use crate::core::UnixMillis;
 use crate::core::federation::backfill::{BackfillReqArgs, BackfillResBody};
-use crate::data::{connect, schema::*};
+use crate::data::connect;
+use crate::data::schema::*;
 use crate::room::{state, timeline};
 use crate::routing::prelude::*;
 

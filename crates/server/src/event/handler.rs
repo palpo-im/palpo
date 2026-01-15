@@ -21,12 +21,14 @@ use crate::core::signatures::Verified;
 use crate::core::state::{Event, StateError, event_auth};
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::room::DbEvent;
-use crate::data::{connect, diesel_exists, schema::*};
+use crate::data::schema::*;
+use crate::data::{connect, diesel_exists};
 use crate::event::{OutlierPdu, PduEvent, SnPduEvent, handler};
+use crate::exts::*;
 use crate::room::state::{CompressedState, DeltaInfo, update_backward_extremities};
 use crate::room::{state, timeline};
 use crate::sending::send_federation_request;
-use crate::{AppError, AppResult, MatrixError, exts::*, room};
+use crate::{AppError, AppResult, MatrixError, room};
 
 #[tracing::instrument(skip_all)]
 pub(crate) async fn process_incoming_pdu(
@@ -597,7 +599,8 @@ pub async fn process_to_timeline_pdu(
     let state_lock = crate::room::lock_state(&incoming_pdu.room_id).await;
 
     // Only keep those extremities were not referenced yet
-    // extremities.retain(|id| !matches!(crate::room::pdu_metadata::is_event_referenced(room_id, id), Ok(true)));
+    // extremities.retain(|id| !matches!(crate::room::pdu_metadata::is_event_referenced(room_id,
+    // id), Ok(true)));
 
     debug!("compressing state at event");
     let compressed_state_ids = Arc::new(
@@ -643,7 +646,8 @@ pub async fn process_to_timeline_pdu(
     // We use the `state_at_event` instead of `state_after` so we accurately
     // represent the state for this event.
     let event_id = incoming_pdu.event_id.clone();
-    // 14. Check if the event passes auth based on the "current state" of the room, if not soft fail it
+    // 14. Check if the event passes auth based on the "current state" of the room, if not soft fail
+    //     it
     if soft_fail {
         debug!("starting soft fail auth check");
         // We start looking at current room state now, so lets lock the room

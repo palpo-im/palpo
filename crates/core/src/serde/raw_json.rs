@@ -1,18 +1,12 @@
-use std::{
-    clone::Clone,
-    fmt::{self, Debug},
-    marker::PhantomData,
-    mem,
-};
+use std::clone::Clone;
+use std::fmt::{self, Debug};
+use std::marker::PhantomData;
+use std::mem;
 
-use salvo::{
-    oapi::{Components, RefOr, Schema},
-    prelude::*,
-};
-use serde::{
-    de::{self, Deserialize, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor},
-    ser::{Serialize, Serializer},
-};
+use salvo::oapi::{Components, RefOr, Schema};
+use salvo::prelude::*;
+use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
+use serde::ser::{Serialize, Serializer};
 use serde_json::value::to_raw_value as to_raw_json_value;
 
 use crate::serde::{JsonValue, RawJsonValue};

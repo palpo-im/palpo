@@ -1,6 +1,7 @@
 //! Implementation of the `Event` derive macro.
 
-use std::{borrow::Cow, fmt};
+use std::borrow::Cow;
+use std::fmt;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};

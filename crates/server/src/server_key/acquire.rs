@@ -1,10 +1,9 @@
-use std::{
-    borrow::Borrow,
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use tokio::time::{Instant, timeout_at};
 
 use super::{

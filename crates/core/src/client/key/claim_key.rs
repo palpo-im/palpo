@@ -2,18 +2,17 @@
 //!
 //! Claims one-time keys for use in pre-key messages.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    DeviceKeyAlgorithm,
-    client::key::{SignedKeys, SignedKeysIter},
-    encryption::OneTimeKey,
-    identifiers::*,
-    serde::{JsonValue, RawJsonValue},
-};
+use crate::DeviceKeyAlgorithm;
+use crate::client::key::{SignedKeys, SignedKeysIter};
+use crate::encryption::OneTimeKey;
+use crate::identifiers::*;
+use crate::serde::{JsonValue, RawJsonValue};
 
 impl<'a> IntoIterator for &'a SignedKeys {
     type Item = (&'a str, &'a RawJsonValue);

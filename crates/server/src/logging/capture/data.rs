@@ -1,7 +1,9 @@
 use tracing::Level;
-use tracing_core::{Event, span::Current};
+use tracing_core::Event;
+use tracing_core::span::Current;
 
-use super::{Layer, layer::Value};
+use super::Layer;
+use super::layer::Value;
 
 pub struct Data<'a> {
     pub layer: &'a Layer,

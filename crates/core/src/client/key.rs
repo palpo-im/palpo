@@ -1,21 +1,17 @@
 /// Endpoints for key management
 pub mod claim_key;
-use std::{
-    collections::{BTreeMap, btree_map},
-    ops::Deref,
-    time::Duration,
-};
+use std::collections::{BTreeMap, btree_map};
+use std::ops::Deref;
+use std::time::Duration;
 
 pub use claim_key::*;
 use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    DeviceKeyAlgorithm, OwnedDeviceId, OwnedDeviceKeyId, OwnedUserId, PrivOwnedStr,
-    client::uiaa::AuthData,
-    encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
-    serde::{JsonValue, RawJson, RawJsonValue, StringEnum},
-};
+use crate::client::uiaa::AuthData;
+use crate::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
+use crate::serde::{JsonValue, RawJson, RawJsonValue, StringEnum};
+use crate::{DeviceKeyAlgorithm, OwnedDeviceId, OwnedDeviceKeyId, OwnedUserId, PrivOwnedStr};
 
 /// An iterator over signed key IDs and their associated data.
 #[derive(Debug)]

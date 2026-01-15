@@ -12,19 +12,19 @@ pub use thread::*;
 pub use thread_msc4306::*;
 pub use thread_msc4308::*;
 
+use crate::client::filter::RoomEventFilter;
+use crate::client::membership::InviteThreepid;
+use crate::events::room::create::PreviousRoom;
+use crate::events::room::member::MembershipState;
+use crate::events::room::power_levels::RoomPowerLevelsEventContent;
+use crate::events::{
+    AnyInitialStateEvent, AnyRoomAccountDataEvent, AnyStateEvent, AnyTimelineEvent,
+};
+use crate::room::{RoomType, Visibility};
+use crate::serde::{RawJson, StringEnum};
 use crate::{
     OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, PrivOwnedStr,
     RoomVersionId,
-    client::{filter::RoomEventFilter, membership::InviteThreepid},
-    events::{
-        AnyInitialStateEvent, AnyRoomAccountDataEvent, AnyStateEvent, AnyTimelineEvent,
-        room::{
-            create::PreviousRoom, member::MembershipState,
-            power_levels::RoomPowerLevelsEventContent,
-        },
-    },
-    room::{RoomType, Visibility},
-    serde::{RawJson, StringEnum},
 };
 
 // /// `POST /_matrix/client/*/createRoom`
@@ -266,9 +266,9 @@ pub struct UpgradeRoomResBody {
 //     rate_limited: true,
 //     authentication: AccessToken,
 //     history: {
-//         unstable => "/_matrix/client/unstable/org.matrix.msc3030/rooms/:room_id/timestamp_to_event",
-//         1.6 => "/_matrix/client/v1/rooms/:room_id/timestamp_to_event",
-//     }
+//         unstable =>
+// "/_matrix/client/unstable/org.matrix.msc3030/rooms/:room_id/timestamp_to_event",         1.6 =>
+// "/_matrix/client/v1/rooms/:room_id/timestamp_to_event",     }
 // };
 
 // /// `GET /_matrix/client/*/rooms/{room_id}/event/{event_id}`

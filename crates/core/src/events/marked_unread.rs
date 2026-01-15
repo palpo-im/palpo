@@ -2,9 +2,10 @@
 //!
 //! [`m.marked_unread`]: https://spec.matrix.org/latest/client-server-api/#unread-markers
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::macros::EventContent;
 
 /// The content of an `m.marked_unread` event.
 ///

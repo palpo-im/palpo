@@ -12,7 +12,9 @@ use super::{
     PatternedPushRule, PushConditionRoomCtx, RuleKind, RuleNotFoundError, RulesetIter,
     SimplePushRule, insert_and_move_rule,
 };
-use crate::{OwnedRoomId, OwnedUserId, push::RemovePushRuleError, serde::RawJson};
+use crate::push::RemovePushRuleError;
+use crate::serde::RawJson;
+use crate::{OwnedRoomId, OwnedUserId};
 
 /// A push ruleset scopes a set of rules according to some criteria.
 ///
@@ -322,8 +324,7 @@ impl Ruleset {
     /// # Arguments
     ///
     /// * `event` - The raw JSON of a room message event.
-    /// * `context` - The context of the message and room at the time of the
-    ///   event.
+    /// * `context` - The context of the message and room at the time of the event.
     #[instrument(skip_all, fields(context.room_id = %context.room_id))]
     pub async fn get_match<T>(
         &self,
@@ -356,8 +357,7 @@ impl Ruleset {
     /// # Arguments
     ///
     /// * `event` - The raw JSON of a room message event.
-    /// * `context` - The context of the message and room at the time of the
-    ///   event.
+    /// * `context` - The context of the message and room at the time of the event.
     #[instrument(skip_all, fields(context.room_id = %context.room_id))]
     pub async fn get_actions<T>(
         &self,

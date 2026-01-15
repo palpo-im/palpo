@@ -1,10 +1,12 @@
 use std::time::Duration;
 
-use crate::admin::{Context, utils::parse_local_user_id};
+use crate::admin::Context;
+use crate::admin::utils::parse_local_user_id;
 use crate::core::{Mxc, OwnedEventId, OwnedMxcUri, OwnedServerName};
 use crate::media::Dimension;
 use crate::room::timeline;
-use crate::{AppError, AppResult, IsRemoteOrLocal, config, data, utils::time::parse_timepoint_ago};
+use crate::utils::time::parse_timepoint_ago;
+use crate::{AppError, AppResult, IsRemoteOrLocal, config, data};
 
 pub(super) async fn delete_media(
     ctx: &Context<'_>,

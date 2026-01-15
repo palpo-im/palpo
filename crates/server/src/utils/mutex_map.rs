@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::{
-    fmt::Debug,
-    hash::Hash,
-    sync::{Arc, TryLockError::WouldBlock},
-};
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::sync::Arc;
+use std::sync::TryLockError::WouldBlock;
 
 use tokio::sync::OwnedMutexGuard as Omg;
 

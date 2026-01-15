@@ -51,7 +51,8 @@ pub fn increment_notification_counts(
                     event_push_summaries::notification_count.eq(1),
                     event_push_summaries::unread_count.eq(1),
                     event_push_summaries::thread_id.eq(&thread_id),
-                    event_push_summaries::stream_ordering.eq(1), // TODO: use the correct stream ordering
+                    event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
+                                                                  * ordering */
                 ))
                 .execute(&mut connect()?)?;
         }
@@ -88,7 +89,8 @@ pub fn increment_notification_counts(
                     event_push_summaries::highlight_count.eq(1),
                     event_push_summaries::unread_count.eq(1),
                     event_push_summaries::thread_id.eq(&thread_id),
-                    event_push_summaries::stream_ordering.eq(1), // TODO: use the correct stream ordering
+                    event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
+                                                                  * ordering */
                 ))
                 .execute(&mut connect()?)?;
         }
@@ -235,7 +237,8 @@ pub fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<(
                     event_push_summaries::notification_count.eq(notification_count),
                     event_push_summaries::highlight_count.eq(highlight_count),
                     event_push_summaries::unread_count.eq(unread_count),
-                    event_push_summaries::stream_ordering.eq(1), // TODO: use the correct stream ordering
+                    event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
+                                                                  * ordering */
                 ))
                 .execute(&mut connect()?)?;
         }
@@ -278,7 +281,8 @@ pub fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<(
                 event_push_summaries::notification_count.eq(notification_count),
                 event_push_summaries::highlight_count.eq(highlight_count),
                 event_push_summaries::unread_count.eq(unread_count),
-                event_push_summaries::stream_ordering.eq(1), // TODO: use the correct stream ordering
+                event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
+                                                              * ordering */
             ))
             .execute(&mut connect()?)?;
     }

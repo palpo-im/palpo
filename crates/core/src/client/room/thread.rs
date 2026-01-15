@@ -8,11 +8,9 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedRoomId, PrivOwnedStr,
-    events::AnyTimelineEvent,
-    serde::{RawJson, StringEnum},
-};
+use crate::events::AnyTimelineEvent;
+use crate::serde::{RawJson, StringEnum};
+use crate::{OwnedRoomId, PrivOwnedStr};
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,

@@ -4,16 +4,14 @@
 
 use std::time::Duration;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    file::{CaptionContentBlock, FileContentBlock},
-    image::ThumbnailContentBlock,
-    message::TextContentBlock,
-    room::message::Relation,
-};
+use super::file::{CaptionContentBlock, FileContentBlock};
+use super::image::ThumbnailContentBlock;
+use super::message::TextContentBlock;
+use super::room::message::Relation;
+use crate::macros::EventContent;
 
 /// The payload for an extensible video message.
 ///

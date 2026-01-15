@@ -3,14 +3,13 @@
 //!
 //! [MSC3489]: https://github.com/matrix-org/matrix-spec-proposals/pull/3489
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedEventId, UnixMillis,
-    events::{location::LocationContent, relation::Reference},
-};
+use crate::events::location::LocationContent;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
+use crate::{OwnedEventId, UnixMillis};
 
 /// The content of a beacon.
 #[derive(ToSchema, Clone, Debug, Serialize, Deserialize, EventContent)]

@@ -1,6 +1,7 @@
 //! Matrix room version identifiers.
 
-use std::{cmp::Ordering, str::FromStr};
+use std::cmp::Ordering;
+use std::str::FromStr;
 
 use salvo::oapi::{Components, RefOr, Schema, ToSchema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

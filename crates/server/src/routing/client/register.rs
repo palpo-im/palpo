@@ -15,9 +15,10 @@ use crate::core::serde::JsonValue;
 use crate::data::schema::*;
 use crate::data::user::{NewDbPresence, NewDbProfile};
 use crate::data::{connect, diesel_exists};
+use crate::exts::*;
 use crate::{
     AppError, AuthArgs, DEVICE_ID_LENGTH, EmptyResult, JsonResult, MatrixError,
-    RANDOM_USER_ID_LENGTH, SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, exts::*, hoops,
+    RANDOM_USER_ID_LENGTH, SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops,
     membership, room, utils,
 };
 
@@ -222,7 +223,7 @@ async fn register(
     // Generate new token for the device
     let token = utils::random_string(TOKEN_LENGTH);
 
-    //Create device for this account
+    // Create device for this account
     data::user::device::create_device(
         &user_id,
         &device_id,
@@ -313,7 +314,8 @@ async fn register(
 /// - The server name of the user id matches this server
 /// - No user or appservice on this server already claimed this username
 ///
-/// Note: This will not reserve the username, so the username might become invalid when trying to register
+/// Note: This will not reserve the username, so the username might become invalid when trying to
+/// register
 #[endpoint]
 async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableResBody> {
     let username = username.into_inner().to_lowercase();
@@ -348,9 +350,10 @@ async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableRe
 //     rate_limited: true,
 //     authentication: None,
 //     history: {
-//         unstable => "/_matrix/client/unstable/org.matrix.msc3231/register/org.matrix.msc3231.login.registration_token/validity",
-//         1.2 => "/_matrix/client/v1/register/m.login.registration_token/validity",
-//     }
+//         unstable =>
+// "/_matrix/client/unstable/org.matrix.msc3231/register/org.matrix.msc3231.login.
+// registration_token/validity",         1.2 =>
+// "/_matrix/client/v1/register/m.login.registration_token/validity",     }
 // };
 #[endpoint]
 async fn validate_token(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {

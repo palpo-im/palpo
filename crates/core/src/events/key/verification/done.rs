@@ -2,11 +2,12 @@
 //!
 //! [`m.key.verification.done`]: https://spec.matrix.org/latest/client-server-api/#mkeyverificationdone
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedTransactionId, events::relation::Reference};
+use crate::OwnedTransactionId;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
 
 /// The content of a to-device `m.m.key.verification.done` event.
 ///
@@ -56,7 +57,8 @@ mod tests {
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::KeyVerificationDoneEventContent;
-    use crate::{events::relation::Reference, owned_event_id};
+    use crate::events::relation::Reference;
+    use crate::owned_event_id;
 
     #[test]
     fn serialization() {

@@ -2,10 +2,10 @@
 //!
 //! [`m.call.select_answer`]: https://spec.matrix.org/latest/client-server-api/#mcallselect_answer
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
 use crate::{OwnedVoipId, VoipVersionId};
 
 /// **Added in VoIP version 1.** The content of an `m.call.select_answer` event.

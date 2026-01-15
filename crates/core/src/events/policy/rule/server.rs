@@ -2,12 +2,12 @@
 //!
 //! [`m.policy.rule.server`]: https://spec.matrix.org/latest/client-server-api/#mpolicyruleserver
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{PolicyRuleEventContent, PossiblyRedactedPolicyRuleEventContent};
 use crate::events::{PossiblyRedactedStateEventContent, StateEventType, StaticEventContent};
+use crate::macros::EventContent;
 
 /// The content of an `m.policy.rule.server` event.
 ///

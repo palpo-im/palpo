@@ -1,13 +1,16 @@
 //! Types for the `m.poll.response` event.
 
-use std::{ops::Deref, vec};
+use std::ops::Deref;
+use std::vec;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{PollResponseData, start::PollContentBlock, validate_selections};
-use crate::{OwnedEventId, events::relation::Reference};
+use super::start::PollContentBlock;
+use super::{PollResponseData, validate_selections};
+use crate::OwnedEventId;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
 
 /// The payload for a poll response event.
 ///

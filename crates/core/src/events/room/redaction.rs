@@ -2,20 +2,21 @@
 //!
 //! [`m.room.redaction`]: https://spec.matrix.org/latest/client-server-api/#mroomredaction
 
-use crate::macros::{Event, EventContent};
 use as_variant::as_variant;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::events::{
+    BundledMessageLikeRelations, MessageLikeEventContent, MessageLikeEventType, RedactContent,
+    RedactedMessageLikeEventContent, RedactedUnsigned, StaticEventContent,
+};
+use crate::macros::{Event, EventContent};
 use crate::room_version_rules::RedactionRules;
+use crate::serde::CanBeEmpty;
+use crate::serde::canonical_json::RedactionEvent;
 use crate::{
     EventId, OwnedEventId, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId, RoomVersionId,
     UnixMillis, UserId,
-    events::{
-        BundledMessageLikeRelations, MessageLikeEventContent, MessageLikeEventType, RedactContent,
-        RedactedMessageLikeEventContent, RedactedUnsigned, StaticEventContent,
-    },
-    serde::{CanBeEmpty, canonical_json::RedactionEvent},
 };
 
 mod event_serde;

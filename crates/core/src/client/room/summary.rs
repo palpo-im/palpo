@@ -1,10 +1,11 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    EventEncryptionAlgorithm, events::room::member::MembershipState, identifiers::*,
-    room::RoomType, space::SpaceRoomJoinRule,
-};
+use crate::EventEncryptionAlgorithm;
+use crate::events::room::member::MembershipState;
+use crate::identifiers::*;
+use crate::room::RoomType;
+use crate::space::SpaceRoomJoinRule;
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,

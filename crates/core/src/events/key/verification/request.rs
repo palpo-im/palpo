@@ -2,11 +2,11 @@
 //!
 //! [`m.key.verification.request`]: https://spec.matrix.org/latest/client-server-api/#mkeyverificationrequest
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::VerificationMethod;
+use crate::macros::EventContent;
 use crate::{OwnedDeviceId, OwnedTransactionId, UnixMillis};
 
 /// The content of an `m.key.verification.request` event.

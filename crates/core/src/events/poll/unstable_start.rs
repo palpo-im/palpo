@@ -3,29 +3,27 @@
 
 use std::ops::Deref;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::macros::EventContent;
 
 mod content_serde;
 mod unstable_poll_answers_serde;
 mod unstable_poll_kind_serde;
 
 use self::unstable_poll_answers_serde::UnstablePollAnswersDeHelper;
-use super::{
-    PollResponseData, compile_unstable_poll_results, generate_poll_end_fallback_text,
-    start::{PollAnswers, PollAnswersError, PollContentBlock, PollKind},
-    unstable_end::UnstablePollEndEventContent,
+use super::start::{PollAnswers, PollAnswersError, PollContentBlock, PollKind};
+use super::unstable_end::UnstablePollEndEventContent;
+use super::{PollResponseData, compile_unstable_poll_results, generate_poll_end_fallback_text};
+use crate::events::relation::Replacement;
+use crate::events::room::message::RelationWithoutReplacement;
+use crate::events::{
+    MessageLikeEventContent, MessageLikeEventType, RedactContent, RedactedMessageLikeEventContent,
+    StaticEventContent,
 };
-use crate::{
-    OwnedEventId, UnixMillis,
-    events::{
-        MessageLikeEventContent, MessageLikeEventType, RedactContent,
-        RedactedMessageLikeEventContent, StaticEventContent, relation::Replacement,
-        room::message::RelationWithoutReplacement,
-    },
-    room_version_rules::RedactionRules,
-};
+use crate::room_version_rules::RedactionRules;
+use crate::{OwnedEventId, UnixMillis};
 
 /// The payload for an unstable poll start event.
 ///

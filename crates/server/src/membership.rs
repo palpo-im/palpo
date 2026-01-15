@@ -4,12 +4,12 @@ use std::time::Duration;
 use diesel::prelude::*;
 use tokio::sync::RwLock;
 
-use crate::core::events::GlobalAccountDataEventType;
-use crate::core::events::StateEventType;
 use crate::core::events::direct::DirectEventContent;
 use crate::core::events::room::create::RoomCreateEventContent;
 use crate::core::events::room::member::MembershipState;
-use crate::core::events::{AnyStrippedStateEvent, RoomAccountDataEventType};
+use crate::core::events::{
+    AnyStrippedStateEvent, GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType,
+};
 use crate::core::identifiers::*;
 use crate::core::serde::{
     CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue,

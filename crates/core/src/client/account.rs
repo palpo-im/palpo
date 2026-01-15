@@ -4,11 +4,9 @@ pub mod threepid;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::client::uiaa::AuthData;
 use crate::macros::StringEnum;
-use crate::{
-    OwnedClientSecret, OwnedDeviceId, OwnedSessionId, OwnedUserId, PrivOwnedStr,
-    client::uiaa::AuthData,
-};
+use crate::{OwnedClientSecret, OwnedDeviceId, OwnedSessionId, OwnedUserId, PrivOwnedStr};
 
 /// Additional authentication information for requestToken endpoints.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

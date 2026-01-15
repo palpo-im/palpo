@@ -1,14 +1,12 @@
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::{Arc, OnceLock, RwLock as StdRwLock};
 
 use clap::Parser;
-use std::sync::OnceLock;
 use tokio::sync::{RwLock, broadcast, mpsc};
 
 use crate::admin::{
     AdminCommand, CommandInput, Completer, Console, Processor, ProcessorResult, processor,
 };
-use crate::core::events::room::message::Relation;
-use crate::core::events::room::message::RoomMessageEventContent;
+use crate::core::events::room::message::{Relation, RoomMessageEventContent};
 use crate::core::identifiers::*;
 use crate::room::timeline;
 use crate::{AppError, AppResult, PduBuilder, RoomMutexGuard, config};
@@ -175,7 +173,7 @@ impl Executor {
     }
 
     pub(super) async fn interrupt(&self) {
-        //TODO: not unwind safe
+        // TODO: not unwind safe
         self.console.interrupt();
         _ = self.channel.write().expect("locked for writing").take();
         self.console.close().await;

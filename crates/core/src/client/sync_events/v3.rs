@@ -2,25 +2,24 @@
 //!
 //! [spec]: https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3sync
 
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 use as_variant::as_variant;
 use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
 use super::UnreadNotificationsCount;
-use crate::{
-    DeviceKeyAlgorithm, OwnedEventId, OwnedRoomId,
-    client::filter::FilterDefinition,
-    device::DeviceLists,
-    events::{
-        AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, AnyStrippedStateEvent,
-        AnySyncEphemeralRoomEvent, AnySyncStateEvent, AnySyncTimelineEvent, AnyToDeviceEvent,
-        presence::PresenceEvent,
-    },
-    presence::PresenceState,
-    serde::RawJson,
+use crate::client::filter::FilterDefinition;
+use crate::device::DeviceLists;
+use crate::events::presence::PresenceEvent;
+use crate::events::{
+    AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, AnyStrippedStateEvent,
+    AnySyncEphemeralRoomEvent, AnySyncStateEvent, AnySyncTimelineEvent, AnyToDeviceEvent,
 };
+use crate::presence::PresenceState;
+use crate::serde::RawJson;
+use crate::{DeviceKeyAlgorithm, OwnedEventId, OwnedRoomId};
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,

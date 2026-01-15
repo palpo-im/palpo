@@ -1,4 +1,5 @@
-use html5ever::{Attribute, LocalName, tendril::StrTendril};
+use html5ever::tendril::StrTendril;
+use html5ever::{Attribute, LocalName};
 use phf::{Map, Set, phf_map, phf_set};
 use wildmatch::WildMatch;
 

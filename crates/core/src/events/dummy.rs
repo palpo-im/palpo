@@ -4,12 +4,11 @@
 
 use std::fmt;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
-use serde::{
-    de::{self, Deserialize, Deserializer},
-    ser::{Serialize, SerializeStruct as _, Serializer},
-};
+use serde::de::{self, Deserialize, Deserializer};
+use serde::ser::{Serialize, SerializeStruct as _, Serializer};
+
+use crate::macros::EventContent;
 
 /// The content of an `m.dummy` event.
 ///

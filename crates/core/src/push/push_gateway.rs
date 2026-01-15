@@ -7,13 +7,11 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    PrivOwnedStr, UnixSeconds,
-    events::TimelineEventType,
-    identifiers::*,
-    push::{PusherData, Tweak},
-    serde::{RawJsonValue, StringEnum},
-};
+use crate::events::TimelineEventType;
+use crate::identifiers::*;
+use crate::push::{PusherData, Tweak};
+use crate::serde::{RawJsonValue, StringEnum};
+use crate::{PrivOwnedStr, UnixSeconds};
 
 // const METADATA: Metadata = metadata! {
 //     method: POST,

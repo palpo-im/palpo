@@ -89,7 +89,8 @@ async fn change_password(
     }
 
     info!("User {} changed their password.", authed.user_id());
-    // crate::admin::send_message(RoomMessageEventContent::notice_plain(format!("User {user} changed their password.")));
+    // crate::admin::send_message(RoomMessageEventContent::notice_plain(format!("User {user} changed
+    // their password.")));
 
     empty_ok()
 }

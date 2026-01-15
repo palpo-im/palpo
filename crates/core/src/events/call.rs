@@ -18,7 +18,8 @@ pub mod select_answer;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{PrivOwnedStr, serde::StringEnum};
+use crate::PrivOwnedStr;
+use crate::serde::StringEnum;
 
 /// A VoIP session description.
 ///
@@ -102,7 +103,7 @@ pub enum StreamPurpose {
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CallCapabilities {
     /// Whether this client supports [DTMF].
-    ///0
+    /// 0
     /// Defaults to `false`.
     ///
     /// [DTMF]: https://w3c.github.io/webrtc-pc/#peer-to-peer-dtmf

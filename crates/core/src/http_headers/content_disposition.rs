@@ -1,6 +1,8 @@
 //! Types to (de)serialize the `Content-Disposition` HTTP header.
 
-use std::{fmt, ops::Deref, str::FromStr};
+use std::fmt;
+use std::ops::Deref;
+use std::str::FromStr;
 
 use salvo::oapi::ToSchema;
 use serde::Serialize;

@@ -1,20 +1,19 @@
 //! Common types for rooms.
-use std::{
-    borrow::{Borrow, Cow},
-    collections::BTreeMap,
-};
+use std::borrow::{Borrow, Cow};
+use std::collections::BTreeMap;
 
 use as_variant::as_variant;
 use salvo::prelude::*;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize, de};
-use serde_json::{Value as JsonValue, value::RawValue as RawJsonValue};
+use serde_json::Value as JsonValue;
+use serde_json::value::RawValue as RawJsonValue;
 
+use crate::events::StateEventType;
+use crate::serde::{JsonObject, StringEnum, from_raw_json_value};
 use crate::{
     Direction, EventEncryptionAlgorithm, OwnedEventId, OwnedMxcUri, OwnedRoomAliasId, OwnedRoomId,
     OwnedUserId, PrivOwnedStr, RoomId, RoomVersionId, UnixMillis,
-    events::StateEventType,
-    serde::{StringEnum, JsonObject, from_raw_json_value},
 };
 
 /// An enum of possible room types.
@@ -739,7 +738,6 @@ impl TimestampToEventResBody {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::{OwnedRoomId, owned_room_id};
     use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
@@ -747,6 +745,7 @@ mod tests {
         AllowRule, CustomAllowRule, JoinRule, JoinRuleSummary, Restricted, RestrictedSummary,
         RoomMembership, RoomSummary,
     };
+    use crate::{OwnedRoomId, owned_room_id};
 
     #[test]
     fn deserialize_summary_no_join_rule() {

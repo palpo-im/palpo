@@ -12,19 +12,15 @@ use reqwest::Url;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize, de};
 
-use crate::{
-    OwnedServerName, UnixMillis,
-    device::{DeviceListUpdateContent, DirectDeviceContent},
-    encryption::CrossSigningKey,
-    events::{
-        receipt::{Receipt, ReceiptContent},
-        typing::TypingContent,
-    },
-    identifiers::*,
-    presence::PresenceContent,
-    sending::{SendRequest, SendResult},
-    serde::{JsonValue, RawJsonValue, from_raw_json_value},
-};
+use crate::device::{DeviceListUpdateContent, DirectDeviceContent};
+use crate::encryption::CrossSigningKey;
+use crate::events::receipt::{Receipt, ReceiptContent};
+use crate::events::typing::TypingContent;
+use crate::identifiers::*;
+use crate::presence::PresenceContent;
+use crate::sending::{SendRequest, SendResult};
+use crate::serde::{JsonValue, RawJsonValue, from_raw_json_value};
+use crate::{OwnedServerName, UnixMillis};
 
 // const METADATA: Metadata = metadata! {
 //     method: PUT,

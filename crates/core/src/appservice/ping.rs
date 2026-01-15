@@ -12,10 +12,8 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{
-    OwnedTransactionId,
-    sending::{SendRequest, SendResult},
-};
+use crate::OwnedTransactionId;
+use crate::sending::{SendRequest, SendResult};
 
 // const METADATA: Metadata = metadata! {
 //     method: POST,

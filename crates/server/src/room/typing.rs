@@ -44,7 +44,8 @@ pub async fn add_typing(
     //     return Err(AppError::public("Room has no state"));
     // };
     // // Save the state after this sync so we can send the correct state diff next sync
-    // let point_id = state::ensure_point(&room_id, &OwnedEventId::from_str(&Ulid::new().to_string())?, event_sn as i64)?;
+    // let point_id = state::ensure_point(&room_id,
+    // &OwnedEventId::from_str(&Ulid::new().to_string())?, event_sn as i64)?;
     // state::update_frame_id(point_id, current_frame_id)?;
 
     let _ = TYPING_UPDATE_SENDER.send(room_id.to_owned());

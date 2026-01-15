@@ -1,7 +1,5 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use futures_util::future::{AbortHandle, Abortable};
 use rustyline_async::{Readline, ReadlineError, ReadlineEvent};
@@ -100,7 +98,8 @@ impl Console {
                     ReadlineEvent::Line(string) => self.clone().handle(string).await,
                     ReadlineEvent::Interrupted => continue,
                     ReadlineEvent::Eof => break,
-                    // ReadlineEvent::Quit => self.server.shutdown().unwrap_or_else(error::default_log),
+                    // ReadlineEvent::Quit =>
+                    // self.server.shutdown().unwrap_or_else(error::default_log),
                 },
                 Err(e) => match e {
                     ReadlineError::Closed => break,
@@ -216,7 +215,8 @@ pub fn print(markdown: &str) {
 }
 
 fn configure_output_err(mut output: MadSkin) -> MadSkin {
-    use termimad::{Alignment, CompoundStyle, LineStyle, crossterm::style::Color};
+    use termimad::crossterm::style::Color;
+    use termimad::{Alignment, CompoundStyle, LineStyle};
 
     let code_style = CompoundStyle::with_fgbg(Color::AnsiValue(196), Color::AnsiValue(234));
     output.inline_code = code_style.clone();
@@ -231,7 +231,8 @@ fn configure_output_err(mut output: MadSkin) -> MadSkin {
 }
 
 fn configure_output(mut output: MadSkin) -> MadSkin {
-    use termimad::{Alignment, CompoundStyle, LineStyle, crossterm::style::Color};
+    use termimad::crossterm::style::Color;
+    use termimad::{Alignment, CompoundStyle, LineStyle};
 
     let code_style = CompoundStyle::with_fgbg(Color::AnsiValue(40), Color::AnsiValue(234));
     output.inline_code = code_style.clone();

@@ -1,7 +1,8 @@
 use proc_macro2::Span;
-use syn::{meta::ParseNestedMeta, parse::Parse};
+use syn::meta::ParseNestedMeta;
+use syn::parse::Parse;
 
-use super::{RenameAll, RenameRule, PalpoEnumAttrs, UnitVariant, VariantWithSingleField};
+use super::{PalpoEnumAttrs, RenameAll, RenameRule, UnitVariant, VariantWithSingleField};
 
 impl PalpoEnumAttrs {
     /// Try to parse the given meta item and merge it into this `PalpoEnumAttrs`.

@@ -12,8 +12,8 @@ pub struct JwtConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
 
-    /// Validation secret key. The type of key can be configured in 'format', but defaults to the common HMAC which
-    /// is a plaintext shared-secret, so you should keep this value private.
+    /// Validation secret key. The type of key can be configured in 'format', but defaults to the
+    /// common HMAC which is a plaintext shared-secret, so you should keep this value private.
     ///
     /// display: sensitive
     /// default:

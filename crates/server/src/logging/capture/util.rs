@@ -1,9 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use super::{
-    super::{Level, fmt},
-    Closure, Data,
-};
+use super::super::{Level, fmt};
+use super::{Closure, Data};
 use crate::AppResult;
 
 pub fn fmt_html<S>(out: Arc<Mutex<S>>) -> Box<Closure>

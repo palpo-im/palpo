@@ -7,16 +7,12 @@ use super::{
     canonical_json, servers_to_check_signatures, sign_json, verify_canonical_json_bytes,
     verify_event,
 };
+use crate::room_version_rules::{RoomVersionRules, SignaturesRules};
+use crate::serde::{Base64, CanonicalJsonValue};
 use crate::signatures::{
     Ed25519KeyPair, Error, KeyPair, PublicKeyMap, PublicKeySet, VerificationError, Verified,
 };
-use crate::{
-    ServerSigningKeyId, SigningKeyAlgorithm,
-    room_version_rules::{RoomVersionRules, SignaturesRules},
-    serde::Base64,
-    serde::CanonicalJsonValue,
-    server_name,
-};
+use crate::{ServerSigningKeyId, SigningKeyAlgorithm, server_name};
 
 fn generate_key_pair(name: &str) -> Ed25519KeyPair {
     let key_content = Ed25519KeyPair::generate().unwrap();

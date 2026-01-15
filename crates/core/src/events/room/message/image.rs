@@ -1,10 +1,8 @@
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedMxcUri,
-    events::room::{EncryptedFile, ImageInfo, MediaSource},
-};
+use crate::OwnedMxcUri;
+use crate::events::room::{EncryptedFile, ImageInfo, MediaSource};
 
 /// The payload for an image message.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

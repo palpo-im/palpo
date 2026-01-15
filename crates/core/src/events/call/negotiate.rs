@@ -2,11 +2,11 @@
 //!
 //! [`m.call.negotiate`]: https://spec.matrix.org/latest/client-server-api/#mcallnegotiate
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::SessionDescription;
+use crate::macros::EventContent;
 use crate::{OwnedVoipId, VoipVersionId};
 
 /// **Added in VoIP version 1.** The content of an `m.call.negotiate` event.

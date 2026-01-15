@@ -1,15 +1,11 @@
-use std::{
-    borrow::Cow,
-    collections::btree_map::{BTreeMap, Entry},
-    fmt,
-    str::FromStr,
-    time::{Duration, SystemTime},
-};
+use std::borrow::Cow;
+use std::collections::btree_map::{BTreeMap, Entry};
+use std::fmt;
+use std::str::FromStr;
+use std::time::{Duration, SystemTime};
 
-use serde::{
-    de::{self, Deserialize, Deserializer, MapAccess, Visitor},
-    ser::{self, Serialize, SerializeMap, Serializer},
-};
+use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+use serde::ser::{self, Serialize, SerializeMap, Serializer};
 use serde_json::from_value as from_json_value;
 
 use super::ErrorKind;
@@ -745,8 +741,8 @@ mod tests {
 
     // #[test]
     // fn deserialize_forbidden() {
-    //     let deserialized: ErrorKind = from_json_value(json!({ "errcode": "M_FORBIDDEN" })).unwrap();
-    //     assert_eq!(deserialized, ErrorKind::Forbidden);
+    //     let deserialized: ErrorKind = from_json_value(json!({ "errcode": "M_FORBIDDEN"
+    // })).unwrap();     assert_eq!(deserialized, ErrorKind::Forbidden);
     // }
 
     // #[test]

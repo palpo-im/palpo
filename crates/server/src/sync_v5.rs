@@ -4,14 +4,14 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::core::Seqnum;
 use crate::core::client::filter::RoomEventFilter;
-use crate::core::client::sync_events::{self, v5::*};
+use crate::core::client::sync_events::v5::*;
+use crate::core::client::sync_events::{self};
 use crate::core::device::DeviceLists;
 use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_contents};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{AnyRawAccountDataEvent, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
-use crate::event::BatchToken;
-use crate::event::ignored_filter;
+use crate::event::{BatchToken, ignored_filter};
 use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
@@ -153,7 +153,7 @@ async fn process_lists(
             let new_rooms: BTreeSet<OwnedRoomId> =
                 room_ids.clone().into_iter().map(From::from).collect();
             new_known_rooms.extend(new_rooms);
-            //new_known_rooms.extend(room_ids..cloned());
+            // new_known_rooms.extend(room_ids..cloned());
             for room_id in room_ids {
                 let todo_room = todo_rooms.entry(room_id.to_owned()).or_insert(TodoRoom {
                     required_state: BTreeSet::new(),
@@ -238,9 +238,9 @@ fn fetch_subscriptions(
         known_subscription_rooms.insert(room_id.clone());
     }
     // where this went (protomsc says it was removed)
-    //for r in req_body.unsubscribe_rooms {
-    //	known_subscription_rooms.remove(&r);
-    //	req_body.room_subscriptions.remove(&r);
+    // for r in req_body.unsubscribe_rooms {
+    // 	known_subscription_rooms.remove(&r);
+    // 	req_body.room_subscriptions.remove(&r);
     //}
 
     crate::sync_v5::update_sync_known_rooms(

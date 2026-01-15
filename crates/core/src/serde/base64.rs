@@ -1,11 +1,10 @@
 //! Transparent base64 encoding / decoding as part of (de)serialization.
 
-use std::{fmt, marker::PhantomData};
+use std::fmt;
+use std::marker::PhantomData;
 
-use base64::{
-    Engine,
-    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose},
-};
+use base64::Engine;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose};
 use salvo::oapi::{Components, RefOr, Schema, ToSchema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 

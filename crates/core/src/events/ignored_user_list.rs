@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::OwnedUserId;
+use crate::macros::EventContent;
 
 /// The content of an `m.ignored_user_list` event.
 ///

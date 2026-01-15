@@ -1,8 +1,6 @@
 use salvo::prelude::*;
-use serde::{
-    de::{Deserialize, Deserializer},
-    ser::{Serialize, Serializer},
-};
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Serialize, Serializer};
 
 /// Options for filtering based on the presence of a URL.
 #[derive(ToSchema, Clone, Copy, Debug, Eq, PartialEq)]

@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use as_variant::as_variant;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{to_value as to_json_value, value::Value as JsonValue};
+use serde_json::to_value as to_json_value;
+use serde_json::value::Value as JsonValue;
 use thiserror::Error;
 use tracing::{instrument, warn};
 

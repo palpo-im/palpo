@@ -21,8 +21,10 @@ use crate::event::handler::{process_pulled_pdu, remote_timestamp_to_event};
 use crate::event::parse_fetched_pdu;
 use crate::room::{state, timeline};
 use crate::utils::HtmlEscape;
-use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, json_ok, room};
-use crate::{OptionalExtension, PduBuilder};
+use crate::{
+    AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, OptionalExtension, PduBuilder,
+    empty_ok, json_ok, room,
+};
 
 /// #GET /_matrix/client/r0/rooms/{room_id}/event/{event_id}
 /// Gets a single event.

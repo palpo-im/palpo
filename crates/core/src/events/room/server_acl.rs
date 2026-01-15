@@ -2,12 +2,13 @@
 //!
 //! [`m.room.server_acl`]: https://spec.matrix.org/latest/client-server-api/#mroomserver_acl
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 use wildmatch::WildMatch;
 
-use crate::{ServerName, events::EmptyStateKey};
+use crate::ServerName;
+use crate::events::EmptyStateKey;
+use crate::macros::EventContent;
 
 /// The content of an `m.room.server_acl` event.
 ///

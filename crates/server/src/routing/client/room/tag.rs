@@ -1,5 +1,3 @@
-
-
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 

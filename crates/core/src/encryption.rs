@@ -7,10 +7,8 @@ use std::collections::BTreeMap;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    EventEncryptionAlgorithm, OwnedDeviceId, OwnedDeviceKeyId, OwnedUserId, PrivOwnedStr,
-    serde::{Base64, StringEnum},
-};
+use crate::serde::{Base64, StringEnum};
+use crate::{EventEncryptionAlgorithm, OwnedDeviceId, OwnedDeviceKeyId, OwnedUserId, PrivOwnedStr};
 
 /// Identity keys for a device.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

@@ -10,7 +10,8 @@ use std::time::Duration;
 use salvo::prelude::*;
 use serde::Serialize;
 
-use crate::{OwnedServerName, authentication::TokenType};
+use crate::OwnedServerName;
+use crate::authentication::TokenType;
 
 // const METADATA: Metadata = metadata! {
 //     method: POST,

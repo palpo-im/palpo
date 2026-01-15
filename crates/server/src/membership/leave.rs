@@ -1,4 +1,3 @@
-
 use std::collections::HashSet;
 
 use salvo::http::StatusError;
@@ -42,7 +41,7 @@ pub async fn leave_room(
     let conf = config::get();
 
     if room::is_server_joined(&conf.server_name, room_id)? {
-        //If only this server in room, leave locally.
+        // If only this server in room, leave locally.
         if let Err(e) = leave_room_local(user_id, room_id, reason.clone()).await {
             warn!("failed to leave room {} locally: {}", user_id, e);
         } else {

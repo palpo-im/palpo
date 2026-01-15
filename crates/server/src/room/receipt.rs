@@ -83,7 +83,8 @@ pub fn last_private_read(user_id: &UserId, room_id: &RoomId) -> AppResult<Receip
         .first::<OwnedEventId>(&mut connect()?)?;
 
     // let room_sn = crate::room::get_room_sn(room_id)
-    //     .map_err(|e| MatrixError::bad_state(format!("room does not exist in database for {room_id}: {e}")))?;
+    //     .map_err(|e| MatrixError::bad_state(format!("room does not exist in database for
+    // {room_id}: {e}")))?;
 
     // let pdu = timeline::get_pdu(&event_id)?;
 

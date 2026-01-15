@@ -14,8 +14,7 @@ use crate::core::federation::knock::{
 };
 use crate::core::identifiers::*;
 use crate::core::serde::JsonObject;
-use crate::event::gen_event_id_canonical_json;
-use crate::event::handler;
+use crate::event::{gen_event_id_canonical_json, handler};
 use crate::room::{state, timeline};
 use crate::{
     AuthArgs, DepotExt, IsRemoteOrLocal, JsonResult, MatrixError, PduBuilder, PduEvent, data,

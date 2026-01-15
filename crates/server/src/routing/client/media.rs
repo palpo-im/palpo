@@ -21,10 +21,11 @@ use crate::core::identifiers::*;
 use crate::data::connect;
 use crate::data::media::{DbMetadata, DbThumbnail, NewDbMetadata, NewDbThumbnail};
 use crate::data::schema::*;
+use crate::exts::*;
 use crate::media::*;
 use crate::{
-    AppResult, AuthArgs, EmptyResult, JsonResult, MatrixError, config, empty_ok, exts::*, hoops,
-    json_ok, utils,
+    AppResult, AuthArgs, EmptyResult, JsonResult, MatrixError, config, empty_ok, hoops, json_ok,
+    utils,
 };
 
 pub fn self_auth_router() -> Router {
@@ -131,7 +132,8 @@ pub async fn get_content_with_filename(
             .attached_name(args.filename)
             .build()
             .await?;
-        // if let Some(Ok(content_disposition)) = metadata.content_disposition.as_deref().map(HeaderValue::from_str) {
+        // if let Some(Ok(content_disposition)) =
+        // metadata.content_disposition.as_deref().map(HeaderValue::from_str) {
         //     file.set_content_disposition(content_disposition);
         // }
         file.send(req.headers(), res).await;
@@ -216,7 +218,7 @@ pub async fn create_content(
         };
 
         crate::data::media::insert_metadata(&metadata)?;
-        //TODO: thumbnail support
+        // TODO: thumbnail support
     } else {
         return Err(MatrixError::cannot_overwrite_media("Media ID already has content").into());
     }
@@ -285,7 +287,7 @@ pub async fn upload_content(
 
         crate::data::media::insert_metadata(&metadata)?;
 
-        //TODO: thumbnail support
+        // TODO: thumbnail support
         empty_ok()
     } else {
         Err(MatrixError::cannot_overwrite_media("Media ID already has content").into())
@@ -339,7 +341,8 @@ pub async fn preview_url(
 /// - Server rounds that up again to (958, 600) to fix the aspect ratio (only for width,height>96)
 /// - Server creates the thumbnail and sends it to the user
 ///
-/// For width,height <= 96 the server uses another thumbnailing algorithm which crops the image afterwards.
+/// For width,height <= 96 the server uses another thumbnailing algorithm which crops the image
+/// afterwards.
 #[endpoint]
 pub async fn get_thumbnail(
     _aa: AuthArgs,
@@ -402,7 +405,8 @@ pub async fn get_thumbnail(
                 })
                 .build()
                 .await?;
-            // if let Some(Ok(content_disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
+            // if let Some(Ok(content_disposition)) =
+            // content_disposition.as_deref().map(HeaderValue::from_str) {
             //     file.set_content_disposition(content_disposition);
             // }
 
@@ -438,7 +442,8 @@ pub async fn get_thumbnail(
             })
             .build()
             .await?;
-        // if let Some(Ok(content_disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
+        // if let Some(Ok(content_disposition)) =
+        // content_disposition.as_deref().map(HeaderValue::from_str) {
         //     file.set_content_disposition(content_disposition);
         // }
         file.send(req.headers(), res).await;
@@ -465,7 +470,8 @@ pub async fn get_thumbnail(
                     )
                     .build()
                     .await?;
-                // if let Some(Ok(content_disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
+                // if let Some(Ok(content_disposition)) =
+                // content_disposition.as_deref().map(HeaderValue::from_str) {
                 //     file.set_content_disposition(content_disposition);
                 // }
                 file.send(req.headers(), res).await;
@@ -567,7 +573,8 @@ pub async fn get_thumbnail(
                 )
                 .build()
                 .await?;
-            // if let Some(Ok(content_disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
+            // if let Some(Ok(content_disposition)) =
+            // content_disposition.as_deref().map(HeaderValue::from_str) {
             //     file.set_content_disposition(content_disposition);
             // }
             file.send(req.headers(), res).await;
@@ -583,7 +590,8 @@ pub async fn get_thumbnail(
                 )
                 .build()
                 .await?;
-            // if let Some(Ok(content_disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
+            // if let Some(Ok(content_disposition)) =
+            // content_disposition.as_deref().map(HeaderValue::from_str) {
             //     file.set_content_disposition(content_disposition);
             // }
             file.send(req.headers(), res).await;

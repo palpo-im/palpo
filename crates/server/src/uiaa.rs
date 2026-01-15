@@ -4,16 +4,14 @@ use std::sync::LazyLock;
 use diesel::prelude::*;
 
 use super::LazyRwLock;
-use crate::SESSION_ID_LENGTH;
 use crate::core::client::uiaa::{
     AuthData, AuthError, AuthType, Password, UiaaInfo, UserIdentifier,
 };
 use crate::core::identifiers::*;
-use crate::core::serde::CanonicalJsonValue;
-use crate::core::serde::JsonValue;
+use crate::core::serde::{CanonicalJsonValue, JsonValue};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::{AppResult, MatrixError, data, utils};
+use crate::{AppResult, MatrixError, SESSION_ID_LENGTH, data, utils};
 
 static UIAA_REQUESTS: LazyRwLock<
     BTreeMap<(OwnedUserId, OwnedDeviceId, String), CanonicalJsonValue>,
@@ -29,7 +27,9 @@ pub fn create_session(
     set_uiaa_request(
         user_id,
         device_id,
-        uiaa_info.session.as_ref().expect("session should be set"), // TODO: better session error handling (why is it optional in palpo?)
+        uiaa_info.session.as_ref().expect("session should be set"), /* TODO: better session
+                                                                     * error handling (why is it
+                                                                     * optional in palpo?) */
         json_body,
     );
     update_session(

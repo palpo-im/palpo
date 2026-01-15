@@ -4,12 +4,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::events::room::ImageInfo;
-use crate::{OwnedMxcUri, OwnedRoomId, PrivOwnedStr, serde::StringEnum};
+use crate::macros::EventContent;
+use crate::serde::StringEnum;
+use crate::{OwnedMxcUri, OwnedRoomId, PrivOwnedStr};
 
 /// The content of an `im.ponies.room_emotes` event,
 /// the unstable version of `m.image_pack` in room state events.

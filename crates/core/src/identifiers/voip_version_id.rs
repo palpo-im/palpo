@@ -2,13 +2,11 @@
 
 use std::fmt;
 
-use crate::macros::DisplayAsRefStr;
 use salvo::oapi::ToSchema;
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{self, Visitor},
-};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::macros::DisplayAsRefStr;
 use crate::{IdParseError, PrivOwnedStr};
 
 /// A Matrix VoIP version ID.

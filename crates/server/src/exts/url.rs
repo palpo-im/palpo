@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::IpAddr;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use salvo::http::headers::{CacheControl, Header};
 
-use crate::LazyRwLock;
 use crate::core::identifiers::*;
-use crate::sending;
+use crate::{LazyRwLock, sending};
 
 type WellKnownMap = HashMap<OwnedServerName, DestinationResponse>;
 pub static ACTUAL_DESTINATION_CACHE: LazyRwLock<WellKnownMap> = LazyLock::new(Default::default); // actual_destination, host
@@ -196,7 +194,8 @@ pub enum DestType {
 /// Numbers in comments below refer to bullet points in linked section of specification
 async fn find_actual_destination(
     destination: &'_ ServerName,
-    // The host used to potentially lookup SRV records against, only used when only_request_srv is true
+    // The host used to potentially lookup SRV records against, only used when only_request_srv is
+    // true
     well_known_dest: Option<String>,
     // Should be used when only the SRV lookup has expired
     only_request_srv: bool,

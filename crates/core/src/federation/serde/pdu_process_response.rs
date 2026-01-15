@@ -1,10 +1,9 @@
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{
-    Deserialize, Serialize,
-    de::{Deserializer, MapAccess, Visitor},
-    ser::{SerializeMap, Serializer},
-};
+use serde::de::{Deserializer, MapAccess, Visitor};
+use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::OwnedEventId;
 
@@ -71,7 +70,8 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
-    use serde_json::{json, value::Serializer as JsonSerializer};
+    use serde_json::json;
+    use serde_json::value::Serializer as JsonSerializer;
 
     use super::{deserialize, serialize};
     use crate::{OwnedEventId, event_id, owned_event_id};

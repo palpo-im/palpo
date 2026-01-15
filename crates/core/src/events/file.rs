@@ -4,15 +4,15 @@
 
 use std::collections::BTreeMap;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    message::TextContentBlock,
-    room::{EncryptedFile, JsonWebKey, message::Relation},
-};
-use crate::{OwnedMxcUri, serde::Base64};
+use super::message::TextContentBlock;
+use super::room::message::Relation;
+use super::room::{EncryptedFile, JsonWebKey};
+use crate::OwnedMxcUri;
+use crate::macros::EventContent;
+use crate::serde::Base64;
 
 /// The payload for an extensible file message.
 ///

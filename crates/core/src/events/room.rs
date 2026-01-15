@@ -7,10 +7,9 @@ use std::collections::BTreeMap;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize, de};
 
-use crate::{
-    OwnedMxcUri,
-    serde::{Base64, base64::UrlSafe},
-};
+use crate::OwnedMxcUri;
+use crate::serde::Base64;
+use crate::serde::base64::UrlSafe;
 
 pub mod aliases;
 pub mod avatar;

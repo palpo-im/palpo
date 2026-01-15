@@ -1,12 +1,17 @@
 //! Types to deserialize `m.room.create` events.
 
-use std::{borrow::Cow, collections::HashSet, ops::Deref};
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::ops::Deref;
 
-use serde::{Deserialize, de::IgnoredAny};
+use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use super::Event;
 use crate::room_version_rules::RoomVersionRules;
-use crate::{OwnedUserId, RoomVersionId, UserId, serde::from_raw_json_value, state::StateResult};
+use crate::serde::from_raw_json_value;
+use crate::state::StateResult;
+use crate::{OwnedUserId, RoomVersionId, UserId};
 
 /// A helper type for an [`Event`] of type `m.room.create`.
 ///

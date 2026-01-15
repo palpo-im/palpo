@@ -10,10 +10,8 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedDeviceId, OwnedUserId,
-    encryption::{CrossSigningKey, DeviceKeys},
-};
+use crate::encryption::{CrossSigningKey, DeviceKeys};
+use crate::{OwnedDeviceId, OwnedUserId};
 // const METADATA: Metadata = metadata! {
 //     method: GET,
 //     rate_limited: false,

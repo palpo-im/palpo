@@ -3,7 +3,10 @@ mod types {
     use std::io::{BufRead, Cursor};
 
     use byteorder::{NetworkEndian, ReadBytesExt};
-    use diesel::{Queryable, deserialize::FromSql, pg::Pg, sql_types::*};
+    use diesel::Queryable;
+    use diesel::deserialize::FromSql;
+    use diesel::pg::Pg;
+    use diesel::sql_types::*;
 
     #[derive(Clone, Copy, SqlType)]
     #[diesel(postgres_type(oid = 3615, array_oid = 3645))]
@@ -301,7 +304,8 @@ pub use self::types::*;
 //     #[test]
 //     fn test_tsvector_from_sql_with_positions() {
 //         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-//         let mut conn = diesel::PgConnection::establish(&database_url).expect("Error connecting to database");
+//         let mut conn = diesel::PgConnection::establish(&database_url).expect("Error connecting to
+// database");
 
 //         let query = diesel::select(sql::<TsVector>(
 //             "to_tsvector('a fat cat sat on a mat and ate a fat rat')",
@@ -343,10 +347,12 @@ pub use self::types::*;
 //     #[test]
 //     fn test_tsvector_from_sql_without_positions() {
 //         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-//         let mut conn = PgConnection::establish(&database_url).expect("Error connecting to database");
+//         let mut conn = PgConnection::establish(&database_url).expect("Error connecting to
+// database");
 
-//         let query = diesel::select(sql::<TsVector>("'a fat cat sat on a mat and ate a fat rat'::tsvector"));
-//         let result: PgTsVector = query.get_result(&mut conn).expect("Error executing query");
+//         let query = diesel::select(sql::<TsVector>("'a fat cat sat on a mat and ate a fat
+// rat'::tsvector"));         let result: PgTsVector = query.get_result(&mut conn).expect("Error
+// executing query");
 
 //         let expected = PgTsVector {
 //             entries: vec![

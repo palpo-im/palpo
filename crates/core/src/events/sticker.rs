@@ -2,11 +2,12 @@
 //!
 //! [`m.sticker`]: https://spec.matrix.org/latest/client-server-api/#msticker
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedMxcUri, events::room::ImageInfo};
+use crate::OwnedMxcUri;
+use crate::events::room::ImageInfo;
+use crate::macros::EventContent;
 
 /// The content of an `m.sticker` event.
 ///

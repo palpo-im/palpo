@@ -1,7 +1,9 @@
-use std::{collections::BTreeMap, iter::FromIterator};
+use std::collections::BTreeMap;
+use std::iter::FromIterator;
 
 use diesel::prelude::*;
-use salvo::http::headers::{HeaderMapExt, authorization::Authorization};
+use salvo::http::headers::HeaderMapExt;
+use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
 
 use crate::core::federation::authentication::XMatrix;

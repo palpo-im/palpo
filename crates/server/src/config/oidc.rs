@@ -22,7 +22,7 @@ pub struct OidcConfig {
     /// Map of provider name to configuration. Each provider needs:
     /// - issuer: Provider base URL
     /// - client_id: OAuth app ID
-    /// - client_secret: OAuth app secret  
+    /// - client_secret: OAuth app secret
     /// - redirect_uri: Callback URL (must match provider settings)
     /// - scopes (optional): Permissions to request
     /// - display_name (optional): UI display text

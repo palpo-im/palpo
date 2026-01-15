@@ -1,12 +1,14 @@
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
+use super::relation::{BundledMessageLikeRelations, BundledStateRelations};
+use super::room::redaction::RoomRedactionEventContent;
 use super::{
     MessageLikeEventContent, OriginalSyncMessageLikeEvent, PossiblyRedactedStateEventContent,
-    relation::{BundledMessageLikeRelations, BundledStateRelations},
-    room::redaction::RoomRedactionEventContent,
 };
-use crate::{OwnedEventId, OwnedTransactionId, OwnedUserId, UnixMillis, serde::CanBeEmpty};
+use crate::serde::CanBeEmpty;
+use crate::{OwnedEventId, OwnedTransactionId, OwnedUserId, UnixMillis};
 
 /// Extra information about a message event that is not incorporated into the
 /// event's hash.

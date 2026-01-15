@@ -2,10 +2,10 @@
 //!
 //! [`m.forwarded_room_key`]: https://spec.matrix.org/latest/client-server-api/#mforwarded_room_key
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
 use crate::{EventEncryptionAlgorithm, OwnedRoomId};
 
 /// The content of an `m.forwarded_room_key` event.

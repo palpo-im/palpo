@@ -4,13 +4,14 @@
 
 use std::time::Duration;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::events::{
-    audio::Amplitude, file::FileContentBlock, message::TextContentBlock, room::message::Relation,
-};
+use crate::events::audio::Amplitude;
+use crate::events::file::FileContentBlock;
+use crate::events::message::TextContentBlock;
+use crate::events::room::message::Relation;
+use crate::macros::EventContent;
 
 /// The payload for an extensible voice message.
 ///

@@ -4,7 +4,10 @@ mod tests;
 mod unquote;
 mod unquoted;
 
-pub use self::{between::Between, split::SplitInfallible, unquote::Unquote, unquoted::Unquoted};
+pub use self::between::Between;
+pub use self::split::SplitInfallible;
+pub use self::unquote::Unquote;
+pub use self::unquoted::Unquoted;
 use crate::AppResult;
 
 pub const EMPTY: &str = "";

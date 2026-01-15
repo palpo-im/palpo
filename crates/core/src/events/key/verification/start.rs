@@ -2,9 +2,9 @@
 //!
 //! [`m.key.verification.start`]: https://spec.matrix.org/latest/client-server-api/#mkeyverificationstart
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
+use std::fmt;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -12,7 +12,10 @@ use serde_json::Value as JsonValue;
 use super::{
     HashAlgorithm, KeyAgreementProtocol, MessageAuthenticationCode, ShortAuthenticationString,
 };
-use crate::{OwnedDeviceId, OwnedTransactionId, events::relation::Reference, serde::Base64};
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
+use crate::serde::Base64;
+use crate::{OwnedDeviceId, OwnedTransactionId};
 
 /// The content of a to-device `m.key.verification.start` event.
 ///
@@ -260,7 +263,6 @@ pub struct SasV1Content {
 //                 "transaction_id": "456"
 //             });
 
-//
 // assert_eq!(to_json_value(&key_verification_start_content).unwrap(),
 // json_data);         }
 //     }

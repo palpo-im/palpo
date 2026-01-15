@@ -1,9 +1,9 @@
-use std::{
-    fmt,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::fmt;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use diesel::{AsExpression, FromSqlRow, deserialize::FromSql, pg, serialize::ToSql, sql_types};
+use diesel::deserialize::FromSql;
+use diesel::serialize::ToSql;
+use diesel::{AsExpression, FromSqlRow, pg, sql_types};
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 

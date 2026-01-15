@@ -10,12 +10,10 @@ use std::collections::BTreeMap;
 use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedUserId, PrivOwnedStr,
-    client::filter::RoomEventFilter,
-    events::{AnyStateEvent, AnyTimelineEvent},
-    serde::{RawJson, StringEnum},
-};
+use crate::client::filter::RoomEventFilter;
+use crate::events::{AnyStateEvent, AnyTimelineEvent};
+use crate::serde::{RawJson, StringEnum};
+use crate::{OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedUserId, PrivOwnedStr};
 
 // const METADATA: Metadata = metadata! {
 //     method: POST,

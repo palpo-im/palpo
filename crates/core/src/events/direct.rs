@@ -2,15 +2,13 @@
 //!
 //! [`m.direct`]: https://spec.matrix.org/latest/client-server-api/#mdirect
 
-use std::{
-    collections::{BTreeMap, btree_map},
-    ops::{Deref, DerefMut},
-};
+use std::collections::{BTreeMap, btree_map};
+use std::ops::{Deref, DerefMut};
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
 use crate::{OwnedRoomId, OwnedUserId};
 
 /// The content of an `m.direct` event.

@@ -2,23 +2,20 @@
 
 use std::ops::Deref;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::macros::EventContent;
 
 mod poll_answers_serde;
 use poll_answers_serde::PollAnswersDeHelper;
 
-use super::{
-    PollResponseData, compile_poll_results,
-    end::{PollEndEventContent, PollResultsContentBlock},
-    generate_poll_end_fallback_text,
-};
-use crate::{
-    PrivOwnedStr, UnixMillis,
-    events::{message::TextContentBlock, room::message::Relation},
-    serde::StringEnum,
-};
+use super::end::{PollEndEventContent, PollResultsContentBlock};
+use super::{PollResponseData, compile_poll_results, generate_poll_end_fallback_text};
+use crate::events::message::TextContentBlock;
+use crate::events::room::message::Relation;
+use crate::serde::StringEnum;
+use crate::{PrivOwnedStr, UnixMillis};
 
 /// The payload for a poll start event.
 ///
@@ -161,7 +158,7 @@ impl PollContentBlock {
         }
     }
 
-    pub(super) fn default_max_selections() -> u32{
+    pub(super) fn default_max_selections() -> u32 {
         1
     }
 

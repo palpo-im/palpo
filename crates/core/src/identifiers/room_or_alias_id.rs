@@ -3,10 +3,11 @@
 
 use std::hint::unreachable_unchecked;
 
-use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
-use super::{OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId, server_name::ServerName};
+use super::server_name::ServerName;
+use super::{OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId};
+use crate::macros::IdDst;
 
 /// A Matrix [room ID] or a Matrix [room alias ID].
 ///
@@ -17,7 +18,10 @@ use super::{OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId, server_name::Ser
 ///
 /// ```
 /// # use palpo_core::RoomOrAliasId;
-/// assert_eq!(<&RoomOrAliasId>::try_from("#palpo:example.com").unwrap(), "#palpo:example.com");
+/// assert_eq!(
+///     <&RoomOrAliasId>::try_from("#palpo:example.com").unwrap(),
+///     "#palpo:example.com"
+/// );
 ///
 /// assert_eq!(
 ///     <&RoomOrAliasId>::try_from("!n8f893n9:example.com").unwrap(),

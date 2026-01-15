@@ -57,7 +57,8 @@ pub static ROTATE: LazyLock<RotationHandler> = LazyLock::new(Default::default);
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 pub static SEQNUM_QUEUE: LazyLock<SeqnumQueue> = LazyLock::new(Default::default);
 
-/// Handles "rotation" of long-polling requests. "Rotation" in this context is similar to "rotation" of log files and the like.
+/// Handles "rotation" of long-polling requests. "Rotation" in this context is similar to "rotation"
+/// of log files and the like.
 ///
 /// This is utilized to have sync workers return early and release read locks on the database.
 pub struct RotationHandler(broadcast::Sender<()>, broadcast::Receiver<()>);
@@ -110,10 +111,8 @@ pub fn dns_resolver() -> &'static HickoryResolver<TokioConnectionProvider> {
 }
 
 pub fn appservices() -> &'static Vec<Registration> {
-    use figment::{
-        Figment,
-        providers::{Format, Toml, Yaml},
-    };
+    use figment::Figment;
+    use figment::providers::{Format, Toml, Yaml};
     static APPSERVICES: OnceLock<Vec<Registration>> = OnceLock::new();
 
     APPSERVICES.get_or_init(|| {
@@ -365,8 +364,8 @@ pub fn add_signing_key_from_origin(
 //     }
 // }
 
-/// Filters the key map of multiple servers down to keys that should be accepted given the expiry time,
-/// room version, and timestamp of the paramters
+/// Filters the key map of multiple servers down to keys that should be accepted given the expiry
+/// time, room version, and timestamp of the paramters
 pub fn filter_keys_server_map(
     keys: BTreeMap<String, SigningKeys>,
     timestamp: UnixMillis,

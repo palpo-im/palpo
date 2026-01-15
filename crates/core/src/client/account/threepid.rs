@@ -14,11 +14,10 @@ use serde::{Deserialize, Serialize};
 //         1.0 => "/_matrix/client/r0/account/3pid/bind",
 //         1.1 => "/_matrix/client/v3/account/3pid/bind",
 use crate::client::account::IdentityServerInfo;
-use crate::{
-    OwnedClientSecret, OwnedSessionId,
-    client::{account::ThirdPartyIdRemovalStatus, uiaa::AuthData},
-    third_party::{Medium, ThirdPartyIdentifier},
-};
+use crate::client::account::ThirdPartyIdRemovalStatus;
+use crate::client::uiaa::AuthData;
+use crate::third_party::{Medium, ThirdPartyIdentifier};
+use crate::{OwnedClientSecret, OwnedSessionId};
 
 #[derive(ToSchema, Serialize, Debug)]
 pub struct ThreepidsResBody {

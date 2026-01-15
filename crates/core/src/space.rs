@@ -4,8 +4,9 @@
 
 use salvo::prelude::*;
 
+use crate::PrivOwnedStr;
 use crate::macros::StringEnum;
-use crate::{PrivOwnedStr, room::JoinRule};
+use crate::room::JoinRule;
 
 /// The rule used for users wishing to join a room.
 ///

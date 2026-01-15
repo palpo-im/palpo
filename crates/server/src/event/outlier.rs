@@ -8,7 +8,8 @@ use crate::core::serde::{CanonicalJsonObject, RawJsonValue};
 use crate::core::state::{Event, StateError};
 use crate::core::{self, Seqnum, UnixMillis};
 use crate::data::room::{DbEventData, NewDbEvent};
-use crate::data::{connect, diesel_exists, schema::*};
+use crate::data::schema::*;
+use crate::data::{connect, diesel_exists};
 use crate::event::fetching::{
     fetch_and_process_auth_chain, fetch_and_process_missing_events,
     fetch_and_process_missing_state, fetch_and_process_missing_state_by_ids,
@@ -172,7 +173,8 @@ impl OutlierPdu {
             return self.save_to_database(is_backfill);
         }
 
-        // Fetch any missing prev events doing all checks listed here starting at 1. These are timeline events
+        // Fetch any missing prev events doing all checks listed here starting at 1. These are
+        // timeline events
         if let Err(e) = fetch_and_process_missing_events(
             &self.remote_server,
             &self.room_id,

@@ -10,11 +10,9 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::{
-    OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId,
-    sending::{SendRequest, SendResult},
-    user::ProfileField,
-};
+use crate::sending::{SendRequest, SendResult};
+use crate::user::ProfileField;
+use crate::{OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId};
 // /// `/v1/` ([spec])
 // ///
 // /// [spec]: https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1querydirectory

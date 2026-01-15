@@ -8,7 +8,8 @@
 use std::time::Duration;
 
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Deserializer, Serialize, de::Error};
+use serde::de::Error;
+use serde::{Deserialize, Deserializer, Serialize};
 
 // const METADATA: Metadata = metadata! {
 //     method: PUT,

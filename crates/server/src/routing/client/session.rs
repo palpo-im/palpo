@@ -13,9 +13,10 @@ use crate::core::serde::CanonicalJsonValue;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::{DbUser, NewDbUser};
+use crate::exts::*;
 use crate::{
     AppError, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
-    SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, exts::*, hoops, json_ok, user, utils,
+    SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops, json_ok, user, utils,
 };
 
 pub fn public_router() -> Router {
@@ -97,25 +98,27 @@ async fn login(
 
             //             let dns = user::search_ldap(&user_id).await?;
             //             if dns.len() >= 2 {
-            //                 return Err(MatrixError::forbidden("LDAP search returned two or more results", None).into());
-            //             }
+            //                 return Err(MatrixError::forbidden("LDAP search returned two or more
+            // results", None).into());             }
 
             //             if let Some((user_dn, is_admin)) = dns.first() {
             //                 (user_dn.clone(), *is_admin)
             //             } else {
             //                 let Ok(user) = data::user::get_user(&user_id)? else {
-            //                     return Err(MatrixError::forbidden("user not found.", None).into());
-            //                 };
+            //                     return Err(MatrixError::forbidden("user not found.",
+            // None).into());                 };
             //                 if let Err(_e) = user::vertify_password(&user, password) {
-            //                     res.status_code(StatusCode::FORBIDDEN); //for complement testing: TestLogin/parallel/POST_/login_wrong_password_is_rejected
-            //                     return Err(MatrixError::forbidden("wrong username or password.", None).into());
+            //                     res.status_code(StatusCode::FORBIDDEN); //for complement testing:
+            // TestLogin/parallel/POST_/login_wrong_password_is_rejected                
+            // return Err(MatrixError::forbidden("wrong username or password.", None).into());
             //                 }
             //                 (user_id.to_string(), false)
             //             }
             //         }
             //     };
 
-            //     let user_id = user::auth_ldap(&user_dn, password).await.map(|()| user_id.to_owned())?;
+            //     let user_id = user::auth_ldap(&user_dn, password).await.map(|()|
+            // user_id.to_owned())?;
 
             //     // LDAP users are automatically created on first login attempt. This is a very
             //     // common feature that can be seen on many services using a LDAP provider for

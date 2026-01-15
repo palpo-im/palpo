@@ -149,7 +149,8 @@ pub fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) -> App
 /// * `appended` - Added to base. Each vec is state_key_id+shorteventid
 /// * `disposed` - Removed from base. Each vec is state_key_id+shorteventid
 /// * `diff_to_sibling` - Approximately how much the diff grows each time for this layer
-/// * `parent_states` - A stack with info on state_hash, full state, added diff and removed diff for each parent layer
+/// * `parent_states` - A stack with info on state_hash, full state, added diff and removed diff for
+///   each parent layer
 #[tracing::instrument(skip(appended, disposed, diff_to_sibling, parent_states))]
 pub fn calc_and_save_state_delta(
     room_id: &RoomId,

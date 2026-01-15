@@ -1,7 +1,6 @@
 mod cmd;
-use cmd::*;
-
 use clap::Subcommand;
+use cmd::*;
 
 use crate::AppResult;
 use crate::core::{OwnedEventId, OwnedMxcUri};
@@ -10,27 +9,25 @@ use crate::macros::admin_command_dispatch;
 #[admin_command_dispatch]
 #[derive(Debug, Subcommand)]
 pub(crate) enum MediaCommand {
-    /// - Deletes a single media file from our database and on the filesystem
-    ///   via a single MXC URL or event ID (not redacted)
+    /// - Deletes a single media file from our database and on the filesystem via a single MXC URL
+    ///   or event ID (not redacted)
     DeleteMedia {
         /// The MXC URL to delete
         #[arg(long)]
         mxc: Option<OwnedMxcUri>,
 
-        /// - The message event ID which contains the media and thumbnail MXC
-        ///   URLs
+        /// - The message event ID which contains the media and thumbnail MXC URLs
         #[arg(long)]
         event_id: Option<OwnedEventId>,
     },
 
-    /// - Deletes a codeblock list of MXC URLs from our database and on the
-    ///   filesystem. This will always ignore errors.
+    /// - Deletes a codeblock list of MXC URLs from our database and on the filesystem. This will
+    ///   always ignore errors.
     DeleteMediaList,
 
-    /// - Deletes all remote (and optionally local) media created before or
-    ///   after [duration] time using filesystem metadata first created at date,
-    ///   or fallback to last modified date. This will always ignore errors by
-    ///   default.
+    /// - Deletes all remote (and optionally local) media created before or after [duration] time
+    ///   using filesystem metadata first created at date, or fallback to last modified date. This
+    ///   will always ignore errors by default.
     DeletePastRemoteMedia {
         /// - The relative time (e.g. 30s, 5m, 7d) within which to search
         duration: String,

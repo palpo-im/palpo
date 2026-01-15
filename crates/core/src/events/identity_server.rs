@@ -2,9 +2,10 @@
 //!
 //! [`m.identity_server`]: https://spec.matrix.org/latest/client-server-api/#mdirect
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::macros::EventContent;
 
 /// The content of an `m.identity_server` event.
 ///

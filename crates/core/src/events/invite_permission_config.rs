@@ -2,15 +2,15 @@
 //!
 //! [`m.invite_permission_config`]: https://github.com/matrix-org/matrix-spec-proposals/pull/4380
 
-use serde::{Deserialize, Serialize};
 use salvo::oapi::ToSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::macros::EventContent;
 
 /// The content of an `m.invite_permission_config` event.
 ///
 /// A single property: `block_all`.
-#[derive(ToSchema,Clone, Debug, Default, Deserialize, Serialize, EventContent)]
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize, EventContent)]
 #[palpo_event(
     kind = GlobalAccountData,
     type = "org.matrix.msc4380.invite_permission_config",

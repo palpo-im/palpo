@@ -1,12 +1,14 @@
 //! Types for the `org.matrix.msc3381.poll.response` event, the unstable version
 //! of `m.poll.response`.
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{PollResponseData, unstable_start::UnstablePollStartContentBlock, validate_selections};
-use crate::{OwnedEventId, events::relation::Reference};
+use super::unstable_start::UnstablePollStartContentBlock;
+use super::{PollResponseData, validate_selections};
+use crate::OwnedEventId;
+use crate::events::relation::Reference;
+use crate::macros::EventContent;
 
 /// The payload for an unstable poll response event.
 ///

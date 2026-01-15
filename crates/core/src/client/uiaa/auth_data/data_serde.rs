@@ -2,11 +2,13 @@
 
 use std::borrow::Cow;
 
-use crate::{serde::from_raw_json_value, third_party::Medium};
-use serde::{Deserialize, Deserializer, Serialize, de, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::{AuthData, CustomThirdPartyId, UserIdentifier};
+use crate::serde::from_raw_json_value;
+use crate::third_party::Medium;
 
 impl<'de> Deserialize<'de> for AuthData {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -125,14 +127,21 @@ impl<'de> Deserialize<'de> for UserIdentifier {
         match id_type {
             ExtractType::User => from_raw_json_value(&json)
                 .map(|user_id: UserIdOrLocalpart| Self::UserIdOrLocalpart(user_id.user)),
-            ExtractType::Phone => from_raw_json_value(&json)
-                .map(|nb: PhoneNumber| Self::PhoneNumber { country: nb.country, phone: nb.phone }),
+            ExtractType::Phone => {
+                from_raw_json_value(&json).map(|nb: PhoneNumber| Self::PhoneNumber {
+                    country: nb.country,
+                    phone: nb.phone,
+                })
+            }
             ExtractType::ThirdParty => {
                 let ThirdPartyId { medium, address } = from_raw_json_value(&json)?;
                 match medium {
                     Medium::Email => Ok(Self::Email { address }),
                     Medium::Msisdn => Ok(Self::Msisdn { number: address }),
-                    _ => Ok(Self::_CustomThirdParty(CustomThirdPartyId { medium, address })),
+                    _ => Ok(Self::_CustomThirdParty(CustomThirdPartyId {
+                        medium,
+                        address,
+                    })),
                 }
             }
         }
@@ -214,8 +223,8 @@ impl<'de> Deserialize<'de> for UserIdentifier {
 //             "country": "33",
 //             "phone": "0102030405",
 //         });
-//         assert_matches!(from_json_value(json), Ok(UserIdentifier::PhoneNumber { country, phone }));
-//         assert_eq!(country, "33");
+//         assert_matches!(from_json_value(json), Ok(UserIdentifier::PhoneNumber { country, phone
+// }));         assert_eq!(country, "33");
 //         assert_eq!(phone, "0102030405");
 
 //         let json = json!({

@@ -7,14 +7,13 @@ use std::collections::BTreeMap;
 
 use reqwest::Url;
 use salvo::prelude::*;
-use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
-use crate::{
-    OwnedServerName, OwnedServerSigningKeyId, UnixMillis,
-    directory::{PublicRoomFilter, QueryCriteria, RoomNetwork, Server},
-    federation::discovery::ServerSigningKeys,
-    sending::{SendRequest, SendResult},
-};
+use crate::directory::{PublicRoomFilter, QueryCriteria, RoomNetwork, Server};
+use crate::federation::discovery::ServerSigningKeys;
+use crate::sending::{SendRequest, SendResult};
+use crate::{OwnedServerName, OwnedServerSigningKeyId, UnixMillis};
 
 // /// `POST /_matrix/federation/*/publicRooms`
 // ///

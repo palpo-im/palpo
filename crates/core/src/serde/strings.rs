@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, fmt, marker::PhantomData};
+use std::collections::BTreeMap;
+use std::fmt;
+use std::marker::PhantomData;
 
-use serde::{
-    Deserialize, Serialize,
-    de::{self, Deserializer, IntoDeserializer as _, MapAccess, Visitor},
-    ser::Serializer,
-};
+use serde::de::{self, Deserializer, IntoDeserializer as _, MapAccess, Visitor};
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 
 /// Serde deserialization decorator to map empty Strings to None,
 /// and forward non-empty Strings to the Deserialize implementation for T.

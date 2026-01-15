@@ -4,10 +4,10 @@
 
 use std::borrow::Cow;
 
-use crate::macros::EventContent;
 use as_variant::as_variant;
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 #[cfg(feature = "html")]
@@ -16,6 +16,7 @@ use crate::events::Mentions;
 use crate::events::relation::{InReplyTo, Replacement, Thread};
 #[cfg(feature = "html")]
 use crate::html::{HtmlSanitizerMode, RemoveReplyFallback, sanitize_html};
+use crate::macros::EventContent;
 use crate::serde::{JsonObject, StringEnum};
 use crate::{EventId, OwnedEventId, PrivOwnedStr, UserId};
 
@@ -38,28 +39,25 @@ mod text;
 mod url_preview;
 mod video;
 mod without_relation;
-#[cfg(feature = "unstable-msc4095")]
-pub use self::url_preview::{PreviewImage, PreviewImageSource, UrlPreview};
-
 pub use audio::{
     AudioInfo, AudioMessageEventContent, UnstableAmplitude, UnstableAudioDetailsContentBlock,
     UnstableVoiceContentBlock,
 };
 
-pub use self::{
-    emote::EmoteMessageEventContent,
-    file::{FileInfo, FileMessageEventContent},
-    image::ImageMessageEventContent,
-    key_verification_request::KeyVerificationRequestEventContent,
-    location::{LocationInfo, LocationMessageEventContent},
-    notice::NoticeMessageEventContent,
-    relation::{Relation, RelationWithoutReplacement},
-    relation_serde::deserialize_relation,
-    server_notice::{LimitType, ServerNoticeMessageEventContent, ServerNoticeType},
-    text::TextMessageEventContent,
-    video::{VideoInfo, VideoMessageEventContent},
-    without_relation::RoomMessageEventContentWithoutRelation,
-};
+pub use self::emote::EmoteMessageEventContent;
+pub use self::file::{FileInfo, FileMessageEventContent};
+pub use self::image::ImageMessageEventContent;
+pub use self::key_verification_request::KeyVerificationRequestEventContent;
+pub use self::location::{LocationInfo, LocationMessageEventContent};
+pub use self::notice::NoticeMessageEventContent;
+pub use self::relation::{Relation, RelationWithoutReplacement};
+pub use self::relation_serde::deserialize_relation;
+pub use self::server_notice::{LimitType, ServerNoticeMessageEventContent, ServerNoticeType};
+pub use self::text::TextMessageEventContent;
+#[cfg(feature = "unstable-msc4095")]
+pub use self::url_preview::{PreviewImage, PreviewImageSource, UrlPreview};
+pub use self::video::{VideoInfo, VideoMessageEventContent};
+pub use self::without_relation::RoomMessageEventContentWithoutRelation;
 
 /// The content of an `m.room.message` event.
 ///
@@ -159,7 +157,6 @@ impl RoomMessageEventContent {
     /// `rel_type` to `m.thread` if the `original_message is in a thread and
     /// thread forwarding is enabled.
     #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/rich_reply.md"))]
-    ///
     /// # Panics
     ///
     /// Panics if `self` has a `formatted_body` with a format other than HTML.

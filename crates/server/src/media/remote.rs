@@ -3,14 +3,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use diesel::prelude::*;
 use salvo::Response;
 
+use super::{Dimension, FileMeta};
 use crate::core::federation::media::ContentReqArgs;
 use crate::core::identifiers::*;
 use crate::core::{Mxc, ServerName, UserId};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::{AppError, AppResult, config, exts::*};
-
-use super::{Dimension, FileMeta};
+use crate::exts::*;
+use crate::{AppError, AppResult, config};
 
 pub async fn fetch_remote_content(
     _mxc: &str,

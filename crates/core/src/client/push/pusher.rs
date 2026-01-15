@@ -4,12 +4,11 @@
 
 use js_option::JsOption;
 use salvo::prelude::*;
-use serde::{Deserialize, Serialize, de, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, de};
 
-use crate::{
-    push::{Pusher, PusherIds},
-    serde::{RawJsonValue, from_raw_json_value},
-};
+use crate::push::{Pusher, PusherIds};
+use crate::serde::{RawJsonValue, from_raw_json_value};
 
 // `/v3/` ([spec])
 //

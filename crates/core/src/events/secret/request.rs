@@ -2,14 +2,14 @@
 //!
 //! [`m.secret.request`]: https://spec.matrix.org/latest/client-server-api/#msecretrequest
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedDeviceId, OwnedTransactionId, PrivOwnedStr, events::GlobalAccountDataEventType,
-    serde::StringEnum,
-};
+use crate::events::GlobalAccountDataEventType;
+use crate::macros::EventContent;
+use crate::serde::StringEnum;
+use crate::{OwnedDeviceId, OwnedTransactionId, PrivOwnedStr};
 
 /// The content of an `m.secret.request` event.
 ///

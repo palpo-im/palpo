@@ -4,7 +4,8 @@
 
 use std::collections::BTreeSet;
 
-use html5ever::{Attribute, QualName, ns, tendril::StrTendril};
+use html5ever::tendril::StrTendril;
+use html5ever::{Attribute, QualName, ns};
 
 use crate::html::sanitizer_config::clean::{
     ALLOWED_SCHEMES_A_HREF_COMPAT, ALLOWED_SCHEMES_A_HREF_STRICT,

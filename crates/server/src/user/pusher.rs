@@ -73,21 +73,22 @@ pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
 }
 
 // #[tracing::instrument(skip(destination, request))]
-// pub async fn send_request<T: OutgoingRequest>(destination: &str, request: T) -> AppResult<T::IncomingResponse>
-// where
+// pub async fn send_request<T: OutgoingRequest>(destination: &str, request: T) ->
+// AppResult<T::IncomingResponse> where
 //     T: Debug,
 // {
 //     let destination = destination.replace("/_matrix/push/v1/notify", "");
 
 //     let http_request = request
-//         .try_into_http_request::<BytesMut>(&destination, SendDbAccessToken::IfRequired(""), &[MatrixVersion::V1_0])
-//         .map_err(|e| {
+//         .try_into_http_request::<BytesMut>(&destination, SendDbAccessToken::IfRequired(""),
+// &[MatrixVersion::V1_0])         .map_err(|e| {
 //             warn!("Failed to find destination {}: {}", destination, e);
 //             AppError::public("Invalid destination")
 //         })?
 //         .map(|body| body.freeze());
 
-//     let reqwest_request = reqwest::Request::try_from(http_request).expect("all http requests are valid reqwest requests");
+//     let reqwest_request = reqwest::Request::try_from(http_request).expect("all http requests are
+// valid reqwest requests");
 
 //     // TODO: we could keep this very short and let expo backoff do it's thing...
 //     //*reqwest_request.timeout_mut() = Some(Duration::from_secs(5));
@@ -99,8 +100,8 @@ pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
 //         Ok(mut response) => {
 //             // reqwest::Response -> http::Response conversion
 //             let status = response.status();
-//             let mut http_response_builder = http::Response::builder().status(status).version(response.version());
-//             mem::swap(
+//             let mut http_response_builder =
+// http::Response::builder().status(status).version(response.version());             mem::swap(
 //                 response.headers_mut(),
 //                 http_response_builder.headers_mut().expect("http::response::Builder is usable"),
 //             );
@@ -120,8 +121,9 @@ pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
 //                 );
 //             }
 
-//             let response = T::IncomingResponse::try_from_http_response(http_response_builder.body(body).expect("reqwest body is valid http body"));
-//             response.map_err(|_| {
+//             let response =
+// T::IncomingResponse::try_from_http_response(http_response_builder.body(body).expect("reqwest body
+// is valid http body"));             response.map_err(|_| {
 //                 info!("Push gateway returned invalid response bytes {}\n{}", destination, url);
 //                 AppError::public("Push gateway returned bad response.")
 //             })

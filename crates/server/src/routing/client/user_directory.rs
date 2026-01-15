@@ -2,9 +2,8 @@ use diesel::prelude::*;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
-use crate::core::client::user_directory::SearchedUser;
 use crate::core::client::user_directory::{
-    SearchUsersReqArgs, SearchUsersReqBody, SearchUsersResBody,
+    SearchUsersReqArgs, SearchUsersReqBody, SearchUsersResBody, SearchedUser,
 };
 use crate::core::events::StateEventType;
 use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
@@ -23,7 +22,8 @@ pub fn authed_router() -> Router {
 /// #POST /_matrix/client/r0/user_directory/search
 /// Searches all known users for a match.
 ///
-/// - Hides any local users that aren't in any public rooms (i.e. those that have the join rule set to public)
+/// - Hides any local users that aren't in any public rooms (i.e. those that have the join rule set
+///   to public)
 /// and don't share a room with the sender
 #[endpoint]
 fn search(

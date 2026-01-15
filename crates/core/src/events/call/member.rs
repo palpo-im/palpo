@@ -7,26 +7,23 @@
 mod focus;
 mod member_data;
 mod member_state_key;
-pub use focus::*;
-pub use member_data::*;
-pub use member_state_key::*;
-
 use std::time::Duration;
 
 use as_variant::as_variant;
+pub use focus::*;
+pub use member_data::*;
+pub use member_state_key::*;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::events::{
+    PossiblyRedactedStateEventContent, RedactContent, RedactedStateEventContent, StateEventType,
+    StaticEventContent,
+};
 use crate::macros::EventContent;
 use crate::room_version_rules::RedactionRules;
-use crate::{
-    OwnedDeviceId, PrivOwnedStr, UnixMillis,
-    events::{
-        PossiblyRedactedStateEventContent, RedactContent, RedactedStateEventContent,
-        StateEventType, StaticEventContent,
-    },
-    serde::StringEnum,
-};
+use crate::serde::StringEnum;
+use crate::{OwnedDeviceId, PrivOwnedStr, UnixMillis};
 
 /// The member state event for a matrixRTC session.
 ///
@@ -96,9 +93,9 @@ impl CallMemberEventContent {
     ///
     /// # Arguments
     ///
-    /// * `origin_server_ts` - optionally the `origin_server_ts` can be passed
-    ///   as a fallback in case the Membership does not contain `created_ts`.
-    ///   (`origin_server_ts` will be ignored if `created_ts` is `Some`)
+    /// * `origin_server_ts` - optionally the `origin_server_ts` can be passed as a fallback in case
+    ///   the Membership does not contain `created_ts`. (`origin_server_ts` will be ignored if
+    ///   `created_ts` is `Some`)
     pub fn active_memberships(
         &self,
         origin_server_ts: Option<UnixMillis>,

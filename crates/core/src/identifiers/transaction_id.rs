@@ -1,5 +1,6 @@
-use crate::macros::IdDst;
 use diesel::expression::AsExpression;
+
+use crate::macros::IdDst;
 
 /// A Matrix transaction ID.
 ///

@@ -4,7 +4,6 @@ use diesel::prelude::*;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
-use crate::AuthArgs;
 use crate::core::federation::device::{Device, DevicesResBody};
 use crate::core::federation::key::{
     ClaimKeysReqBody, ClaimKeysResBody, QueryKeysReqBody, QueryKeysResBody,
@@ -12,7 +11,7 @@ use crate::core::federation::key::{
 use crate::core::identifiers::*;
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::{AppError, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok};
+use crate::{AppError, AuthArgs, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok};
 
 pub fn router() -> Router {
     Router::with_path("user")

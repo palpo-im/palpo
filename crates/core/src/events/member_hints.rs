@@ -6,12 +6,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::OwnedUserId;
 use crate::events::state_key::EmptyStateKey;
+use crate::macros::EventContent;
 
 /// The content for an `m.member_hints` state event.
 ///
@@ -41,7 +41,8 @@ mod test {
     use serde_json::{from_value as from_json_value, json};
 
     use super::*;
-    use crate::{events::AnyStateEvent, user_id};
+    use crate::events::AnyStateEvent;
+    use crate::user_id;
 
     #[test]
     fn deserialize() {

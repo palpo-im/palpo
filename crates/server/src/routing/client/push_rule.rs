@@ -8,10 +8,8 @@ use crate::core::client::push::{
 };
 use crate::core::events::GlobalAccountDataEventType;
 use crate::core::push::{
-    InsertPushRuleError, RemovePushRuleError, RuleScope, ScopeKindRuleReqArgs,
-};
-use crate::core::push::{
-    NewConditionalPushRule, NewPatternedPushRule, NewPushRule, NewSimplePushRule, RuleKind,
+    InsertPushRuleError, NewConditionalPushRule, NewPatternedPushRule, NewPushRule,
+    NewSimplePushRule, RemovePushRuleError, RuleKind, RuleScope, ScopeKindRuleReqArgs,
 };
 use crate::{
     DepotExt, EmptyResult, JsonResult, MatrixError, OptionalExtension, empty_ok, hoops, json_ok,

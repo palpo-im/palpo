@@ -12,9 +12,8 @@ use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonObject, JsonValue, RawJsonValue};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::event::BatchToken;
 use crate::event::handler::process_to_timeline_pdu;
-use crate::event::{handler, parse_fetched_pdu};
+use crate::event::{BatchToken, handler, parse_fetched_pdu};
 use crate::{AppError, AppResult, GetUrlOrigin, SnPduEvent, room};
 
 #[tracing::instrument(skip_all)]
@@ -99,7 +98,8 @@ pub async fn backfill_if_required(
             BackfillReqArgs {
                 room_id: room_id.to_owned(),
                 v: vec![fill_from.to_owned()],
-                limit: (limit * 2).max(50), //Avoid not enough filled and will get messages with gap.
+                limit: (limit * 2).max(50), /* Avoid not enough filled and will get messages with
+                                             * gap. */
             },
         )?
         .into_inner();

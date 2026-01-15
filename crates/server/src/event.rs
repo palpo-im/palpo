@@ -4,13 +4,11 @@ pub mod handler;
 mod pdu;
 pub mod resolver;
 pub use batch_token::*;
-
 pub use pdu::*;
 mod outlier;
 pub mod search;
-pub use outlier::*;
-
 use diesel::prelude::*;
+pub use outlier::*;
 
 use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonObject, RawJsonValue};

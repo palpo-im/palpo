@@ -4,9 +4,10 @@ use std::ops::Deref;
 use serde::Deserialize;
 
 use crate::events::room::member::MembershipState;
+use crate::identifiers::*;
 use crate::serde::{CanonicalJsonObject, RawJsonValue, from_raw_json_value};
+use crate::signatures::canonical_json;
 use crate::state::{Event, StateResult};
-use crate::{identifiers::*, signatures::canonical_json};
 
 /// A helper type for an [`Event`] of type `m.room.member`.
 ///

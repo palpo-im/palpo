@@ -26,10 +26,9 @@
 //! `palpo_event` specifies the state event's `type` and its `kind`.
 //!
 //! ```rust
-//! use serde::{Deserialize, Serialize};
-//!
-//! use palpo_core::macros::EventContent;
 //! use palpo_core::RoomVersionId;
+//! use palpo_core::macros::EventContent;
+//! use serde::{Deserialize, Serialize};
 //!
 //! #[derive(Clone, Debug, Deserialize, Serialize, EventContent)]
 //! #[palpo_event(type = "org.example.event", kind = State, state_key_type = String)]
@@ -183,15 +182,16 @@ pub mod voice;
 use std::collections::BTreeSet;
 
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, Serializer, de::IgnoredAny};
+use serde::de::IgnoredAny;
+use serde::{Deserialize, Serialize, Serializer};
 
-pub use self::{
-    content::*,
-    enums::*,
-    kinds::*,
-    relation::{BundledMessageLikeRelations, BundledStateRelations},
-    state_key::EmptyStateKey,
-    unsigned::{MessageLikeUnsigned, RedactedUnsigned, StateUnsigned, UnsignedRoomRedactionEvent},
+pub use self::content::*;
+pub use self::enums::*;
+pub use self::kinds::*;
+pub use self::relation::{BundledMessageLikeRelations, BundledStateRelations};
+pub use self::state_key::EmptyStateKey;
+pub use self::unsigned::{
+    MessageLikeUnsigned, RedactedUnsigned, StateUnsigned, UnsignedRoomRedactionEvent,
 };
 use crate::room_version_rules::RedactionRules;
 use crate::{EventEncryptionAlgorithm, OwnedUserId};

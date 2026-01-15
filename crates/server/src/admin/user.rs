@@ -1,7 +1,6 @@
 mod cmd;
-use cmd::*;
-
 use clap::Subcommand;
+use cmd::*;
 
 use crate::AppResult;
 use crate::core::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId};
@@ -64,8 +63,7 @@ pub(crate) enum UserCommand {
     #[clap(alias = "list")]
     ListUsers,
 
-    /// - Lists all the rooms (local and remote) that the specified user is
-    ///   joined in
+    /// - Lists all the rooms (local and remote) that the specified user is joined in
     ListJoinedRooms { user_id: String },
 
     /// - Manually join a local user to a room.
@@ -80,8 +78,8 @@ pub(crate) enum UserCommand {
         room_id: OwnedRoomOrAliasId,
     },
 
-    /// - Forces the specified user to drop their power levels to the room
-    ///   default, if their permissions allow and the auth check permits
+    /// - Forces the specified user to drop their power levels to the room default, if their
+    ///   permissions allow and the auth check permits
     ForceDemote {
         user_id: String,
         room_id: OwnedRoomOrAliasId,
@@ -116,14 +114,12 @@ pub(crate) enum UserCommand {
         room_id: OwnedRoomId,
     },
 
-    /// - Attempts to forcefully redact the specified event ID from the sender
-    ///   user
+    /// - Attempts to forcefully redact the specified event ID from the sender user
     ///
     /// This is only valid for local users
     RedactEvent { event_id: OwnedEventId },
 
-    /// - Force joins a specified list of local users to join the specified
-    ///   room.
+    /// - Force joins a specified list of local users to join the specified room.
     ///
     /// Specify a codeblock of usernames.
     ///

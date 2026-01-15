@@ -3,10 +3,8 @@
 
 use std::time::Duration;
 
-use serde::{
-    de::{Deserialize, Deserializer},
-    ser::{Serialize, Serializer},
-};
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Serialize, Serializer};
 
 /// Serialize an `Option<Duration>`.
 ///

@@ -13,12 +13,10 @@ use reqwest::Url;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    DeviceKeyAlgorithm, OwnedDeviceId, OwnedDeviceKeyId, OwnedUserId,
-    encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
-    sending::{SendRequest, SendResult},
-    serde::Base64,
-};
+use crate::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
+use crate::sending::{SendRequest, SendResult};
+use crate::serde::Base64;
+use crate::{DeviceKeyAlgorithm, OwnedDeviceId, OwnedDeviceKeyId, OwnedUserId};
 
 pub fn get_server_key_request(origin: &str) -> SendResult<SendRequest> {
     let url = Url::parse(&format!("{origin}/_matrix/key/v2/server"))?;

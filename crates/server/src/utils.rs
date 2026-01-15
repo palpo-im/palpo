@@ -1,4 +1,6 @@
-use std::{cmp::Ordering, fmt, str::FromStr};
+use std::cmp::Ordering;
+use std::fmt;
+use std::str::FromStr;
 
 use rand::prelude::*;
 

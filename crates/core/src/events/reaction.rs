@@ -2,11 +2,11 @@
 //!
 //! [`m.reaction`]: https://spec.matrix.org/latest/client-server-api/#mreaction
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::relation::Annotation;
+use crate::macros::EventContent;
 
 /// The payload for a `m.reaction` event.
 ///

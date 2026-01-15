@@ -287,7 +287,7 @@ pub async fn send_typing(
 }
 #[endpoint]
 pub(super) async fn timestamp(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
-    //TODO:??
+    // TODO:??
     let _authed = depot.authed_info()?;
     empty_ok()
 }

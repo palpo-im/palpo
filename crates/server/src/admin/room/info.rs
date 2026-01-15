@@ -2,8 +2,7 @@ use clap::Subcommand;
 
 use crate::admin::{Context, admin_command_dispatch};
 use crate::core::OwnedRoomId;
-use crate::{AppError, AppResult};
-use crate::{IsRemoteOrLocal, data};
+use crate::{AppError, AppResult, IsRemoteOrLocal, data};
 
 #[admin_command_dispatch]
 #[derive(Debug, Subcommand)]

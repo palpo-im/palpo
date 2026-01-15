@@ -3,14 +3,12 @@ use salvo::prelude::*;
 /// Spaces endpoints.
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    EventEncryptionAlgorithm, OwnedMxcUri, OwnedRoomAliasId, OwnedRoomId, RoomVersionId,
-    events::space::child::HierarchySpaceChildEvent,
-    room::RoomType,
-    sending::{SendRequest, SendResult},
-    serde::RawJson,
-    space::SpaceRoomJoinRule,
-};
+use crate::events::space::child::HierarchySpaceChildEvent;
+use crate::room::RoomType;
+use crate::sending::{SendRequest, SendResult};
+use crate::serde::RawJson;
+use crate::space::SpaceRoomJoinRule;
+use crate::{EventEncryptionAlgorithm, OwnedMxcUri, OwnedRoomAliasId, OwnedRoomId, RoomVersionId};
 
 /// The summary of a parent space.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

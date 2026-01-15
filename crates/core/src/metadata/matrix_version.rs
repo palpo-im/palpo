@@ -1,8 +1,6 @@
-use std::{
-    cmp::Ordering,
-    fmt::{self, Display},
-    str::FromStr,
-};
+use std::cmp::Ordering;
+use std::fmt::{self, Display};
+use std::str::FromStr;
 
 use salvo::prelude::*;
 use serde::Serialize;
@@ -276,7 +274,8 @@ impl MatrixVersion {
     /// Accepts string literals and parses them.
     #[doc(hidden)]
     pub const fn from_lit(lit: &'static str) -> Self {
-        use konst::{option, primitive::parse_u8, result, string};
+        use konst::primitive::parse_u8;
+        use konst::{option, result, string};
 
         let major: u8;
         let minor: u8;

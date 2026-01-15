@@ -10,10 +10,8 @@ use salvo::oapi::ToParameters;
 use serde::Deserialize;
 use url::Url;
 
-use crate::{
-    OwnedRoomAliasId,
-    sending::{SendRequest, SendResult},
-};
+use crate::OwnedRoomAliasId;
+use crate::sending::{SendRequest, SendResult};
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,

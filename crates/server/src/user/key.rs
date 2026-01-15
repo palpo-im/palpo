@@ -134,7 +134,8 @@ pub async fn query_keys<F: Fn(&UserId) -> bool>(
                         serde_json::from_value(json).expect("RawJson::from_value always works");
                     crate::user::add_cross_signing_keys(
                         &user_id, &raw, &None, &None,
-                        false, // Dont notify. A notification would trigger another key request resulting in an endless loop
+                        false, /* Dont notify. A notification would trigger another key request
+                               * resulting in an endless loop */
                     )?;
                     master_keys.insert(user_id.to_owned(), raw);
                 }
@@ -467,7 +468,8 @@ pub fn sign_key(
     //     .filter(e2e_cross_signing_keys::key_type.eq("master"))
     //     .order_by(e2e_cross_signing_keys::id.desc())
     //     .first::<DbCrossSigningKey>(&mut connect()?)?;
-    // let mut cross_signing_key: CrossSigningKey = serde_json::from_value(cross_signing_key.key_data.clone())?;
+    // let mut cross_signing_key: CrossSigningKey =
+    // serde_json::from_value(cross_signing_key.key_data.clone())?;
     let origin_key_id = DeviceKeyId::parse(&signature.0)?.to_owned();
 
     // cross_signing_key

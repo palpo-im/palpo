@@ -1,8 +1,10 @@
-use std::{fmt, sync::Arc};
+use std::fmt;
+use std::sync::Arc;
 
 use tracing::field::{Field, Visit};
 use tracing_core::{Event, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan};
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::registry::LookupSpan;
 
 use super::{Capture, Data, State};
 

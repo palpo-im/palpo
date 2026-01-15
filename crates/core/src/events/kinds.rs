@@ -1,9 +1,9 @@
 #![allow(clippy::exhaustive_structs)]
 
-use crate::macros::Event;
 use as_variant::as_variant;
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Deserializer, Serialize, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{
     AnyInitialStateEvent, EmptyStateKey, EphemeralRoomEventContent, EventContentFromType,
@@ -13,12 +13,12 @@ use super::{
     RedactionDeHelper, RoomAccountDataEventContent, StateEventContent, StateEventType,
     StaticStateEventContent, ToDeviceEventContent,
 };
-use crate::{
-    EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UnixMillis, UserId,
-    events::{AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, receipt::ReceiptEventContent},
-    room_version_rules::RedactionRules,
-    serde::{RawJson, RawJsonValue, from_raw_json_value},
-};
+use crate::events::receipt::ReceiptEventContent;
+use crate::events::{AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent};
+use crate::macros::Event;
+use crate::room_version_rules::RedactionRules;
+use crate::serde::{RawJson, RawJsonValue, from_raw_json_value};
+use crate::{EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UnixMillis, UserId};
 
 /// Enum allowing to use the same structures for global and room account data
 #[derive(Debug)]
@@ -845,7 +845,7 @@ impl_possibly_redacted_event!(
 );
 
 macro_rules! impl_sync_from_full {
-    ($ty:ident, $full:ident, $content_trait:ident, $redacted_content_trait: ident) => {
+    ($ty:ident, $full:ident, $content_trait:ident, $redacted_content_trait:ident) => {
         impl<C> From<$full<C>> for $ty<C>
         where
             C: $content_trait + RedactContent,

@@ -2,10 +2,10 @@
 //!
 //! [`m.typing`]: https://spec.matrix.org/latest/client-server-api/#mtyping
 
-use crate::macros::EventContent;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
 use crate::{OwnedRoomId, OwnedUserId};
 
 /// The content of an `m.typing` event.

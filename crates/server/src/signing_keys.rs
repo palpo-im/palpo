@@ -8,7 +8,8 @@ use crate::core::UnixMillis;
 use crate::core::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey};
 use crate::core::serde::Base64;
 
-/// Similar to ServerSigningKeys, but drops a few unnecessary fields we don't require post-validation
+/// Similar to ServerSigningKeys, but drops a few unnecessary fields we don't require
+/// post-validation
 #[derive(Deserialize, Debug, Clone)]
 pub struct SigningKeys {
     pub verify_keys: BTreeMap<String, VerifyKey>,

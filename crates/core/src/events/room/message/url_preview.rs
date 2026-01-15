@@ -182,7 +182,8 @@ impl UrlPreview {
 //                 "key": {
 //                     "alg": "A256CTR",
 //                     "ext": true,
-//                     "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+//                     "k":
+// "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 //                     "key_ops": [
 //                         "encrypt",
 //                         "decrypt"
@@ -238,7 +239,8 @@ impl UrlPreview {
 //                         "key": {
 //                             "alg": "A256CTR",
 //                             "ext": true,
-//                             "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+//                             "k":
+// "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 //                             "key_ops": [
 //                                 "encrypt",
 //                                 "decrypt"
@@ -276,8 +278,8 @@ impl UrlPreview {
 //                 {
 //                     "matched_url": "matrix.org/support",
 //                     "matrix:image:size": 16588,
-//                     "og:description": "Matrix, the open protocol for secure decentralised communications",
-//                     "og:image":"mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
+//                     "og:description": "Matrix, the open protocol for secure decentralised
+// communications",                     "og:image":"mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
 //                     "og:image:height": 400,
 //                     "og:image:type": "image/jpeg",
 //                     "og:image:width": 800,
@@ -287,7 +289,8 @@ impl UrlPreview {
 //             ],
 //         });
 
-//         let preview_img = assign!(PreviewImage::plain(owned_mxc_uri!("mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO")), {
+//         let preview_img =
+// assign!(PreviewImage::plain(owned_mxc_uri!("mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO")), {
 //                 height: Some(uint!(400)),
 //                 width: Some(uint!(800)),
 //                 mimetype: Some("image/jpeg".to_owned()),
@@ -297,8 +300,8 @@ impl UrlPreview {
 //                    image: Some(preview_img),
 //                    url: Some("https://matrix.org/support/".to_owned()),
 //                    title: Some("Support Matrix".to_owned()),
-//                    description: Some("Matrix, the open protocol for secure decentralised communications".to_owned()),
-//         });
+//                    description: Some("Matrix, the open protocol for secure decentralised
+// communications".to_owned()),         });
 //         let msg = assign!(MessageEventContent::plain("matrix.org/support"),  {
 //             url_previews: Some(vec![full_preview])
 //         });
@@ -314,8 +317,8 @@ impl UrlPreview {
 //                 {
 //                     "matrix:matched_url": "https://matrix.org",
 //                     "matrix:image:size": 16588,
-//                     "og:description": "Matrix, the open protocol for secure decentralised communications",
-//                     "og:image": "mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
+//                     "og:description": "Matrix, the open protocol for secure decentralised
+// communications",                     "og:image": "mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
 //                     "og:image:height": 400,
 //                     "og:image:type": "image/jpeg",
 //                     "og:image:width": 800,
@@ -331,8 +334,8 @@ impl UrlPreview {
 //         let TextMessageEventContent { url_previews, .. } = message_with_preview;
 //         let previews = url_previews.expect("No url previews found");
 //         assert_eq!(previews.len(), 1);
-//         let UrlPreview { image, matched_url, title, url, description } = previews.first().unwrap();
-//         assert_eq!(matched_url.as_ref().unwrap(), "https://matrix.org");
+//         let UrlPreview { image, matched_url, title, url, description } =
+// previews.first().unwrap();         assert_eq!(matched_url.as_ref().unwrap(), "https://matrix.org");
 //         assert_eq!(title.as_ref().unwrap(), "Matrix.org");
 //         assert_eq!(
 //             description.as_ref().unwrap(),
@@ -359,8 +362,8 @@ impl UrlPreview {
 //                 {
 //                     "matched_url": "https://matrix.org",
 //                     "matrix:image:size": 16588,
-//                     "og:description": "Matrix, the open protocol for secure decentralised communications",
-//                     "og:image": "mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
+//                     "og:description": "Matrix, the open protocol for secure decentralised
+// communications",                     "og:image": "mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
 //                     "og:image:height": 400,
 //                     "og:image:type": "image/jpeg",
 //                     "og:image:width": 800,
@@ -376,8 +379,8 @@ impl UrlPreview {
 //         let TextMessageEventContent { url_previews, .. } = message_with_preview;
 //         let previews = url_previews.expect("No url previews found");
 //         assert_eq!(previews.len(), 1);
-//         let UrlPreview { image, matched_url, title, url, description } = previews.first().unwrap();
-//         assert_eq!(matched_url.as_ref().unwrap(), "https://matrix.org");
+//         let UrlPreview { image, matched_url, title, url, description } =
+// previews.first().unwrap();         assert_eq!(matched_url.as_ref().unwrap(), "https://matrix.org");
 //         assert_eq!(title.as_ref().unwrap(), "Matrix.org");
 //         assert_eq!(
 //             description.as_ref().unwrap(),
@@ -440,8 +443,8 @@ impl UrlPreview {
 //                     "matched_url": "https://matrix.org",
 //                     "og:title": "Matrix.org",
 //                     "og:url": "https://matrix.org/",
-//                     "og:description": "Matrix, the open protocol for secure decentralised communications",
-//                     "matrix:image:size": 16588,
+//                     "og:description": "Matrix, the open protocol for secure decentralised
+// communications",                     "matrix:image:size": 16588,
 //                     "og:image:height": 400,
 //                     "og:image:type": "image/jpeg",
 //                     "og:image:width": 800,
@@ -473,8 +476,8 @@ impl UrlPreview {
 //         let TextMessageEventContent { url_previews, .. } = message_with_preview;
 //         let previews = url_previews.expect("No url previews found");
 //         assert_eq!(previews.len(), 1);
-//         let UrlPreview { image, matched_url, title, url, description } = previews.first().unwrap();
-//         assert_eq!(matched_url.as_ref().unwrap(), "https://matrix.org");
+//         let UrlPreview { image, matched_url, title, url, description } =
+// previews.first().unwrap();         assert_eq!(matched_url.as_ref().unwrap(), "https://matrix.org");
 //         assert_eq!(title.as_ref().unwrap(), "Matrix.org");
 //         assert_eq!(
 //             description.as_ref().unwrap(),
@@ -509,8 +512,8 @@ impl UrlPreview {
 //                 {
 //                     "matrix:matched_url": "matrix.org/support",
 //                     "matrix:image:size": 16588,
-//                     "og:description": "Matrix, the open protocol for secure decentralised communications",
-//                     "og:image": "mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
+//                     "og:description": "Matrix, the open protocol for secure decentralised
+// communications",                     "og:image": "mxc://maunium.net/zeHhTqqUtUSUTUDxQisPdwZO",
 //                     "og:image:height": 400,
 //                     "og:image:type": "image/jpeg",
 //                     "og:image:width": 800,

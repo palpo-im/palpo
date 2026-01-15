@@ -1,7 +1,5 @@
-use futures_util::{
-    StreamExt, stream,
-    stream::{Stream, TryStream},
-};
+use futures_util::stream::{Stream, TryStream};
+use futures_util::{StreamExt, stream};
 
 pub trait IterStream<I: IntoIterator + Send> {
     /// Convert an Iterator into a Stream

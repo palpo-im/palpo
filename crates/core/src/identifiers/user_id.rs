@@ -1,13 +1,14 @@
 //! Matrix user identifiers.
 
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use diesel::expression::AsExpression;
 use palpo_identifiers_validation::MAX_BYTES;
-
 pub use palpo_identifiers_validation::user_id::localpart_is_fully_conforming;
 
-use super::{IdParseError, MatrixToUri, MatrixUri, ServerName, matrix_uri::UriAction};
+use super::matrix_uri::UriAction;
+use super::{IdParseError, MatrixToUri, MatrixUri, ServerName};
 use crate::macros::IdDst;
 
 /// A Matrix [user ID].
@@ -17,7 +18,10 @@ use crate::macros::IdDst;
 ///
 /// ```
 /// # use palpo_core::UserId;
-/// assert_eq!(<&UserId>::try_from("@carl:example.com").unwrap(), "@carl:example.com");
+/// assert_eq!(
+///     <&UserId>::try_from("@carl:example.com").unwrap(),
+///     "@carl:example.com"
+/// );
 /// ```
 ///
 /// [user ID]: https://spec.matrix.org/latest/appendices/#user-identifiers

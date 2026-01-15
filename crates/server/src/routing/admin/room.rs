@@ -3,42 +3,35 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::admin;
 use crate::core::client::space::{HierarchyReqArgs, HierarchyResBody};
 use crate::core::identifiers::*;
 use crate::exts::IsRemoteOrLocal;
-use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, json_ok, room};
+use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, admin, json_ok, room};
 
 pub fn router() -> Router {
     Router::new()
         .push(
             Router::with_path("v1").push(
-                Router::with_path("rooms")
-                    .get(list_rooms)
-                    .push(
-                        Router::with_path("{room_id}")
-                            .get(get_room)
-                            .push(Router::with_path("hierarchy").get(get_hierarchy))
-                            .push(Router::with_path("members").get(get_room_members))
-                            .push(Router::with_path("state").get(get_room_state))
-                            .push(Router::with_path("messages").get(get_room_messages))
-                            .push(
-                                Router::with_path("block")
-                                    .get(get_room_block)
-                                    .put(set_room_block),
-                            )
-                            .push(
-                                Router::with_path("forward_extremities")
-                                    .get(get_forward_extremities),
-                            ),
-                    ),
+                Router::with_path("rooms").get(list_rooms).push(
+                    Router::with_path("{room_id}")
+                        .get(get_room)
+                        .push(Router::with_path("hierarchy").get(get_hierarchy))
+                        .push(Router::with_path("members").get(get_room_members))
+                        .push(Router::with_path("state").get(get_room_state))
+                        .push(Router::with_path("messages").get(get_room_messages))
+                        .push(
+                            Router::with_path("block")
+                                .get(get_room_block)
+                                .put(set_room_block),
+                        )
+                        .push(
+                            Router::with_path("forward_extremities").get(get_forward_extremities),
+                        ),
+                ),
             ),
         )
         .push(
-            Router::with_path("v2").push(
-                Router::with_path("rooms/{room_id}")
-                    .delete(delete_room),
-            ),
+            Router::with_path("v2").push(Router::with_path("rooms/{room_id}").delete(delete_room)),
         )
 }
 
@@ -170,9 +163,7 @@ fn get_detailed_room_info(room_id: &RoomId) -> RoomInfoResponse {
         .flatten()
         .map(|a| a.to_string());
 
-    let encryption = room::get_encryption(room_id)
-        .ok()
-        .map(|e| e.to_string());
+    let encryption = room::get_encryption(room_id).ok().map(|e| e.to_string());
 
     let join_rules = room::get_join_rule(room_id)
         .ok()
@@ -221,7 +212,14 @@ fn get_detailed_room_info(room_id: &RoomId) -> RoomInfoResponse {
         federatable: true,
         public: is_public,
         join_rules,
-        guest_access: Some(if guest_access { "can_join" } else { "forbidden" }.to_string()),
+        guest_access: Some(
+            if guest_access {
+                "can_join"
+            } else {
+                "forbidden"
+            }
+            .to_string(),
+        ),
         history_visibility,
         state_events,
         room_type,
@@ -258,8 +256,12 @@ pub fn list_rooms(
         let term_lower = term.to_lowercase();
         rooms.retain(|r| {
             r.room_id.to_lowercase().contains(&term_lower)
-                || r.name.as_ref().map_or(false, |n| n.to_lowercase().contains(&term_lower))
-                || r.canonical_alias.as_ref().map_or(false, |a| a.to_lowercase().contains(&term_lower))
+                || r.name
+                    .as_ref()
+                    .map_or(false, |n| n.to_lowercase().contains(&term_lower))
+                || r.canonical_alias
+                    .as_ref()
+                    .map_or(false, |a| a.to_lowercase().contains(&term_lower))
         });
     }
 
@@ -395,12 +397,8 @@ pub fn get_room_messages(
         .and_then(|t| t.strip_prefix("sn_"))
         .and_then(|s| s.parse().ok());
 
-    let db_events = crate::data::room::timeline::get_pdus_by_room(
-        &room_id,
-        from_sn,
-        limit,
-        backward,
-    )?;
+    let db_events =
+        crate::data::room::timeline::get_pdus_by_room(&room_id, from_sn, limit, backward)?;
 
     // Get actual PDU content from event_datas
     let chunk: Vec<JsonValue> = db_events
@@ -529,14 +527,14 @@ pub fn get_forward_extremities(
     let results: Vec<ForwardExtremity> = extremities
         .into_iter()
         .filter_map(|event_id| {
-            room::timeline::get_pdu(&event_id).ok().map(|pdu| {
-                ForwardExtremity {
+            room::timeline::get_pdu(&event_id)
+                .ok()
+                .map(|pdu| ForwardExtremity {
                     event_id: event_id.to_string(),
                     state_group: None,
                     depth: pdu.depth as i64,
                     received_ts: pdu.origin_server_ts.get() as i64,
-                }
-            })
+                })
         })
         .collect();
 

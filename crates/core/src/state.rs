@@ -1,10 +1,8 @@
-use std::{
-    borrow::Borrow,
-    cmp::{Ordering, Reverse},
-    collections::{BinaryHeap, HashMap, HashSet},
-    hash::Hash,
-    sync::OnceLock,
-};
+use std::borrow::Borrow;
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::hash::Hash;
+use std::sync::OnceLock;
 
 use futures_util::{StreamExt, stream};
 use tracing::{debug, info, instrument, trace, warn};
@@ -24,15 +22,13 @@ pub use events::Event;
 use crate::events::room::member::MembershipState;
 use crate::events::room::power_levels::UserPowerLevel;
 use crate::events::{StateEventType, TimelineEventType};
+use crate::room_version_rules::{AuthorizationRules, StateResolutionV2Rules};
+use crate::state::events::power_levels::RoomPowerLevelsEventOptionExt;
 use crate::state::events::{
     RoomCreateEvent, RoomMemberEvent, RoomPowerLevelsEvent, RoomPowerLevelsIntField,
-    power_levels::RoomPowerLevelsEventOptionExt,
 };
-use crate::{
-    EventId, OwnedEventId, OwnedUserId, UnixMillis,
-    room_version_rules::{AuthorizationRules, StateResolutionV2Rules},
-    utils::RoomIdExt,
-};
+use crate::utils::RoomIdExt;
+use crate::{EventId, OwnedEventId, OwnedUserId, UnixMillis};
 
 /// A mapping of event type and state_key to some value `T`, usually an `EventId`.
 ///
@@ -876,7 +872,10 @@ where
                 event_id.to_owned(),
                 (
                     position,
-                    fetch_event(event_id.to_owned()).await.map(|event| event.origin_server_ts()).ok(),
+                    fetch_event(event_id.to_owned())
+                        .await
+                        .map(|event| event.origin_server_ts())
+                        .ok(),
                     event_id.to_owned(),
                 ),
             );

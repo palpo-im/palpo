@@ -16,7 +16,8 @@ use crate::OwnedEventId;
 //     rate_limited: true,
 //     authentication: AccessToken,
 //     history: {
-//         unstable("org.matrix.msc4306") => "/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_root}/subscription",
+//         unstable("org.matrix.msc4306") =>
+// "/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_root}/subscription",
 //     }
 // };
 
@@ -58,7 +59,8 @@ impl ThreadSubscriptionResBody {
 //     rate_limited: true,
 //     authentication: AccessToken,
 //     history: {
-//         unstable("org.matrix.msc4306") => "/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_root}/subscription",
+//         unstable("org.matrix.msc4306") =>
+// "/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_root}/subscription",
 //     }
 // };
 
@@ -112,7 +114,8 @@ impl SetThreadSubscriptionReqBody {
 //     rate_limited: true,
 //     authentication: AccessToken,
 //     history: {
-//         unstable("org.matrix.msc4306") => "/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_root}/subscription",
+//         unstable("org.matrix.msc4306") =>
+// "/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_root}/subscription",
 //     }
 // };
 

@@ -244,8 +244,8 @@ impl StateResolutionVersion {
 /// The tweaks in the [state resolution v2 algorithm] for a room version.
 ///
 /// This type can be constructed from one of its constants (like [`StateResolutionV2Rules::V2_0`]),
-/// or by constructing a [`RoomVersionRules`] first and using the `state_resolution` field (if the room
-/// version uses version 2 of the state resolution algorithm).
+/// or by constructing a [`RoomVersionRules`] first and using the `state_resolution` field (if the
+/// room version uses version 2 of the state resolution algorithm).
 ///
 /// [state resolution v2 algorithm]: https://spec.matrix.org/latest/rooms/v2/#state-resolution
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

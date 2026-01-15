@@ -10,9 +10,9 @@ mod event_type;
 mod parse;
 mod util;
 
-use self::{
-    event_kind_enum::EventEnum, event_type::EventTypeEnum, util::expand_json_castable_impl,
-};
+use self::event_kind_enum::EventEnum;
+use self::event_type::EventTypeEnum;
+use self::util::expand_json_castable_impl;
 use super::common::{
     CommonEventField, CommonEventKind, EventContentTraitVariation, EventTypes, EventVariation,
 };

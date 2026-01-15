@@ -1,14 +1,13 @@
 use std::fmt;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use crate::{
-    events::{
-        EphemeralRoomEventType, GlobalAccountDataEventType, MessageLikeEventType,
-        RoomAccountDataEventType, StateEventType, ToDeviceEventType,
-    },
-    serde::{CanBeEmpty, RawJson, RawJsonValue},
+use crate::events::{
+    EphemeralRoomEventType, GlobalAccountDataEventType, MessageLikeEventType,
+    RoomAccountDataEventType, StateEventType, ToDeviceEventType,
 };
+use crate::serde::{CanBeEmpty, RawJson, RawJsonValue};
 
 /// Extension trait for [`RawJson<T>`].
 pub trait RawJsonExt<T: EventContentFromType> {

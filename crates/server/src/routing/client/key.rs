@@ -79,7 +79,7 @@ async fn upload_keys(
         crate::user::add_device_keys(authed.user_id(), authed.device_id(), device_keys)?;
     }
 
-    //TODO: fallback keys. e2e_keys.py 848
+    // TODO: fallback keys. e2e_keys.py 848
 
     json_ok(UploadKeysResBody {
         one_time_key_counts: data::user::count_one_time_keys(authed.user_id(), authed.device_id())?,

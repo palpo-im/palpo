@@ -26,8 +26,9 @@ use crate::core::room_version_rules::AuthorizationRules;
 use crate::core::serde::{JsonValue, RawJson};
 use crate::core::state::StateMap;
 use crate::core::{EventId, OwnedEventId, RoomId, UserId};
+use crate::data::connect;
 use crate::data::room::{NewDbEventMissing, NewDbTimelineGap};
-use crate::data::{connect, schema::*};
+use crate::data::schema::*;
 use crate::event::{PduEvent, update_frame_id, update_frame_id_by_sn};
 use crate::room::timeline;
 use crate::{

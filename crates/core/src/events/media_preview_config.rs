@@ -4,9 +4,9 @@
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::macros::StringEnum;
+use crate::PrivOwnedStr;
+use crate::macros::{EventContent, StringEnum};
 use crate::serde::JsonCastable;
-use crate::{PrivOwnedStr, macros::EventContent};
 
 /// The content of an `m.media_preview_config` event.
 #[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize, EventContent)]
@@ -123,10 +123,8 @@ mod tests {
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::{MediaPreviewConfigEventContent, UnstableMediaPreviewConfigEventContent};
-    use crate::events::{
-        AnyGlobalAccountDataEvent, GlobalAccountDataEvent,
-        media_preview_config::{InviteAvatars, MediaPreviews},
-    };
+    use crate::events::media_preview_config::{InviteAvatars, MediaPreviews};
+    use crate::events::{AnyGlobalAccountDataEvent, GlobalAccountDataEvent};
 
     #[test]
     fn deserialize() {

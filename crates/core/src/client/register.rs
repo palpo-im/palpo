@@ -10,13 +10,9 @@ use std::time::Duration;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedClientSecret, OwnedDeviceId, OwnedSessionId, OwnedUserId,
-    client::{
-        account::{LoginType, RegistrationKind},
-        uiaa::AuthData,
-    },
-};
+use crate::client::account::{LoginType, RegistrationKind};
+use crate::client::uiaa::AuthData;
+use crate::{OwnedClientSecret, OwnedDeviceId, OwnedSessionId, OwnedUserId};
 
 /// Request type for the `register` endpoint.
 #[derive(ToSchema, Deserialize, Default, Debug)]
@@ -189,9 +185,9 @@ impl AvailableResBody {
 //     authentication: None,
 //     history: {
 //         unstable =>
-// "/_matrix/client/unstable/org.matrix.msc3231/register/org.matrix.msc3231.login.registration_token/validity",
-//         1.2 => "/_matrix/client/v1/register/m.login.registration_token/validity",
-//     }
+// "/_matrix/client/unstable/org.matrix.msc3231/register/org.matrix.msc3231.login.
+// registration_token/validity",         1.2 =>
+// "/_matrix/client/v1/register/m.login.registration_token/validity",     }
 // };
 
 /// Request type for the `check_registration_token_validity` endpoint.

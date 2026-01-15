@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
+use std::ops::RangeBounds;
 #[cfg(feature = "unstable-msc4306")]
 use std::panic::RefUnwindSafe;
-use std::{collections::BTreeMap, ops::RangeBounds, str::FromStr};
+use std::str::FromStr;
 #[cfg(feature = "unstable-msc4306")]
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -13,19 +15,16 @@ use wildmatch::WildMatch;
 #[cfg(feature = "unstable-msc4306")]
 use crate::EventId;
 use crate::macros::StringEnum;
-use crate::{
-    OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId,
-    power_levels::NotificationPowerLevels, room_version_rules::RoomPowerLevelsRules,
-};
+use crate::power_levels::NotificationPowerLevels;
+use crate::room_version_rules::RoomPowerLevelsRules;
+use crate::{OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId};
 
 mod flattened_json;
 mod push_condition_serde;
 mod room_member_count_is;
 
-pub use self::{
-    flattened_json::{FlattenedJson, FlattenedJsonValue, ScalarJsonValue},
-    room_member_count_is::{ComparisonOperator, RoomMemberCountIs},
-};
+pub use self::flattened_json::{FlattenedJson, FlattenedJsonValue, ScalarJsonValue};
+pub use self::room_member_count_is::{ComparisonOperator, RoomMemberCountIs};
 
 /// Features supported by room versions.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
@@ -177,9 +176,8 @@ impl PushCondition {
     /// # Arguments
     ///
     /// * `event` - The flattened JSON representation of a room message event.
-    /// * `context` - The context of the room at the time of the event. If the
-    ///   power levels context is missing from it, conditions that depend on it
-    ///   will never apply.
+    /// * `context` - The context of the room at the time of the event. If the power levels context
+    ///   is missing from it, conditions that depend on it will never apply.
     pub async fn applies(&self, event: &FlattenedJson, context: &PushConditionRoomCtx) -> bool {
         if event
             .get_str("sender")

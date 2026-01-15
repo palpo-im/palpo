@@ -3,7 +3,8 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::{LazyLock, OnceLock};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use figment::Figment;
 use figment::providers::{Env, Format, Json, Toml, Yaml};
 use ipaddress::IPAddress;

@@ -5,10 +5,10 @@ mod moderation;
 
 use clap::Subcommand;
 
-use self::{
-    alias::RoomAliasCommand, directory::RoomDirectoryCommand, info::RoomInfoCommand,
-    moderation::RoomModerationCommand,
-};
+use self::alias::RoomAliasCommand;
+use self::directory::RoomDirectoryCommand;
+use self::info::RoomInfoCommand;
+use self::moderation::RoomModerationCommand;
 use crate::admin::{Context, PAGE_SIZE, get_room_info};
 use crate::core::OwnedRoomId;
 use crate::macros::admin_command_dispatch;

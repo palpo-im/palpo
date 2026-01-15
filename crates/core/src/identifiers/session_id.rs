@@ -1,9 +1,9 @@
 //! Matrix session ID.
 
-use crate::macros::IdDst;
 use diesel::expression::AsExpression;
 
 use super::IdParseError;
+use crate::macros::IdDst;
 
 /// A session ID.
 ///

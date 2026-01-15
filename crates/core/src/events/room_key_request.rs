@@ -2,13 +2,13 @@
 //!
 //! [`m.room_key_request`]: https://spec.matrix.org/latest/client-server-api/#mroom_key_request
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::macros::EventContent;
+use crate::serde::StringEnum;
 use crate::{
     EventEncryptionAlgorithm, OwnedDeviceId, OwnedRoomId, OwnedTransactionId, PrivOwnedStr,
-    serde::StringEnum,
 };
 
 /// The content of an `m.room_key_request` event.

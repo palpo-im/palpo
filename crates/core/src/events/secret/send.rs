@@ -4,11 +4,11 @@
 
 use std::fmt;
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::OwnedTransactionId;
+use crate::macros::EventContent;
 
 /// The content of an `m.secret.send` event.
 ///

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use super::{

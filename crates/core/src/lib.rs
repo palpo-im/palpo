@@ -103,9 +103,7 @@ impl<T> ReasonBool<T> {
 /// It is not considered part of this module's public API.
 #[doc(hidden)]
 pub mod __private {
+    pub use {bytes, http, serde, serde_json};
+
     pub use crate::macros;
-    pub use bytes;
-    pub use http;
-    pub use serde;
-    pub use serde_json;
 }

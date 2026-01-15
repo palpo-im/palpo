@@ -6,11 +6,8 @@ mod rustc;
 mod utils;
 
 use proc_macro::TokenStream;
-use syn::{
-    Error, ItemConst, ItemEnum, ItemStruct, Meta,
-    parse::{Parse, Parser},
-    parse_macro_input,
-};
+use syn::parse::{Parse, Parser};
+use syn::{Error, ItemConst, ItemEnum, ItemStruct, Meta, parse_macro_input};
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 

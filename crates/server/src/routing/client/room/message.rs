@@ -110,18 +110,17 @@ pub(super) async fn get_messages(
             )?;
 
             for (_, event) in &events {
-                /* TODO: Remove this when these are resolved:
-                 * https://github.com/vector-im/element-android/issues/3417
-                 * https://github.com/vector-im/element-web/issues/21034
-                if !crate::room::lazy_loading.lazy_load_was_sent_before(
-                    sender_id,
-                    sender_id,
-                    &body.room_id,
-                    &event.sender,
-                )? {
-                    lazy_loaded.insert(event.sender.clone());
-                }
-                */
+                // TODO: Remove this when these are resolved:
+                // https://github.com/vector-im/element-android/issues/3417
+                // https://github.com/vector-im/element-web/issues/21034
+                // if !crate::room::lazy_loading.lazy_load_was_sent_before(
+                // sender_id,
+                // sender_id,
+                // &body.room_id,
+                // &event.sender,
+                // )? {
+                // lazy_loaded.insert(event.sender.clone());
+                // }
                 lazy_loaded.insert(event.sender.clone());
             }
 
@@ -160,18 +159,17 @@ pub(super) async fn get_messages(
             }
 
             for (_, event) in &events {
-                /* TODO: Remove this when these are resolved:
-                 * https://github.com/vector-im/element-android/issues/3417
-                 * https://github.com/vector-im/element-web/issues/21034
-                if !crate::room::lazy_loading.lazy_load_was_sent_before(
-                    sender_id,
-                    authed.device_id(),
-                    &args.room_id,
-                    &event.sender,
-                )? {
-                    lazy_loaded.insert(event.sender.clone());
-                }
-                */
+                // TODO: Remove this when these are resolved:
+                // https://github.com/vector-im/element-android/issues/3417
+                // https://github.com/vector-im/element-web/issues/21034
+                // if !crate::room::lazy_loading.lazy_load_was_sent_before(
+                // sender_id,
+                // authed.device_id(),
+                // &args.room_id,
+                // &event.sender,
+                // )? {
+                // lazy_loaded.insert(event.sender.clone());
+                // }
                 lazy_loaded.insert(event.sender.clone());
             }
             next_token = events.last().map(|(_, pdu)| pdu.prev_historic_token());
@@ -194,17 +192,15 @@ pub(super) async fn get_messages(
     }
 
     // TODO: enable again when we are sure clients can handle it
-    /*
-    if let Some(next_token) = next_token {
-        crate::room::lazy_loading.lazy_load_mark_sent(
-            authed.user_id(),
-            authed.device_id(),
-            &body.room_id,
-            lazy_loaded,
-            next_token,
-        );
-    }
-    */
+    // if let Some(next_token) = next_token {
+    // crate::room::lazy_loading.lazy_load_mark_sent(
+    // authed.user_id(),
+    // authed.device_id(),
+    // &body.room_id,
+    // lazy_loaded,
+    // next_token,
+    // );
+    // }
 
     json_ok(resp)
 }

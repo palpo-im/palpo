@@ -2,7 +2,8 @@
 
 use std::fmt::Debug;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Assert that serialization of `de` results in `se` and deserialization of
 /// `se` results in `de`.

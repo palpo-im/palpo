@@ -1,13 +1,11 @@
 use salvo::http::header::AUTHORIZATION;
 use salvo::http::headers::authorization::Credentials;
 
+use crate::core::error::{AuthenticateError, ErrorKind};
 use crate::core::federation::authentication::XMatrix;
-use crate::core::error::AuthenticateError;
-use crate::core::error::ErrorKind;
 use crate::core::identifiers::*;
 use crate::core::room::{AllowRule, JoinRule};
-use crate::core::serde::CanonicalJsonObject;
-use crate::core::serde::JsonValue;
+use crate::core::serde::{CanonicalJsonObject, JsonValue};
 use crate::core::{MatrixError, signatures};
 use crate::{AppError, AppResult, config, room, sending};
 

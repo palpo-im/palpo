@@ -7,12 +7,10 @@ use reqwest::Url;
 use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    OwnedMxcUri, OwnedServerName, ServerName, UnixMillis,
-    media::ResizeMethod,
-    sending::{SendRequest, SendResult},
-    serde::{RawJsonValue, to_raw_json_value},
-};
+use crate::media::ResizeMethod;
+use crate::sending::{SendRequest, SendResult};
+use crate::serde::{RawJsonValue, to_raw_json_value};
+use crate::{OwnedMxcUri, OwnedServerName, ServerName, UnixMillis};
 
 /// The default duration that the client should be willing to wait to start
 /// receiving data.

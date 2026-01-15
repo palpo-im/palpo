@@ -39,21 +39,19 @@ pub use ruleset::Ruleset;
 use salvo::oapi::ToSchema;
 pub use simple_push_rule::*;
 
+pub use self::action::{Action, Tweak};
 #[cfg(feature = "unstable-msc3932")]
 pub use self::condition::RoomVersionFeature;
-pub use self::{
-    action::{Action, Tweak},
-    condition::{
-        _CustomPushCondition, ComparisonOperator, FlattenedJson, FlattenedJsonValue, PushCondition,
-        PushConditionPowerLevelsCtx, PushConditionRoomCtx, RoomMemberCountIs, ScalarJsonValue,
-    },
-    iter::{AnyPushRule, AnyPushRuleRef, RulesetIntoIter, RulesetIter},
-    predefined::{
-        PredefinedContentRuleId, PredefinedOverrideRuleId, PredefinedRuleId,
-        PredefinedUnderrideRuleId,
-    },
+pub use self::condition::{
+    _CustomPushCondition, ComparisonOperator, FlattenedJson, FlattenedJsonValue, PushCondition,
+    PushConditionPowerLevelsCtx, PushConditionRoomCtx, RoomMemberCountIs, ScalarJsonValue,
 };
-use crate::{PrivOwnedStr, serde::StringEnum};
+pub use self::iter::{AnyPushRule, AnyPushRuleRef, RulesetIntoIter, RulesetIter};
+pub use self::predefined::{
+    PredefinedContentRuleId, PredefinedOverrideRuleId, PredefinedRuleId, PredefinedUnderrideRuleId,
+};
+use crate::PrivOwnedStr;
+use crate::serde::StringEnum;
 
 /// A special format that the homeserver should use when sending notifications
 /// to a Push Gateway. Currently, only `event_id_only` is supported, see the

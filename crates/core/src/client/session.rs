@@ -1,17 +1,15 @@
-use std::{borrow::Cow, fmt, time::Duration};
+use std::borrow::Cow;
+use std::fmt;
+use std::time::Duration;
 
 use salvo::prelude::*;
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{self, DeserializeOwned},
-};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::{
-    OwnedDeviceId, OwnedMxcUri, OwnedUserId, PrivOwnedStr,
-    client::uiaa::{AuthData, UserIdentifier},
-    serde::{JsonObject, StringEnum},
-};
+use crate::client::uiaa::{AuthData, UserIdentifier};
+use crate::serde::{JsonObject, StringEnum};
+use crate::{OwnedDeviceId, OwnedMxcUri, OwnedUserId, PrivOwnedStr};
 
 // /// `POST /_matrix/client/*/refresh`
 // ///

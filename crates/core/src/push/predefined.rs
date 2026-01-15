@@ -2,11 +2,9 @@
 //!
 //! [predefined push rules]: https://spec.matrix.org/latest/client-server-api/#predefined-rules
 
+use super::PushCondition::*;
+use super::{Action, ConditionalPushRule, RoomMemberCountIs, RuleKind, Ruleset, Tweak};
 use crate::macros::StringEnum;
-
-use super::{
-    Action, ConditionalPushRule, PushCondition::*, RoomMemberCountIs, RuleKind, Ruleset, Tweak,
-};
 use crate::{PrivOwnedStr, UserId};
 
 impl Ruleset {
@@ -14,9 +12,8 @@ impl Ruleset {
     ///
     /// # Parameters
     ///
-    /// - `user_id`: the user for which to generate the default rules. Some
-    ///   rules depend on the user's ID (for instance those to send
-    ///   notifications when they are mentioned).
+    /// - `user_id`: the user for which to generate the default rules. Some rules depend on the
+    ///   user's ID (for instance those to send notifications when they are mentioned).
     ///
     /// [predefined push rules]: https://spec.matrix.org/latest/client-server-api/#predefined-rules
     pub fn server_default(user_id: &UserId) -> Self {
@@ -76,8 +73,8 @@ impl Ruleset {
     ///
     /// # Parameters
     ///
-    /// - `server_default`: the new server-default push rules. This ruleset must
-    ///   not contain non-default rules.
+    /// - `server_default`: the new server-default push rules. This ruleset must not contain
+    ///   non-default rules.
     pub fn update_with_server_default(&mut self, mut new_server_default: Ruleset) {
         // Copy the default rules states from the old rules to the new rules and remove
         // the server-default rules from the old rules.

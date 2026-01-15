@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use salvo::oapi::ToSchema;
 
-use crate::{PrivOwnedStr, serde::StringEnum};
+use crate::PrivOwnedStr;
+use crate::serde::StringEnum;
 
 pub mod accept;
 pub mod cancel;

@@ -7,10 +7,8 @@ use std::ops::Deref;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::serde::{
-    Base64, Base64DecodeError,
-    base64::{Standard, UrlSafe},
-};
+use crate::serde::base64::{Standard, UrlSafe};
+use crate::serde::{Base64, Base64DecodeError};
 
 /// A base64-encoded public key from an [identity server].
 ///

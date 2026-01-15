@@ -12,29 +12,29 @@ pub(crate) use utils::*;
 mod executor;
 mod processor;
 
+use std::fmt;
 use std::pin::Pin;
-use std::{fmt, time::SystemTime};
+use std::time::SystemTime;
 
 use clap::Parser;
-use futures_util::{
-    Future, FutureExt, TryFutureExt,
-    io::{AsyncWriteExt, BufWriter},
-    lock::Mutex,
-};
+pub use executor::*;
+use futures_util::io::{AsyncWriteExt, BufWriter};
+use futures_util::lock::Mutex;
+use futures_util::{Future, FutureExt, TryFutureExt};
 use regex::Regex;
 use tokio::sync::mpsc;
 
+use self::appservice::AppserviceCommand;
+use self::federation::FederationCommand;
+use self::media::MediaCommand;
+use self::room::RoomCommand;
+use self::server::ServerCommand;
+use self::user::UserCommand;
 use crate::AppResult;
 use crate::core::ServerName;
 use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::identifiers::*;
 pub(crate) use crate::macros::admin_command_dispatch;
-
-use self::{
-    appservice::AppserviceCommand, federation::FederationCommand, media::MediaCommand,
-    room::RoomCommand, server::ServerCommand, user::UserCommand,
-};
-pub use executor::*;
 
 pub(crate) const PAGE_SIZE: usize = 100;
 

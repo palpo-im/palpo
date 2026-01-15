@@ -1,7 +1,10 @@
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
+use std::fmt;
 
 use as_variant::as_variant;
-use serde::{Deserialize, Serialize, de::Deserializer, ser::Serializer};
+use serde::de::Deserializer;
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, to_string as to_json_string};
 
 use super::CanonicalJsonError;

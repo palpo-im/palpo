@@ -1,17 +1,19 @@
 //! Authentication data types for the different [`AuthType`]s.
 
-use std::{borrow::Cow, fmt};
+use std::borrow::Cow;
+use std::fmt;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value as JsonValue;
 use salvo::oapi::ToSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 mod data_serde;
 
 use super::AuthType;
-use crate::{PrivOwnedStr,
-    OwnedClientSecret, OwnedSessionId, OwnedUserId, serde::JsonObject, third_party::Medium,
-};
+use crate::serde::JsonObject;
+use crate::third_party::Medium;
+use crate::{OwnedClientSecret, OwnedSessionId, OwnedUserId, PrivOwnedStr};
 
 /// Information for one authentication stage.
 #[derive(ToSchema, Clone, Serialize)]
@@ -338,7 +340,7 @@ impl Dummy {
 /// See [the spec] for how to use this.
 ///
 /// [the spec]: https://spec.matrix.org/latest/client-server-api/#token-authenticated-registration
-#[derive(ToSchema,Clone, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename = "m.login.registration_token")]
 pub struct RegistrationToken {
     /// The registration token.

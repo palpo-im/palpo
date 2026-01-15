@@ -18,8 +18,8 @@ use crate::{Direction, OwnedEventId, OwnedRoomId};
 //     rate_limited: true,
 //     authentication: AccessToken,
 //     history: {
-//         unstable("org.matrix.msc4308") => "/_matrix/client/unstable/io.element.msc4308/thread_subscriptions",
-//     }
+//         unstable("org.matrix.msc4308") =>
+// "/_matrix/client/unstable/io.element.msc4308/thread_subscriptions",     }
 // };
 
 /// Request type for the `get_thread_subscriptions_changes` endpoint.

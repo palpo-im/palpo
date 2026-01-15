@@ -2,11 +2,12 @@
 //!
 //! [`m.room.pinned_events`]: https://spec.matrix.org/latest/client-server-api/#mroompinned_events
 
-use crate::macros::EventContent;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedEventId, events::EmptyStateKey};
+use crate::OwnedEventId;
+use crate::events::EmptyStateKey;
+use crate::macros::EventContent;
 
 /// The content of an `m.room.pinned_events` event.
 ///

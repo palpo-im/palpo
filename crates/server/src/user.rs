@@ -8,11 +8,10 @@ pub mod presence;
 // mod ldap;
 // pub use ldap::*;
 pub mod session;
-pub use presence::*;
-
 use std::mem;
 
 use diesel::prelude::*;
+pub use presence::*;
 use serde::de::DeserializeOwned;
 
 use crate::core::UnixMillis;

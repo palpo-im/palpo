@@ -2,7 +2,8 @@ use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use super::FormattedBody;
-use crate::{OwnedDeviceId, OwnedUserId, events::key::verification::VerificationMethod};
+use crate::events::key::verification::VerificationMethod;
+use crate::{OwnedDeviceId, OwnedUserId};
 
 /// The payload for a key verification request message.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]

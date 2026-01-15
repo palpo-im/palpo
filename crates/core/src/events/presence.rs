@@ -4,7 +4,8 @@
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{OwnedMxcUri, OwnedUserId, presence::PresenceState};
+use crate::presence::PresenceState;
+use crate::{OwnedMxcUri, OwnedUserId};
 
 /// Presence event.
 #[derive(ToSchema, Serialize, Deserialize, Clone, Debug)]

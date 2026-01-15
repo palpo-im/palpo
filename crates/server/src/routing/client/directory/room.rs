@@ -2,15 +2,13 @@ use diesel::prelude::*;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
-use crate::AuthArgs;
-use crate::core::client::directory::SetRoomVisibilityReqBody;
-use crate::core::client::directory::VisibilityResBody;
+use crate::core::client::directory::{SetRoomVisibilityReqBody, VisibilityResBody};
 use crate::core::identifiers::*;
 use crate::core::room::Visibility;
 use crate::data::room::DbRoom;
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
-use crate::{EmptyResult, JsonResult, empty_ok, json_ok};
+use crate::{AuthArgs, EmptyResult, JsonResult, empty_ok, json_ok};
 
 /// #GET /_matrix/client/r0/directory/list/room/{room_id}
 /// Gets the visibility of a given room in the room directory.
