@@ -103,7 +103,7 @@ jobs:
             gitsha1=${{ github.sha }}
             org.opencontainers.image.version=${{ env.PALPO_VERSION }}
           tags: |
-            docker.io/chrislearn/palpo
+            docker.io/palpo/palpo
             ghcr.io/palpo-im/palpo
           context: .
           file: ./build/docker/Dockerfile.palpo
@@ -134,7 +134,7 @@ jobs:
     strategy:
       matrix:
         repository:
-          - docker.io/chrislearn/palpo
+          - docker.io/palpo/palpo
           - ghcr.io/palpo-im/palpo
 
     needs:
