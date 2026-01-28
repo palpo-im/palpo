@@ -793,7 +793,7 @@ impl ServerConfig {
         if let Some(url) = &self.well_known.client {
             url.to_string()
         } else {
-            // If under proxy, you should set manually.
+            // If under proxy, you should set well-known client manually.
             if let Some(listenser) = self.listeners.first() {
                 if listenser.enabled_tls().is_none() {
                     return format!("http://{}", self.server_name);
