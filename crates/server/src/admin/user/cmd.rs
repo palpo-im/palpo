@@ -6,10 +6,7 @@ use crate::core::events::{RoomAccountDataEventType, StateEventType};
 use crate::core::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId};
 use crate::room::timeline;
 use crate::user::full_user_deactivate;
-use crate::{
-    AppError, AppResult, IsRemoteOrLocal, OptionalExtension, PduBuilder, config, data, membership,
-    utils,
-};
+use crate::{AppError, AppResult, IsRemoteOrLocal, PduBuilder, config, data, membership, utils};
 
 const AUTO_GEN_PASSWORD_LENGTH: usize = 25;
 const BULK_JOIN_REASON: &str = "Bulk force joining this room as initiated by the server admin.";

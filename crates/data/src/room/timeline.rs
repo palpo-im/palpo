@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 
 use crate::core::identifiers::*;
-use crate::core::{Seqnum, UnixMillis};
+use crate::core::UnixMillis;
 use crate::room::DbEvent;
 use crate::schema::*;
 use crate::{DataResult, connect};

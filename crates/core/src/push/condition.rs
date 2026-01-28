@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 use std::ops::RangeBounds;
-#[cfg(feature = "unstable-msc4306")]
-use std::panic::RefUnwindSafe;
 use std::str::FromStr;
 #[cfg(feature = "unstable-msc4306")]
 use std::{future::Future, pin::Pin, sync::Arc};

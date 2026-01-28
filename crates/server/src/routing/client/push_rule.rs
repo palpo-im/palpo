@@ -11,9 +11,7 @@ use crate::core::push::{
     InsertPushRuleError, NewConditionalPushRule, NewPatternedPushRule, NewPushRule,
     NewSimplePushRule, RemovePushRuleError, RuleKind, RuleScope, ScopeKindRuleReqArgs,
 };
-use crate::{
-    DepotExt, EmptyResult, JsonResult, MatrixError, OptionalExtension, empty_ok, hoops, json_ok,
-};
+use crate::{DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, hoops, json_ok};
 
 pub fn authed_router() -> Router {
     Router::with_path("pushrules")

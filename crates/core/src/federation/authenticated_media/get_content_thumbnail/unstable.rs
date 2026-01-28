@@ -7,7 +7,6 @@ use std::time::Duration;
 use salvo::oapi::ToParameters;
 use serde::Deserialize;
 
-use crate::federation::authenticated_media::{ContentMetadata, FileOrLocation};
 use crate::media::ResizeMethod;
 
 /// Request type for the `get_content_thumbnail` endpoint.

@@ -214,9 +214,11 @@ pub(crate) trait StructFieldExt {
     /// Get a reference to the `ident` of this field.
     ///
     /// Panics if this is not a named field.
+    #[allow(dead_code)]
     fn ident(&self) -> &Ident;
 
     /// Get the `#[cfg]` attributes on this field.
+    #[allow(dead_code)]
     fn cfg_attrs(&self) -> impl Iterator<Item = &'_ Attribute>;
 
     /// Get the serde meta items on this field, if it has `#[serde(…)]` attributes.
@@ -248,6 +250,7 @@ impl StructFieldExt for Field {
 #[derive(Clone, Copy)]
 pub(crate) enum SerdeMetaItem {
     /// `flatten`.
+    #[allow(dead_code)]
     Flatten,
 
     /// `default`.
@@ -305,6 +308,7 @@ pub(crate) trait TypeExt {
     fn option_inner_type(&self) -> Option<&syn::Type>;
 
     /// Whether this type has a lifetime.
+    #[allow(dead_code)]
     fn has_lifetime(&self) -> bool;
 }
 
@@ -366,6 +370,7 @@ impl TypeExt for syn::Type {
 /// #[cfg(feature = "my-feature")]
 /// ident,
 /// ```
+#[allow(dead_code)]
 pub(crate) fn expand_fields_as_list<'a>(
     fields: impl IntoIterator<Item = &'a Field>,
 ) -> TokenStream {

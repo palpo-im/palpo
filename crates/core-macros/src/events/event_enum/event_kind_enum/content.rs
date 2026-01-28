@@ -196,7 +196,6 @@ impl EventEnum<'_> {
     /// given event content enum.
     fn expand_content_enum_json_castable_impl(&self) -> TokenStream {
         let palpo_core = self.palpo_core;
-        let serde = NameSpace::serde();
         let ident = &self.content_enum;
 
         // All event content types are represented as objects in JSON.

@@ -7,14 +7,13 @@
 #[cfg(feature = "unstable-msc4143")]
 use std::borrow::Cow;
 
-use salvo::oapi::{ToParameters, ToSchema};
+use salvo::oapi::ToSchema;
 #[cfg(feature = "unstable-msc4143")]
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "unstable-msc4143")]
 use serde_json::Value as JsonValue;
 
-use crate::auth_scheme::NoAuthentication;
 #[cfg(feature = "unstable-msc4143")]
 use crate::serde::JsonObject;
 

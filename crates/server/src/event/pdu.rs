@@ -33,7 +33,7 @@ use crate::data::room::{DbEventData, NewDbEvent};
 use crate::data::schema::*;
 use crate::event::{BatchToken, SeqnumQueueGuard};
 use crate::room::timeline::get_pdu;
-use crate::room::{get_state, state};
+use crate::room::state;
 use crate::{AppError, AppResult, MatrixError, RoomMutexGuard, room};
 
 /// Content hashes of a PDU.

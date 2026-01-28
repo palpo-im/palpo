@@ -103,6 +103,7 @@ struct IdDst {
     str_field_index: syn::Index,
 
     /// The path to use imports from the ruma-common crate.
+    #[allow(dead_code)]
     palpo_core: TokenStream,
 }
 

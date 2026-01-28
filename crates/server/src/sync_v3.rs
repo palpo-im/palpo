@@ -20,8 +20,6 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::serde::RawJson;
 use crate::core::{Seqnum, UnixMillis};
-use crate::data::connect;
-use crate::data::schema::*;
 use crate::event::{BatchToken, EventHash, PduEvent, SnPduEvent};
 use crate::room::{state, timeline};
 use crate::{AppError, AppResult, config, data, extract_variant, room};

@@ -1,7 +1,6 @@
 use salvo::http::{ParseError, ResBody};
 use salvo::prelude::*;
 use salvo::size_limiter;
-use url::Url;
 
 use crate::AppResult;
 use crate::core::MatrixError;

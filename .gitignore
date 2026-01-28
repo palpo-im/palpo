@@ -10,3 +10,4 @@ debug.log
 sytestout
 __*
 /deploy/docker/data
+.claude/

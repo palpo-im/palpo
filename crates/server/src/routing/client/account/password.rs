@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use diesel::prelude::*;
 use palpo_core::client::account::ChangePasswordReqBody;
 use salvo::oapi::extract::*;

@@ -6,7 +6,6 @@ mod media;
 
 use salvo::prelude::*;
 use salvo::serve_static::StaticDir;
-use url::Url;
 
 use crate::core::MatrixError;
 use crate::core::client::discovery::client::{ClientResBody, HomeServerInfo};

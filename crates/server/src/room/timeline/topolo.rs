@@ -1,7 +1,5 @@
 use diesel::prelude::*;
 use indexmap::IndexMap;
-use palpo_data::print_query;
-use palpo_data::room::DbEvent;
 
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
 use crate::core::identifiers::*;

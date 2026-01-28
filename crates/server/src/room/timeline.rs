@@ -15,15 +15,13 @@ use crate::core::identifiers::*;
 use crate::core::presence::PresenceState;
 use crate::core::push::{Action, Ruleset, Tweak};
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, to_canonical_object};
-use crate::core::state::{Event, StateError, event_auth};
-use crate::data::room::{DbEvent, DbEventData, NewDbEvent, NewDbEventEdge};
+use crate::core::state::Event;
+use crate::data::room::{DbEvent, DbEventData, NewDbEventEdge};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
-use crate::event::{EventHash, PduBuilder, PduEvent};
+use crate::event::{PduBuilder, PduEvent};
 use crate::room::{push_action, state, timeline};
-use crate::{
-    AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, config, data, membership, utils,
-};
+use crate::{AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, config, data, membership};
 
 mod backfill;
 pub mod stream;

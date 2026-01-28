@@ -624,8 +624,8 @@
 #
 # enable = false
 
-# Validation secret key. The type of key can be configured in 'format', but defaults to the common HMAC which
-# is a plaintext shared-secret, so you should keep this value private.
+# Validation secret key. The type of key can be configured in 'format', but defaults to the
+# common HMAC which is a plaintext shared-secret, so you should keep this value private.
 #
 # secret =
 
@@ -891,11 +891,10 @@
 # freeze_legacy =
 
 # Check consistency of the media directory at startup:
-# 1. When `media_compat_file_link` is enabled, this check will upgrade
-#    media when switching back and forth between Conduit and palpo.
-#    Both options must be enabled to handle this.
-# 2. When media is deleted from the directory, this check will also delete
-#    its database entry.
+# 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
+#    back and forth between Conduit and palpo. Both options must be enabled to handle this.
+# 2. When media is deleted from the directory, this check will also delete its database
+#    entry.
 #
 # If none of these checks apply to your use cases, and your media
 # directory is significantly large setting this to false may reduce
@@ -1166,7 +1165,7 @@
 # Map of provider name to configuration. Each provider needs:
 # - issuer: Provider base URL
 # - client_id: OAuth app ID
-# - client_secret: OAuth app secret  
+# - client_secret: OAuth app secret
 # - redirect_uri: Callback URL (must match provider settings)
 # - scopes (optional): Permissions to request
 # - display_name (optional): UI display text

@@ -20,7 +20,7 @@ use crate::event::{PduEvent, SnPduEvent, ensure_event_sn};
 use crate::room::state::update_backward_extremities;
 use crate::room::timeline;
 use crate::utils::SeqnumQueueGuard;
-use crate::{AppError, AppResult, MatrixError, RoomMutexGuard};
+use crate::{AppError, AppResult, MatrixError};
 
 #[derive(Clone, Debug)]
 pub struct OutlierPdu {

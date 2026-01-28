@@ -21,7 +21,7 @@ use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
 use crate::data::schema::*;
-use crate::data::user::{DbUser, DbUserData, NewDbPassword, NewDbUser};
+use crate::data::user::{DbUser, DbUserData, NewDbUser};
 use crate::data::{DataResult, connect};
 use crate::room::timeline;
 use crate::{AppError, AppResult, IsRemoteOrLocal, MatrixError, PduBuilder, config, data, room};

@@ -15,7 +15,7 @@ use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
 use crate::exts::*;
-use crate::{AppResult, MatrixError, OptionalExtension};
+use crate::{AppResult, MatrixError};
 
 #[derive(Debug, Clone)]
 pub struct UserNotifySummary {
