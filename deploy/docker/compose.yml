@@ -3,6 +3,8 @@ services:
     hostname: postgres
     image: postgres:17
     restart: always
+    ports:
+      - 5432:5432
     volumes:
       - ./data/pgsql:/var/lib/postgresql/data
     environment:
