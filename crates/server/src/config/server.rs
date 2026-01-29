@@ -978,7 +978,7 @@ impl ServerConfig {
         // palpo instance without \              any 2nd-step (e.g. registration token). If
         // this is not the intended behaviour, \              please set a registration
         // token. For security and safety reasons, palpo will \              shut down. If
-        // you are extra sure this is the desired behaviour you want, please \              
+        // you are extra sure this is the desired behaviour you want, please \
         // set the following config option to true:
         // `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse`",
         //         ));

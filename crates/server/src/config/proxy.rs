@@ -85,10 +85,10 @@ impl PartialProxyConfig {
             }
         }
         match (included_because, excluded_because) {
-            (Some(a), Some(b)) if a.more_specific_than(b) => Some(&self.url), /* included for a
-                                                                                * more specific
-                                                                                * reason than
-                                                                                * excluded */
+            (Some(a), Some(b)) if a.more_specific_than(b) => Some(&self.url), // included for a
+            // more specific
+            // reason than
+            // excluded
             (Some(_), None) => Some(&self.url),
             _ => None,
         }

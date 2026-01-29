@@ -21,7 +21,9 @@ use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::{PduBuilder, PduEvent};
 use crate::room::{push_action, state, timeline};
-use crate::{AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, config, data, membership};
+use crate::{
+    AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, config, data, membership,
+};
 
 mod backfill;
 pub mod stream;

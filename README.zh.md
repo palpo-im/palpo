@@ -178,6 +178,8 @@ docker-compose up -d
 
 - 🎨 改进用户体验
 
+请阅读我们的[贡献指南](CONTRIBUTING.md)以开始参与。
+
 ---
 
 ---

@@ -128,6 +128,8 @@ We welcome contributions of all kinds! Whether you're:
 - 🧪 Writing tests
 - 🎨 Improving UX
 
+Please read our [Contributing Guide](CONTRIBUTING.md) to get started.
+
 ---
 
 ---

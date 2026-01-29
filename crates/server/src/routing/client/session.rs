@@ -109,7 +109,7 @@ async fn login(
             // None).into());                 };
             //                 if let Err(_e) = user::vertify_password(&user, password) {
             //                     res.status_code(StatusCode::FORBIDDEN); //for complement testing:
-            // TestLogin/parallel/POST_/login_wrong_password_is_rejected                
+            // TestLogin/parallel/POST_/login_wrong_password_is_rejected
             // return Err(MatrixError::forbidden("wrong username or password.", None).into());
             //                 }
             //                 (user_id.to_string(), false)
