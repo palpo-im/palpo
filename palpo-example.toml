@@ -1151,6 +1151,80 @@
 #
 # check_root_domain = false
 
+# [well_known]
+
+# Client discovery endpoint (/.well-known/matrix/client)
+#
+# Used by Matrix clients (Element, FluffyChat, etc.) to find the correct
+# homeserver URL for user API calls (login, sync, sending messages, etc.).
+#
+# If not configured, defaults to using server_name with port 443 (HTTPS).
+#
+# IMPORTANT: Set this manually when Palpo is behind a reverse proxy, load balancer,
+# or CDN. The URL should be the external address that clients can reach.
+#
+# Format: Full URL with scheme (e.g., "https://matrix.example.com")
+#
+# Example scenarios:
+# - Direct deployment: client = "https://matrix.example.com"
+# - Behind proxy: client = "https://matrix.example.com" (proxy on port 443)
+# - With CDN: client = "https://cdn.example.com"
+# - Custom domain: client = "https://chat.example.com"
+# - Local testing: client = "http://localhost:8080"
+#
+# Example: "https://matrix.palpo.im"
+#
+# client =
+
+# Server discovery endpoint (/.well-known/matrix/server)
+#
+# Used by other Matrix servers (federation) to find the correct endpoint for
+# federated communication. This is the address that other homeservers will use
+# to connect to your server.
+#
+# If not configured, defaults to server_name with port 8448 (standard federation port).
+#
+# Format: "hostname:port" (e.g., "matrix.example.com:8448")
+# Note: Only hostname and port, no protocol scheme.
+#
+# Example scenarios:
+# - Direct deployment: server = "matrix.example.com:8448"
+# - Behind proxy: server = "matrix.example.com:8448" (proxy handles the routing)
+# - Different federation port: server = "matrix.example.com:9008"
+#
+# Example: "matrix.palpo.im:8448"
+#
+# server =
+
+# URL to a support page for this Matrix server. This can be included
+# in the server's support contact information to help users find
+# assistance or documentation.
+# 
+# Example: "https://example.com/matrix-support"
+#
+# support_page =
+
+# The role/type of the support contact. This helps categorize what
+# kind of support is available (e.g. administrator, security contact).
+# 
+# Common values include roles like "m.role.admin" or "m.role.security"
+#
+# support_role =
+
+# Email address for server support contact. Users and other server
+# administrators can use this to reach out for help or report issues.
+# 
+# Example: "admin@example.com"
+#
+# support_email =
+
+# Matrix User ID (MXID) of a support contact on this server.
+# This provides an in-Matrix way for users to contact support.
+# 
+# Example: "@admin:example.com"
+#
+# support_mxid =
+
 # [oidc]
 
 # Enable OIDC/OAuth authentication

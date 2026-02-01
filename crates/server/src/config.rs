@@ -49,6 +49,8 @@ mod typing;
 pub use typing::*;
 mod url_preview;
 pub use url_preview::*;
+mod well_known;
+pub use well_known::*;
 mod oidc;
 pub use oidc::*;
 

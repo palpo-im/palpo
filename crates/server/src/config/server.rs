@@ -5,32 +5,20 @@ use regex::RegexSet;
 use salvo::http::HeaderValue;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
-use url::Url;
 
 use super::{
     AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, FederationConfig, HttpClientConfig,
     JwtConfig, LoggerConfig, MediaConfig, OidcConfig, PresenceConfig, ProxyConfig,
-    ReadReceiptConfig, TurnConfig, TypingConfig, UrlPreviewConfig,
+    ReadReceiptConfig, TurnConfig, TypingConfig, UrlPreviewConfig, WellKnownConfig,
 };
-use crate::core::client::discovery::support::ContactRole;
 use crate::core::serde::{default_false, default_true};
-use crate::core::{OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId};
+use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
 use crate::env_vars::required_var;
 use crate::macros::config_example;
 use crate::utils::sys;
 use crate::{AppError, AppResult};
 
 const DEPRECATED_KEYS: &[&str; 0] = &[];
-
-#[derive(Clone, Debug, Deserialize, Default)]
-pub struct WellKnownConfig {
-    pub client: Option<String>,
-    pub server: Option<OwnedServerName>,
-    pub support_page: Option<Url>,
-    pub support_role: Option<ContactRole>,
-    pub support_email: Option<String>,
-    pub support_mxid: Option<OwnedUserId>,
-}
 
 #[derive(Clone, Debug, Deserialize, Default)]
 pub struct KeypairConfig {
