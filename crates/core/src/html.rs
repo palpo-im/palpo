@@ -265,10 +265,6 @@ impl TreeSink for Html {
             new_parent.append_child(child);
         }
     }
-
-    fn clone_subtree(&self, node: &Self::Handle) -> Self::Handle {
-        node.clone()
-    }
 }
 
 impl Serialize for Html {
