@@ -1199,28 +1199,28 @@
 # URL to a support page for this Matrix server. This can be included
 # in the server's support contact information to help users find
 # assistance or documentation.
-# 
+#
 # Example: "https://example.com/matrix-support"
 #
 # support_page =
 
 # The role/type of the support contact. This helps categorize what
 # kind of support is available (e.g. administrator, security contact).
-# 
+#
 # Common values include roles like "m.role.admin" or "m.role.security"
 #
 # support_role =
 
 # Email address for server support contact. Users and other server
 # administrators can use this to reach out for help or report issues.
-# 
+#
 # Example: "admin@example.com"
 #
 # support_email =
 
 # Matrix User ID (MXID) of a support contact on this server.
 # This provides an in-Matrix way for users to contact support.
-# 
+#
 # Example: "@admin:example.com"
 #
 # support_mxid =
