@@ -274,36 +274,37 @@ impl MatrixVersion {
     /// Accepts string literals and parses them.
     #[doc(hidden)]
     pub const fn from_lit(lit: &'static str) -> Self {
-        use konst::primitive::parse_u8;
-        use konst::{option, result, string};
+        use konst::{result, string};
 
         let major: u8;
         let minor: u8;
 
-        let mut lit_iter = string::split(lit, ".").next();
+        let mut split = string::split(lit, ".");
 
-        {
-            let (checked_first, checked_split) = option::unwrap!(lit_iter); // First iteration always succeeds
+        // Get major version
+        let major_str = match split.next() {
+            Some(s) => s,
+            None => panic!("could not find major version"),
+        };
 
-            major = result::unwrap_or_else!(parse_u8(checked_first), |_| panic!(
-                "major version is not a valid number"
-            ));
+        major = match u8::from_str_radix(major_str, 10) {
+            Ok(v) => v,
+            Err(_) => panic!("major version is not a valid number"),
+        };
 
-            lit_iter = checked_split.next();
-        }
-
-        match lit_iter {
-            Some((checked_second, checked_split)) => {
-                minor = result::unwrap_or_else!(parse_u8(checked_second), |_| panic!(
-                    "minor version is not a valid number"
-                ));
-
-                lit_iter = checked_split.next();
-            }
+        // Get minor version
+        let minor_str = match split.next() {
+            Some(s) => s,
             None => panic!("could not find dot to denote second number"),
-        }
+        };
 
-        if lit_iter.is_some() {
+        minor = match u8::from_str_radix(minor_str, 10) {
+            Ok(v) => v,
+            Err(_) => panic!("minor version is not a valid number"),
+        };
+
+        // Check there's no more content
+        if split.next().is_some() {
             panic!("version literal contains more than one dot")
         }
 
