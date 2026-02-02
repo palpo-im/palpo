@@ -132,7 +132,6 @@ phf = { workspace = true, features = ["macros"] }
 pkcs8 = { workspace = true, features = ["alloc"] }
 pulldown-cmark = { workspace = true, optional = true, features = ["html"] }
 rand = { workspace = true }
-rand_core = { workspace = true }
 # redis = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }

@@ -2949,9 +2949,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.2.0"
+version = "10.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c76e1c7d7df3e34443b3621b459b066a7b79644f059fc8b2db7070c825fd417e"
+checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -3691,7 +3691,7 @@ dependencies = [
  "palpo-data",
  "palpo-server-macros",
  "path-slash",
- "rand 0.9.2",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "reqwest-middleware",
@@ -3769,8 +3769,7 @@ dependencies = [
  "phf 0.13.1",
  "pkcs8",
  "pulldown-cmark",
- "rand 0.9.2",
- "rand_core 0.6.4",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "salvo",
@@ -3849,7 +3848,7 @@ dependencies = [
  "mime-infer",
  "palpo-core",
  "path-slash",
- "rand 0.9.2",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "ring",
