@@ -73,7 +73,7 @@
     - **验证: 需求 12.1, 12.2, 12.3, 12.4**
 
 - [ ] 4. 配置管理API实现
-  - [ ] 4.1 实现配置API核心功能
+  - [x] 4.1 实现配置API核心功能
     - 创建ConfigAPI结构体和路由处理器
     - 实现get_config、update_config、validate_config方法
     - 实现配置文件读写和TOML序列化
