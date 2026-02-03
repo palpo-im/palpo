@@ -819,7 +819,7 @@ impl ConfigAPI {
     
     fn validate_config_dependencies(
         config: &WebConfigData,
-        errors: &mut Vec<ConfigError>,
+        _errors: &mut Vec<ConfigError>,
         warnings: &mut Vec<ConfigWarning>,
     ) {
         // Check if federation is enabled but no federation listener is configured
