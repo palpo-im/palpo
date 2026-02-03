@@ -1,9 +1,9 @@
 //! Configuration validation utilities
 
 use crate::models::{ConfigError, ConfigWarning, ValidationResult, WebConfigData};
-use regex::Regex;
+// use regex::Regex;
 use std::net::{IpAddr, SocketAddr};
-use url::Url;
+// use url::Url;
 
 /// Validate server name format (Matrix server name)
 pub fn validate_server_name(server_name: &str) -> Result<(), ConfigError> {
@@ -11,9 +11,8 @@ pub fn validate_server_name(server_name: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::required_field("server_name"));
     }
 
-    // Basic Matrix server name validation
-    let server_name_regex = Regex::new(r"^[a-zA-Z0-9.-]+$").unwrap();
-    if !server_name_regex.is_match(server_name) {
+    // Basic Matrix server name validation - simple character check
+    if !server_name.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-') {
         return Err(ConfigError::invalid_format(
             "server_name",
             "Valid Matrix server name (alphanumeric, dots, and hyphens only)",
@@ -98,8 +97,10 @@ pub fn validate_url(url_str: &str, field_name: &str) -> Result<(), ConfigError> 
         return Err(ConfigError::required_field(field_name));
     }
 
-    Url::parse(url_str)
-        .map_err(|_| ConfigError::invalid_format(field_name, "Valid URL"))?;
+    // Simple URL validation - check for basic URL structure
+    if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
+        return Err(ConfigError::invalid_format(field_name, "Valid URL (must start with http:// or https://)"));
+    }
 
     Ok(())
 }

@@ -1,7 +1,6 @@
 //! Configuration data models
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 
 /// Main configuration data structure
 #[derive(Serialize, Deserialize, Clone, Debug)]
