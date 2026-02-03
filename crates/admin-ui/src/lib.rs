@@ -9,5 +9,6 @@ pub mod pages;
 pub mod services;
 pub mod utils;
 pub mod hooks;
+pub mod models;
 
 pub use app::App;
