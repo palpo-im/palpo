@@ -26,7 +26,7 @@ pub struct ServerConfigSection {
 }
 
 /// Listener configuration for HTTP/HTTPS endpoints
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ListenerConfig {
     pub bind: String,
     pub port: u16,
@@ -35,7 +35,7 @@ pub struct ListenerConfig {
 }
 
 /// TLS configuration
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TlsConfig {
     pub certificate_path: String,
     pub private_key_path: String,
@@ -43,7 +43,7 @@ pub struct TlsConfig {
 }
 
 /// Listener resource types
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ListenerResource {
     Client,
     Federation,
@@ -159,7 +159,7 @@ pub struct LoggingConfigSection {
 }
 
 /// Log levels
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum LogLevel {
     Debug,
     Info,
@@ -177,7 +177,7 @@ pub enum LogFormat {
 }
 
 /// Log output destinations
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum LogOutput {
     Console,
     File(String),
