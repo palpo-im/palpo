@@ -19,6 +19,7 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "HtmlElement",
+    "HtmlAnchorElement",
     "Storage",
     "Request",
     "RequestInit",
@@ -27,6 +28,9 @@ web-sys = { version = "0.3", features = [
     "Headers",
     "AbortController",
     "AbortSignal",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

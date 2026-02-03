@@ -163,7 +163,7 @@ impl AuthService {
         let mut opts = RequestInit::new();
         opts.set_method("POST");
         opts.set_mode(RequestMode::Cors);
-        opts.set_body(Some(&wasm_bindgen::JsValue::from_str(&json_data)));
+        opts.set_body(&wasm_bindgen::JsValue::from_str(&json_data));
 
         let request = Request::new_with_str_and_init(url, &opts)
             .map_err(|_| WebConfigError::client("Failed to create request"))?;
