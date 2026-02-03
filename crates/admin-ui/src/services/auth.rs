@@ -160,7 +160,7 @@ impl AuthService {
         let json_data = serde_json::to_string(data)
             .map_err(|e| WebConfigError::client(format!("Failed to serialize request: {}", e)))?;
 
-        let mut opts = RequestInit::new();
+        let opts = RequestInit::new();
         opts.set_method("POST");
         opts.set_mode(RequestMode::Cors);
         opts.set_body(&wasm_bindgen::JsValue::from_str(&json_data));
@@ -293,6 +293,7 @@ impl AuthMiddleware {
 /// Session manager for handling session timeouts and renewals
 pub struct SessionManager {
     auth_service: AuthService,
+    #[allow(dead_code)]
     check_interval: u32, // in milliseconds
 }
 

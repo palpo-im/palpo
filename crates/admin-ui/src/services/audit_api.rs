@@ -524,6 +524,7 @@ pub fn init_audit_api_client(base_url: String) {
 ///
 /// This function uses unsafe static mutable access, which is acceptable in
 /// single-threaded WASM environments but should be used with caution.
+#[allow(static_mut_refs)]
 pub fn get_audit_api_client() -> &'static mut AuditApiClient {
     unsafe {
         GLOBAL_AUDIT_CLIENT.as_mut().expect("Audit API client not initialized")

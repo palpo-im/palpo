@@ -173,6 +173,7 @@ pub enum LogFormat {
     Json,
     Pretty,
     Compact,
+    Text,
 }
 
 /// Log output destinations

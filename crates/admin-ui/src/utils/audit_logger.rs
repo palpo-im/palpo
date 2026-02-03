@@ -406,6 +406,7 @@ static INIT: std::sync::Once = std::sync::Once::new();
 ///
 /// This function uses unsafe static access, which is acceptable in single-threaded
 /// WASM environments. The `Once` guard ensures thread-safe initialization.
+#[allow(static_mut_refs)]
 pub fn get_audit_logger() -> &'static AuditLogger {
     unsafe {
         INIT.call_once(|| {
