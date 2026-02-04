@@ -21,10 +21,10 @@ services:
 
   postgres:
     hostname: postgres
-    image: postgres:17
+    image: postgres:18
     restart: always
     volumes:
-      - ./data/pgsql:/var/lib/postgresql/data
+      - ./data/pgsql:/var/lib/postgresql
     environment:
       POSTGRES_PASSWORD: changeme
       POSTGRES_USER: palpo
@@ -38,18 +38,18 @@ services:
       - caddy
 
   palpo:
-    image: ghcr.io/palpo-im/palpo:latest
+    image: docker.io/ghcr.io/palpo-im/palpo:latest
     restart: unless-stopped
     volumes:
       - db:/var/lib/palpo
-      #- ./palpo.toml:/etc/palpo.toml
+      - ./palpo.toml:/var/palpo/palpo.toml:ro
     environment:
       PALPO_CONFIG: '/var/palpo/palpo.toml'
     networks:
       - caddy
     labels:
       caddy: matrix.example.com
-      caddy.reverse_proxy: "{{upstreams 6167}}"
+      caddy.reverse_proxy: "{{upstreams 8008}}"
 
 volumes:
   db:
