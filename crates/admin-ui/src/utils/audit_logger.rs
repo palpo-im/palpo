@@ -95,6 +95,7 @@ use std::sync::{Arc, Mutex};
 /// let recent = logger.get_recent_entries(10);
 /// println!("Recent audit events: {}", recent.len());
 /// ```
+#[derive(Clone)]
 pub struct AuditLogger {
     entries: Arc<Mutex<VecDeque<AuditLogEntry>>>,
     max_entries: usize,
@@ -121,6 +122,93 @@ impl AuditLogger {
             entries: Arc::new(Mutex::new(VecDeque::new())),
             max_entries,
         }
+    }
+
+    /// Logs an administrative action with optional details.
+    ///
+    /// This method provides a unified interface for logging both successful and failed
+    /// operations. It determines success/failure based on whether an error message is provided.
+    ///
+    /// # Parameters
+    ///
+    /// - `admin_user_id`: The ID of the administrator who performed the action
+    /// - `action`: The type of administrative action
+    /// - `target_type`: The type of resource that was targeted
+    /// - `target_id`: The specific identifier of the target resource
+    /// - `details`: Optional JSON value with additional operation details
+    /// - `description`: Human-readable description of the operation
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// // Log a successful action
+    /// logger.log_action(
+    ///     "admin@example.com",
+    ///     AuditAction::UserCreate,
+    ///     AuditTargetType::User,
+    ///     "@newuser:example.com",
+    ///     Some(serde_json::json!({"username": "newuser"})),
+    ///     "Created new user",
+    /// ).await;
+    /// ```
+    pub async fn log_action(
+        &self,
+        admin_user_id: &str,
+        action: AuditAction,
+        target_type: AuditTargetType,
+        target_id: &str,
+        details: Option<serde_json::Value>,
+        description: &str,
+    ) {
+        self.log_success(
+            admin_user_id.to_string(),
+            action,
+            target_type,
+            target_id.to_string(),
+            None, // old_value
+            details, // new_value (details)
+        );
+    }
+
+    /// Logs a failed administrative action.
+    ///
+    /// This method is a convenience wrapper for logging failed operations with
+    /// an error message.
+    ///
+    /// # Parameters
+    ///
+    /// - `admin_user_id`: The ID of the administrator who attempted the action
+    /// - `action`: The type of administrative action that was attempted
+    /// - `target_type`: The type of resource that was targeted
+    /// - `target_id`: The specific identifier of the target resource
+    /// - `error_message`: A description of why the operation failed
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// logger.log_action_failure(
+    ///     "admin@example.com",
+    ///     AuditAction::UserCreate,
+    ///     AuditTargetType::User,
+    ///     "invalid_user",
+    ///     "Username already exists",
+    /// ).await;
+    /// ```
+    pub async fn log_action_failure(
+        &self,
+        admin_user_id: &str,
+        action: AuditAction,
+        target_type: AuditTargetType,
+        target_id: &str,
+        error_message: &str,
+    ) {
+        self.log_failure(
+            admin_user_id.to_string(),
+            action,
+            target_type,
+            target_id.to_string(),
+            error_message.to_string(),
+        );
     }
 
     /// Logs a successful administrative action.
@@ -358,8 +446,17 @@ impl AuditLogger {
     /// - `entry`: The audit log entry to send to the backend
     fn send_to_backend(&self, entry: &AuditLogEntry) {
         // In a real implementation, this would make an HTTP request to the backend
-        // For now, we just log to console
-        web_sys::console::log_1(&format!("Audit Log: {}", entry.description()).into());
+        // For now, we just log to console in WASM environments
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::console::log_1(&format!("Audit Log: {}", entry.description()).into());
+        }
+        
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // In non-WASM environments (like tests), just print to stdout
+            println!("Audit Log: {}", entry.description());
+        }
     }
 }
 
