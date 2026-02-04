@@ -1,0 +1,60 @@
+server_name = "127.0.0.1:6006"
+
+# Enables registration. If set to false, no users can register on this server.
+allow_registration = true
+
+enable_admin_room = true
+
+# Directory containing appservice registration YAML files (e.g. mautrix-telegram)
+appservice_registration_dir = "appservices"
+
+# The local address that the server listens on.
+[[listeners]]
+address = "0.0.0.0:6006"
+
+[logger]
+format = "pretty" # pretty, json, compact
+#max_concurrent_requests = 100 # How many requests Palpo sends to other servers at the same time
+#level = "warn,state=warn,_=off,sled=off"
+
+[db]
+url = "postgres://postgres:root@localhost:5432/palpo_local"
+pool_size = 10
+
+[federation]
+enable = true
+
+[well_known]
+# Palpo handles the /.well-known/matrix/* endpoints, making both clients and servers try to access palpo with the host
+# server_name and port 443 by default.
+# If you want to override these defaults, uncomment and edit the following lines accordingly:
+server = "127.0.0.1:6006"
+client = "http://127.0.0.1:6006"
+
+[turn]
+secret = "n0t4ctuAllymatr1Xd0TorgSshar3d5ecret4obvIousreAsons"
+allow_guests = true
+uris = ["turn:127.0.0.1?transport=udp", "turn:127.0.0.1?transport=tcp"]
+
+[oidc]
+enable = true
+enable_pkce = true
+session_timeout = 1800
+require_email_verified = false
+allow_registration = true
+default_provider = "github"
+user_prefix = ""
+
+[oidc.providers.google]
+issuer = "https://accounts.google.com"
+client_id = "your-google-client-id.apps.googleusercontent.com"
+client_secret = "GOCSPX-your-google-client-secret"
+redirect_uri = "https://your-server.com/_matrix/client/oidc/callback"
+
+[oidc.providers.github]
+issuer = "https://github.com"
+client_id = "your-github-oauth-app-id"
+client_secret = "your-github-oauth-app-secret"
+redirect_uri = "https://your-server.com/_matrix/client/oidc/callback"
+scopes = ["read:user", "user:email"]
+display_name = "Sign in with GitHub"

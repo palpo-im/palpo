@@ -23,13 +23,11 @@ use crate::{
 };
 
 pub fn public_router() -> Router {
+    println!("xxxxx Registering public register router");
     Router::with_path("register").push(
         Router::with_hoop(hoops::limit_rate)
-            .push(
-                Router::new()
-                    .post(register)
-                    .push(Router::with_path("available").get(available)),
-            )
+            .push(Router::with_path("available").get(available))
+            .post(register)
             .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
     )
 }
@@ -55,22 +53,28 @@ async fn register(
     _res: &mut Response,
 ) -> JsonResult<RegisterResBody> {
     let body = body.into_inner();
+    println!("xxxxxxxxxxxxxxxxx Register request body: {:?}", body);
     // For complement test `TestRequestEncodingFails`.
     if body.is_default() {
         let payload = req.payload().await?;
         if let Err(e) = serde_json::from_slice::<JsonValue>(payload) {
+            println!("xxxxxxxxxxxxxxxxx 1");
             return Err(MatrixError::not_json(format!("invalid json data: {e}")).into());
         }
     }
+    println!("xxxxxxxxxxxxxxxxx 2");
 
     let conf = crate::config::get();
     if !conf.allow_registration && !aa.from_appservice && conf.registration_token.is_none() {
+        println!("xxxxxxxxxxxxxxxxx 3");
         return Err(MatrixError::forbidden("registration has been disabled", None).into());
     }
+    println!("xxxxxxxxxxxxxxxxx 4");
 
     let is_guest = body.kind == RegistrationKind::Guest;
     let user_id = match (&body.username, is_guest) {
         (Some(username), false) => {
+            println!("xxxxxxxxxxxxxxxxx 5");
             let proposed_user_id =
                 UserId::parse_with_server_name(username.to_lowercase(), &conf.server_name)
                     .ok()
@@ -80,11 +84,13 @@ async fn register(
                     .ok_or(MatrixError::invalid_username("username is invalid"))?;
             proposed_user_id.validate_strict()?;
             if data::user::user_exists(&proposed_user_id)? {
+                println!("xxxxxxxxxxxxxxxxx 6");
                 return Err(MatrixError::user_in_use("desired user id is already taken").into());
             }
             proposed_user_id
         }
         _ => loop {
+            println!("xxxxxxxxxxxxxxxxx 7");
             let proposed_user_id = UserId::parse_with_server_name(
                 utils::random_string(RANDOM_USER_ID_LENGTH).to_lowercase(),
                 &conf.server_name,
@@ -96,17 +102,21 @@ async fn register(
         },
     };
 
+    let mut appservice = None;
     if body.login_type == Some(LoginType::Appservice) {
-        let authed = depot.authed_info()?;
-        if let Some(appservice) = &authed.appservice {
-            if !appservice.is_user_match(&user_id) {
-                return Err(MatrixError::exclusive("User is not in namespace.").into());
-            }
-        } else {
-            return Err(MatrixError::missing_token("Missing appservice token.").into());
+        println!("xxxxxxxxxxxxxxxxx 8");
+        let token = aa.require_access_token()?;
+        appservice = crate::appservices()
+            .into_iter()
+            .find(|appservice| appservice.as_token == token)
+            .cloned();
+        println!("Checking appservices for appservices: {:?}", appservice);
+        if appservice.is_none() {
+            return Err(MatrixError::missing_token("missing appservice token").into());
         }
     } else if crate::appservice::is_exclusive_user_id(&user_id)? {
-        return Err(MatrixError::exclusive("User id reserved by appservice.").into());
+        println!("xxxxxxxxxxxxxxxxx 9");
+        return Err(MatrixError::exclusive("user id reserved by appservice").into());
     }
 
     // UIAA
@@ -249,11 +259,7 @@ async fn register(
         // }
     }
 
-    let from_appservice = if let Ok(authed) = depot.authed_info() {
-        authed.appservice.is_some()
-    } else {
-        false
-    };
+    let from_appservice = appservice.is_some();
     if !from_appservice
         && !conf.auto_join_rooms.is_empty()
         && (conf.allow_guests_auto_join_rooms || !is_guest)

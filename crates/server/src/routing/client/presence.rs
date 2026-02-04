@@ -23,7 +23,7 @@ pub fn authed_router() -> Router {
 #[endpoint]
 fn get_status(user_id: PathParam<OwnedUserId>, depot: &mut Depot) -> JsonResult<PresenceResBody> {
     if !crate::config::get().presence.allow_local {
-        return Err(MatrixError::forbidden("Presence is disabled on this server", None).into());
+        return Err(MatrixError::forbidden("presence is disabled on this server", None).into());
     }
 
     let authed = depot.authed_info()?;
@@ -32,7 +32,7 @@ fn get_status(user_id: PathParam<OwnedUserId>, depot: &mut Depot) -> JsonResult<
 
     if !state::user_can_see_user(sender_id, &user_id)? {
         return Err(
-            MatrixError::unauthorized("You cannot get the presence state of this user").into(),
+            MatrixError::unauthorized("you cannot get the presence state of this user").into(),
         );
     }
 
@@ -57,17 +57,27 @@ async fn set_status(
     depot: &mut Depot,
 ) -> EmptyResult {
     if !config::get().presence.allow_local {
-        return Err(MatrixError::forbidden("Presence is disabled on this server", None).into());
+        return Err(MatrixError::forbidden("presence is disabled on this server", None).into());
     }
 
     let authed = depot.authed_info()?;
     let user_id = user_id.into_inner();
     if authed.user_id() != user_id {
-        return Err(MatrixError::forbidden(
-            "You cannot set the presence state of another user",
-            None,
-        )
-        .into());
+        if let Some(appservice) = authed.appservice() {
+            if !appservice.is_user_match(&user_id) {
+                return Err(MatrixError::forbidden(
+                    "appservice cannot set the presence state of user not matched by its namespace",
+                    None,
+                )
+                .into());
+            }
+        } else {
+            return Err(MatrixError::forbidden(
+                "you cannot set the presence state of another user",
+                None,
+            )
+            .into());
+        }
     }
     let SetPresenceReqBody {
         presence,

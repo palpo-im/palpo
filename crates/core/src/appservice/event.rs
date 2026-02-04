@@ -46,7 +46,7 @@ pub fn push_events_request(
     body: PushEventsReqBody,
 ) -> SendResult<SendRequest> {
     let url = Url::parse(&format!("{origin}/_matrix/app/v1/transactions/{txn_id}"))?;
-    crate::sending::post(url).stuff(body)
+    crate::sending::put(url).stuff(body)
 }
 /// Request type for the `push_events` endpoint.
 

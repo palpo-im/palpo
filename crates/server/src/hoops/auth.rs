@@ -29,7 +29,7 @@ pub async fn auth_by_access_token_or_signatures(
             auth_by_signatures_inner(req, depot).await
         }
     } else {
-        Err(MatrixError::missing_token("Missing token.").into())
+        Err(MatrixError::missing_token("missing token").into())
     }
 }
 
@@ -48,7 +48,6 @@ pub async fn auth_by_signatures(
 
 async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
     let token = aa.require_access_token()?;
-
     let access_token = user_access_tokens::table
         .filter(user_access_tokens::token.eq(token))
         .first::<DbAccessToken>(&mut connect()?)
@@ -73,7 +72,9 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         Ok(())
     } else {
         let appservices = crate::appservices();
+        println!("Checking appservices for appservices: {:?}", appservices);
         for appservice in appservices {
+            print!("Checking appservice {} with as_token {}", appservice.id, appservice.as_token);
             if appservice.as_token == token {
                 let user = users::table
                     .filter(users::appservice_id.eq(&appservice.id))
@@ -90,13 +91,13 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
                 return Ok(());
             }
         }
-        Err(MatrixError::unknown_token("Unknown access token.", true).into())
+        Err(MatrixError::unknown_token("unknown access token", true).into())
     }
 }
 
 async fn auth_by_signatures_inner(req: &mut Request, depot: &mut Depot) -> AppResult<()> {
     let Some(Authorization(x_matrix)) = req.headers().typed_get::<Authorization<XMatrix>>() else {
-        warn!("Missing or invalid Authorization header");
+        warn!("missing or invalid Authorization header");
         return Err(MatrixError::forbidden("Missing or invalid authorization header", None).into());
     };
 

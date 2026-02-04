@@ -21,6 +21,7 @@ use crate::core::{Seqnum, UnixMillis};
 use crate::data::misc::DbServerSigningKeys;
 use crate::data::schema::*;
 use crate::data::user::{NewDbUser, NewDbUserDevice};
+use crate::appservice::DbRegistration;
 use crate::data::{connect, diesel_exists};
 use crate::utils::{MutexMap, MutexMapGuard, SeqnumQueue, SeqnumQueueFuture, SeqnumQueueGuard};
 use crate::{AppResult, SigningKeys};
@@ -176,6 +177,31 @@ pub fn appservices() -> &'static Vec<Registration> {
             }
             exist_ids.insert(registration.id.clone());
             appservices.push(registration.clone());
+
+            // Ensure the appservice registration is in the database so that
+            // event forwarding (via appservice::all()) can find it.
+            let db_registration: DbRegistration = registration.clone().into();
+            let mut conn = connect().expect("db connect failed");
+            if let Err(e) = diesel::insert_into(appservice_registrations::table)
+                .values(&db_registration)
+                .on_conflict(appservice_registrations::id)
+                .do_update()
+                .set((
+                    appservice_registrations::url.eq(&db_registration.url),
+                    appservice_registrations::as_token.eq(&db_registration.as_token),
+                    appservice_registrations::hs_token.eq(&db_registration.hs_token),
+                    appservice_registrations::sender_localpart.eq(&db_registration.sender_localpart),
+                    appservice_registrations::namespaces.eq(&db_registration.namespaces),
+                    appservice_registrations::rate_limited.eq(&db_registration.rate_limited),
+                    appservice_registrations::protocols.eq(&db_registration.protocols),
+                    appservice_registrations::receive_ephemeral.eq(&db_registration.receive_ephemeral),
+                    appservice_registrations::device_management.eq(&db_registration.device_management),
+                ))
+                .execute(&mut conn)
+            {
+                tracing::error!("Failed to save appservice registration to database: {e}");
+            }
+            drop(conn);
 
             let user_id = OwnedUserId::try_from(format!(
                 "@{}:{}",
