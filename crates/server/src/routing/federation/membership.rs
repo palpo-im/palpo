@@ -373,7 +373,7 @@ async fn send_leave(
     else {
         // Event could not be converted to canonical json
         return Err(
-            MatrixError::invalid_param("Could not convert event to canonical json.").into(),
+            MatrixError::invalid_param("could not convert event to canonical json.").into(),
         );
     };
 
@@ -381,30 +381,30 @@ async fn send_leave(
         serde_json::to_value(
             value
                 .get("room_id")
-                .ok_or_else(|| MatrixError::bad_json("Event missing room_id property."))?,
+                .ok_or_else(|| MatrixError::bad_json("event missing room_id property."))?,
         )
         .expect("CanonicalJson is valid json value"),
     )
-    .map_err(|e| MatrixError::bad_json(format!("room_id field is not a valid room ID: {e}")))?;
+    .map_err(|e| MatrixError::bad_json(format!("room_id field is not a valid room id: {e}")))?;
 
     if event_room_id != args.room_id {
         return Err(
-            MatrixError::bad_json("Event room_id does not match request path room ID.").into(),
+            MatrixError::bad_json("event room_id does not match request path room id").into(),
         );
     }
 
     let content: RoomMemberEventContent = serde_json::from_value(
         value
             .get("content")
-            .ok_or_else(|| MatrixError::bad_json("Event missing content property"))?
+            .ok_or_else(|| MatrixError::bad_json("event missing content property"))?
             .clone()
             .into(),
     )
-    .map_err(|_| MatrixError::bad_json("Event content is empty or invalid"))?;
+    .map_err(|_| MatrixError::bad_json("event content is empty or invalid"))?;
 
     if content.membership != MembershipState::Leave {
         return Err(MatrixError::bad_json(
-            "Not allowed to send a non-leave membership event to leave endpoint.",
+            "not allowed to send a non-leave membership event to leave endpoint",
         )
         .into());
     }
@@ -412,15 +412,15 @@ async fn send_leave(
     let event_type: StateEventType = serde_json::from_value(
         value
             .get("type")
-            .ok_or_else(|| MatrixError::bad_json("Event missing type property."))?
+            .ok_or_else(|| MatrixError::bad_json("event missing type property."))?
             .clone()
             .into(),
     )
-    .map_err(|_| MatrixError::bad_json("Event does not have a valid state event type."))?;
+    .map_err(|_| MatrixError::bad_json("event does not have a valid state event type"))?;
 
     if event_type != StateEventType::RoomMember {
         return Err(MatrixError::invalid_param(
-            "Not allowed to send non-membership state event to leave endpoint.",
+            "not allowed to send non-membership state event to leave endpoint",
         )
         .into());
     }
