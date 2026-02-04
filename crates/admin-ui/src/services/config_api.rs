@@ -4,6 +4,7 @@
 //! including reading, writing, validating, and reloading configuration files.
 
 use crate::models::{config::*, error::WebConfigError, validation::{ConfigError, ConfigWarning, ValidationResult}};
+use crate::utils::fs_compat;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::SystemTime;
@@ -25,7 +26,7 @@ impl ConfigAPI {
     /// Get current server configuration
     pub async fn get_config() -> Result<ServerConfigResponse, WebConfigError> {
         let config_path = Self::get_config_path()?;
-        let config_content = tokio::fs::read_to_string(&config_path)
+        let config_content = fs_compat::read_to_string(&config_path)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to read config file: {}", e), &config_path))?;
         
@@ -70,7 +71,7 @@ impl ConfigAPI {
             })?;
         
         // Write configuration to file
-        tokio::fs::write(&config_path, toml_content)
+        fs_compat::write(&config_path, toml_content)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to write config file: {}", e), &config_path))?;
         
@@ -202,12 +203,11 @@ impl ConfigAPI {
     }
     
     async fn get_file_modified_time(path: &str) -> Result<SystemTime, WebConfigError> {
-        let metadata = tokio::fs::metadata(path)
+        let metadata = fs_compat::metadata(path)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to get file metadata: {}", e), path))?;
         
-        metadata.modified()
-            .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to get modification time: {}", e), path))
+        Ok(metadata.modified)
     }
     
     fn calculate_checksum(content: &str) -> String {
@@ -227,7 +227,7 @@ impl ConfigAPI {
         
         let backup_path = format!("{}.backup.{}", config_path, timestamp);
         
-        tokio::fs::copy(config_path, &backup_path)
+        fs_compat::copy(config_path, &backup_path)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to create backup: {}", e), config_path))?;
         

@@ -149,12 +149,7 @@ pub enum UserSortField {
     IsAdmin,
 }
 
-/// Sort order
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
+use crate::models::room::SortOrder;
 
 /// User statistics
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -234,12 +229,3 @@ impl UserSortField {
     }
 }
 
-impl SortOrder {
-    /// Get human-readable description of the sort order
-    pub fn description(&self) -> &'static str {
-        match self {
-            SortOrder::Ascending => "Ascending",
-            SortOrder::Descending => "Descending",
-        }
-    }
-}
