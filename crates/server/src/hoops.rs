@@ -19,6 +19,16 @@ pub async fn ensure_accept(req: &mut Request) {
 }
 
 #[handler]
+pub async fn ensure_content_type(req: &mut Request) {
+    if req.content_type().is_none() {
+        req.headers_mut().insert(
+            "Content-Type",
+            "application/json".parse().expect("should not fail"),
+        );
+    }
+}
+
+#[handler]
 pub async fn limit_size(
     req: &mut Request,
     depot: &mut Depot,
