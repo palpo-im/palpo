@@ -291,17 +291,17 @@ async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
     }
 
     let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) else {
-        return Err(MatrixError::unknown("Unknown or invalid Content-Type header").into());
+        return Err(MatrixError::unknown("unknown or invalid content-type header").into());
     };
 
     let content_type = content_type.to_str().map_err(|e| {
-        MatrixError::unknown(format!("Unknown or invalid Content-Type header: {e}"))
+        MatrixError::unknown(format!("unknown or invalid content-type header: {e}"))
     })?;
 
     let data = match content_type {
         html if html.starts_with("text/html") => download_html(url).await?,
         img if img.starts_with("image/") => download_image(url).await?,
-        _ => return Err(MatrixError::unknown("Unsupported Content-Type").into()),
+        _ => return Err(MatrixError::unknown("unsupported content-type").into()),
     };
     crate::data::media::set_url_preview(&data.clone().into_new_db_url_preview(url.as_str()))?;
 
