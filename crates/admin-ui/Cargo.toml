@@ -9,6 +9,12 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# 明确指定测试在native环境运行
+[[bin]]
+name = "test-runner"
+path = "src/bin/test_runner.rs"
+required-features = ["test-utils"]
+
 [dependencies]
 # Frontend dependencies (Dioxus)
 dioxus = { version = "0.5", features = ["web"] }
@@ -19,18 +25,12 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "HtmlElement",
-    "HtmlAnchorElement",
     "Storage",
     "Request",
     "RequestInit",
     "RequestMode",
     "Response",
     "Headers",
-    "AbortController",
-    "AbortSignal",
-    "Blob",
-    "BlobPropertyBag",
-    "Url",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
@@ -46,8 +46,24 @@ getrandom = { version = "0.2", features = ["js"] }
 toml = "0.8"
 serde_yaml = "0.9"
 base64 = "0.21"
-tokio = { version = "1.0", features = ["fs", "time", "macros", "rt"] }
 rand = { version = "0.8", features = ["getrandom"] }
+
+# Conditional dependencies for different targets
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# WASM-compatible async runtime
+wasm-bindgen-futures = "0.4"
+gloo-net = "0.4"  # For HTTP requests in WASM
+gloo-storage = "0.3"  # For local storage in WASM
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native dependencies
+tokio = { version = "1.0", features = ["fs", "macros", "rt", "time"] }
+reqwest = { version = "0.11", features = ["json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+# For tests, we need tokio even on WASM target
+tokio = { version = "1.0", features = ["macros", "rt", "time"] }
 
 [features]
 default = []

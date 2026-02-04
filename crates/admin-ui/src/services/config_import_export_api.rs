@@ -4,6 +4,7 @@
 //! with support for multiple formats, conflict resolution, and migration assistance.
 
 use crate::models::{config::*, error::WebConfigError, validation::ValidationResult};
+use crate::utils::fs_compat;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -14,7 +15,7 @@ impl ConfigImportExportAPI {
     /// Export configuration with comprehensive options
     pub async fn export_config(options: ExportOptions) -> Result<ConfigExportResponse, WebConfigError> {
         let config_path = Self::get_config_path()?;
-        let config_content = tokio::fs::read_to_string(&config_path)
+        let config_content = fs_compat::read_to_string(&config_path)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to read config file: {}", e), &config_path))?;
         
@@ -280,7 +281,7 @@ impl ConfigImportExportAPI {
     
     async fn get_current_config() -> Result<WebConfigData, WebConfigError> {
         let config_path = Self::get_config_path()?;
-        let config_content = tokio::fs::read_to_string(&config_path)
+        let config_content = fs_compat::read_to_string(&config_path)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to read config file: {}", e), &config_path))?;
         
@@ -299,7 +300,7 @@ impl ConfigImportExportAPI {
                 format: "TOML".to_string(),
             })?;
         
-        tokio::fs::write(&config_path, toml_content)
+        fs_compat::write(&config_path, toml_content)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to write config file: {}", e), &config_path))
     }
@@ -819,7 +820,7 @@ impl ConfigImportExportAPI {
         
         let backup_path = format!("{}.backup.{}", config_path, timestamp);
         
-        tokio::fs::copy(config_path, &backup_path)
+        fs_compat::copy(config_path, &backup_path)
             .await
             .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to create backup: {}", e), config_path))?;
         
