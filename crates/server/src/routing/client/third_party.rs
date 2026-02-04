@@ -29,6 +29,11 @@ fn appservice_get_request(base_url: &str, path: &str) -> Result<reqwest::Request
     Ok(reqwest::Request::new(reqwest::Method::GET, url))
 }
 
+/// Percent-encode a string for use in a URL query parameter.
+fn encode_query_value(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
 /// # `GET /_matrix/client/v3/thirdparty/protocols`
 ///
 /// Fetches metadata about all third party protocols supported by the homeserver.
@@ -38,16 +43,16 @@ async fn protocols(_aa: AuthArgs) -> JsonResult<ProtocolsResBody> {
     let mut result = BTreeMap::new();
 
     for appservice in crate::appservice::all()?.values() {
-        let Some(protocols) = &appservice.registration.protocols else {
+        let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
-        let Some(url) = &appservice.registration.url else {
+        let Some(base_url) = &appservice.registration.url else {
             continue;
         };
 
-        for protocol_id in protocols {
+        for protocol_id in proto_list {
             let path = format!("protocol/{protocol_id}");
-            let Ok(request) = appservice_get_request(url, &path) else {
+            let Ok(request) = appservice_get_request(base_url, &path) else {
                 continue;
             };
             match sending::send_appservice_request::<Protocol>(
@@ -56,8 +61,8 @@ async fn protocols(_aa: AuthArgs) -> JsonResult<ProtocolsResBody> {
             )
             .await
             {
-                Ok(protocol) => {
-                    result.insert(protocol_id.clone(), protocol);
+                Ok(proto) => {
+                    result.insert(protocol_id.clone(), proto);
                 }
                 Err(e) => {
                     warn!(
@@ -80,18 +85,18 @@ async fn get_protocol(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<
     let protocol_id = protocol.into_inner();
 
     for appservice in crate::appservice::all()?.values() {
-        let Some(protocols) = &appservice.registration.protocols else {
+        let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
-        if !protocols.iter().any(|p| p == &protocol_id) {
+        if !proto_list.iter().any(|p| p == &protocol_id) {
             continue;
         }
-        let Some(url) = &appservice.registration.url else {
+        let Some(base_url) = &appservice.registration.url else {
             continue;
         };
 
         let path = format!("protocol/{protocol_id}");
-        let request = appservice_get_request(url, &path)?;
+        let request = appservice_get_request(base_url, &path)?;
         let protocol_data = sending::send_appservice_request::<Protocol>(
             appservice.registration.clone(),
             request,
@@ -116,15 +121,15 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
         if appservice.registration.protocols.is_none() {
             continue;
         }
-        let Some(url) = &appservice.registration.url else {
+        let Some(base_url) = &appservice.registration.url else {
             continue;
         };
 
         let path = match &alias {
-            Some(a) => format!("location?alias={}", urlencoding::encode(a)),
+            Some(a) => format!("location?alias={}", encode_query_value(a)),
             None => "location".to_owned(),
         };
-        let Ok(request) = appservice_get_request(url, &path) else {
+        let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
         match sending::send_appservice_request::<Vec<Location>>(
@@ -133,7 +138,7 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
         )
         .await
         {
-            Ok(locations) => result.extend(locations),
+            Ok(locs) => result.extend(locs),
             Err(e) => {
                 debug!(
                     "Failed to fetch locations from appservice '{}': {}",
@@ -158,18 +163,18 @@ async fn protocol_locations(
     let mut result = Vec::new();
 
     for appservice in crate::appservice::all()?.values() {
-        let Some(protocols) = &appservice.registration.protocols else {
+        let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
-        if !protocols.iter().any(|p| p == &protocol_id) {
+        if !proto_list.iter().any(|p| p == &protocol_id) {
             continue;
         }
-        let Some(url) = &appservice.registration.url else {
+        let Some(base_url) = &appservice.registration.url else {
             continue;
         };
 
         let path = format!("location/{protocol_id}");
-        let Ok(request) = appservice_get_request(url, &path) else {
+        let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
         match sending::send_appservice_request::<Vec<Location>>(
@@ -178,7 +183,7 @@ async fn protocol_locations(
         )
         .await
         {
-            Ok(locations) => result.extend(locations),
+            Ok(locs) => result.extend(locs),
             Err(e) => {
                 debug!(
                     "Failed to fetch locations for '{}' from appservice '{}': {}",
@@ -203,15 +208,15 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
         if appservice.registration.protocols.is_none() {
             continue;
         }
-        let Some(url) = &appservice.registration.url else {
+        let Some(base_url) = &appservice.registration.url else {
             continue;
         };
 
         let path = match &userid {
-            Some(u) => format!("user?userid={}", urlencoding::encode(u)),
+            Some(u) => format!("user?userid={}", encode_query_value(u)),
             None => "user".to_owned(),
         };
-        let Ok(request) = appservice_get_request(url, &path) else {
+        let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
         match sending::send_appservice_request::<Vec<User>>(
@@ -220,7 +225,7 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
         )
         .await
         {
-            Ok(users) => result.extend(users),
+            Ok(user_list) => result.extend(user_list),
             Err(e) => {
                 debug!(
                     "Failed to fetch users from appservice '{}': {}",
@@ -245,18 +250,18 @@ async fn protocol_users(
     let mut result = Vec::new();
 
     for appservice in crate::appservice::all()?.values() {
-        let Some(protocols) = &appservice.registration.protocols else {
+        let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
-        if !protocols.iter().any(|p| p == &protocol_id) {
+        if !proto_list.iter().any(|p| p == &protocol_id) {
             continue;
         }
-        let Some(url) = &appservice.registration.url else {
+        let Some(base_url) = &appservice.registration.url else {
             continue;
         };
 
         let path = format!("user/{protocol_id}");
-        let Ok(request) = appservice_get_request(url, &path) else {
+        let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
         match sending::send_appservice_request::<Vec<User>>(
@@ -265,7 +270,7 @@ async fn protocol_users(
         )
         .await
         {
-            Ok(users) => result.extend(users),
+            Ok(user_list) => result.extend(user_list),
             Err(e) => {
                 debug!(
                     "Failed to fetch users for '{}' from appservice '{}': {}",

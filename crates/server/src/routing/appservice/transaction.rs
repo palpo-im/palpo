@@ -2,7 +2,6 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
 use crate::core::appservice::event::PushEventsReqBody;
-use crate::core::identifiers::*;
 use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok};
 
 pub fn router() -> Router {
