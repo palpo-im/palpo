@@ -4,9 +4,10 @@ use crate::models::{
     User, CreateUserRequest, CreateUserResponse, UpdateUserRequest, UpdateUserResponse,
     ResetPasswordRequest, ResetPasswordResponse, DeactivateUserRequest, DeactivateUserResponse,
     BatchUserOperationRequest, BatchUserOperationResponse, ListUsersRequest, ListUsersResponse,
-    UserStatistics, BatchUserOperation, UserSortField, SortOrder, Permission,
+    UserStatistics, BatchUserOperation, UserSortField, Permission,
     WebConfigError, AuditAction, AuditTargetType,
 };
+use crate::models::room::SortOrder;
 use crate::utils::audit_logger::AuditLogger;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
