@@ -47,6 +47,7 @@ toml = "0.8"
 serde_yaml = "0.9"
 base64 = "0.21"
 tokio = { version = "1.0", features = ["fs", "time", "macros", "rt"] }
+rand = { version = "0.8", features = ["getrandom"] }
 
 [features]
 default = []
