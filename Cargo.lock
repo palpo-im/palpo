@@ -4606,6 +4606,7 @@ dependencies = [
  "dioxus",
  "getrandom 0.2.16",
  "js-sys",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "serde_yaml",
