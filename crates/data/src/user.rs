@@ -23,6 +23,8 @@ pub mod session;
 pub use session::*;
 pub mod external_id;
 pub mod presence;
+pub mod registration_token;
+pub use registration_token::*;
 use std::mem;
 
 use diesel::dsl;

@@ -373,6 +373,22 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    event_reports (id) {
+        id -> Int8,
+        received_ts -> Int8,
+        room_id -> Text,
+        event_id -> Text,
+        user_id -> Text,
+        reason -> Nullable<Text>,
+        content -> Nullable<Jsonb>,
+        score -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     event_searches (id) {
         id -> Int8,
         event_id -> Text,
@@ -1089,6 +1105,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     event_missings,
     event_phases,
     event_points,
+    event_reports,
     event_push_actions,
     event_push_summaries,
     event_receipts,

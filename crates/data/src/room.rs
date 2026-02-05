@@ -9,8 +9,10 @@ use crate::schema::*;
 use crate::{DataResult, connect};
 
 pub mod event;
+pub mod event_report;
 pub mod receipt;
 pub mod timeline;
+pub use event_report::*;
 
 #[derive(Insertable, Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = rooms)]
