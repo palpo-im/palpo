@@ -6,6 +6,7 @@ mod transaction;
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use subtle::ConstantTimeEq;
 
 use crate::core::appservice::ping::SendPingReqBody;
 use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok};
@@ -24,7 +25,11 @@ pub fn router() -> Router {
 fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
     let token = aa.require_access_token()?;
     let appservices = crate::appservices();
-    if appservices.iter().any(|a| a.hs_token == token) {
+    // Use constant-time comparison to prevent timing attacks
+    if appservices
+        .iter()
+        .any(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
+    {
         Ok(())
     } else {
         Err(MatrixError::forbidden("Invalid hs_token", None).into())

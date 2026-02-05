@@ -5,6 +5,7 @@ use diesel::prelude::*;
 use salvo::http::headers::HeaderMapExt;
 use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
+use subtle::ConstantTimeEq;
 
 use crate::appservice::RegistrationInfo;
 use crate::core::UnixMillis;
@@ -76,7 +77,8 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
     } else {
         let appservices = crate::appservices();
         for appservice in appservices {
-            if appservice.as_token == token {
+            // Use constant-time comparison to prevent timing attacks
+            if appservice.as_token.as_bytes().ct_eq(token.as_bytes()).into() {
                 let appservice_info: RegistrationInfo = appservice.to_owned().try_into()?;
 
                 // Check if the appservice is masquerading as another user
