@@ -9,6 +9,7 @@ pub mod user;
 pub mod room;
 pub mod federation;
 pub mod media;
+pub mod appservice;
 
 pub use config::*;
 pub use audit::*;
@@ -19,3 +20,4 @@ pub use user::*;
 pub use room::*;
 pub use federation::*;
 pub use media::*;
+pub use appservice::*;
