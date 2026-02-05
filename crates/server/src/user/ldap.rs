@@ -5,9 +5,34 @@ use ldap3::{LdapConnAsync, Scope, SearchEntry};
 use crate::core::UserId;
 use crate::{AppError, AppResult, MatrixError, config};
 
+/// Escape special characters in LDAP filter values according to RFC 4515.
+///
+/// Characters that need escaping:
+/// - * (asterisk) -> \2a
+/// - ( (left paren) -> \28
+/// - ) (right paren) -> \29
+/// - \ (backslash) -> \5c
+/// - NUL (null) -> \00
+fn escape_ldap_filter_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() * 2);
+    for c in value.chars() {
+        match c {
+            '*' => escaped.push_str("\\2a"),
+            '(' => escaped.push_str("\\28"),
+            ')' => escaped.push_str("\\29"),
+            '\\' => escaped.push_str("\\5c"),
+            '\0' => escaped.push_str("\\00"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 pub async fn search_ldap(user_id: &UserId) -> AppResult<Vec<(String, bool)>> {
     let localpart = user_id.localpart().to_owned();
     let lowercased_localpart = localpart.to_lowercase();
+    // Escape special LDAP filter characters to prevent LDAP injection attacks
+    let escaped_localpart = escape_ldap_filter_value(&lowercased_localpart);
 
     let conf =
         config::enabled_ldap().ok_or_else(|| AppError::public("LDAP is not enabled in the configuration"))?;
@@ -41,7 +66,7 @@ pub async fn search_ldap(user_id: &UserId) -> AppResult<Vec<(String, bool)>> {
 
     let attr = [&conf.uid_attribute, &conf.name_attribute];
 
-    let user_filter = &conf.filter.replace("{username}", &lowercased_localpart);
+    let user_filter = &conf.filter.replace("{username}", &escaped_localpart);
 
     let (entries, _result) = ldap
         .search(&conf.base_dn, Scope::Subtree, user_filter, &attr)
@@ -72,7 +97,7 @@ pub async fn search_ldap(user_id: &UserId) -> AppResult<Vec<(String, bool)>> {
             &conf.admin_base_dn
         };
 
-        let admin_filter = &conf.admin_filter.replace("{username}", &lowercased_localpart);
+        let admin_filter = &conf.admin_filter.replace("{username}", &escaped_localpart);
 
         let (admin_entries, _result) = ldap
             .search(admin_base_dn, Scope::Subtree, admin_filter, &attr)
