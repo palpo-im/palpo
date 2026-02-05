@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use diesel::prelude::*;
 
@@ -13,8 +14,17 @@ use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppResult, MatrixError, SESSION_ID_LENGTH, data, utils};
 
+/// Default UIAA session timeout: 15 minutes
+const UIAA_SESSION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// UIAA request with timestamp for timeout tracking
+struct UiaaRequest {
+    request: CanonicalJsonValue,
+    created_at: Instant,
+}
+
 static UIAA_REQUESTS: LazyRwLock<
-    BTreeMap<(OwnedUserId, OwnedDeviceId, String), CanonicalJsonValue>,
+    BTreeMap<(OwnedUserId, OwnedDeviceId, String), UiaaRequest>,
 > = LazyLock::new(Default::default);
 
 /// Creates a new Uiaa session. Make sure the session token is unique.
@@ -177,12 +187,18 @@ pub fn set_uiaa_request(
     session: &str,
     request: CanonicalJsonValue,
 ) {
+    // Clean up expired sessions before adding new one
+    cleanup_expired_sessions();
+
     UIAA_REQUESTS
         .write()
         .expect("write UIAA_REQUESTS failed")
         .insert(
             (user_id.to_owned(), device_id.to_owned(), session.to_owned()),
-            request,
+            UiaaRequest {
+                request,
+                created_at: Instant::now(),
+            },
         );
 }
 
@@ -191,9 +207,22 @@ pub fn get_uiaa_request(
     device_id: &DeviceId,
     session: &str,
 ) -> Option<CanonicalJsonValue> {
-    UIAA_REQUESTS
-        .read()
-        .expect("read UIAA_REQUESTS failed")
-        .get(&(user_id.to_owned(), device_id.to_owned(), session.to_owned()))
-        .cloned()
+    let key = (user_id.to_owned(), device_id.to_owned(), session.to_owned());
+    let requests = UIAA_REQUESTS.read().expect("read UIAA_REQUESTS failed");
+
+    requests.get(&key).and_then(|uiaa_request| {
+        // Check if the session has expired
+        if uiaa_request.created_at.elapsed() > UIAA_SESSION_TIMEOUT {
+            // Session expired, will be cleaned up later
+            None
+        } else {
+            Some(uiaa_request.request.clone())
+        }
+    })
+}
+
+/// Remove expired UIAA sessions from memory
+fn cleanup_expired_sessions() {
+    let mut requests = UIAA_REQUESTS.write().expect("write UIAA_REQUESTS failed");
+    requests.retain(|_, uiaa_request| uiaa_request.created_at.elapsed() <= UIAA_SESSION_TIMEOUT);
 }
