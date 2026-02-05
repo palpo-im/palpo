@@ -10,6 +10,7 @@ pub mod user_admin_api;
 pub mod room_admin_api;
 pub mod federation_admin_api;
 pub mod media_admin_api;
+pub mod appservice_admin_api;
 
 pub use auth::*;
 pub use audit::*;
@@ -21,3 +22,4 @@ pub use user_admin_api::*;
 pub use room_admin_api::*;
 pub use federation_admin_api::*;
 pub use media_admin_api::*;
+pub use appservice_admin_api::*;
