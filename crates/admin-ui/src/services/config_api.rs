@@ -246,27 +246,7 @@ impl ConfigAPI {
         Err(WebConfigError::server_control("Hot reload not implemented"))
     }
     
-    fn sanitize_sensitive_data(config: &mut WebConfigData) {
-        // Remove or mask sensitive information
-        config.auth.jwt_secret = "***REDACTED***".to_string();
-        config.database.connection_string = Self::mask_connection_string(&config.database.connection_string);
-        
-        for provider in &mut config.auth.oidc_providers {
-            provider.client_secret = "***REDACTED***".to_string();
-        }
-    }
-    
-    fn mask_connection_string(connection_string: &str) -> String {
-        // Mask password in connection string
-        if let Some(at_pos) = connection_string.find('@') {
-            if let Some(colon_pos) = connection_string[..at_pos].rfind(':') {
-                let mut masked = connection_string.to_string();
-                masked.replace_range(colon_pos + 1..at_pos, "***");
-                return masked;
-            }
-        }
-        connection_string.to_string()
-    }
+
     
     // Validation methods
     
