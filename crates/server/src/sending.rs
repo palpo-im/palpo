@@ -312,7 +312,6 @@ async fn send_events(
 ) -> Result<OutgoingKind, (OutgoingKind, AppError)> {
     match &kind {
         OutgoingKind::Appservice(id) => {
-            info!("Sending {} events to appservice {}", events.len(), id);
             let mut pdu_jsons = Vec::new();
             for event in &events {
                 match event {
@@ -331,14 +330,11 @@ async fn send_events(
             }
 
             let max_request = crate::sending::max_request();
-            debug!("Waiting for permit for appservice {}", id);
             let permit = max_request.acquire().await;
-            debug!("Got permit for appservice {}", id);
 
             let registration = crate::appservice::get_registration(id)
                 .map_err(|e| (kind.clone(), e))?
                 .ok_or_else(|| {
-                    error!("Could not load appservice registration for {}", id);
                     (
                         kind.clone(),
                         AppError::internal(
@@ -358,10 +354,8 @@ async fn send_events(
                     SendingEventType::Flush => None,
                 }),
             ));
-            let appservice_url = registration.url.as_deref().unwrap_or_default();
-            info!("Sending transaction {} to appservice {} at {}", txn_id, id, appservice_url);
             let request = push_events_request(
-                appservice_url,
+                registration.url.as_deref().unwrap_or_default(),
                 txn_id,
                 req_body,
             )
@@ -369,14 +363,8 @@ async fn send_events(
             .into_inner();
             let response = crate::appservice::send_request(registration, request)
                 .await
-                .map_err(|e| {
-                    error!("Failed to send to appservice {}: {}", id, e);
-                    (kind.clone(), e)
-                })
-                .map(|_response| {
-                    info!("Successfully sent to appservice {}", id);
-                    kind.clone()
-                });
+                .map_err(|e| (kind.clone(), e))
+                .map(|_response| kind.clone());
 
             drop(permit);
             response

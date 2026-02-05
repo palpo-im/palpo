@@ -221,19 +221,14 @@ pub fn get_our_real_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
 }
 
 pub fn appservice_in_room(room_id: &RoomId, appservice: &RegistrationInfo) -> AppResult<bool> {
-    let appservice_id = &appservice.registration.id;
     let maybe = APPSERVICE_IN_ROOM_CACHE
         .read()
         .unwrap()
         .get(room_id)
-        .and_then(|map| map.get(appservice_id))
+        .and_then(|map| map.get(&appservice.registration.id))
         .copied();
 
     if let Some(b) = maybe {
-        debug!(
-            "appservice_in_room cache hit: appservice={}, room={}, result={}",
-            appservice_id, room_id, b
-        );
         Ok(b)
     } else {
         let bridge_user_id = UserId::parse_with_server_name(
@@ -242,47 +237,19 @@ pub fn appservice_in_room(room_id: &RoomId, appservice: &RegistrationInfo) -> Ap
         )
         .ok();
 
-        debug!(
-            "appservice_in_room: appservice={}, sender_localpart={}, bridge_user_id={:?}",
-            appservice_id,
-            appservice.registration.sender_localpart,
-            bridge_user_id
-        );
-
         let bridge_user_joined = bridge_user_id
             .as_ref()
             .is_some_and(|id| user::is_joined(id, room_id).unwrap_or(false));
-
-        debug!(
-            "appservice_in_room: appservice={}, bridge_user_joined={}",
-            appservice_id, bridge_user_joined
-        );
 
         let in_room = bridge_user_joined || {
             let user_ids = room_users::table
                 .filter(room_users::room_id.eq(room_id))
                 .select(room_users::user_id)
                 .load::<String>(&mut connect()?)?;
-            debug!(
-                "appservice_in_room: appservice={}, room={}, users in room: {:?}",
-                appservice_id,
-                room_id,
-                user_ids.iter().take(5).collect::<Vec<_>>()
-            );
-            let matched = user_ids
+            user_ids
                 .iter()
-                .any(|user_id| appservice.users.is_match(user_id.as_str()));
-            debug!(
-                "appservice_in_room: appservice={}, users regex match={}",
-                appservice_id, matched
-            );
-            matched
+                .any(|user_id| appservice.users.is_match(user_id.as_str()))
         };
-
-        debug!(
-            "appservice_in_room: appservice={}, room={}, final result={}",
-            appservice_id, room_id, in_room
-        );
 
         APPSERVICE_IN_ROOM_CACHE
             .write()

@@ -552,24 +552,8 @@ pub async fn append_pdu(
     }
 
     let all_appservices = crate::appservice::all()?;
-    debug!(
-        "Checking {} appservices for pdu {} in room {}",
-        all_appservices.len(),
-        pdu.event_id,
-        pdu.room_id
-    );
     for appservice in all_appservices.values() {
-        let appservice_id = &appservice.registration.id;
-        let in_room = super::appservice_in_room(&pdu.room_id, appservice)?;
-        debug!(
-            "Appservice {} in_room check for room {}: {}",
-            appservice_id, pdu.room_id, in_room
-        );
-        if in_room {
-            info!(
-                "Sending pdu {} to appservice {} (in_room=true)",
-                pdu.event_id, appservice_id
-            );
+        if super::appservice_in_room(&pdu.room_id, appservice)? {
             crate::sending::send_pdu_appservice(appservice.registration.id.clone(), &pdu.event_id)?;
             continue;
         }
@@ -587,36 +571,26 @@ pub async fn append_pdu(
             )
             && state_key_uid == &appservice_uid
         {
-            info!(
-                "Sending pdu {} to appservice {} (member event for appservice user)",
-                pdu.event_id, appservice_id
-            );
             crate::sending::send_pdu_appservice(appservice.registration.id.clone(), &pdu.event_id)?;
             continue;
         }
         let matching_users = || {
-            let sender_match = config::get().server_name == pdu.sender.server_name()
-                && appservice.is_user_match(&pdu.sender);
-            let state_key_match = pdu.event_ty == TimelineEventType::RoomMember
-                && pdu.state_key.as_ref().is_some_and(|state_key| {
-                    UserId::parse(state_key).is_ok_and(|user_id| {
-                        config::get().server_name == user_id.server_name()
-                            && appservice.is_user_match(&user_id)
+            config::get().server_name == pdu.sender.server_name()
+                && appservice.is_user_match(&pdu.sender)
+                || pdu.event_ty == TimelineEventType::RoomMember
+                    && pdu.state_key.as_ref().is_some_and(|state_key| {
+                        UserId::parse(state_key).is_ok_and(|user_id| {
+                            config::get().server_name == user_id.server_name()
+                                && appservice.is_user_match(&user_id)
+                        })
                     })
-                });
-            debug!(
-                "Appservice {} matching_users: sender_match={}, state_key_match={}",
-                appservice_id, sender_match, state_key_match
-            );
-            sender_match || state_key_match
         };
         let matching_aliases = || {
-            let local_aliases = super::local_aliases_for_room(&pdu.room_id).unwrap_or_default();
-            let alias_match = local_aliases
+            super::local_aliases_for_room(&pdu.room_id)
+                .unwrap_or_default()
                 .iter()
-                .any(|room_alias| appservice.aliases.is_match(room_alias.as_str()));
-            let canonical_match =
-                if let Ok(pdu) =
+                .any(|room_alias| appservice.aliases.is_match(room_alias.as_str()))
+                || if let Ok(pdu) =
                     super::get_state(&pdu.room_id, &StateEventType::RoomCanonicalAlias, "", None)
                 {
                     pdu.get_content::<RoomCanonicalAliasEventContent>()
@@ -631,27 +605,11 @@ pub async fn append_pdu(
                         })
                 } else {
                     false
-                };
-            debug!(
-                "Appservice {} matching_aliases: alias_match={}, canonical_match={}",
-                appservice_id, alias_match, canonical_match
-            );
-            alias_match || canonical_match
+                }
         };
 
-        let rooms_match = appservice.rooms.is_match(pdu.room_id.as_str());
-        let aliases_match = matching_aliases();
-        let users_match = matching_users();
-        debug!(
-            "Appservice {} final check: rooms_match={}, aliases_match={}, users_match={}",
-            appservice_id, rooms_match, aliases_match, users_match
-        );
-
-        if aliases_match || rooms_match || users_match {
-            info!(
-                "Sending pdu {} to appservice {} (aliases={}, rooms={}, users={})",
-                pdu.event_id, appservice_id, aliases_match, rooms_match, users_match
-            );
+        if matching_aliases() || appservice.rooms.is_match(pdu.room_id.as_str()) || matching_users()
+        {
             crate::sending::send_pdu_appservice(appservice.registration.id.clone(), &pdu.event_id)?;
         }
     }
