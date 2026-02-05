@@ -110,7 +110,8 @@ impl AuthContext {
 
 /// Hook for authentication management in Dioxus components
 pub fn use_auth() -> AuthContext {
-    let auth_state = use_signal(|| AuthState::Unauthenticated);
+    // Get the auth state from context
+    let auth_state = use_context::<Signal<AuthState>>();
     let auth_service = AuthService::default();
 
     // Validate session on component mount
