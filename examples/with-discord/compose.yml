@@ -20,7 +20,7 @@ services:
   #     - internal
 
   matrix-appservice-discord:
-    image: halfshot/matrix-appservice-discord:latest
+    image: ghcr.io/matrix-org/matrix-appservice-discord:v4.0.0
     restart: unless-stopped
     network_mode: host
     volumes:
