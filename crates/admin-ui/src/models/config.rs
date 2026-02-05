@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Main configuration data structure
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WebConfigData {
     pub server: ServerConfigSection,
     pub database: DatabaseConfigSection,
@@ -15,7 +15,7 @@ pub struct WebConfigData {
 }
 
 /// Server configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ServerConfigSection {
     pub server_name: String,
     pub listeners: Vec<ListenerConfig>,
@@ -52,7 +52,7 @@ pub enum ListenerResource {
 }
 
 /// Database configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DatabaseConfigSection {
     pub connection_string: String,
     pub max_connections: u32,
@@ -63,7 +63,7 @@ pub struct DatabaseConfigSection {
 }
 
 /// Federation configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct FederationConfigSection {
     pub enabled: bool,
     pub trusted_servers: Vec<String>,
@@ -74,7 +74,7 @@ pub struct FederationConfigSection {
 }
 
 /// Authentication configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AuthConfigSection {
     pub registration_enabled: bool,
     pub registration_kind: RegistrationKind,
@@ -86,7 +86,7 @@ pub struct AuthConfigSection {
 }
 
 /// Registration types
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum RegistrationKind {
     Open,
     Token,
@@ -95,7 +95,7 @@ pub enum RegistrationKind {
 }
 
 /// OIDC provider configuration
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OidcProvider {
     pub name: String,
     pub issuer: String,
@@ -105,7 +105,7 @@ pub struct OidcProvider {
 }
 
 /// Media configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MediaConfigSection {
     pub storage_path: String,
     pub max_file_size: u64,
@@ -116,7 +116,7 @@ pub struct MediaConfigSection {
 }
 
 /// Thumbnail size configuration
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ThumbnailSize {
     pub width: u32,
     pub height: u32,
@@ -124,14 +124,14 @@ pub struct ThumbnailSize {
 }
 
 /// Thumbnail generation methods
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ThumbnailMethod {
     Crop,
     Scale,
 }
 
 /// Network configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct NetworkConfigSection {
     pub request_timeout: u64,
     pub connection_timeout: u64,
@@ -141,7 +141,7 @@ pub struct NetworkConfigSection {
 }
 
 /// Rate limiting configuration
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RateLimitConfig {
     pub requests_per_minute: u32,
     pub burst_size: u32,
@@ -149,7 +149,7 @@ pub struct RateLimitConfig {
 }
 
 /// Logging configuration section
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LoggingConfigSection {
     pub level: LogLevel,
     pub format: LogFormat,
@@ -168,7 +168,7 @@ pub enum LogLevel {
 }
 
 /// Log formats
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum LogFormat {
     Json,
     Pretty,
@@ -185,7 +185,7 @@ pub enum LogOutput {
 }
 
 /// Log rotation configuration
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LogRotationConfig {
     pub max_size_mb: u64,
     pub max_files: u32,
