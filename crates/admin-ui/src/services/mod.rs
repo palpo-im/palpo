@@ -11,6 +11,7 @@ pub mod room_admin_api;
 pub mod federation_admin_api;
 pub mod media_admin_api;
 pub mod appservice_admin_api;
+pub mod server_control_api;
 
 pub use auth::*;
 pub use audit::*;
@@ -23,3 +24,4 @@ pub use room_admin_api::*;
 pub use federation_admin_api::*;
 pub use media_admin_api::*;
 pub use appservice_admin_api::*;
+pub use server_control_api::*;

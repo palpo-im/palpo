@@ -10,6 +10,7 @@ pub mod room;
 pub mod federation;
 pub mod media;
 pub mod appservice;
+pub mod server;
 
 pub use config::*;
 pub use audit::*;
@@ -21,3 +22,4 @@ pub use room::*;
 pub use federation::*;
 pub use media::*;
 pub use appservice::*;
+pub use server::*;
