@@ -94,28 +94,67 @@ async fn fetch_thumbnail_authenticated(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
-    unimplemented!()
-    // use federation::authenticated_media::get_content_thumbnail::v1::{Request, Response};
+    use crate::core::http_headers::ContentDisposition;
+    use reqwest::header;
+    use std::str::FromStr;
 
-    // let request = Request {
-    // 	media_id: mxc.media_id.into(),
-    // 	method: dim.method.clone().into(),
-    // 	width: dim.width.into(),
-    // 	height: dim.height.into(),
-    // 	animated: true.into(),
-    // 	timeout_ms,
-    // };
+    let target_server = server.unwrap_or(mxc.server_name);
+    let origin = target_server.origin().await;
 
-    // let Response { content, .. } = self
-    // 	.federation_request(mxc, user, server, request)
-    // 	.await?;
+    // Build the federation thumbnail request using the authenticated media API (v1)
+    let thumbnail_req = crate::core::federation::media::thumbnail_request(
+        &origin,
+        crate::core::federation::media::ThumbnailReqArgs {
+            media_id: mxc.media_id.to_owned(),
+            method: Some(dim.method.clone()),
+            width: dim.width,
+            height: dim.height,
+            timeout_ms,
+            animated: Some(true),
+        },
+    )?
+    .into_inner();
 
-    // match content {
-    // 	| FileOrLocation::File(content) =>
-    // 		self.handle_thumbnail_file(mxc, user, dim, content)
-    // 			.await,
-    // 	| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
-    // }
+    // Send federation request
+    let response = crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
+
+    // Extract content from response headers
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
+    let content_disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| ContentDisposition::from_str(s).ok());
+
+    // Get the file content
+    let file = response.bytes().await?.to_vec();
+
+    // Save the thumbnail locally for caching
+    if !file.is_empty() {
+        if let Err(e) = crate::media::save_thumbnail(
+            mxc,
+            user,
+            content_type.as_deref(),
+            content_disposition.as_ref(),
+            dim,
+            &file,
+        )
+        .await
+        {
+            warn!("Failed to save fetched thumbnail locally: {e}");
+        }
+    }
+
+    Ok(FileMeta {
+        content: Some(file),
+        content_type,
+        content_disposition,
+    })
 }
 
 // async fn fetch_content_authenticated(
@@ -148,31 +187,70 @@ async fn fetch_thumbnail_unauthenticated(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
-    unimplemented!()
-    // use media::get_content_thumbnail::v3::{Request, Response};
+    use crate::core::http_headers::ContentDisposition;
+    use reqwest::header;
+    use std::str::FromStr;
 
-    // let request = Request {
-    // 	allow_remote: true,
-    // 	allow_redirect: true,
-    // 	animated: true.into(),
-    // 	method: dim.method.clone().into(),
-    // 	width: dim.width.into(),
-    // 	height: dim.height.into(),
-    // 	server_name: mxc.server_name.into(),
-    // 	media_id: mxc.media_id.into(),
-    // 	timeout_ms,
-    // };
+    let target_server = server.unwrap_or(mxc.server_name);
+    let origin = target_server.origin().await;
 
-    // let Response {
-    // 	file, content_type, content_disposition, ..
-    // } = self
-    // 	.federation_request(mxc, user, server, request)
-    // 	.await?;
+    // Build the legacy (unauthenticated) media thumbnail request (v3)
+    let thumbnail_req = crate::core::media::thumbnail_request(
+        &origin,
+        mxc.server_name,
+        crate::core::media::ThumbnailReqArgs {
+            server_name: mxc.server_name.to_owned(),
+            media_id: mxc.media_id.to_owned(),
+            method: Some(dim.method.clone()),
+            width: dim.width,
+            height: dim.height,
+            allow_remote: true,
+            timeout_ms,
+            allow_redirect: true,
+        },
+    )?
+    .into_inner();
 
-    // let content = Content { file, content_type, content_disposition };
+    // Send federation request
+    let response = crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
 
-    // handle_thumbnail_file(mxc, user, dim, content)
-    // 	.await
+    // Extract content from response headers
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
+    let content_disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| ContentDisposition::from_str(s).ok());
+
+    // Get the file content
+    let file = response.bytes().await?.to_vec();
+
+    // Save the thumbnail locally for caching
+    if !file.is_empty() {
+        if let Err(e) = crate::media::save_thumbnail(
+            mxc,
+            user,
+            content_type.as_deref(),
+            content_disposition.as_ref(),
+            dim,
+            &file,
+        )
+        .await
+        {
+            warn!("Failed to save fetched thumbnail locally: {e}");
+        }
+    }
+
+    Ok(FileMeta {
+        content: Some(file),
+        content_type,
+        content_disposition,
+    })
 }
 
 // async fn fetch_content_unauthenticated(

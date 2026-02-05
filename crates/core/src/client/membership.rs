@@ -239,8 +239,8 @@ pub struct LeaveRoomReqBody {
 // };
 
 /// Request type for the `mutual_rooms` endpoint.
-#[derive(ToSchema, Deserialize, Debug)]
-pub struct MutualRoomsReqBody {
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct MutualRoomsReqArgs {
     /// The user to search mutual rooms for.
     #[salvo(parameter(parameter_in = Query))]
     pub user_id: OwnedUserId,

@@ -38,10 +38,22 @@ pub fn authed_router() -> Router {
         )
 }
 
+/// #GET /_matrix/client/r0/pushrules/global
+/// Retrieves the global push rules for this user.
 #[endpoint]
-async fn global() -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
+    let authed = depot.authed_info()?;
+
+    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
+        authed.user_id(),
+        None,
+        &GlobalAccountDataEventType::PushRules.to_string(),
+    )
+    .unwrap_or_default();
+
+    json_ok(RulesResBody {
+        global: user_data_content.global,
+    })
 }
 
 /// #GET /_matrix/client/r0/pushrules/{scope}/{kind}/{rule_id}

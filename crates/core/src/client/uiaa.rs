@@ -24,7 +24,7 @@ pub use self::auth_params::*;
 
 /// The type of an authentication stage.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
-#[derive(Clone, StringEnum)]
+#[derive(salvo::oapi::ToSchema, Clone, StringEnum)]
 #[non_exhaustive]
 pub enum AuthType {
     /// Password-based authentication (`m.login.password`).
