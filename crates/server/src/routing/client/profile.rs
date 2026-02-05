@@ -140,7 +140,15 @@ async fn set_avatar_url(
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
     let authed = depot.authed_info()?;
-    if authed.user_id() != user_id {
+
+    // Allow if the user is updating their own profile, or if an appservice is updating
+    // a user within its namespace
+    let is_allowed = authed.user_id() == user_id
+        || authed
+            .appservice()
+            .is_some_and(|appservice| appservice.is_user_match(&user_id));
+
+    if !is_allowed {
         return Err(MatrixError::forbidden("forbidden", None).into());
     }
 
@@ -271,7 +279,15 @@ async fn set_display_name(
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
     let authed = depot.authed_info()?;
-    if authed.user_id() != user_id {
+
+    // Allow if the user is updating their own profile, or if an appservice is updating
+    // a user within its namespace
+    let is_allowed = authed.user_id() == user_id
+        || authed
+            .appservice()
+            .is_some_and(|appservice| appservice.is_user_match(&user_id));
+
+    if !is_allowed {
         return Err(MatrixError::forbidden("forbidden", None).into());
     }
     let SetDisplayNameReqBody { display_name } = body.into_inner();
