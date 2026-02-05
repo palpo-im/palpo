@@ -158,7 +158,7 @@ impl AuditLogger {
         target_type: AuditTargetType,
         target_id: &str,
         details: Option<serde_json::Value>,
-        description: &str,
+        _description: &str,
     ) {
         self.log_success(
             admin_user_id.to_string(),
