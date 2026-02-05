@@ -29,6 +29,7 @@ pub mod prelude {
 pub fn root() -> Router {
     Router::new()
         .hoop(hoops::ensure_accept)
+        .hoop(hoops::ensure_content_type)
         .hoop(hoops::limit_size)
         .get(home)
         .push(

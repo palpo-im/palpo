@@ -11,3 +11,6 @@ sytestout
 __*
 /deploy/docker/data
 .claude/
+
+examples/with-discord/data/
+examples/with-telegram/data/

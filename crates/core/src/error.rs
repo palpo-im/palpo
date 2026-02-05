@@ -341,7 +341,7 @@ pub enum HeaderDeserializationError {
     ParseIntError(#[from] ParseIntError),
 
     /// Failed to parse a HTTP date from a `http::header::Value`.
-    #[error("failed to parse HTTP date")]
+    #[error("failed to parse http date")]
     InvalidHttpDate,
 
     /// The given required header is missing.
@@ -354,7 +354,7 @@ pub enum HeaderDeserializationError {
 
     /// A header was received with a unexpected value.
     #[error(
-        "The {header} header was received with an unexpected value, \
+        "the {header} header was received with an unexpected value, \
          expected {expected}, received {unexpected}"
     )]
     InvalidHeaderValue {
@@ -369,7 +369,7 @@ pub enum HeaderDeserializationError {
     /// The `Content-Type` header for a `multipart/mixed` response is missing
     /// the `boundary` attribute.
     #[error(
-        "The `Content-Type` header for a `multipart/mixed` response is missing the `boundary` attribute"
+        "the `content-type` header for a `multipart/mixed` response is missing the `boundary` attribute"
     )]
     MissingMultipartBoundary,
 }

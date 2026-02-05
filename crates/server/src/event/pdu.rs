@@ -482,6 +482,7 @@ impl PduEvent {
 
     #[tracing::instrument]
     pub fn to_room_event(&self) -> RawJson<AnyTimelineEvent> {
+        let age = UnixMillis::now().get().saturating_sub(self.origin_server_ts.get());
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -491,8 +492,12 @@ impl PduEvent {
             "room_id": self.room_id,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if self.unsigned.is_empty() {
+            data["unsigned"] = json!({ "age": age });
+        } else {
+            let mut unsigned = json!(self.unsigned);
+            unsigned["age"] = json!(age);
+            data["unsigned"] = unsigned;
         }
         if let Some(state_key) = &self.state_key {
             data["state_key"] = json!(state_key);

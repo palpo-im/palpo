@@ -25,11 +25,8 @@ use crate::{
 pub fn public_router() -> Router {
     Router::with_path("register").push(
         Router::with_hoop(hoops::limit_rate)
-            .push(
-                Router::new()
-                    .post(register)
-                    .push(Router::with_path("available").get(available)),
-            )
+            .push(Router::with_path("available").get(available))
+            .post(register)
             .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
     )
 }
@@ -96,17 +93,18 @@ async fn register(
         },
     };
 
+    let mut appservice = None;
     if body.login_type == Some(LoginType::Appservice) {
-        let authed = depot.authed_info()?;
-        if let Some(appservice) = &authed.appservice {
-            if !appservice.is_user_match(&user_id) {
-                return Err(MatrixError::exclusive("User is not in namespace.").into());
-            }
-        } else {
-            return Err(MatrixError::missing_token("Missing appservice token.").into());
+        let token = aa.require_access_token()?;
+        appservice = crate::appservices()
+            .into_iter()
+            .find(|appservice| appservice.as_token == token)
+            .cloned();
+        if appservice.is_none() {
+            return Err(MatrixError::missing_token("missing appservice token").into());
         }
     } else if crate::appservice::is_exclusive_user_id(&user_id)? {
-        return Err(MatrixError::exclusive("User id reserved by appservice.").into());
+        return Err(MatrixError::exclusive("user id reserved by appservice").into());
     }
 
     // UIAA
@@ -249,11 +247,7 @@ async fn register(
         // }
     }
 
-    let from_appservice = if let Ok(authed) = depot.authed_info() {
-        authed.appservice.is_some()
-    } else {
-        false
-    };
+    let from_appservice = appservice.is_some();
     if !from_appservice
         && !conf.auto_join_rooms.is_empty()
         && (conf.allow_guests_auto_join_rooms || !is_guest)

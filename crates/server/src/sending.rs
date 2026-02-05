@@ -315,11 +315,13 @@ async fn send_events(
             let mut pdu_jsons = Vec::new();
             for event in &events {
                 match event {
-                    SendingEventType::Pdu(event_id) => pdu_jsons.push(
-                        timeline::get_pdu(event_id)
-                            .map_err(|e| (kind.clone(), e))?
-                            .to_room_event(),
-                    ),
+                    SendingEventType::Pdu(event_id) => {
+                        pdu_jsons.push(
+                            timeline::get_pdu(event_id)
+                                .map_err(|e| (kind.clone(), e))?
+                                .to_room_event(),
+                        );
+                    }
                     SendingEventType::Edu(_) => {
                         // Appservices don't need EDUs (?)
                     }
@@ -341,7 +343,7 @@ async fn send_events(
                     )
                 })?;
             let req_body = PushEventsReqBody {
-                events: pdu_jsons,
+                events: pdu_jsons.clone(),
                 to_device: vec![],
             };
 

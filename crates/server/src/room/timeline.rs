@@ -543,8 +543,10 @@ pub async fn append_pdu(
         error!("failed to increment notification counts: {}", e);
     }
 
-    for appservice in crate::appservice::all()?.values() {
-        if super::appservice_in_room(&pdu.room_id, appservice)? {
+    let all_appservices = crate::appservice::all()?;
+    for appservice in all_appservices.values() {
+        let in_room = super::appservice_in_room(&pdu.room_id, appservice)?;
+        if in_room {
             crate::sending::send_pdu_appservice(appservice.registration.id.clone(), &pdu.event_id)?;
             continue;
         }

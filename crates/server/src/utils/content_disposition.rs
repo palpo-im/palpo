@@ -39,7 +39,7 @@ const ALLOWED_INLINE_CONTENT_TYPES: [&str; 26] = [
 #[must_use]
 pub fn content_disposition_type(content_type: Option<&str>) -> ContentDispositionType {
     let Some(content_type) = content_type else {
-        tracing::info!("No Content-Type was given, assuming attachment for Content-Disposition");
+        tracing::info!("no content-type was given, assuming attachment for Content-Disposition");
         return ContentDispositionType::Attachment;
     };
 
