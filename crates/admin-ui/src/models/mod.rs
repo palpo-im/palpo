@@ -8,6 +8,7 @@ pub mod auth;
 pub mod user;
 pub mod room;
 pub mod federation;
+pub mod media;
 
 pub use config::*;
 pub use audit::*;
@@ -17,3 +18,4 @@ pub use auth::*;
 pub use user::*;
 pub use room::*;
 pub use federation::*;
+pub use media::*;
