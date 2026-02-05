@@ -5,6 +5,7 @@ use dioxus_router::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
 use crate::pages::{LoginPage, AdminDashboard};
+use crate::services::api_client::init_api_client;
 
 /// Main application routes
 #[derive(Clone, Routable, Debug, PartialEq)]
@@ -53,6 +54,19 @@ impl Default for AppState {
 /// Main application component with routing and state management
 #[component]
 pub fn App() -> Element {
+    // Initialize API client on app startup
+    use_effect(|| {
+        // Get base URL from environment or use default
+        let base_url = web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .unwrap_or_else(|| "http://localhost:8008".to_string());
+        
+        init_api_client(base_url);
+        
+        // Log initialization for debugging
+        web_sys::console::log_1(&"API client initialized".into());
+    });
+
     // Initialize global state
     use_context_provider(|| Signal::new(AuthState::Unauthenticated));
     use_context_provider(|| Signal::new(AppState::default()));

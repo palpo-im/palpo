@@ -251,6 +251,45 @@ impl ApiError {
     }
 }
 
+/// Extension trait for WebConfigError to add auth error checking
+impl WebConfigError {
+    /// Check if this is an authentication error
+    pub fn is_auth_error(&self) -> bool {
+        matches!(self, WebConfigError::AuthError { .. }) ||
+        (matches!(self, WebConfigError::ApiError { status_code: Some(401), .. }))
+    }
+
+    /// Check if this is a permission error  
+    pub fn is_permission_error(&self) -> bool {
+        matches!(self, WebConfigError::PermissionError { .. }) ||
+        (matches!(self, WebConfigError::ApiError { status_code: Some(403), .. }))
+    }
+
+    /// Check if this is a client error (4xx)
+    pub fn is_client_error(&self) -> bool {
+        match self {
+            WebConfigError::ApiError { status_code: Some(code), .. } => *code >= 400 && *code < 500,
+            WebConfigError::ValidationError { .. } |
+            WebConfigError::AuthError { .. } |
+            WebConfigError::PermissionError { .. } |
+            WebConfigError::ClientError { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this is a server error (5xx)
+    pub fn is_server_error(&self) -> bool {
+        match self {
+            WebConfigError::ApiError { status_code: Some(code), .. } => *code >= 500,
+            WebConfigError::DatabaseError { .. } |
+            WebConfigError::FileSystemError { .. } |
+            WebConfigError::ServerControlError { .. } |
+            WebConfigError::InternalError { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)

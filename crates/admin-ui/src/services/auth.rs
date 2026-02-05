@@ -4,39 +4,45 @@ use crate::models::{
     AdminUser, AuthState, LoginRequest, LoginResponse, LogoutRequest,
     ValidateSessionRequest, ValidateSessionResponse, WebConfigError, WebConfigResult,
 };
-use serde_json;
+use crate::services::api_client::{get_api_client, ApiClient};
 use std::time::SystemTime;
-use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{window, Request, RequestInit, RequestMode, Response};
 
 /// Authentication service for handling login, logout, and session management
 #[derive(Clone)]
 pub struct AuthService {
-    base_url: String,
+    api_client: ApiClient,
 }
 
 impl AuthService {
     /// Create a new authentication service
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
-            base_url: base_url.into(),
-        }
+    pub fn new(api_client: ApiClient) -> Self {
+        Self { api_client }
+    }
+
+    /// Create authentication service using global API client
+    pub fn from_global() -> WebConfigResult<Self> {
+        let api_client = get_api_client()?;
+        Ok(Self { api_client })
     }
 
     /// Authenticate user with username and password
     pub async fn login(&self, username: String, password: String) -> WebConfigResult<LoginResponse> {
         let request = LoginRequest { username, password };
         
-        let url = format!("{}/api/auth/login", self.base_url);
-        let response = self.post_json(&url, &request).await?;
+        // Use API client without auth for login
+        let mut config = crate::services::api_client::RequestConfig::new(
+            crate::services::api_client::HttpMethod::Post,
+            "/api/auth/login"
+        ).without_auth();
+        config = config.with_json_body(&request)?;
         
-        let login_response: LoginResponse = self.parse_json_response(response).await?;
+        let response = self.api_client.execute_request(config).await?;
+        let login_response: LoginResponse = self.api_client.parse_json(response).await?;
         
-        // Store token in local storage if login successful
+        // Store token in API client if login successful
         if login_response.success {
             if let Some(token) = &login_response.token {
-                self.store_token(token)?;
+                self.api_client.set_token(token)?;
             }
         }
         
@@ -47,28 +53,26 @@ impl AuthService {
     pub async fn logout(&self, session_id: String) -> WebConfigResult<()> {
         let request = LogoutRequest { session_id };
         
-        let url = format!("{}/api/auth/logout", self.base_url);
-        let _response = self.post_json(&url, &request).await?;
+        let _response = self.api_client.post_json("/api/auth/logout", &request).await?;
         
         // Clear stored token
-        self.clear_token()?;
+        self.api_client.clear_token()?;
         
         Ok(())
     }
 
     /// Validate current session
     pub async fn validate_session(&self) -> WebConfigResult<ValidateSessionResponse> {
-        let token = self.get_stored_token()?;
+        let token = self.api_client.get_token()?
+            .ok_or_else(|| WebConfigError::auth("No authentication token found"))?;
         
         let request = ValidateSessionRequest { token };
-        let url = format!("{}/api/auth/validate", self.base_url);
-        let response = self.post_json(&url, &request).await?;
-        
-        let validation_response: ValidateSessionResponse = self.parse_json_response(response).await?;
+        let validation_response: ValidateSessionResponse = self.api_client
+            .post_json_response("/api/auth/validate", &request).await?;
         
         // Clear token if session is invalid
         if !validation_response.valid {
-            self.clear_token()?;
+            self.api_client.clear_token()?;
         }
         
         Ok(validation_response)
@@ -108,125 +112,20 @@ impl AuthService {
             _ => None,
         }
     }
-
-    /// Store authentication token in local storage
-    fn store_token(&self, token: &str) -> WebConfigResult<()> {
-        let window = window().ok_or_else(|| WebConfigError::client("No window object available"))?;
-        let storage = window
-            .local_storage()
-            .map_err(|_| WebConfigError::client("Failed to access local storage"))?
-            .ok_or_else(|| WebConfigError::client("Local storage not available"))?;
-
-        storage
-            .set_item("auth_token", token)
-            .map_err(|_| WebConfigError::client("Failed to store auth token"))?;
-
-        Ok(())
-    }
-
-    /// Get stored authentication token from local storage
-    fn get_stored_token(&self) -> WebConfigResult<String> {
-        let window = window().ok_or_else(|| WebConfigError::client("No window object available"))?;
-        let storage = window
-            .local_storage()
-            .map_err(|_| WebConfigError::client("Failed to access local storage"))?
-            .ok_or_else(|| WebConfigError::client("Local storage not available"))?;
-
-        let token = storage
-            .get_item("auth_token")
-            .map_err(|_| WebConfigError::client("Failed to retrieve auth token"))?
-            .ok_or_else(|| WebConfigError::auth("No authentication token found"))?;
-
-        Ok(token)
-    }
-
-    /// Clear stored authentication token
-    fn clear_token(&self) -> WebConfigResult<()> {
-        let window = window().ok_or_else(|| WebConfigError::client("No window object available"))?;
-        let storage = window
-            .local_storage()
-            .map_err(|_| WebConfigError::client("Failed to access local storage"))?
-            .ok_or_else(|| WebConfigError::client("Local storage not available"))?;
-
-        storage
-            .remove_item("auth_token")
-            .map_err(|_| WebConfigError::client("Failed to clear auth token"))?;
-
-        Ok(())
-    }
-
-    /// Make a POST request with JSON payload
-    async fn post_json<T: serde::Serialize>(&self, url: &str, data: &T) -> WebConfigResult<Response> {
-        let json_data = serde_json::to_string(data)
-            .map_err(|e| WebConfigError::client(format!("Failed to serialize request: {}", e)))?;
-
-        let opts = RequestInit::new();
-        opts.set_method("POST");
-        opts.set_mode(RequestMode::Cors);
-        opts.set_body(&wasm_bindgen::JsValue::from_str(&json_data));
-
-        let request = Request::new_with_str_and_init(url, &opts)
-            .map_err(|_| WebConfigError::client("Failed to create request"))?;
-
-        // Set headers
-        request
-            .headers()
-            .set("Content-Type", "application/json")
-            .map_err(|_| WebConfigError::client("Failed to set content type header"))?;
-
-        // Add authorization header if token is available
-        if let Ok(token) = self.get_stored_token() {
-            request
-                .headers()
-                .set("Authorization", &format!("Bearer {}", token))
-                .map_err(|_| WebConfigError::client("Failed to set authorization header"))?;
-        }
-
-        let window = window().ok_or_else(|| WebConfigError::client("No window object available"))?;
-        let resp_value = JsFuture::from(window.fetch_with_request(&request))
-            .await
-            .map_err(|_| WebConfigError::network("Network request failed"))?;
-
-        let resp: Response = resp_value
-            .dyn_into()
-            .map_err(|_| WebConfigError::client("Invalid response type"))?;
-
-        if !resp.ok() {
-            return Err(WebConfigError::api_with_status(
-                format!("HTTP error: {}", resp.status_text()),
-                resp.status(),
-            ));
-        }
-
-        Ok(resp)
-    }
-
-    /// Parse JSON response from HTTP response
-    async fn parse_json_response<T: serde::de::DeserializeOwned>(&self, response: Response) -> WebConfigResult<T> {
-        let json_promise = response
-            .json()
-            .map_err(|_| WebConfigError::client("Failed to get JSON from response"))?;
-
-        let json_value = JsFuture::from(json_promise)
-            .await
-            .map_err(|_| WebConfigError::client("Failed to parse JSON response"))?;
-
-        let json_string = js_sys::JSON::stringify(&json_value)
-            .map_err(|_| WebConfigError::client("Failed to stringify JSON"))?;
-
-        let json_str = json_string
-            .as_string()
-            .ok_or_else(|| WebConfigError::client("Invalid JSON string"))?;
-
-        serde_json::from_str(&json_str)
-            .map_err(|e| WebConfigError::client(format!("Failed to deserialize JSON: {}", e)))
-    }
 }
 
 /// Default authentication service instance
 impl Default for AuthService {
     fn default() -> Self {
-        Self::new("http://localhost:8008")
+        // Try to use global API client, fallback to creating a new one
+        match Self::from_global() {
+            Ok(service) => service,
+            Err(_) => {
+                // Create a default API client if global one is not available
+                let api_client = crate::services::api_client::ApiClient::default();
+                Self::new(api_client)
+            }
+        }
     }
 }
 

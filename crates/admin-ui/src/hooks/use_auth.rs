@@ -112,7 +112,15 @@ impl AuthContext {
 pub fn use_auth() -> AuthContext {
     // Get the auth state from context
     let auth_state = use_context::<Signal<AuthState>>();
-    let auth_service = AuthService::default();
+    
+    // Create auth service using global API client
+    let auth_service = match AuthService::from_global() {
+        Ok(service) => service,
+        Err(_) => {
+            // Fallback to default if global client not available
+            AuthService::default()
+        }
+    };
 
     // Validate session on component mount
     use_effect({
