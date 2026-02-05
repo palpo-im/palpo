@@ -8,11 +8,51 @@ use serde::de::DeserializeOwned;
 
 use crate::AppResult;
 
+/// Validates that a directory path is safe and does not contain path traversal sequences.
+///
+/// A safe path:
+/// - Does not contain `..` (parent directory reference)
+/// - Does not start with `/` or `\` (absolute path)
+/// - Does not contain `:` (Windows drive letter or alternate data stream)
+/// - Only contains normal path components (no special components)
+///
+/// # Arguments
+/// * `dir_path` - The directory path to validate
+///
+/// # Returns
+/// * `true` if the path is safe, `false` otherwise
 pub fn is_safe_dir_path(dir_path: &str) -> bool {
-    !dir_path.contains('.')
-        && !dir_path.contains(':')
-        && !dir_path.contains('\\')
-        && !dir_path.starts_with('/')
+    // Check for path traversal sequences (including URL-encoded variants)
+    if dir_path.contains("..") || dir_path.contains("%2e%2e") || dir_path.contains("%2E%2E") {
+        return false;
+    }
+
+    // Check for absolute paths
+    if dir_path.starts_with('/') || dir_path.starts_with('\\') {
+        return false;
+    }
+
+    // Check for Windows drive letters or alternate data streams
+    if dir_path.contains(':') {
+        return false;
+    }
+
+    // Check for null bytes (potential bypass attempt)
+    if dir_path.contains('\0') {
+        return false;
+    }
+
+    // Use Path components to verify the path only contains normal components
+    let path = Path::new(dir_path);
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => continue,
+            // Reject ParentDir (..), RootDir, Prefix, and CurDir (.)
+            _ => return false,
+        }
+    }
+
+    true
 }
 pub struct TempPath(String);
 impl TempPath {
