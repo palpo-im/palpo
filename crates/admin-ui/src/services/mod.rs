@@ -1,5 +1,6 @@
 //! API services module
 
+pub mod api_client;
 pub mod auth;
 pub mod audit;
 pub mod audit_api;
@@ -14,6 +15,7 @@ pub mod media_admin_api;
 pub mod appservice_admin_api;
 pub mod server_control_api;
 
+pub use api_client::*;
 pub use auth::*;
 pub use audit::*;
 pub use audit_api::*;
