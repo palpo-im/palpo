@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::Duration;
 
 use diesel::prelude::*;
@@ -130,7 +131,7 @@ impl TryFrom<DbRegistration> for RegistrationInfo {
     }
 }
 
-#[derive(Identifiable, Queryable, Insertable, Serialize, Deserialize, Clone, Debug)]
+#[derive(Identifiable, Queryable, Insertable, Serialize, Deserialize, Clone)]
 #[diesel(table_name = appservice_registrations)]
 pub struct DbRegistration {
     /// A unique, user - defined ID of the application service which will never change.
@@ -173,6 +174,24 @@ pub struct DbRegistration {
     /// Defaults to `false`
     #[serde(default, rename = "io.element.msc4190")]
     pub device_management: bool,
+}
+
+// Custom Debug implementation to prevent leaking as_token and hs_token
+impl fmt::Debug for DbRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbRegistration")
+            .field("id", &self.id)
+            .field("url", &self.url)
+            .field("as_token", &"[REDACTED]")
+            .field("hs_token", &"[REDACTED]")
+            .field("sender_localpart", &self.sender_localpart)
+            .field("namespaces", &self.namespaces)
+            .field("rate_limited", &self.rate_limited)
+            .field("protocols", &self.protocols)
+            .field("receive_ephemeral", &self.receive_ephemeral)
+            .field("device_management", &self.device_management)
+            .finish()
+    }
 }
 
 impl From<Registration> for DbRegistration {

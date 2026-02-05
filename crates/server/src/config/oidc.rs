@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::Deserialize;
 
@@ -107,7 +108,7 @@ pub struct OidcConfig {
     pub enable_pkce: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct OidcProviderConfig {
     /// Provider base URL
     ///
@@ -168,6 +169,23 @@ pub struct OidcProviderConfig {
     /// default: {}
     #[serde(default)]
     pub attribute_mapping: BTreeMap<String, String>,
+}
+
+// Custom Debug implementation to prevent leaking client_secret
+impl fmt::Debug for OidcProviderConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcProviderConfig")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[REDACTED]")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("additional_params", &self.additional_params)
+            .field("skip_tls_verify", &self.skip_tls_verify)
+            .field("display_name", &self.display_name)
+            .field("attribute_mapping", &self.attribute_mapping)
+            .finish()
+    }
 }
 
 fn default_user_mapping() -> String {
