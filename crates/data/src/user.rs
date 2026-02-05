@@ -522,13 +522,32 @@ pub struct ListUsersFilter {
     pub dir: Option<String>,
 }
 
+/// Escape special characters in SQL LIKE/ILIKE patterns.
+///
+/// This prevents users from injecting wildcard characters (% and _)
+/// that could modify the query behavior.
+fn escape_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() * 2);
+    for c in value.chars() {
+        match c {
+            '%' => escaped.push_str("\\%"),
+            '_' => escaped.push_str("\\_"),
+            '\\' => escaped.push_str("\\\\"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 pub fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i64)> {
     let mut query = users::table.into_boxed();
     let mut count_query = users::table.into_boxed();
 
     // Filter by name (localpart contains)
+    // Escape LIKE wildcards to prevent pattern injection attacks
     if let Some(ref name) = filter.name {
-        let pattern = format!("%{}%", name);
+        let escaped_name = escape_like_pattern(name);
+        let pattern = format!("%{}%", escaped_name);
         query = query.filter(users::localpart.ilike(pattern.clone()));
         count_query = count_query.filter(users::localpart.ilike(pattern));
     }
