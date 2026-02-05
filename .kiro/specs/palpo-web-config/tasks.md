@@ -160,7 +160,7 @@
     - _需求: 20.1, 20.2, 20.3, 20.4, 20.5_
 
 - [ ] 10. Appservice管理API实现
-  - [ ] 10.1 实现Appservice管理API
+  - [x] 10.1 实现Appservice管理API
     - 创建AppserviceAdminAPI和相关数据模型
     - 实现Appservice注册、注销、测试功能
     - 实现YAML配置验证和解析
