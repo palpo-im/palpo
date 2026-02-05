@@ -433,6 +433,14 @@ pub async fn append_pdu(
                     &pdu.sender,
                     stripped_state,
                 )?;
+
+                // Invalidate appservice room cache when membership changes
+                // This ensures that when a bridge user joins a room, subsequent messages
+                // will correctly check if the appservice should receive them
+                crate::APPSERVICE_IN_ROOM_CACHE
+                    .write()
+                    .unwrap()
+                    .remove(&pdu.room_id);
             }
         }
         TimelineEventType::RoomMessage => {
@@ -545,8 +553,7 @@ pub async fn append_pdu(
 
     let all_appservices = crate::appservice::all()?;
     for appservice in all_appservices.values() {
-        let in_room = super::appservice_in_room(&pdu.room_id, appservice)?;
-        if in_room {
+        if super::appservice_in_room(&pdu.room_id, appservice)? {
             crate::sending::send_pdu_appservice(appservice.registration.id.clone(), &pdu.event_id)?;
             continue;
         }

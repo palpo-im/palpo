@@ -246,10 +246,9 @@ pub fn appservice_in_room(room_id: &RoomId, appservice: &RegistrationInfo) -> Ap
                 .filter(room_users::room_id.eq(room_id))
                 .select(room_users::user_id)
                 .load::<String>(&mut connect()?)?;
-            let matched = user_ids
+            user_ids
                 .iter()
-                .any(|user_id| appservice.users.is_match(user_id.as_str()));
-            matched
+                .any(|user_id| appservice.users.is_match(user_id.as_str()))
         };
 
         APPSERVICE_IN_ROOM_CACHE

@@ -597,21 +597,68 @@ fn delete_request(id: i64) -> AppResult<()> {
 }
 
 fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
-    diesel::delete(
-        outgoing_requests::table
-            .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
-            .filter(outgoing_requests::state.eq("pending")),
-    )
-    .execute(&mut connect()?)?;
+    match outgoing_kind {
+        OutgoingKind::Appservice(appservice_id) => {
+            diesel::delete(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+                    .filter(outgoing_requests::state.eq("pending"))
+                    .filter(outgoing_requests::appservice_id.eq(appservice_id)),
+            )
+            .execute(&mut connect()?)?;
+        }
+        OutgoingKind::Normal(server_id) => {
+            diesel::delete(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+                    .filter(outgoing_requests::state.eq("pending"))
+                    .filter(outgoing_requests::server_id.eq(server_id.as_str())),
+            )
+            .execute(&mut connect()?)?;
+        }
+        OutgoingKind::Push(user_id, pushkey) => {
+            diesel::delete(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+                    .filter(outgoing_requests::state.eq("pending"))
+                    .filter(outgoing_requests::user_id.eq(user_id.as_str()))
+                    .filter(outgoing_requests::pushkey.eq(pushkey)),
+            )
+            .execute(&mut connect()?)?;
+        }
+    }
 
     Ok(())
 }
 
 fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
-    diesel::delete(
-        outgoing_requests::table.filter(outgoing_requests::kind.eq(outgoing_kind.name())),
-    )
-    .execute(&mut connect()?)?;
+    match outgoing_kind {
+        OutgoingKind::Appservice(appservice_id) => {
+            diesel::delete(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+                    .filter(outgoing_requests::appservice_id.eq(appservice_id)),
+            )
+            .execute(&mut connect()?)?;
+        }
+        OutgoingKind::Normal(server_id) => {
+            diesel::delete(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+                    .filter(outgoing_requests::server_id.eq(server_id.as_str())),
+            )
+            .execute(&mut connect()?)?;
+        }
+        OutgoingKind::Push(user_id, pushkey) => {
+            diesel::delete(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+                    .filter(outgoing_requests::user_id.eq(user_id.as_str()))
+                    .filter(outgoing_requests::pushkey.eq(pushkey)),
+            )
+            .execute(&mut connect()?)?;
+        }
+    }
 
     Ok(())
 }
@@ -660,8 +707,27 @@ fn queue_request(outgoing_kind: &OutgoingKind, event: &SendingEventType) -> AppR
 }
 
 fn active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
-    let list = outgoing_requests::table
+    let mut query = outgoing_requests::table
         .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+        .filter(outgoing_requests::state.eq("pending"))
+        .into_boxed();
+
+    // Add specific filters based on OutgoingKind
+    match outgoing_kind {
+        OutgoingKind::Appservice(appservice_id) => {
+            query = query.filter(outgoing_requests::appservice_id.eq(appservice_id));
+        }
+        OutgoingKind::Normal(server_id) => {
+            query = query.filter(outgoing_requests::server_id.eq(server_id.as_str()));
+        }
+        OutgoingKind::Push(user_id, pushkey) => {
+            query = query
+                .filter(outgoing_requests::user_id.eq(user_id.as_str()))
+                .filter(outgoing_requests::pushkey.eq(pushkey));
+        }
+    }
+
+    let list = query
         .load::<DbOutgoingRequest>(&mut connect()?)?
         .into_iter()
         .filter_map(|r| {
@@ -679,8 +745,28 @@ fn active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, Send
 }
 
 fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
-    Ok(outgoing_requests::table
+    let mut query = outgoing_requests::table
         .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+        // Exclude already active requests (state="pending" means being processed)
+        .filter(outgoing_requests::state.ne("pending"))
+        .into_boxed();
+
+    // Add specific filters based on OutgoingKind
+    match outgoing_kind {
+        OutgoingKind::Appservice(appservice_id) => {
+            query = query.filter(outgoing_requests::appservice_id.eq(appservice_id));
+        }
+        OutgoingKind::Normal(server_id) => {
+            query = query.filter(outgoing_requests::server_id.eq(server_id.as_str()));
+        }
+        OutgoingKind::Push(user_id, pushkey) => {
+            query = query
+                .filter(outgoing_requests::user_id.eq(user_id.as_str()))
+                .filter(outgoing_requests::pushkey.eq(pushkey));
+        }
+    }
+
+    Ok(query
         .load::<DbOutgoingRequest>(&mut connect()?)?
         .into_iter()
         .filter_map(|r| {
