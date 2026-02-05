@@ -152,3 +152,166 @@ pub fn insert_metadata(metadata: &NewDbMetadata) -> DataResult<()> {
         .execute(&mut connect()?)?;
     Ok(())
 }
+
+/// List media uploaded by a user with pagination
+pub fn list_media_by_user(
+    user_id: &UserId,
+    from: i64,
+    limit: i64,
+    order_by: Option<&str>,
+    direction: Option<&str>,
+) -> DataResult<(Vec<DbMetadata>, i64)> {
+    // Get total count
+    let total = media_metadatas::table
+        .filter(media_metadatas::created_by.eq(user_id.as_str()))
+        .count()
+        .get_result::<i64>(&mut connect()?)?;
+
+    // Build query with ordering
+    let direction_desc = direction.map(|d| d == "b").unwrap_or(true);
+    let mut query = media_metadatas::table
+        .filter(media_metadatas::created_by.eq(user_id.as_str()))
+        .into_boxed();
+
+    query = match order_by {
+        Some("media_id") => {
+            if direction_desc {
+                query.order(media_metadatas::media_id.desc())
+            } else {
+                query.order(media_metadatas::media_id.asc())
+            }
+        }
+        Some("upload_name") => {
+            if direction_desc {
+                query.order(media_metadatas::file_name.desc())
+            } else {
+                query.order(media_metadatas::file_name.asc())
+            }
+        }
+        Some("media_length") => {
+            if direction_desc {
+                query.order(media_metadatas::file_size.desc())
+            } else {
+                query.order(media_metadatas::file_size.asc())
+            }
+        }
+        Some("media_type") => {
+            if direction_desc {
+                query.order(media_metadatas::content_type.desc())
+            } else {
+                query.order(media_metadatas::content_type.asc())
+            }
+        }
+        _ => {
+            // Default: created_ts
+            if direction_desc {
+                query.order(media_metadatas::created_at.desc())
+            } else {
+                query.order(media_metadatas::created_at.asc())
+            }
+        }
+    };
+
+    let media = query
+        .offset(from)
+        .limit(limit)
+        .load::<DbMetadata>(&mut connect()?)?;
+
+    Ok((media, total))
+}
+
+/// Delete multiple media items by their IDs
+/// Returns the list of deleted media IDs and total count
+pub fn delete_media_by_ids(
+    server_name: &ServerName,
+    media_ids: &[String],
+) -> DataResult<(Vec<String>, i64)> {
+    let mut deleted = Vec::new();
+
+    for media_id in media_ids {
+        let rows = diesel::delete(
+            media_metadatas::table
+                .filter(media_metadatas::media_id.eq(media_id))
+                .filter(media_metadatas::origin_server.eq(server_name)),
+        )
+        .execute(&mut connect()?)?;
+
+        if rows > 0 {
+            // Also delete thumbnails
+            diesel::delete(
+                media_thumbnails::table
+                    .filter(media_thumbnails::media_id.eq(media_id))
+                    .filter(media_thumbnails::origin_server.eq(server_name)),
+            )
+            .execute(&mut connect()?)?;
+            deleted.push(media_id.clone());
+        }
+    }
+
+    let total = deleted.len() as i64;
+    Ok((deleted, total))
+}
+
+/// Purge old remote media cache (media from other servers)
+/// Returns the count of deleted items
+pub fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64) -> DataResult<i64> {
+    let before_ts = UnixMillis(before_ts as u64);
+
+    // Delete thumbnails first
+    let deleted_thumbnails = diesel::delete(
+        media_thumbnails::table
+            .filter(media_thumbnails::origin_server.ne(local_server))
+            .filter(media_thumbnails::created_at.lt(before_ts)),
+    )
+    .execute(&mut connect()?)? as i64;
+
+    // Delete metadata
+    let deleted_metadata = diesel::delete(
+        media_metadatas::table
+            .filter(media_metadatas::origin_server.ne(local_server))
+            .filter(media_metadatas::created_at.lt(before_ts)),
+    )
+    .execute(&mut connect()?)? as i64;
+
+    Ok(deleted_metadata + deleted_thumbnails)
+}
+
+/// Delete old local media before a timestamp and larger than size_gt
+pub fn delete_old_local_media(
+    local_server: &ServerName,
+    before_ts: i64,
+    size_gt: i64,
+) -> DataResult<(Vec<String>, i64)> {
+    let before_ts = UnixMillis(before_ts as u64);
+
+    // Get media IDs to delete
+    let media_ids = media_metadatas::table
+        .filter(media_metadatas::origin_server.eq(local_server))
+        .filter(media_metadatas::created_at.lt(before_ts))
+        .filter(media_metadatas::file_size.gt(size_gt))
+        .select(media_metadatas::media_id)
+        .load::<String>(&mut connect()?)?;
+
+    if media_ids.is_empty() {
+        return Ok((vec![], 0));
+    }
+
+    // Delete thumbnails
+    diesel::delete(
+        media_thumbnails::table
+            .filter(media_thumbnails::origin_server.eq(local_server))
+            .filter(media_thumbnails::media_id.eq_any(&media_ids)),
+    )
+    .execute(&mut connect()?)?;
+
+    // Delete metadata
+    diesel::delete(
+        media_metadatas::table
+            .filter(media_metadatas::origin_server.eq(local_server))
+            .filter(media_metadatas::media_id.eq_any(&media_ids)),
+    )
+    .execute(&mut connect()?)?;
+
+    let total = media_ids.len() as i64;
+    Ok((media_ids, total))
+}

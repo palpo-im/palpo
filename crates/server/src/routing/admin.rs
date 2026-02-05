@@ -3,6 +3,7 @@ mod event_report;
 mod federation;
 mod media;
 mod register;
+mod registration_token;
 mod room;
 mod scheduled_task;
 mod server_notice;
@@ -38,6 +39,7 @@ pub fn router() -> Router {
                 .push(federation::router())
                 .push(media::router())
                 .push(register::router())
+                .push(registration_token::router())
                 .push(room::router())
                 .push(scheduled_task::router())
                 .push(server_notice::router())
