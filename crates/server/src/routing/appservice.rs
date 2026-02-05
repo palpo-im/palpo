@@ -7,6 +7,7 @@ mod transaction;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
+use crate::appservice;
 use crate::core::appservice::ping::SendPingReqBody;
 use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok};
 
@@ -56,18 +57,13 @@ async fn query_rooms(aa: AuthArgs, room_alias: PathParam<String>) -> EmptyResult
     let room_alias = room_alias.into_inner();
 
     // Check if any registered appservice has a namespace that matches this alias.
-    let appservices = crate::appservices();
-    for appservice in appservices {
-        for ns in &appservice.namespaces.aliases {
-            if let Ok(re) = regex::Regex::new(&ns.regex) {
-                if re.is_match(&room_alias) {
-                    debug!(
-                        "Appservice '{}' claims room alias {}",
-                        appservice.id, room_alias
-                    );
-                    return empty_ok();
-                }
-            }
+    // Use pre-compiled RegexSet from RegistrationInfo to prevent ReDoS attacks
+    // and avoid re-compiling regex patterns on every request.
+    let appservices = appservice::all()?;
+    for (id, info) in appservices.iter() {
+        if info.aliases.is_match(&room_alias) {
+            debug!("Appservice '{}' claims room alias {}", id, room_alias);
+            return empty_ok();
         }
     }
 
@@ -85,15 +81,13 @@ async fn query_users(aa: AuthArgs, user_id: PathParam<String>) -> EmptyResult {
     let user_id = user_id.into_inner();
 
     // Check if any registered appservice has a namespace that matches this user ID.
-    let appservices = crate::appservices();
-    for appservice in appservices {
-        for ns in &appservice.namespaces.users {
-            if let Ok(re) = regex::Regex::new(&ns.regex) {
-                if re.is_match(&user_id) {
-                    debug!("Appservice '{}' claims user {}", appservice.id, user_id);
-                    return empty_ok();
-                }
-            }
+    // Use pre-compiled RegexSet from RegistrationInfo to prevent ReDoS attacks
+    // and avoid re-compiling regex patterns on every request.
+    let appservices = appservice::all()?;
+    for (id, info) in appservices.iter() {
+        if info.users.is_match(&user_id) {
+            debug!("Appservice '{}' claims user {}", id, user_id);
+            return empty_ok();
         }
     }
 
