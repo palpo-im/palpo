@@ -6,9 +6,10 @@
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{JsonResult, MatrixError};
+use crate::core::identifiers::*;
+use crate::{EmptyResult, JsonResult, MatrixError, data, empty_ok, json_ok};
 
 pub fn router() -> Router {
     Router::new()
@@ -30,12 +31,20 @@ pub struct EventReport {
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sender: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canonical_alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+}
+
+impl From<data::room::EventReportInfo> for EventReport {
+    fn from(info: data::room::EventReportInfo) -> Self {
+        Self {
+            id: info.id,
+            received_ts: info.received_ts,
+            room_id: info.room_id.to_string(),
+            event_id: info.event_id.to_string(),
+            user_id: info.user_id.to_string(),
+            reason: info.reason,
+            score: info.score,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -57,59 +66,123 @@ pub struct EventReportDetailResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sender: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canonical_alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub event_json: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EmptyResponse {}
+impl From<data::room::DbEventReport> for EventReportDetailResponse {
+    fn from(db: data::room::DbEventReport) -> Self {
+        Self {
+            id: db.id,
+            received_ts: db.received_ts,
+            room_id: db.room_id.to_string(),
+            event_id: db.event_id.to_string(),
+            user_id: db.user_id.to_string(),
+            reason: db.reason,
+            score: db.score,
+            event_json: db.content,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToParameters)]
+pub struct ListEventReportsQuery {
+    /// Offset for pagination
+    #[serde(default)]
+    pub from: Option<i64>,
+    /// Maximum number of reports to return (default 100)
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Direction of pagination: f (forwards/oldest first) or b (backwards/newest first, default)
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// Filter by the user who made the report
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// Filter by room ID
+    #[serde(default)]
+    pub room_id: Option<String>,
+}
 
 /// GET /_synapse/admin/v1/event_reports
 ///
-/// List all reported events
-#[endpoint]
-pub fn list_event_reports(
-    _from: QueryParam<i64, false>,
-    _limit: QueryParam<i64, false>,
-    _dir: QueryParam<String, false>,
-    _user_id: QueryParam<String, false>,
-    _room_id: QueryParam<String, false>,
-    _event_sender_user_id: QueryParam<String, false>,
-) -> JsonResult<EventReportsResponse> {
-    Err(MatrixError::bad_status(
-        Some(salvo::http::StatusCode::NOT_IMPLEMENTED),
-        "Event reports are not enabled on this server",
-    )
-    .into())
+/// List all reported events with pagination and filtering
+#[endpoint(operation_id = "list_event_reports")]
+pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventReportsResponse> {
+    let from = query.from.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100).min(1000);
+
+    // Parse user_id if provided
+    let user_id = if let Some(ref uid) = query.user_id {
+        Some(
+            UserId::parse(uid)
+                .map_err(|_| MatrixError::invalid_param("Invalid user_id"))?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+
+    // Parse room_id if provided
+    let room_id = if let Some(ref rid) = query.room_id {
+        Some(
+            RoomId::parse(rid)
+                .map_err(|_| MatrixError::invalid_param("Invalid room_id"))?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+
+    let filter = data::room::EventReportFilter {
+        from: Some(from),
+        limit: Some(limit),
+        direction: query.dir,
+        user_id,
+        room_id,
+    };
+
+    let (reports, total) = data::room::list_event_reports(&filter)?;
+
+    let event_reports: Vec<EventReport> = reports.into_iter().map(Into::into).collect();
+    let next_token = if (from + limit) < total {
+        Some(from + event_reports.len() as i64)
+    } else {
+        None
+    };
+
+    json_ok(EventReportsResponse {
+        event_reports,
+        total,
+        next_token,
+    })
 }
 
 /// GET /_synapse/admin/v1/event_reports/{report_id}
 ///
-/// Get details of a specific event report
-#[endpoint]
+/// Get details of a specific event report including the event JSON
+#[endpoint(operation_id = "get_event_report")]
 pub fn get_event_report(report_id: PathParam<i64>) -> JsonResult<EventReportDetailResponse> {
-    let _report_id = report_id.into_inner();
-    Err(MatrixError::bad_status(
-        Some(salvo::http::StatusCode::NOT_IMPLEMENTED),
-        "Event reports are not enabled on this server",
-    )
-    .into())
+    let report_id = report_id.into_inner();
+
+    let report = data::room::get_event_report(report_id)?
+        .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
+
+    json_ok(report.into())
 }
 
 /// DELETE /_synapse/admin/v1/event_reports/{report_id}
 ///
 /// Delete an event report
-#[endpoint]
-pub fn delete_event_report(report_id: PathParam<i64>) -> JsonResult<EmptyResponse> {
-    let _report_id = report_id.into_inner();
-    Err(MatrixError::bad_status(
-        Some(salvo::http::StatusCode::NOT_IMPLEMENTED),
-        "Event reports are not enabled on this server",
-    )
-    .into())
+#[endpoint(operation_id = "delete_event_report")]
+pub fn delete_event_report(report_id: PathParam<i64>) -> EmptyResult {
+    let report_id = report_id.into_inner();
+
+    let deleted = data::room::delete_event_report(report_id)?;
+    if !deleted {
+        return Err(
+            MatrixError::not_found(format!("Event report {} not found", report_id)).into(),
+        );
+    }
+
+    empty_ok()
 }

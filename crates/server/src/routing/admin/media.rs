@@ -226,7 +226,7 @@ pub fn list_user_media(
     let dir = query.dir.as_deref();
 
     // Only allow looking up local users
-    if user_id.server_name() != config::get().server_name.as_ref() {
+    if *user_id.server_name() != *config::get().server_name {
         return Err(MatrixError::invalid_param("Can only look up local users").into());
     }
 
@@ -266,7 +266,7 @@ pub fn delete_user_media(
     let dir = query.dir.as_deref();
 
     // Only allow looking up local users
-    if user_id.server_name() != config::get().server_name.as_ref() {
+    if *user_id.server_name() != *config::get().server_name {
         return Err(MatrixError::invalid_param("Can only look up local users").into());
     }
 

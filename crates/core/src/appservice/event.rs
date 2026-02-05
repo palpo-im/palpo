@@ -19,9 +19,10 @@ use crate::events::typing::TypingEvent;
 #[cfg(feature = "unstable-msc4203")]
 use crate::events::{AnyToDeviceEvent, AnyToDeviceEventContent, ToDeviceEventType};
 use crate::sending::{SendRequest, SendResult};
-use crate::serde::{
-    JsonCastable, JsonObject, JsonValue, RawJson, RawJsonValue, from_raw_json_value,
-};
+use crate::serde::{JsonObject, JsonValue, RawJson, RawJsonValue, from_raw_json_value};
+#[cfg(feature = "unstable-msc4203")]
+use crate::serde::JsonCastable;
+#[cfg(feature = "unstable-msc4203")]
 use crate::{OwnedDeviceId, OwnedUserId, UserId};
 
 // /// `PUT /_matrix/app/*/transactions/{txn_id}`
@@ -97,7 +98,7 @@ pub struct PushEventsReqBody {
     // )]
     // pub ephemeral: Vec<Edu>,
     /// A list of to-device messages.
-
+    #[cfg(feature = "unstable-msc4203")]
     #[serde(
         default,
         skip_serializing_if = "<[_]>::is_empty",
