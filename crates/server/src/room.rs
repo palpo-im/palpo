@@ -237,16 +237,20 @@ pub fn appservice_in_room(room_id: &RoomId, appservice: &RegistrationInfo) -> Ap
         )
         .ok();
 
-        let in_room =
-            bridge_user_id.is_some_and(|id| user::is_joined(&id, room_id).unwrap_or(false)) || {
-                let user_ids = room_users::table
-                    .filter(room_users::room_id.eq(room_id))
-                    .select(room_users::user_id)
-                    .load::<String>(&mut connect()?)?;
-                user_ids
-                    .iter()
-                    .any(|user_id| appservice.users.is_match(user_id.as_str()))
-            };
+        let bridge_user_joined = bridge_user_id
+            .as_ref()
+            .is_some_and(|id| user::is_joined(id, room_id).unwrap_or(false));
+
+        let in_room = bridge_user_joined || {
+            let user_ids = room_users::table
+                .filter(room_users::room_id.eq(room_id))
+                .select(room_users::user_id)
+                .load::<String>(&mut connect()?)?;
+            let matched = user_ids
+                .iter()
+                .any(|user_id| appservice.users.is_match(user_id.as_str()));
+            matched
+        };
 
         APPSERVICE_IN_ROOM_CACHE
             .write()

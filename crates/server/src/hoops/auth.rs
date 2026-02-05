@@ -72,7 +72,6 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         Ok(())
     } else {
         let appservices = crate::appservices();
-        println!("Checking appservices for appservices: {:?}", appservices);
         for appservice in appservices {
             print!("Checking appservice {} with as_token {}", appservice.id, appservice.as_token);
             if appservice.as_token == token {
