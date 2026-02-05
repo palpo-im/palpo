@@ -109,12 +109,17 @@ impl CustomizeConnection<PgConnection, r2d2::Error> for ConnectionConfig {
     fn on_acquire(&self, conn: &mut PgConnection) -> Result<(), r2d2::Error> {
         use diesel::sql_query;
 
-        sql_query(format!(
-            "SET statement_timeout = {}",
-            self.statement_timeout
-        ))
-        .execute(conn)
-        .map_err(r2d2::Error::QueryError)?;
+        // SAFETY: statement_timeout is a u64, which guarantees it's a valid integer.
+        // PostgreSQL SET statements don't support parameterized queries, so we must
+        // use string formatting. The u64 type ensures no SQL injection is possible
+        // since it can only contain numeric digits.
+        //
+        // Validate the timeout is within a reasonable range (0 to 1 hour in ms)
+        // to prevent potential DoS through extremely long timeouts.
+        let timeout = self.statement_timeout.min(3_600_000);
+        sql_query(format!("SET statement_timeout = {}", timeout))
+            .execute(conn)
+            .map_err(r2d2::Error::QueryError)?;
         // if self.read_only {
         //     sql_query("SET default_transaction_read_only = 't'")
         //         .execute(conn)
