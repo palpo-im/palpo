@@ -18,6 +18,7 @@ required-features = ["test-utils"]
 [dependencies]
 # Frontend dependencies (Dioxus)
 dioxus = { version = "0.5", features = ["web"] }
+dioxus-router = "0.5"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = [
     "console",

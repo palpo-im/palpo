@@ -4789,6 +4789,7 @@ dependencies = [
  "base64 0.21.7",
  "chrono",
  "dioxus",
+ "dioxus-router",
  "getrandom 0.2.16",
  "gloo-net 0.4.0",
  "gloo-storage 0.3.0",
