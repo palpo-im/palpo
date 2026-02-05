@@ -67,10 +67,20 @@ async fn process() -> AppResult<()> {
             Some(response) = futures.next() => {
                 match response {
                     Ok(outgoing_kind) => {
+                        info!("Transaction completed for {:?}", outgoing_kind);
                         super::delete_all_active_requests_for(&outgoing_kind)?;
 
                         // Find events that have been added since starting the last request
-                        let new_events = super::queued_requests(&outgoing_kind).unwrap_or_default().into_iter().take(30).collect::<Vec<_>>();
+                        let new_events = match super::queued_requests(&outgoing_kind) {
+                            Ok(events) => {
+                                info!("Found {} queued events for {:?}", events.len(), outgoing_kind);
+                                events
+                            }
+                            Err(e) => {
+                                error!("Failed to get queued requests for {:?}: {}", outgoing_kind, e);
+                                vec![]
+                            }
+                        }.into_iter().take(30).collect::<Vec<_>>();
 
                         if !new_events.is_empty() {
                             // Insert pdus we found
@@ -104,12 +114,22 @@ async fn process() -> AppResult<()> {
                 };
             },
             Some((outgoing_kind, event, id)) = receiver.recv() => {
-                if let Ok(Some(events)) = select_events(
+                info!("Received event for {:?}, id={}", outgoing_kind, id);
+                match select_events(
                     &outgoing_kind,
                     vec![(id, event)],
                     &mut current_transaction_status,
                 ) {
-                    futures.push(super::send_events(outgoing_kind, events));
+                    Ok(Some(events)) => {
+                        info!("Processing {} events for {:?}", events.len(), outgoing_kind);
+                        futures.push(super::send_events(outgoing_kind, events));
+                    }
+                    Ok(None) => {
+                        info!("Event queued but not processed (transaction already running) for {:?}", outgoing_kind);
+                    }
+                    Err(e) => {
+                        error!("Failed to select events for {:?}: {}", outgoing_kind, e);
+                    }
                 }
             }
         }
