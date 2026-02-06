@@ -1,18 +1,38 @@
 # palpo - Traefik 反向代理之后
 
 services:
+  postgres:
+    hostname: postgres
+    image: postgres:18
+    restart: always
+    volumes:
+      - ./data/pgsql:/var/lib/postgresql
+    environment:
+      POSTGRES_PASSWORD: your_password
+      POSTGRES_USER: palpo
+      POSTGRES_DATABASE: palpo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U palpo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - proxy
+
   palpo:
-    ### 如果您已经使用 'docker build' 构建了 palpo 镜像，或者想使用 Docker Hub 镜像，
-    ### 那么您就可以开始了。
     image: ghcr.io/palpo-im/palpo:latest
+    hostname: palpo
     restart: unless-stopped
     volumes:
       - db:/var/lib/palpo
-      #- ./palpo.toml:/etc/palpo.toml
+      - ./palpo.toml:/var/palpo/palpo.toml:ro
     networks:
       - proxy
     environment:
-      PALPO_CONFIG: '/var/palpo/palpo.toml'
+      PALPO_CONFIG: "/var/palpo/palpo.toml"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   traefik:
     image: "traefik:latest"
@@ -21,6 +41,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    networks:
+      - proxy
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:z"
       - "acme:/etc/traefik/acme"
@@ -67,6 +89,19 @@ services:
 configs:
   dynamic.yml:
     content: |
+      http:
+        routers:
+          palpo:
+            rule: "Host(`your_domain.com`)"
+            entryPoints:
+              - websecure
+            service: palpo
+            tls: {}
+        services:
+          palpo:
+            loadBalancer:
+              servers:
+                - url: "http://palpo:8008"
       # 可选设置 STS 标头，如 https://hstspreload.org
       # http:
       #   middlewares:
@@ -89,8 +124,8 @@ configs:
             minVersion: VersionTLS12
 
 volumes:
-    db:
-    acme:
+  db:
+  acme:
 
 networks:
-    proxy:
+  proxy:
