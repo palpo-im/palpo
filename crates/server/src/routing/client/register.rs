@@ -96,13 +96,18 @@ async fn register(
     let mut appservice = None;
     if body.login_type == Some(LoginType::Appservice) {
         let token = aa.require_access_token()?;
-        appservice = crate::appservices()
+        let matched = crate::appservices()
             .into_iter()
             .find(|appservice| appservice.as_token == token)
             .cloned();
-        if appservice.is_none() {
+        let Some(matched) = matched else {
             return Err(MatrixError::missing_token("missing appservice token").into());
+        };
+        let appservice_info: crate::appservice::RegistrationInfo = matched.clone().try_into()?;
+        if !appservice_info.is_user_match(&user_id) {
+            return Err(MatrixError::exclusive("user is not in appservice namespace").into());
         }
+        appservice = Some(matched);
     } else if crate::appservice::is_exclusive_user_id(&user_id)? {
         return Err(MatrixError::exclusive("user id reserved by appservice").into());
     }

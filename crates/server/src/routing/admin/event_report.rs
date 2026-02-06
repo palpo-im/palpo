@@ -104,7 +104,13 @@ pub struct ListEventReportsQuery {
 #[endpoint(operation_id = "list_event_reports")]
 pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventReportsResponse> {
     let from = query.from.unwrap_or(0);
-    let limit = query.limit.unwrap_or(100).min(1000);
+    if from < 0 {
+        return Err(MatrixError::invalid_param("from must be a non-negative integer").into());
+    }
+    let limit = query.limit.unwrap_or(100);
+    if limit <= 0 || limit > 1000 {
+        return Err(MatrixError::invalid_param("limit must be between 1 and 1000").into());
+    }
 
     let user_id = if let Some(ref uid) = query.user_id {
         Some(

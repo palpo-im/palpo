@@ -166,7 +166,7 @@ fn get_or_create_appservice_device(
 ) -> AppResult<DbUserDevice> {
     let device_id = device_id
         .map(|d| d.to_owned().into())
-        .unwrap_or_else(|| DeviceId::new());
+        .unwrap_or_else(|| OwnedDeviceId::from("appservice"));
 
     // Try to get existing device
     if let Ok(device) = user_devices::table
