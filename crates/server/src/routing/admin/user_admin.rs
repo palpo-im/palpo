@@ -476,7 +476,7 @@ pub async fn list_users_v3(
     // not_deactivated=true  -> deactivated=false (exclude deactivated)
     // not_deactivated=false -> deactivated=true  (show only deactivated)
     // not_deactivated=None  -> deactivated=None  (show all)
-    let deactivated = not_deactivated.into_inner().map(|nd| !nd);
+    let deactivated = not_deactivated.into_inner().map(|val| !val);
     let filter = data::user::ListUsersFilter {
         from: from.into_inner(),
         limit: limit.into_inner(),
