@@ -261,6 +261,17 @@ pub fn set_avatar_url(user_id: &UserId, avatar_url: &MxcUri) -> DataResult<()> {
     .execute(&mut connect()?)?;
     Ok(())
 }
+pub fn remove_avatar_url(user_id: &UserId) -> DataResult<()> {
+    diesel::update(
+        user_profiles::table
+            .filter(user_profiles::user_id.eq(user_id.as_str()))
+            .filter(user_profiles::room_id.is_null()),
+    )
+    .set(user_profiles::avatar_url.eq::<Option<String>>(None))
+    .execute(&mut connect()?)
+    .map(|_| ())
+    .map_err(Into::into)
+}
 
 pub fn delete_profile(user_id: &UserId) -> DataResult<()> {
     diesel::delete(
@@ -365,6 +376,13 @@ pub fn deactivate(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_access_tokens::table.filter(user_access_tokens::user_id.eq(user_id)))
         .execute(&mut connect()?)?;
 
+    Ok(())
+}
+
+pub fn reactivate(user_id: &UserId) -> DataResult<()> {
+    diesel::update(users::table.find(user_id))
+        .set(users::deactivated_at.eq::<Option<UnixMillis>>(None))
+        .execute(&mut connect()?)?;
     Ok(())
 }
 

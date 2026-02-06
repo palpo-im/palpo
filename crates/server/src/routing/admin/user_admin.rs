@@ -343,6 +343,7 @@ pub async fn get_user_v2(user_id: PathParam<OwnedUserId>) -> JsonResult<UserInfo
 pub async fn put_user_v2(
     user_id: PathParam<OwnedUserId>,
     body: JsonBody<PutUserReqBody>,
+    res: &mut salvo::Response,
 ) -> JsonResult<UserInfoV2> {
     let user_id = user_id.into_inner();
     let body = body.into_inner();
@@ -353,6 +354,7 @@ pub async fn put_user_v2(
     if !user_exists {
         // Create new user
         user::create_user(user_id.clone(), body.password.as_deref())?;
+        res.status_code(salvo::http::StatusCode::CREATED);
     } else {
         // Update password if provided
         if let Some(password) = &body.password {
@@ -395,6 +397,8 @@ pub async fn put_user_v2(
     if let Some(deactivated) = body.deactivated {
         if deactivated {
             data::user::deactivate(&user_id)?;
+        } else {
+            data::user::reactivate(&user_id)?;
         }
     }
 
@@ -454,7 +458,7 @@ pub async fn list_users_v2(
 
 /// GET /_synapse/admin/v3/users
 ///
-/// Same as v2 but with different deactivated parameter handling
+/// Same as v2 but uses not_deactivated parameter instead of deactivated
 #[endpoint]
 pub async fn list_users_v3(
     from: QueryParam<i64, false>,
@@ -462,21 +466,23 @@ pub async fn list_users_v3(
     user_id: QueryParam<String, false>,
     name: QueryParam<String, false>,
     guests: QueryParam<bool, false>,
-    deactivated: QueryParam<bool, false>,
+    not_deactivated: QueryParam<bool, false>,
     admins: QueryParam<bool, false>,
     order_by: QueryParam<String, false>,
     dir: QueryParam<String, false>,
 ) -> JsonResult<UsersListResponse> {
-    // v3 uses deactivated=true/false differently
-    // In v2, deactivated=true means show only deactivated users
-    // In v3, not_deactivated parameter is used instead
     let name_filter = name.into_inner().or(user_id.into_inner());
+    // Convert not_deactivated to deactivated:
+    // not_deactivated=true  -> deactivated=false (exclude deactivated)
+    // not_deactivated=false -> deactivated=true  (show only deactivated)
+    // not_deactivated=None  -> deactivated=None  (show all)
+    let deactivated = not_deactivated.into_inner().map(|nd| !nd);
     let filter = data::user::ListUsersFilter {
         from: from.into_inner(),
         limit: limit.into_inner(),
         name: name_filter,
         guests: guests.into_inner(),
-        deactivated: deactivated.into_inner(),
+        deactivated,
         admins: admins.into_inner(),
         user_types: None,
         order_by: order_by.into_inner(),

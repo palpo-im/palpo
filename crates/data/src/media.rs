@@ -315,3 +315,67 @@ pub fn delete_old_local_media(
     let total = media_ids.len() as i64;
     Ok((media_ids, total))
 }
+
+#[derive(diesel::QueryableByName)]
+pub struct UserMediaStatsRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub user_id: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub media_count: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub media_length: i64,
+}
+
+pub fn get_user_media_statistics(
+    offset: i64,
+    limit: i64,
+    search_term: Option<&str>,
+    order_by: Option<&str>,
+    dir: Option<&str>,
+) -> DataResult<(Vec<UserMediaStatsRow>, i64)> {
+    let mut conn = connect()?;
+    let order_col = match order_by {
+        Some("media_count") => "media_count",
+        _ => "media_length",
+    };
+    let order_dir = match dir {
+        Some("f") => "ASC",
+        _ => "DESC",
+    };
+    let search_filter = search_term
+        .map(|s| format!("AND created_by LIKE '%{}%'", s.replace('\'', "''")))
+        .unwrap_or_default();
+
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM (\
+            SELECT created_by FROM media_metadatas \
+            WHERE created_by IS NOT NULL {} \
+            GROUP BY created_by\
+        ) sub",
+        search_filter
+    );
+    let total: i64 = diesel::sql_query(&count_sql)
+        .get_result::<CountResult>(&mut conn)?
+        .count;
+
+    let data_sql = format!(
+        "SELECT created_by AS user_id, \
+            COUNT(*) AS media_count, \
+            COALESCE(SUM(file_size), 0) AS media_length \
+        FROM media_metadatas \
+        WHERE created_by IS NOT NULL {} \
+        GROUP BY created_by \
+        ORDER BY {} {} \
+        LIMIT {} OFFSET {}",
+        search_filter, order_col, order_dir, limit, offset
+    );
+    let rows = diesel::sql_query(&data_sql)
+        .load::<UserMediaStatsRow>(&mut conn)?;
+    Ok((rows, total))
+}
+
+#[derive(diesel::QueryableByName)]
+struct CountResult {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    count: i64,
+}
