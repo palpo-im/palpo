@@ -134,7 +134,7 @@ async fn process(
     (result, output)
 }
 
-fn capture_create(context: &Context<'_>) -> (Arc<Capture>, Arc<Mutex<String>>) {
+fn capture_create(_context: &Context<'_>) -> (Arc<Capture>, Arc<Mutex<String>>) {
     let conf = config::get();
     let env_filter = EnvFilter::try_new(&conf.admin.log_capture).unwrap_or_else(|e| {
         warn!("admin_log_capture filter invalid: {e:?}");

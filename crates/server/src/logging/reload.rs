@@ -57,7 +57,7 @@ impl LogLevelReloadHandles {
             .expect("locked")
             .iter()
             .filter(|(name, _)| names.is_some_and(|names| names.contains(&name.as_str())))
-            .for_each(|(_, handle)| {
+            .for_each(|(_, _handle)| {
                 // TODO: EnvFilter clone
                 // _ = handle.reload(new_value.to_owned());
             });

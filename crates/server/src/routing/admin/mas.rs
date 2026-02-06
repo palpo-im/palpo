@@ -146,7 +146,7 @@ pub async fn provision_user(
 ) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
-    let exists = data::user::user_exists(&user_id).unwrap_or(false);
+    let exists = data::user::user_exists(&user_id)?;
     if !exists {
         user::create_user(user_id.clone(), None)?;
         res.status_code(salvo::http::StatusCode::CREATED);
@@ -157,9 +157,8 @@ pub async fn provision_user(
         data::user::remove_display_name(&user_id)?;
     }
     if let Some(avatar_url) = &body.set_avatar_url {
-        if let Ok(mxc_uri) = <&MxcUri>::try_from(avatar_url.as_str()) {
-            data::user::set_avatar_url(&user_id, mxc_uri)?;
-        }
+        let mxc_uri: &MxcUri = avatar_url.as_str().into();
+        data::user::set_avatar_url(&user_id, mxc_uri)?;
     } else if body.unset_avatar_url {
         data::user::remove_avatar_url(&user_id)?;
     }
@@ -183,7 +182,7 @@ pub async fn is_localpart_available(localpart: QueryParam<String, true>) -> Empt
         return Err(MatrixError::invalid_param("Invalid username").into());
     }
     let user_id = localpart_to_user_id(&localpart)?;
-    if data::user::user_exists(&user_id).unwrap_or(false) {
+    if data::user::user_exists(&user_id)? {
         return Err(MatrixError::unknown("User ID already taken.").into());
     }
     empty_ok()

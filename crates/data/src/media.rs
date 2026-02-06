@@ -342,35 +342,63 @@ pub fn get_user_media_statistics(
         Some("f") => "ASC",
         _ => "DESC",
     };
-    let search_filter = search_term
-        .map(|s| format!("AND created_by LIKE '%{}%'", s.replace('\'', "''")))
-        .unwrap_or_default();
 
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM (\
-            SELECT created_by FROM media_metadatas \
-            WHERE created_by IS NOT NULL {} \
-            GROUP BY created_by\
-        ) sub",
-        search_filter
-    );
-    let total: i64 = diesel::sql_query(&count_sql)
-        .get_result::<CountResult>(&mut conn)?
-        .count;
+    let (rows, total) = if let Some(term) = search_term {
+        let like_pattern = format!("%{}%", term);
 
-    let data_sql = format!(
-        "SELECT created_by AS user_id, \
-            COUNT(*) AS media_count, \
-            COALESCE(SUM(file_size), 0) AS media_length \
-        FROM media_metadatas \
-        WHERE created_by IS NOT NULL {} \
-        GROUP BY created_by \
-        ORDER BY {} {} \
-        LIMIT {} OFFSET {}",
-        search_filter, order_col, order_dir, limit, offset
-    );
-    let rows = diesel::sql_query(&data_sql)
-        .load::<UserMediaStatsRow>(&mut conn)?;
+        let count_sql = format!(
+            "SELECT COUNT(*) AS count FROM (\
+                SELECT created_by FROM media_metadatas \
+                WHERE created_by IS NOT NULL AND created_by LIKE $1 \
+                GROUP BY created_by\
+            ) sub"
+        );
+        let total: i64 = diesel::sql_query(&count_sql)
+            .bind::<diesel::sql_types::Text, _>(&like_pattern)
+            .get_result::<CountResult>(&mut conn)?
+            .count;
+
+        let data_sql = format!(
+            "SELECT created_by AS user_id, \
+                COUNT(*) AS media_count, \
+                COALESCE(SUM(file_size), 0) AS media_length \
+            FROM media_metadatas \
+            WHERE created_by IS NOT NULL AND created_by LIKE $1 \
+            GROUP BY created_by \
+            ORDER BY {} {} \
+            LIMIT {} OFFSET {}",
+            order_col, order_dir, limit, offset
+        );
+        let rows = diesel::sql_query(&data_sql)
+            .bind::<diesel::sql_types::Text, _>(&like_pattern)
+            .load::<UserMediaStatsRow>(&mut conn)?;
+        (rows, total)
+    } else {
+        let count_sql = "SELECT COUNT(*) AS count FROM (\
+                SELECT created_by FROM media_metadatas \
+                WHERE created_by IS NOT NULL \
+                GROUP BY created_by\
+            ) sub";
+        let total: i64 = diesel::sql_query(count_sql)
+            .get_result::<CountResult>(&mut conn)?
+            .count;
+
+        let data_sql = format!(
+            "SELECT created_by AS user_id, \
+                COUNT(*) AS media_count, \
+                COALESCE(SUM(file_size), 0) AS media_length \
+            FROM media_metadatas \
+            WHERE created_by IS NOT NULL \
+            GROUP BY created_by \
+            ORDER BY {} {} \
+            LIMIT {} OFFSET {}",
+            order_col, order_dir, limit, offset
+        );
+        let rows = diesel::sql_query(&data_sql)
+            .load::<UserMediaStatsRow>(&mut conn)?;
+        (rows, total)
+    };
+
     Ok((rows, total))
 }
 

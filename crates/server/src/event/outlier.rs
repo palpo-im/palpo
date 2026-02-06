@@ -187,7 +187,7 @@ impl OutlierPdu {
             if let AppError::Matrix(MatrixError { ref kind, .. }) = e {
                 if *kind == core::error::ErrorKind::BadJson {
                     self.rejection_reason = Some(format!("bad prev events: {}", e));
-                    let state_lock = crate::room::lock_state(&self.room_id).await;
+                    let _state_lock = crate::room::lock_state(&self.room_id).await;
                     return self.save_to_database(is_backfill);
                 } else {
                     self.soft_failed = true;
@@ -215,7 +215,7 @@ impl OutlierPdu {
 
     pub async fn process_pulled(
         mut self,
-        remote_server: &ServerName,
+        _remote_server: &ServerName,
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let version_rules = crate::room::get_version_rules(&self.room_version)?;

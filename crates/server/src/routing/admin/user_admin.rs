@@ -383,9 +383,8 @@ pub async fn put_user_v2(
 
     // Update avatar
     if let Some(avatar_url) = &body.avatar_url {
-        if let Ok(mxc_uri) = <&MxcUri>::try_from(avatar_url.as_str()) {
-            data::user::set_avatar_url(&user_id, mxc_uri)?;
-        }
+        let mxc_uri: &MxcUri = avatar_url.as_str().into();
+        data::user::set_avatar_url(&user_id, mxc_uri)?;
     }
 
     // Update admin status

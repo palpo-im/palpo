@@ -48,7 +48,7 @@ async fn register(
     aa: AuthArgs,
     body: JsonBody<RegisterReqBody>,
     req: &mut Request,
-    depot: &mut Depot,
+    _depot: &mut Depot,
     _res: &mut Response,
 ) -> JsonResult<RegisterResBody> {
     let body = body.into_inner();

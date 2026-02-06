@@ -125,7 +125,7 @@ pub fn federation_client() -> ClientWithMiddleware {
         .get_or_init(|| {
             let conf = crate::config::get();
             // Client is cheap to clone (Arc wrapper) and avoids lifetime issues
-            let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
+            let _tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
 
             // let jwt_decoding_key = conf
             //     .jwt_secret

@@ -87,7 +87,7 @@ fn generate_dummy_fallback_html(server_name: &str, session_id: &str) -> String {
     )
 }
 
-fn generate_password_fallback_html(server_name: &str, session_id: &str) -> String {
+fn generate_password_fallback_html(server_name: &str, _session_id: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>

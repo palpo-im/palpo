@@ -30,7 +30,7 @@ pub fn authed_router() -> Router {
 /// - Triggers device list updates
 #[endpoint]
 async fn change_password(
-    req: &mut Request,
+    _req: &mut Request,
     _aa: AuthArgs,
     body: JsonBody<ChangePasswordReqBody>,
     depot: &mut Depot,

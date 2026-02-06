@@ -379,7 +379,7 @@ pub fn copy_room_tags_and_direct_to_room(
     };
 
     let old_room_id = old_room_id.to_owned();
-    for (key, room_ids) in direct_rooms.iter_mut() {
+    for (_key, room_ids) in direct_rooms.iter_mut() {
         if room_ids.contains(&old_room_id) {
             room_ids.retain(|r| r != &old_room_id);
             let new_room_id = new_room_id.to_owned();
@@ -420,7 +420,7 @@ pub fn copy_room_tags_and_direct_to_room(
 /// Copy all of the push rules from one room to another for a specific user
 pub fn copy_push_rules_from_room_to_room(
     user_id: &UserId,
-    old_room_id: &RoomId,
+    _old_room_id: &RoomId,
     new_room_id: &RoomId,
 ) -> AppResult<()> {
     let Ok(mut user_data_content) = crate::data::user::get_data::<PushRulesEventContent>(
