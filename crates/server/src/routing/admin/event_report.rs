@@ -86,19 +86,14 @@ impl From<data::room::DbEventReport> for EventReportDetailResponse {
 
 #[derive(Debug, Deserialize, ToParameters)]
 pub struct ListEventReportsQuery {
-    /// Offset for pagination
     #[serde(default)]
     pub from: Option<i64>,
-    /// Maximum number of reports to return (default 100)
     #[serde(default)]
     pub limit: Option<i64>,
-    /// Direction of pagination: f (forwards/oldest first) or b (backwards/newest first, default)
     #[serde(default)]
     pub dir: Option<String>,
-    /// Filter by the user who made the report
     #[serde(default)]
     pub user_id: Option<String>,
-    /// Filter by room ID
     #[serde(default)]
     pub room_id: Option<String>,
 }
@@ -109,9 +104,14 @@ pub struct ListEventReportsQuery {
 #[endpoint(operation_id = "list_event_reports")]
 pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventReportsResponse> {
     let from = query.from.unwrap_or(0);
-    let limit = query.limit.unwrap_or(100).min(1000);
+    if from < 0 {
+        return Err(MatrixError::invalid_param("from must be a non-negative integer").into());
+    }
+    let limit = query.limit.unwrap_or(100);
+    if limit <= 0 || limit > 1000 {
+        return Err(MatrixError::invalid_param("limit must be between 1 and 1000").into());
+    }
 
-    // Parse user_id if provided
     let user_id = if let Some(ref uid) = query.user_id {
         Some(
             UserId::parse(uid)
@@ -122,7 +122,6 @@ pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventRepor
         None
     };
 
-    // Parse room_id if provided
     let room_id = if let Some(ref rid) = query.room_id {
         Some(
             RoomId::parse(rid)

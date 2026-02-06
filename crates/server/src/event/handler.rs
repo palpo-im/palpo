@@ -341,7 +341,7 @@ pub async fn process_to_outlier_pdu(
 
     let server_joined = crate::room::is_server_joined(crate::config::server_name(), room_id)?;
     if !server_joined {
-        if let Some(state_key) = incoming_pdu.state_key.as_deref()
+        if let Some(_state_key) = incoming_pdu.state_key.as_deref()
             && incoming_pdu.event_ty == TimelineEventType::RoomMember
         // && state_key.ends_with(&*format!(":{}", crate::config::server_name()))
         {

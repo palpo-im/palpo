@@ -77,6 +77,12 @@ pub struct AdminConfig {
     /// default: "m.server_notice"
     #[serde(default = "default_room_tag")]
     pub room_tag: String,
+
+    /// Shared secret for MAS (Matrix Authentication Service) endpoints.
+    /// When set, enables the `_synapse/mas/` endpoints which use this
+    /// secret as a Bearer token for authentication.
+    #[serde(default)]
+    pub mas_secret: Option<String>,
 }
 
 impl Default for AdminConfig {
@@ -90,6 +96,7 @@ impl Default for AdminConfig {
             signal_execute: Vec::new(),
             log_capture: default_log_capture(),
             room_tag: default_room_tag(),
+            mas_secret: None,
         }
     }
 }

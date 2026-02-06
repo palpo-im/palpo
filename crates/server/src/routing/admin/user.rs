@@ -167,9 +167,8 @@ pub fn delete_devices(
     }
 
     for device_id in body.devices {
-        if let Ok(device_id) = <OwnedDeviceId>::try_from(device_id.as_str()) {
-            let _ = data::user::device::remove_device(&user_id, &device_id);
-        }
+        let device_id: OwnedDeviceId = device_id.into();
+        let _ = data::user::device::remove_device(&user_id, &device_id);
     }
 
     empty_ok()

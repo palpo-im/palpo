@@ -1,6 +1,7 @@
 mod event;
 mod event_report;
 mod federation;
+mod mas;
 mod media;
 mod register;
 mod registration_token;
@@ -22,6 +23,24 @@ pub async fn require_admin(depot: &mut Depot) -> AppResult<()> {
     let authed = depot.authed_info()?;
     if !authed.is_admin() {
         return Err(MatrixError::forbidden("Requires admin privileges", None).into());
+    }
+    Ok(())
+}
+
+/// Middleware to authenticate MAS requests via shared secret
+#[handler]
+pub async fn auth_by_mas_secret(aa: crate::AuthArgs) -> AppResult<()> {
+    let token = aa
+        .require_access_token()
+        .map_err(crate::AppError::from)?;
+    let conf = crate::config::get();
+    let Some(mas_secret) = &conf.admin.mas_secret else {
+        return Err(
+            MatrixError::forbidden("MAS endpoints are not configured on this server", None).into(),
+        );
+    };
+    if token != mas_secret.as_str() {
+        return Err(MatrixError::forbidden("Invalid MAS secret", None).into());
     }
     Ok(())
 }
@@ -49,6 +68,12 @@ pub fn router() -> Router {
                 .push(user_lookup::router()),
         )
     }
+    // MAS modern endpoints - separate auth via shared secret
+    admin = admin.push(
+        Router::with_path("_synapse/mas")
+            .hoop(auth_by_mas_secret)
+            .push(mas::router()),
+    );
     admin
 }
 

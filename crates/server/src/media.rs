@@ -168,7 +168,7 @@ pub fn get_all_mxcs() -> AppResult<Vec<OwnedMxcUri>> {
 #[allow(clippy::too_many_arguments)]
 pub async fn save_thumbnail(
     mxc: &Mxc<'_>,
-    user: Option<&UserId>,
+    _user: Option<&UserId>,
     content_type: Option<&str>,
     content_disposition: Option<&ContentDisposition>,
     dim: &Dimension,

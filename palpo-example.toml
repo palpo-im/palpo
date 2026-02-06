@@ -618,6 +618,12 @@
 #
 # room_tag = "m.server_notice"
 
+# Shared secret for MAS (Matrix Authentication Service) endpoints.
+# When set, enables the `_synapse/mas/` endpoints which use this
+# secret as a Bearer token for authentication.
+#
+# mas_secret = false
+
 # [jwt]
 
 # Enable JWT logins

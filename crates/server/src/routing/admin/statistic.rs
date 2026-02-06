@@ -7,7 +7,7 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::Serialize;
 
-use crate::{JsonResult, MatrixError, json_ok};
+use crate::{JsonResult, data, json_ok};
 
 pub fn router() -> Router {
     Router::new()
@@ -52,16 +52,43 @@ pub struct UserMediaStats {
 pub fn user_media_statistics(
     from: QueryParam<i64, false>,
     limit: QueryParam<i64, false>,
-    _order_by: QueryParam<String, false>,
-    _dir: QueryParam<String, false>,
-    _search_term: QueryParam<String, false>,
+    order_by: QueryParam<String, false>,
+    dir: QueryParam<String, false>,
+    search_term: QueryParam<String, false>,
 ) -> JsonResult<UserMediaStatisticsResponse> {
-    let _from = from.into_inner().unwrap_or(0);
-    let _limit = limit.into_inner().unwrap_or(100);
+    let from = from.into_inner().unwrap_or(0);
+    let limit = limit.into_inner().unwrap_or(100);
+    let order_by = order_by.into_inner();
+    let dir = dir.into_inner();
+    let search_term = search_term.into_inner();
 
-    Err(MatrixError::bad_status(
-        Some(salvo::http::StatusCode::NOT_IMPLEMENTED),
-        "User media statistics are not enabled on this server",
-    )
-    .into())
+    let (rows, total) = data::media::get_user_media_statistics(
+        from,
+        limit,
+        search_term.as_deref(),
+        order_by.as_deref(),
+        dir.as_deref(),
+    )?;
+
+    let next_token = if from + limit < total {
+        Some((from + limit).to_string())
+    } else {
+        None
+    };
+
+    let users = rows
+        .into_iter()
+        .map(|r| UserMediaStats {
+            user_id: r.user_id,
+            displayname: None,
+            media_count: r.media_count,
+            media_length: r.media_length,
+        })
+        .collect();
+
+    json_ok(UserMediaStatisticsResponse {
+        users,
+        total,
+        next_token,
+    })
 }

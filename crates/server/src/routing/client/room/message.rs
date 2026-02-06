@@ -35,14 +35,13 @@ pub(super) async fn get_messages(
         &mut connect()?
     )?;
     if !is_joined {
-        let Some((_event_sn, forgotten)) = room_users::table
+        let forgotten_row = room_users::table
             .filter(room_users::room_id.eq(&args.room_id))
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::membership.eq("leave"))
             .select((room_users::event_sn, room_users::forgotten))
-            .first::<(i64, bool)>(&mut connect()?)
-            .optional()?
-        else {
+            .first::<(i64, bool)>(&mut connect()?);
+        let Some((_event_sn, forgotten)) = diesel::OptionalExtension::optional(forgotten_row)? else {
             return Err(MatrixError::forbidden("you aren't a member of the room", None).into());
         };
         if forgotten {

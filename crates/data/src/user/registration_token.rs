@@ -75,7 +75,7 @@ pub fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<Registrat
     if let Some(is_valid) = valid {
         let now = UnixMillis::now().get() as i64;
         if is_valid {
-            // Valid tokens: not expired AND (uses_allowed is null OR completed < uses_allowed)
+            // Valid tokens: not expired AND (uses_allowed is null OR completed + pending < uses_allowed)
             query = query
                 .filter(
                     user_registration_tokens::expires_at
@@ -85,11 +85,11 @@ pub fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<Registrat
                 .filter(
                     user_registration_tokens::uses_allowed
                         .is_null()
-                        .or(user_registration_tokens::completed
+                        .or((user_registration_tokens::completed + user_registration_tokens::pending)
                             .lt(user_registration_tokens::uses_allowed.assume_not_null())),
                 );
         } else {
-            // Invalid tokens: expired OR (uses_allowed is not null AND completed >= uses_allowed)
+            // Invalid tokens: expired OR (uses_allowed is not null AND completed + pending >= uses_allowed)
             query = query.filter(
                 user_registration_tokens::expires_at
                     .is_not_null()
@@ -97,7 +97,8 @@ pub fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<Registrat
                     .or(user_registration_tokens::uses_allowed
                         .is_not_null()
                         .and(
-                            user_registration_tokens::completed
+                            (user_registration_tokens::completed
+                                + user_registration_tokens::pending)
                                 .ge(user_registration_tokens::uses_allowed.assume_not_null()),
                         )),
             );
@@ -238,7 +239,7 @@ pub fn is_token_valid(token: &str) -> DataResult<bool> {
 
     // Check uses
     if let Some(uses_allowed) = db_token.uses_allowed {
-        if db_token.completed >= uses_allowed {
+        if db_token.completed + db_token.pending >= uses_allowed {
             return Ok(false);
         }
     }
@@ -259,25 +260,47 @@ pub fn increment_pending(token: &str) -> DataResult<bool> {
 
 /// Complete a registration (decrement pending, increment completed)
 pub fn complete_registration(token: &str) -> DataResult<bool> {
+    let mut conn = connect()?;
+    let pending = user_registration_tokens::table
+        .filter(user_registration_tokens::token.eq(token))
+        .select(user_registration_tokens::pending)
+        .first::<i64>(&mut conn)
+        .optional()?;
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    let new_pending = pending.saturating_sub(1);
+
     let result = diesel::update(
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
     .set((
-        user_registration_tokens::pending.eq(user_registration_tokens::pending - 1),
+        user_registration_tokens::pending.eq(new_pending),
         user_registration_tokens::completed.eq(user_registration_tokens::completed + 1),
     ))
-    .execute(&mut connect()?)?;
+    .execute(&mut conn)?;
 
     Ok(result > 0)
 }
 
 /// Cancel a pending registration (decrement pending)
 pub fn cancel_registration(token: &str) -> DataResult<bool> {
+    let mut conn = connect()?;
+    let pending = user_registration_tokens::table
+        .filter(user_registration_tokens::token.eq(token))
+        .select(user_registration_tokens::pending)
+        .first::<i64>(&mut conn)
+        .optional()?;
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    let new_pending = pending.saturating_sub(1);
+
     let result = diesel::update(
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
-    .set(user_registration_tokens::pending.eq(user_registration_tokens::pending - 1))
-    .execute(&mut connect()?)?;
+    .set(user_registration_tokens::pending.eq(new_pending))
+    .execute(&mut conn)?;
 
     Ok(result > 0)
 }

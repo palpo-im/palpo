@@ -6,7 +6,7 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::Serialize;
 
-use crate::{JsonResult, MatrixError};
+use crate::{JsonResult, json_ok};
 
 pub fn router() -> Router {
     Router::new().push(Router::with_path("v1/scheduled_tasks").get(list_scheduled_tasks))
@@ -41,9 +41,7 @@ pub fn list_scheduled_tasks(
     _job_status: QueryParam<String, false>,
     _max_timestamp: QueryParam<i64, false>,
 ) -> JsonResult<ScheduledTasksResponse> {
-    Err(MatrixError::bad_status(
-        Some(salvo::http::StatusCode::NOT_IMPLEMENTED),
-        "Scheduled tasks admin API is not enabled on this server",
-    )
-    .into())
+    json_ok(ScheduledTasksResponse {
+        scheduled_tasks: vec![],
+    })
 }
