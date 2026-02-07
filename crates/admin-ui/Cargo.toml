@@ -55,6 +55,7 @@ rand = { version = "0.8", features = ["getrandom"] }
 wasm-bindgen-futures = "0.4"
 gloo-net = "0.4"  # For HTTP requests in WASM
 gloo-storage = "0.3"  # For local storage in WASM
+gloo-timers = { version = "0.3", features = ["futures"] }  # For timers in WASM
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native dependencies
