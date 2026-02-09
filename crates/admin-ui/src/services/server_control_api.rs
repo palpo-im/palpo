@@ -10,7 +10,11 @@ use crate::models::{
 use crate::utils::audit_logger::AuditLogger;
 use std::time::{Duration, SystemTime};
 use std::sync::{Arc, RwLock};
-use tokio::time::timeout;
+
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::sleep;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::time::sleep;
 
 /// Server control API service
 #[derive(Clone)]
@@ -121,7 +125,7 @@ impl ServerControlAPI {
         let start_time = SystemTime::now();
         
         // Simulate config reload process
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(500)).await;
         
         let reload_time = SystemTime::now()
             .duration_since(start_time)
@@ -196,7 +200,7 @@ impl ServerControlAPI {
 
         // Simulate restart delay
         if !request.force {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            sleep(Duration::from_millis(1000)).await;
         }
 
         Ok(OperationResponse {
@@ -359,21 +363,9 @@ impl ServerControlAPI {
 
         let started_at = SystemTime::now();
         
-        // Execute the command with timeout
-        let timeout_duration = Duration::from_secs(command.timeout_seconds.unwrap_or(30));
-        
-        let result = match timeout(timeout_duration, self.execute_system_command(&command)).await {
-            Ok(result) => result,
-            Err(_) => CommandResult {
-                success: false,
-                output: String::new(),
-                error: Some("Command timed out".to_string()),
-                execution_time: timeout_duration,
-                exit_code: Some(-1),
-                command: command.command.clone(),
-                started_at,
-            },
-        };
+        // Execute the command (simulated in this demo implementation)
+        // Note: timeout_seconds parameter is ignored as this is a frontend-only demo
+        let result = self.execute_system_command(&command).await;
 
         // Log the action
         self.audit_logger.log_action(

@@ -6,7 +6,12 @@
 use crate::models::{config::*, error::WebConfigError};
 use crate::services::config_api::ConfigAPI;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{SystemTime, Duration};
+
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::sleep;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::time::sleep;
 
 /// Configuration Template API service
 pub struct ConfigTemplateAPI;
@@ -837,7 +842,7 @@ mod tests {
     async fn test_generate_template_id() {
         let id1 = ConfigTemplateAPI::generate_template_id("My Custom Template");
         // Add a small delay to ensure different timestamps
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        sleep(Duration::from_millis(1)).await;
         let id2 = ConfigTemplateAPI::generate_template_id("My Custom Template");
         
         // IDs should be different due to timestamp (if timing allows)
