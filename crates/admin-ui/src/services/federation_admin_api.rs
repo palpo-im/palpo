@@ -45,7 +45,12 @@ use crate::models::{
 };
 use crate::utils::audit_logger::AuditLogger;
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::sleep;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::time::sleep;
 
 /// Federation administration API service
 ///
@@ -700,7 +705,7 @@ impl FederationAdminAPI {
         let start_time = SystemTime::now();
         
         // Simulate network delay
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
         
         let mut test_details = Vec::new();
         let mut overall_success = true;

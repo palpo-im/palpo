@@ -1,7 +1,6 @@
 //! Main application component
 
 use dioxus::prelude::*;
-use dioxus_router::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
 use crate::pages::{LoginPage, AdminDashboard};

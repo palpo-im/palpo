@@ -42,7 +42,7 @@ pub struct LoadingOverlayProps {
 #[component]
 pub fn LoadingOverlay(props: LoadingOverlayProps) -> Element {
     if !props.visible {
-        return None;
+        return rsx! {};
     }
 
     rsx! {
@@ -202,7 +202,7 @@ pub struct InlineLoaderProps {
 #[component]
 pub fn InlineLoader(props: InlineLoaderProps) -> Element {
     if !props.visible {
-        return None;
+        return rsx! {};
     }
 
     rsx! {
