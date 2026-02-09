@@ -7,7 +7,6 @@
 //! - Breadcrumb: Navigation breadcrumb component
 
 use dioxus::prelude::*;
-use dioxus_router::prelude::*;
 use crate::hooks::use_auth;
 
 /// Navigation item definition
