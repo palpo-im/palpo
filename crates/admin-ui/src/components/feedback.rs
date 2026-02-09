@@ -92,7 +92,7 @@ pub fn ValidationFeedback(props: ValidationFeedbackProps) -> Element {
     let has_warnings = !props.warnings.is_empty();
 
     if !has_errors && !has_warnings {
-        return None;
+        return rsx! {};
     }
 
     rsx! {
@@ -135,7 +135,7 @@ pub struct ToastProps {
 #[component]
 pub fn Toast(props: ToastProps) -> Element {
     if !props.visible {
-        return None;
+        return rsx! {};
     }
 
     let toast_class = format!("toast toast-{}", props.toast_type);
@@ -213,7 +213,7 @@ pub fn FieldError(props: FieldErrorProps) -> Element {
         .collect();
 
     if field_errors.is_empty() {
-        return None;
+        return rsx! {};
     }
 
     rsx! {
