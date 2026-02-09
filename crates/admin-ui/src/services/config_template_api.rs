@@ -6,12 +6,7 @@
 use crate::models::{config::*, error::WebConfigError};
 use crate::services::config_api::ConfigAPI;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, Duration};
-
-#[cfg(target_arch = "wasm32")]
-use gloo_timers::future::sleep;
-#[cfg(not(target_arch = "wasm32"))]
-use tokio::time::sleep;
+use std::time::SystemTime;
 
 /// Configuration Template API service
 pub struct ConfigTemplateAPI;
