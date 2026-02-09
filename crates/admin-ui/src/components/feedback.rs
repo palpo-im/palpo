@@ -224,3 +224,4 @@ pub fn FieldError(props: FieldErrorProps) -> Element {
         }
     }
 }
+    #[cfg(target_arch = "wasm32")]
