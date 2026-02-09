@@ -174,7 +174,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 crate::admin::start()
                     .await
                     .expect("admin console failed to start");
-                tracing::info!("admin console stopped");
+                tracing::info!("admin console stopped, shutting down...");
+                std::process::exit(0);
             });
         }
     }

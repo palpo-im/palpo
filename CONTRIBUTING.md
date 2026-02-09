@@ -45,6 +45,50 @@ cargo build
 cargo check --all --bins --examples --tests
 ```
 
+### Admin Console
+
+Palpo includes an interactive admin console for managing the server:
+
+```bash
+# Console-only mode (no HTTP server)
+./palpo -c palpo.toml -s false --console
+
+# Console + server mode
+./palpo -c palpo.toml --console
+```
+
+**Console commands:**
+
+| Command | Description |
+|---------|-------------|
+| `help` | Show available admin commands |
+| `exit` / `quit` | Exit the console (and server if running) |
+| `clear` | Clear the terminal screen |
+| `user <subcommand>` | Manage local users |
+| `room <subcommand>` | Manage rooms |
+| `federation <subcommand>` | Manage federation |
+| `server <subcommand>` | Manage server settings |
+| `media <subcommand>` | Manage media |
+| `appservice <subcommand>` | Manage appservices |
+
+**Keyboard shortcuts:**
+
+| Shortcut | Description |
+|----------|-------------|
+| `Ctrl+D` | Exit the console (same as `exit`) |
+| `Ctrl+C` | Interrupt the current command |
+| `Up/Down` | Navigate command history |
+
+**Graceful shutdown:**
+
+When running in console+server mode, exiting the console (via `exit`, `quit`, or `Ctrl+D`) triggers a graceful server shutdown. The server will stop accepting new connections and exit cleanly.
+
+When running as a daemon (without `--console`), send `SIGTERM` or `SIGQUIT` for graceful shutdown:
+
+```bash
+kill -TERM <palpo-pid>
+```
+
 ### Project Structure
 
 Palpo is organized as a Cargo workspace with the following crates:

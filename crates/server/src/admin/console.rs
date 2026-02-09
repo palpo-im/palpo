@@ -90,12 +90,16 @@ impl Console {
             crate::info::version()
         ));
         self.output
-            .print_text("\"help\" for help, ^D to exit the console");
+            .print_text("\"help\" for help, \"exit\" to quit, ^D to exit the console");
 
         loop {
             match self.readline().await {
                 Ok(event) => match event {
-                    ReadlineEvent::Line(string) => self.clone().handle(string).await,
+                    ReadlineEvent::Line(string) => {
+                        if self.clone().handle(string).await {
+                            break;
+                        }
+                    }
                     ReadlineEvent::Interrupted => continue,
                     ReadlineEvent::Eof => break,
                     // ReadlineEvent::Quit =>
@@ -112,6 +116,11 @@ impl Console {
         }
 
         debug!("session ending");
+        // Drop the command channel sender so that admin::start()'s event loop
+        // will receive None from receiver.recv() and exit.
+        if let Ok(mut channel) = crate::admin::executor().channel.write() {
+            channel.take();
+        }
         self.worker_join.lock().expect("locked").take();
     }
 
@@ -142,9 +151,20 @@ impl Console {
         result
     }
 
-    async fn handle(self: Arc<Self>, line: String) {
-        if line.trim().is_empty() {
-            return;
+    async fn handle(self: Arc<Self>, line: String) -> bool {
+        let trimmed = line.trim();
+
+        if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
+            return true;
+        }
+
+        if trimmed.eq_ignore_ascii_case("clear") {
+            self.output.print_text("\x1B[2J\x1B[1;1H");
+            return false;
+        }
+
+        if trimmed.is_empty() {
+            return false;
         }
 
         self.add_history(line.clone());
@@ -158,6 +178,8 @@ impl Console {
         }}
 
         _ = future.await;
+
+        false
     }
 
     async fn process(self: Arc<Self>, line: String) {
