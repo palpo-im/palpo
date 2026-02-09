@@ -248,5 +248,3 @@ pub fn ProgressSteps(props: ProgressStepsProps) -> Element {
         }
     }
 }
-
-#[cfg(test)]

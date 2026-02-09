@@ -19,9 +19,11 @@ pub use api_client::*;
 pub use auth::*;
 pub use audit::*;
 pub use audit_api::*;
-pub use config::*;
+// Re-export ConfigService from config module
+pub use config::ConfigService;
 pub use config_api::*;
 pub use config_template_api::*;
+// Re-export all from config_import_export_api (includes ConfigFormat)
 pub use config_import_export_api::*;
 pub use user_admin_api::*;
 pub use room_admin_api::*;
