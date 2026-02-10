@@ -10,6 +10,9 @@ pub mod media;
 pub mod appservices;
 pub mod logs;
 
+#[cfg(test)]
+mod config_search_test;
+
 pub use login::LoginPage;
 pub use dashboard::AdminDashboard;
 pub use config::ConfigManager;

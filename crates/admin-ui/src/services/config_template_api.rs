@@ -708,6 +708,7 @@ pub struct TemplateValidationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_list_builtin_templates() {
