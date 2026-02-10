@@ -25,7 +25,8 @@ impl Ruleset {
                 ConditionalPushRule::invite_for_me(user_id),
                 ConditionalPushRule::member_event(),
                 ConditionalPushRule::is_user_mention(user_id),
-                // deprecated, but added for complement test `TestThreadedReceipts`.
+                // Deprecated fallback kept for legacy mention behavior and compatibility tests.
+                #[allow(deprecated)]
                 ConditionalPushRule::contains_display_name(),
                 ConditionalPushRule::is_room_mention(),
                 ConditionalPushRule::tombstone(),

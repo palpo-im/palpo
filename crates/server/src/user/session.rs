@@ -12,6 +12,20 @@ pub struct JwtClaims {
 }
 
 pub fn validate_jwt_token(config: &JwtConfig, token: &str) -> AppResult<JwtClaims> {
+    if cfg!(debug_assertions) && !config.validate_signature {
+        warn!("JWT signature validation is disabled!");
+        let verifier = init_jwt_verifier(config)?;
+        let mut validator = init_jwt_validator(config)?;
+        #[allow(deprecated)]
+        validator.insecure_disable_signature_validation();
+
+        return jsonwebtoken::decode::<JwtClaims>(token, &verifier, &validator)
+            .map(|decoded| (decoded.header, decoded.claims))
+            .inspect(|(head, claim)| debug!(?head, ?claim, "JWT token decoded (insecure)"))
+            .map_err(|e| MatrixError::not_found(format!("invalid JWT token: {e}")).into())
+            .map(|(_, claims)| claims);
+    }
+
     let verifier = init_jwt_verifier(config)?;
     let validator = init_jwt_validator(config)?;
     jsonwebtoken::decode::<JwtClaims>(token, &verifier, &validator)
@@ -66,13 +80,59 @@ fn init_jwt_validator(config: &JwtConfig) -> AppResult<Validation> {
         validator.set_issuer(&config.issuer);
     }
 
-    if cfg!(debug_assertions) && !config.validate_signature {
-        warn!("JWT signature validation is disabled!");
-        validator.insecure_disable_signature_validation();
-    }
-
     validator.set_required_spec_claims(&required_spec_claims);
     debug!(?validator, "JWT configured");
 
     Ok(validator)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    use serde::Serialize;
+
+    use super::validate_jwt_token;
+    use crate::config::JwtConfig;
+
+    #[derive(Serialize)]
+    struct ExpiredClaims {
+        sub: String,
+        exp: u64,
+    }
+
+    #[test]
+    fn validate_jwt_token_rejects_expired_token_when_signature_check_disabled() {
+        let exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time should be after unix epoch")
+            .as_secs()
+            .saturating_sub(3600);
+
+        let token = encode(
+            &Header::default(),
+            &ExpiredClaims {
+                sub: "alice".to_owned(),
+                exp,
+            },
+            &EncodingKey::from_secret(b"test-secret"),
+        )
+        .expect("JWT token should be encoded");
+
+        let mut config = JwtConfig::default();
+        config.secret = "test-secret".to_owned();
+        config.format = "HMAC".to_owned();
+        config.algorithm = "HS256".to_owned();
+        config.validate_signature = false;
+        config.validate_exp = true;
+        config.require_exp = true;
+
+        let result = validate_jwt_token(&config, &token);
+
+        assert!(
+            result.is_err(),
+            "expired token must be rejected even when signature validation is disabled"
+        );
+    }
 }

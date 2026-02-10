@@ -22,10 +22,10 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "unstable-msc3932")]
+use crate::push::PredefinedOverrideRuleId;
+#[cfg(feature = "unstable-msc3932")]
 use crate::push::RoomVersionFeature;
-use crate::push::{
-    Action, FlattenedJson, PredefinedOverrideRuleId, PushCondition, PushConditionRoomCtx, PushRule,
-};
+use crate::push::{Action, FlattenedJson, PushCondition, PushConditionRoomCtx, PushRule};
 
 /// Like `SimplePushRule`, but with an additional `conditions` field.
 ///
@@ -71,8 +71,8 @@ impl ConditionalPushRule {
         #[cfg(feature = "unstable-msc3932")]
         {
             if self.rule_id != PredefinedOverrideRuleId::Master.as_ref()
-                && self.rule_id != PredefinedOverrideRuleId::RoomNotif.as_ref()
-                && self.rule_id != PredefinedOverrideRuleId::ContainsDisplayName.as_ref()
+                && self.rule_id != PredefinedOverrideRuleId::IsUserMention.as_ref()
+                && self.rule_id != PredefinedOverrideRuleId::IsRoomMention.as_ref()
             {
                 // Push rules which don't specify a `room_version_supports` condition are
                 // assumed to not support extensible events and are therefore
@@ -91,10 +91,8 @@ impl ConditionalPushRule {
             }
         }
 
-        // The old mention rules are disabled when an m.mentions field is present.
-        #[allow(deprecated)]
-        if (self.rule_id == PredefinedOverrideRuleId::RoomNotif.as_ref()
-            || self.rule_id == PredefinedOverrideRuleId::ContainsDisplayName.as_ref())
+        // The old mention rules (Matrix <1.7) are disabled when m.mentions is present.
+        if (self.rule_id == ".m.rule.roomnotif" || self.rule_id == ".m.rule.contains_display_name")
             && event.contains_mentions()
         {
             return false;
