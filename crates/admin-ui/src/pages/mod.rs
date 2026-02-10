@@ -13,6 +13,9 @@ pub mod logs;
 #[cfg(test)]
 mod config_search_test;
 
+#[cfg(test)]
+mod config_feedback_test;
+
 pub use login::LoginPage;
 pub use dashboard::AdminDashboard;
 pub use config::ConfigManager;
