@@ -36,6 +36,33 @@ use crate::hooks::use_config::use_config_loader;
 use crate::models::config::*;
 use std::collections::HashMap;
 
+/// Helper function to check if a field matches the search query (fuzzy matching)
+///
+/// Performs case-insensitive substring matching on field labels and descriptions.
+/// Returns true if the query is empty or if the field matches.
+fn matches_search(label: &str, description: Option<&str>, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    
+    let query_lower = query.to_lowercase();
+    let label_lower = label.to_lowercase();
+    
+    // Check if label contains query
+    if label_lower.contains(&query_lower) {
+        return true;
+    }
+    
+    // Check if description contains query
+    if let Some(desc) = description {
+        if desc.to_lowercase().contains(&query_lower) {
+            return true;
+        }
+    }
+    
+    false
+}
+
 /// Main configuration manager component
 ///
 /// This component provides a complete interface for managing all Palpo server configuration.
@@ -49,6 +76,8 @@ use std::collections::HashMap;
 /// - `is_dirty`: Whether unsaved changes exist
 /// - `save_success`: Whether the last save was successful
 /// - `active_section`: Currently displayed configuration section
+/// - `search_query`: Current search query for filtering config fields
+/// - `section_filter`: Optional section filter (e.g., "server", "database")
 ///
 /// # User Flow
 ///
@@ -57,6 +86,7 @@ use std::collections::HashMap;
 /// 3. User modifies fields → `is_dirty` becomes true, save button enables
 /// 4. User clicks save → Validation runs, then saves if valid
 /// 5. User clicks reset → Reverts to original configuration
+/// 6. User searches → Fields matching query are highlighted and filtered
 #[component]
 pub fn ConfigManager() -> Element {
     // Load configuration context with API methods
@@ -68,6 +98,10 @@ pub fn ConfigManager() -> Element {
     let mut is_dirty = use_signal(|| false);
     let mut save_success = use_signal(|| false);
     let mut active_section = use_signal(|| "server".to_string());
+    
+    // Search and filter state
+    let mut search_query = use_signal(|| String::new());
+    let mut section_filter = use_signal(|| None::<String>);
     
     // Load configuration when component mounts
     {
@@ -142,6 +176,44 @@ pub fn ConfigManager() -> Element {
                                 loading: is_loading,
                                 onclick: handle_save,
                                 "保存配置"
+                            }
+                        }
+                    }
+                    
+                    // Search and filter controls
+                    div { class: "mt-4 flex space-x-4",
+                        div { class: "flex-1",
+                            Input {
+                                label: "".to_string(),
+                                placeholder: "搜索配置项...".to_string(),
+                                value: search_query(),
+                                oninput: move |val: String| {
+                                    search_query.set(val);
+                                }
+                            }
+                        }
+                        div { class: "w-48",
+                            Select {
+                                label: "".to_string(),
+                                value: section_filter().unwrap_or_else(|| "all".to_string()),
+                                options: vec![
+                                    ("all".to_string(), "所有配置节".to_string()),
+                                    ("server".to_string(), "服务器配置".to_string()),
+                                    ("database".to_string(), "数据库配置".to_string()),
+                                    ("federation".to_string(), "联邦配置".to_string()),
+                                    ("auth".to_string(), "认证配置".to_string()),
+                                    ("media".to_string(), "媒体配置".to_string()),
+                                    ("network".to_string(), "网络配置".to_string()),
+                                    ("logging".to_string(), "日志配置".to_string()),
+                                ],
+                                onchange: move |val: String| {
+                                    if val == "all" {
+                                        section_filter.set(None);
+                                    } else {
+                                        section_filter.set(Some(val.clone()));
+                                        active_section.set(val);
+                                    }
+                                }
                             }
                         }
                     }
@@ -228,7 +300,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 "database" => rsx! {
@@ -238,7 +311,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 "federation" => rsx! {
@@ -248,7 +322,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 "auth" => rsx! {
@@ -258,7 +333,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 "media" => rsx! {
@@ -268,7 +344,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 "network" => rsx! {
@@ -278,7 +355,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 "logging" => rsx! {
@@ -288,7 +366,8 @@ pub fn ConfigManager() -> Element {
                                         form_data: form_data,
                                         is_dirty: is_dirty,
                                         save_success: save_success,
-                                        validation_errors: validation_errors
+                                        validation_errors: validation_errors,
+                                        search_query: search_query()
                                     }
                                 },
                                 _ => rsx! { div { "未知配置节" } }
@@ -352,6 +431,7 @@ fn SectionNavItem(
 /// - `is_dirty`: Mutable signal tracking unsaved changes
 /// - `save_success`: Mutable signal for save success state
 /// - `validation_errors`: Mutable signal for validation errors
+/// - `search_query`: Current search query for filtering/highlighting fields
 ///
 /// # Behavior
 ///
@@ -360,6 +440,8 @@ fn SectionNavItem(
 /// 2. Clears `save_success` flag
 /// 3. Updates the field in `form_data`
 /// 4. Removes any existing validation error for that field
+///
+/// Fields are filtered based on search_query - only matching fields are displayed.
 #[component]
 fn ServerConfigForm(
     config: ServerConfigSection,
@@ -368,47 +450,54 @@ fn ServerConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "服务器配置" }
             
-            Input {
-                label: "服务器名称".to_string(),
-                value: config.server_name.clone(),
-                required: true,
-                error: errors.get("server.server_name").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.server.server_name = val.clone());
-                    validation_errors.with_mut(|errs| { errs.remove("server.server_name"); });
-                }
-            }
-            
-            Input {
-                label: "最大请求大小 (字节)".to_string(),
-                input_type: "number".to_string(),
-                value: config.max_request_size.to_string(),
-                required: true,
-                error: errors.get("server.max_request_size").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(size) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.server.max_request_size = size);
+            if matches_search("服务器名称", Some("Matrix服务器的域名"), &search_query) {
+                Input {
+                    label: "服务器名称".to_string(),
+                    value: config.server_name.clone(),
+                    required: true,
+                    error: errors.get("server.server_name").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.server.server_name = val.clone());
+                        validation_errors.with_mut(|errs| { errs.remove("server.server_name"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("server.max_request_size"); });
                 }
             }
             
-            Checkbox {
-                label: "启用指标监控".to_string(),
-                checked: config.enable_metrics,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.server.enable_metrics = checked);
+            if matches_search("最大请求大小", Some("单个HTTP请求的最大字节数"), &search_query) {
+                Input {
+                    label: "最大请求大小 (字节)".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.max_request_size.to_string(),
+                    required: true,
+                    error: errors.get("server.max_request_size").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(size) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.server.max_request_size = size);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("server.max_request_size"); });
+                    }
+                }
+            }
+            
+            if matches_search("启用指标监控", Some("启用Prometheus指标导出"), &search_query) {
+                Checkbox {
+                    label: "启用指标监控".to_string(),
+                    checked: config.enable_metrics,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.server.enable_metrics = checked);
+                    }
                 }
             }
         }
@@ -427,63 +516,72 @@ fn DatabaseConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "数据库配置" }
             
-            Input {
-                label: "数据库连接字符串".to_string(),
-                value: config.connection_string.clone(),
-                required: true,
-                error: errors.get("database.connection_string").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.database.connection_string = val.clone());
-                    validation_errors.with_mut(|errs| { errs.remove("database.connection_string"); });
-                }
-            }
-            
-            Input {
-                label: "最大连接数".to_string(),
-                input_type: "number".to_string(),
-                value: config.max_connections.to_string(),
-                required: true,
-                error: errors.get("database.max_connections").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(num) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.database.max_connections = num);
+            if matches_search("数据库连接字符串", Some("PostgreSQL数据库连接URL"), &search_query) {
+                Input {
+                    label: "数据库连接字符串".to_string(),
+                    value: config.connection_string.clone(),
+                    required: true,
+                    error: errors.get("database.connection_string").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.database.connection_string = val.clone());
+                        validation_errors.with_mut(|errs| { errs.remove("database.connection_string"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("database.max_connections"); });
                 }
             }
             
-            Input {
-                label: "连接超时 (秒)".to_string(),
-                input_type: "number".to_string(),
-                value: config.connection_timeout.to_string(),
-                required: true,
-                error: errors.get("database.connection_timeout").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(timeout) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.database.connection_timeout = timeout);
+            if matches_search("最大连接数", Some("数据库连接池的最大连接数"), &search_query) {
+                Input {
+                    label: "最大连接数".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.max_connections.to_string(),
+                    required: true,
+                    error: errors.get("database.max_connections").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(num) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.database.max_connections = num);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("database.max_connections"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("database.connection_timeout"); });
                 }
             }
             
-            Checkbox {
-                label: "自动迁移数据库".to_string(),
-                checked: config.auto_migrate,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.database.auto_migrate = checked);
+            if matches_search("连接超时", Some("数据库连接超时时间（秒）"), &search_query) {
+                Input {
+                    label: "连接超时 (秒)".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.connection_timeout.to_string(),
+                    required: true,
+                    error: errors.get("database.connection_timeout").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(timeout) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.database.connection_timeout = timeout);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("database.connection_timeout"); });
+                    }
+                }
+            }
+            
+            if matches_search("自动迁移数据库", Some("启动时自动运行数据库迁移"), &search_query) {
+                Checkbox {
+                    label: "自动迁移数据库".to_string(),
+                    checked: config.auto_migrate,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.database.auto_migrate = checked);
+                    }
                 }
             }
         }
@@ -502,41 +600,48 @@ fn FederationConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "联邦配置" }
             
-            Checkbox {
-                label: "启用联邦功能".to_string(),
-                checked: config.enabled,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.federation.enabled = checked);
+            if matches_search("启用联邦功能", Some("启用与其他Matrix服务器的联邦通信"), &search_query) {
+                Checkbox {
+                    label: "启用联邦功能".to_string(),
+                    checked: config.enabled,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.federation.enabled = checked);
+                    }
                 }
             }
             
-            Input {
-                label: "签名密钥路径".to_string(),
-                value: config.signing_key_path.clone(),
-                required: true,
-                error: errors.get("federation.signing_key_path").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.federation.signing_key_path = val.clone());
-                    validation_errors.with_mut(|errs| { errs.remove("federation.signing_key_path"); });
+            if matches_search("签名密钥路径", Some("服务器签名密钥文件的路径"), &search_query) {
+                Input {
+                    label: "签名密钥路径".to_string(),
+                    value: config.signing_key_path.clone(),
+                    required: true,
+                    error: errors.get("federation.signing_key_path").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.federation.signing_key_path = val.clone());
+                        validation_errors.with_mut(|errs| { errs.remove("federation.signing_key_path"); });
+                    }
                 }
             }
             
-            Checkbox {
-                label: "验证密钥".to_string(),
-                checked: config.verify_keys,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.federation.verify_keys = checked);
+            if matches_search("验证密钥", Some("验证联邦服务器的签名密钥"), &search_query) {
+                Checkbox {
+                    label: "验证密钥".to_string(),
+                    checked: config.verify_keys,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.federation.verify_keys = checked);
+                    }
                 }
             }
         }
@@ -555,48 +660,55 @@ fn AuthConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "认证配置" }
             
-            Checkbox {
-                label: "启用用户注册".to_string(),
-                checked: config.registration_enabled,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.auth.registration_enabled = checked);
-                }
-            }
-            
-            Input {
-                label: "JWT 密钥".to_string(),
-                input_type: "password".to_string(),
-                value: config.jwt_secret.clone(),
-                required: true,
-                error: errors.get("auth.jwt_secret").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.auth.jwt_secret = val.clone());
-                    validation_errors.with_mut(|errs| { errs.remove("auth.jwt_secret"); });
-                }
-            }
-            
-            Input {
-                label: "JWT 过期时间 (秒)".to_string(),
-                input_type: "number".to_string(),
-                value: config.jwt_expiry.to_string(),
-                required: true,
-                error: errors.get("auth.jwt_expiry").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(expiry) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.auth.jwt_expiry = expiry);
+            if matches_search("启用用户注册", Some("允许新用户注册账号"), &search_query) {
+                Checkbox {
+                    label: "启用用户注册".to_string(),
+                    checked: config.registration_enabled,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.auth.registration_enabled = checked);
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("auth.jwt_expiry"); });
+                }
+            }
+            
+            if matches_search("JWT 密钥", Some("用于签名JWT令牌的密钥"), &search_query) {
+                Input {
+                    label: "JWT 密钥".to_string(),
+                    input_type: "password".to_string(),
+                    value: config.jwt_secret.clone(),
+                    required: true,
+                    error: errors.get("auth.jwt_secret").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.auth.jwt_secret = val.clone());
+                        validation_errors.with_mut(|errs| { errs.remove("auth.jwt_secret"); });
+                    }
+                }
+            }
+            
+            if matches_search("JWT 过期时间", Some("JWT令牌的有效期（秒）"), &search_query) {
+                Input {
+                    label: "JWT 过期时间 (秒)".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.jwt_expiry.to_string(),
+                    required: true,
+                    error: errors.get("auth.jwt_expiry").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(expiry) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.auth.jwt_expiry = expiry);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("auth.jwt_expiry"); });
+                    }
                 }
             }
         }
@@ -615,47 +727,54 @@ fn MediaConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "媒体配置" }
             
-            Input {
-                label: "存储路径".to_string(),
-                value: config.storage_path.clone(),
-                required: true,
-                error: errors.get("media.storage_path").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.media.storage_path = val.clone());
-                    validation_errors.with_mut(|errs| { errs.remove("media.storage_path"); });
-                }
-            }
-            
-            Input {
-                label: "最大文件大小 (字节)".to_string(),
-                input_type: "number".to_string(),
-                value: config.max_file_size.to_string(),
-                required: true,
-                error: errors.get("media.max_file_size").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(size) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.media.max_file_size = size);
+            if matches_search("存储路径", Some("媒体文件的存储目录"), &search_query) {
+                Input {
+                    label: "存储路径".to_string(),
+                    value: config.storage_path.clone(),
+                    required: true,
+                    error: errors.get("media.storage_path").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.media.storage_path = val.clone());
+                        validation_errors.with_mut(|errs| { errs.remove("media.storage_path"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("media.max_file_size"); });
                 }
             }
             
-            Checkbox {
-                label: "启用 URL 预览".to_string(),
-                checked: config.enable_url_previews,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.media.enable_url_previews = checked);
+            if matches_search("最大文件大小", Some("允许上传的最大文件大小（字节）"), &search_query) {
+                Input {
+                    label: "最大文件大小 (字节)".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.max_file_size.to_string(),
+                    required: true,
+                    error: errors.get("media.max_file_size").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(size) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.media.max_file_size = size);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("media.max_file_size"); });
+                    }
+                }
+            }
+            
+            if matches_search("启用 URL 预览", Some("为消息中的URL生成预览"), &search_query) {
+                Checkbox {
+                    label: "启用 URL 预览".to_string(),
+                    checked: config.enable_url_previews,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.media.enable_url_previews = checked);
+                    }
                 }
             }
         }
@@ -674,68 +793,77 @@ fn NetworkConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "网络配置" }
             
-            Input {
-                label: "请求超时 (秒)".to_string(),
-                input_type: "number".to_string(),
-                value: config.request_timeout.to_string(),
-                required: true,
-                error: errors.get("network.request_timeout").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(timeout) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.network.request_timeout = timeout);
+            if matches_search("请求超时", Some("HTTP请求的超时时间（秒）"), &search_query) {
+                Input {
+                    label: "请求超时 (秒)".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.request_timeout.to_string(),
+                    required: true,
+                    error: errors.get("network.request_timeout").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(timeout) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.network.request_timeout = timeout);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("network.request_timeout"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("network.request_timeout"); });
                 }
             }
             
-            Input {
-                label: "连接超时 (秒)".to_string(),
-                input_type: "number".to_string(),
-                value: config.connection_timeout.to_string(),
-                required: true,
-                error: errors.get("network.connection_timeout").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(timeout) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.network.connection_timeout = timeout);
+            if matches_search("连接超时", Some("网络连接的超时时间（秒）"), &search_query) {
+                Input {
+                    label: "连接超时 (秒)".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.connection_timeout.to_string(),
+                    required: true,
+                    error: errors.get("network.connection_timeout").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(timeout) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.network.connection_timeout = timeout);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("network.connection_timeout"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("network.connection_timeout"); });
                 }
             }
             
             h5 { class: "text-md font-medium text-gray-700 mt-4", "速率限制" }
             
-            Checkbox {
-                label: "启用速率限制".to_string(),
-                checked: config.rate_limits.enabled,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.network.rate_limits.enabled = checked);
+            if matches_search("启用速率限制", Some("启用API请求速率限制"), &search_query) {
+                Checkbox {
+                    label: "启用速率限制".to_string(),
+                    checked: config.rate_limits.enabled,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.network.rate_limits.enabled = checked);
+                    }
                 }
             }
             
-            Input {
-                label: "每分钟请求数".to_string(),
-                input_type: "number".to_string(),
-                value: config.rate_limits.requests_per_minute.to_string(),
-                required: true,
-                error: errors.get("network.rate_limits.requests_per_minute").cloned(),
-                oninput: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    if let Ok(rpm) = val.parse() {
-                        form_data.with_mut(|cfg| cfg.network.rate_limits.requests_per_minute = rpm);
+            if matches_search("每分钟请求数", Some("每分钟允许的最大请求数"), &search_query) {
+                Input {
+                    label: "每分钟请求数".to_string(),
+                    input_type: "number".to_string(),
+                    value: config.rate_limits.requests_per_minute.to_string(),
+                    required: true,
+                    error: errors.get("network.rate_limits.requests_per_minute").cloned(),
+                    oninput: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        if let Ok(rpm) = val.parse() {
+                            form_data.with_mut(|cfg| cfg.network.rate_limits.requests_per_minute = rpm);
+                        }
+                        validation_errors.with_mut(|errs| { errs.remove("network.rate_limits.requests_per_minute"); });
                     }
-                    validation_errors.with_mut(|errs| { errs.remove("network.rate_limits.requests_per_minute"); });
                 }
             }
         }
@@ -754,70 +882,77 @@ fn LoggingConfigForm(
     mut is_dirty: Signal<bool>,
     mut save_success: Signal<bool>,
     mut validation_errors: Signal<HashMap<String, String>>,
+    search_query: String,
 ) -> Element {
     rsx! {
         div { class: "space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "日志配置" }
             
-            Select {
-                label: "日志级别".to_string(),
-                value: format!("{:?}", config.level),
-                options: vec![
-                    ("Debug".to_string(), "Debug".to_string()),
-                    ("Info".to_string(), "Info".to_string()),
-                    ("Warn".to_string(), "Warn".to_string()),
-                    ("Error".to_string(), "Error".to_string()),
-                ],
-                required: true,
-                error: errors.get("logging.level").cloned(),
-                onchange: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    let level = match val.as_str() {
-                        "Debug" => LogLevel::Debug,
-                        "Info" => LogLevel::Info,
-                        "Warn" => LogLevel::Warn,
-                        "Error" => LogLevel::Error,
-                        _ => LogLevel::Info,
-                    };
-                    form_data.with_mut(|cfg| cfg.logging.level = level);
-                    validation_errors.with_mut(|errs| { errs.remove("logging.level"); });
+            if matches_search("日志级别", Some("日志记录的详细程度"), &search_query) {
+                Select {
+                    label: "日志级别".to_string(),
+                    value: format!("{:?}", config.level),
+                    options: vec![
+                        ("Debug".to_string(), "Debug".to_string()),
+                        ("Info".to_string(), "Info".to_string()),
+                        ("Warn".to_string(), "Warn".to_string()),
+                        ("Error".to_string(), "Error".to_string()),
+                    ],
+                    required: true,
+                    error: errors.get("logging.level").cloned(),
+                    onchange: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        let level = match val.as_str() {
+                            "Debug" => LogLevel::Debug,
+                            "Info" => LogLevel::Info,
+                            "Warn" => LogLevel::Warn,
+                            "Error" => LogLevel::Error,
+                            _ => LogLevel::Info,
+                        };
+                        form_data.with_mut(|cfg| cfg.logging.level = level);
+                        validation_errors.with_mut(|errs| { errs.remove("logging.level"); });
+                    }
                 }
             }
             
-            Select {
-                label: "日志格式".to_string(),
-                value: format!("{:?}", config.format),
-                options: vec![
-                    ("Json".to_string(), "JSON".to_string()),
-                    ("Pretty".to_string(), "Pretty".to_string()),
-                    ("Compact".to_string(), "Compact".to_string()),
-                    ("Text".to_string(), "Text".to_string()),
-                ],
-                required: true,
-                error: errors.get("logging.format").cloned(),
-                onchange: move |val: String| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    let format = match val.as_str() {
-                        "Json" => LogFormat::Json,
-                        "Pretty" => LogFormat::Pretty,
-                        "Compact" => LogFormat::Compact,
-                        "Text" => LogFormat::Text,
-                        _ => LogFormat::Pretty,
-                    };
-                    form_data.with_mut(|cfg| cfg.logging.format = format);
-                    validation_errors.with_mut(|errs| { errs.remove("logging.format"); });
+            if matches_search("日志格式", Some("日志输出的格式"), &search_query) {
+                Select {
+                    label: "日志格式".to_string(),
+                    value: format!("{:?}", config.format),
+                    options: vec![
+                        ("Json".to_string(), "JSON".to_string()),
+                        ("Pretty".to_string(), "Pretty".to_string()),
+                        ("Compact".to_string(), "Compact".to_string()),
+                        ("Text".to_string(), "Text".to_string()),
+                    ],
+                    required: true,
+                    error: errors.get("logging.format").cloned(),
+                    onchange: move |val: String| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        let format = match val.as_str() {
+                            "Json" => LogFormat::Json,
+                            "Pretty" => LogFormat::Pretty,
+                            "Compact" => LogFormat::Compact,
+                            "Text" => LogFormat::Text,
+                            _ => LogFormat::Pretty,
+                        };
+                        form_data.with_mut(|cfg| cfg.logging.format = format);
+                        validation_errors.with_mut(|errs| { errs.remove("logging.format"); });
+                    }
                 }
             }
             
-            Checkbox {
-                label: "启用 Prometheus 指标".to_string(),
-                checked: config.prometheus_metrics,
-                onchange: move |checked: bool| {
-                    is_dirty.set(true);
-                    save_success.set(false);
-                    form_data.with_mut(|cfg| cfg.logging.prometheus_metrics = checked);
+            if matches_search("启用 Prometheus 指标", Some("导出Prometheus监控指标"), &search_query) {
+                Checkbox {
+                    label: "启用 Prometheus 指标".to_string(),
+                    checked: config.prometheus_metrics,
+                    onchange: move |checked: bool| {
+                        is_dirty.set(true);
+                        save_success.set(false);
+                        form_data.with_mut(|cfg| cfg.logging.prometheus_metrics = checked);
+                    }
                 }
             }
         }
