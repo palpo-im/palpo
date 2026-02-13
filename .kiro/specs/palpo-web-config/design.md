@@ -77,11 +77,11 @@ graph TB
 - **序列化**: serde + TOML/JSON
 
 **前端技术栈 (Rust实现):**
-- **Web框架**: Dioxus (Rust全栈Web框架)
+- **Web框架**: Dioxus 0.7 (Rust全栈Web框架)
 - **样式**: TailwindCSS + Dioxus样式系统
-- **状态管理**: Dioxus信号和上下文系统
-- **HTTP客户端**: reqwest (WASM兼容)
-- **构建工具**: Dioxus CLI + Trunk
+- **状态管理**: Dioxus信号和上下文系统 (Signal, use_context_provider)
+- **HTTP客户端**: gloo-net (WASM兼容) + gloo-storage (本地存储)
+- **构建工具**: Dioxus CLI
 - **组件库**: 基于Dioxus的自定义组件
 
 **技术选型理由:**
@@ -90,10 +90,13 @@ graph TB
 - **性能优秀**: 编译到WebAssembly，运行速度快
 - **类型安全**: 完全的Rust类型系统支持，可直接复用Palpo配置结构体
 - **开发体验**: 热重载、优秀的调试工具
+- **WASM生态**: gloo库专为WASM设计，提供更好的互操作性
 
 ## 组件和接口
 
 ### 后端API组件
+
+> **注意**: 以下API服务实现位于 `crates/admin-ui/src/services/` 目录，目前为**模拟实现**（mock implementations），代码中包含注释 "In a real implementation, this would connect to the Matrix server's database"。实际后端API集成待后续开发。
 
 #### 1. 认证中间件 (AuthMiddleware)
 
@@ -107,10 +110,12 @@ impl AuthMiddleware {
 }
 
 pub struct AdminUser {
-    pub user_id: OwnedUserId,
+    pub user_id: String, // 使用String而非OwnedUserId以简化WASM兼容
+    pub username: String,
     pub is_admin: bool,
     pub session_id: String,
     pub expires_at: SystemTime,
+    pub permissions: Vec<Permission>,
 }
 ```
 
@@ -657,81 +662,99 @@ fn AdminLayout(cx: Scope) -> Element {
 ```rust
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
 
-// 认证状态
+/// 管理员用户信息
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AdminUser {
+    pub user_id: String, // 使用String而非OwnedUserId以简化WASM兼容
+    pub username: String,
+    pub is_admin: bool,
+    pub session_id: String,
+    pub expires_at: SystemTime,
+    pub permissions: Vec<Permission>,
+}
+
+/// 用户权限枚举
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum Permission {
+    ConfigManagement,
+    UserManagement,
+    RoomManagement,
+    FederationManagement,
+    MediaManagement,
+    AppserviceManagement,
+    ServerControl,
+    AuditLogAccess,
+    SystemAdmin,
+}
+
+/// 认证状态 (枚举变体)
 #[derive(Clone, Debug, PartialEq)]
-pub struct AuthState {
-    pub user: Option<AdminUser>,
-    pub token: Option<String>,
-    pub is_authenticated: bool,
+pub enum AuthState {
+    Unauthenticated,
+    Authenticating,
+    Authenticated(AdminUser),
+    Failed(String),
 }
 
 impl AuthState {
-    pub fn new() -> Self {
-        Self {
-            user: None,
-            token: None,
-            is_authenticated: false,
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self, AuthState::Authenticated(_))
+    }
+
+    pub fn user(&self) -> Option<&AdminUser> {
+        match self {
+            AuthState::Authenticated(user) => Some(user),
+            _ => None,
         }
     }
-    
-    pub fn login(&mut self, user: AdminUser, token: String) {
-        self.user = Some(user);
-        self.token = Some(token);
-        self.is_authenticated = true;
+
+    pub fn is_authenticating(&self) -> bool {
+        matches!(self, AuthState::Authenticating)
     }
-    
-    pub fn logout(&mut self) {
-        self.user = None;
-        self.token = None;
-        self.is_authenticated = false;
+
+    pub fn is_failed(&self) -> bool {
+        matches!(self, AuthState::Failed(_))
+    }
+
+    pub fn error(&self) -> Option<&String> {
+        match self {
+            AuthState::Failed(error) => Some(error),
+            _ => None,
+        }
     }
 }
 
-// 配置状态
+impl Default for AuthState {
+    fn default() -> Self {
+        AuthState::Unauthenticated
+    }
+}
+
+/// 应用状态 (简化版)
 #[derive(Clone, Debug, PartialEq)]
-pub struct ConfigState {
-    pub config: Option<ServerConfig>,
-    pub validation_errors: Vec<ConfigError>,
+pub struct AppState {
+    pub config: Option<WebConfigData>,
     pub is_loading: bool,
-    pub is_dirty: bool,
+    pub error: Option<String>,
 }
 
-impl ConfigState {
-    pub fn new() -> Self {
+impl Default for AppState {
+    fn default() -> Self {
         Self {
             config: None,
-            validation_errors: Vec::new(),
             is_loading: false,
-            is_dirty: false,
+            error: None,
         }
-    }
-    
-    pub fn set_config(&mut self, config: ServerConfig) {
-        self.config = Some(config);
-        self.validation_errors.clear();
-        self.is_dirty = false;
-    }
-    
-    pub fn update_field<T>(&mut self, field: &str, value: T) 
-    where 
-        T: Clone + PartialEq,
-    {
-        // 更新配置字段的逻辑
-        self.is_dirty = true;
-    }
-    
-    pub fn add_validation_error(&mut self, error: ConfigError) {
-        self.validation_errors.retain(|e| e.field != error.field);
-        self.validation_errors.push(error);
     }
 }
 
-// 全局状态提供者
+/// 全局状态提供者
 #[component]
 pub fn StateProvider(cx: Scope, children: Element) -> Element {
-    use_shared_state_provider(cx, || AuthState::new());
-    use_shared_state_provider(cx, || ConfigState::new());
+    use_context_provider(cx, || Signal::new(AuthState::default()));
+    use_context_provider(cx, || Signal::new(AppState::default()));
     
     render! {
         children
@@ -745,13 +768,13 @@ pub fn StateProvider(cx: Scope, children: Element) -> Element {
 use dioxus::prelude::*;
 use dioxus_hooks::*;
 
-// 配置表单组件
+/// 配置表单组件
 #[component]
 pub fn ConfigForm(
     cx: Scope,
-    config: Option<ServerConfig>,
+    config: Option<WebConfigData>,
     readonly: bool,
-    on_submit: EventHandler<ServerConfig>,
+    on_submit: EventHandler<WebConfigData>,
 ) -> Element {
     let form_data = use_state(cx, || config.clone().unwrap_or_default());
     let validation_errors = use_state(cx, || Vec::<ConfigError>::new());
@@ -833,7 +856,7 @@ pub fn ConfigForm(
     }
 }
 
-// 用户列表组件
+/// 用户列表组件
 #[component]
 pub fn UserList(cx: Scope) -> Element {
     let users = use_future(cx, (), |_| get_users_api());
@@ -901,7 +924,7 @@ pub fn UserList(cx: Scope) -> Element {
     }
 }
 
-// 错误消息组件
+/// 错误消息组件
 #[component]
 pub fn ErrorMessage(
     cx: Scope,
@@ -920,7 +943,7 @@ pub fn ErrorMessage(
     }
 }
 
-// 用户行组件
+/// 用户行组件
 #[component]
 pub fn UserRow(
     cx: Scope,
@@ -984,149 +1007,550 @@ pub fn UserRow(
 }
 ```
 
-#### 4. API客户端 (WASM兼容)
+> **注意**: 当前大多数管理页面组件仍处于开发阶段，显示占位符文本"功能正在开发中..."。完整功能实现待后续迭代。
+
+#### 4. 自定义Hooks
 
 ```rust
-use reqwest::Client;
+use dioxus::prelude::*;
+use crate::models::{AdminUser, AuthState, Permission};
+use crate::services::AuthService;
+use wasm_bindgen_futures::spawn_local;
+
+/// 认证上下文和方法
+#[derive(Clone)]
+pub struct AuthContext {
+    pub auth_state: Signal<AuthState>,
+    pub auth_service: AuthService,
+}
+
+impl AuthContext {
+    pub fn login(&self, username: String, password: String) {
+        let auth_service = self.auth_service.clone();
+        let mut auth_state = self.auth_state;
+        
+        spawn_local(async move {
+            auth_state.set(AuthState::Authenticating);
+            
+            match auth_service.login(username, password).await {
+                Ok(response) => {
+                    if response.success {
+                        if let Some(user) = response.user {
+                            auth_state.set(AuthState::Authenticated(user));
+                        } else {
+                            auth_state.set(AuthState::Failed("No user data received".to_string()));
+                        }
+                    } else {
+                        let error = response.error.unwrap_or_else(|| "Login failed".to_string());
+                        auth_state.set(AuthState::Failed(error));
+                    }
+                }
+                Err(error) => {
+                    auth_state.set(AuthState::Failed(error.user_message()));
+                }
+            }
+        });
+    }
+
+    pub fn logout(&self) {
+        let auth_service = self.auth_service.clone();
+        let mut auth_state = self.auth_state;
+        
+        spawn_local(async move {
+            if let AuthState::Authenticated(user) = &*auth_state.read() {
+                let session_id = user.session_id.clone();
+                let _ = auth_service.logout(session_id).await;
+            }
+            auth_state.set(AuthState::Unauthenticated);
+        });
+    }
+
+    pub fn validate_session(&self) {
+        let auth_service = self.auth_service.clone();
+        let mut auth_state = self.auth_state;
+        
+        spawn_local(async move {
+            match auth_service.validate_session().await {
+                Ok(response) => {
+                    if response.valid {
+                        if let Some(user) = response.user {
+                            auth_state.set(AuthState::Authenticated(user));
+                        }
+                    } else {
+                        auth_state.set(AuthState::Unauthenticated);
+                    }
+                }
+                Err(_) => {
+                    auth_state.set(AuthState::Unauthenticated);
+                }
+            }
+        });
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.auth_state.read().is_authenticated()
+    }
+
+    pub fn current_user(&self) -> Option<AdminUser> {
+        self.auth_state.read().user().cloned()
+    }
+
+    pub fn has_permission(&self, permission: Permission) -> bool {
+        if let Some(user) = self.current_user() {
+            user.has_permission(&permission)
+        } else {
+            false
+        }
+    }
+}
+
+/// 认证管理Hook
+pub fn use_auth() -> AuthContext {
+    let auth_state = use_context::<Signal<AuthState>>();
+    
+    let auth_service = match AuthService::from_global() {
+        Ok(service) => service,
+        Err(_) => AuthService::default(),
+    };
+
+    // 组件挂载时验证会话
+    use_effect({
+        let auth_service = auth_service.clone();
+        let mut auth_state = auth_state;
+        
+        move || {
+            let auth_service = auth_service.clone();
+            spawn_local(async move {
+                match auth_service.validate_session().await {
+                    Ok(response) => {
+                        if response.valid {
+                            if let Some(user) = response.user {
+                                auth_state.set(AuthState::Authenticated(user));
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+            });
+        }
+    });
+
+    AuthContext {
+        auth_state,
+        auth_service,
+    }
+}
+
+/// 需要认证的Hook - 未认证时重定向到登录页
+pub fn use_require_auth() -> Option<AdminUser> {
+    let auth_context = use_auth();
+    
+    let auth_state = auth_context.auth_state.read();
+    match &*auth_state {
+        AuthState::Authenticated(user) => {
+            if user.is_session_valid() {
+                Some(user.clone())
+            } else {
+                drop(auth_state);
+                auth_context.logout();
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 需要特定权限的Hook
+pub fn use_require_permission(permission: Permission) -> Option<AdminUser> {
+    let user = use_require_auth()?;
+    
+    if user.has_permission(&permission) {
+        Some(user)
+    } else {
+        None
+    }
+}
+
+/// 会话监控Hook - 自动登出
+pub fn use_session_monitor() {
+    let auth_context = use_auth();
+    
+    use_effect(move || {
+        let auth_context = auth_context.clone();
+        
+        spawn_local(async move {
+            loop {
+                // 每30秒检查一次
+                let timeout = js_sys::Promise::new(&mut |resolve, _| {
+                    web_sys::window()
+                        .unwrap()
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 30000)
+                        .unwrap();
+                });
+                wasm_bindgen_futures::JsFuture::from(timeout).await.unwrap();
+                
+                if let Some(user) = auth_context.current_user() {
+                    if !user.is_session_valid() {
+                        auth_context.logout();
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        });
+    });
+}
+```
+
+#### 4. API客户端 (WASM兼容 - gloo-net实现)
+
+```rust
+use gloo_net::http::{Request, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-pub struct ApiClient {
-    client: Client,
-    base_url: String,
-    token: Option<String>,
+/// HTTP请求方法
+#[derive(Clone, Debug, PartialEq)]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
 }
 
-impl ApiClient {
-    pub fn new(base_url: String) -> Self {
+impl HttpMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HttpMethod::Get => "GET",
+            HttpMethod::Post => "POST",
+            HttpMethod::Put => "PUT",
+            HttpMethod::Patch => "PATCH",
+            HttpMethod::Delete => "DELETE",
+        }
+    }
+}
+
+/// 请求配置
+#[derive(Clone, Debug)]
+pub struct RequestConfig {
+    method: HttpMethod,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<serde_json::Value>,
+    timeout_ms: u32,
+    retry_count: u32,
+    skip_auth: bool,
+}
+
+impl RequestConfig {
+    pub fn new(method: HttpMethod, url: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
-            base_url,
-            token: None,
+            method,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+            timeout_ms: 30000,
+            retry_count: 0,
+            skip_auth: false,
         }
     }
-    
-    pub fn set_token(&mut self, token: String) {
-        self.token = Some(token);
+
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((key.into(), value.into()));
+        self
     }
-    
-    pub async fn get_config(&self) -> Result<ServerConfig, ApiError> {
-        let url = format!("{}/api/admin/config", self.base_url);
-        let mut request = self.client.get(&url);
-        
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
-        
-        let response = request.send().await?;
-        if response.status().is_success() {
-            Ok(response.json().await?)
-        } else {
-            Err(ApiError::from_response(response).await)
+
+    pub fn with_json_body<T: Serialize>(mut self, data: &T) -> WebConfigResult<Self> {
+        self.body = Some(serde_json::to_value(data)?);
+        Ok(self)
+    }
+
+    pub fn with_timeout(mut self, timeout_ms: u32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn with_retry(mut self, count: u32) -> Self {
+        self.retry_count = count;
+        self
+    }
+
+    pub fn without_auth(mut self) -> Self {
+        self.skip_auth = true;
+        self
+    }
+}
+
+/// 请求拦截器 trait
+pub trait RequestInterceptor: Send + Sync {
+    fn intercept(&self, config: &mut RequestConfig) -> WebConfigResult<()>;
+}
+
+/// 响应拦截器 trait
+pub trait ResponseInterceptor: Send + Sync {
+    fn intercept(&self, response: &Response, config: &RequestConfig) -> WebConfigResult<()>;
+}
+
+/// Token管理器
+#[derive(Clone)]
+pub struct TokenManager {
+    storage_key: String,
+}
+
+impl TokenManager {
+    pub fn new(storage_key: impl Into<String>) -> Self {
+        Self {
+            storage_key: storage_key.into(),
         }
     }
-    
-    pub async fn update_config(&self, config: ServerConfig) -> Result<(), ApiError> {
-        let url = format!("{}/api/admin/config", self.base_url);
-        let mut request = self.client.put(&url).json(&config);
-        
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
-        
-        let response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(ApiError::from_response(response).await);
+
+    pub fn store_token(&self, token: &str) -> WebConfigResult<()> {
+        gloo_storage::LocalStorage::set(&self.storage_key, token)
+            .map_err(|e| WebConfigError::StorageError(e.to_string()))
+    }
+
+    pub fn get_token(&self) -> WebConfigResult<Option<String>> {
+        gloo_storage::LocalStorage::get(&self.storage_key)
+            .map_err(|e| WebConfigError::StorageError(e.to_string()))
+    }
+
+    pub fn clear_token(&self) -> WebConfigResult<()> {
+        gloo_storage::LocalStorage::delete(&self.storage_key);
+        Ok(())
+    }
+
+    pub fn has_token(&self) -> bool {
+        gloo_storage::LocalStorage::get(&self.storage_key).is_ok()
+    }
+}
+
+/// 认证拦截器
+struct AuthInterceptor {
+    token_manager: TokenManager,
+}
+
+impl AuthInterceptor {
+    pub fn new(token_manager: TokenManager) -> Self {
+        Self { token_manager }
+    }
+}
+
+impl RequestInterceptor for AuthInterceptor {
+    fn intercept(&self, config: &mut RequestConfig) -> WebConfigResult<()> {
+        if !config.skip_auth {
+            if let Some(token) = self.token_manager.get_token()? {
+                config.headers.push(("Authorization".to_string(), format!("Bearer {}", token)));
+            }
         }
         Ok(())
     }
 }
 
-// 全局API客户端实例 (WASM兼容)
+/// 错误拦截器
+struct ErrorInterceptor;
+
+impl ResponseInterceptor for ErrorInterceptor {
+    fn intercept(&self, response: &Response, _config: &RequestConfig) -> WebConfigResult<()> {
+        if !response.ok {
+            return Err(WebConfigError::HttpError(
+                response.status(),
+                response.status_text().unwrap_or_default().to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// API客户端
+#[derive(Clone)]
+pub struct ApiClient {
+    base_url: String,
+    request_interceptors: Vec<Box<dyn RequestInterceptor>>,
+    response_interceptors: Vec<Box<dyn ResponseInterceptor>>,
+    token_manager: TokenManager,
+}
+
+impl ApiClient {
+    pub fn new(base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into();
+        let token_manager = TokenManager::new("auth_token");
+
+        let mut client = Self {
+            base_url,
+            request_interceptors: Vec::new(),
+            response_interceptors: Vec::new(),
+            token_manager,
+        };
+
+        // 添加默认拦截器
+        client.add_request_interceptor(Box::new(AuthInterceptor::new(token_manager.clone())));
+        client.add_response_interceptor(Box::new(ErrorInterceptor));
+
+        client
+    }
+
+    pub fn add_request_interceptor(&mut self, interceptor: Box<dyn RequestInterceptor>) {
+        self.request_interceptors.push(interceptor);
+    }
+
+    pub fn add_response_interceptor(&mut self, interceptor: Box<dyn ResponseInterceptor>) {
+        self.response_interceptors.push(interceptor);
+    }
+
+    pub fn set_token(&self, token: &str) -> WebConfigResult<()> {
+        self.token_manager.store_token(token)
+    }
+
+    pub fn get_token(&self) -> WebConfigResult<Option<String>> {
+        self.token_manager.get_token()
+    }
+
+    pub fn clear_token(&self) -> WebConfigResult<()> {
+        self.token_manager.clear_token()
+    }
+
+    pub fn has_token(&self) -> bool {
+        self.token_manager.has_token()
+    }
+
+    pub async fn get(&self, path: &str) -> WebConfigResult<Response> {
+        self.execute_request(RequestConfig::new(HttpMethod::Get, path)).await
+    }
+
+    pub async fn post_json<T: Serialize>(&self, path: &str, data: &T) -> WebConfigResult<Response> {
+        self.execute_request(
+            RequestConfig::new(HttpMethod::Post, path).with_json_body(data)?,
+        )
+        .await
+    }
+
+    pub async fn put_json<T: Serialize>(&self, path: &str, data: &T) -> WebConfigResult<Response> {
+        self.execute_request(
+            RequestConfig::new(HttpMethod::Put, path).with_json_body(data)?,
+        )
+        .await
+    }
+
+    pub async fn delete(&self, path: &str) -> WebConfigResult<Response> {
+        self.execute_request(RequestConfig::new(HttpMethod::Delete, path)).await
+    }
+
+    pub async fn patch_json<T: Serialize>(&self, path: &str, data: &T) -> WebConfigResult<Response> {
+        self.execute_request(
+            RequestConfig::new(HttpMethod::Patch, path).with_json_body(data)?,
+        )
+        .await
+    }
+
+    async fn execute_request(&self, mut config: RequestConfig) -> WebConfigResult<Response> {
+        // 应用请求拦截器
+        for interceptor in &self.request_interceptors {
+            interceptor.intercept(&mut config)?;
+        }
+
+        // 构建请求
+        let url = format!("{}{}", self.base_url, config.url);
+        let mut request = match config.method {
+            HttpMethod::Get => Request::get(&url),
+            HttpMethod::Post => Request::post(&url),
+            HttpMethod::Put => Request::put(&url),
+            HttpMethod::Patch => Request::patch(&url),
+            HttpMethod::Delete => Request::delete(&url),
+        };
+
+        // 添加headers
+        for (key, value) in &config.headers {
+            request = request.header(key, value);
+        }
+
+        // 添加body
+        if let Some(body) = config.body {
+            request = request.json(&body)?;
+        }
+
+        // 发送请求
+        let response = request.send().await?;
+
+        // 应用响应拦截器
+        for interceptor in &self.response_interceptors {
+            interceptor.intercept(&response, &config)?;
+        }
+
+        Ok(Response(response))
+    }
+
+    pub async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> WebConfigResult<T> {
+        let response = self.get(path).await?;
+        response.json().await
+    }
+
+    pub async fn post_json_response<T: Serialize, R: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        data: &T,
+    ) -> WebConfigResult<R> {
+        let response = self.post_json(path, data).await?;
+        response.json().await
+    }
+}
+
+/// 全局API客户端实例
 use std::cell::RefCell;
 use std::rc::Rc;
 
 thread_local! {
-    static API_CLIENT: RefCell<Option<Rc<RefCell<ApiClient>>>> = RefCell::new(None);
+    static API_CLIENT: RefCell<Option<Rc<ApiClient>>> = RefCell::new(None);
 }
 
-pub fn init_api_client(base_url: String) {
-    let client = Rc::new(RefCell::new(ApiClient::new(base_url)));
+pub fn init_api_client(base_url: impl Into<String>) {
+    let client = Rc::new(ApiClient::new(base_url));
     API_CLIENT.with(|api| {
         *api.borrow_mut() = Some(client);
     });
 }
 
-pub async fn get_config_api() -> Result<ServerConfig, ApiError> {
-    API_CLIENT.with(|api| {
-        let client = api.borrow();
-        let client = client.as_ref().expect("API client not initialized");
-        let client = client.borrow();
-        client.get_config()
-    }).await
-}
-
-pub async fn update_config_api(config: ServerConfig) -> Result<(), ApiError> {
-    API_CLIENT.with(|api| {
-        let client = api.borrow();
-        let client = client.as_ref().expect("API client not initialized");
-        let client = client.borrow();
-        client.update_config(config)
-    }).await
-}
-
-pub async fn get_users_api() -> Result<Vec<UserInfo>, ApiError> {
-    let client = API_CLIENT.get().unwrap().lock().unwrap();
-    let url = format!("{}/api/admin/users", client.base_url);
-    let mut request = client.client.get(&url);
-    
-    if let Some(token) = &client.token {
-        request = request.bearer_auth(token);
-    }
-    
-    let response = request.send().await?;
-    if response.status().is_success() {
-        let user_list: UserListResponse = response.json().await?;
-        Ok(user_list.users)
-    } else {
-        Err(ApiError::from_response(response).await)
-    }
-}
-
-pub async fn validate_config_field_api(field: &str, value: &str) -> Result<(), ConfigError> {
-    let client = API_CLIENT.get().unwrap().lock().unwrap();
-    let url = format!("{}/api/admin/config/validate", client.base_url);
-    let mut request = client.client.post(&url).json(&serde_json::json!({
-        "field": field,
-        "value": value
-    }));
-    
-    if let Some(token) = &client.token {
-        request = request.bearer_auth(token);
-    }
-    
-    let response = request.send().await.map_err(|e| ConfigError {
-        field: field.to_string(),
-        message: e.to_string(),
-    })?;
-    
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let error_response: ValidationErrorResponse = response.json().await.map_err(|e| ConfigError {
-            field: field.to_string(),
-            message: e.to_string(),
-        })?;
-        Err(ConfigError {
-            field: field.to_string(),
-            message: error_response.message,
+pub fn get_api_client() -> WebConfigResult<ApiClient> {
+    API_CLIENT
+        .with(|api| {
+            let client = api.borrow();
+            client.as_ref().cloned()
         })
-    }
+        .ok_or_else(|| WebConfigError::NotInitialized("API client not initialized".to_string()))
 }
 
-#[derive(Serialize, Deserialize)]
-struct ValidationErrorResponse {
-    message: String,
+// 便捷函数
+pub async fn api_get(path: &str) -> WebConfigResult<Response> {
+    get_api_client()?.get(path).await
+}
+
+pub async fn api_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> WebConfigResult<T> {
+    get_api_client()?.get_json(path).await
+}
+
+pub async fn api_post_json<T: Serialize>(path: &str, data: &T) -> WebConfigResult<Response> {
+    get_api_client()?.post_json(path, data).await
+}
+
+pub async fn api_put_json<T: Serialize>(path: &str, data: &T) -> WebConfigResult<Response> {
+    get_api_client()?.put_json(path, data).await
+}
+
+pub async fn api_delete(path: &str) -> WebConfigResult<Response> {
+    get_api_client()?.delete(path).await
+}
+
+pub fn set_auth_token(token: &str) -> WebConfigResult<()> {
+    get_api_client()?.set_token(token)
+}
+
+pub fn clear_auth_token() -> WebConfigResult<()> {
+    get_api_client()?.clear_token()
+}
+
+pub fn has_auth_token() -> bool {
+    get_api_client().map_or(false, |c| c.has_token())
 }
 ```
 
@@ -1502,35 +1926,47 @@ mod tests {
     
     #[test]
     fn test_auth_state() {
-        let mut auth_state = AuthState::new();
-        assert!(!auth_state.is_authenticated);
+        // 测试未认证状态
+        let auth_state = AuthState::Unauthenticated;
+        assert!(!auth_state.is_authenticated());
         
-        // 测试登录状态变化
-        let user = AdminUser::default();
-        let token = "test_token".to_string();
-        auth_state.login(user, token);
-        assert!(auth_state.is_authenticated);
+        // 测试认证中状态
+        let auth_state = AuthState::Authenticating;
+        assert!(auth_state.is_authenticating());
         
-        // 测试登出
-        auth_state.logout();
-        assert!(!auth_state.is_authenticated);
+        // 测试认证成功状态
+        let user = AdminUser {
+            user_id: "test_user".to_string(),
+            username: "test".to_string(),
+            is_admin: true,
+            session_id: "session123".to_string(),
+            expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
+            permissions: vec![Permission::SystemAdmin],
+        };
+        let auth_state = AuthState::Authenticated(user.clone());
+        assert!(auth_state.is_authenticated());
+        assert_eq!(auth_state.user(), Some(&user));
+        
+        // 测试认证失败状态
+        let auth_state = AuthState::Failed("Invalid credentials".to_string());
+        assert!(auth_state.is_failed());
+        assert_eq!(auth_state.error(), Some(&"Invalid credentials".to_string()));
     }
     
     #[test]
-    fn test_config_state() {
-        let mut config_state = ConfigState::new();
-        assert!(config_state.config.is_none());
-        assert!(!config_state.is_dirty);
+    fn test_admin_user_permissions() {
+        let admin_user = AdminUser {
+            user_id: "admin".to_string(),
+            username: "admin".to_string(),
+            is_admin: true,
+            session_id: "session123".to_string(),
+            expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
+            permissions: vec![Permission::SystemAdmin],
+        };
         
-        // 测试配置设置
-        let config = ServerConfig::default();
-        config_state.set_config(config.clone());
-        assert_eq!(config_state.config, Some(config));
-        assert!(!config_state.is_dirty);
-        
-        // 测试字段更新
-        config_state.update_field("server_name", "test.example.com");
-        assert!(config_state.is_dirty);
+        assert!(admin_user.has_permission(&Permission::ConfigManagement));
+        assert!(admin_user.has_permission(&Permission::UserManagement));
+        assert!(admin_user.is_session_valid());
     }
 }
 ```
@@ -1570,42 +2006,68 @@ palpo-web-config/
 
 ```toml
 [package]
-name = "palpo-web-config"
+name = "palpo-admin-ui"
 version = "0.1.0"
 edition = "2021"
-
-[dependencies]
-# 后端依赖
-salvo = { version = "0.60", features = ["full"] }
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-diesel = { version = "2.0", features = ["postgres"] }
-
-# 前端依赖 (Dioxus)
-dioxus = { version = "0.5", features = ["web"] }
-dioxus-router = "0.5"
-dioxus-hooks = "0.5"
-reqwest = { version = "0.11", features = ["json"] }
-wasm-bindgen = "0.2"
-web-sys = "0.3"
-serde-wasm-bindgen = "0.6"
-js-sys = "0.3"
-
-# 共享依赖
-serde_json = "1.0"
-thiserror = "1.0"
-anyhow = "1.0"
+description = "Web admin interface for Palpo Matrix server configuration and management"
+authors = ["Palpo Team"]
+license = "Apache-2.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[[bin]]
-name = "server"
-path = "src/main.rs"
+[dependencies]
+# Frontend dependencies (Dioxus 0.7)
+dioxus = { version = "0.7", features = ["web", "router"] }
+dioxus-router = "0.7"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Storage",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+] }
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
+# Shared dependencies
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+uuid = { version = "1.0", features = ["v4", "serde", "js"] }
+getrandom = { version = "0.2", features = ["js"] }
+toml = "0.8"
+serde_yaml = "0.9"
+base64 = "0.21"
+rand = { version = "0.8", features = ["getrandom"] }
+
+# WASM-specific dependencies
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = "0.4"  # HTTP requests in WASM
+gloo-storage = "0.3"  # Local storage in WASM
+gloo-timers = { version = "0.3", features = ["futures"] }  # Timers in WASM
+
+# Native dependencies (for testing)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.0", features = ["fs", "macros", "rt", "time"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+wasm-bindgen-test = "0.3"
+proptest = "1.4"
 
 [features]
 default = []
-web = ["dioxus/web"]
+test-utils = []
 ```
 
 #### 3. 构建脚本
@@ -1709,7 +2171,7 @@ build-std-features = ["panic_immediate_abort"]
 
 ```toml
 [application]
-name = "palpo-web-config"
+name = "palpo-admin-ui"
 default_platform = "web"
 
 [web.app]
