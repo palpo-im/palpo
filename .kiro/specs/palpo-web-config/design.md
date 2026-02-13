@@ -2,7 +2,7 @@
 
 ## 概述
 
-Palpo Matrix服务器web配置页面是一个现代化的管理界面，基于Rust + Salvo web框架构建。该系统将现有的命令行管理功能转换为直观的web界面，同时保持与现有架构的完全兼容性。
+Palpo Matrix服务器web管理界面是一个现代化的管理控制台，允许管理员通过web浏览器可视化地管理Palpo Matrix服务器的所有配置和运营功能。该系统参考synapse-admin等成熟项目，提供更直观、安全和用户友好的管理体验。
 
 设计采用前后端分离架构，后端提供RESTful API，前端使用Dioxus (Rust WebAssembly框架)构建现代化响应式用户界面。系统集成现有的配置管理、用户认证和数据库层，确保安全性和一致性。
 
@@ -12,251 +12,451 @@ Palpo Matrix服务器web配置页面是一个现代化的管理界面，基于Ru
 
 ```mermaid
 graph TB
-    subgraph "前端层"
+    subgraph "前端层 (Dioxus)"
         UI[Web UI界面]
         Auth[认证组件]
-        Config[配置管理组件]
-        Admin[管理功能组件]
+        Pages[管理功能页面]
     end
     
     subgraph "后端API层"
         Router[Salvo路由器]
         AuthAPI[认证API]
-        ConfigAPI[配置API]
-        AdminAPI[管理API]
-        Middleware[中间件层]
+        UserAPI[用户管理API]
+        RoomAPI[房间管理API]
+        MediaAPI[媒体管理API]
+        FedAPI[联邦管理API]
+        ASAPI[Appservice管理API]
+        ServerAPI[服务器控制API]
     end
     
     subgraph "业务逻辑层"
-        ConfigMgr[配置管理器]
         UserMgr[用户管理器]
         RoomMgr[房间管理器]
-        FedMgr[联邦管理器]
         MediaMgr[媒体管理器]
+        FedMgr[联邦管理器]
         AppSvcMgr[Appservice管理器]
     end
     
     subgraph "数据层"
-        TOML[TOML配置文件]
         DB[(PostgreSQL数据库)]
+        TOML[TOML配置文件]
         FS[文件系统]
     end
     
     UI --> Router
     Auth --> AuthAPI
-    Config --> ConfigAPI
-    Admin --> AdminAPI
+    Pages --> UserAPI
+    Pages --> RoomAPI
+    Pages --> MediaAPI
+    Pages --> FedAPI
+    Pages --> ASAPI
+    Pages --> ServerAPI
     
-    Router --> Middleware
-    AuthAPI --> Middleware
-    ConfigAPI --> Middleware
-    AdminAPI --> Middleware
+    Router --> AuthAPI
+    Router --> UserAPI
+    Router --> RoomAPI
+    Router --> MediaAPI
+    Router --> FedAPI
+    Router --> ASAPI
+    Router --> ServerAPI
     
-    Middleware --> ConfigMgr
-    Middleware --> UserMgr
-    Middleware --> RoomMgr
-    Middleware --> FedMgr
-    Middleware --> MediaMgr
-    Middleware --> AppSvcMgr
+    UserAPI --> UserMgr
+    RoomAPI --> RoomMgr
+    MediaAPI --> MediaMgr
+    FedAPI --> FedMgr
+    ASAPI --> AppSvcMgr
     
-    ConfigMgr --> TOML
     UserMgr --> DB
     RoomMgr --> DB
-    FedMgr --> DB
     MediaMgr --> FS
+    FedMgr --> DB
     AppSvcMgr --> DB
 ```
 
 ### 技术栈
 
 **后端技术栈:**
-- **Web框架**: Salvo (现有)
-- **数据库**: PostgreSQL + Diesel ORM (现有)
-- **配置管理**: Figment库 (现有)
-- **认证**: JWT + Matrix认证 (现有)
-- **序列化**: serde + TOML/JSON
+- **Web框架**: Salvo
+- **数据库**: PostgreSQL + Diesel ORM
+- **认证**: JWT + Matrix认证
+- **序列化**: serde + JSON
 
-**前端技术栈 (Rust实现):**
-- **Web框架**: Dioxus 0.7 (Rust全栈Web框架)
-- **样式**: TailwindCSS + Dioxus样式系统
-- **状态管理**: Dioxus信号和上下文系统 (Signal, use_context_provider)
-- **HTTP客户端**: gloo-net (WASM兼容) + gloo-storage (本地存储)
+**前端技术栈:**
+- **Web框架**: Dioxus (Rust WebAssembly框架)
+- **样式**: TailwindCSS
+- **状态管理**: Dioxus信号系统
+- **HTTP客户端**: gloo-net
 - **构建工具**: Dioxus CLI
-- **组件库**: 基于Dioxus的自定义组件
 
-**技术选型理由:**
-- **React-like语法**: 熟悉的组件化开发模式，学习曲线平缓
-- **多平台支持**: Web、桌面、移动端统一技术栈
-- **性能优秀**: 编译到WebAssembly，运行速度快
-- **类型安全**: 完全的Rust类型系统支持，可直接复用Palpo配置结构体
-- **开发体验**: 热重载、优秀的调试工具
-- **WASM生态**: gloo库专为WASM设计，提供更好的互操作性
+## API设计
 
-## 组件和接口
-
-### 后端API组件
-
-> **注意**: 以下API服务实现位于 `crates/admin-ui/src/services/` 目录，目前为**模拟实现**（mock implementations），代码中包含注释 "In a real implementation, this would connect to the Matrix server's database"。实际后端API集成待后续开发。
-
-#### 1. 认证中间件 (AuthMiddleware)
+### 1. 用户管理API (UserAdminAPI)
 
 ```rust
-pub struct AuthMiddleware;
-
-impl AuthMiddleware {
-    pub async fn require_admin(depot: &mut Depot) -> AppResult<()>;
-    pub async fn validate_session(depot: &mut Depot) -> AppResult<()>;
-    pub fn get_admin_user(depot: &Depot) -> Option<&AdminUser>;
-}
-
-pub struct AdminUser {
-    pub user_id: String, // 使用String而非OwnedUserId以简化WASM兼容
-    pub username: String,
-    pub is_admin: bool,
-    pub session_id: String,
-    pub expires_at: SystemTime,
-    pub permissions: Vec<Permission>,
-}
-```
-
-#### 2. 配置API (ConfigAPI)
-
-```rust
-pub struct ConfigAPI;
-
-impl ConfigAPI {
-    pub async fn get_config() -> AppResult<ServerConfigResponse>;
-    pub async fn update_config(config: UpdateConfigRequest) -> AppResult<()>;
-    pub async fn validate_config(config: ValidateConfigRequest) -> AppResult<ValidationResult>;
-    pub async fn reload_config() -> AppResult<()>;
-    pub async fn export_config() -> AppResult<ConfigExportResponse>;
-    pub async fn import_config(config: ConfigImportRequest) -> AppResult<()>;
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ServerConfigResponse {
-    pub server: ServerConfig,
-    pub database: DatabaseConfig,
-    pub federation: FederationConfig,
-    pub auth: AuthConfig,
-    pub media: MediaConfig,
-    pub network: NetworkConfig,
-    pub logging: LoggingConfig,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ValidationResult {
-    pub valid: bool,
-    pub errors: Vec<ConfigError>,
-    pub warnings: Vec<ConfigWarning>,
-}
-```
-
-#### 3. 用户管理API (UserAdminAPI)
-
-```rust
+// 用户管理API服务
 pub struct UserAdminAPI;
 
 impl UserAdminAPI {
-    pub async fn list_users(filter: UserFilter) -> AppResult<UserListResponse>;
-    pub async fn create_user(request: CreateUserRequest) -> AppResult<UserResponse>;
-    pub async fn get_user(user_id: &UserId) -> AppResult<UserResponse>;
-    pub async fn update_user(user_id: &UserId, request: UpdateUserRequest) -> AppResult<()>;
-    pub async fn deactivate_user(user_id: &UserId, leave_rooms: bool) -> AppResult<()>;
-    pub async fn reset_password(user_id: &UserId, password: Option<String>) -> AppResult<String>;
-    pub async fn set_admin(user_id: &UserId, is_admin: bool) -> AppResult<()>;
-    pub async fn list_user_rooms(user_id: &UserId) -> AppResult<Vec<RoomInfo>>;
+    // 列出用户
+    pub async fn list_users(filter: UserFilter) -> Result<UserListResponse, WebConfigError>;
+    
+    // 获取用户详情
+    pub async fn get_user(user_id: &str) -> Result<UserDetail, WebConfigError>;
+    
+    // 创建用户
+    pub async fn create_user(request: CreateUserRequest) -> Result<CreateUserResponse, WebConfigError>;
+    
+    // 更新用户
+    pub async fn update_user(user_id: &str, request: UpdateUserRequest) -> Result<(), WebConfigError>;
+    
+    // 检查用户名可用性
+    pub async fn check_username_availability(username: &str) -> Result<bool, WebConfigError>;
+    
+    // 重置密码
+    pub async fn reset_password(user_id: &str, password: Option<String>) -> Result<String, WebConfigError>;
+    
+    // 停用用户
+    pub async fn deactivate_user(user_id: &str, erase_data: bool, leave_rooms: bool) -> Result<(), WebConfigError>;
+    
+    // 重新激活用户
+    pub async fn reactivate_user(user_id: &str) -> Result<(), WebConfigError>;
+    
+    // 锁定用户
+    pub async fn lock_user(user_id: &str) -> Result<(), WebConfigError>;
+    
+    // 解锁用户
+    pub async fn unlock_user(user_id: &str) -> Result<(), WebConfigError>;
+    
+    // 暂停用户 (MSC3823)
+    pub async fn suspend_user(user_id: &str, reason: Option<String>) -> Result<(), WebConfigError>;
+    
+    // 取消暂停用户
+    pub async fn unsuspend_user(user_id: &str) -> Result<(), WebConfigError>;
+    
+    // 擦除用户
+    pub async fn erase_user(user_id: &str) -> Result<(), WebConfigError>;
+    
+    // 设置管理员权限
+    pub async fn set_admin(user_id: &str, is_admin: bool) -> Result<(), WebConfigError>;
+    
+    // 获取用户设备列表
+    pub async fn get_user_devices(user_id: &str) -> Result<Vec<DeviceInfo>, WebConfigError>;
+    
+    // 删除用户设备
+    pub async fn delete_user_device(user_id: &str, device_id: &str) -> Result<(), WebConfigError>;
+    
+    // 获取用户连接信息
+    pub async fn get_user_connections(user_id: &str) -> Result<ConnectionInfo, WebConfigError>;
+    
+    // 获取用户推送器列表
+    pub async fn get_user_pushers(user_id: &str) -> Result<Vec<PusherInfo>, WebConfigError>;
+    
+    // 获取用户媒体列表
+    pub async fn get_user_media(user_id: &str, filter: MediaFilter) -> Result<MediaListResponse, WebConfigError>;
+    
+    // 获取用户加入的房间列表
+    pub async fn get_user_rooms(user_id: &str) -> Result<Vec<RoomInfo>, WebConfigError>;
+    
+    // 获取用户成员资格列表
+    pub async fn get_user_memberships(user_id: &str) -> Result<Vec<MembershipInfo>, WebConfigError>;
+    
+    // 设置用户速率限制
+    pub async fn set_user_rate_limits(user_id: &str, limits: RateLimitSettings) -> Result<(), WebConfigError>;
+    
+    // 获取用户速率限制
+    pub async fn get_user_rate_limits(user_id: &str) -> Result<RateLimitSettings, WebConfigError>;
+    
+    // 管理用户实验功能
+    pub async fn set_user_experimental_features(user_id: &str, features: HashMap<String, bool>) -> Result<(), WebConfigError>;
+    
+    // 获取用户实验功能
+    pub async fn get_user_experimental_features(user_id: &str) -> Result<HashMap<String, bool>, WebConfigError>;
+    
+    // 管理用户账户数据
+    pub async fn get_user_account_data(user_id: &str) -> Result<AccountData, WebConfigError>;
+    
+    // 更新用户账户数据
+    pub async fn update_user_account_data(user_id: &str, data_type: &str, data: serde_json::Value) -> Result<(), WebConfigError>;
+    
+    // 删除用户账户数据
+    pub async fn delete_user_account_data(user_id: &str, data_type: &str) -> Result<(), WebConfigError>;
+    
+    // 管理用户第三方标识
+    pub async fn get_user_threepids(user_id: &str) -> Result<Vec<ThreepidInfo>, WebConfigError>;
+    
+    // 添加用户第三方标识
+    pub async fn add_user_threepid(user_id: &str, medium: &str, address: &str) -> Result<(), WebConfigError>;
+    
+    // 删除用户第三方标识
+    pub async fn delete_user_threepid(user_id: &str, medium: &str, address: &str) -> Result<(), WebConfigError>;
+    
+    // 管理用户SSO外部ID
+    pub async fn get_user_external_ids(user_id: &str) -> Result<Vec<ExternalIdInfo>, WebConfigError>;
+    
+    // 添加用户SSO外部ID
+    pub async fn add_user_external_id(user_id: &str, auth_provider: &str, external_id: &str) -> Result<(), WebConfigError>;
+    
+    // 删除用户SSO外部ID
+    pub async fn delete_user_external_id(user_id: &str, auth_provider: &str, external_id: &str) -> Result<(), WebConfigError>;
+    
+    // 批量操作
+    pub async fn batch_operation(request: BatchUserOperationRequest) -> Result<BatchUserOperationResponse, WebConfigError>;
+    
+    // 发送服务器通知
+    pub async fn send_server_notice(user_id: &str, message: &str) -> Result<(), WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct UserListResponse {
-    pub users: Vec<UserInfo>,
-    pub total: usize,
-    pub page: usize,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct UserInfo {
-    pub user_id: OwnedUserId,
+// 数据模型
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserDetail {
+    pub user_id: String,
+    pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub is_admin: bool,
     pub is_guest: bool,
     pub is_deactivated: bool,
-    pub created_at: SystemTime,
-    pub last_seen: Option<SystemTime>,
+    pub is_locked: bool,
+    pub is_suspended: bool,
+    pub is_erased: bool,
+    pub creation_ts: u64,
+    pub threepids: Vec<ThreepidInfo>,
+    pub external_ids: Vec<ExternalIdInfo>,
+    pub user_type: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ThreepidInfo {
+    pub medium: String,
+    pub address: String,
+    pub added_at: u64,
+    pub validated_at: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExternalIdInfo {
+    pub auth_provider: String,
+    pub external_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub display_name: Option<String>,
+    pub last_seen_ip: Option<String>,
+    pub last_seen_user_agent: Option<String>,
+    pub last_seen_ts: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ConnectionInfo {
+    pub user_id: String,
+    pub devices: Vec<DeviceInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PusherInfo {
+    pub pusher_id: String,
+    pub kind: String,
+    pub app_display_name: String,
+    pub app_id: String,
+    pub device_display_name: Option<String>,
+    pub profile_tag: Option<String>,
+    pub lang: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RateLimitSettings {
+    pub messages_per_second: Option<u64>,
+    pub burst_count: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AccountData {
+    pub global: HashMap<String, serde_json::Value>,
+    pub rooms: HashMap<String, HashMap<String, serde_json::Value>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MembershipInfo {
+    pub room_id: String,
+    pub room_name: Option<String>,
+    pub membership: String,
+    pub joined_at: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BatchUserOperationRequest {
+    pub user_ids: Vec<String>,
+    pub operation: BatchUserOperation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum BatchUserOperation {
+    Deactivate { erase_data: bool, leave_rooms: bool },
+    Reactivate,
+    Lock,
+    Unlock,
+    SendNotice { message: String },
 }
 ```
 
-#### 4. 房间管理API (RoomAdminAPI)
+### 2. 房间管理API (RoomAdminAPI)
 
 ```rust
 pub struct RoomAdminAPI;
 
 impl RoomAdminAPI {
-    pub async fn list_rooms(filter: RoomFilter) -> AppResult<RoomListResponse>;
-    pub async fn get_room_info(room_id: &RoomId) -> AppResult<RoomDetailResponse>;
-    pub async fn disable_room(room_id: &RoomId) -> AppResult<()>;
-    pub async fn enable_room(room_id: &RoomId) -> AppResult<()>;
-    pub async fn delete_room(room_id: &RoomId) -> AppResult<()>;
-    pub async fn force_join_user(user_id: &UserId, room_id: &RoomId) -> AppResult<()>;
-    pub async fn force_leave_user(user_id: &UserId, room_id: &RoomId) -> AppResult<()>;
+    // 列出房间
+    pub async fn list_rooms(filter: RoomFilter) -> Result<RoomListResponse, WebConfigError>;
+    
+    // 获取房间详情
+    pub async fn get_room_detail(room_id: &str) -> Result<RoomDetail, WebConfigError>;
+    
+    // 获取房间成员列表
+    pub async fn get_room_members(room_id: &str) -> Result<Vec<RoomMemberDetail>, WebConfigError>;
+    
+    // 获取房间状态事件
+    pub async fn get_room_state(room_id: &str, filter: Option<Vec<String>>) -> Result<Vec<StateEvent>, WebConfigError>;
+    
+    // 获取房间媒体列表
+    pub async fn get_room_media(room_id: &str) -> Result<Vec<MediaInfo>, WebConfigError>;
+    
+    // 获取房间前沿终点
+    pub async fn get_room_forward_extremities(room_id: &str) -> Result<Vec<ForwardExtremity>, WebConfigError>;
+    
+    // 发布房间到目录
+    pub async fn publish_room(room_id: &str) -> Result<(), WebConfigError>;
+    
+    // 从目录取消发布
+    pub async fn unpublish_room(room_id: &str) -> Result<(), WebConfigError>;
+    
+    // 批量发布房间到目录
+    pub async fn batch_publish_rooms(room_ids: Vec<String>) -> Result<BatchPublishResult, WebConfigError>;
+    
+    // 批量从目录取消发布
+    pub async fn batch_unpublish_rooms(room_ids: Vec<String>) -> Result<BatchPublishResult, WebConfigError>;
+    
+    // 设置房间管理员
+    pub async fn make_room_admin(room_id: &str, user_id: &str) -> Result<(), WebConfigError>;
+    
+    // 删除房间
+    pub async fn delete_room(room_id: &str, block: bool) -> Result<(), WebConfigError>;
+    
+    // 禁用房间
+    pub async fn disable_room(room_id: &str) -> Result<(), WebConfigError>;
+    
+    // 启用房间
+    pub async fn enable_room(room_id: &str) -> Result<(), WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct RoomDetailResponse {
-    pub room_id: OwnedRoomId,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomDetail {
+    pub room_id: String,
     pub name: Option<String>,
+    pub canonical_alias: Option<String>,
     pub topic: Option<String>,
     pub avatar_url: Option<String>,
+    pub creator: String,
     pub member_count: u64,
+    pub joined_local_members: u64,
+    pub joined_local_devices: u64,
+    pub state_events_count: u64,
+    pub version: String,
+    pub is_encrypted: bool,
+    pub encryption: Option<String>,
+    pub is_federatable: bool,
     pub is_public: bool,
-    pub is_federated: bool,
-    pub is_disabled: bool,
-    pub created_at: SystemTime,
-    pub members: Vec<RoomMemberInfo>,
+    pub join_rule: String,
+    pub guest_access: String,
+    pub history_visibility: String,
+    pub room_type: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomMemberDetail {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub is_guest: bool,
+    pub is_deactivated: bool,
+    pub is_locked: bool,
+    pub is_erased: bool,
+    pub membership: String,
+    pub power_level: u64,
+    pub is_admin: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StateEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub origin_server_ts: u64,
+    pub sender: String,
+    pub content: serde_json::Value,
+    pub state_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ForwardExtremity {
+    pub event_id: String,
+    pub state_group: u64,
+    pub depth: u64,
+    pub received_ts: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BatchPublishResult {
+    pub success_count: u64,
+    pub failed_count: u64,
+    pub failed_rooms: Vec<String>,
 }
 ```
 
-#### 5. 联邦管理API (FederationAdminAPI)
-
-```rust
-pub struct FederationAdminAPI;
-
-impl FederationAdminAPI {
-    pub async fn list_destinations() -> AppResult<Vec<FederationDestination>>;
-    pub async fn get_destination_info(server_name: &ServerName) -> AppResult<DestinationInfo>;
-    pub async fn disable_destination(server_name: &ServerName) -> AppResult<()>;
-    pub async fn enable_destination(server_name: &ServerName) -> AppResult<()>;
-    pub async fn test_federation(server_name: &ServerName) -> AppResult<FederationTestResult>;
-    pub async fn fetch_support_info(server_name: &ServerName) -> AppResult<SupportInfo>;
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct FederationDestination {
-    pub server_name: OwnedServerName,
-    pub is_reachable: bool,
-    pub last_successful_send: Option<SystemTime>,
-    pub failure_count: u32,
-    pub shared_rooms: Vec<OwnedRoomId>,
-}
-```
-
-#### 6. 媒体管理API (MediaAdminAPI)
+### 3. 媒体管理API (MediaAdminAPI)
 
 ```rust
 pub struct MediaAdminAPI;
 
 impl MediaAdminAPI {
-    pub async fn get_media_stats() -> AppResult<MediaStatsResponse>;
-    pub async fn list_media(filter: MediaFilter) -> AppResult<MediaListResponse>;
-    pub async fn get_media_info(mxc_uri: &str) -> AppResult<MediaInfo>;
-    pub async fn delete_media(mxc_uri: &str) -> AppResult<()>;
-    pub async fn delete_media_batch(mxc_uris: Vec<String>) -> AppResult<BatchDeleteResult>;
-    pub async fn cleanup_old_media(before: SystemTime, include_local: bool) -> AppResult<CleanupResult>;
+    // 获取媒体统计
+    pub async fn get_media_stats() -> Result<MediaStatsResponse, WebConfigError>;
+    
+    // 获取详细媒体统计
+    pub async fn get_detailed_media_stats() -> Result<DetailedMediaStats, WebConfigError>;
+    
+    // 列出媒体文件
+    pub async fn list_media(filter: MediaFilter) -> Result<MediaListResponse, WebConfigError>;
+    
+    // 获取媒体文件信息
+    pub async fn get_media_info(mxc_uri: &str) -> Result<MediaInfo, WebConfigError>;
+    
+    // 删除媒体文件
+    pub async fn delete_media(mxc_uri: &str, reason: Option<String>) -> Result<DeleteMediaResult, WebConfigError>;
+    
+    // 批量删除媒体文件
+    pub async fn delete_media_batch(mxc_uris: Vec<String>, reason: Option<String>) -> Result<BatchDeleteResult, WebConfigError>;
+    
+    // 隔离媒体文件
+    pub async fn quarantine_media(mxc_uri: &str) -> Result<(), WebConfigError>;
+    
+    // 取消隔离媒体文件
+    pub async fn unquarantine_media(mxc_uri: &str) -> Result<(), WebConfigError>;
+    
+    // 保护媒体文件
+    pub async fn protect_media(mxc_uri: &str) -> Result<(), WebConfigError>;
+    
+    // 取消保护媒体文件
+    pub async fn unprotect_media(mxc_uri: &str) -> Result<(), WebConfigError>;
+    
+    // 清理远程媒体
+    pub async fn purge_remote_media(before_ts: u64, keep_profiles: bool) -> Result<PurgeMediaResult, WebConfigError>;
+    
+    // 获取用户媒体统计
+    pub async fn get_user_media_stats(filter: Option<UserMediaFilter>) -> Result<Vec<UserMediaStats>, WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MediaStatsResponse {
     pub total_files: u64,
     pub total_size: u64,
@@ -264,332 +464,303 @@ pub struct MediaStatsResponse {
     pub local_size: u64,
     pub remote_files: u64,
     pub remote_size: u64,
+    pub quarantined_files: u64,
+    pub quarantined_size: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DetailedMediaStats {
+    pub basic_stats: MediaStatsResponse,
+    pub by_content_type: Vec<MediaStorageByType>,
+    pub by_uploader: Vec<MediaStorageByUploader>,
+    pub daily_uploads: Vec<DailyUploadStats>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MediaStorageByType {
+    pub content_type: String,
+    pub file_count: u64,
+    pub total_size: u64,
+    pub percentage: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MediaStorageByUploader {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub file_count: u64,
+    pub total_size: u64,
+    pub percentage: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserMediaStats {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub media_count: u64,
+    pub media_length: u64,
 }
 ```
 
-#### 8. 服务器控制API (ServerControlAPI)
+### 4. 房间目录API (RoomDirectoryAPI)
 
 ```rust
-pub struct ServerControlAPI;
+pub struct RoomDirectoryAPI;
 
-impl ServerControlAPI {
-    pub async fn get_server_status() -> AppResult<ServerStatusResponse>;
-    pub async fn reload_config() -> AppResult<ConfigReloadResult>;
-    pub async fn restart_server(force: bool) -> AppResult<()>;
-    pub async fn shutdown_server(graceful: bool) -> AppResult<()>;
-    pub async fn get_server_features() -> AppResult<Vec<ServerFeature>>;
-    pub async fn send_admin_notice(message: String) -> AppResult<()>;
-    pub async fn execute_admin_command(command: AdminCommand) -> AppResult<CommandResult>;
+impl RoomDirectoryAPI {
+    // 列出公开房间
+    pub async fn list_public_rooms(filter: PublicRoomFilter) -> Result<PublicRoomListResponse, WebConfigError>;
+    
+    // 发布房间到目录
+    pub async fn publish_room(room_id: &str) -> Result<(), WebConfigError>;
+    
+    // 从目录取消发布
+    pub async fn unpublish_room(room_id: &str) -> Result<(), WebConfigError>;
+    
+    // 批量发布
+    pub async fn batch_publish(room_ids: Vec<String>) -> Result<BatchPublishResult, WebConfigError>;
+    
+    // 批量取消发布
+    pub async fn batch_unpublish(room_ids: Vec<String>) -> Result<BatchPublishResult, WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ServerStatusResponse {
-    pub uptime: Duration,
-    pub version: String,
-    pub features: Vec<String>,
-    pub active_connections: u32,
-    pub memory_usage: u64,
-    pub config_last_modified: SystemTime,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PublicRoomListResponse {
+    pub rooms: Vec<PublicRoomInfo>,
+    pub total_count: u64,
+    pub has_more: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ConfigReloadResult {
-    pub success: bool,
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
-    pub hot_reload_supported: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AdminCommand {
-    pub command: String,
-    pub args: Vec<String>,
-    pub require_confirmation: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CommandResult {
-    pub success: bool,
-    pub output: String,
-    pub error: Option<String>,
-    pub execution_time: Duration,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PublicRoomInfo {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub canonical_alias: Option<String>,
+    pub topic: Option<String>,
+    pub avatar_url: Option<String>,
+    pub num_joined_members: u64,
+    pub world_readable: bool,
+    pub guest_can_join: bool,
 }
 ```
 
-```rust
-pub struct AppserviceAdminAPI;
+### 5. 联邦目的地API (FederationDestinationsAPI)
 
-impl AppserviceAdminAPI {
-    pub async fn list_appservices() -> AppResult<Vec<AppserviceInfo>>;
-    pub async fn get_appservice(id: &str) -> AppResult<AppserviceDetail>;
-    pub async fn register_appservice(config: AppserviceConfig) -> AppResult<()>;
-    pub async fn unregister_appservice(id: &str) -> AppResult<()>;
-    pub async fn test_appservice(id: &str) -> AppResult<AppserviceTestResult>;
+```rust
+pub struct FederationDestinationsAPI;
+
+impl FederationDestinationsAPI {
+    // 列出联邦目的地
+    pub async fn list_destinations(filter: DestinationFilter) -> Result<DestinationListResponse, WebConfigError>;
+    
+    // 获取目的地详情
+    pub async fn get_destination_detail(destination: &str) -> Result<DestinationDetail, WebConfigError>;
+    
+    // 重置连接
+    pub async fn reset_connection(destination: &str) -> Result<(), WebConfigError>;
+    
+    // 获取目的地房间列表
+    pub async fn get_destination_rooms(destination: &str) -> Result<Vec<DestinationRoomInfo>, WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct AppserviceInfo {
-    pub id: String,
-    pub url: String,
-    pub sender_localpart: String,
-    pub is_active: bool,
-    pub namespaces: AppserviceNamespaces,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DestinationListResponse {
+    pub destinations: Vec<DestinationInfo>,
+    pub total_count: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DestinationInfo {
+    pub destination: String,
+    pub retry_last_ts: u64,
+    pub retry_interval: u64,
+    pub failure_ts: Option<u64>,
+    pub last_successful_stream_ordering: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DestinationDetail {
+    pub destination: String,
+    pub retry_last_ts: u64,
+    pub retry_interval: u64,
+    pub failure_ts: Option<u64>,
+    pub last_successful_stream_ordering: Option<u64>,
+    pub rooms: Vec<DestinationRoomInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DestinationRoomInfo {
+    pub room_id: String,
+    pub stream_ordering: u64,
+    pub room_name: Option<String>,
 }
 ```
 
-#### 8. 服务器控制API (ServerControlAPI)
+### 6. 注册令牌API (RegistrationTokensAPI)
 
 ```rust
-pub struct ServerControlAPI;
+pub struct RegistrationTokensAPI;
 
-impl ServerControlAPI {
-    pub async fn get_server_status() -> AppResult<ServerStatusResponse>;
-    pub async fn reload_config() -> AppResult<ConfigReloadResult>;
-    pub async fn restart_server(force: bool) -> AppResult<()>;
-    pub async fn shutdown_server(graceful: bool) -> AppResult<()>;
-    pub async fn get_server_features() -> AppResult<Vec<ServerFeature>>;
-    pub async fn send_admin_notice(message: String) -> AppResult<()>;
-    pub async fn execute_admin_command(command: AdminCommand) -> AppResult<CommandResult>;
+impl RegistrationTokensAPI {
+    // 列出注册令牌
+    pub async fn list_tokens(filter: Option<TokenFilter>) -> Result<Vec<RegistrationTokenInfo>, WebConfigError>;
+    
+    // 创建注册令牌
+    pub async fn create_token(request: CreateTokenRequest) -> Result<RegistrationTokenInfo, WebConfigError>;
+    
+    // 更新注册令牌
+    pub async fn update_token(token: &str, request: UpdateTokenRequest) -> Result<(), WebConfigError>;
+    
+    // 删除注册令牌
+    pub async fn delete_token(token: &str) -> Result<(), WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ServerStatusResponse {
-    pub uptime: Duration,
-    pub version: String,
-    pub features: Vec<String>,
-    pub active_connections: u32,
-    pub memory_usage: u64,
-    pub config_last_modified: SystemTime,
-    pub hot_reload_supported: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ConfigReloadResult {
-    pub success: bool,
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
-    pub hot_reload_supported: bool,
-    pub restart_required: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AdminCommand {
-    pub command: String,
-    pub args: Vec<String>,
-    pub require_confirmation: bool,
-    pub timeout_seconds: Option<u64>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CommandResult {
-    pub success: bool,
-    pub output: String,
-    pub error: Option<String>,
-    pub execution_time: Duration,
-    pub exit_code: Option<i32>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ServerFeature {
-    pub name: String,
-    pub enabled: bool,
-    pub description: String,
-    pub requires_restart: bool,
-}
-```
-
-#### 9. 配置模板API (ConfigTemplateAPI)
-
-```rust
-pub struct ConfigTemplateAPI;
-
-impl ConfigTemplateAPI {
-    pub async fn list_templates() -> AppResult<Vec<ConfigTemplate>>;
-    pub async fn get_template(template_id: &str) -> AppResult<ConfigTemplateDetail>;
-    pub async fn create_template(template: CreateTemplateRequest) -> AppResult<String>;
-    pub async fn update_template(template_id: &str, template: UpdateTemplateRequest) -> AppResult<()>;
-    pub async fn delete_template(template_id: &str) -> AppResult<()>;
-    pub async fn apply_template(template_id: &str, overrides: Option<serde_json::Value>) -> AppResult<ServerConfig>;
-    pub async fn validate_template(template: ConfigTemplateData) -> AppResult<TemplateValidationResult>;
-    pub async fn export_current_as_template(name: String, description: String) -> AppResult<String>;
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ConfigTemplate {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub category: TemplateCategory,
-    pub created_at: SystemTime,
-    pub updated_at: SystemTime,
-    pub is_builtin: bool,
-    pub compatible_versions: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ConfigTemplateDetail {
-    pub template: ConfigTemplate,
-    pub config_data: serde_json::Value,
-    pub required_fields: Vec<String>,
-    pub optional_fields: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum TemplateCategory {
-    Development,
-    Production,
-    Testing,
-    Custom,
-    Federation,
-    Security,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CreateTemplateRequest {
-    pub name: String,
-    pub description: String,
-    pub category: TemplateCategory,
-    pub config_data: serde_json::Value,
-    pub required_fields: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct TemplateValidationResult {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RegistrationTokenInfo {
+    pub token: String,
+    pub uses_allowed: u64,
+    pub pending: u64,
+    pub completed: u64,
+    pub expiry_time: Option<u64>,
     pub valid: bool,
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
-    pub missing_required_fields: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreateTokenRequest {
+    pub token: Option<String>,
+    pub length: Option<u64>,
+    pub uses_allowed: Option<u64>,
+    pub expiry_time: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdateTokenRequest {
+    pub uses_allowed: Option<u64>,
+    pub expiry_time: Option<u64>,
 }
 ```
 
-#### 10. 配置导入导出增强API (ConfigImportExportAPI)
+### 7. 举报管理API (ReportsAPI)
 
 ```rust
-pub struct ConfigImportExportAPI;
+pub struct ReportsAPI;
 
-impl ConfigImportExportAPI {
-    pub async fn export_config(options: ExportOptions) -> AppResult<ConfigExportResponse>;
-    pub async fn import_config(request: ConfigImportRequest) -> AppResult<ImportResult>;
-    pub async fn preview_import(request: ConfigImportRequest) -> AppResult<ImportPreview>;
-    pub async fn validate_import_file(file_content: String, format: ConfigFormat) -> AppResult<ImportValidationResult>;
-    pub async fn get_export_formats() -> AppResult<Vec<ExportFormat>>;
-    pub async fn create_migration_script(from_version: String, to_version: String) -> AppResult<MigrationScript>;
+impl ReportsAPI {
+    // 列出举报
+    pub async fn list_reports(filter: ReportFilter) -> Result<ReportListResponse, WebConfigError>;
+    
+    // 获取举报详情
+    pub async fn get_report_detail(report_id: u64) -> Result<ReportDetail, WebConfigError>;
+    
+    // 删除举报
+    pub async fn delete_report(report_id: u64) -> Result<(), WebConfigError>;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ExportOptions {
-    pub format: ConfigFormat,
-    pub include_sensitive: bool,
-    pub include_defaults: bool,
-    pub sections: Option<Vec<String>>,
-    pub encrypt: bool,
-    pub encryption_key: Option<String>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReportListResponse {
+    pub reports: Vec<ReportInfo>,
+    pub total_count: u64,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ConfigExportResponse {
-    pub content: String,
-    pub format: ConfigFormat,
-    pub exported_at: SystemTime,
-    pub checksum: String,
-    pub size_bytes: u64,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReportInfo {
+    pub id: u64,
+    pub received_ts: u64,
+    pub user_id: String,
+    pub room_id: String,
+    pub room_name: Option<String>,
+    pub score: i64,
+    pub reason: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ConfigImportRequest {
-    pub content: String,
-    pub format: ConfigFormat,
-    pub merge_strategy: MergeStrategy,
-    pub validate_only: bool,
-    pub backup_current: bool,
-    pub encryption_key: Option<String>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReportDetail {
+    pub id: u64,
+    pub received_ts: u64,
+    pub user_id: String,
+    pub room_id: String,
+    pub room_name: Option<String>,
+    pub canonical_alias: Option<String>,
+    pub score: i64,
+    pub reason: Option<String>,
+    pub event_id: String,
+    pub event: EventInfo,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ImportResult {
-    pub success: bool,
-    pub applied_changes: Vec<ConfigChange>,
-    pub skipped_changes: Vec<ConfigChange>,
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
-    pub backup_file: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ImportPreview {
-    pub changes: Vec<ConfigChange>,
-    pub conflicts: Vec<ConfigConflict>,
-    pub validation_errors: Vec<String>,
-    pub estimated_impact: ImpactAssessment,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ConfigChange {
-    pub field: String,
-    pub old_value: Option<serde_json::Value>,
-    pub new_value: serde_json::Value,
-    pub change_type: ChangeType,
-    pub requires_restart: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ConfigConflict {
-    pub field: String,
-    pub current_value: serde_json::Value,
-    pub import_value: serde_json::Value,
-    pub resolution: ConflictResolution,
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum ConfigFormat {
-    Toml,
-    Json,
-    Yaml,
-    Encrypted,
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum MergeStrategy {
-    Replace,
-    Merge,
-    KeepCurrent,
-    Interactive,
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum ChangeType {
-    Added,
-    Modified,
-    Removed,
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum ConflictResolution {
-    UseImport,
-    KeepCurrent,
-    Manual,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ImpactAssessment {
-    pub restart_required: bool,
-    pub affected_services: Vec<String>,
-    pub risk_level: RiskLevel,
-    pub estimated_downtime: Option<Duration>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum RiskLevel {
-    Low,
-    Medium,
-    High,
-    Critical,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EventInfo {
+    pub event_id: String,
+    pub event_type: String,
+    pub sender: String,
+    pub origin_server_ts: u64,
+    pub content: serde_json::Value,
+    pub url: Option<String>,
 }
 ```
 
-### 前端组件架构 (Dioxus实现)
+### 8. 设备管理API (DevicesAPI)
 
-#### 1. 应用结构
+```rust
+pub struct DevicesAPI;
+
+impl DevicesAPI {
+    // 列出用户设备
+    pub async fn list_user_devices(user_id: &str) -> Result<Vec<DeviceDetail>, WebConfigError>;
+    
+    // 删除用户设备
+    pub async fn delete_user_device(user_id: &str, device_id: &str) -> Result<(), WebConfigError>;
+}
+```
+
+### 9. 认证API (AuthAPI)
+
+```rust
+pub struct AuthAPI;
+
+impl AuthAPI {
+    // 用户名密码登录
+    pub async fn login(request: LoginRequest) -> Result<LoginResponse, WebConfigError>;
+    
+    // 访问令牌登录
+    pub async fn login_with_token(request: TokenLoginRequest) -> Result<LoginResponse, WebConfigError>;
+    
+    // 刷新访问令牌
+    pub async fn refresh_token(refresh_token: &str) -> Result<TokenRefreshResponse, WebConfigError>;
+    
+    // 登出
+    pub async fn logout(session_id: &str) -> Result<(), WebConfigError>;
+    
+    // 验证会话
+    pub async fn validate_session() -> Result<SessionValidationResponse, WebConfigError>;
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+    pub server_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LoginResponse {
+    pub success: bool,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub expires_in: u64,
+    pub user: Option<AdminUser>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TokenLoginRequest {
+    pub access_token: String,
+    pub server_url: String,
+}
+```
+
+## 前端组件架构
+
+### 页面结构
 
 ```rust
 use dioxus::prelude::*;
@@ -612,84 +783,43 @@ enum Route {
 enum AdminRoute {
     #[route("/")]
     Dashboard {},
-    #[route("/config")]
-    ConfigManager {},
     #[route("/users")]
     UserManager {},
+    #[route("/users/:id")]
+    UserDetail { id: String },
     #[route("/rooms")]
     RoomManager {},
-    #[route("/federation")]
-    FederationManager {},
+    #[route("/rooms/:id")]
+    RoomDetail { id: String },
     #[route("/media")]
     MediaManager {},
+    #[route("/room-directory")]
+    RoomDirectory {},
+    #[route("/federation/destinations")]
+    FederationDestinations {},
+    #[route("/registration-tokens")]
+    RegistrationTokens {},
+    #[route("/reports")]
+    Reports {},
+    #[route("/devices/:user_id")]
+    UserDevices { user_id: String },
+    #[route("/config")]
+    ConfigManager {},
+    #[route("/server/status")]
+    ServerStatus {},
+    #[route("/server/commands")]
+    ServerCommands {},
     #[route("/appservices")]
     AppserviceManager {},
     #[route("/logs")]
     AuditLogs {},
 }
-
-fn App(cx: Scope) -> Element {
-    render! {
-        Router::<Route> {}
-    }
-}
-
-#[component]
-fn AdminLayout(cx: Scope) -> Element {
-    let auth = use_shared_state::<AuthState>(cx)?;
-    let navigator = use_navigator(cx);
-    
-    use_effect(cx, &auth.read().is_authenticated, |is_authenticated| {
-        if !is_authenticated {
-            navigator.push(Route::Login {});
-        }
-        async {}
-    });
-    
-    render! {
-        div { class: "admin-layout",
-            Sidebar {}
-            main { class: "main-content",
-                Outlet::<AdminRoute> {}
-            }
-        }
-    }
-}
 ```
 
-#### 2. 状态管理 (Dioxus信号系统)
+### 状态管理
 
 ```rust
-use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
-
-/// 管理员用户信息
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AdminUser {
-    pub user_id: String, // 使用String而非OwnedUserId以简化WASM兼容
-    pub username: String,
-    pub is_admin: bool,
-    pub session_id: String,
-    pub expires_at: SystemTime,
-    pub permissions: Vec<Permission>,
-}
-
-/// 用户权限枚举
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum Permission {
-    ConfigManagement,
-    UserManagement,
-    RoomManagement,
-    FederationManagement,
-    MediaManagement,
-    AppserviceManagement,
-    ServerControl,
-    AuditLogAccess,
-    SystemAdmin,
-}
-
-/// 认证状态 (枚举变体)
+// 认证状态
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthState {
     Unauthenticated,
@@ -698,1611 +828,48 @@ pub enum AuthState {
     Failed(String),
 }
 
-impl AuthState {
-    pub fn is_authenticated(&self) -> bool {
-        matches!(self, AuthState::Authenticated(_))
-    }
-
-    pub fn user(&self) -> Option<&AdminUser> {
-        match self {
-            AuthState::Authenticated(user) => Some(user),
-            _ => None,
-        }
-    }
-
-    pub fn is_authenticating(&self) -> bool {
-        matches!(self, AuthState::Authenticating)
-    }
-
-    pub fn is_failed(&self) -> bool {
-        matches!(self, AuthState::Failed(_))
-    }
-
-    pub fn error(&self) -> Option<&String> {
-        match self {
-            AuthState::Failed(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl Default for AuthState {
-    fn default() -> Self {
-        AuthState::Unauthenticated
-    }
-}
-
-/// 应用状态 (简化版)
+// 应用状态
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
-    pub config: Option<WebConfigData>,
+    pub current_page: String,
     pub is_loading: bool,
     pub error: Option<String>,
+    pub theme: Theme,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            config: None,
-            is_loading: false,
-            error: None,
-        }
-    }
-}
-
-/// 全局状态提供者
-#[component]
-pub fn StateProvider(cx: Scope, children: Element) -> Element {
-    use_context_provider(cx, || Signal::new(AuthState::default()));
-    use_context_provider(cx, || Signal::new(AppState::default()));
-    
-    render! {
-        children
-    }
-}
-```
-
-#### 3. 核心组件
-
-```rust
-use dioxus::prelude::*;
-use dioxus_hooks::*;
-
-/// 配置表单组件
-#[component]
-pub fn ConfigForm(
-    cx: Scope,
-    config: Option<WebConfigData>,
-    readonly: bool,
-    on_submit: EventHandler<WebConfigData>,
-) -> Element {
-    let form_data = use_state(cx, || config.clone().unwrap_or_default());
-    let validation_errors = use_state(cx, || Vec::<ConfigError>::new());
-    
-    // 实时验证
-    let validate_field = |field: &str, value: &str| {
-        cx.spawn({
-            let validation_errors = validation_errors.clone();
-            let field = field.to_string();
-            let value = value.to_string();
-            
-            async move {
-                match validate_config_field_api(&field, &value).await {
-                    Ok(_) => {
-                        validation_errors.with_mut(|errors| {
-                            errors.retain(|e| e.field != field);
-                        });
-                    }
-                    Err(error) => {
-                        validation_errors.with_mut(|errors| {
-                            errors.retain(|e| e.field != field);
-                            errors.push(error);
-                        });
-                    }
-                }
-            }
-        });
-    };
-    
-    let submit_config = move |_| {
-        let config = form_data.get().clone();
-        if validation_errors.get().is_empty() {
-            on_submit.call(config);
-        }
-    };
-    
-    render! {
-        form { 
-            class: "config-form",
-            onsubmit: submit_config,
-            prevent_default: "onsubmit",
-            
-            div { class: "form-section",
-                h3 { "服务器配置" }
-                div { class: "form-group",
-                    label { "服务器名称" }
-                    input {
-                        r#type: "text",
-                        value: "{form_data.get().server.server_name}",
-                        readonly: *readonly,
-                        oninput: move |evt| {
-                            let value = evt.value.clone();
-                            validate_field("server_name", &value);
-                            form_data.with_mut(|config| {
-                                config.server.server_name = value;
-                            });
-                        }
-                    }
-                    ErrorMessage { 
-                        field: "server_name", 
-                        errors: validation_errors.get().clone() 
-                    }
-                }
-                // 更多配置字段...
-            }
-            
-            if !*readonly {
-                rsx! {
-                    div { class: "form-actions",
-                        button { 
-                            r#type: "submit", 
-                            disabled: !validation_errors.get().is_empty(),
-                            "保存配置"
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// 用户列表组件
-#[component]
-pub fn UserList(cx: Scope) -> Element {
-    let users = use_future(cx, (), |_| get_users_api());
-    let selected_users = use_state(cx, || Vec::<String>::new());
-    
-    let handle_batch_operation = move |operation: &str| {
-        let selected = selected_users.get().clone();
-        let users = users.clone();
-        
-        cx.spawn(async move {
-            match operation {
-                "deactivate" => {
-                    for user_id in selected {
-                        let _ = deactivate_user_api(&user_id).await;
-                    }
-                }
-                _ => {}
-            }
-            // 刷新用户列表
-            users.restart();
-        });
-    };
-    
-    render! {
-        div { class: "user-list",
-            div { class: "list-header",
-                h2 { "用户管理" }
-                div { class: "batch-actions",
-                    button { 
-                        onclick: move |_| handle_batch_operation("deactivate"),
-                        "批量停用"
-                    }
-                }
-            }
-            
-            match users.value() {
-                Some(Ok(users)) => rsx! {
-                    div { class: "user-table",
-                        for user in users {
-                            UserRow {
-                                key: "{user.user_id}",
-                                user: user.clone(),
-                                selected: selected_users.get().clone(),
-                                on_select: move |user_id: String| {
-                                    selected_users.with_mut(|selected| {
-                                        if selected.contains(&user_id) {
-                                            selected.retain(|id| id != &user_id);
-                                        } else {
-                                            selected.push(user_id);
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-                },
-                Some(Err(e)) => rsx! {
-                    div { class: "error", "加载失败: {e}" }
-                },
-                None => rsx! {
-                    div { "加载中..." }
-                }
-            }
-        }
-    }
-}
-
-/// 错误消息组件
-#[component]
-pub fn ErrorMessage(
-    cx: Scope,
-    field: &'static str,
-    errors: Vec<ConfigError>,
-) -> Element {
-    let field_error = errors.iter()
-        .find(|e| e.field == *field)
-        .map(|e| e.message.clone());
-    
-    match field_error {
-        Some(message) => render! {
-            div { class: "error-message", "{message}" }
-        },
-        None => render! { div {} }
-    }
-}
-
-/// 用户行组件
-#[component]
-pub fn UserRow(
-    cx: Scope,
-    user: UserInfo,
-    selected: Vec<String>,
-    on_select: EventHandler<String>,
-) -> Element {
-    let is_selected = selected.contains(&user.user_id.to_string());
-    
-    render! {
-        div { 
-            class: "user-row {if is_selected { \"selected\" } else { \"\" }}",
-            onclick: move |_| on_select.call(user.user_id.to_string()),
-            
-            div { class: "user-info",
-                img { 
-                    src: user.avatar_url.as_deref().unwrap_or("/default-avatar.png"),
-                    alt: "Avatar",
-                    class: "avatar"
-                }
-                div { class: "user-details",
-                    div { class: "user-id", "{user.user_id}" }
-                    if let Some(display_name) = &user.display_name {
-                        rsx! { div { class: "display-name", "{display_name}" } }
-                    }
-                }
-            }
-            
-            div { class: "user-status",
-                if user.is_admin {
-                    rsx! { span { class: "badge admin", "管理员" } }
-                }
-                if user.is_deactivated {
-                    rsx! { span { class: "badge deactivated", "已停用" } }
-                }
-                if user.is_guest {
-                    rsx! { span { class: "badge guest", "访客" } }
-                }
-            }
-            
-            div { class: "user-actions",
-                button { 
-                    class: "btn-small",
-                    onclick: move |evt| {
-                        evt.stop_propagation();
-                        // 处理编辑用户
-                    },
-                    "编辑"
-                }
-                button { 
-                    class: "btn-small btn-danger",
-                    onclick: move |evt| {
-                        evt.stop_propagation();
-                        // 处理停用用户
-                    },
-                    if user.is_deactivated { "激活" } else { "停用" }
-                }
-            }
-        }
-    }
-}
-```
-
-> **注意**: 当前大多数管理页面组件仍处于开发阶段，显示占位符文本"功能正在开发中..."。完整功能实现待后续迭代。
-
-#### 4. 自定义Hooks
-
-```rust
-use dioxus::prelude::*;
-use crate::models::{AdminUser, AuthState, Permission};
-use crate::services::AuthService;
-use wasm_bindgen_futures::spawn_local;
-
-/// 认证上下文和方法
-#[derive(Clone)]
-pub struct AuthContext {
-    pub auth_state: Signal<AuthState>,
-    pub auth_service: AuthService,
-}
-
-impl AuthContext {
-    pub fn login(&self, username: String, password: String) {
-        let auth_service = self.auth_service.clone();
-        let mut auth_state = self.auth_state;
-        
-        spawn_local(async move {
-            auth_state.set(AuthState::Authenticating);
-            
-            match auth_service.login(username, password).await {
-                Ok(response) => {
-                    if response.success {
-                        if let Some(user) = response.user {
-                            auth_state.set(AuthState::Authenticated(user));
-                        } else {
-                            auth_state.set(AuthState::Failed("No user data received".to_string()));
-                        }
-                    } else {
-                        let error = response.error.unwrap_or_else(|| "Login failed".to_string());
-                        auth_state.set(AuthState::Failed(error));
-                    }
-                }
-                Err(error) => {
-                    auth_state.set(AuthState::Failed(error.user_message()));
-                }
-            }
-        });
-    }
-
-    pub fn logout(&self) {
-        let auth_service = self.auth_service.clone();
-        let mut auth_state = self.auth_state;
-        
-        spawn_local(async move {
-            if let AuthState::Authenticated(user) = &*auth_state.read() {
-                let session_id = user.session_id.clone();
-                let _ = auth_service.logout(session_id).await;
-            }
-            auth_state.set(AuthState::Unauthenticated);
-        });
-    }
-
-    pub fn validate_session(&self) {
-        let auth_service = self.auth_service.clone();
-        let mut auth_state = self.auth_state;
-        
-        spawn_local(async move {
-            match auth_service.validate_session().await {
-                Ok(response) => {
-                    if response.valid {
-                        if let Some(user) = response.user {
-                            auth_state.set(AuthState::Authenticated(user));
-                        }
-                    } else {
-                        auth_state.set(AuthState::Unauthenticated);
-                    }
-                }
-                Err(_) => {
-                    auth_state.set(AuthState::Unauthenticated);
-                }
-            }
-        });
-    }
-
-    pub fn is_authenticated(&self) -> bool {
-        self.auth_state.read().is_authenticated()
-    }
-
-    pub fn current_user(&self) -> Option<AdminUser> {
-        self.auth_state.read().user().cloned()
-    }
-
-    pub fn has_permission(&self, permission: Permission) -> bool {
-        if let Some(user) = self.current_user() {
-            user.has_permission(&permission)
-        } else {
-            false
-        }
-    }
-}
-
-/// 认证管理Hook
-pub fn use_auth() -> AuthContext {
-    let auth_state = use_context::<Signal<AuthState>>();
-    
-    let auth_service = match AuthService::from_global() {
-        Ok(service) => service,
-        Err(_) => AuthService::default(),
-    };
-
-    // 组件挂载时验证会话
-    use_effect({
-        let auth_service = auth_service.clone();
-        let mut auth_state = auth_state;
-        
-        move || {
-            let auth_service = auth_service.clone();
-            spawn_local(async move {
-                match auth_service.validate_session().await {
-                    Ok(response) => {
-                        if response.valid {
-                            if let Some(user) = response.user {
-                                auth_state.set(AuthState::Authenticated(user));
-                            }
-                        }
-                    }
-                    Err(_) => {}
-                }
-            });
-        }
-    });
-
-    AuthContext {
-        auth_state,
-        auth_service,
-    }
-}
-
-/// 需要认证的Hook - 未认证时重定向到登录页
-pub fn use_require_auth() -> Option<AdminUser> {
-    let auth_context = use_auth();
-    
-    let auth_state = auth_context.auth_state.read();
-    match &*auth_state {
-        AuthState::Authenticated(user) => {
-            if user.is_session_valid() {
-                Some(user.clone())
-            } else {
-                drop(auth_state);
-                auth_context.logout();
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// 需要特定权限的Hook
-pub fn use_require_permission(permission: Permission) -> Option<AdminUser> {
-    let user = use_require_auth()?;
-    
-    if user.has_permission(&permission) {
-        Some(user)
-    } else {
-        None
-    }
-}
-
-/// 会话监控Hook - 自动登出
-pub fn use_session_monitor() {
-    let auth_context = use_auth();
-    
-    use_effect(move || {
-        let auth_context = auth_context.clone();
-        
-        spawn_local(async move {
-            loop {
-                // 每30秒检查一次
-                let timeout = js_sys::Promise::new(&mut |resolve, _| {
-                    web_sys::window()
-                        .unwrap()
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 30000)
-                        .unwrap();
-                });
-                wasm_bindgen_futures::JsFuture::from(timeout).await.unwrap();
-                
-                if let Some(user) = auth_context.current_user() {
-                    if !user.is_session_valid() {
-                        auth_context.logout();
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    });
-}
-```
-
-#### 4. API客户端 (WASM兼容 - gloo-net实现)
-
-```rust
-use gloo_net::http::{Request, RequestBuilder};
-use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
-
-/// HTTP请求方法
 #[derive(Clone, Debug, PartialEq)]
-pub enum HttpMethod {
-    Get,
-    Post,
-    Put,
-    Patch,
-    Delete,
-}
-
-impl HttpMethod {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            HttpMethod::Get => "GET",
-            HttpMethod::Post => "POST",
-            HttpMethod::Put => "PUT",
-            HttpMethod::Patch => "PATCH",
-            HttpMethod::Delete => "DELETE",
-        }
-    }
-}
-
-/// 请求配置
-#[derive(Clone, Debug)]
-pub struct RequestConfig {
-    method: HttpMethod,
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Option<serde_json::Value>,
-    timeout_ms: u32,
-    retry_count: u32,
-    skip_auth: bool,
-}
-
-impl RequestConfig {
-    pub fn new(method: HttpMethod, url: impl Into<String>) -> Self {
-        Self {
-            method,
-            url: url.into(),
-            headers: Vec::new(),
-            body: None,
-            timeout_ms: 30000,
-            retry_count: 0,
-            skip_auth: false,
-        }
-    }
-
-    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.push((key.into(), value.into()));
-        self
-    }
-
-    pub fn with_json_body<T: Serialize>(mut self, data: &T) -> WebConfigResult<Self> {
-        self.body = Some(serde_json::to_value(data)?);
-        Ok(self)
-    }
-
-    pub fn with_timeout(mut self, timeout_ms: u32) -> Self {
-        self.timeout_ms = timeout_ms;
-        self
-    }
-
-    pub fn with_retry(mut self, count: u32) -> Self {
-        self.retry_count = count;
-        self
-    }
-
-    pub fn without_auth(mut self) -> Self {
-        self.skip_auth = true;
-        self
-    }
-}
-
-/// 请求拦截器 trait
-pub trait RequestInterceptor: Send + Sync {
-    fn intercept(&self, config: &mut RequestConfig) -> WebConfigResult<()>;
-}
-
-/// 响应拦截器 trait
-pub trait ResponseInterceptor: Send + Sync {
-    fn intercept(&self, response: &Response, config: &RequestConfig) -> WebConfigResult<()>;
-}
-
-/// Token管理器
-#[derive(Clone)]
-pub struct TokenManager {
-    storage_key: String,
-}
-
-impl TokenManager {
-    pub fn new(storage_key: impl Into<String>) -> Self {
-        Self {
-            storage_key: storage_key.into(),
-        }
-    }
-
-    pub fn store_token(&self, token: &str) -> WebConfigResult<()> {
-        gloo_storage::LocalStorage::set(&self.storage_key, token)
-            .map_err(|e| WebConfigError::StorageError(e.to_string()))
-    }
-
-    pub fn get_token(&self) -> WebConfigResult<Option<String>> {
-        gloo_storage::LocalStorage::get(&self.storage_key)
-            .map_err(|e| WebConfigError::StorageError(e.to_string()))
-    }
-
-    pub fn clear_token(&self) -> WebConfigResult<()> {
-        gloo_storage::LocalStorage::delete(&self.storage_key);
-        Ok(())
-    }
-
-    pub fn has_token(&self) -> bool {
-        gloo_storage::LocalStorage::get(&self.storage_key).is_ok()
-    }
-}
-
-/// 认证拦截器
-struct AuthInterceptor {
-    token_manager: TokenManager,
-}
-
-impl AuthInterceptor {
-    pub fn new(token_manager: TokenManager) -> Self {
-        Self { token_manager }
-    }
-}
-
-impl RequestInterceptor for AuthInterceptor {
-    fn intercept(&self, config: &mut RequestConfig) -> WebConfigResult<()> {
-        if !config.skip_auth {
-            if let Some(token) = self.token_manager.get_token()? {
-                config.headers.push(("Authorization".to_string(), format!("Bearer {}", token)));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// 错误拦截器
-struct ErrorInterceptor;
-
-impl ResponseInterceptor for ErrorInterceptor {
-    fn intercept(&self, response: &Response, _config: &RequestConfig) -> WebConfigResult<()> {
-        if !response.ok {
-            return Err(WebConfigError::HttpError(
-                response.status(),
-                response.status_text().unwrap_or_default().to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// API客户端
-#[derive(Clone)]
-pub struct ApiClient {
-    base_url: String,
-    request_interceptors: Vec<Box<dyn RequestInterceptor>>,
-    response_interceptors: Vec<Box<dyn ResponseInterceptor>>,
-    token_manager: TokenManager,
-}
-
-impl ApiClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        let base_url = base_url.into();
-        let token_manager = TokenManager::new("auth_token");
-
-        let mut client = Self {
-            base_url,
-            request_interceptors: Vec::new(),
-            response_interceptors: Vec::new(),
-            token_manager,
-        };
-
-        // 添加默认拦截器
-        client.add_request_interceptor(Box::new(AuthInterceptor::new(token_manager.clone())));
-        client.add_response_interceptor(Box::new(ErrorInterceptor));
-
-        client
-    }
-
-    pub fn add_request_interceptor(&mut self, interceptor: Box<dyn RequestInterceptor>) {
-        self.request_interceptors.push(interceptor);
-    }
-
-    pub fn add_response_interceptor(&mut self, interceptor: Box<dyn ResponseInterceptor>) {
-        self.response_interceptors.push(interceptor);
-    }
-
-    pub fn set_token(&self, token: &str) -> WebConfigResult<()> {
-        self.token_manager.store_token(token)
-    }
-
-    pub fn get_token(&self) -> WebConfigResult<Option<String>> {
-        self.token_manager.get_token()
-    }
-
-    pub fn clear_token(&self) -> WebConfigResult<()> {
-        self.token_manager.clear_token()
-    }
-
-    pub fn has_token(&self) -> bool {
-        self.token_manager.has_token()
-    }
-
-    pub async fn get(&self, path: &str) -> WebConfigResult<Response> {
-        self.execute_request(RequestConfig::new(HttpMethod::Get, path)).await
-    }
-
-    pub async fn post_json<T: Serialize>(&self, path: &str, data: &T) -> WebConfigResult<Response> {
-        self.execute_request(
-            RequestConfig::new(HttpMethod::Post, path).with_json_body(data)?,
-        )
-        .await
-    }
-
-    pub async fn put_json<T: Serialize>(&self, path: &str, data: &T) -> WebConfigResult<Response> {
-        self.execute_request(
-            RequestConfig::new(HttpMethod::Put, path).with_json_body(data)?,
-        )
-        .await
-    }
-
-    pub async fn delete(&self, path: &str) -> WebConfigResult<Response> {
-        self.execute_request(RequestConfig::new(HttpMethod::Delete, path)).await
-    }
-
-    pub async fn patch_json<T: Serialize>(&self, path: &str, data: &T) -> WebConfigResult<Response> {
-        self.execute_request(
-            RequestConfig::new(HttpMethod::Patch, path).with_json_body(data)?,
-        )
-        .await
-    }
-
-    async fn execute_request(&self, mut config: RequestConfig) -> WebConfigResult<Response> {
-        // 应用请求拦截器
-        for interceptor in &self.request_interceptors {
-            interceptor.intercept(&mut config)?;
-        }
-
-        // 构建请求
-        let url = format!("{}{}", self.base_url, config.url);
-        let mut request = match config.method {
-            HttpMethod::Get => Request::get(&url),
-            HttpMethod::Post => Request::post(&url),
-            HttpMethod::Put => Request::put(&url),
-            HttpMethod::Patch => Request::patch(&url),
-            HttpMethod::Delete => Request::delete(&url),
-        };
-
-        // 添加headers
-        for (key, value) in &config.headers {
-            request = request.header(key, value);
-        }
-
-        // 添加body
-        if let Some(body) = config.body {
-            request = request.json(&body)?;
-        }
-
-        // 发送请求
-        let response = request.send().await?;
-
-        // 应用响应拦截器
-        for interceptor in &self.response_interceptors {
-            interceptor.intercept(&response, &config)?;
-        }
-
-        Ok(Response(response))
-    }
-
-    pub async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> WebConfigResult<T> {
-        let response = self.get(path).await?;
-        response.json().await
-    }
-
-    pub async fn post_json_response<T: Serialize, R: for<'de> Deserialize<'de>>(
-        &self,
-        path: &str,
-        data: &T,
-    ) -> WebConfigResult<R> {
-        let response = self.post_json(path, data).await?;
-        response.json().await
-    }
-}
-
-/// 全局API客户端实例
-use std::cell::RefCell;
-use std::rc::Rc;
-
-thread_local! {
-    static API_CLIENT: RefCell<Option<Rc<ApiClient>>> = RefCell::new(None);
-}
-
-pub fn init_api_client(base_url: impl Into<String>) {
-    let client = Rc::new(ApiClient::new(base_url));
-    API_CLIENT.with(|api| {
-        *api.borrow_mut() = Some(client);
-    });
-}
-
-pub fn get_api_client() -> WebConfigResult<ApiClient> {
-    API_CLIENT
-        .with(|api| {
-            let client = api.borrow();
-            client.as_ref().cloned()
-        })
-        .ok_or_else(|| WebConfigError::NotInitialized("API client not initialized".to_string()))
-}
-
-// 便捷函数
-pub async fn api_get(path: &str) -> WebConfigResult<Response> {
-    get_api_client()?.get(path).await
-}
-
-pub async fn api_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> WebConfigResult<T> {
-    get_api_client()?.get_json(path).await
-}
-
-pub async fn api_post_json<T: Serialize>(path: &str, data: &T) -> WebConfigResult<Response> {
-    get_api_client()?.post_json(path, data).await
-}
-
-pub async fn api_put_json<T: Serialize>(path: &str, data: &T) -> WebConfigResult<Response> {
-    get_api_client()?.put_json(path, data).await
-}
-
-pub async fn api_delete(path: &str) -> WebConfigResult<Response> {
-    get_api_client()?.delete(path).await
-}
-
-pub fn set_auth_token(token: &str) -> WebConfigResult<()> {
-    get_api_client()?.set_token(token)
-}
-
-pub fn clear_auth_token() -> WebConfigResult<()> {
-    get_api_client()?.clear_token()
-}
-
-pub fn has_auth_token() -> bool {
-    get_api_client().map_or(false, |c| c.has_token())
-}
-```
-
-## 数据模型
-
-### 配置数据模型
-
-```rust
-#[derive(Serialize, Deserialize, Clone)]
-pub struct WebConfigData {
-    pub server: ServerConfigSection,
-    pub database: DatabaseConfigSection,
-    pub federation: FederationConfigSection,
-    pub auth: AuthConfigSection,
-    pub media: MediaConfigSection,
-    pub network: NetworkConfigSection,
-    pub logging: LoggingConfigSection,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ServerConfigSection {
-    pub server_name: String,
-    pub listeners: Vec<ListenerConfig>,
-    pub max_request_size: u64,
-    pub enable_metrics: bool,
-    pub home_page: Option<String>,
-    pub new_user_displayname_suffix: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct DatabaseConfigSection {
-    pub connection_string: String,
-    pub max_connections: u32,
-    pub connection_timeout: u64,
-    pub auto_migrate: bool,
-    pub pool_size: Option<u32>,
-    pub min_idle: Option<u32>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct FederationConfigSection {
-    pub enabled: bool,
-    pub trusted_servers: Vec<String>,
-    pub signing_key_path: String,
-    pub verify_keys: bool,
-    pub allow_device_name: bool,
-    pub allow_inbound_profile_lookup: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct AuthConfigSection {
-    pub registration_enabled: bool,
-    pub registration_kind: RegistrationKind,
-    pub jwt_secret: String,
-    pub jwt_expiry: u64,
-    pub oidc_providers: Vec<OidcProvider>,
-    pub allow_guest_registration: bool,
-    pub require_auth_for_profile_requests: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct MediaConfigSection {
-    pub storage_path: String,
-    pub max_file_size: u64,
-    pub thumbnail_sizes: Vec<ThumbnailSize>,
-    pub enable_url_previews: bool,
-    pub allow_legacy: bool,
-    pub startup_check: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct NetworkConfigSection {
-    pub request_timeout: u64,
-    pub connection_timeout: u64,
-    pub ip_range_denylist: Vec<String>,
-    pub cors_origins: Vec<String>,
-    pub rate_limits: RateLimitConfig,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct LoggingConfigSection {
-    pub level: LogLevel,
-    pub format: LogFormat,
-    pub output: Vec<LogOutput>,
-    pub rotation: LogRotationConfig,
-    pub prometheus_metrics: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum RegistrationKind {
-    Open,
-    Token,
-    Invite,
-    Disabled,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum LogFormat {
-    Json,
-    Pretty,
-    Compact,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum LogOutput {
-    Console,
-    File(String),
-    Syslog,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct RateLimitConfig {
-    pub requests_per_minute: u32,
-    pub burst_size: u32,
-    pub enabled: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct LogRotationConfig {
-    pub max_size_mb: u64,
-    pub max_files: u32,
-    pub max_age_days: u32,
-}
-```
-```
-
-### 审计日志模型
-
-```rust
-#[derive(Serialize, Deserialize, Clone)]
-pub struct AuditLogEntry {
-    pub id: i64,
-    pub timestamp: SystemTime,
-    pub admin_user_id: OwnedUserId,
-    pub action: AuditAction,
-    pub target_type: AuditTargetType,
-    pub target_id: String,
-    pub old_value: Option<serde_json::Value>,
-    pub new_value: Option<serde_json::Value>,
-    pub success: bool,
-    pub error_message: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum AuditAction {
-    ConfigUpdate,
-    UserCreate,
-    UserUpdate,
-    UserDeactivate,
-    RoomDisable,
-    RoomEnable,
-    AppserviceRegister,
-    AppserviceUnregister,
-    MediaDelete,
-    FederationDisable,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum AuditTargetType {
-    Config,
-    User,
-    Room,
-    Appservice,
-    Media,
-    Federation,
+pub enum Theme {
+    Light,
+    Dark,
 }
 ```
 
 ## 错误处理
 
-### 错误类型定义
-
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum WebConfigError {
-    #[error("Configuration validation failed: {0}")]
-    ValidationError(String),
+    #[error("Permission denied: {message}")]
+    Permission { message: String },
     
-    #[error("Authentication required")]
-    AuthenticationRequired,
+    #[error("Validation error: {message}")]
+    Validation { message: String, field: Option<String> },
     
-    #[error("Insufficient privileges")]
-    InsufficientPrivileges,
+    #[error("Not found: {resource}")]
+    NotFound { resource: String },
     
-    #[error("Configuration file error: {0}")]
-    ConfigFileError(String),
+    #[error("Internal error: {message}")]
+    Internal { message: String },
     
-    #[error("Database operation failed: {0}")]
-    DatabaseError(String),
-    
-    #[error("External service error: {0}")]
-    ExternalServiceError(String),
-}
-
-impl From<WebConfigError> for AppError {
-    fn from(err: WebConfigError) -> Self {
-        match err {
-            WebConfigError::AuthenticationRequired => {
-                AppError::public("Authentication required")
-            }
-            WebConfigError::InsufficientPrivileges => {
-                AppError::public("Insufficient privileges")
-            }
-            WebConfigError::ValidationError(msg) => {
-                AppError::public(format!("Validation error: {}", msg))
-            }
-            _ => AppError::internal(err.to_string()),
-        }
-    }
+    #[error("Authentication error: {message}")]
+    Authentication { message: String },
 }
 ```
 
-### 前端错误处理 (Rust)
-
-```rust
-use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApiError {
-    pub status: u16,
-    pub code: String,
-    pub message: String,
-    pub details: Option<serde_json::Value>,
-}
-
-impl ApiError {
-    pub async fn from_response(response: reqwest::Response) -> Self {
-        let status = response.status().as_u16();
-        let error_body: Result<ErrorResponse, _> = response.json().await;
-        
-        match error_body {
-            Ok(error) => Self {
-                status,
-                code: error.code,
-                message: error.message,
-                details: error.details,
-            },
-            Err(_) => Self {
-                status,
-                code: "UNKNOWN_ERROR".to_string(),
-                message: "Unknown error occurred".to_string(),
-                details: None,
-            },
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct ErrorResponse {
-    code: String,
-    message: String,
-    details: Option<serde_json::Value>,
-}
-
-// 全局错误处理钩子
-pub fn use_error_handler(cx: &ScopeState) -> impl Fn(ApiError) + '_ {
-    let navigator = use_navigator(cx);
-    
-    move |error: ApiError| {
-        match error.status {
-            401 => {
-                // 重定向到登录页面
-                navigator.push(Route::Login {});
-            }
-            403 => {
-                // 显示权限不足错误
-                show_error_toast("权限不足");
-            }
-            422 => {
-                // 显示验证错误
-                if let Some(details) = error.details {
-                    show_validation_errors(details);
-                } else {
-                    show_error_toast(&error.message);
-                }
-            }
-            _ => {
-                show_error_toast(&error.message);
-            }
-        }
-    }
-}
-
-fn show_error_toast(message: &str) {
-    // 实现错误提示逻辑
-    web_sys::console::error_1(&format!("Error: {}", message).into());
-}
-
-fn show_validation_errors(details: serde_json::Value) {
-    // 实现验证错误显示逻辑
-    if let Some(errors) = details.as_array() {
-        for error in errors {
-            if let Some(message) = error.get("message").and_then(|m| m.as_str()) {
-                show_error_toast(message);
-            }
-        }
-    }
-}
-```
-
-## 测试策略
-
-### 后端测试
-
-**单元测试:**
-- 配置验证逻辑测试
-- API端点功能测试
-- 数据模型序列化测试
-- 错误处理测试
-
-**集成测试:**
-- 数据库操作测试
-- 文件系统操作测试
-- 外部服务集成测试
-- 认证流程测试
-
-**属性测试:**
-- 配置解析和验证的属性测试
-- 用户管理操作的属性测试
-- 审计日志记录的属性测试
-
-### 前端测试 (Rust)
-
-**单元测试:**
-- 组件渲染测试 (使用dioxus-testing)
-- 状态管理测试 (共享状态和钩子测试)
-- 工具函数测试
-- 表单验证测试
-
-**集成测试:**
-- API调用测试 (使用mockall模拟)
-- 路由导航测试
-- 用户交互流程测试
-
-**端到端测试:**
-- 完整管理流程测试 (使用wasm-pack-test)
-- 跨浏览器兼容性测试
-- 响应式设计测试
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use dioxus::prelude::*;
-    use dioxus_testing::*;
-    
-    #[test]
-    fn test_config_form_validation() {
-        let mut dom = VirtualDom::new_with_props(
-            ConfigForm,
-            ConfigFormProps {
-                config: Some(ServerConfig::default()),
-                readonly: false,
-                on_submit: |_| {},
-            }
-        );
-        
-        let _ = dom.rebuild();
-        let html = dioxus_ssr::render(&dom);
-        
-        // 测试组件渲染和验证逻辑
-        assert!(html.contains("服务器配置"));
-    }
-    
-    #[test]
-    fn test_auth_state() {
-        // 测试未认证状态
-        let auth_state = AuthState::Unauthenticated;
-        assert!(!auth_state.is_authenticated());
-        
-        // 测试认证中状态
-        let auth_state = AuthState::Authenticating;
-        assert!(auth_state.is_authenticating());
-        
-        // 测试认证成功状态
-        let user = AdminUser {
-            user_id: "test_user".to_string(),
-            username: "test".to_string(),
-            is_admin: true,
-            session_id: "session123".to_string(),
-            expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
-            permissions: vec![Permission::SystemAdmin],
-        };
-        let auth_state = AuthState::Authenticated(user.clone());
-        assert!(auth_state.is_authenticated());
-        assert_eq!(auth_state.user(), Some(&user));
-        
-        // 测试认证失败状态
-        let auth_state = AuthState::Failed("Invalid credentials".to_string());
-        assert!(auth_state.is_failed());
-        assert_eq!(auth_state.error(), Some(&"Invalid credentials".to_string()));
-    }
-    
-    #[test]
-    fn test_admin_user_permissions() {
-        let admin_user = AdminUser {
-            user_id: "admin".to_string(),
-            username: "admin".to_string(),
-            is_admin: true,
-            session_id: "session123".to_string(),
-            expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
-            permissions: vec![Permission::SystemAdmin],
-        };
-        
-        assert!(admin_user.has_permission(&Permission::ConfigManagement));
-        assert!(admin_user.has_permission(&Permission::UserManagement));
-        assert!(admin_user.is_session_valid());
-    }
-}
-```
-
-### 构建和部署
-
-#### 1. 项目结构
-
-```
-palpo-web-config/
-├── Cargo.toml
-├── Dioxus.toml             # Dioxus 配置文件
-├── src/
-│   ├── main.rs             # 后端入口
-│   ├── lib.rs              # 前端库入口
-│   ├── api/                # API路由和处理器
-│   ├── models/             # 数据模型
-│   └── web/                # 前端Rust代码
-│       ├── app.rs          # 主应用组件
-│       ├── components/     # UI组件
-│       ├── pages/          # 页面组件
-│       ├── hooks/          # 自定义钩子
-│       ├── services/       # API服务
-│       └── utils/          # 工具函数
-├── assets/                 # 静态资源
-│   ├── tailwind.css        # 样式文件
-│   ├── icons/              # 图标文件
-│   └── images/             # 图片文件
-├── dist/                   # 构建输出
-└── scripts/                # 构建和部署脚本
-    ├── build.sh
-    ├── dev.sh
-    └── deploy.sh
-```
-
-#### 2. Cargo.toml配置
-
-```toml
-[package]
-name = "palpo-admin-ui"
-version = "0.1.0"
-edition = "2021"
-description = "Web admin interface for Palpo Matrix server configuration and management"
-authors = ["Palpo Team"]
-license = "Apache-2.0"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-# Frontend dependencies (Dioxus 0.7)
-dioxus = { version = "0.7", features = ["web", "router"] }
-dioxus-router = "0.7"
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = [
-    "console",
-    "Window",
-    "Document",
-    "Element",
-    "HtmlElement",
-    "Storage",
-    "Request",
-    "RequestInit",
-    "RequestMode",
-    "Response",
-    "Headers",
-] }
-js-sys = "0.3"
-wasm-bindgen-futures = "0.4"
-
-# Shared dependencies
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-anyhow = "1.0"
-chrono = { version = "0.4", features = ["serde", "wasmbind"] }
-uuid = { version = "1.0", features = ["v4", "serde", "js"] }
-getrandom = { version = "0.2", features = ["js"] }
-toml = "0.8"
-serde_yaml = "0.9"
-base64 = "0.21"
-rand = { version = "0.8", features = ["getrandom"] }
-
-# WASM-specific dependencies
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo-net = "0.4"  # HTTP requests in WASM
-gloo-storage = "0.3"  # Local storage in WASM
-gloo-timers = { version = "0.3", features = ["futures"] }  # Timers in WASM
-
-# Native dependencies (for testing)
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.0", features = ["fs", "macros", "rt", "time"] }
-
-[dev-dependencies]
-tokio-test = "0.4"
-wasm-bindgen-test = "0.3"
-proptest = "1.4"
-
-[features]
-default = []
-test-utils = []
-```
-
-#### 3. 构建脚本
-
-```bash
-#!/bin/bash
-# build.sh
-
-# 安装 Dioxus CLI (如果未安装)
-if ! command -v dx &> /dev/null; then
-    cargo install dioxus-cli
-fi
-
-# 构建前端 WASM
-dx build --release
-
-# 构建后端服务器
-cargo build --release --bin server
-
-# 复制静态文件
-mkdir -p dist/assets
-cp -r static/* dist/assets/
-
-echo "构建完成！"
-echo "前端文件: dist/"
-echo "后端二进制: target/release/server"
-```
-
-#### 4. 开发脚本
-
-```bash
-#!/bin/bash
-# dev.sh
-
-# 并行运行前端和后端开发服务器
-trap 'kill 0' EXIT
-
-# 启动前端开发服务器 (热重载)
-dx serve --hot-reload &
-
-# 启动后端开发服务器
-cargo watch -x "run --bin server" &
-
-wait
-```
-
-#### 6. 额外配置文件
-
-**tailwind.config.js**
-```javascript
-/** @type {import('tailwindcss').Config} */
-module.exports = {
-  content: [
-    "./src/**/*.{rs,html,css}",
-    "./assets/**/*.html",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        'palpo-primary': '#6366f1',
-        'palpo-secondary': '#8b5cf6',
-        'palpo-accent': '#06b6d4',
-        'palpo-success': '#10b981',
-        'palpo-warning': '#f59e0b',
-        'palpo-error': '#ef4444',
-      }
-    },
-  },
-  plugins: [
-    require('@tailwindcss/forms'),
-    require('@tailwindcss/typography'),
-  ],
-}
-```
-
-**wasm-opt.toml**
-```toml
-[profile.release]
-# 优化WASM包大小
-opt-level = "s"
-lto = true
-codegen-units = 1
-panic = "abort"
-
-[profile.release.package."*"]
-opt-level = "s"
-```
-
-**.cargo/config.toml**
-```toml
-[build]
-target = "wasm32-unknown-unknown"
-
-[target.wasm32-unknown-unknown]
-runner = "wasm-server-runner"
-
-[unstable]
-build-std = ["std", "panic_abort"]
-build-std-features = ["panic_immediate_abort"]
-```
-
-```toml
-[application]
-name = "palpo-admin-ui"
-default_platform = "web"
-
-[web.app]
-title = "Palpo 配置管理"
-base_path = "dist"
-
-[web.watcher]
-watch_path = ["src", "assets"]
-reload_html = true
-index_on_404 = true
-
-[web.resource]
-style = ["assets/tailwind.css"]
-script = []
-
-[bundle]
-identifier = "im.palpo.config"
-publisher = "Palpo Team"
-icon = ["assets/icon-32x32.png"]
-resources = ["assets/*"]
-copyright = "Copyright (c) Palpo Team"
-category = "DeveloperTool"
-short_description = "Palpo Matrix服务器配置管理界面"
-long_description = """
-Palpo Matrix服务器的现代化Web配置管理界面。
-提供直观的用户界面来管理服务器配置、用户、房间、联邦等功能。
-"""
-```
-
-#### 6. 额外配置文件
-
-**tailwind.config.js**
-```javascript
-/** @type {import('tailwindcss').Config} */
-module.exports = {
-  content: [
-    "./src/**/*.{rs,html,css}",
-    "./assets/**/*.html",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        'palpo-primary': '#6366f1',
-        'palpo-secondary': '#8b5cf6',
-        'palpo-accent': '#06b6d4',
-        'palpo-success': '#10b981',
-        'palpo-warning': '#f59e0b',
-        'palpo-error': '#ef4444',
-      }
-    },
-  },
-  plugins: [
-    require('@tailwindcss/forms'),
-    require('@tailwindcss/typography'),
-  ],
-}
-```
-
-**wasm-opt.toml**
-```toml
-[profile.release]
-# 优化WASM包大小
-opt-level = "s"
-lto = true
-codegen-units = 1
-panic = "abort"
-
-[profile.release.package."*"]
-opt-level = "s"
-```
-
-**.cargo/config.toml**
-```toml
-[build]
-target = "wasm32-unknown-unknown"
-
-[target.wasm32-unknown-unknown]
-runner = "wasm-server-runner"
-
-[unstable]
-build-std = ["std", "panic_abort"]
-build-std-features = ["panic_immediate_abort"]
-```
-## 正确性属性
-
-*属性是一个特征或行为，应该在系统的所有有效执行中保持为真——本质上是关于系统应该做什么的正式声明。属性作为人类可读规范和机器可验证正确性保证之间的桥梁。*
-
-### 属性 1: 配置验证一致性
-*对于任何* 配置项和输入值，验证函数应该对相同的输入始终返回相同的验证结果，且验证错误应包含具体的错误信息和修正建议
-**验证: 需求 1.2, 1.4, 2.1, 2.2, 2.4, 8.1, 8.2**
-
-### 属性 2: 配置持久化轮回
-*对于任何* 有效的配置对象，保存到TOML文件然后重新加载应该产生等价的配置对象，且每次保存都应创建带时间戳的备份
-**验证: 需求 10.1, 10.2, 10.3, 10.4**
-
-### 属性 3: 列表管理操作不变性
-*对于任何* 配置列表（信任服务器、IP白名单等），添加元素后列表长度应增加1，移除存在的元素后列表长度应减少1，且列表应保持元素的唯一性
-**验证: 需求 3.2, 3.4, 6.3**
-
-### 属性 4: 认证和授权一致性
-*对于任何* 用户访问请求，未认证用户应被拒绝访问，已认证但非管理员用户应被限制访问敏感配置，且所有访问尝试都应被记录
-**验证: 需求 9.1, 9.2, 9.4, 9.5**
-
-### 属性 5: 配置依赖验证
-*对于任何* 具有依赖关系的配置项组合，验证函数应检查配置的一致性，当依赖不满足时应显示相应的错误信息
-**验证: 需求 8.3, 8.4**
-
-### 属性 6: 审计日志完整性
-*对于任何* 配置修改操作，应在审计日志中记录包含用户、时间、变更内容的完整信息，且日志记录应支持基于历史的配置回滚
-**验证: 需求 12.1, 12.2, 12.3, 12.4**
-
-### 属性 7: 配置导入导出轮回
-*对于任何* 完整的配置对象，导出为文件然后重新导入应产生等价的配置，且导入过程应正确验证文件格式和处理配置冲突
-**验证: 需求 14.1, 14.2, 14.3, 14.4**
-
-### 属性 8: 搜索和过滤准确性
-*对于任何* 搜索查询和过滤条件，返回的结果应只包含匹配条件的配置项，且搜索结果应保持一致性
-**验证: 需求 13.2**
-
-### 属性 9: 操作反馈一致性
-*对于任何* 系统操作，成功的操作应返回成功反馈，失败的操作应返回包含具体错误信息的失败反馈
-**验证: 需求 13.5**
-
-### 属性 10: 敏感信息安全处理
-*对于任何* 包含敏感信息的配置操作，系统应提供安全的处理选项，确保敏感数据在传输和存储中得到适当保护
-**验证: 需求 14.5**
-
-### 属性 11: 热重载功能检测
-*对于任何* 系统状态，当热重载功能可用时应提供热重载选项，当不可用时应提供替代的重启选项
-**验证: 需求 11.5**
-
-### 属性 12: 日志归档管理
-*对于任何* 审计日志系统，当日志大小达到限制时应自动触发归档，且归档后的日志应保持可访问性
-**验证: 需求 12.5**
+## 安全考虑
+
+1. **认证**: 所有管理API需要有效的访问令牌
+2. **权限检查**: 某些操作需要特定权限
+3. **CSRF保护**: 使用SameSite Cookie和CSRF令牌
+4. **输入验证**: 所有用户输入都需要验证
+5. **审计日志**: 所有管理操作都记录审计日志
