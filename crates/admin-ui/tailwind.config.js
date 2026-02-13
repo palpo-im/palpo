@@ -17,7 +17,8 @@ module.exports = {
     },
   },
   plugins: [
-    require('@tailwindcss/forms'),
-    require('@tailwindcss/typography'),
+    // Note: Using CDN version of Tailwind, plugins need to be added via CDN or npm
+    // require('@tailwindcss/forms'),
+    // require('@tailwindcss/typography'),
   ],
 }
