@@ -990,7 +990,7 @@ pub enum ConflictResolution {
     Manual,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RiskLevel {
     Low,
     Medium,
