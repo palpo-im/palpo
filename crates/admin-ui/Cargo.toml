@@ -43,11 +43,12 @@ thiserror = "1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 uuid = { version = "1.0", features = ["v4", "serde", "js"] }
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { version = "0.2" }
 toml = "0.8"
 serde_yaml = "0.9"
 base64 = "0.21"
 rand = { version = "0.8", features = ["getrandom"] }
+regex.workspace = true
 
 # Conditional dependencies for different targets
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -56,6 +57,7 @@ wasm-bindgen-futures = "0.4"
 gloo-net = "0.4"  # For HTTP requests in WASM
 gloo-storage = "0.3"  # For local storage in WASM
 gloo-timers = { version = "0.3", features = ["futures"] }  # For timers in WASM
+getrandom = { version = "0.2", features = ["js"] }  # WASM random support
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native dependencies
