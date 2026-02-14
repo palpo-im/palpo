@@ -15,6 +15,9 @@ pub mod media_admin_api;
 pub mod appservice_admin_api;
 pub mod server_control_api;
 
+#[cfg(test)]
+mod config_api_test;
+
 pub use api_client::*;
 pub use auth::*;
 pub use audit::*;
