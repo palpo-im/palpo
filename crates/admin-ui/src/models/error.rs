@@ -213,13 +213,9 @@ impl ApiError {
     }
 
     /// Create an API error with error code
-    pub fn with_code(message: impl Into<String>, error_code: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            status_code: None,
-            error_code: Some(error_code.into()),
-            details: None,
-        }
+    pub fn with_code(mut self, error_code: impl Into<String>) -> Self {
+        self.error_code = Some(error_code.into());
+        self
     }
 
     /// Add details to the error
@@ -272,7 +268,8 @@ impl WebConfigError {
             WebConfigError::ValidationError { .. } |
             WebConfigError::AuthError { .. } |
             WebConfigError::PermissionError { .. } |
-            WebConfigError::ClientError { .. } => true,
+            WebConfigError::ClientError { .. } |
+            WebConfigError::ParseError { .. } => true,
             _ => false,
         }
     }
@@ -284,7 +281,8 @@ impl WebConfigError {
             WebConfigError::DatabaseError { .. } |
             WebConfigError::FileSystemError { .. } |
             WebConfigError::ServerControlError { .. } |
-            WebConfigError::InternalError { .. } => true,
+            WebConfigError::InternalError { .. } |
+            WebConfigError::NetworkError { .. } => true,
             _ => false,
         }
     }
@@ -390,10 +388,674 @@ impl WebConfigError {
         }
     }
 
+    /// Create a parse error
+    pub fn parse(message: impl Into<String>, format: impl Into<String>) -> Self {
+        WebConfigError::ParseError {
+            message: message.into(),
+            format: format.into(),
+        }
+    }
+
     /// Create a client error
     pub fn client(message: impl Into<String>) -> Self {
         WebConfigError::ClientError {
             message: message.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    /// Test WebConfigError status code mappings
+    /// Validates that each error type returns the correct HTTP status code
+    #[test]
+    fn test_error_status_codes() {
+        // Client errors (4xx)
+        assert_eq!(
+            WebConfigError::validation("test").status_code(),
+            400,
+            "ValidationError should return 400"
+        );
+        assert_eq!(
+            WebConfigError::auth("test").status_code(),
+            401,
+            "AuthError should return 401"
+        );
+        assert_eq!(
+            WebConfigError::permission("test").status_code(),
+            403,
+            "PermissionError should return 403"
+        );
+        assert_eq!(
+            WebConfigError::client("test").status_code(),
+            400,
+            "ClientError should return 400"
+        );
+        
+        // Parse errors are client errors
+        assert_eq!(
+            WebConfigError::parse("test", "JSON").status_code(),
+            400,
+            "ParseError should return 400"
+        );
+        
+        // Server errors (5xx)
+        assert_eq!(
+            WebConfigError::api("test").status_code(),
+            500,
+            "ApiError without status should return 500"
+        );
+        assert_eq!(
+            WebConfigError::api_with_status("test", 502).status_code(),
+            502,
+            "ApiError with status should return that status"
+        );
+        assert_eq!(
+            WebConfigError::filesystem("test").status_code(),
+            500,
+            "FileSystemError should return 500"
+        );
+        assert_eq!(
+            WebConfigError::database("test").status_code(),
+            500,
+            "DatabaseError should return 500"
+        );
+        assert_eq!(
+            WebConfigError::server_control("test").status_code(),
+            500,
+            "ServerControlError should return 500"
+        );
+        assert_eq!(
+            WebConfigError::internal("test").status_code(),
+            500,
+            "InternalError should return 500"
+        );
+        
+        // Network errors return 503
+        assert_eq!(
+            WebConfigError::network("test").status_code(),
+            503,
+            "NetworkError should return 503"
+        );
+    }
+
+    /// Test WebConfigError user-friendly messages
+    #[test]
+    fn test_error_user_messages() {
+        // Validation error without field
+        let error = WebConfigError::validation("field is required");
+        assert_eq!(
+            error.user_message(),
+            "Validation error: field is required"
+        );
+
+        // Validation error with field
+        let error = WebConfigError::validation_field("username", "must be at least 3 characters");
+        assert_eq!(
+            error.user_message(),
+            "Validation error in field 'username': must be at least 3 characters"
+        );
+
+        // Auth error
+        let error = WebConfigError::auth("invalid credentials");
+        assert_eq!(
+            error.user_message(),
+            "Authentication required: invalid credentials"
+        );
+
+        // Permission error
+        let error = WebConfigError::permission("admin access required");
+        assert_eq!(
+            error.user_message(),
+            "Permission denied: admin access required"
+        );
+
+        // API error
+        let error = WebConfigError::api("connection refused");
+        assert_eq!(
+            error.user_message(),
+            "API error: connection refused"
+        );
+
+        // File system error without path
+        let error = WebConfigError::filesystem("permission denied");
+        assert_eq!(
+            error.user_message(),
+            "File system error: permission denied"
+        );
+
+        // File system error with path
+        let error = WebConfigError::filesystem_with_path("permission denied", "/etc/palpo/config.toml");
+        assert_eq!(
+            error.user_message(),
+            "File system error at '/etc/palpo/config.toml': permission denied"
+        );
+
+        // Database error
+        let error = WebConfigError::database("connection timeout");
+        assert_eq!(
+            error.user_message(),
+            "Database error: connection timeout"
+        );
+
+        // Parse error
+        let error = WebConfigError::parse("unexpected token", "YAML");
+        assert_eq!(
+            error.user_message(),
+            "Failed to parse YAML configuration: unexpected token"
+        );
+
+        // Network error
+        let error = WebConfigError::network("connection timeout");
+        assert_eq!(
+            error.user_message(),
+            "Network error: connection timeout"
+        );
+
+        // Server control error
+        let error = WebConfigError::server_control("restart failed");
+        assert_eq!(
+            error.user_message(),
+            "Server control error: restart failed"
+        );
+
+        // Internal error
+        let error = WebConfigError::internal("unknown error occurred");
+        assert_eq!(
+            error.user_message(),
+            "Internal error: unknown error occurred"
+        );
+
+        // Client error
+        let error = WebConfigError::client("invalid input");
+        assert_eq!(
+            error.user_message(),
+            "Client error: invalid input"
+        );
+    }
+
+    /// Test WebConfigError error codes
+    #[test]
+    fn test_error_codes() {
+        assert_eq!(
+            WebConfigError::validation("test").error_code(),
+            "VALIDATION_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::auth("test").error_code(),
+            "AUTH_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::permission("test").error_code(),
+            "PERMISSION_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::api("test").error_code(),
+            "API_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::filesystem("test").error_code(),
+            "FILESYSTEM_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::database("test").error_code(),
+            "DATABASE_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::parse("test", "JSON").error_code(),
+            "PARSE_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::network("test").error_code(),
+            "NETWORK_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::server_control("test").error_code(),
+            "SERVER_CONTROL_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::internal("test").error_code(),
+            "INTERNAL_ERROR"
+        );
+        assert_eq!(
+            WebConfigError::client("test").error_code(),
+            "CLIENT_ERROR"
+        );
+    }
+
+    /// Test ErrorResponse creation from WebConfigError
+    #[test]
+    fn test_error_response_from_error() {
+        let error = WebConfigError::validation_field("port", "must be between 1 and 65535");
+        let response = ErrorResponse::from_error(error.clone());
+
+        assert_eq!(response.error, error.to_string());
+        assert_eq!(response.message, error.user_message());
+        assert_eq!(response.code, "VALIDATION_ERROR");
+        assert_eq!(response.status, 400);
+        assert!(response.timestamp <= chrono::Utc::now());
+    }
+
+    /// Test ErrorResponse with details
+    #[test]
+    fn test_error_response_with_details() {
+        let error = WebConfigError::validation("multiple errors");
+        let details = serde_json::json!({
+            "errors": ["port is required", "host is required"]
+        });
+        
+        let response = ErrorResponse::from_error(error).with_details(details.clone());
+        
+        assert_eq!(response.details, Some(details));
+    }
+
+    /// Test ApiError creation utilities
+    #[test]
+    fn test_api_error_creation() {
+        // Basic creation
+        let error = ApiError::new("Something went wrong");
+        assert_eq!(error.message, "Something went wrong");
+        assert!(error.status_code.is_none());
+        assert!(error.error_code.is_none());
+        assert!(error.details.is_none());
+
+        // With status code
+        let error = ApiError::with_status("Bad request", 400);
+        assert_eq!(error.message, "Bad request");
+        assert_eq!(error.status_code, Some(400));
+
+        // With error code
+        let error = ApiError::new("Error occurred").with_code("CUSTOM_ERROR");
+        assert_eq!(error.message, "Error occurred");
+        assert_eq!(error.error_code, Some("CUSTOM_ERROR".to_string()));
+
+        // With details
+        let error = ApiError::new("Error").with_details(serde_json::json!({"key": "value"}));
+        assert!(error.details.is_some());
+    }
+
+    /// Test ApiError error type checking
+    #[test]
+    fn test_api_error_type_checking() {
+        // Client errors (4xx)
+        let error = ApiError::with_status("Bad request", 400);
+        assert!(error.is_client_error());
+        assert!(!error.is_server_error());
+
+        let error = ApiError::with_status("Not found", 404);
+        assert!(error.is_client_error());
+        assert!(!error.is_server_error());
+
+        // Server errors (5xx)
+        let error = ApiError::with_status("Internal error", 500);
+        assert!(!error.is_client_error());
+        assert!(error.is_server_error());
+
+        let error = ApiError::with_status("Bad gateway", 502);
+        assert!(!error.is_client_error());
+        assert!(error.is_server_error());
+
+        // Auth error by status code
+        let error = ApiError::with_status("Unauthorized", 401);
+        assert!(error.is_auth_error());
+        assert!(!error.is_permission_error());
+
+        // Auth error by error code
+        let error = ApiError::new("Auth failed").with_code("AUTH_ERROR");
+        assert!(error.is_auth_error());
+
+        // Permission error by status code
+        let error = ApiError::with_status("Forbidden", 403);
+        assert!(error.is_permission_error());
+        assert!(!error.is_auth_error());
+
+        // Permission error by error code
+        let error = ApiError::new("Access denied").with_code("PERMISSION_ERROR");
+        assert!(error.is_permission_error());
+
+        // No status code - default to not client/server error
+        let error = ApiError::new("Unknown error");
+        assert!(!error.is_client_error());
+        assert!(!error.is_server_error());
+    }
+
+    /// Test WebConfigError error type checking
+    #[test]
+    fn test_web_config_error_type_checking() {
+        // Auth errors
+        assert!(WebConfigError::auth("test").is_auth_error());
+        assert!(!WebConfigError::auth("test").is_permission_error());
+
+        // Auth error via API error with 401
+        assert!(WebConfigError::api_with_status("test", 401).is_auth_error());
+        assert!(!WebConfigError::api_with_status("test", 401).is_permission_error());
+
+        // Permission errors
+        assert!(WebConfigError::permission("test").is_permission_error());
+        assert!(!WebConfigError::permission("test").is_auth_error());
+
+        // Permission error via API error with 403
+        assert!(WebConfigError::api_with_status("test", 403).is_permission_error());
+        assert!(!WebConfigError::api_with_status("test", 403).is_auth_error());
+
+        // Client errors (4xx)
+        assert!(WebConfigError::validation("test").is_client_error());
+        assert!(WebConfigError::client("test").is_client_error());
+        assert!(WebConfigError::api_with_status("test", 400).is_client_error());
+        assert!(WebConfigError::api_with_status("test", 404).is_client_error());
+
+        // Server errors (5xx)
+        assert!(WebConfigError::database("test").is_server_error());
+        assert!(WebConfigError::filesystem("test").is_server_error());
+        assert!(WebConfigError::server_control("test").is_server_error());
+        assert!(WebConfigError::internal("test").is_server_error());
+        assert!(WebConfigError::api_with_status("test", 500).is_server_error());
+        assert!(WebConfigError::api_with_status("test", 502).is_server_error());
+
+        // Network error is a server error
+        assert!(WebConfigError::network("test").is_server_error());
+
+        // Parse error is a client error
+        assert!(WebConfigError::parse("test", "JSON").is_client_error());
+    }
+
+    /// Test WebConfigError helper functions
+    #[test]
+    fn test_error_helper_functions() {
+        // Validation error helpers
+        let error = WebConfigError::validation("test message");
+        assert!(matches!(error, WebConfigError::ValidationError { message, field: None } 
+            if message == "test message"));
+
+        let error = WebConfigError::validation_field("field", "message");
+        assert!(matches!(error, WebConfigError::ValidationError { message, field: Some(f) } 
+            if message == "message" && f == "field"));
+
+        // Auth error helper
+        let error = WebConfigError::auth("auth message");
+        assert!(matches!(error, WebConfigError::AuthError { message } 
+            if message == "auth message"));
+
+        // Permission error helper
+        let error = WebConfigError::permission("permission message");
+        assert!(matches!(error, WebConfigError::PermissionError { message } 
+            if message == "permission message"));
+
+        // API error helpers
+        let error = WebConfigError::api("api message");
+        assert!(matches!(error, WebConfigError::ApiError { message, status_code: None } 
+            if message == "api message"));
+
+        let error = WebConfigError::api_with_status("api message", 500);
+        assert!(matches!(error, WebConfigError::ApiError { message, status_code: Some(500) } 
+            if message == "api message"));
+
+        // File system error helpers
+        let error = WebConfigError::filesystem("fs message");
+        assert!(matches!(error, WebConfigError::FileSystemError { message, path: None } 
+            if message == "fs message"));
+
+        let error = WebConfigError::filesystem_with_path("fs message", "/path/to/file");
+        assert!(matches!(error, WebConfigError::FileSystemError { message, path: Some(p) } 
+            if message == "fs message" && p == "/path/to/file"));
+
+        // Database error helper
+        let error = WebConfigError::database("db message");
+        assert!(matches!(error, WebConfigError::DatabaseError { message } 
+            if message == "db message"));
+
+        // Network error helper
+        let error = WebConfigError::network("network message");
+        assert!(matches!(error, WebConfigError::NetworkError { message } 
+            if message == "network message"));
+
+        // Server control error helper
+        let error = WebConfigError::server_control("control message");
+        assert!(matches!(error, WebConfigError::ServerControlError { message } 
+            if message == "control message"));
+
+        // Internal error helper
+        let error = WebConfigError::internal("internal message");
+        assert!(matches!(error, WebConfigError::InternalError { message } 
+            if message == "internal message"));
+
+        // Client error helper
+        let error = WebConfigError::client("client message");
+        assert!(matches!(error, WebConfigError::ClientError { message } 
+            if message == "client message"));
+    }
+
+    /// Test serde_json::Error conversion to WebConfigError
+    #[test]
+    fn test_serde_json_error_conversion() {
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let error: WebConfigError = json_error.into();
+        
+        assert!(matches!(error, WebConfigError::ParseError { format, .. } 
+            if format == "JSON"));
+    }
+
+    /// Test WebConfigError Display trait implementation
+    #[test]
+    fn test_error_display() {
+        let error = WebConfigError::validation_field("port", "must be positive");
+        assert_eq!(
+            error.to_string(),
+            "Configuration validation failed: must be positive"
+        );
+
+        let error = WebConfigError::auth("invalid token");
+        assert_eq!(
+            error.to_string(),
+            "Authentication failed: invalid token"
+        );
+
+        let error = WebConfigError::permission("admin required");
+        assert_eq!(
+            error.to_string(),
+            "Access denied: admin required"
+        );
+
+        let error = WebConfigError::api("connection refused");
+        assert_eq!(
+            error.to_string(),
+            "API request failed: connection refused"
+        );
+
+        let error = WebConfigError::filesystem_with_path("not found", "/etc/config");
+        assert_eq!(
+            error.to_string(),
+            "File system error: not found"
+        );
+
+        let error = WebConfigError::database("connection timeout");
+        assert_eq!(
+            error.to_string(),
+            "Database error: connection timeout"
+        );
+
+        let error = WebConfigError::parse("syntax error", "YAML");
+        assert_eq!(
+            error.to_string(),
+            "Configuration parsing error: syntax error"
+        );
+
+        let error = WebConfigError::network("timeout");
+        assert_eq!(
+            error.to_string(),
+            "Network error: timeout"
+        );
+
+        let error = WebConfigError::server_control("restart failed");
+        assert_eq!(
+            error.to_string(),
+            "Server control error: restart failed"
+        );
+
+        let error = WebConfigError::internal("oops");
+        assert_eq!(
+            error.to_string(),
+            "Internal server error: oops"
+        );
+
+        let error = WebConfigError::client("invalid input");
+        assert_eq!(
+            error.to_string(),
+            "Client error: invalid input"
+        );
+    }
+
+    /// Test ApiError Display trait implementation
+    #[test]
+    fn test_api_error_display() {
+        let error = ApiError::new("test message");
+        assert_eq!(error.to_string(), "test message");
+
+        let error = ApiError::with_status("error", 500);
+        assert_eq!(error.to_string(), "error");
+
+        let error = ApiError::new("error").with_code("ERR_CODE");
+        assert_eq!(error.to_string(), "error");
+    }
+
+    /// Test ErrorResponse serialization
+    #[test]
+    fn test_error_response_serialization() {
+        let error = WebConfigError::validation_field("email", "invalid format");
+        let response = ErrorResponse::from_error(error);
+        
+        let serialized = serde_json::to_string(&response).expect("Failed to serialize error response");
+        let deserialized: ErrorResponse = serde_json::from_str(&serialized).expect("Failed to deserialize error response");
+        
+        assert_eq!(response.error, deserialized.error);
+        assert_eq!(response.message, deserialized.message);
+        assert_eq!(response.code, deserialized.code);
+        assert_eq!(response.status, deserialized.status);
+    }
+
+    /// Test ApiError serialization for frontend
+    #[test]
+    fn test_api_error_serialization() {
+        let error = ApiError::with_status("Something went wrong", 500)
+            .with_code("INTERNAL_ERROR")
+            .with_details(serde_json::json!({"trace": "abc123"}));
+        
+        let serialized = serde_json::to_string(&error).expect("Failed to serialize API error");
+        let deserialized: ApiError = serde_json::from_str(&serialized).expect("Failed to deserialize API error");
+        
+        assert_eq!(error.message, deserialized.message);
+        assert_eq!(error.status_code, deserialized.status_code);
+        assert_eq!(error.error_code, deserialized.error_code);
+        assert_eq!(error.details, deserialized.details);
+    }
+
+    /// Test WebConfigError serialization for API responses
+    #[test]
+    fn test_web_config_error_serialization() {
+        let error = WebConfigError::validation_field("port", "must be between 1-65535");
+        
+        let serialized = serde_json::to_string(&error).expect("Failed to serialize WebConfigError");
+        let deserialized: WebConfigError = serde_json::from_str(&serialized).expect("Failed to deserialize WebConfigError");
+        
+        assert_eq!(error.to_string(), deserialized.to_string());
+        assert_eq!(error.status_code(), deserialized.status_code());
+        assert_eq!(error.user_message(), deserialized.user_message());
+    }
+
+    /// Test WebConfigError clone and debug
+    #[test]
+    fn test_error_clone_and_debug() {
+        let error = WebConfigError::validation_field("field", "message");
+        let cloned = error.clone();
+        
+        assert_eq!(format!("{:?}", error), format!("{:?}", cloned));
+        assert_eq!(error.user_message(), cloned.user_message());
+    }
+
+    /// Test ApiError clone and debug
+    #[test]
+    fn test_api_error_clone_and_debug() {
+        let error = ApiError::with_status("message", 400)
+            .with_code("ERR")
+            .with_details(serde_json::json!({"key": "value"}));
+        let cloned = error.clone();
+        
+        assert_eq!(format!("{:?}", error), format!("{:?}", cloned));
+        assert_eq!(error.message, cloned.message);
+        assert_eq!(error.status_code, cloned.status_code);
+    }
+
+    /// Test WebConfigResult type alias
+    #[test]
+    fn test_web_config_result() {
+        // Success case
+        let result: WebConfigResult<String> = Ok("success".to_string());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+
+        // Error case
+        let result: WebConfigResult<String> = Err(WebConfigError::validation("failed"));
+        assert!(result.is_err());
+        assert!(matches!(result, Err(WebConfigError::ValidationError { .. })));
+    }
+
+    /// Test error with various status codes in ApiError
+    #[test]
+    fn test_api_error_various_status_codes() {
+        // Test all common status codes
+        let test_cases = [
+            (400, true, false),  // Bad Request - client error
+            (401, true, false),  // Unauthorized - client error (4xx)
+            (403, true, false),  // Forbidden - client error (4xx)
+            (404, true, false),  // Not Found - client error
+            (500, false, true),  // Internal Server Error - server error
+            (502, false, true),  // Bad Gateway - server error
+            (503, false, true),  // Service Unavailable - server error
+        ];
+
+        for (status, expected_client, expected_server) in test_cases {
+            let error = ApiError::with_status("test", status);
+            assert_eq!(error.is_client_error(), expected_client, 
+                "Status {} should be client error: {}", status, expected_client);
+            assert_eq!(error.is_server_error(), expected_server, 
+                "Status {} should be server error: {}", status, expected_server);
+        }
+    }
+
+    /// Test error with no status code
+    #[test]
+    fn test_api_error_no_status_code() {
+        let error = ApiError::new("error without status");
+        assert!(!error.is_client_error());
+        assert!(!error.is_server_error());
+        assert!(!error.is_auth_error());
+        assert!(!error.is_permission_error());
+    }
+
+    /// Test WebConfigError with various API error status codes
+    #[test]
+    fn test_web_config_error_api_status_codes() {
+        // API error with 401 should be auth error
+        let error = WebConfigError::api_with_status("unauthorized", 401);
+        assert!(error.is_auth_error());
+        assert!(!error.is_permission_error());
+
+        // API error with 403 should be permission error
+        let error = WebConfigError::api_with_status("forbidden", 403);
+        assert!(!error.is_auth_error());
+        assert!(error.is_permission_error());
+
+        // API error with 404 should be client error
+        let error = WebConfigError::api_with_status("not found", 404);
+        assert!(error.is_client_error());
+        assert!(!error.is_server_error());
+
+        // API error with 500 should be server error
+        let error = WebConfigError::api_with_status("internal error", 500);
+        assert!(!error.is_client_error());
+        assert!(error.is_server_error());
     }
 }
