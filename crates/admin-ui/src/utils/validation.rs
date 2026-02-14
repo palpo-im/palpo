@@ -19,6 +19,37 @@ pub fn validate_server_name(server_name: &str) -> Result<(), ConfigError> {
         ));
     }
 
+    // Check for invalid patterns
+    if server_name.starts_with('-') || server_name.ends_with('-') {
+        return Err(ConfigError::invalid_format(
+            "server_name",
+            "Server name cannot start or end with a hyphen",
+        ));
+    }
+
+    if server_name.contains("..") {
+        return Err(ConfigError::invalid_format(
+            "server_name",
+            "Server name cannot contain consecutive dots",
+        ));
+    }
+
+    // Check each label (part between dots)
+    for label in server_name.split('.') {
+        if label.is_empty() {
+            return Err(ConfigError::invalid_format(
+                "server_name",
+                "Server name cannot have empty labels",
+            ));
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(ConfigError::invalid_format(
+                "server_name",
+                "Labels cannot start or end with a hyphen",
+            ));
+        }
+    }
+
     if server_name.len() > 255 {
         return Err(ConfigError::invalid_value(
             "server_name",
@@ -44,6 +75,13 @@ pub fn validate_port(port: u16) -> Result<(), ConfigError> {
             "port",
             port.to_string(),
             "Port cannot be 0",
+        ));
+    }
+    if port < 1024 {
+        return Err(ConfigError::invalid_value(
+            "port",
+            port.to_string(),
+            "Port below 1024 requires elevated privileges",
         ));
     }
     Ok(())

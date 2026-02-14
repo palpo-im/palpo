@@ -84,9 +84,9 @@ pub fn ExampleForm() -> Element {
                 label: "角色".to_string(),
                 value: role(),
                 options: vec![
-                    ("user".to_string(), "普通用户".to_string()),
-                    ("admin".to_string(), "管理员".to_string()),
-                    ("moderator".to_string(), "版主".to_string()),
+                    ("user".to_string(), "普通用户".to_string(), None),
+                    ("admin".to_string(), "管理员".to_string(), None),
+                    ("moderator".to_string(), "版主".to_string(), None),
                 ],
                 onchange: move |value| role.set(value)
             }
