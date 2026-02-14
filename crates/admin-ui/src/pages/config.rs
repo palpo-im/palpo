@@ -287,6 +287,20 @@ pub fn ConfigManager() -> Element {
                                     active_section: active_section(),
                                     onclick: move |_| active_section.set("logging".to_string())
                                 }
+                                // Divider
+                                div { class: "border-t border-gray-200 my-2" }
+                                SectionNavItem {
+                                    label: "模板管理".to_string(),
+                                    section: "template".to_string(),
+                                    active_section: active_section(),
+                                    onclick: move |_| active_section.set("template".to_string())
+                                }
+                                SectionNavItem {
+                                    label: "导入/导出".to_string(),
+                                    section: "import_export".to_string(),
+                                    active_section: active_section(),
+                                    onclick: move |_| active_section.set("import_export".to_string())
+                                }
                             }
                         }
                         
@@ -369,6 +383,12 @@ pub fn ConfigManager() -> Element {
                                         validation_errors: validation_errors,
                                         search_query: search_query()
                                     }
+                                },
+                                "template" => rsx! {
+                                    crate::pages::ConfigTemplatePage {}
+                                },
+                                "import_export" => rsx! {
+                                    crate::pages::ConfigImportExportPage {}
                                 },
                                 _ => rsx! { div { "未知配置节" } }
                             }

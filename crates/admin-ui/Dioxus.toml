@@ -12,16 +12,11 @@ reload_html = true
 index_on_404 = true
 
 [web.resource]
-dev = []
 style = []
 script = ["https://cdn.tailwindcss.com"]
 
 [web.resource.dev]
 # Development-only resources
-
-[web.proxy]
-# Configure proxy for API requests during development
-# backend = "http://localhost:8008"
 
 [bundle]
 identifier = "im.palpo.admin"
