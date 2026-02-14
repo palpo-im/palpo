@@ -7,13 +7,25 @@ use dioxus::prelude::*;
 pub struct ErrorMessageProps {
     /// Error message to display
     pub message: String,
+    /// Callback when message is closed/dismissed
+    #[props(default = None)]
+    pub on_close: Option<EventHandler<()>>,
 }
 
 /// Error message component for displaying validation errors
 #[component]
 pub fn ErrorMessage(props: ErrorMessageProps) -> Element {
+    let on_close = props.on_close.clone();
+    
     rsx! {
         div { class: "error-message",
+            if let Some(handler) = on_close {
+                button {
+                    class: "error-close",
+                    onclick: move |_| handler.call(()),
+                    "×"
+                }
+            }
             span { class: "error-icon", "⚠" }
             span { class: "error-text", "{props.message}" }
         }
@@ -25,13 +37,25 @@ pub fn ErrorMessage(props: ErrorMessageProps) -> Element {
 pub struct SuccessMessageProps {
     /// Success message to display
     pub message: String,
+    /// Callback when message is closed/dismissed
+    #[props(default = None)]
+    pub on_close: Option<EventHandler<()>>,
 }
 
 /// Success message component for displaying success feedback
 #[component]
 pub fn SuccessMessage(props: SuccessMessageProps) -> Element {
+    let on_close = props.on_close.clone();
+    
     rsx! {
         div { class: "success-message",
+            if let Some(handler) = on_close {
+                button {
+                    class: "success-close",
+                    onclick: move |_| handler.call(()),
+                    "×"
+                }
+            }
             span { class: "success-icon", "✓" }
             span { class: "success-text", "{props.message}" }
         }
