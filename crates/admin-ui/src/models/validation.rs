@@ -140,6 +140,12 @@ impl ConfigError {
     }
 }
 
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.field, self.message)
+    }
+}
+
 impl ConfigWarning {
     /// Create a new configuration warning
     pub fn new(field: impl Into<String>, message: impl Into<String>, code: impl Into<String>) -> Self {
