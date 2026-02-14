@@ -1,0 +1,295 @@
+//! Main application component
+
+use dioxus::prelude::*;
+use crate::models::{AuthState, WebConfigData};
+use crate::hooks::use_auth;
+use crate::pages::{LoginPage, AdminDashboard};
+use crate::services::api_client::init_api_client;
+use crate::components::layout::AdminLayout as AdminLayoutComponent;
+
+/// Main application routes
+#[derive(Clone, Routable, Debug, PartialEq)]
+pub enum Route {
+    #[route("/")]
+    Home {},
+    #[route("/login")]
+    Login {},
+    #[layout(AdminLayout)]
+    #[route("/admin")]
+    Dashboard {},
+    #[route("/admin/config")]
+    Config {},
+    #[route("/admin/users")]
+    Users {},
+    #[route("/admin/rooms")]
+    Rooms {},
+    #[route("/admin/federation")]
+    Federation {},
+    #[route("/admin/media")]
+    Media {},
+    #[route("/admin/appservices")]
+    Appservices {},
+    #[route("/admin/logs")]
+    Logs {},
+}
+
+/// Global application state
+#[derive(Clone, Debug, PartialEq)]
+pub struct AppState {
+    pub config: Option<WebConfigData>,
+    pub is_loading: bool,
+    pub error: Option<String>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            config: None,
+            is_loading: false,
+            error: None,
+        }
+    }
+}
+
+/// Main application component with routing and state management
+#[component]
+pub fn App() -> Element {
+    // Initialize API client on app startup
+    use_effect(|| {
+        // Get base URL from environment or use default
+        let base_url = web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .unwrap_or_else(|| "http://localhost:8008".to_string());
+        
+        init_api_client(base_url);
+        
+        // Log initialization for debugging
+        web_sys::console::log_1(&"API client initialized".into());
+    });
+
+    // Initialize global state
+    use_context_provider(|| Signal::new(AuthState::Unauthenticated));
+    use_context_provider(|| Signal::new(AppState::default()));
+
+    rsx! {
+        div { class: "min-h-screen bg-gray-50",
+            Router::<Route> {}
+        }
+    }
+}
+
+/// Home page component - redirects to admin or login
+#[component]
+fn Home() -> Element {
+    let auth_context = use_auth();
+    let navigator = use_navigator();
+
+    use_effect(move || {
+        if auth_context.is_authenticated() {
+            navigator.push(Route::Dashboard {});
+        } else {
+            navigator.push(Route::Login {});
+        }
+    });
+
+    rsx! {
+        div { class: "flex items-center justify-center min-h-screen",
+            div { class: "text-center",
+                div { class: "animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" }
+                p { class: "mt-4 text-gray-600", "正在加载..." }
+            }
+        }
+    }
+}
+
+/// Login page component
+#[component]
+fn Login() -> Element {
+    let auth_context = use_auth();
+    let navigator = use_navigator();
+
+    // Redirect if already authenticated
+    use_effect({
+        let auth_context = auth_context.clone();
+        let navigator = navigator.clone();
+        move || {
+            if auth_context.is_authenticated() {
+                navigator.push(Route::Dashboard {});
+            }
+        }
+    });
+
+    rsx! {
+        LoginPage {}
+    }
+}
+
+/// Admin layout component with authentication protection
+#[component]
+fn AdminLayout() -> Element {
+    rsx! {
+        AdminLayoutComponent {}
+    }
+}
+
+/// Dashboard page component
+#[component]
+fn Dashboard() -> Element {
+    rsx! {
+        AdminDashboard {}
+    }
+}
+
+/// Config manager page component
+#[component]
+fn Config() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "配置管理"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "管理 Palpo Matrix 服务器配置"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "配置管理功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// User manager page component
+#[component]
+fn Users() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "用户管理"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "管理 Matrix 用户账户"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "用户管理功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Room manager page component
+#[component]
+fn Rooms() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "房间管理"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "管理 Matrix 聊天房间"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "房间管理功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Federation manager page component
+#[component]
+fn Federation() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "联邦管理"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "管理 Matrix 联邦连接"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "联邦管理功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Media manager page component
+#[component]
+fn Media() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "媒体管理"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "管理媒体文件和存储"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "媒体管理功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Appservice manager page component
+#[component]
+fn Appservices() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "应用服务管理"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "管理 Matrix 应用服务"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "应用服务管理功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Audit logs page component
+#[component]
+fn Logs() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
+                        "审计日志"
+                    }
+                    p { class: "mt-1 text-sm text-gray-500",
+                        "查看系统操作审计日志"
+                    }
+                    div { class: "mt-8 text-center py-12",
+                        p { class: "text-gray-500", "审计日志功能正在开发中..." }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -12,6 +12,7 @@ __*
 /deploy/docker/data
 .claude/
 .kiro/
+.DS_Store
 
 examples/with-discord/data/
 examples/with-telegram/data/
