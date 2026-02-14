@@ -661,7 +661,20 @@ pub struct ConfigTemplate {
     pub compatible_versions: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+// Manual PartialEq implementation that compares only the ID
+// (timestamps are not relevant for equality comparison)
+impl PartialEq for ConfigTemplate {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.description == other.description
+            && self.category == other.category
+            && self.is_builtin == other.is_builtin
+            && self.compatible_versions == other.compatible_versions
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ConfigTemplateDetail {
     pub template: ConfigTemplate,
     pub config_data: serde_json::Value,

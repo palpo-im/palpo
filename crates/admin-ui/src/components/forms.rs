@@ -130,8 +130,9 @@ pub struct SelectProps {
     pub label: String,
     /// Current selected value
     pub value: String,
-    /// Available options (value, label)
-    pub options: Vec<(String, String)>,
+    /// Available options (value, label, description)
+    #[props(default = vec![])]
+    pub options: Vec<(String, String, Option<String>)>,
     /// Whether the select is readonly
     #[props(default = false)]
     pub readonly: bool,
@@ -169,7 +170,7 @@ pub fn Select(props: SelectProps) -> Element {
                 disabled: props.readonly,
                 required: props.required,
                 onchange: move |evt| props.onchange.call(evt.value().clone()),
-                for (value, label) in props.options.iter() {
+                for (value, label, description) in props.options.iter() {
                     option { value: "{value}", "{label}" }
                 }
             }

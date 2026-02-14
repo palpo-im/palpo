@@ -848,7 +848,7 @@ echo "Please review the changes and restart the server."
 
 // Enhanced request/response models
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ExportOptions {
     pub format: ConfigFormat,
     pub include_sensitive: bool,
@@ -941,7 +941,7 @@ pub struct MigrationScript {
     pub warnings: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ImpactAssessment {
     pub restart_required: bool,
     pub affected_services: Vec<String>,
@@ -949,7 +949,7 @@ pub struct ImpactAssessment {
     pub estimated_downtime: Option<Duration>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ConfigFormat {
     Toml,
     Json,
@@ -968,7 +968,7 @@ impl ConfigFormat {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum MergeStrategy {
     Replace,
     Merge,
