@@ -1,66 +1,96 @@
-# Setup Steps
+# Setup Steps (Docker Compose)
 
-## 1. Generate tokens
-Replace the placeholder tokens in telegram-registration.yaml with real ones:
+This example runs `postgres`, `palpo`, and `mautrix-telegram` in the same Docker Compose network.
 
+## 1. Go to the example directory
 
-### Generate as_token
-openssl rand -hex 32
+```bash
+cd examples/with-telegram
+```
 
-### Generate hs_token
-openssl rand -hex 32
+## 2. Generate appservice tokens
 
-## 2. Start mautrix-telegram with Docker Compose
+Generate two random tokens and replace placeholders consistently in:
+- `appservices/telegram-registration.yaml`
+- `data/mautrix-telegram/config.yaml` (after it is generated)
 
-cd crates/server
-docker compose -f compose-telegram.yml up -d
-This will create a data/mautrix-telegram/ directory with a default config.yaml on first run.
+```bash
+openssl rand -hex 32 # as_token
+openssl rand -hex 32 # hs_token
+```
 
-## 3. Configure mautrix-telegram
-Edit crates/server/data/mautrix-telegram/config.yaml:
+## 3. Start Palpo + Postgres
 
+```bash
+docker compose up -d postgres palpo
+```
+
+## 4. Create mautrix-telegram database
+
+```bash
+docker compose exec postgres psql -U postgres -c "CREATE DATABASE mautrix_telegram;"
+```
+
+## 5. Start mautrix-telegram once to generate config
+
+```bash
+docker compose up -d mautrix-telegram
+```
+
+This creates `data/mautrix-telegram/config.yaml` on first run.
+
+## 6. Configure `data/mautrix-telegram/config.yaml`
+
+Set these key fields:
+
+```yaml
 homeserver:
-    address: http://host.docker.internal:6006   # or your host IP
-    domain: "127.0.0.1:6006"                     # must match server_name
+  address: http://palpo:6006
+  domain: "127.0.0.1:6006"
 
 appservice:
-    address: http://mautrix-telegram:29317
-    hostname: 0.0.0.0
-    port: 29317
-    id: telegram
-    bot_username: telegrambot
-    as_token: <same as_token from registration.yaml>
-    hs_token: <same hs_token from registration.yaml>
+  address: http://mautrix-telegram:29317
+  hostname: 0.0.0.0
+  port: 29317
+  id: telegram
+  bot_username: telegrambot
+  as_token: <same as_token as registration.yaml>
+  hs_token: <same hs_token as registration.yaml>
 
 bridge:
-    permissions:
-        "*": relay
-        "127.0.0.1:6006": full
-        "@yourusername:127.0.0.1:6006": admin
+  permissions:
+    "*": relay
+    "127.0.0.1:6006": full
+    "@yourusername:127.0.0.1:6006": admin
 
 telegram:
-    api_id: <your_telegram_api_id>
-    api_hash: <your_telegram_api_hash>
+  api_id: <your_telegram_api_id>
+  api_hash: <your_telegram_api_hash>
 
 database: postgres://postgres:root@postgres:5432/mautrix_telegram?sslmode=disable
+```
 
-## 4. Create the mautrix-telegram database
+Get Telegram API credentials from https://my.telegram.org/apps.
 
-docker exec -it <postgres_container> psql -U postgres -c "CREATE DATABASE mautrix_telegram;"
+## 7. Restart bridge after config update
 
-## 5. Get Telegram API credentials
-Go to https://my.telegram.org/apps to create an app and get api_id and api_hash.
+```bash
+docker compose restart mautrix-telegram
+```
 
-## 6. Restart everything
+## 8. Verify services
 
-docker compose -f compose-telegram.yml restart mautrix-telegram
+```bash
+docker compose ps
+docker compose logs --tail=100 palpo mautrix-telegram
+```
 
-## 7. Start Palpo
+## 9. Use the bridge
 
-cargo run
-Palpo will auto-load the registration from appservices/telegram-registration.yaml on startup.
+Log in to `http://127.0.0.1:6006` with a Matrix client (Element, etc.), then message `@telegrambot:127.0.0.1:6006` and send `login` to link your Telegram account.
 
-## 8. Use the bridge
-Log in to your Palpo instance with a Matrix client (Element, etc.), then message @telegrambot:127.0.0.1:6006 and send login to link your Telegram account.
+## Networking Notes
 
-Key consideration: Since Palpo runs on the host and mautrix-telegram runs in Docker, the bridge needs to reach Palpo. Use host.docker.internal:6006 (Docker Desktop) or your actual host IP. Conversely, Palpo needs to reach the bridge at the URL in the registration file -- if they're on different networks, you may need to adjust the url in telegram-registration.yaml to something Palpo can reach (e.g., http://localhost:29317 if you expose port 29317 from the container).
+- Inside Compose, services talk to each other by service name (`palpo`, `postgres`, `mautrix-telegram`), not `localhost`.
+- `appservices/telegram-registration.yaml` should keep:
+  - `url: "http://mautrix-telegram:29317"`
