@@ -91,12 +91,16 @@ pub struct PushEventsReqBody {
     // Vec<DeviceKeyAlgorithm>>>,
 
     /// A list of ephemeral events (typing, presence, receipts).
+    ///
+    /// We intentionally use `EphemeralData` instead of federation `Edu`: appservice transactions
+    /// carry event-shaped objects (`type` + top-level fields), while federation EDUs use an
+    /// `edu_type`/`content` envelope with different wire semantics.
     #[serde(
         default,
         skip_serializing_if = "<[_]>::is_empty",
         rename = "de.sorunome.msc2409.ephemeral"
     )]
-    pub ephemeral: Vec<serde_json::Value>,
+    pub ephemeral: Vec<EphemeralData>,
     /// A list of to-device messages.
     #[cfg(feature = "unstable-msc4203")]
     #[serde(
@@ -137,7 +141,7 @@ impl DeviceLists {
 }
 
 /// Type for passing ephemeral data to application services.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum EphemeralData {
     /// A presence update for a user.
@@ -150,6 +154,7 @@ pub enum EphemeralData {
     Typing(TypingEvent),
 
     #[doc(hidden)]
+    #[salvo(schema(value_type = Object))]
     _Custom(_CustomEphemeralData),
 }
 
@@ -214,7 +219,7 @@ impl<'de> Deserialize<'de> for EphemeralData {
 
 /// Ephemeral data with an unknown type.
 #[doc(hidden)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ToSchema)]
 pub struct _CustomEphemeralData {
     /// The type of the data.
     data_type: String,
