@@ -96,16 +96,37 @@ async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRo
                 },
             )?
             .into_inner();
-            if matches!(
-                crate::sending::send_appservice_request::<Option<()>>(
-                    appservice.registration.clone(),
-                    request
-                )
-                .await,
-                Ok(Some(_opt_result))
-            ) {
-                return resolve_local_alias(room_alias)
-                    .map_err(|_| MatrixError::not_found("Room does not exist.").into());
+
+            match crate::sending::send_appservice_request::<Option<()>>(
+                appservice.registration.clone(),
+                request,
+            )
+            .await
+            {
+                Ok(Some(_)) => {
+                    // Appservice acknowledged the alias, try resolving locally now
+                    match resolve_local_alias(room_alias) {
+                        Ok(room_id) => return Ok(room_id),
+                        Err(e) => {
+                            warn!(
+                                "Appservice {} claimed alias {} but it wasn't created locally: {}",
+                                appservice.registration.id, room_alias, e
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        "Appservice {} did not claim alias {}",
+                        appservice.registration.id, room_alias
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to query appservice {} for alias {}: {}",
+                        appservice.registration.id, room_alias, e
+                    );
+                }
             }
         }
     }
