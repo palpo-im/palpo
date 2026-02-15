@@ -90,13 +90,13 @@ pub struct PushEventsReqBody {
     // pub device_unused_fallback_key_types: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId,
     // Vec<DeviceKeyAlgorithm>>>,
 
-    // /// A list of EDUs.
-    // #[serde(
-    //     default,
-    //     skip_serializing_if = "<[_]>::is_empty",
-    //     rename = "de.sorunome.msc2409.ephemeral"
-    // )]
-    // pub ephemeral: Vec<Edu>,
+    /// A list of ephemeral events (typing, presence, receipts).
+    #[serde(
+        default,
+        skip_serializing_if = "<[_]>::is_empty",
+        rename = "de.sorunome.msc2409.ephemeral"
+    )]
+    pub ephemeral: Vec<serde_json::Value>,
     /// A list of to-device messages.
     #[cfg(feature = "unstable-msc4203")]
     #[serde(
