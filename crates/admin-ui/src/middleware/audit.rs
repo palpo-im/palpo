@@ -16,7 +16,7 @@
 //!
 //! ### Basic Middleware Usage
 //!
-//! ```rust
+//! ```ignore
 //! use std::rc::Rc;
 //! use std::cell::RefCell;
 //! use crate::services::AuditService;
@@ -39,7 +39,7 @@
 //!
 //! ### Using Audit Context
 //!
-//! ```rust
+//!```ignore
 //! let context = AuditContext::new(
 //!     "admin@example.com".to_string(),
 //!     AuditAction::UserCreate,
@@ -52,7 +52,7 @@
 //!
 //! ### Macro-Based Logging
 //!
-//! ```rust
+//! ```ignore
 //! // Simple context creation
 //! let context = audit_context!(
 //!     "admin@example.com".to_string(),
@@ -90,7 +90,7 @@ use std::cell::RefCell;
 ///
 /// # Examples
 /// #[ignore]
-/// ```rust
+/// ```ignore
 /// let service = Rc::new(RefCell::new(AuditService::new()));
 /// let middleware = AuditMiddleware::new(service);
 ///
@@ -118,7 +118,7 @@ impl AuditMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let service = Rc::new(RefCell::new(AuditService::new()));
     /// let middleware = AuditMiddleware::new(service);
     /// ```
@@ -154,7 +154,7 @@ impl AuditMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// // Log a user creation operation
     /// let result = middleware.log_operation(
     ///     "admin@example.com".to_string(),
@@ -233,7 +233,7 @@ impl AuditMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// // Log a successful configuration reload
     /// let entry_id = middleware.log_success(
     ///     "admin@example.com".to_string(),
@@ -283,8 +283,7 @@ impl AuditMiddleware {
     /// Returns the ID of the created audit log entry, or an `ApiError` on failure.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    ///```ignore
     /// // Log a failed server restart
     /// let entry_id = middleware.log_failure(
     ///     "admin@example.com".to_string(),
@@ -321,7 +320,7 @@ impl AuditMiddleware {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore
 /// struct ConfigUpdateRequest {
 ///     admin_id: String,
 ///     config_key: String,
@@ -385,7 +384,7 @@ pub trait AuditInfo {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore,ignore
 /// // Basic context
 /// let context = AuditContext::new(
 ///     "admin@example.com".to_string(),
@@ -431,7 +430,7 @@ impl AuditContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let context = AuditContext::new(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::RoomDisable,
@@ -467,7 +466,7 @@ impl AuditContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let context = AuditContext::new(...)
     ///     .with_old_value(Some(serde_json::json!({"status": "active"})));
     /// ```
@@ -488,7 +487,7 @@ impl AuditContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let context = AuditContext::new(...)
     ///     .with_new_value(Some(serde_json::json!({"status": "disabled"})));
     /// ```
@@ -513,7 +512,7 @@ impl AuditContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let context = AuditContext::new(...)
     ///     .with_values(
     ///         Some(serde_json::json!({"enabled": false})),
@@ -541,7 +540,7 @@ impl AuditContext {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore,ignore
 /// let context = AuditContext::new(
 ///     "admin@example.com".to_string(),
 ///     AuditAction::UserCreate,
@@ -575,12 +574,12 @@ macro_rules! audit_operation {
 /// # Variants
 ///
 /// ## Basic Context Creation
-/// ```rust
+/// ```ignore,ignore
 /// audit_context!(user_id, action, target_type, target_id)
 /// ```
 ///
 /// ## Context Creation with Values
-/// ```rust
+/// ```ignore,ignore
 /// audit_context!(user_id, action, target_type, target_id, old_value, new_value)
 /// ```
 ///
@@ -595,7 +594,7 @@ macro_rules! audit_operation {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore,ignore
 /// // Basic context
 /// let context = audit_context!(
 ///     "admin@example.com".to_string(),

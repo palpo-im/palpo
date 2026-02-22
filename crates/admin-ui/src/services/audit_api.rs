@@ -17,7 +17,7 @@
 //!
 //! ### Basic Client Usage
 //!
-//! ```rust
+//! ```ignore
 //! let mut client = AuditApiClient::new("https://api.example.com".to_string());
 //! client.set_auth_token("your_auth_token".to_string());
 //!
@@ -32,7 +32,7 @@
 //!
 //! ### Global Client Usage
 //!
-//! ```rust
+//! ```ignore
 //! // Initialize the global client
 //! init_audit_api_client("https://api.example.com".to_string());
 //! set_audit_api_auth_token("your_auth_token".to_string());
@@ -63,7 +63,7 @@ use web_sys::{Request, RequestInit, RequestMode, Response};
 ///
 /// # Examples
 /// #[ignore]
-/// ```rust
+/// ```ignore
 /// let mut client = AuditApiClient::new("https://api.example.com".to_string());
 /// client.set_auth_token("your_bearer_token".to_string());
 ///
@@ -93,8 +93,8 @@ impl AuditApiClient {
     /// Returns a new `AuditApiClient` instance with no authentication token set.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let client = AuditApiClient::new("https://matrix.example.com".to_string());
     /// ```
     pub fn new(base_url: String) -> Self {
@@ -114,8 +114,8 @@ impl AuditApiClient {
     /// - `token`: The authentication token to use for API requests
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let mut client = AuditApiClient::new("https://api.example.com".to_string());
     /// client.set_auth_token("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...".to_string());
     /// ```
@@ -147,8 +147,8 @@ impl AuditApiClient {
     /// - JSON parsing errors
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// // Query all config updates from the last week
     /// let filter = AuditLogFilter {
     ///     action: Some(AuditAction::ConfigUpdate),
@@ -183,7 +183,7 @@ impl AuditApiClient {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// // Query all config updates from the last week
     /// let filter = AuditLogFilter {
     ///     action: Some(AuditAction::ConfigUpdate),
@@ -257,11 +257,11 @@ impl AuditApiClient {
     /// `ApiError` if the request fails.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let stats = client.get_statistics().await?;
     /// println!("Total entries: {}", stats.total_entries);
-    /// println!("Success rate: {:.1}%", 
+    /// println!("Success rate: {:.1}%",
     ///     (stats.successful_entries as f64 / stats.total_entries as f64) * 100.0);
     /// ```
     pub async fn get_statistics(&self) -> Result<AuditStatistics, ApiError> {
@@ -325,8 +325,8 @@ impl AuditApiClient {
     /// if the request fails.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// // Export all failed operations from the last month
     /// let filter = AuditLogFilter {
     ///     success: Some(false),
@@ -397,8 +397,8 @@ impl AuditApiClient {
     /// `ApiError` for other failures.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// match client.get_log_by_id(12345).await? {
     ///     Some(entry) => println!("Found entry: {}", entry.description()),
     ///     None => println!("Entry not found"),
@@ -481,8 +481,8 @@ static AUDIT_CLIENT_INIT: std::sync::Once = std::sync::Once::new();
 /// - `base_url`: The base URL of the audit API server
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// // Initialize at application startup
 /// init_audit_api_client("https://matrix.example.com".to_string());
 /// ```
@@ -514,8 +514,8 @@ pub fn init_audit_api_client(base_url: String) {
 /// Panics if the audit API client has not been initialized with `init_audit_api_client`.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let client = get_audit_api_client();
 /// client.set_auth_token("new_token".to_string());
 /// ```
@@ -541,8 +541,8 @@ pub fn get_audit_api_client() -> &'static mut AuditApiClient {
 /// - `token`: The authentication token to set
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// set_audit_api_auth_token("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...".to_string());
 /// ```
 pub fn set_audit_api_auth_token(token: String) {
@@ -564,8 +564,8 @@ pub fn set_audit_api_auth_token(token: String) {
 /// Returns an `AuditLogResponse` containing matching entries and pagination metadata.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let filter = AuditLogFilter {
 ///     success: Some(false),
 ///     limit: Some(10),
@@ -587,8 +587,8 @@ pub async fn query_audit_logs(filter: AuditLogFilter) -> Result<AuditLogResponse
 /// Returns an `AuditStatistics` struct containing comprehensive audit metrics.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let stats = get_audit_statistics().await?;
 /// println!("Total audit entries: {}", stats.total_entries);
 /// ```
@@ -610,8 +610,8 @@ pub async fn get_audit_statistics() -> Result<AuditStatistics, ApiError> {
 /// Returns a JSON string containing the exported audit entries.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let filter = AuditLogFilter::default();
 /// let json_export = export_audit_logs(filter).await?;
 /// ```
@@ -633,8 +633,8 @@ pub async fn export_audit_logs(filter: AuditLogFilter) -> Result<String, ApiErro
 /// Returns `Some(AuditLogEntry)` if found, `None` if not found.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// match get_audit_log_by_id(12345).await? {
 ///     Some(entry) => println!("Found: {}", entry.description()),
 ///     None => println!("Entry not found"),

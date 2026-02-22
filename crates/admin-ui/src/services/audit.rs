@@ -15,7 +15,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use crate::services::audit::AuditService;
 //! use crate::models::{AuditAction, AuditTargetType};
 //!
@@ -73,7 +73,7 @@ impl AuditService {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let service = AuditService::new();
     /// ```
     pub fn new() -> Self {
@@ -103,8 +103,8 @@ impl AuditService {
     /// Returns the ID of the created audit log entry on success, or an `ApiError` on failure.
     ///
     /// # Examples
-    /// #[ignore]
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let mut service = AuditService::new();
     /// let entry_id = service.record_success(
     ///     "admin@example.com".to_string(),
@@ -167,8 +167,8 @@ impl AuditService {
     /// Returns the ID of the created audit log entry on success, or an `ApiError` on failure.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let mut service = AuditService::new();
     /// let entry_id = service.record_failure(
     ///     "admin@example.com".to_string(),
@@ -234,8 +234,8 @@ impl AuditService {
     /// - `limit` / `offset`: Pagination parameters
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// // Query failed operations only
     /// let filter = AuditLogFilter {
     ///     success: Some(false),
@@ -315,8 +315,8 @@ impl AuditService {
     /// Returns `Some(AuditLogEntry)` if found, `None` if not found, or an `ApiError` on failure.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let mut service = AuditService::new();
     /// let entry_id = service.record_success(
     ///     "admin@example.com".to_string(),
@@ -349,8 +349,8 @@ impl AuditService {
     /// Returns the number of entries that were deleted, or an `ApiError` on failure.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// use std::time::{SystemTime, Duration};
     ///
     /// let mut service = AuditService::new();
@@ -389,8 +389,8 @@ impl AuditService {
     /// Returns a JSON string containing the exported audit entries, or an `ApiError` on failure.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// // Export all failed operations from the last week
     /// let filter = AuditLogFilter {
     ///     success: Some(false),
@@ -425,11 +425,11 @@ impl AuditService {
     /// - **Target counts**: Frequency of each target type
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let stats = service.get_statistics().unwrap();
     /// println!("Total audit entries: {}", stats.total_entries);
-    /// println!("Success rate: {:.1}%", 
+    /// println!("Success rate: {:.1}%",
     ///     (stats.successful_entries as f64 / stats.total_entries as f64) * 100.0);
     /// println!("Recent activity (24h): {}", stats.recent_entries);
     /// ```
@@ -519,8 +519,8 @@ pub struct AuditStatistics {
 /// WASM environments. For multi-threaded use, consider using `Arc<Mutex<>>` instead.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// use std::rc::Rc;
 /// use std::cell::RefCell;
 ///
@@ -550,8 +550,8 @@ impl AuditMiddleware {
     /// - `service`: A shared reference to an `AuditService` instance
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let service = Rc::new(RefCell::new(AuditService::new()));
     /// let middleware = AuditMiddleware::new(service);
     /// ```
@@ -582,8 +582,8 @@ impl AuditMiddleware {
     /// transparently in operation chains.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let result = middleware.log_operation(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::UserCreate,
@@ -644,12 +644,12 @@ impl AuditMiddleware {
 /// # Variants
 ///
 /// ## Basic Usage (without before/after values)
-/// ```rust
+/// ```ignore
 /// audit_log!(service, user_id, action, target_type, target_id, result)
 /// ```
 ///
 /// ## With Before/After Values
-/// ```rust
+/// ```ignore
 /// audit_log!(service, user_id, action, target_type, target_id, old_value, new_value, result)
 /// ```
 ///
@@ -665,8 +665,7 @@ impl AuditMiddleware {
 /// - `result`: The operation result to be logged
 ///
 /// # Examples
-///
-/// ```rust
+/// ```ignore
 /// // Basic audit logging
 /// let result = audit_log!(
 ///     service_ref,

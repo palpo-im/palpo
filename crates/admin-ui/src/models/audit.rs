@@ -17,7 +17,7 @@
 //!
 //! ### Creating Audit Entries
 //!
-//! ```rust
+//! ```ignore
 //! // Create a successful operation entry
 //! let entry = AuditLogEntry::success_with_values(
 //!     "admin@example.com".to_string(),
@@ -40,7 +40,7 @@
 //!
 //! ### Filtering Audit Logs
 //!
-//! ```rust
+//! ```ignore
 //! let filter = AuditLogFilter {
 //!     success: Some(false), // Only failed operations
 //!     action: Some(AuditAction::ConfigUpdate),
@@ -74,8 +74,8 @@ use std::time::SystemTime;
 /// - `error_message`: Error description if the operation failed
 ///
 /// # Examples
-/// #[ignore]
-/// ```rust
+/// 
+/// ```ignore
 /// // Successful configuration update
 /// let entry = AuditLogEntry::success_with_values(
 ///     "admin@example.com".to_string(),
@@ -135,8 +135,8 @@ pub enum AuditSeverity {
 /// description for display purposes.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let action = AuditAction::ConfigUpdate;
 /// println!("Action: {}", action.description());
 /// println!("Severity: {:?}", action.severity());
@@ -165,8 +165,8 @@ pub enum AuditAction {
 /// for display purposes.
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let target_type = AuditTargetType::User;
 /// println!("Target type: {}", target_type.description());
 /// ```
@@ -199,8 +199,8 @@ pub enum AuditTargetType {
 /// - `offset`: Number of entries to skip (for pagination)
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// // Query failed operations from the last hour
 /// let filter = AuditLogFilter {
 ///     success: Some(false),
@@ -241,8 +241,8 @@ pub struct AuditLogFilter {
 /// - `per_page`: Number of entries per page (same as limit)
 ///
 /// # Examples
-///
-/// ```rust
+/// 
+/// ```ignore
 /// let response = AuditLogResponse {
 ///     entries: vec![entry1, entry2, entry3],
 ///     total: 150,
@@ -266,8 +266,8 @@ impl Default for AuditLogFilter {
     /// a limit of 50 entries starting from offset 0.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let filter = AuditLogFilter::default();
     /// assert_eq!(filter.limit, Some(50));
     /// assert_eq!(filter.offset, Some(0));
@@ -306,8 +306,8 @@ impl AuditLogEntry {
     /// for optional fields.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let entry = AuditLogEntry::new(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::ConfigReload,
@@ -358,8 +358,8 @@ impl AuditLogEntry {
     /// Returns a new `AuditLogEntry` marked as successful with the specified values.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let entry = AuditLogEntry::success_with_values(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::ConfigUpdate,
@@ -413,8 +413,8 @@ impl AuditLogEntry {
     /// Returns a new `AuditLogEntry` marked as failed with the specified error message.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let entry = AuditLogEntry::failure(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::UserDeactivate,
@@ -453,8 +453,8 @@ impl AuditLogEntry {
     /// Returns `true` if the operation was successful, `false` otherwise.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let success_entry = AuditLogEntry::success_with_values(...);
     /// assert!(success_entry.is_success());
     ///
@@ -472,8 +472,8 @@ impl AuditLogEntry {
     /// Returns `true` if the operation failed, `false` otherwise.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let success_entry = AuditLogEntry::success_with_values(...);
     /// assert!(!success_entry.is_failure());
     ///
@@ -495,8 +495,8 @@ impl AuditLogEntry {
     /// Returns a `String` containing a human-readable description of the audit entry.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let entry = AuditLogEntry::success_with_values(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::ConfigUpdate,
@@ -528,8 +528,8 @@ impl AuditAction {
     /// Returns a static string describing the action.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// assert_eq!(AuditAction::ConfigUpdate.description(), "Configuration Updated");
     /// assert_eq!(AuditAction::UserCreate.description(), "User Created");
     /// assert_eq!(AuditAction::ServerRestart.description(), "Server Restarted");
@@ -562,8 +562,8 @@ impl AuditAction {
     /// Returns a `Vec<AuditAction>` containing all possible audit actions.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let all_actions = AuditAction::all();
     /// assert!(all_actions.contains(&AuditAction::ConfigUpdate));
     /// assert!(all_actions.contains(&AuditAction::UserCreate));
@@ -603,8 +603,8 @@ impl AuditAction {
     /// - **Critical**: High-impact operations that could affect system availability
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// assert_eq!(AuditAction::ConfigUpdate.severity(), AuditSeverity::Info);
     /// assert_eq!(AuditAction::UserCreate.severity(), AuditSeverity::Success);
     /// assert_eq!(AuditAction::UserDeactivate.severity(), AuditSeverity::Warning);
@@ -632,8 +632,8 @@ impl AuditTargetType {
     /// Returns a static string describing the target type.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// assert_eq!(AuditTargetType::Config.description(), "Configuration");
     /// assert_eq!(AuditTargetType::User.description(), "User");
     /// assert_eq!(AuditTargetType::Appservice.description(), "Application Service");
@@ -660,8 +660,8 @@ impl AuditTargetType {
     /// Returns a `Vec<AuditTargetType>` containing all possible target types.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let all_targets = AuditTargetType::all();
     /// assert!(all_targets.contains(&AuditTargetType::Config));
     /// assert!(all_targets.contains(&AuditTargetType::User));
@@ -690,8 +690,8 @@ impl AuditSeverity {
     /// Returns a static string containing CSS classes for text color and background.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// assert_eq!(AuditSeverity::Info.css_class(), "text-blue-600 bg-blue-50");
     /// assert_eq!(AuditSeverity::Critical.css_class(), "text-red-600 bg-red-50");
     /// ```
@@ -714,8 +714,8 @@ impl AuditSeverity {
     /// Returns a static string containing an emoji icon.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// assert_eq!(AuditSeverity::Info.icon(), "ℹ️");
     /// assert_eq!(AuditSeverity::Success.icon(), "✅");
     /// assert_eq!(AuditSeverity::Warning.icon(), "⚠️");

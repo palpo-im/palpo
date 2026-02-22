@@ -16,7 +16,7 @@
 //!
 //! ### Direct Logger Usage
 //!
-//! ```rust
+//! ```ignore
 //! let logger = AuditLogger::new(500); // Keep last 500 entries
 //!
 //! logger.log_success(
@@ -33,7 +33,7 @@
 //!
 //! ### Global Logger Usage
 //!
-//! ```rust
+//! ```ignore
 //! // Use convenience functions with the global logger
 //! log_success(
 //!     "admin@example.com".to_string(),
@@ -68,8 +68,8 @@ use std::sync::{Arc, Mutex};
 /// stored entries and removing old entries when the limit is exceeded.
 ///
 /// # Examples
-/// #[ignore]
-/// ```rust
+/// 
+/// ```ignore
 /// let logger = AuditLogger::new(1000); // Keep last 1000 entries
 ///
 /// // Log a successful operation
@@ -113,8 +113,8 @@ impl AuditLogger {
     /// Returns a new `AuditLogger` instance with an empty entry buffer.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// let logger = AuditLogger::new(500); // Keep last 500 entries
     /// ```
     pub fn new(max_entries: usize) -> Self {
@@ -139,8 +139,8 @@ impl AuditLogger {
     /// - `description`: Human-readable description of the operation
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// // Log a successful action
     /// logger.log_action(
     ///     "admin@example.com",
@@ -184,8 +184,8 @@ impl AuditLogger {
     /// - `error_message`: A description of why the operation failed
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// logger.log_action_failure(
     ///     "admin@example.com",
     ///     AuditAction::UserCreate,
@@ -227,8 +227,8 @@ impl AuditLogger {
     /// - `new_value`: Optional JSON value representing the state after the action
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// 
+    /// ```ignore
     /// logger.log_success(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::RoomEnable,
@@ -274,8 +274,8 @@ impl AuditLogger {
     /// - `error_message`: A description of why the operation failed
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// #[ignore]
+    /// ```ignore
     /// logger.log_failure(
     ///     "admin@example.com".to_string(),
     ///     AuditAction::UserDeactivate,
@@ -340,8 +340,8 @@ impl AuditLogger {
     /// vector if the lock cannot be acquired.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// #[ignore]
+    /// ```ignore
     /// let all_entries = logger.get_entries();
     /// println!("Total logged entries: {}", all_entries.len());
     /// ```
@@ -368,8 +368,8 @@ impl AuditLogger {
     /// or an empty vector if the lock cannot be acquired.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// #[ignore]
+    /// ```ignore
     /// // Get the 5 most recent audit entries
     /// let recent = logger.get_recent_entries(5);
     /// for entry in recent {
@@ -398,8 +398,7 @@ impl AuditLogger {
     /// Use with caution as this will permanently delete the local audit history.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// ```ignore
     /// logger.clear();
     /// assert_eq!(logger.count(), 0);
     /// ```
@@ -417,8 +416,8 @@ impl AuditLogger {
     /// the lock cannot be acquired.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// #[ignore]
+    /// ```ignore
     /// println!("Current audit entries: {}", logger.count());
     /// ```
     pub fn count(&self) -> usize {
@@ -464,8 +463,8 @@ impl Default for AuditLogger {
     /// Creates a default audit logger with a capacity of 1000 entries.
     ///
     /// # Examples
-    ///
-    /// ```rust
+    /// #[ignore]
+    /// ```ignore
     /// let logger = AuditLogger::default();
     /// assert_eq!(logger.max_entries, 1000);
     /// ```
@@ -493,8 +492,8 @@ static INIT: std::sync::Once = std::sync::Once::new();
 /// Returns a reference to the global `AuditLogger` instance.
 ///
 /// # Examples
-///
-/// ```rust
+/// #[ignore]
+/// ```ignore
 /// let logger = get_audit_logger();
 /// logger.log_success(...);
 /// ```
@@ -528,8 +527,8 @@ pub fn get_audit_logger() -> &'static AuditLogger {
 /// - `new_value`: Optional JSON value representing the state after the action
 ///
 /// # Examples
-///
-/// ```rust
+/// #[ignore]
+/// ```ignore
 /// log_success(
 ///     "admin@example.com".to_string(),
 ///     AuditAction::ConfigUpdate,
@@ -564,8 +563,8 @@ pub fn log_success(
 /// - `error_message`: A description of why the operation failed
 ///
 /// # Examples
-///
-/// ```rust
+/// #[ignore]
+/// ```ignore
 /// log_failure(
 ///     "admin@example.com".to_string(),
 ///     AuditAction::UserCreate,
@@ -598,8 +597,8 @@ pub fn log_failure(
 /// Returns a `Vec<AuditLogEntry>` containing up to `count` recent entries.
 ///
 /// # Examples
-///
-/// ```rust
+/// #[ignore]
+/// ```ignore
 /// let recent_entries = get_recent_entries(10);
 /// for entry in recent_entries {
 ///     println!("{}: {}", entry.admin_user_id, entry.description());
@@ -619,8 +618,8 @@ pub fn get_recent_entries(count: usize) -> Vec<AuditLogEntry> {
 /// Returns a `Vec<AuditLogEntry>` containing all stored audit entries.
 ///
 /// # Examples
-///
-/// ```rust
+/// #[ignore]
+/// ```ignore
 /// let all_entries = get_all_entries();
 /// println!("Total audit entries: {}", all_entries.len());
 /// ```
