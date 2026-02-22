@@ -175,6 +175,44 @@ impl ConfigImportExportAPI {
         })
     }
     
+    /// Preview import changes with in-memory configs (for testing)
+    /// 
+    /// # Arguments
+    /// * `current_config` - The current configuration to compare against
+    /// * `import_content` - The content of the configuration to import
+    /// * `format` - The format of the import content
+    /// * `merge_strategy` - How to handle conflicts
+    /// 
+    /// # Returns
+    /// Preview of changes without applying them
+    pub async fn preview_import_with_configs(
+        current_config: &WebConfigData,
+        import_content: &str,
+        format: &ConfigFormat,
+        merge_strategy: &MergeStrategy,
+    ) -> Result<ImportPreview, WebConfigError> {
+        // Parse configuration from content
+        let imported_config = Self::parse_config(import_content, format)?;
+        
+        // Validate imported configuration
+        let validation_result = Self::validate_config(&imported_config).await?;
+        let validation_errors = validation_result.errors.into_iter().map(|e| e.message).collect();
+        
+        // Calculate changes and conflicts
+        let changes = Self::calculate_changes(current_config, &imported_config);
+        let conflicts = Self::detect_conflicts(&changes, merge_strategy);
+        
+        // Assess impact
+        let impact = Self::assess_impact(&changes);
+        
+        Ok(ImportPreview {
+            changes,
+            conflicts,
+            validation_errors,
+            estimated_impact: impact,
+        })
+    }
+    
     /// Validate import file format and content
     pub async fn validate_import_file(file_content: String, format: ConfigFormat) -> Result<ImportValidationResult, WebConfigError> {
         let mut errors = Vec::new();
