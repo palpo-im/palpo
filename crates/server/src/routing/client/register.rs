@@ -331,7 +331,10 @@ async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableRe
         return Err(MatrixError::user_in_use("Desired user ID is already taken.").into());
     }
 
-    // TODO add check for appservice namespaces
+    // Check if the username is reserved by an appservice exclusive namespace
+    if crate::appservice::is_exclusive_user_id(&user_id)? {
+        return Err(MatrixError::exclusive("Username is reserved by an application service.").into());
+    }
 
     // If no if check is true we have an username that's available to be used.
     Ok(Json(AvailableResBody::new(true)))

@@ -1,32 +1,49 @@
 services:
-  # postgres:
-  #   hostname: postgres
-  #   image: postgres:18
-  #   restart: always
-  #   ports:
-  #     - 5432:5432
-  #   volumes:
-  #     - ./data/pgsql:/var/lib/postgresql/data
-  #   environment:
-  #     POSTGRES_PASSWORD: root
-  #     POSTGRES_USER: postgres
-  #     POSTGRES_DB: palpo_local
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U postgres"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 5
-  #   networks:
-  #     - internal
+  postgres:
+    hostname: postgres
+    image: postgres:18
+    restart: always
+    volumes:
+      - ./data/pgsql:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: root
+      POSTGRES_USER: postgres
+      POSTGRES_DB: palpo_local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  palpo:
+    build:
+      context: ../../
+      dockerfile: build/docker/Dockerfile.palpo
+    restart: unless-stopped
+    volumes:
+      - ./palpo.toml:/var/palpo/palpo.toml
+      - ./appservices:/var/palpo/appservices
+      - ./data/palpo:/var/palpo/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - 6006:6006
+    environment:
+      PALPO_CONFIG: /var/palpo/palpo.toml
+      RUST_LOG: "palpo=info,palpo_core=warn"
+    networks:
+      - internal
 
   mautrix-telegram:
     image: dock.mau.dev/mautrix/telegram:latest
     restart: unless-stopped
     volumes:
       - ./data/mautrix-telegram:/data
-    # depends_on:
-    #   postgres:
-    #     condition: service_healthy
+    depends_on:
+      - palpo
     ports:
       - 29317:29317
     networks:

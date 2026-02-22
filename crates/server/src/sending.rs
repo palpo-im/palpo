@@ -344,6 +344,7 @@ async fn send_events(
                 })?;
             let req_body = PushEventsReqBody {
                 events: pdu_jsons.clone(),
+                ephemeral: vec![],
                 to_device: vec![],
             };
 

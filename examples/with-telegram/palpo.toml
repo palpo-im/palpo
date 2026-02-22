@@ -18,7 +18,7 @@ format = "pretty" # pretty, json, compact
 #level = "warn,state=warn,_=off,sled=off"
 
 [db]
-url = "postgres://postgres:root@localhost:5432/palpo_local"
+url = "postgres://postgres:root@postgres:5432/palpo_local"
 pool_size = 10
 
 [federation]
