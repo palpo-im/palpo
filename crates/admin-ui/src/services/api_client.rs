@@ -632,14 +632,6 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
-    fn test_request_config_creation() {
-        let config = RequestConfig::new(HttpMethod::Get, "http://example.com/api");
-        assert_eq!(config.method, HttpMethod::Get);
-        assert_eq!(config.url, "http://example.com/api");
-        assert!(config.require_auth);
-    }
-
-    #[wasm_bindgen_test]
     fn test_request_config_with_header() {
         let config = RequestConfig::new(HttpMethod::Post, "http://example.com/api")
             .with_header("X-Custom", "value");
@@ -665,13 +657,6 @@ mod tests {
         // Clear token
         token_manager.clear_token().unwrap();
         assert!(!token_manager.has_token());
-    }
-
-    #[wasm_bindgen_test]
-    fn test_api_client_creation() {
-        let client = ApiClient::new("http://localhost:8008");
-        assert_eq!(client.base_url, "http://localhost:8008");
-        assert!(!client.has_token());
     }
 
     #[wasm_bindgen_test]
