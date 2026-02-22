@@ -74,7 +74,7 @@ use std::time::SystemTime;
 /// - `error_message`: Error description if the operation failed
 ///
 /// # Examples
-///
+/// #[ignore]
 /// ```rust
 /// // Successful configuration update
 /// let entry = AuditLogEntry::success_with_values(

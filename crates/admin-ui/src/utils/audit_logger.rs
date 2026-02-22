@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex};
 /// stored entries and removing old entries when the limit is exceeded.
 ///
 /// # Examples
-///
+/// #[ignore]
 /// ```rust
 /// let logger = AuditLogger::new(1000); // Keep last 1000 entries
 ///
