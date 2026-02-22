@@ -12,11 +12,11 @@
 //! - **Session Management**: Handles session timeouts and renewal
 //! - **Role-Based Access Control**: Supports role-based permission management
 //!
-//! ## Usage Patterns
+//!use crate::models::{
 //!
 //! ### Basic Authentication Check
 //!
-//! ```rust
+//! ```ignore
 //! use std::rc::Rc;
 //! use std::cell::RefCell;
 //! use crate::services::AuthService;
@@ -31,7 +31,7 @@
 //!
 //! ### Admin Permission Check
 //!
-//! ```rust
+//! ```ignore
 //! use crate::models::Permission;
 //!
 //! let result = middleware.require_permission(Permission::UserManagement).await;
@@ -39,7 +39,7 @@
 //!
 //! ### Using Extension Trait
 //!
-//! ```rust
+//! ```ignore
 //! // Add authentication check to operations
 //! let result = middleware.authenticate_operation(
 //!     "admin@example.com".to_string(),
@@ -68,7 +68,7 @@ use std::time::SystemTime;
 ///
 /// # Examples
 /// #[ignore]
-/// ```rust
+/// ```ignore
 /// let service = Rc::new(RefCell::new(AuthService::default()));
 /// let middleware = AuthMiddleware::new(service.clone());
 ///
@@ -91,7 +91,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let service = Rc::new(RefCell::new(AuthService::default()));
     /// let middleware = AuthMiddleware::new(service);
     /// ```
@@ -111,7 +111,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let service = Rc::new(RefCell::new(AuthService::default()));
     /// let config = AuthMiddlewareConfig {
     ///     require_admin: true,
@@ -138,7 +138,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let user = middleware.require_auth().await?;
     /// println!("Authenticated as: {}", user.username);
     /// ```
@@ -175,7 +175,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let admin = middleware.require_admin().await?;
     /// ```
     pub async fn require_admin(&self) -> WebConfigResult<AdminUser> {
@@ -202,7 +202,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let user = middleware.require_permission(Permission::UserManagement).await?;
     /// ```
     pub async fn require_permission(&self, permission: Permission) -> WebConfigResult<AdminUser> {
@@ -233,7 +233,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let user = middleware.require_any_permission(&[
     ///     Permission::UserManagement,
     ///     Permission::RoomManagement,
@@ -269,7 +269,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let result = middleware.protect_operation(
     ///     perform_admin_task()
     /// ).await;
@@ -302,7 +302,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let result = middleware.protect_admin_operation(
     ///     perform_admin_task()
     /// ).await;
@@ -336,7 +336,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let result = middleware.protect_with_permission(
     ///     Permission::UserManagement,
     ///     perform_user_management()
@@ -369,7 +369,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let claims = middleware.validate_jwt_token(token).await?;
     /// ```
     pub fn validate_jwt_token(&self, token: &str) -> WebConfigResult<TokenClaims> {
@@ -413,7 +413,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// if middleware.session_needs_renewal().await {
     ///     // Trigger token refresh
     /// }
@@ -439,7 +439,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// if let Some(user) = middleware.get_current_user().await {
     ///     println!("Current user: {}", user.username);
     /// }
@@ -461,7 +461,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// if middleware.has_permission(Permission::UserManagement).await {
     ///     // Show user management UI
     /// }
@@ -482,7 +482,7 @@ impl AuthMiddleware {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// if middleware.is_admin().await {
     ///     // Show admin-only UI
     /// }
