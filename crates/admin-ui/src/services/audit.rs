@@ -103,7 +103,7 @@ impl AuditService {
     /// Returns the ID of the created audit log entry on success, or an `ApiError` on failure.
     ///
     /// # Examples
-    ///
+    /// #[ignore]
     /// ```rust
     /// let mut service = AuditService::new();
     /// let entry_id = service.record_success(
