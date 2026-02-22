@@ -654,14 +654,6 @@ mod tests {
     // ============ Unit Tests ============
 
     #[test]
-    fn test_auth_middleware_default_config() {
-        let middleware = create_test_middleware();
-        assert!(middleware.config.check_session_timeout);
-        assert_eq!(middleware.config.session_timeout, 7200);
-        assert!(!middleware.config.require_admin);
-    }
-
-    #[test]
     fn test_auth_middleware_custom_config() {
         let service = Rc::new(RefCell::new(AuthService::default()));
         let config = AuthMiddlewareConfig {

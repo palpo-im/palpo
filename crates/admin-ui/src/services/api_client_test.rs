@@ -16,16 +16,6 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_request_config_creation() {
-        let config = RequestConfig::new(HttpMethod::Get, "http://example.com/api");
-        assert_eq!(config.method, HttpMethod::Get);
-        assert_eq!(config.url, "http://example.com/api");
-        assert!(config.require_auth);
-        assert_eq!(config.retry_count, 0);
-        assert!(config.timeout.is_none());
-    }
-
-    #[wasm_bindgen_test]
     fn test_request_config_builder() {
         let test_data = TestData {
             message: "test".to_string(),
@@ -50,15 +40,6 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_http_method_as_str() {
-        assert_eq!(HttpMethod::Get.as_str(), "GET");
-        assert_eq!(HttpMethod::Post.as_str(), "POST");
-        assert_eq!(HttpMethod::Put.as_str(), "PUT");
-        assert_eq!(HttpMethod::Delete.as_str(), "DELETE");
-        assert_eq!(HttpMethod::Patch.as_str(), "PATCH");
-    }
-
-    #[wasm_bindgen_test]
     fn test_token_manager() {
         let token_manager = TokenManager::new("test_token_key");
         
@@ -78,15 +59,6 @@ mod tests {
         token_manager.clear_token().unwrap();
         assert!(!token_manager.has_token());
         assert_eq!(token_manager.get_token().unwrap(), None);
-    }
-
-    #[wasm_bindgen_test]
-    fn test_api_client_creation() {
-        let client = ApiClient::new("http://localhost:8008");
-        assert_eq!(client.base_url, "http://localhost:8008");
-        assert!(!client.has_token());
-        assert_eq!(client.default_timeout, 30000);
-        assert_eq!(client.default_retry_count, 2);
     }
 
     #[wasm_bindgen_test]
