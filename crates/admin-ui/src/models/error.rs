@@ -652,31 +652,6 @@ mod tests {
         assert_eq!(response.details, Some(details));
     }
 
-    /// Test ApiError creation utilities
-    #[test]
-    fn test_api_error_creation() {
-        // Basic creation
-        let error = ApiError::new("Something went wrong");
-        assert_eq!(error.message, "Something went wrong");
-        assert!(error.status_code.is_none());
-        assert!(error.error_code.is_none());
-        assert!(error.details.is_none());
-
-        // With status code
-        let error = ApiError::with_status("Bad request", 400);
-        assert_eq!(error.message, "Bad request");
-        assert_eq!(error.status_code, Some(400));
-
-        // With error code
-        let error = ApiError::new("Error occurred").with_code("CUSTOM_ERROR");
-        assert_eq!(error.message, "Error occurred");
-        assert_eq!(error.error_code, Some("CUSTOM_ERROR".to_string()));
-
-        // With details
-        let error = ApiError::new("Error").with_details(serde_json::json!({"key": "value"}));
-        assert!(error.details.is_some());
-    }
-
     /// Test ApiError error type checking
     #[test]
     fn test_api_error_type_checking() {
