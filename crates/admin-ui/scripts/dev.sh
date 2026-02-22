@@ -49,7 +49,7 @@ echo ""
 
 # Start development server with hot reload
 if [ "$OPEN_BROWSER" = "true" ]; then
-    dx serve --hot-reload --port "$PORT"
+    dx serve --hot-reload true --port "$PORT"
 else
-    dx serve --hot-reload --port "$PORT" --no-open
+    dx serve --hot-reload true --port "$PORT" --no-open
 fi

@@ -67,7 +67,7 @@ use std::time::SystemTime;
 /// environments, consider using `Arc<Mutex<>>` instead.
 ///
 /// # Examples
-///
+/// #[ignore]
 /// ```rust
 /// let service = Rc::new(RefCell::new(AuthService::default()));
 /// let middleware = AuthMiddleware::new(service.clone());

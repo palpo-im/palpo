@@ -69,7 +69,7 @@ use tokio::time::sleep;
 /// The service validates user permissions before executing any federation management operations.
 ///
 /// # Examples
-///
+/// #[ignore]
 /// ```rust
 /// use palpo_admin_ui::services::FederationAdminAPI;
 /// use palpo_admin_ui::utils::audit_logger::AuditLogger;

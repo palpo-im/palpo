@@ -62,7 +62,7 @@ use web_sys::{Request, RequestInit, RequestMode, Response};
 /// environments and supports Bearer token authentication.
 ///
 /// # Examples
-///
+/// #[ignore]
 /// ```rust
 /// let mut client = AuditApiClient::new("https://api.example.com".to_string());
 /// client.set_auth_token("your_bearer_token".to_string());

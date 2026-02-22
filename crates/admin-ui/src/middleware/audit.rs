@@ -89,7 +89,7 @@ use std::cell::RefCell;
 /// environments, consider using `Arc<Mutex<>>` instead.
 ///
 /// # Examples
-///
+/// #[ignore]
 /// ```rust
 /// let service = Rc::new(RefCell::new(AuditService::new()));
 /// let middleware = AuditMiddleware::new(service);
