@@ -14,7 +14,6 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  DOCKERHUB_NAMESPACE: chrislearn
   DOCKERHUB_USER: chrislearn
 
 jobs:
