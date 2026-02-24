@@ -12,6 +12,13 @@ pub(crate) use utils::*;
 mod executor;
 mod processor;
 
+// Two-tier admin system types
+pub(crate) mod types;
+pub(crate) use types::{
+    AdminError, CreateMatrixAdminResponse, ServerConfig, ServerStatus, SessionToken,
+    WebUIAdminCredentials,
+};
+
 use std::fmt;
 use std::pin::Pin;
 use std::time::SystemTime;

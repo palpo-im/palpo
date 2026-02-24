@@ -14,6 +14,7 @@ pub mod federation_admin_api;
 pub mod media_admin_api;
 pub mod appservice_admin_api;
 pub mod server_control_api;
+pub mod webui_auth_api;
 
 #[cfg(test)]
 mod config_api_test;
@@ -34,3 +35,4 @@ pub use federation_admin_api::*;
 pub use media_admin_api::*;
 pub use appservice_admin_api::*;
 pub use server_control_api::*;
+pub use webui_auth_api::*;
