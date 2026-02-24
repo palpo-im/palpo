@@ -4898,6 +4898,7 @@ dependencies = [
  "figment",
  "futures-util",
  "globwalk",
+ "hex",
  "hickory-resolver",
  "hmac",
  "hyper-util",
