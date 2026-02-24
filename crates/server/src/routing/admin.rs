@@ -47,6 +47,14 @@ pub async fn auth_by_mas_secret(aa: crate::AuthArgs) -> AppResult<()> {
 
 pub fn router() -> Router {
     let mut admin = Router::new().oapi_tag("admin");
+    
+    // Add default admin endpoints (no auth required for initialize and login)
+    
+    // TODO: Add server management endpoints
+    // These require ServerControlAPI and MatrixAdminClient to be available in Depot
+    // admin = admin.push(server_management::router(server_control));
+    // admin = admin.push(server_management::matrix_admin_router(server_control, matrix_admin_client));
+    
     for v in ["_palpo/admin", "_synapse/admin"] {
         admin = admin.push(
             Router::with_path(v)
