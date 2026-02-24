@@ -23,6 +23,10 @@ pub(crate) use types::{
 pub(crate) mod migrations;
 pub(crate) use migrations::MigrationRunner;
 
+// Web UI authentication service (Tier 1)
+pub(crate) mod webui_auth_service;
+pub(crate) use webui_auth_service::WebUIAuthService;
+
 use std::fmt;
 use std::pin::Pin;
 use std::time::SystemTime;
