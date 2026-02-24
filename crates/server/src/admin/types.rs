@@ -275,8 +275,8 @@ pub enum AdminError {
 }
 
 // Implement From conversions for common error types
-impl From<sqlx::Error> for AdminError {
-    fn from(err: sqlx::Error) -> Self {
+impl From<diesel::result::Error> for AdminError {
+    fn from(err: diesel::result::Error) -> Self {
         AdminError::DatabaseQueryFailed(err.to_string())
     }
 }
