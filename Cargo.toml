@@ -134,6 +134,7 @@ ulid = "1.1.0"
 web-time = "1.1.0"
 webpage = { version = "2.0.1", default-features = false }
 wildmatch = "2.6.1"
+proptest = "1.4"
 
 [workspace.lints.clippy]
 result_large_err = "allow"
