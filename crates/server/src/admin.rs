@@ -19,6 +19,10 @@ pub(crate) use types::{
     WebUIAdminCredentials,
 };
 
+// Database migrations for Web UI admin
+pub(crate) mod migrations;
+pub(crate) use migrations::MigrationRunner;
+
 use std::fmt;
 use std::pin::Pin;
 use std::time::SystemTime;
