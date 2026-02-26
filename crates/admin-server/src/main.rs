@@ -6,6 +6,8 @@ use palpo_admin_server::{
 };
 use palpo_data::DbConfig;
 use salvo::prelude::*;
+use salvo::cors::{self, AllowHeaders, Cors};
+use salvo::http::Method;
 use std::env;
 use std::sync::Arc;
 use tracing::info;
@@ -99,11 +101,20 @@ async fn main() -> Result<()> {
     // Initialize Matrix admin state
     matrix_admin::init_matrix_admin_state(matrix_admin_state);
 
+    // Configure CORS - allow any origin for development
+    let cors = Cors::new()
+        .allow_origin(cors::Any)
+        .allow_methods(vec![Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH, Method::OPTIONS])
+        .allow_headers(AllowHeaders::list([
+            salvo::http::header::CONTENT_TYPE,
+            salvo::http::header::AUTHORIZATION,
+        ]));
+
     // Create router with Web UI Admin endpoints
     let router = Router::new()
         .push(
             Router::with_path("/api/v1/admin/webui-admin")
-                .get(webui_admin::status)
+                .push(Router::with_path("/status").get(webui_admin::status))
                 .push(Router::with_path("/setup").post(webui_admin::setup))
                 .push(Router::with_path("/login").post(webui_admin::login))
                 .push(Router::with_path("/change-password").post(webui_admin::change_password))
@@ -146,13 +157,16 @@ async fn main() -> Result<()> {
         )
         .push(Router::with_path("/health").get(health_check));
 
-    // Create acceptor and bind to port 8080
-    let acceptor = TcpListener::new("0.0.0.0:8080").bind().await;
+    // Create acceptor and bind to port 8081
+    let acceptor = TcpListener::new("0.0.0.0:8081").bind().await;
     
-    info!("Admin Server listening on http://0.0.0.0:8080");
+    info!("Admin Server listening on http://0.0.0.0:8081");
+    
+    // Create service with CORS middleware
+    let service = Service::new(router).hoop(cors.into_handler());
     
     // Start server
-    Server::new(acceptor).serve(router).await;
+    Server::new(acceptor).serve(service).await;
 
     Ok(())
 }

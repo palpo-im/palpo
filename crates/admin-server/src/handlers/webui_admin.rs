@@ -89,10 +89,28 @@ pub struct LoginRequest {
 /// Response for successful login
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
+    /// Success status
+    pub success: bool,
     /// Session token for authenticated requests
-    pub token: String,
-    /// Expiration timestamp (ISO 8601 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// User information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<UserInfo>,
+    /// Error message if login failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// User information in login response
+#[derive(Debug, Serialize)]
+pub struct UserInfo {
+    pub user_id: String,
+    pub username: String,
+    pub is_admin: bool,
+    pub session_id: String,
     pub expires_at: String,
+    pub permissions: Vec<String>,
 }
 
 /// Request body for password change endpoint
@@ -329,8 +347,23 @@ pub async fn login(req: &mut Request, res: &mut Response) {
                 Ok(token) => {
                     tracing::info!("User {} logged in successfully", body.username);
                     res.render(Json(LoginResponse {
-                        token: token.token,
-                        expires_at: token.expires_at.to_rfc3339(),
+                        success: true,
+                        token: Some(token.token.clone()),
+                        user: Some(UserInfo {
+                            user_id: body.username.clone(),
+                            username: body.username.clone(),
+                            is_admin: true,
+                            session_id: token.token,
+                            expires_at: token.expires_at.to_rfc3339(),
+                            permissions: vec![
+                                "ConfigManagement".to_string(),
+                                "UserManagement".to_string(),
+                                "RoomManagement".to_string(),
+                                "FederationManagement".to_string(),
+                                "MediaManagement".to_string(),
+                            ],
+                        }),
+                        error: None,
                     }));
                 }
                 Err(e) => {
