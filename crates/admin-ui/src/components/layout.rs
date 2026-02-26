@@ -89,6 +89,12 @@ pub fn Sidebar(
             route: "/admin".to_string(),
         },
         NavItem {
+            id: "server-control",
+            label: "服务器控制",
+            icon: "🎛️",
+            route: "/admin/server-control".to_string(),
+        },
+        NavItem {
             id: "config",
             label: "配置管理",
             icon: "⚙️",
@@ -337,6 +343,12 @@ fn get_breadcrumbs(route: &Route) -> Vec<BreadcrumbItem> {
     match route {
         Route::Dashboard {} => {
             breadcrumbs.last_mut().unwrap().route = None;
+        }
+        Route::ServerControl {} => {
+            breadcrumbs.push(BreadcrumbItem {
+                label: "服务器控制".to_string(),
+                route: None,
+            });
         }
         Route::Config {} => {
             breadcrumbs.push(BreadcrumbItem {

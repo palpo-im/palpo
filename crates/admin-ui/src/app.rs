@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
-use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage};
+use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage, ServerControlPage};
 use crate::services::api_client::init_api_client;
 use crate::services::webui_auth_api::WebUIAuthAPI;
 use crate::components::layout::AdminLayout as AdminLayoutComponent;
@@ -22,6 +22,8 @@ pub enum Route {
     Dashboard {},
     #[route("/admin/config")]
     Config {},
+    #[route("/admin/server-control")]
+    ServerControl {},
     #[route("/admin/users")]
     Users {},
     #[route("/admin/rooms")]
@@ -339,5 +341,13 @@ fn Logs() -> Element {
 fn PasswordChange() -> Element {
     rsx! {
         PasswordChangePage {}
+    }
+}
+
+/// Server control page component
+#[component]
+fn ServerControl() -> Element {
+    rsx! {
+        ServerControlPage {}
     }
 }
