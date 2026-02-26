@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
-use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage, ServerControlPage};
+use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage, ServerControlPage, MatrixAdminCreatePage};
 use crate::services::api_client::init_api_client;
 use crate::services::webui_auth_api::WebUIAuthAPI;
 use crate::components::layout::AdminLayout as AdminLayoutComponent;
@@ -38,6 +38,8 @@ pub enum Route {
     Logs {},
     #[route("/admin/password-change")]
     PasswordChange {},
+    #[route("/admin/matrix-admin-create")]
+    MatrixAdminCreate {},
 }
 
 /// Global application state
@@ -349,5 +351,13 @@ fn PasswordChange() -> Element {
 fn ServerControl() -> Element {
     rsx! {
         ServerControlPage {}
+    }
+}
+
+/// Matrix admin creation page component
+#[component]
+fn MatrixAdminCreate() -> Element {
+    rsx! {
+        MatrixAdminCreatePage {}
     }
 }
