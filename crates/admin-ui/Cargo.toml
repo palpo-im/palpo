@@ -32,6 +32,8 @@ web-sys = { version = "0.3", features = [
     "RequestMode",
     "Response",
     "Headers",
+    "Navigator",
+    "Clipboard",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
