@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 use crate::hooks::use_auth;
+use crate::components::ForgotPasswordModal;
 
 /// Login page component
 #[component]
@@ -10,6 +11,7 @@ pub fn LoginPage() -> Element {
     let mut username = use_signal(|| String::new());
     let mut password = use_signal(|| String::new());
     let mut show_error = use_signal(|| false);
+    let mut show_forgot_password = use_signal(|| false);
 
     let handle_login = {
         let auth_context = auth_context.clone();
@@ -99,6 +101,17 @@ pub fn LoginPage() -> Element {
                         }
                     }
 
+                    div { class: "flex items-center justify-between",
+                        div { class: "text-sm",
+                            button {
+                                r#type: "button",
+                                onclick: move |_| show_forgot_password.set(true),
+                                class: "font-medium text-blue-600 hover:text-blue-500",
+                                "忘记密码？"
+                            }
+                        }
+                    }
+
                     div {
                         button {
                             r#type: "button",
@@ -116,6 +129,12 @@ pub fn LoginPage() -> Element {
                     }
                 }
             }
+        }
+        
+        // Forgot password modal
+        ForgotPasswordModal {
+            show: show_forgot_password(),
+            onclose: move |_| show_forgot_password.set(false)
         }
     }
 }
