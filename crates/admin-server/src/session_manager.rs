@@ -51,6 +51,7 @@ struct SessionData {
 /// // Invalidate the session (logout)
 /// manager.invalidate_session(&token.token).await?;
 /// ```
+#[derive(Debug, Clone)]
 pub struct SessionManager {
     /// In-memory storage of active sessions
     /// Key: session token, Value: session data
