@@ -52,6 +52,7 @@ use crate::models::{
 };
 use crate::services::AuthService;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use chrono::{DateTime, Utc};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::time::SystemTime;
@@ -787,7 +788,7 @@ mod tests {
             username: "admin".to_string(),
             is_admin: true,
             session_id: "test".to_string(),
-            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            expires_at: "2025-02-27T12:00:00Z".to_string(),
             permissions: vec![Permission::SystemAdmin],
         };
         let authenticated = AuthState::Authenticated(admin_user.clone());
@@ -885,7 +886,7 @@ mod tests {
                 username: user_id.clone(),
                 is_admin: true,
                 session_id: "test-session".to_string(),
-                expires_at: SystemTime::now() + Duration::from_secs(3600),
+                expires_at: "2025-02-27T12:00:00Z".to_string(),
                 permissions: vec![Permission::SystemAdmin],
             };
             
@@ -923,7 +924,7 @@ mod tests {
                 username: user_id.clone(),
                 is_admin: false,
                 session_id: "test-session".to_string(),
-                expires_at: SystemTime::now() + Duration::from_secs(3600),
+                expires_at: "2025-02-27T12:00:00Z".to_string(),
                 permissions: permissions.clone(),
             };
             
@@ -949,12 +950,15 @@ mod tests {
             let now = SystemTime::now();
             // Only add duration, never subtract to avoid overflow
             let duration = Duration::from_secs(time_offset);
-            let expires_at = if is_future {
+            let expires_at_time = if is_future {
                 now + duration
             } else {
                 // For past times, we use a very old time
                 SystemTime::UNIX_EPOCH
             };
+            // Convert to RFC3339 string format
+            let expires_at = chrono::DateTime::<chrono::Utc>::from(expires_at_time)
+                .to_rfc3339();
             
             let user = AdminUser {
                 user_id: format!("@{}:example.com", user_id),
@@ -992,7 +996,7 @@ mod tests {
                 username: user_id.clone(),
                 is_admin,
                 session_id: "test-session".to_string(),
-                expires_at: SystemTime::now() + Duration::from_secs(3600),
+                expires_at: "2025-02-27T12:00:00Z".to_string(),
                 permissions: if is_admin {
                     vec![Permission::SystemAdmin]
                 } else {
@@ -1062,7 +1066,7 @@ mod tests {
                 username: user_id.clone(),
                 is_admin: false,
                 session_id: "test-session".to_string(),
-                expires_at: SystemTime::now() + Duration::from_secs(3600),
+                expires_at: "2025-02-27T12:00:00Z".to_string(),
                 permissions: user_permissions.clone(),
             };
             
