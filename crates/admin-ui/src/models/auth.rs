@@ -1,7 +1,6 @@
 //! Authentication and authorization models
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 
 /// Admin user information
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -10,7 +9,7 @@ pub struct AdminUser {
     pub username: String,
     pub is_admin: bool,
     pub session_id: String,
-    pub expires_at: SystemTime,
+    pub expires_at: String, // RFC3339 timestamp string
     pub permissions: Vec<Permission>,
 }
 
@@ -132,14 +131,26 @@ impl AdminUser {
 
     /// Check if the session is still valid (not expired)
     pub fn is_session_valid(&self) -> bool {
-        SystemTime::now() < self.expires_at
+        // Parse RFC3339 timestamp
+        if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(&self.expires_at) {
+            chrono::Utc::now() < expires
+        } else {
+            false
+        }
     }
 
     /// Get remaining session time in seconds
     pub fn remaining_session_time(&self) -> Option<u64> {
-        match self.expires_at.duration_since(SystemTime::now()) {
-            Ok(duration) => Some(duration.as_secs()),
-            Err(_) => None, // Session expired
+        if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(&self.expires_at) {
+            let now = chrono::Utc::now();
+            let expires_utc = expires.with_timezone(&chrono::Utc);
+            if expires_utc > now {
+                Some((expires_utc.timestamp() - now.timestamp()) as u64)
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 }

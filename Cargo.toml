@@ -95,6 +95,7 @@ regex = "1.12.3"
 reqwest = { version = "0.13.1", features = ["json", "form"] }
 ring = "0.17.14"
 salvo = { version = "0.89.1", features = ["rustls"]}
+salvo-cors = { version = "0.89.1" }
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.0"
 secrecy = "0.10.3"
