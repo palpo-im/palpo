@@ -19,14 +19,14 @@ services:
   #   networks:
   #     - internal
 
-  matrix-appservice-discord:
-    image: ghcr.io/palpo-im/matrix-bridge-discord:main
+  matrix-bridge-feishu:
+    image: ghcr.io/palpo-im/matrix-bridge-feishu:main
     restart: unless-stopped
     network_mode: host
     volumes:
       - ./data:/data
     environment:
-      RUST_LOG: matrix_bridge_discord=debug,info
+      RUST_LOG: matrix_bridge_feishu=debug,info
     # depends_on:
     #   postgres:
     #     condition: service_healthy

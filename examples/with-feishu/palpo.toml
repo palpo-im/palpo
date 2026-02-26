@@ -1,0 +1,27 @@
+server_name = "127.0.0.1:6006"
+
+# Enables registration. If set to false, no users can register on this server.
+allow_registration = true
+
+enable_admin_room = true
+
+# Directory containing appservice registration YAML files (e.g. matrix-appservice-discord)
+appservice_registration_dir = "appservices"
+
+# The local address that the server listens on.
+[[listeners]]
+address = "0.0.0.0:6006"
+
+[logger]
+format = "pretty" # pretty, json, compact
+
+[db]
+url = "postgres://postgres:root@localhost:5432/palpo_local"
+pool_size = 10
+
+[federation]
+enable = true
+
+[well_known]
+server = "127.0.0.1:6006"
+client = "http://127.0.0.1:6006"

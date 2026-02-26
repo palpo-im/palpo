@@ -1,0 +1,16 @@
+id: discord
+url: "http://localhost:9005"
+as_token: "a5c88ba550fb9ea4533cb7e03ef586ee361adf140f0aa191d6b73ec78eabc961" #put_your_as_token_here_generate_with_openssl_rand_hex_32
+hs_token: "56ef4b612101131bf568f5dfe7c2f57ec729a40e900f8d2ee5beb28c3b2642c8" #put_your_hs_token_here_generate_with_openssl_rand_hex_32
+sender_localpart: _discord_bot
+namespaces:
+  users:
+    - exclusive: true
+      regex: "@_discord_.*:127\\.0\\.0\\.1:6006"
+  aliases:
+    - exclusive: true
+      regex: "#_discord_.*:127\\.0\\.0\\.1:6006"
+  rooms: []
+rate_limited: false
+protocols:
+  - discord

@@ -1,0 +1,43 @@
+# Matrix-Discord Bridge Configuration
+
+bridge:
+  domain: "127.0.0.1:6006"          # Matrix server domain
+  port: 9005                         # Bridge service port
+  bind_address: "0.0.0.0"           # Bind address
+  homeserver_url: "http://127.0.0.1:6006"  # Homeserver URL
+
+auth:
+  bot_token: ""  # Discord bot token
+  client_id: ""           # OAuth client ID
+  client_secret: ""                           # Optional: OAuth client secret
+
+logging:
+  level: "info"                   # Log level: trace, debug, info, warn, error
+  format: "pretty"                # Log format: pretty, json
+  file: null                      # Optional: log file path
+
+database:
+  connection_string: "sqlite:///data/discord.db"
+  # PostgreSQL example: "postgresql://user:password@localhost/matrix_discord"
+  max_connections: 10             # Maximum database connections
+  min_connections: 1              # Minimum database connections
+
+room:
+  default_visibility: "public"   # Default room visibility
+  room_alias_prefix: "_discord_"  # Prefix for Discord room aliases
+  enable_room_creation: true      # Allow automatic room creation
+
+channel:
+  enable_channel_creation: true  # Allow automatic channel creation
+  channel_name_format: "[Discord] {guild_name} {channel_name}"  # Channel name format
+  topic_format: "Bridged from Matrix room {room_id}"   # Channel topic format
+
+ghosts:
+  username_template: "_discord_{user_id}"     # Matrix username template
+  displayname_template: "{username}#{discriminator}"  # Display name template
+  avatar_url_template: null                     # Optional: avatar URL template
+
+metrics:
+  enabled: false                  # Enable metrics collection
+  port: 9001                     # Metrics port
+  bind_address: "127.0.0.1"      # Metrics bind address

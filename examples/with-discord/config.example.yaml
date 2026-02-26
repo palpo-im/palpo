@@ -1,0 +1,168 @@
+# Matrix-Discord Bridge Configuration
+# This is a sample of the config file showing all available options.
+
+bridge:
+  # Domain part of the bridge, e.g. matrix.org
+  # Must match the server_name in palpo.toml
+  domain: "127.0.0.1:6006"
+  # This should be your publicly-facing URL because Discord may use it to
+  # fetch media from the media store.
+  homeserver_url: "http://127.0.0.1:6006"
+  # The TCP port on which the appservice runs on.
+  port: 9005
+  # Bind address for the appservice
+  bind_address: "0.0.0.0"
+  # Bridge ID (usually the appservice ID)
+  id: "discord"
+  # Application service token (for homeserver authentication)
+  as_token: "your_appservice_token_here"
+  # Homeserver token (for verifying requests from homeserver)
+  hs_token: "your_homeserver_token_here"
+  # Interval at which to process users in the 'presence queue'. If you have
+  # 5 users, one user will be processed every 500 milliseconds according to the
+  # value below. This has a minimum value of 250.
+  # WARNING: This has a high chance of spamming the homeserver with presence
+  # updates since it will send one each time somebody changes state or is online.
+  presence_interval: 500
+  # Disable setting presence for 'ghost users' which means Discord users on Matrix
+  # will not be shown as away or online.
+  disable_presence: false
+  # Disable sending typing notifications when somebody on Discord types.
+  disable_typing_notifications: false
+  # Disable discord mentions from appearing in the matrix room.
+  disable_discord_mentions: false
+  # Disable deleting messages on Discord if a message is redacted on Matrix.
+  disable_deletion_forwarding: false
+  # Disable portal bridging, where Matrix users can search for unbridged Discord
+  # rooms on their Matrix server.
+  disable_portal_bridging: false
+  # Enable users to bridge rooms using !discord commands.
+  enable_self_service_bridging: true
+  # Disable sending of read receipts for Matrix events which have been
+  # successfully bridged to Discord.
+  disable_read_receipts: false
+  # Disable @everyone mention
+  disable_everyone_mention: false
+  # Disable @here mention
+  disable_here_mention: false
+  # Disable Join Leave echos from matrix
+  disable_join_leave_notifications: false
+  # Disable Invite echos from matrix
+  disable_invite_notifications: false
+  # Disable Room Topic echos from matrix
+  disable_room_topic_notifications: false
+  # Auto-determine the language of code blocks (this can be CPU-intensive)
+  determine_code_language: false
+  # Maximum number of users that can be bridged (null for unlimited)
+  user_limit: null
+  # MXID of an admin user that will be PMd if the bridge experiences problems. Optional
+  admin_mxid: "@admin:127.0.0.1:6006"
+  # The message to send to the bridge admin if the Discord token is not valid
+  invalid_token_message: "Your Discord bot token seems to be invalid, and the bridge cannot function. Please update it in your bridge settings and restart the bridge"
+
+# Authentication configuration for the discord bot.
+auth:
+  # This MUST be a string (wrapped in quotes)
+  client_id: "your_client_id_here"
+  bot_token: "your_bot_token_here"
+  # You must enable "Privileged Gateway Intents" in your bot settings on discord.com
+  # (e.g. https://discord.com/developers/applications/12345/bot)
+  # for this to work
+  use_privileged_intents: true
+
+logging:
+  # What level should the logger output to the console at.
+  level: "info" # trace, debug, info, warn, error
+  # Date format for log lines (moment.js format)
+  line_date_format: "MMM-D HH:mm:ss.SSS"
+  # Log format: pretty, json
+  format: "pretty"
+  # Optional: log file path
+  file: null
+  # Log files configuration
+  files:
+    - file: "debug.log"
+      disabled:
+        - "PresenceHandler"
+    - file: "warn.log"
+      level: "warn"
+    - file: "botlogs.log"
+      level: "info"
+      enabled:
+        - "DiscordBot"
+
+database:
+  # You may either use SQLite or Postgresql for the bridge database, which contains
+  # important mappings for events and user puppeting configurations.
+  # Use the filename option for SQLite, or conn_string for Postgresql.
+  # WARNING: You will almost certainly be fine with sqlite unless your bridge
+  # is in heavy demand and you suffer from IO slowness.
+  filename: "/data/discord.db"
+  # conn_string: "postgresql://postgres:root@localhost/discord_bridge"
+  # url: "sqlite:///data/discord.db"
+  max_connections: 10
+  min_connections: 1
+
+room:
+  # Set the default visibility of alias rooms, defaults to "public".
+  # One of: "public", "private"
+  default_visibility: "public"
+  # Prefix for room aliases
+  room_alias_prefix: "_discord_"
+  # Allow automatic room creation
+  enable_room_creation: true
+  # Kick users after this many milliseconds of inactivity (0 to disable)
+  kick_for: 30000
+
+channel:
+  # Pattern of the name given to bridged rooms.
+  # Can use :guild for the guild name and :name for the channel name.
+  name_pattern: "[Discord] :guild :name"
+  # Allow automatic channel creation
+  enable_channel_creation: true
+  # Channel name format for Matrix -> Discord
+  channel_name_format: "[Discord] {guild_name} {channel_name}"
+  # Topic format for bridged channels
+  topic_format: "Bridged from Matrix room {room_id}"
+  # Changes made to rooms when a channel is deleted.
+  delete_options:
+    # Prefix to add to room name when deleted
+    name_prefix: null
+    # Prefix to add to room topic when deleted
+    topic_prefix: null
+    # Disable people from talking in the room by raising the event PL to 50
+    disable_messaging: false
+    # Remove the discord alias from the room.
+    unset_room_alias: true
+    # Remove the room from the directory.
+    unlist_from_directory: true
+    # Set the room to be unavailable for joining without an invite.
+    set_invite_only: true
+    # Make all the discord users leave the room.
+    ghosts_leave: true
+
+limits:
+  # Delay in milliseconds between discord users joining a room.
+  room_ghost_join_delay: 6000
+  # Lock timeout in milliseconds before sending messages to discord to avoid echos.
+  discord_send_delay: 1500
+  # Maximum number of bridged rooms (-1 for unlimited)
+  room_count: -1
+
+ghosts:
+  # Pattern for the ghosts nick, available is :nick, :username, :tag and :id
+  nick_pattern: ":nick"
+  # Pattern for the ghosts username, available is :username, :tag and :id
+  username_pattern: ":username#:tag"
+  # Username template for Matrix users (new format)
+  username_template: "_discord_{user_id}"
+  # Display name template (new format)
+  displayname_template: "{username}#{discriminator}"
+  # Optional: avatar URL template
+  avatar_url_template: null
+
+# Prometheus-compatible metrics endpoint
+metrics:
+  enable: false
+  port: 9001
+  host: "127.0.0.1"
