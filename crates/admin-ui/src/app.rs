@@ -3,8 +3,9 @@
 use dioxus::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
-use crate::pages::{LoginPage, AdminDashboard};
+use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage};
 use crate::services::api_client::init_api_client;
+use crate::services::webui_auth_api::WebUIAuthAPI;
 use crate::components::layout::AdminLayout as AdminLayoutComponent;
 
 /// Main application routes
@@ -12,6 +13,8 @@ use crate::components::layout::AdminLayout as AdminLayoutComponent;
 pub enum Route {
     #[route("/")]
     Home {},
+    #[route("/setup")]
+    Setup {},
     #[route("/login")]
     Login {},
     #[layout(AdminLayout)]
@@ -31,6 +34,8 @@ pub enum Route {
     Appservices {},
     #[route("/admin/logs")]
     Logs {},
+    #[route("/admin/password-change")]
+    PasswordChange {},
 }
 
 /// Global application state
@@ -78,25 +83,56 @@ pub fn App() -> Element {
     }
 }
 
-/// Home page component - redirects to admin or login
+/// Home page component - redirects to setup, login, or admin based on setup status
 #[component]
 fn Home() -> Element {
     let auth_context = use_auth();
     let navigator = use_navigator();
+    let mut is_checking = use_signal(|| true);
+    let mut check_error = use_signal(|| None::<String>);
 
     use_effect(move || {
+        // If already authenticated, go to dashboard
         if auth_context.is_authenticated() {
             navigator.push(Route::Dashboard {});
-        } else {
-            navigator.push(Route::Login {});
+            return;
         }
+
+        // Check setup status
+        spawn(async move {
+            match WebUIAuthAPI::get_status().await {
+                Ok(status) => {
+                    if status.needs_setup {
+                        // No admin exists, show setup wizard
+                        navigator.push(Route::Setup {});
+                    } else {
+                        // Admin exists, show login page
+                        navigator.push(Route::Login {});
+                    }
+                }
+                Err(e) => {
+                    // On error, show error message and default to login
+                    web_sys::console::error_1(&format!("Failed to check setup status: {}", e).into());
+                    check_error.set(Some(format!("无法检查设置状态: {}", e)));
+                    // Default to login page on error
+                    navigator.push(Route::Login {});
+                }
+            }
+            is_checking.set(false);
+        });
     });
 
     rsx! {
         div { class: "flex items-center justify-center min-h-screen",
             div { class: "text-center",
-                div { class: "animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" }
-                p { class: "mt-4 text-gray-600", "正在加载..." }
+                if *is_checking.read() {
+                    div { class: "animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" }
+                    p { class: "mt-4 text-gray-600", "正在加载..." }
+                } else if let Some(error) = check_error.read().as_ref() {
+                    div { class: "text-red-600",
+                        p { "{error}" }
+                    }
+                }
             }
         }
     }
@@ -121,6 +157,14 @@ fn Login() -> Element {
 
     rsx! {
         LoginPage {}
+    }
+}
+
+/// Setup wizard page component
+#[component]
+fn Setup() -> Element {
+    rsx! {
+        SetupWizardPage {}
     }
 }
 
@@ -291,5 +335,13 @@ fn Logs() -> Element {
                 }
             }
         }
+    }
+}
+
+/// Password change page component
+#[component]
+fn PasswordChange() -> Element {
+    rsx! {
+        PasswordChangePage {}
     }
 }
