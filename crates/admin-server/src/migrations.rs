@@ -12,7 +12,7 @@ use diesel::sql_query;
 use diesel::sql_types::Text;
 
 use super::types::AdminError;
-use crate::data::DieselPool;
+use palpo_data::DieselPool;
 
 /// Migration runner for Web UI admin database schema
 ///

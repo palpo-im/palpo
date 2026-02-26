@@ -44,13 +44,26 @@ use diesel::sql_query;
 use diesel::sql_types::{BigInt, Text};
 
 use super::types::{AdminError, SessionToken};
-use crate::data::DieselPool;
+use palpo_data::DieselPool;
+
+/// Generates a random alphanumeric string of the specified length
+fn random_string(length: usize) -> String {
+    use rand::distributions::Alphanumeric;
+    use rand::Rng;
+    
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(length)
+        .map(char::from)
+        .collect()
+}
 
 /// Web UI Authentication Service
 ///
 /// Manages authentication for the Web UI admin account using PostgreSQL database.
 /// This service is independent of the Palpo Matrix server and can operate even
 /// when Palpo is not running.
+#[derive(Debug, Clone)]
 pub struct WebUIAuthService {
     db_pool: DieselPool,
 }
@@ -184,7 +197,7 @@ impl WebUIAuthService {
         }
 
         // Generate salt and hash password with Argon2id
-        let salt = crate::utils::random_string(32);
+        let salt = random_string(32);
         let hashing_conf = argon2::Config {
             variant: argon2::Variant::Argon2id,
             ..Default::default()
@@ -344,7 +357,7 @@ impl WebUIAuthService {
         }
 
         // Hash new password with new salt
-        let salt = crate::utils::random_string(32);
+        let salt = random_string(32);
         let hashing_conf = argon2::Config {
             variant: argon2::Variant::Argon2id,
             ..Default::default()
@@ -403,7 +416,7 @@ impl WebUIAuthService {
         self.validate_password_policy(new_password)?;
 
         // Hash password
-        let salt = crate::utils::random_string(32);
+        let salt = random_string(32);
         let hashing_conf = argon2::Config {
             variant: argon2::Variant::Argon2id,
             ..Default::default()

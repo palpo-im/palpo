@@ -12,25 +12,6 @@ pub(crate) use utils::*;
 mod executor;
 mod processor;
 
-// Two-tier admin system types
-pub(crate) mod types;
-pub(crate) use types::{
-    AdminError, CreateMatrixAdminResponse, ServerConfig, ServerStatus, SessionToken,
-    WebUIAdminCredentials,
-};
-
-// Database migrations for Web UI admin
-pub(crate) mod migrations;
-pub(crate) use migrations::MigrationRunner;
-
-// Web UI authentication service (Tier 1)
-pub(crate) mod webui_auth_service;
-pub(crate) use webui_auth_service::WebUIAuthService;
-
-// Session manager for Web UI admin sessions
-pub(crate) mod session_manager;
-pub(crate) use session_manager::SessionManager;
-
 use std::fmt;
 use std::pin::Pin;
 use std::time::SystemTime;
