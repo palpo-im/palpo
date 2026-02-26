@@ -34,11 +34,10 @@ pub fn ForgotPasswordModal(
     show: bool,
     onclose: EventHandler<()>,
 ) -> Element {
-    if !show {
-        return None;
-    }
-
     rsx! {
+        if !show {
+            // Return empty when not showing
+        } else {
         // Modal backdrop
         div {
             class: "fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity z-40",
@@ -208,6 +207,7 @@ pub fn ForgotPasswordModal(
                     }
                 }
             }
+        }
         }
     }
 }
