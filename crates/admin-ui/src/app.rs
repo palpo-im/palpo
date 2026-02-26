@@ -61,10 +61,8 @@ impl Default for AppState {
 pub fn App() -> Element {
     // Initialize API client on app startup
     use_effect(|| {
-        // Get base URL from environment or use default
-        let base_url = web_sys::window()
-            .and_then(|w| w.location().origin().ok())
-            .unwrap_or_else(|| "http://localhost:8008".to_string());
+        // API server runs on port 8081
+        let base_url = "http://localhost:8081".to_string();
         
         init_api_client(base_url);
         
@@ -146,8 +144,6 @@ fn Login() -> Element {
 
     // Redirect if already authenticated
     use_effect({
-        let auth_context = auth_context.clone();
-        let navigator = navigator.clone();
         move || {
             if auth_context.is_authenticated() {
                 navigator.push(Route::Dashboard {});
