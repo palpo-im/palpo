@@ -5,7 +5,6 @@ use crate::models::{
     ValidateSessionRequest, ValidateSessionResponse, WebConfigError, WebConfigResult,
 };
 use crate::services::api_client::{get_api_client, ApiClient};
-use std::time::SystemTime;
 
 /// Authentication service for handling login, logout, and session management
 #[derive(Clone)]
@@ -29,10 +28,13 @@ impl AuthService {
     pub async fn login(&self, username: String, password: String) -> WebConfigResult<LoginResponse> {
         let request = LoginRequest { username, password };
         
+        // Construct full URL with base URL
+        let url = format!("{}/api/v1/admin/webui-admin/login", self.api_client.base_url());
+        
         // Use API client without auth for login
         let mut config = crate::services::api_client::RequestConfig::new(
             crate::services::api_client::HttpMethod::Post,
-            "/api/auth/login"
+            url
         ).without_auth();
         config = config.with_json_body(&request)?;
         
@@ -228,7 +230,7 @@ impl SessionManager {
     }
 
     /// Get session expiry timestamp
-    pub async fn get_session_expiry(&self) -> Option<SystemTime> {
+    pub async fn get_session_expiry(&self) -> Option<String> {
         self.auth_service
             .get_current_user()
             .await

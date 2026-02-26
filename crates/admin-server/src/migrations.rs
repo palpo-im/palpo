@@ -150,6 +150,7 @@ impl MigrationRunner {
     fn run_migration_001(&self, conn: &mut PgConnection) -> Result<(), AdminError> {
         tracing::info!("Running migration 001: Create webui_admin_credentials table");
 
+        // Create table
         sql_query(
             r#"
             CREATE TABLE IF NOT EXISTS webui_admin_credentials (
@@ -158,16 +159,28 @@ impl MigrationRunner {
                 salt TEXT NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-            );
-            
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_webui_admin_single 
-            ON webui_admin_credentials ((1));
+            )
             "#,
         )
         .execute(conn)
         .map_err(|e| {
             AdminError::DatabaseMigrationFailed(format!(
                 "Failed to create webui_admin_credentials table: {}",
+                e
+            ))
+        })?;
+
+        // Create unique index
+        sql_query(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_webui_admin_single 
+            ON webui_admin_credentials ((1))
+            "#,
+        )
+        .execute(conn)
+        .map_err(|e| {
+            AdminError::DatabaseMigrationFailed(format!(
+                "Failed to create idx_webui_admin_single index: {}",
                 e
             ))
         })?;
