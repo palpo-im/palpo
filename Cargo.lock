@@ -4959,6 +4959,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "palpo-admin-server"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "diesel",
+ "futures",
+ "hex",
+ "palpo-data",
+ "rand 0.8.5",
+ "reqwest 0.13.1",
+ "rust-argon2",
+ "salvo",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.10+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+]
+
+[[package]]
 name = "palpo-admin-ui"
 version = "0.1.0"
 dependencies = [
