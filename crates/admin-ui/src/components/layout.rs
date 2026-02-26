@@ -95,6 +95,12 @@ pub fn Sidebar(
             route: "/admin/server-control".to_string(),
         },
         NavItem {
+            id: "matrix-admin",
+            label: "创建管理员",
+            icon: "👤",
+            route: "/admin/matrix-admin-create".to_string(),
+        },
+        NavItem {
             id: "config",
             label: "配置管理",
             icon: "⚙️",
@@ -347,6 +353,12 @@ fn get_breadcrumbs(route: &Route) -> Vec<BreadcrumbItem> {
         Route::ServerControl {} => {
             breadcrumbs.push(BreadcrumbItem {
                 label: "服务器控制".to_string(),
+                route: None,
+            });
+        }
+        Route::MatrixAdminCreate {} => {
+            breadcrumbs.push(BreadcrumbItem {
+                label: "创建管理员".to_string(),
                 route: None,
             });
         }
