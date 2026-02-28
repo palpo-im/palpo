@@ -1,58 +1,48 @@
 # Palpo + matrix-bridge-feishu Bridge Example
 
-This example shows how to run [matrix-bridge-feishu](https://github.com/palpo-im/matrix-bridge-feishu) with Palpo for bridging Discord channels to Matrix rooms.
+This example shows how to run [matrix-bridge-feishu](https://github.com/palpo-im/matrix-bridge-feishu) with Palpo for bridging Feishu chats to Matrix rooms.
 
 ## Prerequisites
 
 - Docker and Docker Compose
 - A running PostgreSQL instance (or use the commented-out one in `compose.yml`)
-- A Discord bot token (see step 3)
+- A Feishu custom app (Bot capability enabled)
 - Palpo built and ready to run
 
 ## Setup Steps
 
-### 1. Generate tokens
+### 1. Generate Matrix appservice tokens
 
-Replace the placeholder tokens in `appservices/feishu-registration.yaml` with real ones:
+Replace the placeholder tokens in `appservices/feishu-registration.yaml` and `data/config.yaml`:
 
 ```bash
-# Generate as_token
-openssl rand -hex 32
-
-# Generate hs_token
-openssl rand -hex 32
+openssl rand -hex 32  # as_token
+openssl rand -hex 32  # hs_token
 ```
 
-Update both `appservices/feishu-registration.yaml` and `data/config.yaml` with the same tokens.
+Both files must use the same token values.
 
-### 2. Create a Discord bot
+### 2. Create and configure a Feishu app
 
-1. Go to https://feishu.com/developers/applications
-2. Click "New Application" and give it a name
-3. Go to the "Bot" section and click "Add Bot"
-4. Copy the **Bot Token** - you'll need this for config
-5. Copy the **Application ID** (Client ID) from the "General Information" page
-6. Under "Privileged Gateway Intents", enable **Server Members Intent** and **Message Content Intent** if needed
-7. Use the OAuth2 URL Generator to invite the bot to your Discord server:
-   - Select the `bot` scope
-   - Select permissions: `Manage Webhooks`, `Send Messages`, `Read Message History`, `Manage Messages`
-   - Open the generated URL and authorize the bot to your server
+1. Go to https://open.feishu.cn/app and create a custom app.
+2. Enable **Bot** capability.
+3. Add required permissions for messaging/events (send message, receive message events).
+4. Configure event subscription:
+   - Subscription mode: **Send notifications to developer's server**
+   - Request URL: `http://<YOUR_PUBLIC_HOST>:8081/webhook`
+   - Subscribe to: `im.message.receive_v1`
+5. (Optional but recommended) configure **Encrypt Key** and **Verification Token** in Feishu and set the same values in `data/config.yaml`.
 
-### 3. Configure the Discord bridge
+### 3. Configure the Feishu bridge
 
 Edit `data/config.yaml`:
 
-```yaml
-bridge:
-  domain: "127.0.0.1:6006"
-  homeserverUrl: "http://127.0.0.1:6006"
+- `appservice.as_token` and `appservice.hs_token`
+- `bridge.app_id` and `bridge.app_secret`
+- `bridge.listen_address` (default is `http://0.0.0.0:8081`)
+- `bridge.encrypt_key` / `bridge.verification_token` if enabled in Feishu
 
-auth:
-  clientID: "YOUR_DISCORD_APPLICATION_CLIENT_ID"
-  botToken: "YOUR_DISCORD_BOT_TOKEN"
-```
-
-### 4. Start the Discord bridge with Docker Compose
+### 4. Start the Feishu bridge with Docker Compose
 
 ```bash
 docker compose up -d
@@ -66,22 +56,23 @@ From the project root:
 cargo run
 ```
 
-Palpo will auto-load the registration from `appservices/feishu-registration.yaml` on startup.
+Palpo will auto-load the registration from `appservices/feishu-registration.yaml`.
 
-### 6. Bridge a Discord channel to a Matrix room
+### 6. Bridge a Matrix room to a Feishu chat
 
-Once the bridge is running, you can join a bridged room on Matrix using the alias format:
+In a Matrix room, use the bridge command:
 
 ```
-#_discord_<guildId>_<channelId>:127.0.0.1:6006
+!feishu bridge <feishu_chat_id>
 ```
 
-To find the Guild ID and Channel ID, enable Developer Mode in Discord (Settings > Advanced > Developer Mode), then right-click a server name for the Guild ID and right-click a channel for the Channel ID.
+Then messages in that Matrix room will forward to the linked Feishu chat, and Feishu bot messages in that chat will forward back.
 
 ## Networking Notes
 
-- If Palpo runs on the host and the Discord bridge runs in Docker, the bridge needs to reach Palpo. Use `host.docker.internal:6006` (Docker Desktop) or your actual host IP in the bridge config's `homeserverUrl`.
-- Palpo needs to reach the bridge at the URL specified in `feishu-registration.yaml`. If they're on different networks, adjust the `url` field accordingly (e.g., `http://localhost:9005` if you expose port 9005).
+- Feishu webhook callbacks must reach `http://<YOUR_PUBLIC_HOST>:8081/webhook`.
+- Palpo must reach the bridge URL configured in `appservices/feishu-registration.yaml` (`http://localhost:8080` in this example).
+- If running on different hosts/networks, adjust both the registration URL and `listen_address` accordingly.
 
 ## File Structure
 
@@ -91,8 +82,7 @@ with-feishu/
 ├── compose.yml                              # Docker Compose for the bridge
 ├── palpo.toml                               # Palpo server configuration
 ├── appservices/
-│   └── feishu-registration.yaml            # Appservice registration for Palpo
+│   └── feishu-registration.yaml             # Appservice registration for Palpo
 └── data/
-    └── matrix-bridge-feishu/
-        └── config.yaml                      # Discord bridge configuration
+    └── config.yaml                          # Feishu bridge configuration
 ```

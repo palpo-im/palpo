@@ -25,6 +25,7 @@ services:
     network_mode: host
     volumes:
       - ./data:/data
+      - ./data/config.yaml:/config/config.yaml:ro
     environment:
       RUST_LOG: matrix_bridge_feishu=debug,info
     # depends_on:

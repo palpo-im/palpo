@@ -1,6 +1,6 @@
-# Palpo + matrix-appservice-discord Bridge Example
+# Palpo + matrix-bridge-discord Bridge Example
 
-This example shows how to run [matrix-appservice-discord](https://github.com/palpo-im/matrix-bridge-discord) with Palpo for bridging Discord channels to Matrix rooms.
+This example shows how to run [matrix-bridge-discord](https://github.com/palpo-im/matrix-bridge-discord) with Palpo for bridging Discord channels to Matrix rooms.
 
 ## Prerequisites
 
@@ -45,11 +45,11 @@ Edit `data/config.yaml`:
 ```yaml
 bridge:
   domain: "127.0.0.1:6006"
-  homeserverUrl: "http://127.0.0.1:6006"
+  homeserver_url: "http://127.0.0.1:6006"
 
 auth:
-  clientID: "YOUR_DISCORD_APPLICATION_CLIENT_ID"
-  botToken: "YOUR_DISCORD_BOT_TOKEN"
+  client_id: "YOUR_DISCORD_APPLICATION_CLIENT_ID"
+  bot_token: "YOUR_DISCORD_BOT_TOKEN"
 ```
 
 ### 4. Start the Discord bridge with Docker Compose

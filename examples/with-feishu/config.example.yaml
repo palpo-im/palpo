@@ -1,43 +1,74 @@
-# Matrix-Discord Bridge Configuration
+# Matrix-Feishu Bridge Configuration
+
+homeserver:
+  address: "http://127.0.0.1:6006"
+  domain: "127.0.0.1:6006"
+  software: "standard"
+  status_endpoint: null
+  message_send_checkpoint_endpoint: null
+  async_media: false
+  websocket: false
+  ping_interval_seconds: 0
+
+appservice:
+  address: "http://localhost:8080"
+  hostname: "0.0.0.0"
+  port: 8080
+  database:
+    type: "sqlite"
+    uri: "sqlite:/data/matrix-feishu.db"
+    max_open_conns: 20
+    max_idle_conns: 2
+    max_conn_idle_time: null
+    max_conn_lifetime: null
+  id: "feishu"
+  bot:
+    username: "feishubot"
+    displayname: "Feishu Bridge"
+    avatar: "mxc://127.0.0.1:6006/feishu-avatar"
+  ephemeral_events: false
+  async_transactions: false
+  as_token: "PUT_YOUR_AS_TOKEN_HERE_GENERATE_WITH_OPENSSL_RAND_HEX_32"
+  hs_token: "PUT_YOUR_HS_TOKEN_HERE_GENERATE_WITH_OPENSSL_RAND_HEX_32"
 
 bridge:
-  domain: "127.0.0.1:6006"          # Matrix server domain
-  port: 9005                         # Bridge service port
-  bind_address: "0.0.0.0"           # Bind address
-  homeserver_url: "http://127.0.0.1:6006"  # Homeserver URL
-
-auth:
-  bot_token: ""  # Discord bot token
-  client_id: ""           # OAuth client ID
-  client_secret: ""                           # Optional: OAuth client secret
+  listen_address: "http://0.0.0.0:8081"
+  listen_secret: ""
+  app_id: "YOUR_FEISHU_APP_ID"
+  app_secret: "YOUR_FEISHU_APP_SECRET"
+  encrypt_key: null
+  verification_token: null
+  username_template: "feishu_{{.}}"
+  displayname_template: "{{.}} (Feishu)"
+  avatar_template: ""
+  bridge_matrix_reply: true
+  bridge_matrix_edit: true
+  bridge_matrix_reactions: true
+  bridge_matrix_redactions: true
+  bridge_matrix_leave: true
+  bridge_feishu_join: true
+  bridge_feishu_leave: true
+  allow_plain_text: true
+  allow_markdown: true
+  allow_html: false
+  allow_images: true
+  allow_videos: true
+  allow_audio: true
+  allow_files: true
+  max_media_size: 10485760
+  message_limit: 60
+  message_cooldown: 1000
+  webhook_timeout: 30
+  api_timeout: 60
+  enable_rich_text: true
+  convert_cards: true
+  permissions:
+    "*": "relay"
+    "127.0.0.1:6006": "full"
+    "@admin:127.0.0.1:6006": "admin"
 
 logging:
-  level: "info"                   # Log level: trace, debug, info, warn, error
-  format: "pretty"                # Log format: pretty, json
-  file: null                      # Optional: log file path
-
-database:
-  connection_string: "sqlite:///data/discord.db"
-  # PostgreSQL example: "postgresql://user:password@localhost/matrix_discord"
-  max_connections: 10             # Maximum database connections
-  min_connections: 1              # Minimum database connections
-
-room:
-  default_visibility: "public"   # Default room visibility
-  room_alias_prefix: "_discord_"  # Prefix for Discord room aliases
-  enable_room_creation: true      # Allow automatic room creation
-
-channel:
-  enable_channel_creation: true  # Allow automatic channel creation
-  channel_name_format: "[Discord] {guild_name} {channel_name}"  # Channel name format
-  topic_format: "Bridged from Matrix room {room_id}"   # Channel topic format
-
-ghosts:
-  username_template: "_discord_{user_id}"     # Matrix username template
-  displayname_template: "{username}#{discriminator}"  # Display name template
-  avatar_url_template: null                     # Optional: avatar URL template
-
-metrics:
-  enabled: false                  # Enable metrics collection
-  port: 9001                     # Metrics port
-  bind_address: "127.0.0.1"      # Metrics bind address
+  min_level: "info"
+  writers:
+    - type: "stdout"
+      format: "pretty"

@@ -19,7 +19,7 @@ services:
   #   networks:
   #     - internal
 
-  matrix-appservice-discord:
+  matrix-bridge-discord:
     image: ghcr.io/palpo-im/matrix-bridge-discord:main
     restart: unless-stopped
     network_mode: host

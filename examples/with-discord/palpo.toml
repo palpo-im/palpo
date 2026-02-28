@@ -5,7 +5,7 @@ allow_registration = true
 
 enable_admin_room = true
 
-# Directory containing appservice registration YAML files (e.g. matrix-appservice-discord)
+# Directory containing appservice registration YAML files
 appservice_registration_dir = "appservices"
 
 # The local address that the server listens on.
