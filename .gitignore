@@ -20,3 +20,6 @@ examples/with-telegram/data/
 examples/with-telegram/space/
 examples/with-feishu/data/
 examples/with-feishu/space/
+.gitnexus
+AGENTS.md
+CLAUDE.md
