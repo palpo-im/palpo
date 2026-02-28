@@ -16,3 +16,6 @@ __*
 
 examples/with-*/data/
 examples/with-*/space/
+.gitnexus
+AGENTS.md
+CLAUDE.md
