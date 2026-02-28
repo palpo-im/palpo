@@ -1,0 +1,37 @@
+[package]
+name = "palpo-admin-server"
+description = "Admin server for Palpo Matrix server - provides Web UI authentication and server control"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+palpo-data = { workspace = true }
+
+anyhow = { workspace = true }
+rust-argon2 = { workspace = true }
+chrono = { workspace = true }
+diesel = { workspace = true }
+hex = "0.4"
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+salvo = { workspace = true, features = ["logging", "oapi", "cors"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+toml = { workspace = true, features = ["display"] }
+reqwest = { workspace = true }
+urlencoding = "2.1"
+
+[dev-dependencies]
+futures = "0.3"
+
+[lints]
+workspace = true

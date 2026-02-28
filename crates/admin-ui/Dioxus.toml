@@ -1,0 +1,42 @@
+[application]
+name = "palpo-admin-ui"
+default_platform = "web"
+
+[web.app]
+title = "Palpo 管理界面"
+base_path = "/"
+
+[web.watcher]
+watch_path = ["src", "../core/src"]
+reload_html = true
+index_on_404 = true
+
+[web.resource]
+style = []
+script = ["https://cdn.tailwindcss.com"]
+
+[web.resource.dev]
+# Development-only resources
+
+[bundle]
+identifier = "im.palpo.admin"
+publisher = "Palpo Team"
+# icon = ["assets/icon-32x32.png"]  # TODO: Add icon file
+resources = ["assets/*"]
+copyright = "Copyright (c) Palpo Team"
+category = "DeveloperTool"
+short_description = "Palpo Matrix服务器管理界面"
+long_description = """
+Palpo Matrix服务器的现代化Web管理界面。
+提供直观的用户界面来管理服务器配置、用户、房间、联邦等功能。
+"""
+
+# WASM optimization settings
+[web.wasm-opt]
+# Enable wasm-opt optimization in release builds
+level = "z"  # Optimize for size (options: 0, 1, 2, 3, 4, s, z)
+
+[web.wasm-opt.profile.release]
+# Release profile optimizations
+level = "z"
+shrink = true

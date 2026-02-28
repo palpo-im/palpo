@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles for Palpo Admin UI */
+.palpo-card {
+    @apply bg-white rounded-lg shadow-md p-6;
+}
+
+.palpo-button {
+    @apply bg-palpo-primary text-white px-4 py-2 rounded-md hover:bg-palpo-secondary transition-colors;
+}
+
+.palpo-input {
+    @apply border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-palpo-primary;
+}
