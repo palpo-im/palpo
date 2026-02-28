@@ -16,3 +16,6 @@ __*
 
 examples/with-discord/data/
 examples/with-telegram/data/
+.gitnexus
+AGENTS.md
+CLAUDE.md
