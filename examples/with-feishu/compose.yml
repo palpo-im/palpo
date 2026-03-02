@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   # postgres:
   #   hostname: postgres
@@ -28,6 +30,14 @@ services:
       - ./data/config.yaml:/config/config.yaml:ro
     environment:
       RUST_LOG: matrix_bridge_feishu=debug,info
+      # Optional: Override configuration with environment variables
+      # MATRIX_BRIDGE_FEISHU_DB_TYPE: "sqlite"
+      # MATRIX_BRIDGE_FEISHU_DB_URI: "sqlite:/data/matrix-feishu.db"
+      # MATRIX_BRIDGE_FEISHU_AS_TOKEN: "your_as_token"
+      # MATRIX_BRIDGE_FEISHU_HS_TOKEN: "your_hs_token"
+      # MATRIX_BRIDGE_FEISHU_PROVISIONING_READ_TOKEN: "read_token"
+      # MATRIX_BRIDGE_FEISHU_PROVISIONING_WRITE_TOKEN: "write_token"
+      # MATRIX_BRIDGE_FEISHU_PROVISIONING_DELETE_TOKEN: "delete_token"
     # depends_on:
     #   postgres:
     #     condition: service_healthy
