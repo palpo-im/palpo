@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  # postgres:
+  #   hostname: postgres
+  #   image: postgres:18
+  #   restart: always
+  #   ports:
+  #     - 5432:5432
+  #   volumes:
+  #     - ./data/pgsql:/var/lib/postgresql/data
+  #   environment:
+  #     POSTGRES_PASSWORD: root
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_DB: palpo_local
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U postgres"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - internal
+
+  matrix-bridge-feishu:
+    image: ghcr.io/palpo-im/matrix-bridge-feishu:main
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./data:/data
+      - ./data/config.yaml:/config/config.yaml:ro
+    environment:
+      RUST_LOG: matrix_bridge_feishu=debug,info
+      # Optional: Override configuration with environment variables
+      # MATRIX_BRIDGE_FEISHU_DB_TYPE: "sqlite"
+      # MATRIX_BRIDGE_FEISHU_DB_URI: "sqlite:/data/matrix-feishu.db"
+      # MATRIX_BRIDGE_FEISHU_AS_TOKEN: "your_as_token"
+      # MATRIX_BRIDGE_FEISHU_HS_TOKEN: "your_hs_token"
+      # MATRIX_BRIDGE_FEISHU_PROVISIONING_READ_TOKEN: "read_token"
+      # MATRIX_BRIDGE_FEISHU_PROVISIONING_WRITE_TOKEN: "write_token"
+      # MATRIX_BRIDGE_FEISHU_PROVISIONING_DELETE_TOKEN: "delete_token"
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy

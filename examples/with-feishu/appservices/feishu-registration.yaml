@@ -1,16 +1,16 @@
-id: discord
-url: "http://localhost:9005"
+id: feishu
+url: "http://localhost:8080"
 as_token: "PUT_YOUR_AS_TOKEN_HERE_GENERATE_WITH_OPENSSL_RAND_HEX_32"
 hs_token: "PUT_YOUR_HS_TOKEN_HERE_GENERATE_WITH_OPENSSL_RAND_HEX_32"
-sender_localpart: _discord_bot
+sender_localpart: feishubot
 namespaces:
   users:
     - exclusive: true
-      regex: "@_discord_.*:127\\.0\\.0\\.1:6006"
+      regex: "@feishu_.*:127\\.0\\.0\\.1:6006"
   aliases:
     - exclusive: true
-      regex: "#_discord_.*:127\\.0\\.0\\.1:6006"
+      regex: "#feishu_.*:127\\.0\\.0\\.1:6006"
   rooms: []
 rate_limited: false
 protocols:
-  - discord
+  - feishu
