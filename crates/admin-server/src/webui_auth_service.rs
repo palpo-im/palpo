@@ -102,6 +102,7 @@ impl WebUIAuthService {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
+        // Create table
         sql_query(
             r#"
             CREATE TABLE IF NOT EXISTS webui_admin_credentials (
@@ -109,17 +110,25 @@ impl WebUIAuthService {
                 password_hash TEXT NOT NULL,
                 salt TEXT NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-            );
-            
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_webui_admin_single 
-            ON webui_admin_credentials ((1));
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW())
             "#,
         )
         .execute(&mut conn)
         .map_err(|e| {
             AdminError::DatabaseMigrationFailed(format!(
                 "Failed to create webui_admin_credentials table: {}",
+                e
+            ))
+        })?;
+
+        // Create unique index
+        sql_query(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_webui_admin_single ON webui_admin_credentials ((1))"#,
+        )
+        .execute(&mut conn)
+        .map_err(|e| {
+            AdminError::DatabaseMigrationFailed(format!(
+                "Failed to create unique index: {}",
                 e
             ))
         })?;
