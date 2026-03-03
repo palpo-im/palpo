@@ -4968,6 +4968,7 @@ dependencies = [
  "futures",
  "hex",
  "palpo-data",
+ "proptest",
  "rand 0.8.5",
  "reqwest 0.13.1",
  "rust-argon2",
