@@ -26,6 +26,7 @@ services:
     volumes:
       - ./data:/data
     environment:
+      CONFIG_PATH: "/data/config.yaml"
       RUST_LOG: matrix_bridge_discord=debug,info
     # depends_on:
     #   postgres:
