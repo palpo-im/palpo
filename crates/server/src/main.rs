@@ -159,6 +159,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     crate::logging::init()?;
     crate::data::init(&conf.db.clone().into_data_db_config());
+    // Force-load appservice registrations during startup so database rows
+    // are up-to-date with the configured registration directory.
+    let _ = crate::appservices();
 
     if args.console {
         tracing::info!("starting admin console...");

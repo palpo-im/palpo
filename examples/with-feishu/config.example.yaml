@@ -57,7 +57,7 @@ appservice:
   id: "feishu"
   # Bot configuration
   bot:
-    username: "feishubot"
+    username: "feishu_bot"
     displayname: "Feishu Bridge"
     avatar: "mxc://127.0.0.1:6006/feishu-avatar"
   # Enable ephemeral events
