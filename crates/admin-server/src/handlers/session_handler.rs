@@ -1,16 +1,25 @@
 /// Session Handler - HTTP handlers for session and whois API
 ///
-/// This module implements session-related API endpoints including:
-/// - Whois queries (user session information)
-/// - Session listing
-/// - Session count
-/// - Last seen information
+/// This module implements session-related API endpoints using Salvo framework.
+/// All endpoints require authentication via Bearer token.
+///
+/// Endpoints:
+/// - GET /api/v1/users/{user_id}/whois - Get whois information
+/// - GET /api/v1/users/{user_id}/sessions - List user sessions
+/// - GET /api/v1/users/{user_id}/sessions/count - Get session count
+/// - GET /api/v1/users/{user_id}/last-seen - Get last seen information
+/// - DELETE /api/v1/users/{user_id}/sessions - Delete all user sessions
 
-use actix_web::{web, HttpResponse, Responder};
+use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
-
+use std::sync::Arc;
 use crate::types::AdminError;
 use crate::repositories::{SessionRepository, SessionFilter, SessionInfo, WhoisInfo};
+
+use super::auth_middleware::require_auth;
+use super::validation::{validate_user_id, validate_limit, validate_offset, ValidationError};
+
+// ===== Request Types =====
 
 /// Session list query parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,138 +78,6 @@ pub struct SuccessResponse {
     pub message: String,
 }
 
-/// Session handler configuration
-pub struct SessionHandler<T: SessionRepository> {
-    session_repo: T,
-}
-
-impl<T: SessionRepository> SessionHandler<T> {
-    /// Create a new handler with the given repository
-    pub fn new(session_repo: T) -> Self {
-        Self { session_repo }
-    }
-
-    /// Get whois information for a user
-    pub async fn get_whois(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let whois = self.session_repo.get_whois(&user_id).await?;
-
-        let sessions: Vec<SessionResponse> = whois.sessions.iter().map(SessionResponse::from).collect();
-
-        Ok(HttpResponse::Ok().json(WhoisResponse {
-            user_id: whois.user_id,
-            sessions,
-            total_session_count: whois.total_session_count,
-            primary_device_id: whois.primary_device_id,
-        }))
-    }
-
-    /// List all sessions for a user
-    pub async fn list_sessions(
-        &self,
-        user_id: web::Path<String>,
-        query: web::Query<SessionListQuery>,
-    ) -> Result<HttpResponse, AdminError> {
-        let filter = SessionFilter {
-            user_id: user_id.to_string(),
-            limit: query.limit,
-            offset: query.offset,
-        };
-
-        let result = self.session_repo.list_sessions(&filter).await?;
-
-        let sessions: Vec<SessionResponse> = result.sessions.iter().map(SessionResponse::from).collect();
-
-        Ok(HttpResponse::Ok().json(SessionListResponse {
-            sessions,
-            total_count: result.total_count,
-            limit: result.limit,
-            offset: result.offset,
-        }))
-    }
-
-    /// Get all sessions for a user (without pagination)
-    pub async fn get_user_sessions(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let sessions = self.session_repo.get_user_sessions(&user_id).await?;
-
-        let response: Vec<SessionResponse> = sessions.iter().map(SessionResponse::from).collect();
-
-        Ok(HttpResponse::Ok().json(response))
-    }
-
-    /// Get session count for a user
-    pub async fn get_session_count(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let count = self.session_repo.get_user_ip_count(&user_id).await?;
-
-        Ok(HttpResponse::Ok().json(SessionCountResponse {
-            user_id: user_id.to_string(),
-            ip_count: count,
-        }))
-    }
-
-    /// Get last seen information for a user
-    pub async fn get_last_seen(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let last_seen_ts = self.session_repo.get_last_seen(&user_id).await?;
-        let last_seen_ip = self.session_repo.get_last_seen_ip(&user_id).await?;
-
-        Ok(HttpResponse::Ok().json(LastSeenResponse {
-            user_id: user_id.to_string(),
-            last_seen_ts,
-            last_seen_ip,
-        }))
-    }
-
-    /// Record a session (for internal use)
-    pub async fn record_session(
-        &self,
-        req: web::Json<RecordSessionRequest>,
-    ) -> Result<HttpResponse, AdminError> {
-        self.session_repo.record_session(
-            &req.user_id,
-            &req.ip,
-            req.device_id.as_deref(),
-            req.user_agent.as_deref(),
-        ).await?;
-
-        Ok(HttpResponse::Ok().json(SuccessResponse {
-            success: true,
-            message: "Session recorded successfully".to_string(),
-        }))
-    }
-
-    /// Delete old sessions (cleanup)
-    pub async fn delete_old_sessions(&self, before_ts: web::Path<i64>) -> Result<HttpResponse, AdminError> {
-        let count = self.session_repo.delete_old_sessions(before_ts.into_inner()).await?;
-
-        Ok(HttpResponse::Ok().json(BatchDeleteResponse {
-            success: true,
-            deleted_count: count,
-            message: format!("Deleted {} old sessions", count),
-        }))
-    }
-
-    /// Delete all sessions for a user
-    pub async fn delete_user_sessions(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let count = self.session_repo.delete_user_sessions(&user_id).await?;
-
-        tracing::info!("Deleted {} sessions for user {}", count, user_id);
-
-        Ok(HttpResponse::Ok().json(BatchDeleteResponse {
-            success: true,
-            deleted_count: count,
-            message: format!("Deleted {} sessions for user {}", count, user_id),
-        }))
-    }
-}
-
-/// Record session request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecordSessionRequest {
-    pub user_id: String,
-    pub ip: String,
-    pub device_id: Option<String>,
-    pub user_agent: Option<String>,
-}
-
 /// Batch delete response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchDeleteResponse {
@@ -209,7 +86,237 @@ pub struct BatchDeleteResponse {
     pub message: String,
 }
 
-// Conversion implementations
+/// Standard error response
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
+// ===== Handler State =====
+
+/// Session handler state containing the repository
+#[derive(Clone)]
+pub struct SessionHandlerState {
+    pub session_repo: Arc<dyn SessionRepository>,
+}
+
+impl SessionHandlerState {
+    pub fn new(session_repo: Arc<dyn SessionRepository>) -> Self {
+        Self { session_repo }
+    }
+}
+
+/// Global session handler state
+static SESSION_HANDLER_STATE: std::sync::OnceLock<SessionHandlerState> = std::sync::OnceLock::new();
+
+/// Initialize the global session handler state
+pub fn init_session_handler_state(state: SessionHandlerState) {
+    SESSION_HANDLER_STATE.set(state).expect("Session handler state already initialized");
+}
+
+/// Get the global session handler state
+fn get_session_handler_state() -> &'static SessionHandlerState {
+    SESSION_HANDLER_STATE.get().expect("Session handler state not initialized")
+}
+
+// ===== Handler Functions =====
+
+/// GET /api/v1/users/{user_id}/whois - Get whois information
+#[handler]
+pub async fn get_whois(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_session_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.session_repo.get_whois(&user_id).await {
+        Ok(whois) => {
+            let sessions: Vec<SessionResponse> = whois.sessions.iter().map(SessionResponse::from).collect();
+            res.render(Json(WhoisResponse {
+                user_id: whois.user_id,
+                sessions,
+                total_session_count: whois.total_session_count,
+                primary_device_id: whois.primary_device_id,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get whois: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to get whois information".to_string() }));
+        }
+    }
+}
+
+/// GET /api/v1/users/{user_id}/sessions - List user sessions
+#[handler]
+pub async fn list_sessions(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_session_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    let query = req.parse_query::<SessionListQuery>().unwrap_or_default();
+
+    // Validate pagination parameters
+    let limit = match validate_limit(query.limit) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("Invalid limit parameter: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse { error: format!("Invalid limit: {}", e) }));
+            return;
+        }
+    };
+
+    let offset = match validate_offset(query.offset) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("Invalid offset parameter: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse { error: format!("Invalid offset: {}", e) }));
+            return;
+        }
+    };
+
+    let filter = SessionFilter {
+        user_id: user_id.clone(),
+        limit: Some(limit),
+        offset: Some(offset),
+    };
+
+    match state.session_repo.list_sessions(&filter).await {
+        Ok(result) => {
+            let sessions: Vec<SessionResponse> = result.sessions.iter().map(SessionResponse::from).collect();
+            res.render(Json(SessionListResponse {
+                sessions,
+                total_count: result.total_count,
+                limit,
+                offset,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to list sessions: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to list sessions".to_string() }));
+        }
+    }
+}
+
+/// GET /api/v1/users/{user_id}/sessions/count - Get session count
+#[handler]
+pub async fn get_session_count(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_session_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.session_repo.get_user_ip_count(&user_id).await {
+        Ok(count) => {
+            res.render(Json(SessionCountResponse {
+                user_id,
+                ip_count: count,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get session count: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to get session count".to_string() }));
+        }
+    }
+}
+
+/// GET /api/v1/users/{user_id}/last-seen - Get last seen information
+#[handler]
+pub async fn get_last_seen(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_session_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.session_repo.get_last_seen(&user_id).await {
+        Ok(last_seen_ts) => {
+            let last_seen_ip = state.session_repo.get_last_seen_ip(&user_id).await.unwrap_or(None);
+            res.render(Json(LastSeenResponse {
+                user_id,
+                last_seen_ts,
+                last_seen_ip,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get last seen: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to get last seen information".to_string() }));
+        }
+    }
+}
+
+/// DELETE /api/v1/users/{user_id}/sessions - Delete all user sessions
+#[handler]
+pub async fn delete_user_sessions(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_session_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.session_repo.delete_user_sessions(&user_id).await {
+        Ok(count) => {
+            tracing::info!("Deleted {} sessions for user {}", count, user_id);
+            res.render(Json(BatchDeleteResponse {
+                success: true,
+                deleted_count: count,
+                message: format!("Deleted {} sessions for user {}", count, user_id),
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete sessions: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to delete sessions".to_string() }));
+        }
+    }
+}
+
+// ===== Conversion Implementations =====
+
 impl From<&SessionInfo> for SessionResponse {
     fn from(session: &SessionInfo) -> Self {
         SessionResponse {
@@ -220,23 +327,4 @@ impl From<&SessionInfo> for SessionResponse {
             user_agent: session.user_agent.clone(),
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::repositories::DieselSessionRepository;
-    use palpo_data::DieselPool;
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_get_whois() {}
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_list_sessions() {}
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_get_last_seen() {}
 }

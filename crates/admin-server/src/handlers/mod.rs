@@ -14,5 +14,6 @@ pub mod media_handler;
 pub mod shadow_ban_handler;
 pub mod threepid_handler;
 pub mod auth_middleware;
+pub mod validation;
 
 pub use webui_admin::AppState;
