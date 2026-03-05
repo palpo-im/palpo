@@ -1,8 +1,8 @@
 use anyhow::Result;
 use palpo_admin_server::{
-    handlers::{webui_admin, server_control, matrix_admin},
+    handlers::{webui_admin, server_control, matrix_admin, user_handler, device_handler, session_handler, rate_limit_handler, shadow_ban_handler, threepid_handler},
     MigrationRunner, MigrationService, SessionManager, WebUIAuthService, ServerControlAPI,
-    MatrixAdminCreationService, AuthService,
+    MatrixAdminCreationService, AuthService, Repositories,
 };
 use palpo_data::DbConfig;
 use salvo::prelude::*;
@@ -101,6 +101,21 @@ async fn main() -> Result<()> {
     // Initialize Matrix admin state
     matrix_admin::init_matrix_admin_state(matrix_admin_state);
 
+    // Create user management state
+    let user_app_state = webui_admin::UserAppState {
+        user_repo: Arc::new(repositories.user_repo),
+        device_repo: Arc::new(repositories.device_repo),
+        session_repo: Arc::new(repositories.session_repo),
+        rate_limit_repo: Arc::new(repositories.rate_limit_repo),
+        media_repo: Arc::new(repositories.media_repo),
+        shadow_ban_repo: Arc::new(repositories.shadow_ban_repo),
+        threepid_repo: Arc::new(repositories.threepid_repo),
+        session_manager: session_manager.clone(),
+    };
+
+    // Initialize user app state
+    webui_admin::init_user_app_state(user_app_state);
+
     // Configure CORS - allow any origin for development
     let cors = Cors::new()
         .allow_origin(cors::Any)
@@ -153,6 +168,89 @@ async fn main() -> Result<()> {
                 )
                 .push(Router::with_path("/change-password")
                     .post(matrix_admin::change_matrix_admin_password)
+                )
+        )
+        // User Management Routes
+        .push(
+            Router::with_path("/api/v1/users")
+                .push(Router::with_path("").post(user_handler::create_user))
+                .push(Router::with_path("").get(user_handler::list_users))
+                .push(Router::with_path("/username-available/<username>")
+                    .get(user_handler::check_username_available)
+                )
+                .push(Router::with_path("/stats")
+                    .get(user_handler::get_user_stats)
+                )
+                .push(Router::with_path("/<user_id>")
+                    .get(user_handler::get_user)
+                    .put(user_handler::update_user)
+                    .delete(user_handler::deactivate_user)
+                )
+                .push(Router::with_path("/<user_id>/details")
+                    .get(user_handler::get_user_details)
+                )
+                .push(Router::with_path("/<user_id>/reactivate")
+                    .post(user_handler::reactivate_user)
+                )
+                .push(Router::with_path("/<user_id>/admin")
+                    .get(user_handler::get_admin_status)
+                    .put(user_handler::set_admin_status)
+                )
+                .push(Router::with_path("/<user_id>/shadow-ban")
+                    .get(user_handler::get_shadow_banned)
+                    .put(user_handler::set_shadow_banned)
+                )
+                .push(Router::with_path("/<user_id>/locked")
+                    .get(user_handler::get_locked)
+                    .put(user_handler::set_locked)
+                )
+                .push(Router::with_path("/<user_id>/devices")
+                    .get(device_handler::list_user_devices)
+                    .delete(device_handler::delete_device)
+                )
+                .push(Router::with_path("/<user_id>/devices/delete")
+                    .post(device_handler::batch_delete_devices)
+                )
+                .push(Router::with_path("/<user_id>/whois")
+                    .get(session_handler::get_whois)
+                )
+                .push(Router::with_path("/<user_id>/joined-rooms")
+                    .get(user_handler::get_user_stats) // Placeholder - would need room repo
+                )
+                .push(Router::with_path("/<user_id>/rate-limit")
+                    .get(rate_limit_handler::get_rate_limit)
+                    .post(rate_limit_handler::set_rate_limit)
+                    .delete(rate_limit_handler::delete_rate_limit)
+                )
+                .push(Router::with_path("/<user_id>/account-data")
+                    .get(user_handler::get_user_stats) // Placeholder
+                )
+                .push(Router::with_path("/<user_id>/media")
+                    .get(user_handler::get_user_stats) // Placeholder
+                )
+                .push(Router::with_path("/<user_id>/pushers")
+                    .get(user_handler::get_user_stats) // Placeholder
+                )
+                .push(Router::with_path("/<user_id>/shadow-ban")
+                    .post(shadow_ban_handler::add_shadow_ban)
+                    .delete(shadow_ban_handler::remove_shadow_ban)
+                )
+                .push(Router::with_path("/<user_id>/login")
+                    .post(user_handler::get_user_stats) // Placeholder - login as user
+                )
+        )
+        // Threepid Lookup Routes
+        .push(
+            Router::with_path("/api/v1/threepid/<medium>")
+                .push(Router::with_path("/users/<address>")
+                    .get(threepid_handler::lookup_threepid)
+                )
+        )
+        // Auth Providers Routes
+        .push(
+            Router::with_path("/api/v1/auth-providers")
+                .push(Router::with_path("/<provider>/users/<external_id>")
+                    .get(threepid_handler::lookup_external_id)
                 )
         )
         .push(Router::with_path("/health").get(health_check));

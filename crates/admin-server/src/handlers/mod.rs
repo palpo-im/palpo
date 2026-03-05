@@ -17,3 +17,4 @@ pub mod auth_middleware;
 pub mod validation;
 
 pub use webui_admin::AppState;
+pub use webui_admin::UserAppState;
