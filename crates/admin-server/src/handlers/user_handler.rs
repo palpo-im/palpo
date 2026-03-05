@@ -26,10 +26,10 @@ use std::sync::Arc;
 use crate::types::AdminError;
 use crate::repositories::{UserRepository, User, CreateUserInput, UpdateUserInput, UserFilter, UserDetails};
 
-use super::auth_middleware::{require_auth, get_authenticated_username};
+use super::auth_middleware::require_auth;
 use super::validation::{
     validate_user_id, validate_username, validate_limit, validate_offset,
-    validate_displayname, ValidationError,
+    validate_displayname,
 };
 
 // ===== Request Types =====
