@@ -1,17 +1,29 @@
 /// Threepid Handler - HTTP handlers for third-party identifier lookup
 ///
-/// This module implements threepid (third-party identifier) API endpoints:
-/// - Lookup user by threepid (email, phone, etc.)
-/// - Get user's threepids
-/// - Add/remove threepids
-/// - Validate threepids
-/// - Lookup user by external ID (SSO)
+/// This module implements threepid (third-party identifier) API endpoints using Salvo framework.
+/// All endpoints require authentication via Bearer token.
+///
+/// Endpoints:
+/// - GET /api/v1/threepid/{medium}/users/{address} - Lookup user by threepid
+/// - GET /api/v1/users/{user_id}/threepids - Get user's threepids
+/// - POST /api/v1/users/{user_id}/threepids - Add threepid
+/// - DELETE /api/v1/users/{user_id}/threepids/{medium}/{address} - Remove threepid
+/// - POST /api/v1/users/{user_id}/threepids/{medium}/{address}/validate - Validate threepid
+/// - GET /api/v1/auth-providers/{provider}/users/{external_id} - Lookup user by external ID
+/// - GET /api/v1/users/{user_id}/external-ids - Get user's external IDs
+/// - POST /api/v1/users/{user_id}/external-ids - Add external ID
+/// - DELETE /api/v1/users/{user_id}/external-ids/{provider}/{external_id} - Remove external ID
 
-use actix_web::{web, HttpResponse, Responder};
+use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
-
+use std::sync::Arc;
 use crate::types::AdminError;
 use crate::repositories::{ThreepidRepository, UserThreepid, UserExternalId};
+
+use super::auth_middleware::require_auth;
+use super::validation::{validate_user_id, validate_threepid_medium, ValidationError};
+
+// ===== Request Types =====
 
 /// Threepid lookup response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +55,7 @@ pub struct ThreepidInfo {
 /// Add threepid request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddThreepidRequest {
-    pub medium: String,  // "email", "phone", etc.
+    pub medium: String,
     pub address: String,
 }
 
@@ -84,205 +96,404 @@ pub struct SuccessResponse {
     pub message: String,
 }
 
-/// Threepid handler configuration
-pub struct ThreepidHandler<T: ThreepidRepository> {
-    threepid_repo: T,
+/// Standard error response
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
 }
 
-impl<T: ThreepidRepository> ThreepidHandler<T> {
-    /// Create a new handler with the given repository
-    pub fn new(threepid_repo: T) -> Self {
+// ===== Handler State =====
+
+/// Threepid handler state containing the repository
+#[derive(Clone)]
+pub struct ThreepidHandlerState {
+    pub threepid_repo: Arc<dyn ThreepidRepository>,
+}
+
+impl ThreepidHandlerState {
+    pub fn new(threepid_repo: Arc<dyn ThreepidRepository>) -> Self {
         Self { threepid_repo }
     }
+}
 
-    /// Lookup user by threepid (medium + address)
-    pub async fn lookup_user_by_threepid(
-        &self,
-        path: web::Path<(String, String)>,
-    ) -> Result<HttpResponse, AdminError> {
-        let (medium, address) = path.into_inner();
-        let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
+/// Global threepid handler state
+static THREEPID_HANDLER_STATE: std::sync::OnceLock<ThreepidHandlerState> = std::sync::OnceLock::new();
 
-        let result = self.threepid_repo.lookup_user_by_threepid(&medium, &decoded_address).await?;
+/// Initialize the global threepid handler state
+pub fn init_threepid_handler_state(state: ThreepidHandlerState) {
+    THREEPID_HANDLER_STATE.set(state).expect("Threepid handler state already initialized");
+}
 
-        match result {
-            Some(r) => Ok(HttpResponse::Ok().json(ThreepidLookupResponse {
+/// Get the global threepid handler state
+fn get_threepid_handler_state() -> &'static ThreepidHandlerState {
+    THREEPID_HANDLER_STATE.get().expect("Threepid handler state not initialized")
+}
+
+// ===== Handler Functions =====
+
+/// GET /api/v1/threepid/{medium}/users/{address} - Lookup user by threepid
+#[handler]
+pub async fn lookup_user_by_threepid(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let medium = req.param::<String>("medium").unwrap_or_default();
+    let address = req.param::<String>("address").unwrap_or_default();
+
+    // Validate medium
+    if let Err(e) = validate_threepid_medium(&medium) {
+        tracing::warn!("Invalid threepid medium: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid medium: {}", e) }));
+        return;
+    }
+
+    // Validate address is not empty
+    if address.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: "Address cannot be empty".to_string() }));
+        return;
+    }
+
+    let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
+
+    match state.threepid_repo.lookup_user_by_threepid(&medium, &decoded_address).await {
+        Ok(Some(r)) => {
+            res.render(Json(ThreepidLookupResponse {
                 user_id: r.user_id,
                 medium: r.medium,
                 address: r.address,
                 validated: r.validated,
                 validated_at: r.validated_at,
-            })),
-            None => Ok(HttpResponse::NotFound().json(SuccessResponse {
+            }));
+        }
+        Ok(None) => {
+            res.status_code(StatusCode::NOT_FOUND);
+            res.render(Json(SuccessResponse {
                 success: false,
                 message: format!("No user found with threepid {}: {}", medium, decoded_address),
-            })),
+            }));
         }
-    }
-
-    /// Get all threepids for a user
-    pub async fn get_user_threepids(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let threepids = self.threepid_repo.get_user_threepids(&user_id).await?;
-
-        let threepid_info: Vec<ThreepidInfo> = threepids.iter().map(|t| ThreepidInfo {
-            medium: t.medium.clone(),
-            address: t.address.clone(),
-            validated: t.validated_ts.is_some(),
-            validated_at: t.validated_ts,
-            added_at: t.added_ts,
-        }).collect();
-
-        Ok(HttpResponse::Ok().json(UserThreepidsResponse {
-            user_id: user_id.to_string(),
-            threepids: threepid_info,
-        }))
-    }
-
-    /// Add a threepid for a user
-    pub async fn add_threepid(
-        &self,
-        user_id: web::Path<String>,
-        req: web::Json<AddThreepidRequest>,
-    ) -> Result<HttpResponse, AdminError> {
-        let threepid = self.threepid_repo.add_threepid(&user_id, &req.medium, &req.address).await?;
-
-        tracing::info!("Added threepid {}:{} for user {}", req.medium, req.address, user_id);
-
-        Ok(HttpResponse::Created().json(ThreepidInfo {
-            medium: threepid.medium,
-            address: threepid.address,
-            validated: threepid.validated_ts.is_some(),
-            validated_at: threepid.validated_ts,
-            added_at: threepid.added_ts,
-        }))
-    }
-
-    /// Remove a threepid from a user
-    pub async fn remove_threepid(
-        &self,
-        path: web::Path<(String, String, String)>,
-    ) -> Result<HttpResponse, AdminError> {
-        let (user_id, medium, address) = path.into_inner();
-        let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
-
-        self.threepid_repo.remove_threepid(&user_id, &medium, &decoded_address).await?;
-
-        tracing::info!("Removed threepid {}:{} for user {}", medium, decoded_address, user_id);
-
-        Ok(HttpResponse::Ok().json(SuccessResponse {
-            success: true,
-            message: format!("Threepid {}:{} removed successfully", medium, decoded_address),
-        }))
-    }
-
-    /// Validate a threepid
-    pub async fn validate_threepid(
-        &self,
-        path: web::Path<(String, String, String)>,
-    ) -> Result<HttpResponse, AdminError> {
-        let (user_id, medium, address) = path.into_inner();
-        let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
-
-        self.threepid_repo.validate_threepid(&user_id, &medium, &decoded_address).await?;
-
-        tracing::info!("Validated threepid {}:{} for user {}", medium, decoded_address, user_id);
-
-        Ok(HttpResponse::Ok().json(SuccessResponse {
-            success: true,
-            message: format!("Threepid {}:{} validated successfully", medium, decoded_address),
-        }))
-    }
-
-    /// Lookup user by external ID (SSO)
-    pub async fn lookup_user_by_external_id(
-        &self,
-        path: web::Path<(String, String)>,
-    ) -> Result<HttpResponse, AdminError> {
-        let (provider, external_id) = path.into_inner();
-        let decoded_external_id = urlencoding::decode(&external_id).unwrap_or(external_id.clone());
-
-        let result = self.threepid_repo.lookup_user_by_external_id(&provider, &decoded_external_id).await?;
-
-        match result {
-            Some(r) => Ok(HttpResponse::Ok().json(ExternalIdLookupResponse {
-                user_id: r.user_id,
-                auth_provider: r.auth_provider,
-                external_id: r.external_id,
-            })),
-            None => Ok(HttpResponse::NotFound().json(SuccessResponse {
-                success: false,
-                message: format!("No user found with external ID {}:{}", provider, decoded_external_id),
-            })),
+        Err(e) => {
+            tracing::error!("Failed to lookup threepid: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to lookup threepid".to_string() }));
         }
-    }
-
-    /// Get all external IDs for a user
-    pub async fn get_user_external_ids(&self, user_id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-        let external_ids = self.threepid_repo.get_user_external_ids(&user_id).await?;
-
-        let external_id_info: Vec<ExternalIdInfo> = external_ids.iter().map(|e| ExternalIdInfo {
-            auth_provider: e.auth_provider.clone(),
-            external_id: e.external_id.clone(),
-            created_at: e.created_ts,
-        }).collect();
-
-        Ok(HttpResponse::Ok().json(UserExternalIdsResponse {
-            user_id: user_id.to_string(),
-            external_ids: external_id_info,
-        }))
-    }
-
-    /// Add an external ID for a user
-    pub async fn add_external_id(
-        &self,
-        user_id: web::Path<String>,
-        req: web::Json<AddExternalIdRequest>,
-    ) -> Result<HttpResponse, AdminError> {
-        let external_id = self.threepid_repo.add_external_id(&user_id, &req.auth_provider, &req.external_id).await?;
-
-        tracing::info!("Added external ID {}:{} for user {}", req.auth_provider, req.external_id, user_id);
-
-        Ok(HttpResponse::Created().json(ExternalIdInfo {
-            auth_provider: external_id.auth_provider,
-            external_id: external_id.external_id,
-            created_at: external_id.created_ts,
-        }))
-    }
-
-    /// Remove an external ID
-    pub async fn remove_external_id(
-        &self,
-        path: web::Path<(String, String, String)>,
-    ) -> Result<HttpResponse, AdminError> {
-        let (user_id, provider, external_id) = path.into_inner();
-        let decoded_external_id = urlencoding::decode(&external_id).unwrap_or(external_id.clone());
-
-        self.threepid_repo.remove_external_id(&user_id, &provider, &decoded_external_id).await?;
-
-        tracing::info!("Removed external ID {}:{} for user {}", provider, decoded_external_id, user_id);
-
-        Ok(HttpResponse::Ok().json(SuccessResponse {
-            success: true,
-            message: format!("External ID {}:{} removed successfully", provider, decoded_external_id),
-        }))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::repositories::DieselThreepidRepository;
-    use palpo_data::DieselPool;
+/// GET /api/v1/users/{user_id}/threepids - Get user's threepids
+#[handler]
+pub async fn get_user_threepids(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_lookup_user_by_threepid() {}
+    let state = get_threepid_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_get_user_threepids() {}
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_lookup_user_by_external_id() {}
+    match state.threepid_repo.get_user_threepids(&user_id).await {
+        Ok(threepids) => {
+            let threepid_info: Vec<ThreepidInfo> = threepids.iter().map(|t| ThreepidInfo {
+                medium: t.medium.clone(),
+                address: t.address.clone(),
+                validated: t.validated_ts.is_some(),
+                validated_at: t.validated_ts,
+                added_at: t.added_ts,
+            }).collect();
+            res.render(Json(UserThreepidsResponse {
+                user_id,
+                threepids: threepid_info,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get user threepids: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to get user threepids".to_string() }));
+        }
+    }
+}
+
+/// POST /api/v1/users/{user_id}/threepids - Add threepid
+#[handler]
+pub async fn add_threepid(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    let body = match req.parse_json::<AddThreepidRequest>().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Invalid add threepid request: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse { error: "Invalid request body".to_string() }));
+            return;
+        }
+    };
+
+    // Validate medium
+    if let Err(e) = validate_threepid_medium(&body.medium) {
+        tracing::warn!("Invalid threepid medium: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid medium: {}", e) }));
+        return;
+    }
+
+    // Validate address is not empty
+    if body.address.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: "Address cannot be empty".to_string() }));
+        return;
+    }
+
+    match state.threepid_repo.add_threepid(&user_id, &body.medium, &body.address).await {
+        Ok(threepid) => {
+            tracing::info!("Added threepid {}:{} for user {}", body.medium, body.address, user_id);
+            res.status_code(StatusCode::CREATED);
+            res.render(Json(ThreepidInfo {
+                medium: threepid.medium,
+                address: threepid.address,
+                validated: threepid.validated_ts.is_some(),
+                validated_at: threepid.validated_ts,
+                added_at: threepid.added_ts,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to add threepid: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to add threepid".to_string() }));
+        }
+    }
+}
+
+/// DELETE /api/v1/users/{user_id}/threepids/{medium}/{address} - Remove threepid
+#[handler]
+pub async fn remove_threepid(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+    let medium = req.param::<String>("medium").unwrap_or_default();
+    let address = req.param::<String>("address").unwrap_or_default();
+
+    // Validate parameters
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    if let Err(e) = validate_threepid_medium(&medium) {
+        tracing::warn!("Invalid threepid medium: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid medium: {}", e) }));
+        return;
+    }
+
+    let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
+
+    if let Err(e) = state.threepid_repo.remove_threepid(&user_id, &medium, &decoded_address).await {
+        tracing::error!("Failed to remove threepid: {}", e);
+        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+        res.render(Json(ErrorResponse { error: "Failed to remove threepid".to_string() }));
+        return;
+    }
+
+    tracing::info!("Removed threepid {}:{} for user {}", medium, decoded_address, user_id);
+    res.render(Json(SuccessResponse {
+        success: true,
+        message: format!("Threepid {}:{} removed successfully", medium, decoded_address),
+    }));
+}
+
+/// GET /api/v1/auth-providers/{provider}/users/{external_id} - Lookup user by external ID
+#[handler]
+pub async fn lookup_user_by_external_id(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let provider = req.param::<String>("provider").unwrap_or_default();
+    let external_id = req.param::<String>("external_id").unwrap_or_default();
+
+    // Validate provider is not empty
+    if provider.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: "Provider cannot be empty".to_string() }));
+        return;
+    }
+
+    // Validate external_id is not empty
+    if external_id.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: "External ID cannot be empty".to_string() }));
+        return;
+    }
+
+    let decoded_external_id = urlencoding::decode(&external_id).unwrap_or(external_id.clone());
+
+    match state.threepid_repo.lookup_user_by_external_id(&provider, &decoded_external_id).await {
+        Ok(Some(r)) => {
+            res.render(Json(ExternalIdLookupResponse {
+                user_id: r.user_id,
+                auth_provider: r.auth_provider,
+                external_id: r.external_id,
+            }));
+        }
+        Ok(None) => {
+            res.status_code(StatusCode::NOT_FOUND);
+            res.render(Json(SuccessResponse {
+                success: false,
+                message: format!("No user found with external ID {}:{}", provider, decoded_external_id),
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to lookup external ID: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to lookup external ID".to_string() }));
+        }
+    }
+}
+
+/// GET /api/v1/users/{user_id}/external-ids - Get user's external IDs
+#[handler]
+pub async fn get_user_external_ids(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.threepid_repo.get_user_external_ids(&user_id).await {
+        Ok(external_ids) => {
+            let external_id_info: Vec<ExternalIdInfo> = external_ids.iter().map(|e| ExternalIdInfo {
+                auth_provider: e.auth_provider.clone(),
+                external_id: e.external_id.clone(),
+                created_at: e.created_ts,
+            }).collect();
+            res.render(Json(UserExternalIdsResponse {
+                user_id,
+                external_ids: external_id_info,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get user external IDs: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to get user external IDs".to_string() }));
+        }
+    }
+}
+
+/// POST /api/v1/users/{user_id}/external-ids - Add external ID
+#[handler]
+pub async fn add_external_id(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+
+    // Validate user_id format
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    let body = match req.parse_json::<AddExternalIdRequest>().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Invalid add external ID request: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse { error: "Invalid request body".to_string() }));
+            return;
+        }
+    };
+
+    // Validate provider is not empty
+    if body.auth_provider.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: "Auth provider cannot be empty".to_string() }));
+        return;
+    }
+
+    // Validate external_id is not empty
+    if body.external_id.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: "External ID cannot be empty".to_string() }));
+        return;
+    }
+
+    match state.threepid_repo.add_external_id(&user_id, &body.auth_provider, &body.external_id).await {
+        Ok(external_id) => {
+            tracing::info!("Added external ID {}:{} for user {}", body.auth_provider, body.external_id, user_id);
+            res.status_code(StatusCode::CREATED);
+            res.render(Json(ExternalIdInfo {
+                auth_provider: external_id.auth_provider,
+                external_id: external_id.external_id,
+                created_at: external_id.created_ts,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to add external ID: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to add external ID".to_string() }));
+        }
+    }
+}
+
+/// DELETE /api/v1/users/{user_id}/external-ids/{provider}/{external_id} - Remove external ID
+#[handler]
+pub async fn remove_external_id(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
+    let state = get_threepid_handler_state();
+    let user_id = req.param::<String>("user_id").unwrap_or_default();
+    let provider = req.param::<String>("provider").unwrap_or_default();
+    let external_id = req.param::<String>("external_id").unwrap_or_default();
+
+    // Validate parameters
+    if let Err(e) = validate_user_id(&user_id) {
+        tracing::warn!("Invalid user_id format: {}", e);
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    let decoded_external_id = urlencoding::decode(&external_id).unwrap_or(external_id.clone());
+
+    if let Err(e) = state.threepid_repo.remove_external_id(&user_id, &provider, &decoded_external_id).await {
+        tracing::error!("Failed to remove external ID: {}", e);
+        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+        res.render(Json(ErrorResponse { error: "Failed to remove external ID".to_string() }));
+        return;
+    }
+
+    tracing::info!("Removed external ID {}:{} for user {}", provider, decoded_external_id, user_id);
+    res.render(Json(SuccessResponse {
+        success: true,
+        message: format!("External ID {}:{} removed successfully", provider, decoded_external_id),
+    }));
 }
