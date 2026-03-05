@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
-use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage, ServerControlPage, MatrixAdminCreatePage};
+use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage, ServerControlPage, MatrixAdminCreatePage, UserManager, RoomManager, RoomDetailPage as RoomDetailPageComponent};
 use crate::services::api_client::init_api_client;
 use crate::services::webui_auth_api::WebUIAuthAPI;
 use crate::components::layout::AdminLayout as AdminLayoutComponent;
@@ -26,8 +26,12 @@ pub enum Route {
     ServerControl {},
     #[route("/admin/users")]
     Users {},
+    #[route("/admin/users/:user_id")]
+    UserDetailPage { user_id: String },
     #[route("/admin/rooms")]
     Rooms {},
+    #[route("/admin/rooms/:room_id")]
+    RoomDetailPage { room_id: String },
     #[route("/admin/federation")]
     Federation {},
     #[route("/admin/media")]
@@ -210,21 +214,15 @@ fn Config() -> Element {
 #[component]
 fn Users() -> Element {
     rsx! {
-        div { class: "space-y-6",
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
-                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
-                        "用户管理"
-                    }
-                    p { class: "mt-1 text-sm text-gray-500",
-                        "管理 Matrix 用户账户"
-                    }
-                    div { class: "mt-8 text-center py-12",
-                        p { class: "text-gray-500", "用户管理功能正在开发中..." }
-                    }
-                }
-            }
-        }
+        UserManager {}
+    }
+}
+
+/// User detail page component
+#[component]
+fn UserDetailPage(user_id: String) -> Element {
+    rsx! {
+        crate::pages::user_detail::UserDetail { user_id }
     }
 }
 
@@ -232,21 +230,15 @@ fn Users() -> Element {
 #[component]
 fn Rooms() -> Element {
     rsx! {
-        div { class: "space-y-6",
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
-                    h3 { class: "text-lg leading-6 font-medium text-gray-900",
-                        "房间管理"
-                    }
-                    p { class: "mt-1 text-sm text-gray-500",
-                        "管理 Matrix 聊天房间"
-                    }
-                    div { class: "mt-8 text-center py-12",
-                        p { class: "text-gray-500", "房间管理功能正在开发中..." }
-                    }
-                }
-            }
-        }
+        RoomManager {}
+    }
+}
+
+/// Room detail page component (placeholder for Phase 3)
+#[component]
+fn RoomDetailPage(room_id: String) -> Element {
+    rsx! {
+        RoomDetailPageComponent { room_id }
     }
 }
 
