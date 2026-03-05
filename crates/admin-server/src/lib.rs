@@ -63,3 +63,12 @@ pub use user_migrations::UserMigrationRunner;
 // Repository layer for user management
 pub mod repositories;
 pub use repositories::RepositoryFactory;
+
+// Individual repository modules (required for Diesel table macros)
+mod user_repository;
+mod device_repository;
+mod session_repository;
+mod rate_limit_repository;
+mod media_repository;
+mod shadow_ban_repository;
+mod threepid_repository;
