@@ -6,5 +6,13 @@ pub mod webui_admin;
 pub mod server_config;
 pub mod server_control;
 pub mod matrix_admin;
+pub mod user_handler;
+pub mod device_handler;
+pub mod session_handler;
+pub mod rate_limit_handler;
+pub mod media_handler;
+pub mod shadow_ban_handler;
+pub mod threepid_handler;
+pub mod auth_middleware;
 
 pub use webui_admin::AppState;
