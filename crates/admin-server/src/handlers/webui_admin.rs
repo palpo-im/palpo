@@ -41,6 +41,7 @@ pub struct AppState {
 
 /// Global application state
 static APP_STATE: OnceLock<AppState> = OnceLock::new();
+static USER_APP_STATE: OnceLock<user_handler::UserAppState> = OnceLock::new();
 
 /// Initialize the global application state
 pub fn init_app_state(state: AppState) {
@@ -50,6 +51,31 @@ pub fn init_app_state(state: AppState) {
 /// Get the global application state
 pub fn get_app_state() -> &'static AppState {
     APP_STATE.get().expect("App state not initialized")
+}
+
+/// Initialize the user management application state
+pub fn init_user_app_state(state: user_handler::UserAppState) {
+    USER_APP_STATE.set(state).expect("User app state already initialized");
+}
+
+/// Get the user management application state
+pub fn get_user_app_state() -> &'static user_handler::UserAppState {
+    USER_APP_STATE.get().expect("User app state not initialized")
+}
+
+// ===== User App State =====
+
+/// User management application state
+#[derive(Clone, Debug)]
+pub struct UserAppState {
+    pub user_repo: Arc<dyn crate::repositories::UserRepository>,
+    pub device_repo: Arc<dyn crate::repositories::DeviceRepository>,
+    pub session_repo: Arc<dyn crate::repositories::SessionRepository>,
+    pub rate_limit_repo: Arc<dyn crate::repositories::RateLimitRepository>,
+    pub media_repo: Arc<dyn crate::repositories::MediaRepository>,
+    pub shadow_ban_repo: Arc<dyn crate::repositories::ShadowBanRepository>,
+    pub threepid_repo: Arc<dyn crate::repositories::ThreepidRepository>,
+    pub session_manager: Arc<SessionManager>,
 }
 
 // ===== Request/Response Types =====

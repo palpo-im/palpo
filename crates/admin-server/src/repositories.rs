@@ -3,13 +3,13 @@
 /// This module provides the data access layer for user management operations.
 /// All repositories use direct PostgreSQL operations with Diesel ORM.
 
-pub use user_repository::{UserRepository, DieselUserRepository, User, UserAttributes, CreateUserInput, UpdateUserInput, UserFilter, UserListResult, UserDetails};
-pub use device_repository::{DeviceRepository, DieselDeviceRepository, Device, CreateDeviceInput, UpdateDeviceInput, DeviceFilter, DeviceListResult, DeviceWithSessions};
-pub use session_repository::{SessionRepository, DieselSessionRepository, UserIp, SessionInfo, WhoisInfo, SessionFilter, SessionListResult};
-pub use rate_limit_repository::{RateLimitRepository, DieselRateLimitRepository, UserRateLimitConfig, UpdateRateLimitInput};
-pub use media_repository::{MediaRepository, DieselMediaRepository, MediaMetadata, MediaFilter, MediaListResult};
-pub use shadow_ban_repository::{ShadowBanRepository, DieselShadowBanRepository, ShadowBanStatus};
-pub use threepid_repository::{ThreepidRepository, DieselThreepidRepository, UserThreepid, UserExternalId, ThreepidLookupResult, ExternalIdLookupResult};
+pub use crate::user_repository::{UserRepository, DieselUserRepository, User, UserAttributes, CreateUserInput, UpdateUserInput, UserFilter, UserListResult, UserDetails};
+pub use crate::device_repository::{DeviceRepository, DieselDeviceRepository, Device, CreateDeviceInput, UpdateDeviceInput, DeviceFilter, DeviceListResult, DeviceWithSessions};
+pub use crate::session_repository::{SessionRepository, DieselSessionRepository, UserIp, SessionInfo, WhoisInfo, SessionFilter, SessionListResult};
+pub use crate::rate_limit_repository::{RateLimitRepository, DieselRateLimitRepository, UserRateLimitConfig, UpdateRateLimitInput};
+pub use crate::media_repository::{MediaRepository, DieselMediaRepository, MediaMetadata, MediaFilter, MediaListResult};
+pub use crate::shadow_ban_repository::{ShadowBanRepository, DieselShadowBanRepository, ShadowBanStatus};
+pub use crate::threepid_repository::{ThreepidRepository, DieselThreepidRepository, UserThreepid, UserExternalId, ThreepidLookupResult, ExternalIdLookupResult};
 
 use palpo_data::DieselPool;
 

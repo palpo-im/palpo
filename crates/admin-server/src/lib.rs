@@ -72,3 +72,10 @@ mod rate_limit_repository;
 mod media_repository;
 mod shadow_ban_repository;
 mod threepid_repository;
+
+// Password generator module
+pub mod password_generator;
+pub use password_generator::{PasswordConfig, PasswordError, generate_password, validate_password};
+
+// Re-export UserAppState
+pub use handlers::UserAppState;
