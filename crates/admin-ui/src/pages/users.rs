@@ -11,7 +11,7 @@ use crate::components::feedback::ErrorMessage;
 #[component]
 pub fn UserManager() -> Element {
     // State management
-    let mut users = use_signal(|| Vec::<User>::new());
+    let users = use_signal(|| Vec::<User>::new());
     let mut loading = use_signal(|| false);
     let error = use_signal(|| None::<String>);
     let mut search_query = use_signal(|| String::new());
@@ -20,7 +20,7 @@ pub fn UserManager() -> Element {
     let mut sort_by = use_signal(|| UserSortField::Username);
     let mut sort_order = use_signal(|| SortOrder::Ascending);
     let mut current_page = use_signal(|| 0u32);
-    let mut total_count = use_signal(|| 0u32);
+    let total_count = use_signal(|| 0u32);
     let mut selected_users = use_signal(|| Vec::<String>::new());
     let mut show_batch_menu = use_signal(|| false);
     
