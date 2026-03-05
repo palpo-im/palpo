@@ -13,9 +13,5 @@ __*
 .claude/
 .kiro/
 
-examples/with-discord/data/
-examples/with-discord/space/
-examples/with-telegram/data/
-examples/with-telegram/space/
-examples/with-feishu/data/
-examples/with-feishu/space/
+examples/with-*/data/
+examples/with-*/space/
