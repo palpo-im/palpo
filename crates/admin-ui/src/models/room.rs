@@ -88,7 +88,7 @@ pub struct RoomDetailResponse {
 }
 
 /// Detailed room information
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RoomDetail {
     pub room_id: String,
     pub name: Option<String>,
