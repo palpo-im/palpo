@@ -312,13 +312,19 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
+        let updates: Vec<(
+            Option<diesel::expression::column::ColumnInsertValue<users::table, _>>,
+            diesel::sql_types::Bool,
+        )> = vec![];
+
         let user = diesel::update(users::table.find(user_id))
             .set((
-                input.displayname.is_some().then(|| users::displayname.eq(&input.displayname)),
-                input.avatar_url.is_some().then(|| users::avatar_url.eq(&input.avatar_url)),
-                input.is_admin.is_some().then(|| users::is_admin.eq(input.is_admin.unwrap())),
-                input.user_type.is_some().then(|| users::user_type.eq(&input.user_type)),
-            ).filter(users::name.eq(user_id))
+                input.displayname.as_ref().map(|d| users::displayname.eq(d)),
+                input.avatar_url.as_ref().map(|u| users::avatar_url.eq(u)),
+                input.is_admin.map(|a| users::is_admin.eq(a)),
+                input.user_type.as_ref().map(|t| users::user_type.eq(t)),
+            ))
+            .filter(users::name.eq(user_id))
             .get_result::<User>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
