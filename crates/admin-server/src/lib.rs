@@ -52,3 +52,14 @@ pub use server_config::ServerConfigAPI;
 // Server control API for managing Palpo server lifecycle
 pub mod server_control;
 pub use server_control::{ServerControlAPI, ServerStatusInfo};
+
+// User management database schema
+pub mod schema;
+
+// User management migrations
+pub mod user_migrations;
+pub use user_migrations::UserMigrationRunner;
+
+// Repository layer for user management
+pub mod repositories;
+pub use repositories::RepositoryFactory;
