@@ -2,7 +2,7 @@ use anyhow::Result;
 use palpo_admin_server::{
     handlers::{webui_admin, server_control, matrix_admin, user_handler, device_handler, session_handler, rate_limit_handler, shadow_ban_handler, threepid_handler},
     MigrationRunner, MigrationService, SessionManager, WebUIAuthService, ServerControlAPI,
-    MatrixAdminCreationService, AuthService, Repositories,
+    MatrixAdminCreationService, AuthService, RepositoryFactory,
 };
 use palpo_data::DbConfig;
 use salvo::prelude::*;
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     // Create shared application state
     let app_state = webui_admin::AppState {
         auth_service,
-        session_manager,
+        session_manager: session_manager.clone(),
         migration_service,
     };
 
@@ -101,15 +101,18 @@ async fn main() -> Result<()> {
     // Initialize Matrix admin state
     matrix_admin::init_matrix_admin_state(matrix_admin_state);
 
+    // Create repository factory
+    let repo_factory = RepositoryFactory::new(db_pool.clone());
+
     // Create user management state
     let user_app_state = webui_admin::UserAppState {
-        user_repo: Arc::new(repositories.user_repo),
-        device_repo: Arc::new(repositories.device_repo),
-        session_repo: Arc::new(repositories.session_repo),
-        rate_limit_repo: Arc::new(repositories.rate_limit_repo),
-        media_repo: Arc::new(repositories.media_repo),
-        shadow_ban_repo: Arc::new(repositories.shadow_ban_repo),
-        threepid_repo: Arc::new(repositories.threepid_repo),
+        user_repo: Arc::new(repo_factory.user_repository()),
+        device_repo: Arc::new(repo_factory.device_repository()),
+        session_repo: Arc::new(repo_factory.session_repository()),
+        rate_limit_repo: Arc::new(repo_factory.rate_limit_repository()),
+        media_repo: Arc::new(repo_factory.media_repository()),
+        shadow_ban_repo: Arc::new(repo_factory.shadow_ban_repository()),
+        threepid_repo: Arc::new(repo_factory.threepid_repository()),
         session_manager: session_manager.clone(),
     };
 
@@ -209,7 +212,7 @@ async fn main() -> Result<()> {
                     .delete(device_handler::delete_device)
                 )
                 .push(Router::with_path("/<user_id>/devices/delete")
-                    .post(device_handler::batch_delete_devices)
+                    .post(device_handler::delete_devices)
                 )
                 .push(Router::with_path("/<user_id>/whois")
                     .get(session_handler::get_whois)
@@ -232,8 +235,8 @@ async fn main() -> Result<()> {
                     .get(user_handler::get_user_stats) // Placeholder
                 )
                 .push(Router::with_path("/<user_id>/shadow-ban")
-                    .post(shadow_ban_handler::add_shadow_ban)
-                    .delete(shadow_ban_handler::remove_shadow_ban)
+                    .post(shadow_ban_handler::set_shadow_banned)
+                    .delete(shadow_ban_handler::set_shadow_banned)
                 )
                 .push(Router::with_path("/<user_id>/login")
                     .post(user_handler::get_user_stats) // Placeholder - login as user
@@ -243,14 +246,14 @@ async fn main() -> Result<()> {
         .push(
             Router::with_path("/api/v1/threepid/<medium>")
                 .push(Router::with_path("/users/<address>")
-                    .get(threepid_handler::lookup_threepid)
+                    .get(threepid_handler::lookup_user_by_threepid)
                 )
         )
         // Auth Providers Routes
         .push(
             Router::with_path("/api/v1/auth-providers")
                 .push(Router::with_path("/<provider>/users/<external_id>")
-                    .get(threepid_handler::lookup_external_id)
+                    .get(threepid_handler::get_user_external_ids)
                 )
         )
         .push(Router::with_path("/health").get(health_check));

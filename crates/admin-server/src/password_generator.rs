@@ -361,7 +361,8 @@ mod tests {
     #[test]
     fn test_strength_rating() {
         assert_eq!(get_strength_rating("a"), 1);
-        assert_eq!(get_strength_rating("abc123"), 2);
+        assert_eq!(get_strength_rating("abc123"), 1); // entropy ~31, which is < 32
+        assert_eq!(get_strength_rating("abc123def"), 2); // entropy ~46, which is 32-48
         assert!(get_strength_rating("SecureP@ssw0rd123!") >= 4);
     }
 }

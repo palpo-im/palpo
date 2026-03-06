@@ -8,6 +8,7 @@
 /// - Get/Set/Delete rate limit settings
 
 use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 use chrono::Utc;
 
 use crate::types::AdminError;
@@ -48,6 +49,7 @@ pub trait RateLimitRepository {
 }
 
 /// Diesel-based RateLimitRepository implementation
+#[derive(Debug)]
 pub struct DieselRateLimitRepository {
     db_pool: DieselPool,
 }
@@ -128,7 +130,6 @@ impl RateLimitRepository for DieselRateLimitRepository {
 }
 
 // Table definitions
-use crate::schema::*;
 use crate::schema::user_rate_limit_configs;
 
 #[cfg(test)]

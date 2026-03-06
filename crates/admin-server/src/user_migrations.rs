@@ -14,10 +14,8 @@
 
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{Text, BigInt, Bool, Timestamp};
 
 use super::types::AdminError;
-use super::schema::*;
 use palpo_data::DieselPool;
 
 /// Migration runner for User Management database schema

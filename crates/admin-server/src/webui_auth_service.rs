@@ -279,6 +279,7 @@ impl WebUIAuthService {
             #[diesel(sql_type = Text)]
             password_hash: String,
             #[diesel(sql_type = Text)]
+            #[allow(dead_code)]
             salt: String,
         }
 

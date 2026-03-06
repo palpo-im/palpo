@@ -11,11 +11,11 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::AdminError;
-use crate::repositories::{RateLimitRepository, UpdateRateLimitInput};
+use crate::repositories::{DieselRateLimitRepository, UpdateRateLimitInput};
+use crate::rate_limit_repository::RateLimitRepository;
 
 use super::auth_middleware::require_auth;
-use super::validation::{validate_user_id, validate_rate_limit_params, ValidationError};
+use super::validation::{validate_user_id, validate_rate_limit_params};
 
 // ===== Request Types =====
 
@@ -59,13 +59,13 @@ pub struct ErrorResponse {
 // ===== Handler State =====
 
 /// Rate limit handler state containing the repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RateLimitHandlerState {
-    pub rate_limit_repo: Arc<dyn RateLimitRepository>,
+    pub rate_limit_repo: Arc<DieselRateLimitRepository>,
 }
 
 impl RateLimitHandlerState {
-    pub fn new(rate_limit_repo: Arc<dyn RateLimitRepository>) -> Self {
+    pub fn new(rate_limit_repo: Arc<DieselRateLimitRepository>) -> Self {
         Self { rate_limit_repo }
     }
 }
