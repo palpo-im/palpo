@@ -5,6 +5,7 @@
 /// are silently filtered/ignored by other users.
 
 use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 use chrono::Utc;
 
 use crate::types::AdminError;
@@ -39,6 +40,7 @@ pub trait ShadowBanRepository {
 }
 
 /// Diesel-based ShadowBanRepository implementation
+#[derive(Debug)]
 pub struct DieselShadowBanRepository {
     db_pool: DieselPool,
 }
@@ -140,8 +142,9 @@ impl ShadowBanRepository for DieselShadowBanRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count(users::name))
+        let count = users::table
             .filter(users::shadow_banned.eq(true))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -166,7 +169,6 @@ struct UserAttributes {
 }
 
 // Table definitions
-use crate::schema::*;
 use crate::schema::users;
 use crate::schema::user_attributes;
 

@@ -23,8 +23,8 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::AdminError;
-use crate::repositories::{UserRepository, User, CreateUserInput, UpdateUserInput, UserFilter, UserDetails};
+use crate::repositories::{DieselUserRepository, User, CreateUserInput, UpdateUserInput, UserFilter, UserDetails};
+use crate::user_repository::UserRepository;
 
 use super::auth_middleware::require_auth;
 use super::validation::{
@@ -53,7 +53,7 @@ pub struct UpdateUserRequest {
     pub user_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserListQuery {
     pub is_admin: Option<bool>,
     pub is_deactivated: Option<bool>,
@@ -164,13 +164,13 @@ pub struct ErrorResponse {
 // ===== Handler State =====
 
 /// User handler state containing the repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UserHandlerState {
-    pub user_repo: Arc<dyn UserRepository>,
+    pub user_repo: Arc<DieselUserRepository>,
 }
 
 impl UserHandlerState {
-    pub fn new(user_repo: Arc<dyn UserRepository>) -> Self {
+    pub fn new(user_repo: Arc<DieselUserRepository>) -> Self {
         Self { user_repo }
     }
 }
@@ -252,7 +252,7 @@ pub async fn list_users(req: &mut Request, depot: &mut Depot, res: &mut Response
     if !require_auth(depot, res) { return; }
 
     let state = get_user_handler_state();
-    let query = req.parse_query::<UserListQuery>().unwrap_or_default();
+    let query = req.parse_queries::<UserListQuery>().unwrap_or_default();
 
     // Validate pagination parameters
     let limit = match validate_limit(query.limit) {

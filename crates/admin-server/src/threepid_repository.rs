@@ -10,6 +10,7 @@
 /// - External ID lookup for SSO
 
 use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 use chrono::Utc;
 
 use crate::types::AdminError;
@@ -86,6 +87,7 @@ pub trait ThreepidRepository {
 }
 
 /// Diesel-based ThreepidRepository implementation
+#[derive(Debug)]
 pub struct DieselThreepidRepository {
     db_pool: DieselPool,
 }
@@ -280,7 +282,6 @@ impl ThreepidRepository for DieselThreepidRepository {
 }
 
 // Table definitions
-use crate::schema::*;
 use crate::schema::user_threepids;
 use crate::schema::user_external_ids;
 

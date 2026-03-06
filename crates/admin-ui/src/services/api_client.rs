@@ -97,7 +97,7 @@ pub trait ResponseInterceptor {
 }
 
 /// Token manager for handling authentication tokens
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct TokenManager {
     storage_key: String,
 }

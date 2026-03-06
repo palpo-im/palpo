@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use crate::components::forms::Button;
 
 /// Dialog type enumeration
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DialogType {
     Deactivate,
     DeleteDevice,
@@ -39,7 +39,7 @@ pub struct ConfirmationDialogProps {
 #[component]
 pub fn ConfirmationDialog(props: ConfirmationDialogProps) -> Element {
     if !props.visible {
-        return None;
+        return rsx! {};
     }
 
     let (icon, button_variant, button_text) = match props.dialog_type {
@@ -135,7 +135,7 @@ pub fn PasswordResetDialog(props: PasswordResetDialogProps) -> Element {
     let mut logout_devices = use_signal(|| true);
 
     if !props.visible {
-        return None;
+        return rsx! {};
     }
 
     rsx! {
@@ -221,7 +221,7 @@ pub struct SuccessDialogProps {
 #[component]
 pub fn SuccessDialog(props: SuccessDialogProps) -> Element {
     if !props.visible {
-        return None;
+        return rsx! {};
     }
 
     rsx! {

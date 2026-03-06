@@ -12,11 +12,11 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::AdminError;
-use crate::repositories::ShadowBanRepository;
+use crate::repositories::DieselShadowBanRepository;
+use crate::shadow_ban_repository::ShadowBanRepository;
 
 use super::auth_middleware::require_auth;
-use super::validation::{validate_user_id, validate_limit, validate_offset, ValidationError};
+use super::validation::{validate_user_id, validate_limit, validate_offset};
 
 // ===== Request Types =====
 
@@ -36,7 +36,7 @@ pub struct SetShadowBanRequest {
 }
 
 /// Shadow ban list query
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ShadowBanListQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -80,13 +80,13 @@ pub struct ErrorResponse {
 // ===== Handler State =====
 
 /// Shadow ban handler state containing the repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ShadowBanHandlerState {
-    pub shadow_ban_repo: Arc<dyn ShadowBanRepository>,
+    pub shadow_ban_repo: Arc<DieselShadowBanRepository>,
 }
 
 impl ShadowBanHandlerState {
-    pub fn new(shadow_ban_repo: Arc<dyn ShadowBanRepository>) -> Self {
+    pub fn new(shadow_ban_repo: Arc<DieselShadowBanRepository>) -> Self {
         Self { shadow_ban_repo }
     }
 }
@@ -220,7 +220,7 @@ pub async fn list_shadow_banned_users(req: &mut Request, depot: &mut Depot, res:
     if !require_auth(depot, res) { return; }
 
     let state = get_shadow_ban_handler_state();
-    let query = req.parse_query::<ShadowBanListQuery>().unwrap_or_default();
+    let query = req.parse_queries::<ShadowBanListQuery>().unwrap_or_default();
 
     // Validate pagination parameters
     let limit = match validate_limit(query.limit) {

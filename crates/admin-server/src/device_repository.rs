@@ -11,6 +11,7 @@
 /// - Device session tracking
 
 use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 use chrono::Utc;
 
 use crate::types::AdminError;
@@ -108,6 +109,7 @@ pub trait DeviceRepository {
 }
 
 /// Diesel-based DeviceRepository implementation
+#[derive(Debug)]
 pub struct DieselDeviceRepository {
     db_pool: DieselPool,
 }
@@ -204,11 +206,14 @@ impl DeviceRepository for DieselDeviceRepository {
                 .optional()
                 .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
+            let last_seen = last_seen_info.as_ref().map(|r| r.last_seen_ts);
+            let user_agent = last_seen_info.as_ref().and_then(|r| r.user_agent.clone());
+
             result.push(DeviceWithSessions {
                 device,
                 ip_addresses,
-                last_seen: last_seen_info.map(|r| r.last_seen_ts),
-                user_agent: last_seen_info.map(|r| r.user_agent),
+                last_seen,
+                user_agent,
             });
         }
 
@@ -309,8 +314,9 @@ impl DeviceRepository for DieselDeviceRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count(devices::device_id))
+        let count = devices::table
             .filter(devices::user_id.eq(user_id))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -332,7 +338,13 @@ impl DeviceRepository for DieselDeviceRepository {
             query = query.filter(devices::user_id.eq(user_id));
         }
 
-        let total_count = query.clone()
+        // Get total count - rebuild query to avoid clone issue
+        let mut count_query = devices::table.into_boxed();
+        if let Some(user_id) = &filter.user_id {
+            count_query = count_query.filter(devices::user_id.eq(user_id));
+        }
+
+        let total_count = count_query
             .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
@@ -355,6 +367,7 @@ impl DeviceRepository for DieselDeviceRepository {
 
 // Helper struct for IP record query
 #[derive(Queryable)]
+#[allow(dead_code)]
 struct IpRecord {
     pub user_id: String,
     pub ip: String,
@@ -364,7 +377,6 @@ struct IpRecord {
 }
 
 // Table definitions
-use crate::schema::*;
 use crate::schema::devices;
 use crate::schema::user_ips;
 

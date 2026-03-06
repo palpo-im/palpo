@@ -17,11 +17,11 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::AdminError;
-use crate::repositories::{ThreepidRepository, UserThreepid, UserExternalId};
+use crate::repositories::DieselThreepidRepository;
+use crate::threepid_repository::ThreepidRepository;
 
 use super::auth_middleware::require_auth;
-use super::validation::{validate_user_id, validate_threepid_medium, ValidationError};
+use super::validation::{validate_user_id, validate_threepid_medium};
 
 // ===== Request Types =====
 
@@ -105,13 +105,13 @@ pub struct ErrorResponse {
 // ===== Handler State =====
 
 /// Threepid handler state containing the repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ThreepidHandlerState {
-    pub threepid_repo: Arc<dyn ThreepidRepository>,
+    pub threepid_repo: Arc<DieselThreepidRepository>,
 }
 
 impl ThreepidHandlerState {
-    pub fn new(threepid_repo: Arc<dyn ThreepidRepository>) -> Self {
+    pub fn new(threepid_repo: Arc<DieselThreepidRepository>) -> Self {
         Self { threepid_repo }
     }
 }
@@ -155,7 +155,7 @@ pub async fn lookup_user_by_threepid(req: &mut Request, depot: &mut Depot, res: 
         return;
     }
 
-    let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
+    let decoded_address = urlencoding::decode(&address).unwrap_or_else(|_| address.clone().into());
 
     match state.threepid_repo.lookup_user_by_threepid(&medium, &decoded_address).await {
         Ok(Some(r)) => {
@@ -306,7 +306,7 @@ pub async fn remove_threepid(req: &mut Request, depot: &mut Depot, res: &mut Res
         return;
     }
 
-    let decoded_address = urlencoding::decode(&address).unwrap_or(address.clone());
+    let decoded_address = urlencoding::decode(&address).unwrap_or_else(|_| address.clone().into());
 
     if let Err(e) = state.threepid_repo.remove_threepid(&user_id, &medium, &decoded_address).await {
         tracing::error!("Failed to remove threepid: {}", e);
@@ -345,7 +345,7 @@ pub async fn lookup_user_by_external_id(req: &mut Request, depot: &mut Depot, re
         return;
     }
 
-    let decoded_external_id = urlencoding::decode(&external_id).unwrap_or(external_id.clone());
+    let decoded_external_id = urlencoding::decode(&external_id).unwrap_or_else(|_| external_id.clone().into());
 
     match state.threepid_repo.lookup_user_by_external_id(&provider, &decoded_external_id).await {
         Ok(Some(r)) => {
@@ -482,7 +482,7 @@ pub async fn remove_external_id(req: &mut Request, depot: &mut Depot, res: &mut 
         return;
     }
 
-    let decoded_external_id = urlencoding::decode(&external_id).unwrap_or(external_id.clone());
+    let decoded_external_id = urlencoding::decode(&external_id).unwrap_or_else(|_| external_id.clone().into());
 
     if let Err(e) = state.threepid_repo.remove_external_id(&user_id, &provider, &decoded_external_id).await {
         tracing::error!("Failed to remove external ID: {}", e);

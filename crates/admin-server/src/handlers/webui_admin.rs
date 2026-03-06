@@ -26,6 +26,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::migration_service::LegacyCredentials;
 use crate::types::AdminError;
+use crate::repositories::{DieselUserRepository, DieselDeviceRepository, DieselSessionRepository, DieselRateLimitRepository, DieselMediaRepository, DieselShadowBanRepository, DieselThreepidRepository};
 use crate::{MigrationService, SessionManager, WebUIAuthService};
 
 /// Shared application state for handlers
@@ -41,7 +42,7 @@ pub struct AppState {
 
 /// Global application state
 static APP_STATE: OnceLock<AppState> = OnceLock::new();
-static USER_APP_STATE: OnceLock<user_handler::UserAppState> = OnceLock::new();
+static USER_APP_STATE: OnceLock<UserAppState> = OnceLock::new();
 
 /// Initialize the global application state
 pub fn init_app_state(state: AppState) {
@@ -54,12 +55,12 @@ pub fn get_app_state() -> &'static AppState {
 }
 
 /// Initialize the user management application state
-pub fn init_user_app_state(state: user_handler::UserAppState) {
+pub fn init_user_app_state(state: UserAppState) {
     USER_APP_STATE.set(state).expect("User app state already initialized");
 }
 
 /// Get the user management application state
-pub fn get_user_app_state() -> &'static user_handler::UserAppState {
+pub fn get_user_app_state() -> &'static UserAppState {
     USER_APP_STATE.get().expect("User app state not initialized")
 }
 
@@ -68,13 +69,13 @@ pub fn get_user_app_state() -> &'static user_handler::UserAppState {
 /// User management application state
 #[derive(Clone, Debug)]
 pub struct UserAppState {
-    pub user_repo: Arc<dyn crate::repositories::UserRepository>,
-    pub device_repo: Arc<dyn crate::repositories::DeviceRepository>,
-    pub session_repo: Arc<dyn crate::repositories::SessionRepository>,
-    pub rate_limit_repo: Arc<dyn crate::repositories::RateLimitRepository>,
-    pub media_repo: Arc<dyn crate::repositories::MediaRepository>,
-    pub shadow_ban_repo: Arc<dyn crate::repositories::ShadowBanRepository>,
-    pub threepid_repo: Arc<dyn crate::repositories::ThreepidRepository>,
+    pub user_repo: Arc<DieselUserRepository>,
+    pub device_repo: Arc<DieselDeviceRepository>,
+    pub session_repo: Arc<DieselSessionRepository>,
+    pub rate_limit_repo: Arc<DieselRateLimitRepository>,
+    pub media_repo: Arc<DieselMediaRepository>,
+    pub shadow_ban_repo: Arc<DieselShadowBanRepository>,
+    pub threepid_repo: Arc<DieselThreepidRepository>,
     pub session_manager: Arc<SessionManager>,
 }
 

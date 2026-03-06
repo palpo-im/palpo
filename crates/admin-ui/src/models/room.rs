@@ -73,7 +73,7 @@ pub enum RoomSortField {
 }
 
 /// Sort order
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SortOrder {
     Ascending,
     Descending,

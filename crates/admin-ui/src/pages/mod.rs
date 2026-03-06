@@ -27,6 +27,9 @@ mod config_search_test;
 #[cfg(test)]
 mod config_feedback_test;
 
+#[cfg(test)]
+mod user_management_test;
+
 pub use login::LoginPage;
 pub use setup::SetupWizardPage;
 pub use password_change::PasswordChangePage;
