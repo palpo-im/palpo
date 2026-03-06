@@ -40,13 +40,20 @@
 /// Always use `--test-threads=1` to prevent race conditions.
 ///
 /// ```bash
-/// # Run all tests sequentially (REQUIRED)
+/// # First, create the test database (only once)
+/// createdb palpo_test
+///
+/// # Run all tests in this file sequentially
 /// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
 ///   cargo test -p palpo-admin-server --test migration_idempotence_test --test-threads=1
 ///
+/// # Run with --ignored flag to include ignored tests
+/// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
+///   cargo test -p palpo-admin-server --test migration_idempotence_test --test-threads=1 -- --ignored
+///
 /// # Run specific test
 /// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
-///   cargo test -p palpo-admin-server --test migration_idempotence_test test_migration_idempotence_simple --test-threads=1
+///   cargo test -p palpo-admin-server --test migration_idempotence_test test_migration_idempotence_simple --test-threads=1 -- --ignored
 ///
 /// # Run with verbose output
 /// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
@@ -142,6 +149,7 @@ fn valid_password_strategy() -> impl Strategy<Value = String> {
 }
 
 #[test]
+#[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
 fn test_migration_idempotence_simple() {
     // Test Environment: Uses isolated test database (palpo_test)
     // Purpose: Verify create_admin is idempotent - can be called multiple times safely
@@ -180,6 +188,7 @@ proptest::proptest! {
     #![proptest_config(ProptestConfig::with_cases(10))]
     
     #[test]
+    #[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
     fn test_migration_idempotence_property(password in valid_password_strategy()) {
         let pool = get_or_create_pool();
         let auth_service = WebUIAuthService::new(pool.clone());
@@ -212,6 +221,7 @@ proptest::proptest! {
 }
 
 #[test]
+#[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
 fn test_migration_no_duplicate_records() {
     // Test Environment: Uses isolated test database (palpo_test)
     // Purpose: Verify repeated create_admin calls don't cause issues or create duplicates
@@ -261,6 +271,7 @@ proptest::proptest! {
     #![proptest_config(ProptestConfig::with_cases(5))]
     
     #[test]
+    #[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
     fn test_migration_state_consistency(password in valid_password_strategy()) {
         let pool = get_or_create_pool();
         let auth_service = WebUIAuthService::new(pool.clone());
@@ -295,6 +306,7 @@ proptest::proptest! {
 }
 
 #[test]
+#[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
 fn test_migration_with_different_passwords() {
     // Test Environment: Uses isolated test database (palpo_test)
     // Purpose: Verify create_admin with different passwords maintains consistency
