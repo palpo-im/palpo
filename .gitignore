@@ -12,6 +12,7 @@ __*
 /deploy/docker/data
 .claude/
 .kiro/
+.DS_Store
 
 examples/with-discord/data/
 examples/with-discord/space/
@@ -19,3 +20,7 @@ examples/with-telegram/data/
 examples/with-telegram/space/
 examples/with-feishu/data/
 examples/with-feishu/space/
+.gitnexus
+AGENTS.md
+CLAUDE.md
+tarpaulin-report.html
