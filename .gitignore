@@ -23,4 +23,4 @@ examples/with-feishu/space/
 .gitnexus
 AGENTS.md
 CLAUDE.md
-build_rs_cov.profraw
+tarpaulin-report.html
