@@ -20,22 +20,22 @@
 /// # Example
 ///
 /// ```no_run
-/// use palpo::admin::webui_auth_service::WebUIAuthService;
-/// use palpo::data::DieselPool;
+/// use palpo_admin_server::WebUIAuthService;
+/// use palpo_data::DieselPool;
 ///
 /// async fn example(db_pool: DieselPool) {
 ///     let service = WebUIAuthService::new(db_pool);
 ///     
-///     // Check if admin exists
-///     let exists = service.admin_exists().await.unwrap();
+///     // Check if admin exists (note: admin_exists is synchronous)
+///     let exists = service.admin_exists().unwrap();
 ///     
 ///     if !exists {
-///         // Create admin account
-///         service.create_admin("SecureP@ssw0rd123").await.unwrap();
+///         // Create admin account (note: create_admin is synchronous)
+///         service.create_admin("SecureP@ssw0rd123").unwrap();
 ///     }
 ///     
-///     // Authenticate
-///     let session = service.authenticate("admin", "SecureP@ssw0rd123").await.unwrap();
+///     // Authenticate (note: authenticate is synchronous)
+///     let session = service.authenticate("admin", "SecureP@ssw0rd123").unwrap();
 /// }
 /// ```
 
