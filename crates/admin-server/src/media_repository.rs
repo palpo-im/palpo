@@ -6,7 +6,7 @@
 /// Note: Actual media files are stored on disk, this tracks metadata.
 
 use diesel::prelude::*;
-use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::types::AdminError;
 use palpo_data::DieselPool;
@@ -57,9 +57,14 @@ pub trait MediaRepository {
 
     /// Delete all media for a user
     async fn delete_user_media(&self, user_id: &str) -> Result<u64, AdminError>;
+
+    /// Delete all media for a user (alias)
+    async fn delete_all_user_media(&self, user_id: &str) -> Result<u64, AdminError>;
 }
 
 /// Diesel-based MediaRepository implementation
+#[derive(Debug)]
+#[allow(dead_code)]
 pub struct DieselMediaRepository {
     db_pool: DieselPool,
 }
@@ -83,25 +88,26 @@ impl MediaRepository for DieselMediaRepository {
         })
     }
 
-    async fn get_user_media_count(&self, user_id: &str) -> Result<i64, AdminError> {
+    async fn get_user_media_count(&self, _user_id: &str) -> Result<i64, AdminError> {
         Ok(0)
     }
 
-    async fn get_user_media_size(&self, user_id: &str) -> Result<i64, AdminError> {
+    async fn get_user_media_size(&self, _user_id: &str) -> Result<i64, AdminError> {
         Ok(0)
     }
 
-    async fn delete_media(&self, media_id: &str) -> Result<(), AdminError> {
+    async fn delete_media(&self, _media_id: &str) -> Result<(), AdminError> {
         Ok(())
     }
 
-    async fn delete_user_media(&self, user_id: &str) -> Result<u64, AdminError> {
+    async fn delete_user_media(&self, _user_id: &str) -> Result<u64, AdminError> {
         Ok(0)
     }
-}
 
-// Table definitions
-use crate::schema::*;
+    async fn delete_all_user_media(&self, user_id: &str) -> Result<u64, AdminError> {
+        self.delete_user_media(user_id).await
+    }
+}
 
 // Note: Media repository is a placeholder - actual implementation depends on Palpo media schema
 

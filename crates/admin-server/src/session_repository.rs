@@ -10,6 +10,7 @@
 /// - Session history with device association
 
 use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 use chrono::Utc;
 
 use crate::types::AdminError;
@@ -94,6 +95,7 @@ pub trait SessionRepository {
 }
 
 /// Diesel-based SessionRepository implementation
+#[derive(Debug)]
 pub struct DieselSessionRepository {
     db_pool: DieselPool,
 }
@@ -172,8 +174,11 @@ impl SessionRepository for DieselSessionRepository {
             .collect();
 
         // Get total unique IP count
-        let total_session_count = diesel::select(diesel::dsl::count_distinct(user_ips::ip))
+        let total_session_count = user_ips::table
             .filter(user_ips::user_id.eq(user_id))
+            .select(user_ips::ip)
+            .distinct()
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -238,8 +243,11 @@ impl SessionRepository for DieselSessionRepository {
         let limit = filter.limit.unwrap_or(50).min(100);
         let offset = filter.offset.unwrap_or(0);
 
-        let total_count = diesel::select(diesel::dsl::count_distinct(user_ips::ip))
+        let total_count = user_ips::table
             .filter(user_ips::user_id.eq(&filter.user_id))
+            .select(user_ips::ip)
+            .distinct()
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -286,8 +294,11 @@ impl SessionRepository for DieselSessionRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count_distinct(user_ips::ip))
+        let count = user_ips::table
             .filter(user_ips::user_id.eq(user_id))
+            .select(user_ips::ip)
+            .distinct()
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -300,8 +311,9 @@ impl SessionRepository for DieselSessionRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let last_seen = diesel::select(diesel::dsl::max(user_ips::last_seen_ts))
+        let last_seen = user_ips::table
             .filter(user_ips::user_id.eq(user_id))
+            .select(diesel::dsl::max(user_ips::last_seen_ts))
             .get_result::<Option<i64>>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -314,8 +326,9 @@ impl SessionRepository for DieselSessionRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let last_seen_ip = diesel::select(diesel::dsl::max(user_ips::last_seen_ts))
+        let last_seen_ip = user_ips::table
             .filter(user_ips::user_id.eq(user_id))
+            .select(diesel::dsl::max(user_ips::last_seen_ts))
             .get_result::<Option<i64>>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -365,16 +378,19 @@ impl SessionRepository for DieselSessionRepository {
 }
 
 // Helper struct for device query
-#[derive(Queryable)]
+#[derive(Queryable, Clone)]
+#[allow(dead_code)]
 struct Device {
     pub device_id: String,
     pub user_id: String,
     pub display_name: Option<String>,
     pub last_seen_ts: Option<i64>,
+    pub last_seen_ip: Option<String>,
+    pub last_seen_user_agent: Option<String>,
+    pub created_ts: i64,
 }
 
 // Table definitions
-use crate::schema::*;
 use crate::schema::user_ips;
 use crate::schema::devices;
 

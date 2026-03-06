@@ -1,6 +1,7 @@
 //! Form components for the admin UI
 
 use dioxus::prelude::*;
+use rand::Rng;
 use super::feedback::ErrorMessage;
 
 /// Props for the Input component
@@ -279,7 +280,6 @@ pub fn Button(props: ButtonProps) -> Element {
 // ===== User Form Component =====
 
 use crate::models::user::{CreateUserRequest, User};
-use crate::services::user_admin_api::UserAdminAPI;
 
 /// Props for the UserForm component
 #[derive(Props, Clone, PartialEq)]
@@ -287,8 +287,6 @@ pub struct UserFormProps {
     /// Existing user to edit (None for create mode)
     #[props(default = None)]
     pub user: Option<User>,
-    /// UserAdminAPI instance
-    pub api: UserAdminAPI,
     /// Callback when form is submitted successfully
     pub on_success: EventHandler<User>,
     /// Callback when form is cancelled
@@ -299,8 +297,8 @@ pub struct UserFormProps {
 #[component]
 pub fn UserForm(props: UserFormProps) -> Element {
     let is_edit = props.user.is_some();
-    let is_loading = use_signal(|| false);
-    let error = use_signal(|| None::<String>);
+    let mut is_loading = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
 
     // Form state
     let mut username = use_signal(|| props.user.as_ref().map(|u| u.username.clone()).unwrap_or_default());
@@ -312,12 +310,12 @@ pub fn UserForm(props: UserFormProps) -> Element {
     let mut generated_password = use_signal(|| None::<String>);
 
     // Validation state
-    let username_error = use_signal(|| None::<String>);
-    let password_error = use_signal(|| None::<String>);
-    let confirm_error = use_signal(|| None::<String>);
+    let mut username_error = use_signal(|| None::<String>);
+    let mut password_error = use_signal(|| None::<String>);
+    let mut confirm_error = use_signal(|| None::<String>);
 
     // Validate username
-    let validate_username = move || -> bool {
+    let mut validate_username = move || -> bool {
         let username_val = username();
         if username_val.is_empty() {
             username_error.set(Some("用户名不能为空".to_string()));
@@ -340,7 +338,7 @@ pub fn UserForm(props: UserFormProps) -> Element {
     };
 
     // Validate password
-    let validate_password = move || -> bool {
+    let mut validate_password = move || -> bool {
         if !is_edit && password().is_empty() {
             password_error.set(Some("密码不能为空".to_string()));
             return false;
@@ -354,7 +352,7 @@ pub fn UserForm(props: UserFormProps) -> Element {
     };
 
     // Validate confirm password
-    let validate_confirm = move || -> bool {
+    let mut validate_confirm = move || -> bool {
         if password() != confirm_password() {
             confirm_error.set(Some("两次输入的密码不一致".to_string()));
             return false;
@@ -364,18 +362,18 @@ pub fn UserForm(props: UserFormProps) -> Element {
     };
 
     // Generate random password
-    let generate_random_password = move || {
+    let mut generate_random_password = move || {
         let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
         let mut rng = rand::thread_rng();
-        let password: String = (0..16)
+        let new_password: String = (0..16)
             .map(|_| chars.chars().nth(rng.gen_range(0..chars.len())).unwrap())
             .collect();
-        generated_password.set(Some(password.clone()));
-        password.set(password);
+        generated_password.set(Some(new_password.clone()));
+        password.set(new_password);
     };
 
     // Handle form submission
-    let handle_submit = move |_| {
+    let mut handle_submit = move |_| {
         let username_valid = validate_username();
         let password_valid = validate_password();
         let confirm_valid = validate_confirm();
@@ -397,12 +395,25 @@ pub fn UserForm(props: UserFormProps) -> Element {
         };
 
         // Spawn async task to create user
-        let api = props.api.clone();
         let on_success = props.on_success.clone();
-        let error_clone = error.clone();
-        let is_loading_clone = is_loading.clone();
+        let mut error_clone = error.clone();
+        let mut is_loading_clone = is_loading.clone();
 
-        tokio::spawn(async move {
+        // Use wasm_bindgen_futures::spawn_local for WASM compatibility
+        wasm_bindgen_futures::spawn_local(async move {
+            // Use global API client
+            let api = match crate::services::api_client::get_api_client() {
+                Ok(client) => crate::services::user_admin_api::UserAdminAPI::new(
+                    crate::utils::audit_logger::AuditLogger::new(1000),
+                    client,
+                ),
+                Err(e) => {
+                    error_clone.set(Some(e.to_string()));
+                    is_loading_clone.set(false);
+                    return;
+                }
+            };
+
             match api.create_user(request, "admin").await {
                 Ok(response) => {
                     is_loading_clone.set(false);

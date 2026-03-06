@@ -3,9 +3,12 @@
 /// This module provides authentication middleware for user management endpoints.
 /// All user management endpoints require a valid session token.
 
+use std::sync::Arc;
+
 use salvo::prelude::*;
 use crate::types::AdminError;
 use crate::SessionManager;
+use crate::handlers::user_handler::ErrorResponse;
 
 /// Authentication middleware that validates session tokens
 ///
@@ -36,7 +39,7 @@ impl Handler for AuthMiddleware {
             Some(h) => h.to_str().unwrap_or(""),
             None => {
                 res.status_code(StatusCode::UNAUTHORIZED);
-                res.render(Json(crate::handlers::ErrorResponse {
+                res.render(Json(ErrorResponse {
                     error: "Missing Authorization header".to_string(),
                 }));
                 return;
@@ -48,7 +51,7 @@ impl Handler for AuthMiddleware {
             t
         } else {
             res.status_code(StatusCode::UNAUTHORIZED);
-            res.render(Json(crate::handlers::ErrorResponse {
+            res.render(Json(ErrorResponse {
                 error: "Invalid Authorization header format".to_string(),
             }));
             return;
@@ -63,20 +66,20 @@ impl Handler for AuthMiddleware {
             }
             Err(AdminError::SessionExpired) => {
                 res.status_code(StatusCode::UNAUTHORIZED);
-                res.render(Json(crate::handlers::ErrorResponse {
+                res.render(Json(ErrorResponse {
                     error: "Session expired".to_string(),
                 }));
             }
             Err(AdminError::InvalidSessionToken) => {
                 res.status_code(StatusCode::UNAUTHORIZED);
-                res.render(Json(crate::handlers::ErrorResponse {
+                res.render(Json(ErrorResponse {
                     error: "Invalid session token".to_string(),
                 }));
             }
             Err(e) => {
                 tracing::error!("Session validation error: {}", e);
                 res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-                res.render(Json(crate::handlers::ErrorResponse {
+                res.render(Json(ErrorResponse {
                     error: "Session validation failed".to_string(),
                 }));
             }
@@ -114,7 +117,7 @@ impl Handler for OptionalAuthMiddleware {
 
 /// Get the authenticated username from depot
 pub fn get_authenticated_username(depot: &Depot) -> Option<String> {
-    depot.get::<String>("username").cloned()
+    depot.get::<String>("username").ok().map(|v| v.clone())
 }
 
 /// Require authentication - returns error response if not authenticated
@@ -123,7 +126,7 @@ pub fn require_auth(depot: &Depot, res: &mut Response) -> bool {
         true
     } else {
         res.status_code(StatusCode::UNAUTHORIZED);
-        res.render(Json(crate::handlers::ErrorResponse {
+        res.render(Json(ErrorResponse {
             error: "Authentication required".to_string(),
         }));
         false

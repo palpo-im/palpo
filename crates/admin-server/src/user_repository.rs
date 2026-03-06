@@ -13,8 +13,7 @@
 /// - Device management integration
 
 use diesel::prelude::*;
-use diesel::sql_query;
-use diesel::sql_types::{Text, BigInt, Bool, Integer, Nullable, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::types::AdminError;
 use palpo_data::DieselPool;
@@ -170,6 +169,7 @@ pub trait UserRepository {
 ///
 /// Uses parameterized queries and proper indexing for optimal performance.
 /// Targets 2x performance improvement over Synapse Admin API.
+#[derive(Debug)]
 pub struct DieselUserRepository {
     db_pool: DieselPool,
 }
@@ -279,21 +279,26 @@ impl UserRepository for DieselUserRepository {
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
         // Get device count
-        let device_count = diesel::select(diesel::dsl::count(devices::device_id))
+        let device_count = devices::table
             .filter(devices::user_id.eq(user_id))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
         // Get session count (unique IPs)
-        let session_count = diesel::select(diesel::dsl::count_distinct(user_ips::ip))
+        let session_count = user_ips::table
             .filter(user_ips::user_id.eq(user_id))
+            .select(user_ips::ip)
+            .distinct()
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
         // Get joined room count
-        let joined_room_count = diesel::select(diesel::dsl::count(room_memberships::room_id))
+        let joined_room_count = room_memberships::table
             .filter(room_memberships::user_id.eq(user_id))
             .filter(room_memberships::membership.eq("join"))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -311,11 +316,6 @@ impl UserRepository for DieselUserRepository {
             .db_pool
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
-
-        let updates: Vec<(
-            Option<diesel::expression::column::ColumnInsertValue<users::table, _>>,
-            diesel::sql_types::Bool,
-        )> = vec![];
 
         let user = diesel::update(users::table.find(user_id))
             .set((
@@ -418,8 +418,28 @@ impl UserRepository for DieselUserRepository {
             }
         }
 
-        // Get total count
-        let total_count = query.clone()
+        // Get total count - rebuild query to avoid clone issue
+        let mut count_query = users::table.into_boxed();
+
+        if let Some(is_admin) = filter.is_admin {
+            count_query = count_query.filter(users::is_admin.eq(is_admin));
+        }
+        if let Some(is_deactivated) = filter.is_deactivated {
+            count_query = count_query.filter(users::is_deactivated.eq(is_deactivated));
+        }
+        if let Some(shadow_banned) = filter.shadow_banned {
+            count_query = count_query.filter(users::shadow_banned.eq(shadow_banned));
+        }
+        if let Some(search_term) = &filter.search_term {
+            if !search_term.is_empty() {
+                count_query = count_query.filter(
+                    users::name.ilike(format!("%{}%", search_term))
+                    .or(users::displayname.ilike(format!("%{}%", search_term)))
+                );
+            }
+        }
+
+        let total_count = count_query
             .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
@@ -446,8 +466,9 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count(users::name))
+        let count = users::table
             .filter(users::name.eq(format!("@{}:localhost", username)))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -564,7 +585,8 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count(users::name))
+        let count = users::table
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -577,8 +599,9 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count(users::name))
+        let count = users::table
             .filter(users::is_admin.eq(true))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -591,8 +614,9 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        let count = diesel::select(diesel::dsl::count(users::name))
+        let count = users::table
             .filter(users::is_deactivated.eq(true))
+            .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -601,7 +625,6 @@ impl UserRepository for DieselUserRepository {
 }
 
 // Table definitions for Diesel
-use crate::schema::*;
 use crate::schema::users;
 use crate::schema::devices;
 use crate::schema::user_ips;

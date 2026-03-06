@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3a225ef676a75e706ff3fee4deefd0b33bb123bbd8fe8dbf54888313d26c6a66 # shrinks to password = "Dx6*ce_.l=<!D"
+cc 4fc7709a7ced765375fef1c4b535339b617ecad2de9b59dd70f31629e7b27539 # shrinks to password = "Us1#k,=0n^Z7!="

@@ -4,17 +4,14 @@
 //! All endpoints require authentication via Bearer token.
 
 use crate::models::{
-    User, CreateUserRequest, CreateUserResponse, UpdateUserRequest, UpdateUserResponse,
+    CreateUserRequest, CreateUserResponse, UpdateUserRequest, UpdateUserResponse,
     ResetPasswordRequest, ResetPasswordResponse, DeactivateUserRequest, DeactivateUserResponse,
     BatchUserOperationRequest, BatchUserOperationResponse, ListUsersRequest, ListUsersResponse,
-    UserStatistics, BatchUserOperation, UserSortField, Permission,
+    UserStatistics, BatchUserOperation,
     WebConfigError, AuditAction, AuditTargetType,
 };
-use crate::models::room::SortOrder;
-use crate::services::api_client::{ApiClient, api_get_json, api_post_json_response, api_put_json_response, api_delete};
+use crate::services::api_client::{ApiClient, api_get_json, api_post_json_response, api_put_json_response};
 use crate::utils::audit_logger::AuditLogger;
-use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
 
@@ -341,6 +338,7 @@ impl UserAdminAPI {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Permission;
     use crate::utils::audit_logger::AuditLogger;
     use crate::services::api_client::ApiClient;
 

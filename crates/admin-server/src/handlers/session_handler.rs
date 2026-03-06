@@ -13,16 +13,16 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::AdminError;
-use crate::repositories::{SessionRepository, SessionFilter, SessionInfo, WhoisInfo};
+use crate::repositories::{DieselSessionRepository, SessionFilter, SessionInfo};
+use crate::session_repository::SessionRepository;
 
 use super::auth_middleware::require_auth;
-use super::validation::{validate_user_id, validate_limit, validate_offset, ValidationError};
+use super::validation::{validate_user_id, validate_limit, validate_offset};
 
 // ===== Request Types =====
 
 /// Session list query parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionListQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -95,13 +95,13 @@ pub struct ErrorResponse {
 // ===== Handler State =====
 
 /// Session handler state containing the repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SessionHandlerState {
-    pub session_repo: Arc<dyn SessionRepository>,
+    pub session_repo: Arc<DieselSessionRepository>,
 }
 
 impl SessionHandlerState {
-    pub fn new(session_repo: Arc<dyn SessionRepository>) -> Self {
+    pub fn new(session_repo: Arc<DieselSessionRepository>) -> Self {
         Self { session_repo }
     }
 }
@@ -171,7 +171,7 @@ pub async fn list_sessions(req: &mut Request, depot: &mut Depot, res: &mut Respo
         return;
     }
 
-    let query = req.parse_query::<SessionListQuery>().unwrap_or_default();
+    let query = req.parse_queries::<SessionListQuery>().unwrap_or_default();
 
     // Validate pagination parameters
     let limit = match validate_limit(query.limit) {

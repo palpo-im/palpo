@@ -14,16 +14,16 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::AdminError;
-use crate::repositories::{DeviceRepository, Device, DeviceFilter, DeviceWithSessions};
+use crate::repositories::{DieselDeviceRepository, Device, DeviceFilter, DeviceWithSessions};
+use crate::device_repository::DeviceRepository;
 
 use super::auth_middleware::require_auth;
-use super::validation::{validate_user_id, validate_device_id, validate_limit, validate_offset, ValidationError};
+use super::validation::{validate_user_id, validate_device_id, validate_limit, validate_offset};
 
 // ===== Request Types =====
 
 /// Device list query parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeviceListQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -102,13 +102,13 @@ pub struct ErrorResponse {
 // ===== Handler State =====
 
 /// Device handler state containing the repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DeviceHandlerState {
-    pub device_repo: Arc<dyn DeviceRepository>,
+    pub device_repo: Arc<DieselDeviceRepository>,
 }
 
 impl DeviceHandlerState {
-    pub fn new(device_repo: Arc<dyn DeviceRepository>) -> Self {
+    pub fn new(device_repo: Arc<DieselDeviceRepository>) -> Self {
         Self { device_repo }
     }
 }
@@ -144,7 +144,7 @@ pub async fn list_user_devices(req: &mut Request, depot: &mut Depot, res: &mut R
         return;
     }
 
-    let query = req.parse_query::<DeviceListQuery>().unwrap_or_default();
+    let query = req.parse_queries::<DeviceListQuery>().unwrap_or_default();
 
     // Validate pagination parameters
     let limit = match validate_limit(query.limit) {

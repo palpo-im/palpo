@@ -272,6 +272,10 @@ pub enum AdminError {
     /// HTTP request failed
     #[error("HTTP request failed: {0}")]
     HttpError(String),
+
+    /// Validation error
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 // Implement From conversions for common error types

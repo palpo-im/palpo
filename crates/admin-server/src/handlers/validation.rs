@@ -89,8 +89,8 @@ pub fn validate_user_id(user_id: &str) -> Result<(), ValidationError> {
     }
 
     // Validate localpart characters (Matrix spec: a-z, 0-9, and some special chars)
-    let valid_localpart_chars = |c: char| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '=' || c == '/';
+    let valid_localpart_chars = |c: char| -> bool {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '=' || c == '/'
     };
 
     if !localpart.chars().all(valid_localpart_chars) {
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn test_validate_limit() {
         assert_eq!(validate_limit(Some(10)).unwrap(), 10);
-        assert_eq!(validate_limit(Some(0)).unwrap(), 50); // Clamped to default
+        assert!(validate_limit(Some(0)).is_err()); // Should error for 0
         assert_eq!(validate_limit(None).unwrap(), 50); // Default
         assert_eq!(validate_limit(Some(200)).unwrap(), 100); // Clamped to max
     }

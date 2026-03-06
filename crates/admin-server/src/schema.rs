@@ -3,7 +3,7 @@
 // To update, run: diesel migration generate
 
 use diesel::table;
-use diesel::sql_types;
+use diesel::allow_tables_to_appear_in_same_query;
 
 // ===== Users Table =====
 table! {
