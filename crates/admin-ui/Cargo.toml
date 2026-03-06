@@ -9,12 +9,6 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-# 明确指定测试在native环境运行
-[[bin]]
-name = "test-runner"
-path = "src/bin/test_runner.rs"
-required-features = ["test-utils"]
-
 [dependencies]
 # Frontend dependencies (Dioxus)
 dioxus = { version = "0.7", features = ["web", "router"] }

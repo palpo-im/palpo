@@ -167,8 +167,8 @@ fn generate_password_with_length(length: usize, config: &PasswordConfig) -> Stri
 /// ```
 /// use palpo_admin_server::password_generator::validate_password;
 ///
-/// assert!(validate_password("SecureP@ssw0rd123").is_ok());
-/// assert!(validate_password("short").is_err());
+/// assert!(validate_password("SecureP@ssw0rd123", None).is_ok());
+/// assert!(validate_password("short", None).is_err());
 /// ```
 pub fn validate_password(password: &str, config: Option<PasswordConfig>) -> Result<(), PasswordError> {
     let config = config.unwrap_or_default();
