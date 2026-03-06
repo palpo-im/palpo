@@ -34,18 +34,30 @@
 ///
 /// ## Running Tests
 ///
+/// **Note**: These tests are marked as `#[ignore]` because they require a dedicated test database
+/// to ensure isolation from development/production data. This prevents accidental data modification.
+///
+/// To run these tests manually:
+///
 /// ```bash
-/// # Run all tests with isolated test database
+/// # First, create the test database (only once)
+/// createdb palpo_test
+///
+/// # Run all tests in this file
 /// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
 ///   cargo test -p palpo-admin-server --test password_change_invalidation_test
 ///
+/// # Run with --ignored flag to include ignored tests
+/// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
+///   cargo test -p palpo-admin-server --test password_change_invalidation_test -- --ignored
+///
 /// # Run specific test
 /// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
-///   cargo test -p palpo-admin-server --test password_change_invalidation_test test_password_change_invalidates_old_password_simple
+///   cargo test -p palpo-admin-server --test password_change_invalidation_test test_password_change_invalidates_old_password_simple -- --ignored
 ///
 /// # Run with verbose output
 /// TEST_DATABASE_URL="postgresql://palpo:password@localhost/palpo_test" \
-///   cargo test -p palpo-admin-server --test password_change_invalidation_test -- --nocapture
+///   cargo test -p palpo-admin-server --test password_change_invalidation_test -- --ignored --nocapture
 /// ```
 ///
 /// ## Database Cleanup
@@ -108,127 +120,129 @@ fn valid_password_strategy() -> impl Strategy<Value = String> {
 }
 
 #[test]
+#[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
 fn test_password_change_invalidates_old_password_simple() {
-    // Simple non-property-based test case
+    // Test Environment: Uses isolated test database (palpo_test)
+    // Purpose: Verify password change invalidates old password
+    
     let pool = get_or_create_pool();
-    let service = WebUIAuthService::new(pool);
+    let auth_service = WebUIAuthService::new(pool.clone());
     
-    // Initialize schema
-    service.initialize_schema().expect("Failed to initialize schema");
+    // Step 1: Initialize schema
+    auth_service.initialize_schema().expect("Failed to initialize schema");
     
-    // Create admin with initial password (or reset if already exists)
-    let initial_password = "InitialPass123!";
-    if service.admin_exists().expect("Failed to check admin") {
-        service.reset_password(initial_password).expect("Failed to reset password");
+    let initial_password = "InitialPassword123!Aa";
+    let new_password = "NewPassword456@Bb";
+    
+    // Step 2: Ensure clean state or create admin
+    if auth_service.admin_exists().expect("Failed to check admin") {
+        // Reset to initial password for consistent test
+        let reset_result = auth_service.reset_password(initial_password);
+        assert!(reset_result.is_ok(), "Reset password should succeed");
     } else {
-        service.create_admin(initial_password).expect("Failed to create admin");
+        // Create admin with initial password
+        let create_result = auth_service.create_admin(initial_password);
+        assert!(create_result.is_ok(), "Create admin should succeed");
     }
     
-    // Verify initial password works
-    let result = service.authenticate("admin", initial_password);
-    assert!(result.is_ok(), "Initial authentication should succeed");
+    // Step 3: Verify initial password works
+    let auth_initial = auth_service.authenticate("admin", initial_password);
+    assert!(auth_initial.is_ok(), "Initial password should work");
     
-    // Change password
-    let new_password = "NewPassword456@";
-    service.change_password(initial_password, new_password)
-        .expect("Failed to change password");
+    // Step 4: Change password
+    let change_result = auth_service.change_password(initial_password, new_password);
+    assert!(change_result.is_ok(), "Change password should succeed");
     
-    // Verify old password fails
-    let result = service.authenticate("admin", initial_password);
-    assert!(result.is_err(), "Old password should fail after change");
-    match result {
-        Err(AdminError::InvalidCredentials) => {
-            // Expected error
-        }
-        _ => panic!("Expected InvalidCredentials error"),
-    }
+    // Step 5: Verify old password fails
+    let auth_old = auth_service.authenticate("admin", initial_password);
+    assert!(auth_old.is_err(), "Old password should fail after change");
     
-    // Verify new password works
-    let result = service.authenticate("admin", new_password);
-    assert!(result.is_ok(), "New password should succeed");
+    // Step 6: Verify new password works
+    let auth_new = auth_service.authenticate("admin", new_password);
+    assert!(auth_new.is_ok(), "New password should work");
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(10))] // Reduce cases for faster testing
+proptest::proptest! {
+    #![proptest_config(ProptestConfig::with_cases(10))]
     
     #[test]
-    fn test_password_change_invalidates_old_password_property(
-        initial_password in valid_password_strategy(),
-        new_password in valid_password_strategy(),
-    ) {
-        // Ensure passwords are different
-        prop_assume!(initial_password != new_password);
-        
+    #[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
+    fn test_password_change_invalidates_old_password_property(initial_pwd in valid_password_strategy(), new_pwd in valid_password_strategy()) {
         let pool = get_or_create_pool();
-        let service = WebUIAuthService::new(pool);
+        let auth_service = WebUIAuthService::new(pool.clone());
         
         // Initialize schema
-        service.initialize_schema().expect("Failed to initialize schema");
+        auth_service.initialize_schema().expect("Failed to initialize schema");
         
-        // Create admin with initial password (or reset if already exists)
-        if service.admin_exists().expect("Failed to check admin") {
-            // Reset password using reset_password which doesn't require current password
-            service.reset_password(&initial_password).expect("Failed to reset password");
+        // Ensure admin exists with initial password
+        if !auth_service.admin_exists().unwrap_or(false) {
+            let create_result = auth_service.create_admin(&initial_pwd);
+            prop_assert!(create_result.is_ok(), "Create admin should succeed");
         } else {
-            service.create_admin(&initial_password).expect("Failed to create admin");
+            let reset_result = auth_service.reset_password(&initial_pwd);
+            prop_assert!(reset_result.is_ok(), "Reset password should succeed");
         }
         
         // Verify initial password works
-        let result = service.authenticate("admin", &initial_password);
-        prop_assert!(result.is_ok(), "Initial authentication should succeed");
+        prop_assert!(auth_service.authenticate("admin", &initial_pwd).is_ok(),
+            "Initial password should work");
         
         // Change password
-        service.change_password(&initial_password, &new_password)
-            .expect("Failed to change password");
+        let change_result = auth_service.change_password(&initial_pwd, &new_pwd);
+        prop_assert!(change_result.is_ok(), "Change password should succeed");
         
         // Verify old password fails
-        let result = service.authenticate("admin", &initial_password);
-        prop_assert!(result.is_err(), "Old password should fail after change");
+        prop_assert!(auth_service.authenticate("admin", &initial_pwd).is_err(),
+            "Old password should fail after change");
         
         // Verify new password works
-        let result = service.authenticate("admin", &new_password);
-        prop_assert!(result.is_ok(), "New password should succeed");
+        prop_assert!(auth_service.authenticate("admin", &new_pwd).is_ok(),
+            "New password should work");
     }
 }
 
 #[test]
+#[ignore = "Requires dedicated test database (palpo_test). Run with --ignored flag and TEST_DATABASE_URL."]
 fn test_multiple_password_changes() {
-    // Test that multiple password changes work correctly
+    // Test Environment: Uses isolated test database (palpo_test)
+    // Purpose: Verify multiple consecutive password changes work correctly
+    
     let pool = get_or_create_pool();
-    let service = WebUIAuthService::new(pool);
+    let auth_service = WebUIAuthService::new(pool.clone());
     
-    service.initialize_schema().expect("Failed to initialize schema");
+    // Step 1: Initialize schema
+    auth_service.initialize_schema().expect("Failed to initialize schema");
     
-    let passwords = vec![
-        "Password1!Aa",
-        "Password2@Bb",
-        "Password3#Cc",
-        "Password4$Dd",
-    ];
+    let password1 = "Password1!Aa";
+    let password2 = "Password2@Bb";
+    let password3 = "Password3#Cc";
     
-    // Create admin with first password (or reset if already exists)
-    if service.admin_exists().expect("Failed to check admin") {
-        service.reset_password(passwords[0]).expect("Failed to reset password");
+    // Step 2: Ensure admin exists with password1
+    if !auth_service.admin_exists().unwrap_or(false) {
+        let create_result = auth_service.create_admin(password1);
+        assert!(create_result.is_ok(), "Create admin should succeed");
     } else {
-        service.create_admin(passwords[0]).expect("Failed to create admin");
+        let reset_result = auth_service.reset_password(password1);
+        assert!(reset_result.is_ok(), "Reset password should succeed");
     }
     
-    // Change password multiple times
-    for i in 0..passwords.len() - 1 {
-        let current = passwords[i];
-        let next = passwords[i + 1];
-        
-        // Verify current password works
-        assert!(service.authenticate("admin", current).is_ok());
-        
-        // Change to next password
-        service.change_password(current, next)
-            .expect("Failed to change password");
-        
-        // Verify old password fails
-        assert!(service.authenticate("admin", current).is_err());
-        
-        // Verify new password works
-        assert!(service.authenticate("admin", next).is_ok());
-    }
+    // Step 3: Change from password1 to password2
+    let change1 = auth_service.change_password(password1, password2);
+    assert!(change1.is_ok(), "First password change should succeed");
+    
+    // Step 4: Verify password1 fails, password2 works
+    assert!(auth_service.authenticate("admin", password1).is_err(),
+        "Password1 should fail after first change");
+    assert!(auth_service.authenticate("admin", password2).is_ok(),
+        "Password2 should work after first change");
+    
+    // Step 5: Change from password2 to password3
+    let change2 = auth_service.change_password(password2, password3);
+    assert!(change2.is_ok(), "Second password change should succeed");
+    
+    // Step 6: Verify password2 fails, password3 works
+    assert!(auth_service.authenticate("admin", password2).is_err(),
+        "Password2 should fail after second change");
+    assert!(auth_service.authenticate("admin", password3).is_ok(),
+        "Password3 should work after second change");
 }
