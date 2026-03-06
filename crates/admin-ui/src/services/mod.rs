@@ -19,6 +19,9 @@ pub mod webui_auth_api;
 #[cfg(test)]
 mod config_api_test;
 
+#[cfg(test)]
+mod user_admin_api_test;
+
 pub use api_client::*;
 pub use auth::*;
 pub use audit::*;
