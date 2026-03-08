@@ -119,66 +119,171 @@ This task list tracks the implementation of the user-management feature for the 
 
 ### 3.1 Unit Tests
 
-- [x] 3.1.1 Write unit tests for all repositories
-- [x] 3.1.2 Write unit tests for all handlers
+**Focus**: Test critical business logic, not implementation details
+
+- [x] 3.1.1 Write unit tests for repository business logic (NOT simple CRUD operations)
+  - Username availability checking logic
+  - User search and filtering logic
+  - Pagination boundary conditions
+  - Data validation and sanitization
+- [x] 3.1.2 Write unit tests for handler business logic
+  - Permission validation
+  - Input validation and error handling
+  - State transitions (e.g., user deactivation)
+  - Password policy enforcement
 - [x] 3.1.3 Write unit tests for password generator
+  - Password strength requirements
+  - Cryptographic randomness
+  - Character set distribution
 - [x] 3.1.4 Write unit tests for frontend components
-- [x] 3.1.5 Ensure backend tests cover all critical business logic and edge cases (target: ≥70% coverage with high-value tests)
-- [x] 3.1.6 Ensure frontend tests cover all user interactions and state changes (target: ≥70% coverage with high-value tests)
-- [ ] 3.1.7 Review and remove low-value duplicate tests
-- [ ] 3.1.8 Ensure no tests duplicate source file unit tests
-- [ ] 3.1.9 Verify all tests provide unique value and focus on business requirements
+  - User interactions (form submission, button clicks)
+  - State management (loading, error states)
+  - Validation feedback
+- [x] 3.1.5 Security-critical unit tests
+  - SQL injection prevention (parameterized queries)
+  - XSS prevention in user inputs
+  - Authentication token validation
+  - Authorization checks
+- [ ] 3.1.6 Review existing tests and remove low-value duplicates
+  - Remove tests for trivial getters/setters
+  - Remove tests for Debug/Display traits
+  - Remove tests that duplicate source file tests
+  - Consolidate similar test scenarios
+- [ ] 3.1.7 Verify test quality (NOT coverage percentage)
+  - Each test has clear business justification
+  - Tests focus on "what" not "how"
+  - Tests catch real bugs, not just exercise code
+
+**Quality Review**: Focus on test value, not coverage percentage
+- Review tests for business justification
+- Ensure tests catch real bugs
+- Remove redundant or low-value tests
 
 ### 3.2 Property-Based Tests
 
-**Priority: Focus on the most critical properties first (marked with ⭐)**
+**Philosophy**: Use PBT only where it provides unique value over unit tests
 
-- [ ] 3.2.1 ⭐ Implement Property 1: Username availability accuracy
-- [ ] 3.2.2 ⭐ Implement Property 2: User creation idempotency
-- [ ] 3.2.3 ⭐ Implement Property 3: Device deletion token invalidation
-- [ ] 3.2.4 ⭐ Implement Property 4: Pagination consistency
-- [ ] 3.2.5 Implement Property 5: Sorting stability
-- [ ] 3.2.6 ⭐ Implement Property 6: Rate limit config consistency
-- [ ] 3.2.7 Implement Property 7: Rate limit deletion emptiness
-- [ ] 3.2.8 ⭐ Implement Property 8: Shadow-ban status consistency
-- [ ] 3.2.9 Implement Property 9: Threepid lookup accuracy
-- [ ] 3.2.10 Implement Property 10: External ID lookup accuracy
-- [ ] 3.2.11 Implement Property 11: Search results matching
-- [ ] 3.2.12 Implement Property 12: Device list completeness
-- [ ] 3.2.13 Implement Property 13: Membership list completeness
-- [ ] 3.2.14 ⭐ Implement Property 14: Password reset login
-- [ ] 3.2.15 ⭐ Implement Property 15: Admin status setting
-- [ ] 3.2.16 Implement Property 16: Media deletion update
-- [ ] 3.2.17 ⭐ Implement Property 17: Audit log completeness
-- [ ] 3.2.18 ⭐ Implement Property 18: User deactivation state
-- [ ] 3.2.19 Implement Property 19: Batch device deletion idempotency
-- [ ] 3.2.20 Implement Property 20: Pushers list format consistency
+**Critical Properties (Implement as PBT)**:
+- [ ] 3.2.1 ⭐ Username availability accuracy (Property 1)
+  - Justification: Tests invariant across all possible usernames
+  - Value: Catches edge cases in username validation
+- [ ] 3.2.2 ⭐ Pagination consistency (Property 4)
+  - Justification: Tests invariant across all page sizes and offsets
+  - Value: Catches off-by-one errors and boundary conditions
+- [ ] 3.2.3 ⭐ Rate limit config round-trip (Property 6)
+  - Justification: Tests invariant across all valid config values
+  - Value: Catches serialization/deserialization bugs
+- [ ] 3.2.4 ⭐ Audit log completeness (Property 17)
+  - Justification: Tests invariant across all operations
+  - Value: Critical for security compliance
 
-**Note**: Start with ⭐ priority properties. Non-priority properties can be implemented as simple unit tests if PBT overhead is not justified.
+**Properties to Implement as Unit Tests** (PBT overhead not justified):
+- [ ] 3.2.5 User creation idempotency (Property 2) → Unit test with 2-3 examples
+- [ ] 3.2.6 Device deletion token invalidation (Property 3) → Integration test
+- [ ] 3.2.7 Sorting stability (Property 5) → Unit test with specific examples
+- [ ] 3.2.8 Shadow-ban status consistency (Property 8) → Unit test
+- [ ] 3.2.9 Password reset login (Property 14) → Integration test
+- [ ] 3.2.10 Admin status setting (Property 15) → Unit test
+- [ ] 3.2.11 User deactivation state (Property 18) → Unit test
+
+**Properties to Skip** (Already covered by other tests):
+- ~~Property 7: Rate limit deletion~~ → Covered by unit tests
+- ~~Property 9-13: Lookup/list operations~~ → Covered by integration tests
+- ~~Property 16: Media deletion~~ → Covered by integration tests
+- ~~Property 19-20: Idempotency/format~~ → Covered by unit tests
+
+**Decision Criteria for PBT**:
+- Use PBT when: Testing mathematical properties, invariants across infinite input space, complex state machines
+- Use unit tests when: Testing specific scenarios, edge cases, error conditions
+- Use integration tests when: Testing multi-component interactions
+
+**Total PBT Count**: 4 critical properties (down from 20)
 
 ### 3.3 Integration Tests
 
-**Focus**: Test multi-component interactions and end-to-end workflows, not individual functions
+**Focus**: Test multi-component interactions, NOT individual functions
 
-- [ ] 3.3.1 Test complete user lifecycle (create, modify, deactivate)
-- [ ] 3.3.2 Test device management flow
-- [ ] 3.3.3 Test rate limit configuration flow
-- [ ] 3.3.4 Test media management flow
-- [ ] 3.3.5 Test shadow-ban operations
-- [ ] 3.3.6 Test permission validation
-- [ ] 3.3.7 Test audit logging
-- [ ] 3.3.8 Test database operations with PostgreSQL
+**API Integration Tests** (Backend):
+- [ ] 3.3.1 Complete user lifecycle flow
+  - Create user → Verify in DB → Modify user → Verify changes → Deactivate → Verify state
+  - Tests: Repository + Handler + Database interaction
+- [ ] 3.3.2 Device deletion invalidates tokens
+  - Create device → Get token → Delete device → Verify token invalid
+  - Tests: DeviceRepository + SessionRepository + Auth middleware
+- [ ] 3.3.3 Password reset enables login
+  - Reset password → Attempt login with new password → Verify success
+  - Tests: UserRepository + Auth service integration
+- [ ] 3.3.4 Permission validation across operations
+  - Non-admin attempts admin operation → Verify 403
+  - Admin performs operation → Verify success
+  - Tests: Auth middleware + All handlers
+- [ ] 3.3.5 Audit logging for all operations
+  - Perform operation → Verify audit log entry created
+  - Tests: All handlers + Audit logger integration
 
-**Note**: Integration tests should verify that components work together correctly. Avoid duplicating unit test scenarios.
+**Database Integration Tests**:
+- [ ] 3.3.6 Transaction rollback on error
+  - Start transaction → Cause error → Verify rollback
+  - Tests: Repository error handling + Database transactions
+- [ ] 3.3.7 Concurrent operations consistency
+  - Multiple concurrent user creations → Verify no duplicates
+  - Tests: Repository + Database locking
 
-### 3.4 Manual Testing
+**Frontend Integration Tests** (Component + API):
+- [ ] 3.3.8 User creation form flow
+  - Fill form → Check username availability → Submit → Verify API call → Verify UI update
+  - Tests: UserForm + ApiClient + State management
+- [ ] 3.3.9 User list search and filter
+  - Enter search → Apply filters → Verify API call → Verify results displayed
+  - Tests: UsersPage + ApiClient + Pagination
 
-- [ ] 3.4.1 UI component testing across browsers
-- [ ] 3.4.2 Responsive layout testing
-- [ ] 3.4.3 Accessibility testing (keyboard navigation, screen reader)
-- [ ] 3.4.4 User experience testing
-- [ ] 3.4.5 Performance testing with large datasets
-- [ ] 3.4.6 Performance comparison with Synapse Admin API
+**What NOT to test here**:
+- ❌ Individual repository methods (unit tests)
+- ❌ Individual handler methods (unit tests)
+- ❌ UI component rendering (unit tests)
+- ❌ Simple CRUD operations (covered by E2E tests)
+
+### 3.4 E2E Tests (Automated)
+
+**Required for Web Projects**: Use Playwright/Cypress for real user workflows
+
+**Critical User Journeys**:
+- [ ] 3.4.1 Admin creates new user
+  - Navigate to users page → Click "Create User" → Fill form → Check username availability → Generate password → Submit → Verify user appears in list
+  - Validates: Requirements 1, 2, 3, 19
+- [ ] 3.4.2 Admin manages user devices
+  - Navigate to user detail → Click Devices tab → View device list → Delete device → Confirm → Verify device removed
+  - Validates: Requirements 8
+- [ ] 3.4.3 Admin resets user password
+  - Navigate to user detail → Click Security tab → Click "Reset Password" → Enter new password → Submit → Verify success message
+  - Validates: Requirements 6
+- [ ] 3.4.4 Admin configures rate limits
+  - Navigate to user detail → Click Rate Limit tab → Set limits → Save → Verify saved → Reset limits → Verify cleared
+  - Validates: Requirements 11
+- [ ] 3.4.5 Admin searches and filters users
+  - Navigate to users page → Enter search term → Apply admin filter → Apply deactivated filter → Sort by name → Verify results
+  - Validates: Requirements 19
+
+**E2E Test Requirements**:
+- ✅ Must use real browser (Playwright/Cypress)
+- ✅ Must simulate real user actions (no API shortcuts)
+- ✅ Must verify visual feedback (loading states, error messages)
+- ✅ Must verify URL changes and navigation
+- ✅ Must check for console errors
+- ❌ DO NOT bypass UI with direct API calls
+- ❌ DO NOT skip visual verification
+
+### 3.5 Manual Testing
+
+**Focus**: Things that can't be automated
+
+- [ ] 3.5.1 Cross-browser compatibility (Chrome, Firefox, Safari, Edge)
+- [ ] 3.5.2 Responsive layout on different screen sizes
+- [ ] 3.5.3 Accessibility with screen readers (NVDA, JAWS, VoiceOver)
+- [ ] 3.5.4 Keyboard navigation completeness
+- [ ] 3.5.5 User experience and visual polish
+- [ ] 3.5.6 Performance with 10,000+ users
+- [ ] 3.5.7 Performance comparison with Synapse Admin API (target: 2x faster)
 
 ## Phase 4: Documentation
 
@@ -301,8 +406,10 @@ This task list tracks the implementation of the user-management feature for the 
 - ✅ DO test security-critical functionality (authentication, authorization, validation)
 - ✅ DO ensure each test provides unique value
 
-**Coverage Philosophy**:
-- Target: ≥70% coverage with high-value tests
+**Test Quality Philosophy**:
 - Quality > Quantity: 20 meaningful tests > 100 redundant tests
-- If coverage is low, ask "what critical behavior is untested?" not "how can I add more tests?"
-- Review tests regularly and remove low-value duplicates
+- Coverage is a metric for review, NOT a goal
+- When reviewing coverage, ask: "What critical behavior is untested?" not "How can I add more tests?"
+- Regularly review and remove low-value tests
+- High coverage with meaningless tests = false confidence
+- Low coverage with high-value tests = real confidence
