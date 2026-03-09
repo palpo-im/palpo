@@ -49,7 +49,7 @@ async fn validate_and_add_event_id(
     //     Entry::Occupied(mut e) => *e.get_mut() = (Instant::now(), e.get().1 + 1),
     // };
 
-    if let Some((time, tries)) = crate::BAD_EVENT_RATE_LIMITER.read().unwrap().get(&event_id) {
+    if let Some((time, tries)) = crate::BAD_EVENT_RATE_LIMITER.read().unwrap_or_else(|e| e.into_inner()).get(&event_id) {
         // Exponential backoff
         let mut min_elapsed_duration = Duration::from_secs(30) * (*tries) * (*tries);
         if min_elapsed_duration > Duration::from_secs(60 * 60 * 24) {

@@ -335,16 +335,17 @@ async fn get_srv_destination(delegated_hostname: String) -> (FedDest, Option<Ins
             .lookup_ip(hostname_override.hostname())
             .await
         {
-            crate::TLS_NAME_OVERRIDE.write().unwrap().insert(
-                delegated_hostname.clone(),
-                (override_ip.iter().collect(), force_port.unwrap_or(8448)),
-            );
+            if let Ok(mut guard) = crate::TLS_NAME_OVERRIDE.write() {
+                guard.insert(
+                    delegated_hostname.clone(),
+                    (override_ip.iter().collect(), force_port.unwrap_or(8448)),
+                );
+            }
         } else {
             // Removing in case there was previously a SRV record
-            crate::TLS_NAME_OVERRIDE
-                .write()
-                .unwrap()
-                .remove(&delegated_hostname);
+            if let Ok(mut guard) = crate::TLS_NAME_OVERRIDE.write() {
+                guard.remove(&delegated_hostname);
+            }
             warn!("Using SRV record, but could not resolve to IP");
         }
 
@@ -358,10 +359,9 @@ async fn get_srv_destination(delegated_hostname: String) -> (FedDest, Option<Ins
         }
     } else {
         // Removing in case there was previously a SRV record
-        crate::TLS_NAME_OVERRIDE
-            .write()
-            .unwrap()
-            .remove(&delegated_hostname);
+        if let Ok(mut guard) = crate::TLS_NAME_OVERRIDE.write() {
+            guard.remove(&delegated_hostname);
+        }
         debug!("No SRV records found");
         (add_port_to_hostname(&delegated_hostname), None)
     }
