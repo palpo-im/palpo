@@ -713,6 +713,18 @@ pub fn get_members(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
         .map_err(Into::into)
 }
 
+/// Returns a limited number of members in the room.
+/// Useful for hero calculation where only a few members are needed.
+#[tracing::instrument(level = "debug")]
+pub fn get_members_limit(room_id: &RoomId, limit: i64) -> AppResult<Vec<OwnedUserId>> {
+    room_users::table
+        .filter(room_users::room_id.eq(room_id))
+        .select(room_users::user_id)
+        .limit(limit)
+        .load::<OwnedUserId>(&mut connect()?)
+        .map_err(Into::into)
+}
+
 pub fn keys_changed_users(
     room_id: &RoomId,
     since_sn: i64,
