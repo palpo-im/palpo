@@ -1154,7 +1154,7 @@ fn default_request_timeout() -> u64 {
 }
 
 fn default_max_upload_size() -> u32 {
-    20 * 1024 * 1024 // Default to 20 MB
+    100 * 1024 * 1024 // Default to 100 MB
 }
 
 fn default_max_concurrent_requests() -> u16 {
