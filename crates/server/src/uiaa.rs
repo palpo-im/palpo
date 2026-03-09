@@ -77,7 +77,7 @@ pub fn update_session(
         diesel::delete(
             user_uiaa_datas::table
                 .filter(user_uiaa_datas::user_id.eq(user_id))
-                .filter(user_uiaa_datas::device_id.eq(user_id))
+                .filter(user_uiaa_datas::device_id.eq(device_id))
                 .filter(user_uiaa_datas::session.eq(session)),
         )
         .execute(&mut connect()?)?;

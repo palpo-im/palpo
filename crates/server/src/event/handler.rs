@@ -52,13 +52,21 @@ pub(crate) async fn process_incoming_pdu(
             return Ok(());
         }
         if event.is_rejected || event.soft_failed {
-            diesel::delete(&event).execute(&mut connect()?).ok();
-            diesel::delete(event_points::table.filter(event_points::event_id.eq(event_id)))
-                .execute(&mut connect()?)
-                .ok();
-            diesel::delete(event_datas::table.filter(event_datas::event_id.eq(event_id)))
-                .execute(&mut connect()?)
-                .ok();
+            if let Err(e) = diesel::delete(&event).execute(&mut connect()?) {
+                warn!("failed to delete rejected/soft-failed event {}: {}", event_id, e);
+            }
+            if let Err(e) =
+                diesel::delete(event_points::table.filter(event_points::event_id.eq(event_id)))
+                    .execute(&mut connect()?)
+            {
+                warn!("failed to delete event_points for {}: {}", event_id, e);
+            }
+            if let Err(e) =
+                diesel::delete(event_datas::table.filter(event_datas::event_id.eq(event_id)))
+                    .execute(&mut connect()?)
+            {
+                warn!("failed to delete event_datas for {}: {}", event_id, e);
+            }
         }
     }
 
@@ -759,7 +767,13 @@ pub async fn auth_check(
         ));
     };
 
-    if !state_at_incoming_event.is_empty() {
+    if state_at_incoming_event.is_empty() {
+        warn!("state_at_incoming_event is empty, cannot skip auth check");
+        return Err(AppError::internal(
+            "cannot auth check event with empty state at event",
+        ));
+    }
+    {
         debug!("performing auth check");
         // 11. Check the auth of the event passes based on the state of the event
         event_auth::auth_check(
