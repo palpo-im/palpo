@@ -12,6 +12,11 @@ __*
 /deploy/docker/data
 .claude/
 .kiro/
+.DS_Store
 
 examples/with-*/data/
 examples/with-*/space/
+.gitnexus
+AGENTS.md
+CLAUDE.md
+tarpaulin-report.html
