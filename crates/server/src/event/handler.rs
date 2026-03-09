@@ -767,13 +767,14 @@ pub async fn auth_check(
         ));
     };
 
-    if state_at_incoming_event.is_empty() {
-        warn!("state_at_incoming_event is empty, cannot skip auth check");
-        return Err(AppError::internal(
-            "cannot auth check event with empty state at event",
-        ));
-    }
-    {
+    // TODO: should check we need to do auth check at all based on the event type and state at event, if not then we can skip fetching auth events and just do auth check with empty state/events which should pass and be much faster
+    //  if state_at_incoming_event.is_empty() {
+    //     warn!("state_at_incoming_event is empty, cannot skip auth check");
+    //     return Err(AppError::internal(
+    //         "cannot auth check event with empty state at event",
+    //     ));
+    // }
+     if !state_at_incoming_event.is_empty() {
         debug!("performing auth check");
         // 11. Check the auth of the event passes based on the state of the event
         event_auth::auth_check(
