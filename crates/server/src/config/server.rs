@@ -171,6 +171,13 @@ pub struct ServerConfig {
     #[serde(default = "default_ip_lookup_strategy")]
     pub ip_lookup_strategy: u8,
 
+    /// Allowed CORS origins. If empty, all origins are allowed.
+    /// Example: ["https://example.com", "https://app.example.com"]
+    ///
+    /// default: []
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+
     /// Max request size for file uploads in bytes. Defaults to 20MB.
     ///
     /// default: 20971520
@@ -1147,7 +1154,7 @@ fn default_request_timeout() -> u64 {
 }
 
 fn default_max_upload_size() -> u32 {
-    100 * 1024 * 1024 // Default to 20 MB
+    100 * 1024 * 1024 // Default to 100 MB
 }
 
 fn default_max_concurrent_requests() -> u16 {

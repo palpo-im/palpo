@@ -18,8 +18,12 @@ COPY --from=builder /work/target/release/palpo /var/palpo/palpo
 
 RUN apt-get update && apt-get install -y debian-keyring \
     debian-archive-keyring apt-transport-https ca-certificates \
-    libpq-dev &&\
+    curl libpq-dev &&\
     mkdir -p /var/palpo/media /var/palpo/certs /var/palpo/acme
+
+# Create non-root user
+RUN groupadd -r palpo && useradd -r -g palpo palpo && \
+    chown -R palpo:palpo /var/palpo
 
 ENV PALPO_CONFIG=/var/palpo/palpo.toml
 ENV RUST_LOG="palpo=warn,palpo_core=error,salvo=error"
@@ -27,4 +31,9 @@ ENV LOG_FORMAT=json
 
 EXPOSE 8008 8448
 
-CMD /var/palpo/palpo
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8008/_matrix/client/versions || exit 1
+
+USER palpo
+
+CMD ["/var/palpo/palpo"]

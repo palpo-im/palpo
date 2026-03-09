@@ -53,7 +53,22 @@ async fn access_control(
     ctrl: &mut FlowCtrl,
 ) {
     let headers = res.headers_mut();
-    headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    let origin = req
+        .headers()
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("*");
+    let allowed_origins = &crate::config::get().allowed_origins;
+    let allow_origin = if allowed_origins.is_empty() || allowed_origins.iter().any(|o| o == origin) {
+        origin.to_owned()
+    } else {
+        // If origin is not in the allowed list, don't set credentials
+        "*".to_owned()
+    };
+    headers.insert(
+        "Access-Control-Allow-Origin",
+        allow_origin.parse().unwrap_or_else(|_| "*".parse().unwrap()),
+    );
     headers.insert(
         "Access-Control-Allow-Methods",
         "GET,POST,PUT,DELETE,PATCH,OPTIONS".parse().unwrap(),
@@ -68,10 +83,17 @@ async fn access_control(
             .parse()
             .unwrap(),
     );
-    headers.insert("Access-Control-Allow-Credentials", "true".parse().unwrap());
+    // Only set Allow-Credentials when origin is not wildcard
+    if allow_origin != "*" {
+        headers.insert("Access-Control-Allow-Credentials", "true".parse().unwrap());
+    }
     headers.insert(
         "Content-Security-Policy",
         "frame-ancestors 'self'".parse().unwrap(),
+    );
+    headers.insert(
+        "X-Content-Type-Options",
+        "nosniff".parse().unwrap(),
     );
     ctrl.call_next(req, depot, res).await;
     // headers.insert("Cross-Origin-Embedder-Policy", "require-corp".parse().unwrap());
