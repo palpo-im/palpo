@@ -887,7 +887,12 @@ where
     }
 
     let mut sorted_event_ids = order_map.keys().map(|k| k.to_owned()).collect::<Vec<_>>();
-    sorted_event_ids.sort_by_key(|event_id| order_map.get(event_id).unwrap().to_owned());
+    sorted_event_ids.sort_by_key(|event_id| {
+        order_map
+            .get(event_id)
+            .cloned()
+            .unwrap_or_else(|| (0, None, event_id.to_owned()))
+    });
 
     Ok(sorted_event_ids)
 }
@@ -1002,10 +1007,9 @@ async fn add_event_and_auth_chain_to_graph<Pdu, Fetch, Fut>(
                 }
 
                 // Add the auth event ID to the list of incoming edges.
-                graph
-                    .get_mut(event_id)
-                    .unwrap()
-                    .insert(auth_event_id.to_owned());
+                if let Some(edges) = graph.get_mut(event_id) {
+                    edges.insert(auth_event_id.to_owned());
+                }
             }
         }
     }

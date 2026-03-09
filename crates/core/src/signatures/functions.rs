@@ -585,10 +585,10 @@ where
 
     sign_json(entity_id, key_pair, &mut redacted)?;
 
-    object.insert(
-        "signatures".into(),
-        mem::take(redacted.get_mut("signatures").unwrap()),
-    );
+    let signatures = redacted
+        .get_mut("signatures")
+        .ok_or_else(|| JsonError::not_of_type("signatures", JsonType::Object))?;
+    object.insert("signatures".into(), mem::take(signatures));
 
     Ok(())
 }
