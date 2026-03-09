@@ -2,6 +2,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
+
 use crate::core::Seqnum;
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::client::sync_events::v5::*;
@@ -11,12 +14,15 @@ use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_conte
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{AnyRawAccountDataEvent, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
+use crate::core::UnixMillis;
+use crate::data::connect;
+use crate::data::schema::*;
 use crate::event::{BatchToken, ignored_filter};
 use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
@@ -25,9 +31,79 @@ struct SlidingSyncCache {
     required_state: BTreeSet<Seqnum>,
 }
 
+/// In-memory cache backed by database for cross-instance persistence.
+/// The local cache provides fast access; the database ensures failover.
 static CONNECTIONS: LazyLock<
     Mutex<BTreeMap<(OwnedUserId, OwnedDeviceId, Option<String>), Arc<Mutex<SlidingSyncCache>>>>,
 > = LazyLock::new(Default::default);
+
+/// Load a connection cache from the database if not present in memory.
+fn load_or_create_connection(
+    user_id: &OwnedUserId,
+    device_id: &OwnedDeviceId,
+    conn_id: &Option<String>,
+) -> Arc<Mutex<SlidingSyncCache>> {
+    let mut cache = CONNECTIONS.lock().unwrap();
+    let key = (user_id.clone(), device_id.clone(), conn_id.clone());
+    if let Some(entry) = cache.get(&key) {
+        return Arc::clone(entry);
+    }
+
+    // Try to load from database
+    let conn_id_str = conn_id.as_deref().unwrap_or("");
+    let db_cache = connect()
+        .ok()
+        .and_then(|mut conn| {
+            sliding_sync_connections::table
+                .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+                .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+                .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
+                .select(sliding_sync_connections::cache_data)
+                .first::<serde_json::Value>(&mut conn)
+                .ok()
+        })
+        .and_then(|json| serde_json::from_value::<SlidingSyncCache>(json).ok())
+        .unwrap_or_default();
+
+    let entry = Arc::new(Mutex::new(db_cache));
+    cache.insert(key, Arc::clone(&entry));
+    entry
+}
+
+/// Persist the connection cache to the database for cross-instance access.
+fn persist_connection(
+    user_id: &OwnedUserId,
+    device_id: &OwnedDeviceId,
+    conn_id: &Option<String>,
+    cached: &SlidingSyncCache,
+) {
+    let conn_id_str = conn_id.as_deref().unwrap_or("");
+    let Ok(cache_data) = serde_json::to_value(cached) else {
+        return;
+    };
+    let now = UnixMillis::now();
+    if let Ok(mut conn) = connect() {
+        let _ = diesel::insert_into(sliding_sync_connections::table)
+            .values((
+                sliding_sync_connections::user_id.eq(user_id.as_str()),
+                sliding_sync_connections::device_id.eq(device_id.as_str()),
+                sliding_sync_connections::conn_id.eq(conn_id_str),
+                sliding_sync_connections::cache_data.eq(&cache_data),
+                sliding_sync_connections::updated_at.eq(now),
+            ))
+            .on_conflict((
+                sliding_sync_connections::user_id,
+                sliding_sync_connections::device_id,
+                sliding_sync_connections::conn_id,
+            ))
+            .do_update()
+            .set((
+                sliding_sync_connections::cache_data.eq(&cache_data),
+                sliding_sync_connections::updated_at.eq(now),
+            ))
+            .execute(&mut conn);
+    }
+}
 
 #[tracing::instrument(skip_all)]
 pub async fn sync_events(
@@ -726,7 +802,19 @@ pub fn forget_sync_request_connection(
     CONNECTIONS
         .lock()
         .unwrap()
-        .remove(&(user_id, device_id, conn_id));
+        .remove(&(user_id.clone(), device_id.clone(), conn_id.clone()));
+
+    // Also remove from database
+    let conn_id_str = conn_id.as_deref().unwrap_or("");
+    if let Ok(mut db_conn) = connect() {
+        let _ = diesel::delete(
+            sliding_sync_connections::table
+                .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+                .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+                .filter(sliding_sync_connections::conn_id.eq(conn_id_str)),
+        )
+        .execute(&mut db_conn);
+    }
 }
 /// load params from cache if body doesn't contain it, as long as it's allowed
 /// in some cases we may need to allow an empty list as an actual value
@@ -745,14 +833,8 @@ pub fn update_sync_request_with_cache(
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
 ) -> BTreeMap<String, BTreeMap<OwnedRoomId, i64>> {
-    let mut cache = CONNECTIONS.lock().unwrap();
-    let cached = Arc::clone(
-        cache
-            .entry((user_id, device_id, req_body.conn_id.clone()))
-            .or_default(),
-    );
+    let cached = load_or_create_connection(&user_id, &device_id, &req_body.conn_id);
     let cached = &mut cached.lock().unwrap();
-    drop(cache);
 
     for (list_id, list) in &mut req_body.lists {
         if let Some(cached_list) = cached.lists.get(list_id) {
@@ -840,7 +922,10 @@ pub fn update_sync_request_with_cache(
     );
 
     cached.extensions = req_body.extensions.clone();
-    cached.known_rooms.clone()
+    let known = cached.known_rooms.clone();
+    // Persist to DB for cross-instance availability
+    persist_connection(&user_id, &device_id, &req_body.conn_id, cached);
+    known
 }
 
 pub fn update_sync_subscriptions(
@@ -849,12 +934,10 @@ pub fn update_sync_subscriptions(
     conn_id: Option<String>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
 ) {
-    let mut cache = CONNECTIONS.lock().unwrap();
-    let cached = Arc::clone(cache.entry((user_id, device_id, conn_id)).or_default());
-    let cached = &mut cached.lock().unwrap();
-    drop(cache);
-
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let cached = &mut entry.lock().unwrap();
     cached.subscriptions = subscriptions;
+    persist_connection(&user_id, &device_id, &conn_id, cached);
 }
 
 pub fn update_sync_known_rooms(
@@ -865,10 +948,8 @@ pub fn update_sync_known_rooms(
     new_cached_rooms: BTreeSet<OwnedRoomId>,
     since_sn: i64,
 ) {
-    let mut cache = CONNECTIONS.lock().unwrap();
-    let cached = Arc::clone(cache.entry((user_id, device_id, conn_id)).or_default());
-    let cached = &mut cached.lock().unwrap();
-    drop(cache);
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let cached = &mut entry.lock().unwrap();
 
     for (roomid, last_since) in cached
         .known_rooms
@@ -884,6 +965,7 @@ pub fn update_sync_known_rooms(
     for room_id in new_cached_rooms {
         list.insert(room_id, since_sn);
     }
+    persist_connection(&user_id, &device_id, &conn_id, cached);
 }
 
 pub fn mark_required_state_sent(
@@ -892,11 +974,10 @@ pub fn mark_required_state_sent(
     conn_id: Option<String>,
     event_sn: Seqnum,
 ) {
-    let mut cache = CONNECTIONS.lock().unwrap();
-    let cached = Arc::clone(cache.entry((user_id, device_id, conn_id)).or_default());
-    let cached = &mut cached.lock().unwrap();
-    drop(cache);
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let cached = &mut entry.lock().unwrap();
     cached.required_state.insert(event_sn);
+    persist_connection(&user_id, &device_id, &conn_id, cached);
 }
 pub fn is_required_state_send(
     user_id: OwnedUserId,
@@ -904,9 +985,7 @@ pub fn is_required_state_send(
     conn_id: Option<String>,
     event_sn: Seqnum,
 ) -> bool {
-    let cache = CONNECTIONS.lock().unwrap();
-    let Some(cached) = cache.get(&(user_id, device_id, conn_id)) else {
-        return false;
-    };
-    cached.lock().unwrap().required_state.contains(&event_sn)
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let cached = entry.lock().unwrap();
+    cached.required_state.contains(&event_sn)
 }

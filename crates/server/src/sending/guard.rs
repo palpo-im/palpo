@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 
+use diesel::prelude::*;
+
 use super::{
     EduBuf, EduVec, MPSC_RECEIVER, MPSC_SENDER, OutgoingKind, SELECT_EDU_LIMIT,
     SELECT_PRESENCE_LIMIT, SELECT_RECEIPT_LIMIT, SendingEventType, TransactionStatus,
@@ -14,7 +16,9 @@ use crate::core::events::receipt::{ReceiptContent, ReceiptData, ReceiptMap, Rece
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
 use crate::core::presence::{PresenceContent, PresenceUpdate};
-use crate::core::{Seqnum, device_id};
+use crate::core::{Seqnum, UnixMillis, device_id};
+use crate::data::connect;
+use crate::data::schema::*;
 use crate::exts::*;
 use crate::room::state;
 use crate::{AppResult, data, room};
@@ -88,7 +92,7 @@ async fn process() -> AppResult<()> {
                     }
                     Err((outgoing_kind, event)) => {
                         error!("failed to send event: {event:?}  outgoing_kind:{outgoing_kind:?}");
-                        current_transaction_status.entry(outgoing_kind).and_modify(|e| *e = match e {
+                        current_transaction_status.entry(outgoing_kind.clone()).and_modify(|e| *e = match e {
                             TransactionStatus::Running => {
                                 TransactionStatus::Failed(1, Instant::now())
                             },
@@ -100,6 +104,10 @@ async fn process() -> AppResult<()> {
                                 return
                             },
                         });
+                        // Persist retry state to DB for cross-instance coordination
+                        if let Some(TransactionStatus::Failed(tries, _)) = current_transaction_status.get(&outgoing_kind) {
+                            let _ = persist_retry_state(&outgoing_kind, *tries);
+                        }
                     }
                 };
             },
@@ -174,6 +182,54 @@ fn select_events(
     }
 
     Ok(Some(events))
+}
+
+/// Persist retry state to the database so other instances can respect backoff.
+fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()> {
+    let now = UnixMillis::now().get() as i64;
+    match outgoing_kind {
+        OutgoingKind::Normal(server_name) => {
+            diesel::update(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq("normal"))
+                    .filter(outgoing_requests::server_id.eq(server_name))
+                    .filter(outgoing_requests::state.eq("active")),
+            )
+            .set((
+                outgoing_requests::retry_count.eq(tries as i32),
+                outgoing_requests::last_failed_at.eq(Some(now)),
+            ))
+            .execute(&mut connect()?)?;
+        }
+        OutgoingKind::Appservice(id) => {
+            diesel::update(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq("appservice"))
+                    .filter(outgoing_requests::appservice_id.eq(id))
+                    .filter(outgoing_requests::state.eq("active")),
+            )
+            .set((
+                outgoing_requests::retry_count.eq(tries as i32),
+                outgoing_requests::last_failed_at.eq(Some(now)),
+            ))
+            .execute(&mut connect()?)?;
+        }
+        OutgoingKind::Push(user_id, pushkey) => {
+            diesel::update(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq("push"))
+                    .filter(outgoing_requests::user_id.eq(user_id))
+                    .filter(outgoing_requests::pushkey.eq(pushkey))
+                    .filter(outgoing_requests::state.eq("active")),
+            )
+            .set((
+                outgoing_requests::retry_count.eq(tries as i32),
+                outgoing_requests::last_failed_at.eq(Some(now)),
+            ))
+            .execute(&mut connect()?)?;
+        }
+    }
+    Ok(())
 }
 
 /// Look for device changes
