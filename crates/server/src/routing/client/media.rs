@@ -175,7 +175,7 @@ pub async fn create_content(
     let payload = req
         .payload_with_max_size(config::get().max_upload_size as usize)
         .await
-        .unwrap();
+        .map_err(|e| MatrixError::too_large(format!("Failed to read upload payload: {e}")))?;
     // let checksum = utils::hash::hash_data_sha2_256(payload)?;
     // let media_id = checksum.to_base32_crockford();
 
@@ -246,7 +246,7 @@ pub async fn upload_content(
     let payload = req
         .payload_with_max_size(conf.max_upload_size as usize)
         .await
-        .unwrap();
+        .map_err(|e| MatrixError::too_large(format!("Failed to read upload payload: {e}")))?;
 
     // let mxc = format!("mxc://{}/{}", crate::config::get().server_name, args.media_id);
 
