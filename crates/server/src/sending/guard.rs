@@ -45,10 +45,10 @@ async fn process() -> AppResult<()> {
             .entry(outgoing_kind.clone())
             .or_default();
 
-        if entry.len() > 30 {
-            warn!(
-                "Dropping some current events: {:?} {:?} {:?}",
-                id, outgoing_kind, event
+        if entry.len() > 512 {
+            error!(
+                "Too many pending events ({}) for {:?}, dropping oldest event {:?}",
+                entry.len(), outgoing_kind, id
             );
             super::delete_request(id)?;
             continue;

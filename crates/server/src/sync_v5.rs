@@ -407,10 +407,11 @@ async fn process_rooms(
             })
             .collect::<Vec<_>>();
 
-        // Heroes
-        let heroes: Vec<_> = room::get_members(room_id)?
+        // Heroes - limit query to 6 members (5 heroes + sender) to avoid loading all members
+        let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
             .into_iter()
             .filter(|member| *member != sender_id)
+            .take(5)
             .filter_map(|user_id| {
                 room::get_member(room_id, &user_id, None)
                     .ok()
@@ -420,7 +421,6 @@ async fn process_rooms(
                         avatar: member.avatar_url,
                     })
             })
-            .take(5)
             .collect();
 
         let name = match heroes.len().cmp(&(1_usize)) {
