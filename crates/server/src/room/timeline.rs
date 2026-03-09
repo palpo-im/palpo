@@ -1,6 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{LazyLock, Mutex};
+use std::collections::{BTreeSet, HashSet};
 
 use diesel::prelude::*;
 use serde::Deserialize;
@@ -30,10 +29,8 @@ pub mod stream;
 pub mod topolo;
 pub use backfill::*;
 
-pub static LAST_TIMELINE_COUNT_CACHE: LazyLock<Mutex<HashMap<OwnedRoomId, i64>>> =
-    LazyLock::new(Default::default);
-// pub static PDU_CACHE: LazyLock<Mutex<LruCache<OwnedRoomId, Arc<PduEvent>>>> =
-// LazyLock::new(Default::default);
+// In-memory caches removed for cluster support.
+// All timeline counts are queried from the database directly.
 
 #[tracing::instrument]
 pub fn first_pdu_in_room(room_id: &RoomId) -> AppResult<Option<PduEvent>> {

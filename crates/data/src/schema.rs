@@ -513,6 +513,8 @@ diesel::table! {
         edu_json -> Nullable<Bytea>,
         state -> Text,
         data -> Nullable<Bytea>,
+        retry_count -> Int4,
+        last_failed_at -> Nullable<Int8>,
     }
 }
 
@@ -1047,6 +1049,7 @@ diesel::table! {
         device_id -> Text,
         session -> Text,
         uiaa_info -> Json,
+        request_body -> Nullable<Jsonb>,
     }
 }
 
@@ -1075,6 +1078,31 @@ diesel::table! {
         locked_by -> Nullable<Text>,
         created_at -> Int8,
         suspended_at -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    room_typings (room_id, user_id) {
+        room_id -> Text,
+        user_id -> Text,
+        timeout_at -> Int8,
+        occur_sn -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    sliding_sync_connections (user_id, device_id, conn_id) {
+        user_id -> Text,
+        device_id -> Text,
+        conn_id -> Text,
+        cache_data -> Jsonb,
+        updated_at -> Int8,
     }
 }
 
@@ -1124,8 +1152,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     room_state_fields,
     room_state_frames,
     room_tags,
+    room_typings,
     room_users,
     rooms,
+    sliding_sync_connections,
     server_signing_keys,
     stats_monthly_active_users,
     stats_room_currents,

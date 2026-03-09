@@ -20,6 +20,8 @@ pub struct DbOutgoingRequest {
     pub edu_json: Option<Vec<u8>>,
     pub state: String,
     pub data: Option<Vec<u8>>,
+    pub retry_count: i32,
+    pub last_failed_at: Option<i64>,
 }
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = outgoing_requests)]

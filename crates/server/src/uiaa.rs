@@ -1,10 +1,5 @@
-use std::collections::BTreeMap;
-use std::sync::LazyLock;
-use std::time::{Duration, Instant};
-
 use diesel::prelude::*;
 
-use super::LazyRwLock;
 use crate::core::client::uiaa::{
     AuthData, AuthError, AuthType, Password, UiaaInfo, UserIdentifier,
 };
@@ -14,19 +9,6 @@ use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppResult, MatrixError, SESSION_ID_LENGTH, data, utils};
 
-/// Default UIAA session timeout: 15 minutes
-const UIAA_SESSION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-
-/// UIAA request with timestamp for timeout tracking
-struct UiaaRequest {
-    request: CanonicalJsonValue,
-    created_at: Instant,
-}
-
-static UIAA_REQUESTS: LazyRwLock<
-    BTreeMap<(OwnedUserId, OwnedDeviceId, String), UiaaRequest>,
-> = LazyLock::new(Default::default);
-
 /// Creates a new Uiaa session. Make sure the session token is unique.
 pub fn create_session(
     user_id: &UserId,
@@ -34,20 +16,12 @@ pub fn create_session(
     uiaa_info: &UiaaInfo,
     json_body: CanonicalJsonValue,
 ) -> AppResult<()> {
-    set_uiaa_request(
-        user_id,
-        device_id,
-        uiaa_info.session.as_ref().expect("session should be set"), /* TODO: better session
-                                                                     * error handling (why is it
-                                                                     * optional in palpo?) */
-        json_body,
-    );
-    update_session(
-        user_id,
-        device_id,
-        uiaa_info.session.as_ref().expect("session should be set"),
-        Some(uiaa_info),
-    )
+    let session = uiaa_info.session.as_ref().expect("session should be set");
+    // First create/update the DB row with uiaa_info
+    update_session(user_id, device_id, session, Some(uiaa_info))?;
+    // Then store the request body (now the row exists)
+    set_uiaa_request(user_id, device_id, session, json_body)?;
+    Ok(())
 }
 
 pub fn update_session(
@@ -181,48 +155,39 @@ pub fn try_auth(
     Ok((true, uiaa_info))
 }
 
+/// Store the UIAA request body in the database for cross-instance access.
 pub fn set_uiaa_request(
     user_id: &UserId,
     device_id: &DeviceId,
     session: &str,
     request: CanonicalJsonValue,
-) {
-    // Clean up expired sessions before adding new one
-    cleanup_expired_sessions();
-
-    UIAA_REQUESTS
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(
-            (user_id.to_owned(), device_id.to_owned(), session.to_owned()),
-            UiaaRequest {
-                request,
-                created_at: Instant::now(),
-            },
-        );
+) -> AppResult<()> {
+    let request_body = serde_json::to_value(&request)?;
+    diesel::update(
+        user_uiaa_datas::table
+            .filter(user_uiaa_datas::user_id.eq(user_id))
+            .filter(user_uiaa_datas::device_id.eq(device_id))
+            .filter(user_uiaa_datas::session.eq(session)),
+    )
+    .set(user_uiaa_datas::request_body.eq(Some(&request_body)))
+    .execute(&mut connect()?)?;
+    Ok(())
 }
 
+/// Get the UIAA request body from the database.
 pub fn get_uiaa_request(
     user_id: &UserId,
     device_id: &DeviceId,
     session: &str,
 ) -> Option<CanonicalJsonValue> {
-    let key = (user_id.to_owned(), device_id.to_owned(), session.to_owned());
-    let requests = UIAA_REQUESTS.read().unwrap_or_else(|e| e.into_inner());
+    let request_body = user_uiaa_datas::table
+        .filter(user_uiaa_datas::user_id.eq(user_id))
+        .filter(user_uiaa_datas::device_id.eq(device_id))
+        .filter(user_uiaa_datas::session.eq(session))
+        .select(user_uiaa_datas::request_body)
+        .first::<Option<JsonValue>>(&mut connect().ok()?)
+        .ok()
+        .flatten()?;
 
-    requests.get(&key).and_then(|uiaa_request| {
-        // Check if the session has expired
-        if uiaa_request.created_at.elapsed() > UIAA_SESSION_TIMEOUT {
-            // Session expired, will be cleaned up later
-            None
-        } else {
-            Some(uiaa_request.request.clone())
-        }
-    })
-}
-
-/// Remove expired UIAA sessions from memory
-fn cleanup_expired_sessions() {
-    let mut requests = UIAA_REQUESTS.write().unwrap_or_else(|e| e.into_inner());
-    requests.retain(|_, uiaa_request| uiaa_request.created_at.elapsed() <= UIAA_SESSION_TIMEOUT);
+    serde_json::from_value(request_body).ok()
 }

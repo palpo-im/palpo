@@ -239,7 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         service
     };
-    let _ = crate::data::user::unset_all_presences();
+    // In a clustered deployment, do NOT clear all presence on startup.
+    // Other instances may still be serving users who are online.
+    // Stale presence will be cleaned up by the presence timeout logic.
+    // let _ = crate::data::user::unset_all_presences();
 
     salvo::http::request::set_global_secure_max_size(8 * 1024 * 1024);
     let conf = crate::config::get();
