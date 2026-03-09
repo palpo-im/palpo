@@ -64,7 +64,8 @@ impl DieselPool {
     }
 
     fn is_healthy(&self) -> bool {
-        self.state().connections > 0
+        let state = self.state();
+        state.connections > 0 && state.idle_connections > 0
     }
 }
 

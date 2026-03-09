@@ -120,10 +120,9 @@ pub(crate) async fn process_incoming_pdu(
 
     // Done with prev events, now handling the incoming event
     let start_time = Instant::now();
-    crate::ROOM_ID_FEDERATION_HANDLE_TIME
-        .write()
-        .unwrap()
-        .insert(room_id.to_owned(), (event_id.to_owned(), start_time));
+    if let Ok(mut guard) = crate::ROOM_ID_FEDERATION_HANDLE_TIME.write() {
+        guard.insert(room_id.to_owned(), (event_id.to_owned(), start_time));
+    }
     if let Err(e) = process_to_timeline_pdu(incoming_pdu, val, Some(remote_server)).await {
         error!("failed to process incoming pdu to timeline {}", e);
     } else {
@@ -132,10 +131,9 @@ pub(crate) async fn process_incoming_pdu(
         update_backward_extremities(&pdu)?;
     }
     drop(event_guard);
-    crate::ROOM_ID_FEDERATION_HANDLE_TIME
-        .write()
-        .unwrap()
-        .remove(&room_id.to_owned());
+    if let Ok(mut guard) = crate::ROOM_ID_FEDERATION_HANDLE_TIME.write() {
+        guard.remove(&room_id.to_owned());
+    }
     Ok(())
 }
 

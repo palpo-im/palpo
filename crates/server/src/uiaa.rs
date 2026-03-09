@@ -192,7 +192,7 @@ pub fn set_uiaa_request(
 
     UIAA_REQUESTS
         .write()
-        .expect("write UIAA_REQUESTS failed")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(
             (user_id.to_owned(), device_id.to_owned(), session.to_owned()),
             UiaaRequest {
@@ -208,7 +208,7 @@ pub fn get_uiaa_request(
     session: &str,
 ) -> Option<CanonicalJsonValue> {
     let key = (user_id.to_owned(), device_id.to_owned(), session.to_owned());
-    let requests = UIAA_REQUESTS.read().expect("read UIAA_REQUESTS failed");
+    let requests = UIAA_REQUESTS.read().unwrap_or_else(|e| e.into_inner());
 
     requests.get(&key).and_then(|uiaa_request| {
         // Check if the session has expired
@@ -223,6 +223,6 @@ pub fn get_uiaa_request(
 
 /// Remove expired UIAA sessions from memory
 fn cleanup_expired_sessions() {
-    let mut requests = UIAA_REQUESTS.write().expect("write UIAA_REQUESTS failed");
+    let mut requests = UIAA_REQUESTS.write().unwrap_or_else(|e| e.into_inner());
     requests.retain(|_, uiaa_request| uiaa_request.created_at.elapsed() <= UIAA_SESSION_TIMEOUT);
 }

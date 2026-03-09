@@ -64,7 +64,7 @@ pub fn connect() -> Result<PgPooledConnection, PoolError> {
     match DIESEL_POOL.get().expect("diesel pool should set").get() {
         Ok(conn) => Ok(conn),
         Err(e) => {
-            println!("db connect error {e}");
+            tracing::error!("db connect error: {e}");
             Err(e)
         }
     }

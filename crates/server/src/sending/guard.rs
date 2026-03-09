@@ -212,8 +212,10 @@ fn select_edus_device_changes(
             });
 
             let mut buf = EduBuf::new();
-            serde_json::to_writer(&mut buf, &edu)
-                .expect("failed to serialize device list update to JSON");
+            if let Err(e) = serde_json::to_writer(&mut buf, &edu) {
+                tracing::error!("failed to serialize device list update to JSON: {e}");
+                continue;
+            }
 
             events.push(buf);
             if events_len.fetch_add(1, Ordering::Relaxed) >= SELECT_EDU_LIMIT - 1 {
@@ -254,8 +256,10 @@ fn select_edus_receipts(
     let receipt_content = Edu::Receipt(ReceiptContent::new(receipts));
 
     let mut buf = EduBuf::new();
-    serde_json::to_writer(&mut buf, &receipt_content)
-        .expect("Failed to serialize Receipt EDU to JSON vec");
+    if let Err(e) = serde_json::to_writer(&mut buf, &receipt_content) {
+        tracing::error!("failed to serialize Receipt EDU to JSON: {e}");
+        return Ok(None);
+    }
 
     Ok(Some(buf))
 }
@@ -365,8 +369,10 @@ fn select_edus_presence(
     });
 
     let mut buf = EduBuf::new();
-    serde_json::to_writer(&mut buf, &presence_content)
-        .expect("failed to serialize Presence EDU to JSON");
+    if let Err(e) = serde_json::to_writer(&mut buf, &presence_content) {
+        tracing::error!("failed to serialize Presence EDU to JSON: {e}");
+        return Ok(None);
+    }
 
     Ok(Some(buf))
 }

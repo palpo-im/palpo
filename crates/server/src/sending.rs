@@ -157,9 +157,11 @@ pub fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> AppRes
     let outgoing_kind = OutgoingKind::Push(user.to_owned(), pushkey);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())])?;
-    sender()
-        .send((outgoing_kind, event, keys.into_iter().next().unwrap()))
-        .unwrap();
+    if let Some(key) = keys.into_iter().next() {
+        sender()
+            .send((outgoing_kind, event, key))
+            .map_err(|e| AppError::internal(format!("failed to send push pdu: {e}")))?;
+    }
 
     Ok(())
 }
@@ -238,7 +240,7 @@ pub fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
     edu: &Edu,
 ) -> AppResult<()> {
     let mut serialized = EduBuf::new();
-    serde_json::to_writer(&mut serialized, &edu).expect("serialized edu");
+    serde_json::to_writer(&mut serialized, &edu).map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
 
     let requests = servers
         .into_iter()
@@ -266,7 +268,7 @@ pub fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
 #[tracing::instrument(skip(server, edu), level = "debug")]
 pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
     let mut serialized = EduBuf::new();
-    serde_json::to_writer(&mut serialized, &edu).expect("serialized edu");
+    serde_json::to_writer(&mut serialized, &edu).map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
@@ -281,14 +283,16 @@ pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
 #[tracing::instrument(skip(server, edu))]
 pub fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<()> {
     let mut serialized = EduBuf::new();
-    serde_json::to_writer(&mut serialized, &edu).expect("serialized edu");
+    serde_json::to_writer(&mut serialized, &edu).map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized);
     let keys = queue_requests(&[(&outgoing_kind, event.clone())])?;
-    sender()
-        .send((outgoing_kind, event, keys.into_iter().next().unwrap()))
-        .unwrap();
+    if let Some(key) = keys.into_iter().next() {
+        sender()
+            .send((outgoing_kind, event, key))
+            .map_err(|e| AppError::internal(format!("failed to send reliable edu: {e}")))?;
+    }
 
     Ok(())
 }
@@ -298,9 +302,11 @@ pub fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> AppResult
     let outgoing_kind = OutgoingKind::Appservice(appservice_id);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())])?;
-    sender()
-        .send((outgoing_kind, event, keys.into_iter().next().unwrap()))
-        .unwrap();
+    if let Some(key) = keys.into_iter().next() {
+        sender()
+            .send((outgoing_kind, event, key))
+            .map_err(|e| AppError::internal(format!("failed to send pdu to appservice: {e}")))?;
+    }
 
     Ok(())
 }

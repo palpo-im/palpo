@@ -52,10 +52,17 @@ pub async fn auth_by_signatures(
 
 async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
     let token = aa.require_access_token()?;
-    let access_token = user_access_tokens::table
+    let access_token = match user_access_tokens::table
         .filter(user_access_tokens::token.eq(token))
         .first::<DbAccessToken>(&mut connect()?)
-        .ok();
+    {
+        Ok(token) => Some(token),
+        Err(diesel::result::Error::NotFound) => None,
+        Err(e) => {
+            tracing::error!("failed to query access token: {e}");
+            return Err(MatrixError::unknown("Internal server error during authentication").into());
+        }
+    };
     if let Some(access_token) = access_token {
         let user = users::table
             .find(&access_token.user_id)
@@ -244,11 +251,19 @@ async fn auth_by_signatures_inner(req: &mut Request, depot: &mut Depot) -> AppRe
         ),
     ]);
 
-    let json_body = req
-        .payload()
-        .await
-        .ok()
-        .and_then(|payload| serde_json::from_slice::<CanonicalJsonValue>(payload).ok());
+    let json_body = match req.payload().await {
+        Ok(payload) => match serde_json::from_slice::<CanonicalJsonValue>(payload) {
+            Ok(json) => Some(json),
+            Err(e) => {
+                debug!("failed to parse federation request body as JSON: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            debug!("failed to read federation request payload: {e}");
+            None
+        }
+    };
 
     if let Some(json_body) = &json_body {
         authorization.insert("content".to_owned(), json_body.clone());
