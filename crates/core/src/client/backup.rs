@@ -1,12 +1,14 @@
 /// Endpoints for server-side key backups.
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::OwnedRoomId;
 use crate::identifiers::CrossSigningOrDeviceSignatures;
-use crate::serde::{Base64, RawJson, RawJsonValue};
+use crate::serde::{Base64, JsonObject, RawJson, RawJsonValue};
 
 /// A wrapper around a mapping of session IDs to key data.
 #[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
@@ -28,16 +30,81 @@ impl RoomKeyBackup {
 pub enum BackupAlgorithm {
     /// `m.megolm_backup.v1.curve25519-aes-sha2` backup algorithm.
     #[serde(rename = "m.megolm_backup.v1.curve25519-aes-sha2")]
-    MegolmBackupV1Curve25519AesSha2 {
-        /// The curve25519 public key used to encrypt the backups, encoded in
-        /// unpadded base64.
-        #[salvo(schema(value_type = String))]
-        public_key: Base64,
+    MegolmBackupV1Curve25519AesSha2(MegolmBackupV1Curve25519AesSha2AuthData),
 
-        /// Signatures of the auth_data as Signed JSON.
-        #[salvo(schema(value_type = Object, additional_properties = true))]
-        signatures: CrossSigningOrDeviceSignatures,
-    },
+    #[doc(hidden)]
+    #[serde(untagged)]
+    _Custom(CustomBackupAlgorithm),
+}
+
+impl BackupAlgorithm {
+    /// Returns a reference to the `algorithm` string.
+    pub fn algorithm(&self) -> &str {
+        match self {
+            Self::MegolmBackupV1Curve25519AesSha2(_) => "m.megolm_backup.v1.curve25519-aes-sha2",
+            Self::_Custom(c) => &c.algorithm,
+        }
+    }
+
+    /// Returns the data of the algorithm.
+    ///
+    /// Prefer to use the public variants of `BackupAlgorithm` where possible; this method is
+    /// meant to be used for custom algorithms only.
+    pub fn auth_data(&self) -> Cow<'_, JsonObject> {
+        fn serialize<T: Serialize>(obj: &T) -> JsonObject {
+            match serde_json::to_value(obj).expect("backup data serialization to succeed") {
+                JsonValue::Object(obj) => obj,
+                _ => panic!("all backup data types must serialize to objects"),
+            }
+        }
+
+        match self {
+            Self::MegolmBackupV1Curve25519AesSha2(d) => Cow::Owned(serialize(d)),
+            Self::_Custom(c) => Cow::Borrowed(&c.auth_data),
+        }
+    }
+}
+
+impl From<MegolmBackupV1Curve25519AesSha2AuthData> for BackupAlgorithm {
+    fn from(value: MegolmBackupV1Curve25519AesSha2AuthData) -> Self {
+        Self::MegolmBackupV1Curve25519AesSha2(value)
+    }
+}
+
+/// The data for the `m.megolm_backup.v1.curve25519-aes-sha2` backup algorithm.
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MegolmBackupV1Curve25519AesSha2AuthData {
+    /// The curve25519 public key used to encrypt the backups, encoded in
+    /// unpadded base64.
+    #[salvo(schema(value_type = String))]
+    pub public_key: Base64,
+
+    /// Signatures of the auth_data as Signed JSON.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub signatures: CrossSigningOrDeviceSignatures,
+}
+
+impl MegolmBackupV1Curve25519AesSha2AuthData {
+    /// Construct a new `MegolmBackupV1Curve25519AesSha2AuthData` using the given public key.
+    pub fn new(public_key: Base64) -> Self {
+        Self {
+            public_key,
+            signatures: Default::default(),
+        }
+    }
+}
+
+/// The payload for a custom backup algorithm.
+#[doc(hidden)]
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct CustomBackupAlgorithm {
+    /// The backup algorithm.
+    pub algorithm: String,
+
+    /// The data of the algorithm.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub auth_data: JsonObject,
 }
 
 /// Information about the backup key.
