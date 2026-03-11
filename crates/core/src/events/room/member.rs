@@ -252,15 +252,144 @@ impl RedactContent for RoomMemberEventContent {
 /// The possibly redacted form of [`RoomMemberEventContent`].
 ///
 /// This type is used when it's not obvious whether the content is redacted or
-/// not.
-pub type PossiblyRedactedRoomMemberEventContent = RoomMemberEventContent;
+/// not. All fields except `membership` are optional since they may have been
+/// removed during redaction.
+#[derive(ToSchema, Serialize, Deserialize, Clone, Debug)]
+#[non_exhaustive]
+pub struct PossiblyRedactedRoomMemberEventContent {
+    /// The avatar URL for this user, if any.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "crate::serde::empty_string_as_none"
+    )]
+    pub avatar_url: Option<OwnedMxcUri>,
 
-impl PossiblyRedactedStateEventContent for RoomMemberEventContent {
+    /// The display name for this user, if any.
+    #[serde(rename = "displayname", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    /// Flag indicating whether the room containing this event was created with
+    /// the intention of being a direct chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_direct: Option<bool>,
+
+    /// The membership state of this user.
+    pub membership: MembershipState,
+
+    /// If this member event is the successor to a third party invitation, this
+    /// field will contain information about that invitation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub third_party_invite: Option<PossiblyRedactedThirdPartyInvite>,
+
+    /// The [BlurHash](https://blurha.sh) for the avatar pointed to by `avatar_url`.
+    #[serde(
+        rename = "xyz.amorgan.blurhash",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub blurhash: Option<String>,
+
+    /// User-supplied text for why their membership has changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+
+    /// Arbitrarily chosen `UserId` (MxID) of a local user who can send an invite.
+    #[serde(rename = "join_authorised_via_users_server")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_authorized_via_users_server: Option<OwnedUserId>,
+}
+
+impl PossiblyRedactedRoomMemberEventContent {
+    /// Creates a new `PossiblyRedactedRoomMemberEventContent` with the given membership state.
+    pub fn new(membership: MembershipState) -> Self {
+        Self {
+            membership,
+            avatar_url: None,
+            display_name: None,
+            is_direct: None,
+            third_party_invite: None,
+            blurhash: None,
+            reason: None,
+            join_authorized_via_users_server: None,
+        }
+    }
+
+    /// Obtain the details about this event that are required to calculate a
+    /// membership change.
+    pub fn details(&self) -> MembershipDetails<'_> {
+        MembershipDetails {
+            avatar_url: self.avatar_url.as_deref(),
+            display_name: self.display_name.as_deref(),
+            membership: &self.membership,
+        }
+    }
+}
+
+impl RedactContent for PossiblyRedactedRoomMemberEventContent {
+    type Redacted = RedactedRoomMemberEventContent;
+
+    fn redact(self, rules: &RedactionRules) -> RedactedRoomMemberEventContent {
+        RedactedRoomMemberEventContent {
+            membership: self.membership,
+            third_party_invite: self.third_party_invite.and_then(|i| {
+                rules
+                    .keep_room_member_third_party_invite_signed
+                    .then_some(RedactedThirdPartyInvite { signed: i.signed })
+            }),
+            join_authorized_via_users_server: self
+                .join_authorized_via_users_server
+                .filter(|_| rules.keep_room_member_join_authorised_via_users_server),
+        }
+    }
+}
+
+impl From<RoomMemberEventContent> for PossiblyRedactedRoomMemberEventContent {
+    fn from(c: RoomMemberEventContent) -> Self {
+        Self {
+            avatar_url: c.avatar_url,
+            display_name: c.display_name,
+            is_direct: c.is_direct,
+            membership: c.membership,
+            third_party_invite: c.third_party_invite.map(|i| PossiblyRedactedThirdPartyInvite {
+                display_name: Some(i.display_name),
+                signed: i.signed,
+            }),
+            blurhash: c.blurhash,
+            reason: c.reason,
+            join_authorized_via_users_server: c.join_authorized_via_users_server,
+        }
+    }
+}
+
+impl From<RedactedRoomMemberEventContent> for PossiblyRedactedRoomMemberEventContent {
+    fn from(c: RedactedRoomMemberEventContent) -> Self {
+        Self {
+            avatar_url: None,
+            display_name: None,
+            is_direct: None,
+            membership: c.membership,
+            third_party_invite: c.third_party_invite.map(|i| PossiblyRedactedThirdPartyInvite {
+                display_name: None,
+                signed: i.signed,
+            }),
+            blurhash: None,
+            reason: None,
+            join_authorized_via_users_server: c.join_authorized_via_users_server,
+        }
+    }
+}
+
+impl PossiblyRedactedStateEventContent for PossiblyRedactedRoomMemberEventContent {
     type StateKey = OwnedUserId;
 
     fn event_type(&self) -> StateEventType {
         StateEventType::RoomMember
     }
+}
+
+impl StaticEventContent for PossiblyRedactedRoomMemberEventContent {
+    const TYPE: &'static str = RoomMemberEventContent::TYPE;
+    type IsPrefix = <RoomMemberEventContent as StaticEventContent>::IsPrefix;
 }
 
 /// A member event that has been redacted.
@@ -440,6 +569,23 @@ pub struct RedactedThirdPartyInvite {
     pub signed: SignedContent,
 }
 
+/// Possibly redacted information about a third party invitation.
+///
+/// The `display_name` field is `None` when the content has been redacted.
+#[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
+pub struct PossiblyRedactedThirdPartyInvite {
+    /// A name which can be displayed to represent the user instead of their
+    /// third party identifier.
+    ///
+    /// `None` if the event has been redacted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    /// A block of content which has been signed, which servers can use to
+    /// verify the event.
+    pub signed: SignedContent,
+}
+
 /// A block of content which has been signed, which servers can use to verify a
 /// third party invitation.
 #[derive(ToSchema, Serialize, Deserialize, Clone, Debug)]
@@ -482,7 +628,7 @@ impl OriginalRoomMemberEvent {
     /// Get a reference to the `prev_content` in unsigned, if it exists.
     ///
     /// Shorthand for `event.unsigned.prev_content.as_ref()`
-    pub fn prev_content(&self) -> Option<&RoomMemberEventContent> {
+    pub fn prev_content(&self) -> Option<&PossiblyRedactedRoomMemberEventContent> {
         self.unsigned.prev_content.as_ref()
     }
 
@@ -545,7 +691,7 @@ impl OriginalSyncRoomMemberEvent {
     /// Get a reference to the `prev_content` in unsigned, if it exists.
     ///
     /// Shorthand for `event.unsigned.prev_content.as_ref()`
-    pub fn prev_content(&self) -> Option<&RoomMemberEventContent> {
+    pub fn prev_content(&self) -> Option<&PossiblyRedactedRoomMemberEventContent> {
         self.unsigned.prev_content.as_ref()
     }
 
