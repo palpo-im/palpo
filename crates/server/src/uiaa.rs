@@ -113,7 +113,7 @@ pub fn try_auth(
                 uiaa_info.completed.push(AuthType::RegistrationToken);
             } else {
                 uiaa_info.auth_error =
-                    Some(AuthError::forbidden("Invalid registration token.", None));
+                    Some(AuthError::forbidden("Invalid registration token."));
                 return Ok((false, uiaa_info));
             }
         }
