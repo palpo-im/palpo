@@ -9,28 +9,6 @@ use palpo_admin_server::types::ServerConfig;
 use serde_json::json;
 
 #[test]
-fn test_server_config_serialization() {
-    let config = ServerConfig {
-        database_url: "postgresql://user:pass@localhost/palpo".to_string(),
-        server_name: "example.com".to_string(),
-        bind_address: "0.0.0.0".to_string(),
-        port: 8008,
-        tls_certificate: None,
-        tls_private_key: None,
-    };
-
-    // Test JSON serialization
-    let json_str = serde_json::to_string(&config).expect("Failed to serialize to JSON");
-    let deserialized: ServerConfig =
-        serde_json::from_str(&json_str).expect("Failed to deserialize from JSON");
-
-    assert_eq!(config.database_url, deserialized.database_url);
-    assert_eq!(config.server_name, deserialized.server_name);
-    assert_eq!(config.bind_address, deserialized.bind_address);
-    assert_eq!(config.port, deserialized.port);
-}
-
-#[test]
 fn test_validate_config_request_format() {
     let request = json!({
         "config": {

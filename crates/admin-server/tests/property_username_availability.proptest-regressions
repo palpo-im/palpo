@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7e25b0a39418619a2791614d35b340b252289faf11230365ac6269a48fd963c0 # shrinks to len = 1
+cc a8834c3f85f949e75a7c3bd08a383737bc0b50e31a76789aa490998b3b3f118b # shrinks to username = "0_A"
+cc c3424c499f871749b6b4e2b79e4e00a72c3e952a7edef15ed1c02fe0b05aae4c # shrinks to username = "aAAAAAAA__BW27CYBx_77w8wM7QKq14FRR3WeKpyhGGOOlZ3_6wjkA1T__L_6TRAM77I6U64PhM21_KQzlf0O_Rl5IGs0S_H7Lq_9t5n3_Wjsrj6Hf9f3_1gUS45SmtD_e_D_BIEJg_5Z_hh9942E_175_Fy_FO1mAduB_94RI_g6_OjntI2oby__G0kB7u5_jAl9v9qa112CS_GlX_H__0YFur_O4_5H_d6W9_K3QLx_kH1eBx_samK2cxlsFSH_j_2_Fj4_U9S5zi3vTZiC6K_aGDnWd1_F_vSyYY90rm__4kFJ0_YN"
+cc 147d35edeb5d1f674ab55250b037dcd104abdb93ace2e63c6314ee5e34ad3909 # shrinks to username = "a"
+cc 5da59bbd75113dafa2921ad4d80f8070d51ae0b715a22153d502af5b4aa98440 # shrinks to first = "a", rest = ""
+cc 021436d2b8d4e5b58a12d333fb7cc04f192c2dfdc089027ab3328494ce078308 # shrinks to username = "aaa"
