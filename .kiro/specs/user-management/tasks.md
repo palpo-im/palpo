@@ -220,18 +220,18 @@ This task list tracks the implementation of the user-management feature for the 
   - Tests: All handlers + Audit logger integration
 
 **Database Integration Tests**:
-- [ ] 3.3.6 Transaction rollback on error
+- [x] 3.3.6 Transaction rollback on error
   - Start transaction → Cause error → Verify rollback
   - Tests: Repository error handling + Database transactions
-- [ ] 3.3.7 Concurrent operations consistency
+- [x] 3.3.7 Concurrent operations consistency
   - Multiple concurrent user creations → Verify no duplicates
   - Tests: Repository + Database locking
 
 **Frontend Integration Tests** (Component + API):
-- [ ] 3.3.8 User creation form flow
+- [x] 3.3.8 User creation form flow
   - Fill form → Check username availability → Submit → Verify API call → Verify UI update
   - Tests: UserForm + ApiClient + State management
-- [ ] 3.3.9 User list search and filter
+- [x] 3.3.9 User list search and filter
   - Enter search → Apply filters → Verify API call → Verify results displayed
   - Tests: UsersPage + ApiClient + Pagination
 
