@@ -11,7 +11,6 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue as RawJsonValue;
 
 use crate::PrivOwnedStr;
-use crate::error::AuthenticateError;
 pub use crate::error::ErrorKind;
 use crate::serde::StringEnum;
 
@@ -197,8 +196,8 @@ impl AuthError {
             message: message.into(),
         }
     }
-    pub fn forbidden(message: impl Into<String>, authenticate: Option<AuthenticateError>) -> Self {
-        Self::new(ErrorKind::Forbidden { authenticate }, message)
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Forbidden, message)
     }
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Unauthorized, message)
