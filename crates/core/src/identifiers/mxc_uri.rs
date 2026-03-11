@@ -36,7 +36,7 @@ impl MxcUri {
     /// else it returns the error.
     pub fn parts(&self) -> Result<Mxc<'_>> {
         self.extract_slash_idx().map(|idx| Mxc::<'_> {
-            server_name: ServerName::from_borrowed(&self.as_str()[6..idx.get() as usize]),
+            server_name: ServerName::from_borrowed_unchecked(&self.as_str()[6..idx.get() as usize]),
             media_id: &self.as_str()[idx.get() as usize + 1..],
         })
     }
