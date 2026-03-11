@@ -1,0 +1,895 @@
+#![allow(clippy::exhaustive_structs)]
+
+use std::fmt;
+
+use serde::{
+    de::{Error, Unexpected},
+    ser::{Impossible, Serialize},
+};
+
+use super::{
+    CanonicalJsonError, CanonicalJsonObject, CanonicalJsonValue, to_canonical_value,
+    CANONICALJSON_MAX_INT, CANONICALJSON_MIN_INT,
+};
+
+/// Type alias for serialization results.
+type Result<T> = std::result::Result<T, CanonicalJsonError>;
+
+/// A [`serde::Serializer`] whose output is a [`CanonicalJsonValue`].
+///
+/// This behaves similarly to [`serde_json::value::Serializer`], except for the following
+/// restrictions which return errors:
+///
+/// - Integers must be in the canonical JSON range.
+/// - Floats and bytes are not serializable.
+/// - Booleans and integers cannot be used as keys for an object.
+/// - The same key cannot be serialized twice in an object.
+pub struct Serializer;
+
+impl serde::Serializer for Serializer {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    type SerializeSeq = SerializeArray;
+    type SerializeTuple = SerializeArray;
+    type SerializeTupleStruct = SerializeArray;
+    type SerializeTupleVariant = SerializeNamedValue<SerializeArray>;
+    type SerializeMap = SerializeObject;
+    type SerializeStruct = SerializeStruct;
+    type SerializeStructVariant = SerializeNamedValue<SerializeObject>;
+
+    #[inline]
+    fn serialize_bool(self, value: bool) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Bool(value))
+    }
+
+    #[inline]
+    fn serialize_i8(self, value: i8) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Integer(value.into()))
+    }
+
+    #[inline]
+    fn serialize_i16(self, value: i16) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Integer(value.into()))
+    }
+
+    #[inline]
+    fn serialize_i32(self, value: i32) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Integer(value.into()))
+    }
+
+    fn serialize_i64(self, value: i64) -> Result<Self::Ok> {
+        if value < CANONICALJSON_MIN_INT || value > CANONICALJSON_MAX_INT {
+            return Err(CanonicalJsonError::IntegerOutOfRange);
+        }
+        Ok(CanonicalJsonValue::Integer(value))
+    }
+
+    fn serialize_i128(self, value: i128) -> Result<Self::Ok> {
+        let value: i64 = value
+            .try_into()
+            .map_err(|_| CanonicalJsonError::IntegerOutOfRange)?;
+        self.serialize_i64(value)
+    }
+
+    #[inline]
+    fn serialize_u8(self, value: u8) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Integer(value.into()))
+    }
+
+    #[inline]
+    fn serialize_u16(self, value: u16) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Integer(value.into()))
+    }
+
+    #[inline]
+    fn serialize_u32(self, value: u32) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Integer(value.into()))
+    }
+
+    #[inline]
+    fn serialize_u64(self, value: u64) -> Result<Self::Ok> {
+        if value > CANONICALJSON_MAX_INT as u64 {
+            return Err(CanonicalJsonError::IntegerOutOfRange);
+        }
+        Ok(CanonicalJsonValue::Integer(value as i64))
+    }
+
+    fn serialize_u128(self, value: u128) -> Result<Self::Ok> {
+        let value: i64 = value
+            .try_into()
+            .map_err(|_| CanonicalJsonError::IntegerOutOfRange)?;
+        self.serialize_i64(value)
+    }
+
+    #[inline]
+    fn serialize_f32(self, _float: f32) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidType("float".to_owned()))
+    }
+
+    #[inline]
+    fn serialize_f64(self, _float: f64) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidType("float".to_owned()))
+    }
+
+    #[inline]
+    fn serialize_char(self, value: char) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::String(value.into()))
+    }
+
+    #[inline]
+    fn serialize_str(self, value: &str) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::String(value.to_owned()))
+    }
+
+    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidType("bytes".to_owned()))
+    }
+
+    #[inline]
+    fn serialize_unit(self) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Null)
+    }
+
+    #[inline]
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok> {
+        self.serialize_unit()
+    }
+
+    #[inline]
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+    ) -> Result<Self::Ok> {
+        self.serialize_str(variant)
+    }
+
+    #[inline]
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<Self::Ok>
+    where
+        T: ?Sized + Serialize,
+    {
+        let mut values = CanonicalJsonObject::new();
+        values.insert(variant.to_owned(), to_canonical_value(value)?);
+        Ok(CanonicalJsonValue::Object(values))
+    }
+
+    #[inline]
+    fn serialize_none(self) -> Result<Self::Ok> {
+        self.serialize_unit()
+    }
+
+    #[inline]
+    fn serialize_some<T>(self, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Ok(SerializeArray(Vec::with_capacity(len.unwrap_or_default())))
+    }
+
+    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
+        self.serialize_seq(Some(len))
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        self.serialize_seq(Some(len))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Ok(SerializeNamedValue {
+            name: String::from(variant),
+            serialize: self.serialize_tuple(len)?,
+        })
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Ok(SerializeObject {
+            object: CanonicalJsonObject::new(),
+            next_key: None,
+        })
+    }
+
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+        if name == SerializeStruct::RAW_VALUE_FIELD_NAME {
+            Ok(SerializeStruct::RawValue(None))
+        } else {
+            self.serialize_map(Some(len)).map(SerializeStruct::Object)
+        }
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Ok(SerializeNamedValue {
+            name: String::from(variant),
+            serialize: self.serialize_map(Some(len))?,
+        })
+    }
+
+    fn collect_str<T>(self, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + fmt::Display,
+    {
+        Ok(CanonicalJsonValue::String(value.to_string()))
+    }
+}
+
+/// Serializer to [`CanonicalJsonValue::Array`].
+pub struct SerializeArray(Vec<CanonicalJsonValue>);
+
+impl serde::ser::SerializeSeq for SerializeArray {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.0.push(to_canonical_value(value)?);
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Array(self.0))
+    }
+}
+
+impl serde::ser::SerializeTuple for SerializeArray {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        serde::ser::SerializeSeq::serialize_element(self, value)
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        serde::ser::SerializeSeq::end(self)
+    }
+}
+
+impl serde::ser::SerializeTupleStruct for SerializeArray {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        serde::ser::SerializeSeq::serialize_element(self, value)
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        serde::ser::SerializeSeq::end(self)
+    }
+}
+
+/// Serializer to [`CanonicalJsonValue::Object`].
+pub struct SerializeObject {
+    object: CanonicalJsonObject,
+    next_key: Option<String>,
+}
+
+impl serde::ser::SerializeMap for SerializeObject {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_key<T>(&mut self, key: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.next_key = Some(key.serialize(ObjectKeySerializer)?);
+        Ok(())
+    }
+
+    fn serialize_value<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        let key = self
+            .next_key
+            .take()
+            .expect("serialize_value called before serialize_key");
+
+        if self.object.contains_key(&key) {
+            return Err(CanonicalJsonError::DuplicateObjectKey(key));
+        }
+
+        self.object.insert(key, to_canonical_value(value)?);
+
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        Ok(CanonicalJsonValue::Object(self.object))
+    }
+}
+
+impl serde::ser::SerializeStruct for SerializeObject {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        serde::ser::SerializeMap::serialize_entry(self, key, value)
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        serde::ser::SerializeMap::end(self)
+    }
+}
+
+/// Serializer for a [`CanonicalJsonValue`] with a name.
+pub struct SerializeNamedValue<V> {
+    name: String,
+    serialize: V,
+}
+
+impl serde::ser::SerializeTupleVariant for SerializeNamedValue<SerializeArray> {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        serde::ser::SerializeSeq::serialize_element(&mut self.serialize, value)
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        let mut object = CanonicalJsonObject::new();
+        object.insert(self.name, serde::ser::SerializeSeq::end(self.serialize)?);
+        Ok(CanonicalJsonValue::Object(object))
+    }
+}
+
+impl serde::ser::SerializeStructVariant for SerializeNamedValue<SerializeObject> {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        serde::ser::SerializeMap::serialize_entry(&mut self.serialize, key, value)
+    }
+
+    fn end(self) -> Result<Self::Ok> {
+        let mut object = CanonicalJsonObject::new();
+        object.insert(self.name, serde::ser::SerializeMap::end(self.serialize)?);
+        Ok(CanonicalJsonValue::Object(object))
+    }
+}
+
+/// Serializer for the key of a map. Only accepts strings.
+struct ObjectKeySerializer;
+
+impl serde::Serializer for ObjectKeySerializer {
+    type Ok = String;
+    type Error = CanonicalJsonError;
+
+    type SerializeSeq = Impossible<String, CanonicalJsonError>;
+    type SerializeTuple = Impossible<String, CanonicalJsonError>;
+    type SerializeTupleStruct = Impossible<String, CanonicalJsonError>;
+    type SerializeTupleVariant = Impossible<String, CanonicalJsonError>;
+    type SerializeMap = Impossible<String, CanonicalJsonError>;
+    type SerializeStruct = Impossible<String, CanonicalJsonError>;
+    type SerializeStructVariant = Impossible<String, CanonicalJsonError>;
+
+    #[inline]
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+    ) -> Result<Self::Ok> {
+        Ok(variant.to_owned())
+    }
+
+    #[inline]
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+
+    fn serialize_bool(self, _value: bool) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType("bool".to_owned()))
+    }
+
+    fn serialize_i8(self, _value: i8) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_i16(self, _value: i16) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_i32(self, _value: i32) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_i64(self, _value: i64) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_i128(self, _value: i128) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_u8(self, _value: u8) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_u16(self, _value: u16) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_u32(self, _value: u32) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_u64(self, _value: u64) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_u128(self, _value: u128) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "integer".to_owned(),
+        ))
+    }
+
+    fn serialize_f32(self, _value: f32) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidType("float".to_owned()))
+    }
+
+    fn serialize_f64(self, _value: f64) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidType("float".to_owned()))
+    }
+
+    #[inline]
+    fn serialize_char(self, value: char) -> Result<Self::Ok> {
+        Ok(value.into())
+    }
+
+    #[inline]
+    fn serialize_str(self, value: &str) -> Result<Self::Ok> {
+        Ok(value.to_owned())
+    }
+
+    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidType("bytes".to_owned()))
+    }
+
+    fn serialize_unit(self) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType("()".to_owned()))
+    }
+
+    fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(name.to_owned()))
+    }
+
+    fn serialize_newtype_variant<T>(
+        self,
+        name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(CanonicalJsonError::InvalidObjectKeyType(format!(
+            "{name}::{variant}"
+        )))
+    }
+
+    fn serialize_none(self) -> Result<Self::Ok> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "Option".to_owned(),
+        ))
+    }
+
+    fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "Option".to_owned(),
+        ))
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "sequence".to_owned(),
+        ))
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(
+            "tuple".to_owned(),
+        ))
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(name.to_owned()))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(format!(
+            "{name}::{variant}"
+        )))
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Err(CanonicalJsonError::InvalidObjectKeyType("map".to_owned()))
+    }
+
+    fn serialize_struct(self, name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(name.to_owned()))
+    }
+
+    fn serialize_struct_variant(
+        self,
+        name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Err(CanonicalJsonError::InvalidObjectKeyType(format!(
+            "{name}::{variant}"
+        )))
+    }
+
+    fn collect_str<T>(self, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + fmt::Display,
+    {
+        Ok(value.to_string())
+    }
+}
+
+/// Serializer for a struct.
+///
+/// If the struct is a [`serde_json::value::RawValue`], it is deserialized to a
+/// [`CanonicalJsonValue`]. Other structs are serialized as objects.
+pub enum SerializeStruct {
+    /// Serialize a [`serde_json::value::RawValue`].
+    RawValue(Option<CanonicalJsonValue>),
+
+    /// Serialize an object.
+    Object(SerializeObject),
+}
+
+impl SerializeStruct {
+    /// The hardcoded name of the field used by `serde_json` to detect a `RawValue`.
+    const RAW_VALUE_FIELD_NAME: &str = "$serde_json::private::RawValue";
+}
+
+impl serde::ser::SerializeStruct for SerializeStruct {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    fn serialize_field<T>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> std::result::Result<(), Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        match self {
+            Self::RawValue(deserialized) => {
+                *deserialized = Some(value.serialize(RawValueSerializer)?);
+                Ok(())
+            }
+            Self::Object(serialize) => {
+                serde::ser::SerializeMap::serialize_entry(serialize, key, value)
+            }
+        }
+    }
+
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        match self {
+            Self::RawValue(deserialized) => {
+                Ok(deserialized.expect("RawValue should have been deserialized"))
+            }
+            Self::Object(serialize) => serde::ser::SerializeMap::end(serialize),
+        }
+    }
+}
+
+/// A re-serializer for a [`serde_json::value::RawValue`].
+struct RawValueSerializer;
+
+impl serde::ser::Serializer for RawValueSerializer {
+    type Ok = CanonicalJsonValue;
+    type Error = CanonicalJsonError;
+
+    type SerializeSeq = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+    type SerializeTuple = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+    type SerializeTupleStruct = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+    type SerializeTupleVariant = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+    type SerializeMap = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+    type SerializeStruct = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+    type SerializeStructVariant = Impossible<CanonicalJsonValue, CanonicalJsonError>;
+
+    fn serialize_bool(self, v: bool) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Bool(v), &"raw value"),
+        ))
+    }
+
+    fn serialize_i8(self, v: i8) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Signed(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_i16(self, v: i16) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Signed(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_i32(self, v: i32) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Signed(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_i64(self, v: i64) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Signed(v), &"raw value"),
+        ))
+    }
+
+    fn serialize_u8(self, v: u8) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Unsigned(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_u16(self, v: u16) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Unsigned(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_u32(self, v: u32) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Unsigned(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_u64(self, v: u64) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Unsigned(v), &"raw value"),
+        ))
+    }
+
+    fn serialize_f32(self, v: f32) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Float(v.into()), &"raw value"),
+        ))
+    }
+
+    fn serialize_f64(self, v: f64) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Float(v), &"raw value"),
+        ))
+    }
+
+    fn serialize_char(self, v: char) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Char(v), &"raw value"),
+        ))
+    }
+
+    fn serialize_str(self, value: &str) -> Result<CanonicalJsonValue> {
+        serde_json::from_str(value).map_err(CanonicalJsonError::InvalidRawValue)
+    }
+
+    fn serialize_bytes(self, v: &[u8]) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Bytes(v), &"raw value"),
+        ))
+    }
+
+    fn serialize_none(self) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Other("`None`"), &"raw value"),
+        ))
+    }
+
+    fn serialize_some<T>(self, _v: &T) -> Result<CanonicalJsonValue>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Other("`Some(_)`"), &"raw value"),
+        ))
+    }
+
+    fn serialize_unit(self) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Unit, &"raw value"),
+        ))
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Other("unit struct"), &"raw value"),
+        ))
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<CanonicalJsonValue> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::UnitVariant, &"raw value"),
+        ))
+    }
+
+    fn serialize_newtype_struct<T>(
+        self,
+        _name: &'static str,
+        _value: &T,
+    ) -> Result<CanonicalJsonValue>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::NewtypeStruct, &"raw value"),
+        ))
+    }
+
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<CanonicalJsonValue>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::NewtypeVariant, &"raw value"),
+        ))
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Seq, &"raw value"),
+        ))
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Other("tuple"), &"raw value"),
+        ))
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Other("tuple struct"), &"raw value"),
+        ))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::TupleVariant, &"raw value"),
+        ))
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Map, &"raw value"),
+        ))
+    }
+
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::Other("struct"), &"raw value"),
+        ))
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Err(CanonicalJsonError::InvalidRawValue(
+            serde_json::Error::invalid_type(Unexpected::StructVariant, &"raw value"),
+        ))
+    }
+
+    fn collect_str<T>(self, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + fmt::Display,
+    {
+        self.serialize_str(&value.to_string())
+    }
+}
