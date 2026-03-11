@@ -340,17 +340,19 @@ pub async fn append_pdu(
 
         let mut highlight = false;
         let mut notify = false;
+        let mut matched_actions: Vec<Action> = Vec::new();
 
         if let Ok(power_levels) = crate::room::get_power_levels(pdu.room_id()).await {
-            for action in data::user::pusher::get_actions(
+            let actions = data::user::pusher::get_actions(
                 user_id,
                 &rules_for_user,
                 &power_levels,
                 &sync_pdu,
                 &pdu.room_id,
             )
-            .await?
-            {
+            .await?;
+            matched_actions = actions.to_vec();
+            for action in actions {
                 match action {
                     Action::Notify => notify = true,
                     Action::SetTweak(Tweak::Highlight(true)) => {
@@ -368,12 +370,17 @@ pub async fn append_pdu(
             highlights.push(user_id.clone());
         }
 
-        if let Err(e) =
-            push_action::upsert_push_action(&pdu.room_id, &pdu.event_id, user_id, notify, highlight)
-        {
+        if let Err(e) = push_action::upsert_push_action(
+            &pdu.room_id,
+            &pdu.event_id,
+            user_id,
+            &matched_actions,
+            notify,
+            highlight,
+        ) {
             error!("failed to upsert event push action: {}", e);
         }
-        push_action::refresh_notify_summary(&pdu.sender, &pdu.room_id)?;
+        push_action::refresh_notify_summary(user_id, &pdu.room_id)?;
 
         for push_key in data::user::pusher::get_push_keys(user_id)? {
             crate::sending::send_push_pdu(&pdu.event_id, user_id, push_key)?;

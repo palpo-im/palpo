@@ -217,9 +217,71 @@ fn supported_versions() -> JsonResult<VersionsResBody> {
     })
 }
 
+/// #GET /_matrix/client/v3/notifications
+/// Paginate through the list of events that the user has been notified about.
 #[endpoint]
-fn get_notifications(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
-    // TODO: get_notifications
-    let _authed = depot.authed_info()?;
-    empty_ok()
+fn get_notifications(
+    _aa: AuthArgs,
+    from: QueryParam<String, false>,
+    limit: QueryParam<usize, false>,
+    only: QueryParam<String, false>,
+    depot: &mut Depot,
+) -> JsonResult<crate::core::client::push::NotificationsResBody> {
+    use crate::core::client::push::{Notification, NotificationsResBody};
+
+    let authed = depot.authed_info()?;
+
+    let from_id: Option<i64> = from.into_inner().and_then(|s| s.parse().ok());
+    let page_limit = limit.into_inner().unwrap_or(20).min(100) as i64;
+    let only_highlight = only.into_inner().as_deref() == Some("highlight");
+
+    let push_actions = crate::data::room::event::get_push_actions_for_user(
+        authed.user_id(),
+        from_id,
+        page_limit,
+        only_highlight,
+    )?;
+
+    let mut notifications = Vec::with_capacity(push_actions.len());
+    let mut next_token: Option<String> = None;
+
+    for action_row in &push_actions {
+        next_token = Some(action_row.id.to_string());
+
+        // Try to load the event PDU
+        let pdu = match crate::room::timeline::get_pdu(&action_row.event_id) {
+            Ok(pdu) => pdu,
+            Err(_) => continue,
+        };
+
+        // Check if the user has read this event
+        let read = crate::data::room::event::has_user_read_event(
+            authed.user_id(),
+            &action_row.room_id,
+            action_row.event_sn,
+        );
+
+        // Deserialize stored actions
+        let actions: Vec<crate::core::push::Action> =
+            serde_json::from_value(action_row.actions.clone()).unwrap_or_default();
+
+        notifications.push(Notification {
+            actions,
+            event: pdu.to_sync_room_event(),
+            profile_tag: if action_row.profile_tag.is_empty() {
+                None
+            } else {
+                Some(action_row.profile_tag.clone())
+            },
+            read,
+            room_id: action_row.room_id.clone(),
+            ts: pdu.origin_server_ts,
+        });
+    }
+
+    let mut res = NotificationsResBody::new(notifications);
+    if push_actions.len() == page_limit as usize {
+        res.next_token = next_token;
+    }
+    json_ok(res)
 }

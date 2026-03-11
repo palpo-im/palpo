@@ -6,7 +6,7 @@ use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonObject, JsonValue, default_false};
 use crate::core::{MatrixError, Seqnum, UnixMillis};
 use crate::schema::*;
-use crate::{DataResult, connect};
+use crate::{DataError, DataResult, connect};
 
 pub mod event;
 pub mod event_report;
@@ -351,6 +351,16 @@ pub struct NewDbEventPushAction {
     pub highlight: bool,
     pub unread: bool,
     pub thread_id: Option<OwnedEventId>,
+}
+
+pub fn joined_member_count(room_id: &RoomId) -> DataResult<u64> {
+    stats_room_currents::table
+        .find(room_id)
+        .select(stats_room_currents::joined_members)
+        .first::<i64>(&mut connect()?)
+        .optional()?
+        .map(|c| c.max(0) as u64)
+        .ok_or_else(|| DataError::internal("room not found"))
 }
 
 pub fn is_disabled(room_id: &RoomId) -> DataResult<bool> {

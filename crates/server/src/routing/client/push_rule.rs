@@ -121,6 +121,9 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         }
         RuleKind::Content => {
             let PatternedReqBody { actions, pattern } = serde_json::from_slice(payload)?;
+            if pattern.is_empty() {
+                return Err(MatrixError::invalid_param("content rules must have a non-empty pattern").into());
+            }
             NewPushRule::Content(NewPatternedPushRule::new(
                 args.rule_id.clone(),
                 pattern,

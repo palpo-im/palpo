@@ -8,7 +8,9 @@ use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::member::MembershipState;
 use crate::core::events::{AnyStrippedStateEvent, AnySyncStateEvent, GlobalAccountDataEventType};
 use crate::core::identifiers::*;
-use crate::core::push::{AnyPushRuleRef, NewPushRule, NewSimplePushRule};
+use crate::core::push::{
+    AnyPushRuleRef, NewConditionalPushRule, NewPushRule, NewSimplePushRule, PushCondition,
+};
 use crate::core::serde::{JsonValue, RawJson};
 use crate::data::room::{DbEventPushSummary, DbRoomTag, NewDbRoomTag};
 use crate::data::schema::*;
@@ -417,10 +419,12 @@ pub fn copy_room_tags_and_direct_to_room(
     Ok(())
 }
 
-/// Copy all of the push rules from one room to another for a specific user
+/// Copy all of the push rules from one room to another for a specific user.
+/// Handles room rules directly, and for override/underride rules, updates any
+/// conditions that reference the old room ID.
 pub fn copy_push_rules_from_room_to_room(
     user_id: &UserId,
-    _old_room_id: &RoomId,
+    old_room_id: &RoomId,
     new_room_id: &RoomId,
 ) -> AppResult<()> {
     let Ok(mut user_data_content) = crate::data::user::get_data::<PushRulesEventContent>(
@@ -431,29 +435,70 @@ pub fn copy_push_rules_from_room_to_room(
         return Ok(());
     };
 
+    let old_room_str = old_room_id.as_str();
+    let new_room_str = new_room_id.as_str();
+
+    // Helper to update conditions that reference the old room ID
+    let remap_conditions = |conditions: &[PushCondition]| -> Vec<PushCondition> {
+        conditions
+            .iter()
+            .map(|cond| {
+                // Serialize, replace old room ID with new, deserialize
+                let json = serde_json::to_string(cond).unwrap_or_default();
+                if json.contains(old_room_str) {
+                    let updated = json.replace(old_room_str, new_room_str);
+                    serde_json::from_str(&updated).unwrap_or_else(|_| cond.clone())
+                } else {
+                    cond.clone()
+                }
+            })
+            .collect()
+    };
+
     let mut new_rules = vec![];
     for push_rule in user_data_content.global.iter() {
-        if !push_rule.enabled() {
+        if !push_rule.enabled() || push_rule.is_server_default() {
             continue;
         }
 
         match push_rule {
-            // AnyPushRuleRef::Override(rule) => {
-            // },
-            // AnyPushRuleRef::Content(rule) => {
-            // },
-            // AnyPushRuleRef::PostContent(rule) => {
-            // },
-            // AnyPushRuleRef::Sender(rule) => {
-            // },
-            // AnyPushRuleRef::Underride(rule) => {
-            // },
+            AnyPushRuleRef::Override(rule) => {
+                // Copy override rules that reference the old room in conditions
+                let has_room_ref = rule
+                    .conditions
+                    .iter()
+                    .any(|c| serde_json::to_string(c).unwrap_or_default().contains(old_room_str));
+                if has_room_ref {
+                    let new_conditions = remap_conditions(&rule.conditions);
+                    new_rules.push(NewPushRule::Override(NewConditionalPushRule::new(
+                        rule.rule_id.replace(old_room_str, new_room_str),
+                        new_conditions,
+                        rule.actions.clone(),
+                    )));
+                }
+            }
             AnyPushRuleRef::Room(rule) => {
-                let new_rule = NewPushRule::Room(NewSimplePushRule::new(
-                    new_room_id.to_owned(),
-                    rule.actions.clone(),
-                ));
-                new_rules.push(new_rule);
+                // Copy room-specific rules to the new room
+                if rule.rule_id.as_str() == old_room_str {
+                    new_rules.push(NewPushRule::Room(NewSimplePushRule::new(
+                        new_room_id.to_owned(),
+                        rule.actions.clone(),
+                    )));
+                }
+            }
+            AnyPushRuleRef::Underride(rule) => {
+                let has_room_ref = rule
+                    .conditions
+                    .iter()
+                    .any(|c| serde_json::to_string(c).unwrap_or_default().contains(old_room_str));
+                if has_room_ref {
+                    let new_conditions = remap_conditions(&rule.conditions);
+                    new_rules.push(NewPushRule::Underride(NewConditionalPushRule::new(
+                        rule.rule_id.replace(old_room_str, new_room_str),
+                        new_conditions,
+                        rule.actions.clone(),
+                    )));
+                }
             }
             _ => {}
         }

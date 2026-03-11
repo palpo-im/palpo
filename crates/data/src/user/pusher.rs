@@ -113,9 +113,10 @@ pub async fn get_actions<'a>(
         notifications: power_levels.notifications.clone(),
         rules: power_levels.rules.clone(),
     };
+    let member_count = crate::room::joined_member_count(room_id).unwrap_or(1);
     let ctx = PushConditionRoomCtx {
         room_id: room_id.to_owned(),
-        member_count: 10_u32.into(), // TODO: get member count efficiently
+        member_count: (member_count as u32).into(),
         user_id: user.to_owned(),
         user_display_name: crate::user::display_name(user)
             .ok()

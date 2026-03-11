@@ -3,6 +3,7 @@ use diesel::prelude::*;
 use crate::AppResult;
 use crate::core::Seqnum;
 use crate::core::identifiers::*;
+use crate::core::push::Action;
 use crate::data::connect;
 use crate::data::room::NewDbEventPushAction;
 use crate::data::schema::*;
@@ -99,15 +100,15 @@ pub fn increment_notification_counts(
     Ok(())
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(actions))]
 pub fn upsert_push_action(
     room_id: &RoomId,
     event_id: &EventId,
     user_id: &UserId,
+    actions: &[Action],
     notify: bool,
     highlight: bool,
 ) -> AppResult<()> {
-    let actions: Vec<String> = vec![];
     let (event_sn, thread_id) = event_points::table
         .find(event_id)
         .select((event_points::event_sn, event_points::thread_id))
@@ -128,7 +129,7 @@ pub fn upsert_push_action(
         stream_ordering,
         notify,
         highlight,
-        unread: false,
+        unread: notify,
         thread_id,
     })?;
 
@@ -287,4 +288,26 @@ pub fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<(
             .execute(&mut connect()?)?;
     }
     Ok(())
+}
+
+/// Remove old push actions that are older than the given max age (in milliseconds).
+/// This helps prevent the event_push_actions table from growing unbounded.
+pub fn cleanup_old_push_actions(max_age_ms: i64) -> AppResult<usize> {
+    use crate::core::UnixMillis;
+
+    let cutoff_ts = UnixMillis::now().0 as i64 - max_age_ms;
+
+    // Delete push actions for events older than the cutoff timestamp.
+    let deleted = diesel::delete(
+        event_push_actions::table.filter(
+            event_push_actions::event_id.eq_any(
+                events::table
+                    .filter(events::origin_server_ts.lt(cutoff_ts))
+                    .select(events::id),
+            ),
+        ),
+    )
+    .execute(&mut connect()?)?;
+
+    Ok(deleted)
 }
