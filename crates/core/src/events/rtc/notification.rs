@@ -46,6 +46,13 @@ pub struct RtcNotificationEventContent {
 
     /// How this notification should notify the receiver.
     pub notification_type: NotificationType,
+
+    /// Gives a soft indication of whether the call is a "audio" or "video" (+audio) call.
+    ///
+    /// This is just to indicate between trusted callers that they can start with audio or video
+    /// off, but the actual call semantics remain the same, and they may switch at will.
+    #[serde(rename = "m.call.intent", skip_serializing_if = "Option::is_none")]
+    pub call_intent: Option<CallIntent>,
 }
 
 impl RtcNotificationEventContent {
@@ -61,6 +68,7 @@ impl RtcNotificationEventContent {
             mentions: None,
             relates_to: None,
             notification_type,
+            call_intent: None,
         }
     }
 
@@ -115,6 +123,22 @@ pub enum NotificationType {
 
     /// The receiving client should display a visual notification.
     Notification,
+
+    #[doc(hidden)]
+    _Custom(PrivOwnedStr),
+}
+
+/// Indication of whether the call is an "audio" or "video" (+audio) call.
+#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
+#[derive(ToSchema, Clone, StringEnum)]
+#[palpo_enum(rename_all = "snake_case")]
+pub enum CallIntent {
+    /// Soft indication from the sender that the call is intended for audio.
+    Audio,
+
+    /// Soft indication from the sender that the call is intended for video.
+    /// Hence that the receiver should start with camera enabled.
+    Video,
 
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
