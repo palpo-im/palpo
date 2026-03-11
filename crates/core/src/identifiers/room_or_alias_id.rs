@@ -75,27 +75,25 @@ enum Variant {
 
 impl<'a> From<&'a RoomId> for &'a RoomOrAliasId {
     fn from(room_id: &'a RoomId) -> Self {
-        RoomOrAliasId::from_borrowed(room_id.as_str())
+        RoomOrAliasId::from_borrowed_unchecked(room_id.as_str())
     }
 }
 
 impl<'a> From<&'a RoomAliasId> for &'a RoomOrAliasId {
     fn from(room_alias_id: &'a RoomAliasId) -> Self {
-        RoomOrAliasId::from_borrowed(room_alias_id.as_str())
+        RoomOrAliasId::from_borrowed_unchecked(room_alias_id.as_str())
     }
 }
 
 impl From<OwnedRoomId> for OwnedRoomOrAliasId {
     fn from(room_id: OwnedRoomId) -> Self {
-        // FIXME: Don't allocate
-        RoomOrAliasId::from_borrowed(room_id.as_str()).to_owned()
+        RoomOrAliasId::from_arc(room_id.into_inner()).into()
     }
 }
 
 impl From<OwnedRoomAliasId> for OwnedRoomOrAliasId {
     fn from(room_alias_id: OwnedRoomAliasId) -> Self {
-        // FIXME: Don't allocate
-        RoomOrAliasId::from_borrowed(room_alias_id.as_str()).to_owned()
+        RoomOrAliasId::from_arc(room_alias_id.into_inner()).into()
     }
 }
 
@@ -104,8 +102,8 @@ impl<'a> TryFrom<&'a RoomOrAliasId> for &'a RoomId {
 
     fn try_from(id: &'a RoomOrAliasId) -> Result<&'a RoomId, &'a RoomAliasId> {
         match id.variant() {
-            Variant::RoomId => Ok(RoomId::from_borrowed(id.as_str())),
-            Variant::RoomAliasId => Err(RoomAliasId::from_borrowed(id.as_str())),
+            Variant::RoomId => Ok(RoomId::from_borrowed_unchecked(id.as_str())),
+            Variant::RoomAliasId => Err(RoomAliasId::from_borrowed_unchecked(id.as_str())),
         }
     }
 }
@@ -115,8 +113,8 @@ impl<'a> TryFrom<&'a RoomOrAliasId> for &'a RoomAliasId {
 
     fn try_from(id: &'a RoomOrAliasId) -> Result<&'a RoomAliasId, &'a RoomId> {
         match id.variant() {
-            Variant::RoomAliasId => Ok(RoomAliasId::from_borrowed(id.as_str())),
-            Variant::RoomId => Err(RoomId::from_borrowed(id.as_str())),
+            Variant::RoomAliasId => Ok(RoomAliasId::from_borrowed_unchecked(id.as_str())),
+            Variant::RoomId => Err(RoomId::from_borrowed_unchecked(id.as_str())),
         }
     }
 }
@@ -125,10 +123,9 @@ impl TryFrom<OwnedRoomOrAliasId> for OwnedRoomId {
     type Error = OwnedRoomAliasId;
 
     fn try_from(id: OwnedRoomOrAliasId) -> Result<OwnedRoomId, OwnedRoomAliasId> {
-        // FIXME: Don't allocate
         match id.variant() {
-            Variant::RoomId => Ok(RoomId::from_borrowed(id.as_str()).to_owned()),
-            Variant::RoomAliasId => Err(RoomAliasId::from_borrowed(id.as_str()).to_owned()),
+            Variant::RoomId => Ok(RoomId::from_arc(id.into_inner()).into()),
+            Variant::RoomAliasId => Err(RoomAliasId::from_arc(id.into_inner()).into()),
         }
     }
 }
@@ -137,10 +134,9 @@ impl TryFrom<OwnedRoomOrAliasId> for OwnedRoomAliasId {
     type Error = OwnedRoomId;
 
     fn try_from(id: OwnedRoomOrAliasId) -> Result<OwnedRoomAliasId, OwnedRoomId> {
-        // FIXME: Don't allocate
         match id.variant() {
-            Variant::RoomAliasId => Ok(RoomAliasId::from_borrowed(id.as_str()).to_owned()),
-            Variant::RoomId => Err(RoomId::from_borrowed(id.as_str()).to_owned()),
+            Variant::RoomAliasId => Ok(RoomAliasId::from_arc(id.into_inner()).into()),
+            Variant::RoomId => Err(RoomId::from_arc(id.into_inner()).into()),
         }
     }
 }
