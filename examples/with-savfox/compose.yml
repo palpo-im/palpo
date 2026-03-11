@@ -1,0 +1,33 @@
+services:
+  # postgres:
+  #   hostname: postgres
+  #   image: postgres:18
+  #   restart: always
+  #   ports:
+  #     - 5432:5432
+  #   volumes:
+  #     - ./data/pgsql:/var/lib/postgresql/data
+  #   environment:
+  #     POSTGRES_PASSWORD: root
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_DB: palpo_local
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U postgres"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - internal
+
+  matrix-bridge-savfox:
+    image: ghcr.io/savfox-ai/savfox:main
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./data:/data
+    environment:
+      RUST_LOG: savfox=debug,info
+      CONFIG_PATH: "/data/config.yaml"
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
