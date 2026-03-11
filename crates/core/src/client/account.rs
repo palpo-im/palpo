@@ -49,26 +49,38 @@ pub enum ThirdPartyIdRemovalStatus {
 }
 
 /// The kind of account being registered.
-#[derive(ToSchema, Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
+#[derive(ToSchema, Clone, Default, StringEnum)]
+#[palpo_enum(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RegistrationKind {
-    /// A guest account
+    /// A guest account.
     ///
     /// These accounts may have limited permissions and may not be supported by
     /// all servers.
     Guest,
 
-    /// A regular user account
+    /// A regular user account.
     #[default]
     User,
+
+    #[doc(hidden)]
+    #[salvo(schema(value_type = String))]
+    _Custom(PrivOwnedStr),
 }
 
 /// The login type.
-#[derive(ToSchema, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
+#[derive(ToSchema, Clone, StringEnum)]
+#[non_exhaustive]
 pub enum LoginType {
-    /// An appservice-specific login type
-    #[serde(rename = "m.login.application_service")]
-    Appservice,
+    /// An appservice-specific login type.
+    #[palpo_enum(rename = "m.login.application_service")]
+    ApplicationService,
+
+    #[doc(hidden)]
+    #[salvo(schema(value_type = String))]
+    _Custom(PrivOwnedStr),
 }
 
 /// WhoamiResBody type for the `whoami` endpoint.

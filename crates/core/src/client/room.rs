@@ -332,10 +332,6 @@ pub struct ReportContentReqArgs {
 
 #[derive(ToSchema, Deserialize, Debug)]
 pub struct ReportContentReqBody {
-    /// Integer between -100 and 0 rating offensivness.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub score: Option<i64>,
-
     /// Reason to report content.
     ///
     /// May be blank.
