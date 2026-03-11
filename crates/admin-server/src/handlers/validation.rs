@@ -112,6 +112,13 @@ pub fn validate_username(username: &str) -> Result<(), ValidationError> {
         });
     }
 
+    if username.len() < 3 {
+        return Err(ValidationError {
+            field: "username".to_string(),
+            message: "Username must be at least 3 characters".to_string(),
+        });
+    }
+
     if username.len() > MAX_USERNAME_LENGTH {
         return Err(ValidationError {
             field: "username".to_string(),
@@ -119,6 +126,14 @@ pub fn validate_username(username: &str) -> Result<(), ValidationError> {
                 "Username exceeds maximum length of {} characters",
                 MAX_USERNAME_LENGTH
             ),
+        });
+    }
+
+    // Username must start with a letter
+    if !username.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+        return Err(ValidationError {
+            field: "username".to_string(),
+            message: "Username must start with a letter".to_string(),
         });
     }
 

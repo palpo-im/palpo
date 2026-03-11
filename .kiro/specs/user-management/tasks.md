@@ -144,12 +144,12 @@ This task list tracks the implementation of the user-management feature for the 
   - XSS prevention in user inputs
   - Authentication token validation
   - Authorization checks
-- [ ] 3.1.6 Review existing tests and remove low-value duplicates
+- [x] 3.1.6 Review existing tests and remove low-value duplicates
   - Remove tests for trivial getters/setters
   - Remove tests for Debug/Display traits
   - Remove tests that duplicate source file tests
   - Consolidate similar test scenarios
-- [ ] 3.1.7 Verify test quality (NOT coverage percentage)
+- [x] 3.1.7 Verify test quality (NOT coverage percentage)
   - Each test has clear business justification
   - Tests focus on "what" not "how"
   - Tests catch real bugs, not just exercise code
@@ -164,16 +164,16 @@ This task list tracks the implementation of the user-management feature for the 
 **Philosophy**: Use PBT only where it provides unique value over unit tests
 
 **Critical Properties (Implement as PBT)**:
-- [ ] 3.2.1 ⭐ Username availability accuracy (Property 1)
+- [x] 3.2.1 ⭐ Username availability accuracy (Property 1)
   - Justification: Tests invariant across all possible usernames
   - Value: Catches edge cases in username validation
-- [ ] 3.2.2 ⭐ Pagination consistency (Property 4)
+- [x] 3.2.2 ⭐ Pagination consistency (Property 4)
   - Justification: Tests invariant across all page sizes and offsets
   - Value: Catches off-by-one errors and boundary conditions
-- [ ] 3.2.3 ⭐ Rate limit config round-trip (Property 6)
+- [x] 3.2.3 ⭐ Rate limit config round-trip (Property 6)
   - Justification: Tests invariant across all valid config values
   - Value: Catches serialization/deserialization bugs
-- [ ] 3.2.4 ⭐ Audit log completeness (Property 17)
+- [x] 3.2.4 ⭐ Audit log completeness (Property 17)
   - Justification: Tests invariant across all operations
   - Value: Critical for security compliance
 

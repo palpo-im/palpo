@@ -5,42 +5,6 @@
 
 use palpo_admin_server::types::*;
 
-// ===== Error Display Tests =====
-
-#[test]
-fn test_admin_error_display_webui() {
-    let err = AdminError::WebUIAdminAlreadyExists;
-    assert_eq!(err.to_string(), "Web UI admin already exists");
-    
-    let err = AdminError::WebUIAdminNotFound;
-    assert_eq!(err.to_string(), "Web UI admin not found");
-    
-    let err = AdminError::InvalidSessionToken;
-    assert_eq!(err.to_string(), "Invalid session token");
-    
-    let err = AdminError::SessionExpired;
-    assert_eq!(err.to_string(), "Session expired");
-}
-
-#[test]
-fn test_admin_error_display_database() {
-    let err = AdminError::DatabaseConnectionFailed("connection refused".to_string());
-    assert!(err.to_string().contains("connection refused"));
-    
-    let err = AdminError::DatabaseQueryFailed("syntax error".to_string());
-    assert!(err.to_string().contains("syntax error"));
-}
-
-#[test]
-fn test_admin_error_display_password_policy() {
-    let err = AdminError::PasswordTooShort(8);
-    assert!(err.to_string().contains("8 characters"));
-    assert!(err.to_string().contains("minimum 12"));
-    
-    let err = AdminError::MissingUppercase;
-    assert!(err.to_string().contains("uppercase"));
-}
-
 // ===== Error Conversion Tests =====
 
 #[test]
@@ -83,40 +47,6 @@ fn test_server_status_all_variants() {
                 assert_ne!(status1, status2);
             }
         }
-    }
-}
-
-// ===== Serialization Tests =====
-
-#[test]
-fn test_server_status_serialization() {
-    let status = ServerStatus::Running;
-    let json = serde_json::to_string(&status).unwrap();
-    assert!(json.contains("Running"));
-}
-
-#[test]
-fn test_server_status_deserialization() {
-    let json = "\"Running\"";
-    let status: ServerStatus = serde_json::from_str(json).unwrap();
-    assert_eq!(status, ServerStatus::Running);
-}
-
-#[test]
-fn test_server_status_round_trip() {
-    let statuses = vec![
-        ServerStatus::NotStarted,
-        ServerStatus::Starting,
-        ServerStatus::Running,
-        ServerStatus::Stopping,
-        ServerStatus::Stopped,
-        ServerStatus::Error,
-    ];
-    
-    for original in statuses {
-        let json = serde_json::to_string(&original).unwrap();
-        let deserialized: ServerStatus = serde_json::from_str(&json).unwrap();
-        assert_eq!(original, deserialized);
     }
 }
 
