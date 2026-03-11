@@ -177,19 +177,17 @@ This task list tracks the implementation of the user-management feature for the 
   - Justification: Tests invariant across all operations
   - Value: Critical for security compliance
 
-**Properties to Implement as Unit Tests** (PBT overhead not justified):
-- [ ] 3.2.5 User creation idempotency (Property 2) → Unit test with 2-3 examples
-- [ ] 3.2.6 Device deletion token invalidation (Property 3) → Integration test
-- [ ] 3.2.7 Sorting stability (Property 5) → Unit test with specific examples
-- [ ] 3.2.8 Shadow-ban status consistency (Property 8) → Unit test
-- [ ] 3.2.9 Password reset login (Property 14) → Integration test
-- [ ] 3.2.10 Admin status setting (Property 15) → Unit test
-- [ ] 3.2.11 User deactivation state (Property 18) → Unit test
-
 **Properties to Skip** (Already covered by other tests):
+- ~~Property 2: User creation idempotency~~ → Covered by 3.3.1
+- ~~Property 3: Device deletion token invalidation~~ → Covered by 3.3.2
+- ~~Property 5: Sorting stability~~ → Covered by existing unit tests
 - ~~Property 7: Rate limit deletion~~ → Covered by unit tests
+- ~~Property 8: Shadow-ban status consistency~~ → Covered by 3.3.5
 - ~~Property 9-13: Lookup/list operations~~ → Covered by integration tests
+- ~~Property 14: Password reset login~~ → Covered by 3.3.3
+- ~~Property 15: Admin status setting~~ → Covered by 3.3.4
 - ~~Property 16: Media deletion~~ → Covered by integration tests
+- ~~Property 18: User deactivation state~~ → Covered by 3.3.1
 - ~~Property 19-20: Idempotency/format~~ → Covered by unit tests
 
 **Decision Criteria for PBT**:
@@ -204,20 +202,20 @@ This task list tracks the implementation of the user-management feature for the 
 **Focus**: Test multi-component interactions, NOT individual functions
 
 **API Integration Tests** (Backend):
-- [ ] 3.3.1 Complete user lifecycle flow
+- [x] 3.3.1 Complete user lifecycle flow
   - Create user → Verify in DB → Modify user → Verify changes → Deactivate → Verify state
   - Tests: Repository + Handler + Database interaction
-- [ ] 3.3.2 Device deletion invalidates tokens
+- [x] 3.3.2 Device deletion invalidates tokens
   - Create device → Get token → Delete device → Verify token invalid
   - Tests: DeviceRepository + SessionRepository + Auth middleware
-- [ ] 3.3.3 Password reset enables login
+- [x] 3.3.3 Password reset enables login
   - Reset password → Attempt login with new password → Verify success
   - Tests: UserRepository + Auth service integration
-- [ ] 3.3.4 Permission validation across operations
+- [x] 3.3.4 Permission validation across operations
   - Non-admin attempts admin operation → Verify 403
   - Admin performs operation → Verify success
   - Tests: Auth middleware + All handlers
-- [ ] 3.3.5 Audit logging for all operations
+- [x] 3.3.5 Audit logging for all operations
   - Perform operation → Verify audit log entry created
   - Tests: All handlers + Audit logger integration
 
