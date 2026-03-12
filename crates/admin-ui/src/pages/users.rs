@@ -24,6 +24,8 @@ pub fn UserManager() -> Element {
     let mut selected_users = use_signal(|| Vec::<String>::new());
     let mut show_batch_menu = use_signal(|| false);
     
+    let navigator = use_navigator();
+    
     let page_size = 20u32;
     let total_pages = (total_count() + page_size - 1) / page_size;
 
@@ -45,7 +47,7 @@ pub fn UserManager() -> Element {
                     button {
                         class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500",
                         onclick: move |_| {
-                            // TODO: Navigate to create user page
+                            navigator.push(Route::UserCreate {});
                         },
                         "➕ 创建用户"
                     }

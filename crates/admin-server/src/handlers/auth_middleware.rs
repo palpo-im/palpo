@@ -38,10 +38,12 @@ impl Handler for AuthMiddleware {
         let auth_header = match req.headers().get("Authorization") {
             Some(h) => h.to_str().unwrap_or(""),
             None => {
+                tracing::warn!("Missing Authorization header for path: {}", path);
                 res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(ErrorResponse {
                     error: "Missing Authorization header".to_string(),
                 }));
+                ctrl.skip_rest();
                 return;
             }
         };
@@ -50,31 +52,38 @@ impl Handler for AuthMiddleware {
         let token = if let Some(t) = auth_header.strip_prefix("Bearer ") {
             t
         } else {
+            tracing::warn!("Invalid Authorization header format for path: {}", path);
             res.status_code(StatusCode::UNAUTHORIZED);
             res.render(Json(ErrorResponse {
                 error: "Invalid Authorization header format".to_string(),
             }));
+            ctrl.skip_rest();
             return;
         };
 
         // Validate session
         match self.session_manager.validate_session(token).await {
             Ok(username) => {
+                tracing::debug!("Session validated for user: {}", username);
                 // Add username to depot for handlers to access
                 depot.insert("username", username);
                 ctrl.call_next(req, depot, res).await;
             }
             Err(AdminError::SessionExpired) => {
+                tracing::warn!("Session expired for token: {}...", &token[..8]);
                 res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(ErrorResponse {
                     error: "Session expired".to_string(),
                 }));
+                ctrl.skip_rest();
             }
             Err(AdminError::InvalidSessionToken) => {
+                tracing::warn!("Invalid session token: {}...", &token[..8]);
                 res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(ErrorResponse {
                     error: "Invalid session token".to_string(),
                 }));
+                ctrl.skip_rest();
             }
             Err(e) => {
                 tracing::error!("Session validation error: {}", e);
@@ -82,6 +91,7 @@ impl Handler for AuthMiddleware {
                 res.render(Json(ErrorResponse {
                     error: "Session validation failed".to_string(),
                 }));
+                ctrl.skip_rest();
             }
         }
     }

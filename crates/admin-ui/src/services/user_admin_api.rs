@@ -117,13 +117,13 @@ impl UserAdminAPI {
             return Err(WebConfigError::permission("Insufficient permissions for user management"));
         }
 
-        // Validate username
-        if request.username.is_empty() || request.username.len() > 255 {
+        // Validate user_id format (should be @localpart:server_name)
+        if request.user_id.is_empty() || !request.user_id.starts_with('@') {
             return Ok(CreateUserResponse {
                 success: false,
                 user: None,
                 generated_password: None,
-                error: Some("Username must be between 1 and 255 characters".to_string()),
+                error: Some("Invalid user_id format. Must start with @ (e.g., @user:localhost)".to_string()),
             });
         }
 
@@ -139,10 +139,9 @@ impl UserAdminAPI {
                     AuditTargetType::User,
                     &user.user_id,
                     Some(serde_json::json!({
-                        "username": request.username,
+                        "user_id": request.user_id,
                         "is_admin": request.is_admin,
-                        "permissions": request.permissions,
-                        "password_generated": response.generated_password.is_some()
+                        "is_guest": request.is_guest,
                     })),
                     &format!("Created user {}", user.user_id),
                 ).await;

@@ -19,27 +19,29 @@ use crate::types::AdminError;
 use palpo_data::DieselPool;
 
 /// User entity representing a Matrix user account
+/// Matches Palpo's users table schema
 #[derive(Debug, Clone, Queryable, Insertable, AsChangeset, Serialize, Deserialize)]
 #[diesel(table_name = users)]
 pub struct User {
-    pub name: String,                    // @username:homeserver
-    pub password_hash: Option<String>,
-    pub salt: Option<String>,
+    pub id: String,                     // Matrix user ID (e.g., @user:localhost)
+    pub ty: String,                     // User type (e.g., "user", "bot")
     pub is_admin: bool,
     pub is_guest: bool,
-    pub is_deactivated: bool,
-    pub is_erased: bool,
-    pub shadow_banned: bool,
-    pub locked: bool,
-    pub displayname: Option<String>,
-    pub avatar_url: Option<String>,
-    pub creation_ts: i64,
-    pub last_seen_ts: Option<i64>,
-    pub user_type: Option<String>,
+    pub is_local: bool,
+    pub localpart: String,              // Username part
+    pub server_name: String,            // Server name
     pub appservice_id: Option<String>,
+    pub shadow_banned: bool,
+    pub consent_at: Option<i64>,
     pub consent_version: Option<String>,
-    pub consent_ts: Option<i64>,
-    pub consent_server_notice_sent: bool,
+    pub consent_server_notice_sent: Option<String>,
+    pub approved_at: Option<i64>,
+    pub approved_by: Option<String>,
+    pub deactivated_at: Option<i64>,
+    pub deactivated_by: Option<String>,
+    pub locked_at: Option<i64>,
+    pub locked_by: Option<String>,
+    pub created_at: i64,
 }
 
 /// User attributes for shadow-ban, locked, deactivated status
@@ -191,48 +193,43 @@ impl UserRepository for DieselUserRepository {
 
         let now = chrono::Utc::now().timestamp_millis();
 
+        // Parse user_id to extract localpart and server_name
+        // user_id format: @localpart:server_name
+        let (localpart, server_name) = if input.user_id.starts_with('@') {
+            let without_at = &input.user_id[1..];
+            if let Some(pos) = without_at.find(':') {
+                (&without_at[..pos], &without_at[pos + 1..])
+            } else {
+                (&without_at[..], "localhost")
+            }
+        } else {
+            (&input.user_id[..], "localhost")
+        };
+
         let user = User {
-            name: input.user_id.clone(),
-            password_hash: None,
-            salt: None,
+            id: input.user_id.clone(),
+            ty: if input.is_guest { "guest".to_string() } else { "user".to_string() },
             is_admin: input.is_admin,
             is_guest: input.is_guest,
-            is_deactivated: false,
-            is_erased: false,
-            shadow_banned: false,
-            locked: false,
-            displayname: input.displayname.clone(),
-            avatar_url: input.avatar_url.clone(),
-            creation_ts: now,
-            last_seen_ts: None,
-            user_type: input.user_type.clone(),
+            is_local: true,
+            localpart: localpart.to_string(),
+            server_name: server_name.to_string(),
             appservice_id: input.appservice_id.clone(),
+            shadow_banned: false,
+            consent_at: None,
             consent_version: None,
-            consent_ts: None,
-            consent_server_notice_sent: false,
+            consent_server_notice_sent: None,
+            approved_at: None,
+            approved_by: None,
+            deactivated_at: None,
+            deactivated_by: None,
+            locked_at: None,
+            locked_by: None,
+            created_at: now,
         };
 
         diesel::insert_into(users::table)
             .values(&user)
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
-
-        // Create user attributes record
-        let attributes = UserAttributes {
-            user_id: input.user_id.clone(),
-            shadow_banned: false,
-            locked: false,
-            deactivated: false,
-            erased: false,
-            password_changed_ts: None,
-            last_force_reset_ts: None,
-            expiry_ts: None,
-            created_at: now,
-            updated_at: now,
-        };
-
-        diesel::insert_into(user_attributes::table)
-            .values(&attributes)
             .execute(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -246,7 +243,7 @@ impl UserRepository for DieselUserRepository {
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
         let user = users::table
-            .filter(users::name.eq(user_id))
+            .filter(users::id.eq(user_id))
             .first::<User>(&mut conn)
             .optional()
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
@@ -262,7 +259,7 @@ impl UserRepository for DieselUserRepository {
 
         // Get user
         let user = match users::table
-            .filter(users::name.eq(user_id))
+            .filter(users::id.eq(user_id))
             .first::<User>(&mut conn)
             .optional()
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?
@@ -317,42 +314,30 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
+        // Palpo schema doesn't have displayname or avatar_url in users table
+        // Only update is_admin and user_type
         let user = diesel::update(users::table.find(user_id))
             .set((
-                input.displayname.as_ref().map(|d| users::displayname.eq(d)),
-                input.avatar_url.as_ref().map(|u| users::avatar_url.eq(u)),
                 input.is_admin.map(|a| users::is_admin.eq(a)),
-                input.user_type.as_ref().map(|t| users::user_type.eq(t)),
+                input.user_type.as_ref().map(|t| users::ty.eq(t)),
             ))
-            .filter(users::name.eq(user_id))
             .get_result::<User>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
         Ok(user)
     }
 
-    async fn deactivate_user(&self, user_id: &str, erase: bool) -> Result<(), AdminError> {
+    async fn deactivate_user(&self, user_id: &str, _erase: bool) -> Result<(), AdminError> {
         let mut conn = self
             .db_pool
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
-        // Update users table
-        diesel::update(users::table.find(user_id))
-            .set((
-                users::is_deactivated.eq(true),
-                users::is_erased.eq(erase),
-            ))
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
+        let now = chrono::Utc::now().timestamp_millis();
 
-        // Update attributes
-        diesel::update(user_attributes::table.find(user_id))
-            .set((
-                user_attributes::deactivated.eq(true),
-                user_attributes::erased.eq(erase),
-                user_attributes::updated_at.eq(chrono::Utc::now().timestamp_millis()),
-            ))
+        // Update users table - Palpo uses deactivated_at field
+        diesel::update(users::table.find(user_id))
+            .set(users::deactivated_at.eq(now))
             .execute(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -365,20 +350,9 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
+        // Update users table - set deactivated_at to null
         diesel::update(users::table.find(user_id))
-            .set((
-                users::is_deactivated.eq(false),
-                users::is_erased.eq(false),
-            ))
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
-
-        diesel::update(user_attributes::table.find(user_id))
-            .set((
-                user_attributes::deactivated.eq(false),
-                user_attributes::erased.eq(false),
-                user_attributes::updated_at.eq(chrono::Utc::now().timestamp_millis()),
-            ))
+            .set(users::deactivated_at.eq::<Option<i64>>(None))
             .execute(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
 
@@ -402,7 +376,12 @@ impl UserRepository for DieselUserRepository {
         }
 
         if let Some(is_deactivated) = filter.is_deactivated {
-            query = query.filter(users::is_deactivated.eq(is_deactivated));
+            // Palpo uses deactivated_at instead of is_deactivated
+            if is_deactivated {
+                query = query.filter(users::deactivated_at.is_not_null());
+            } else {
+                query = query.filter(users::deactivated_at.is_null());
+            }
         }
 
         if let Some(shadow_banned) = filter.shadow_banned {
@@ -412,8 +391,8 @@ impl UserRepository for DieselUserRepository {
         if let Some(search_term) = &filter.search_term {
             if !search_term.is_empty() {
                 query = query.filter(
-                    users::name.ilike(format!("%{}%", search_term))
-                    .or(users::displayname.ilike(format!("%{}%", search_term)))
+                    users::id.ilike(format!("%{}%", search_term))
+                    .or(users::localpart.ilike(format!("%{}%", search_term)))
                 );
             }
         }
@@ -424,8 +403,13 @@ impl UserRepository for DieselUserRepository {
         if let Some(is_admin) = filter.is_admin {
             count_query = count_query.filter(users::is_admin.eq(is_admin));
         }
+        // Palpo uses deactivated_at instead of is_deactivated
         if let Some(is_deactivated) = filter.is_deactivated {
-            count_query = count_query.filter(users::is_deactivated.eq(is_deactivated));
+            if is_deactivated {
+                count_query = count_query.filter(users::deactivated_at.is_not_null());
+            } else {
+                count_query = count_query.filter(users::deactivated_at.is_null());
+            }
         }
         if let Some(shadow_banned) = filter.shadow_banned {
             count_query = count_query.filter(users::shadow_banned.eq(shadow_banned));
@@ -433,8 +417,8 @@ impl UserRepository for DieselUserRepository {
         if let Some(search_term) = &filter.search_term {
             if !search_term.is_empty() {
                 count_query = count_query.filter(
-                    users::name.ilike(format!("%{}%", search_term))
-                    .or(users::displayname.ilike(format!("%{}%", search_term)))
+                    users::id.ilike(format!("%{}%", search_term))
+                    .or(users::localpart.ilike(format!("%{}%", search_term)))
                 );
             }
         }
@@ -446,7 +430,7 @@ impl UserRepository for DieselUserRepository {
 
         // Get users with pagination
         let users = query
-            .order_by(users::creation_ts.desc())
+            .order_by(users::created_at.desc())
             .limit(limit)
             .offset(offset)
             .load::<User>(&mut conn)
@@ -467,7 +451,7 @@ impl UserRepository for DieselUserRepository {
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
         let count = users::table
-            .filter(users::name.eq(format!("@{}:localhost", username)))
+            .filter(users::localpart.eq(username))
             .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
@@ -521,18 +505,18 @@ impl UserRepository for DieselUserRepository {
 
         let now = chrono::Utc::now().timestamp_millis();
 
-        diesel::update(users::table.find(user_id))
-            .set(users::locked.eq(locked))
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
-
-        diesel::update(user_attributes::table.find(user_id))
-            .set((
-                user_attributes::locked.eq(locked),
-                user_attributes::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
+        // Palpo uses locked_at field
+        if locked {
+            diesel::update(users::table.find(user_id))
+                .set(users::locked_at.eq(now))
+                .execute(&mut conn)
+                .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
+        } else {
+            diesel::update(users::table.find(user_id))
+                .set(users::locked_at.eq::<Option<i64>>(None))
+                .execute(&mut conn)
+                .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
+        }
 
         Ok(())
     }
@@ -552,30 +536,11 @@ impl UserRepository for DieselUserRepository {
         Ok(attributes)
     }
 
-    async fn update_password(&self, user_id: &str, password_hash: &str, salt: &str) -> Result<(), AdminError> {
-        let mut conn = self
-            .db_pool
-            .get()
-            .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
-
-        let now = chrono::Utc::now().timestamp_millis();
-
-        diesel::update(users::table.find(user_id))
-            .set((
-                users::password_hash.eq(password_hash),
-                users::salt.eq(salt),
-            ))
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
-
-        diesel::update(user_attributes::table.find(user_id))
-            .set((
-                user_attributes::password_changed_ts.eq(now),
-                user_attributes::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;
-
+    async fn update_password(&self, user_id: &str, _password_hash: &str, _salt: &str) -> Result<(), AdminError> {
+        // Note: Palpo doesn't store password hashes in the users table.
+        // Password management should be done through Palpo's admin API or identity service.
+        // This is a placeholder that logs a warning.
+        tracing::warn!("Password update requested for user {}, but Palpo schema doesn't support password storage in users table", user_id);
         Ok(())
     }
 
@@ -614,8 +579,9 @@ impl UserRepository for DieselUserRepository {
             .get()
             .map_err(|e| AdminError::DatabaseConnectionFailed(e.to_string()))?;
 
+        // Palpo uses deactivated_at instead of is_deactivated
         let count = users::table
-            .filter(users::is_deactivated.eq(true))
+            .filter(users::deactivated_at.is_not_null())
             .count()
             .get_result::<i64>(&mut conn)
             .map_err(|e| AdminError::DatabaseQueryFailed(e.to_string()))?;

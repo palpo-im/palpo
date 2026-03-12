@@ -5,27 +5,29 @@
 use diesel::table;
 use diesel::allow_tables_to_appear_in_same_query;
 
-// ===== Users Table =====
+// ===== Users Table (Palpo Matrix User Schema) =====
+// This schema matches the Palpo Matrix server's users table
 table! {
-    users (name) {
-        name -> Text,
-        password_hash -> Nullable<Text>,
-        salt -> Nullable<Text>,
+    users (id) {
+        id -> Text,                    // Matrix user ID (e.g., @user:localhost)
+        ty -> Text,                    // User type (e.g., "user", "bot")
         is_admin -> Bool,
         is_guest -> Bool,
-        is_deactivated -> Bool,
-        is_erased -> Bool,
-        shadow_banned -> Bool,
-        locked -> Bool,
-        displayname -> Nullable<Text>,
-        avatar_url -> Nullable<Text>,
-        creation_ts -> BigInt,
-        last_seen_ts -> Nullable<BigInt>,
-        user_type -> Nullable<Text>,
+        is_local -> Bool,
+        localpart -> Text,             // Username part (e.g., "user" from @user:localhost)
+        server_name -> Text,           // Server name (e.g., "localhost")
         appservice_id -> Nullable<Text>,
+        shadow_banned -> Bool,
+        consent_at -> Nullable<BigInt>,
         consent_version -> Nullable<Text>,
-        consent_ts -> Nullable<BigInt>,
-        consent_server_notice_sent -> Bool,
+        consent_server_notice_sent -> Nullable<Text>,
+        approved_at -> Nullable<BigInt>,
+        approved_by -> Nullable<Text>,
+        deactivated_at -> Nullable<BigInt>,
+        deactivated_by -> Nullable<Text>,
+        locked_at -> Nullable<BigInt>,
+        locked_by -> Nullable<Text>,
+        created_at -> BigInt,
     }
 }
 

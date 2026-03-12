@@ -18,15 +18,16 @@ pub struct User {
     pub permissions: Vec<Permission>,
 }
 
-/// User creation request
+/// User creation request (matches backend Palpo schema)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CreateUserRequest {
-    pub username: String,
-    pub password: Option<String>, // None for auto-generated password
-    pub display_name: Option<String>,
+    pub user_id: String,           // Matrix user ID format: @localpart:server_name
+    pub displayname: Option<String>,
+    pub avatar_url: Option<String>,
     pub is_admin: bool,
-    pub permissions: Vec<Permission>,
-    pub send_notification: bool,
+    pub is_guest: bool,
+    pub user_type: Option<String>,
+    pub appservice_id: Option<String>,
 }
 
 /// User creation response

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use palpo_admin_server::{
-    handlers::{webui_admin, server_control, matrix_admin, user_handler, device_handler, session_handler, rate_limit_handler, shadow_ban_handler, threepid_handler},
+    handlers::{webui_admin, server_control, matrix_admin, user_handler, device_handler, session_handler, rate_limit_handler, shadow_ban_handler, threepid_handler, auth_middleware::AuthMiddleware},
     MigrationRunner, MigrationService, SessionManager, WebUIAuthService, ServerControlAPI,
     MatrixAdminCreationService, AuthService, RepositoryFactory,
 };
@@ -117,7 +117,11 @@ async fn main() -> Result<()> {
     };
 
     // Initialize user app state
-    webui_admin::init_user_app_state(user_app_state);
+    webui_admin::init_user_app_state(user_app_state.clone());
+
+    // Initialize user handler state
+    let user_handler_state = user_handler::UserHandlerState::new(user_app_state.user_repo.clone());
+    user_handler::init_user_handler_state(user_handler_state);
 
     // Configure CORS - allow any origin for development
     let cors = Cors::new()
@@ -173,9 +177,10 @@ async fn main() -> Result<()> {
                     .post(matrix_admin::change_matrix_admin_password)
                 )
         )
-        // User Management Routes
+        // User Management Routes (with authentication)
         .push(
             Router::with_path("/api/v1/users")
+                .hoop(AuthMiddleware::new(session_manager.clone()))
                 .push(Router::with_path("").post(user_handler::create_user))
                 .push(Router::with_path("").get(user_handler::list_users))
                 .push(Router::with_path("/username-available/<username>")
