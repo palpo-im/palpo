@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use crate::models::{AuthState, WebConfigData};
 use crate::hooks::use_auth;
 use crate::pages::{LoginPage, AdminDashboard, SetupWizardPage, PasswordChangePage, ServerControlPage, MatrixAdminCreatePage, UserManager, RoomManager, RoomDetailPage as RoomDetailPageComponent};
+use crate::components::forms::UserForm;
 use crate::services::api_client::init_api_client;
 use crate::services::webui_auth_api::WebUIAuthAPI;
 use crate::components::layout::AdminLayout as AdminLayoutComponent;
@@ -26,6 +27,8 @@ pub enum Route {
     ServerControl {},
     #[route("/admin/users")]
     Users {},
+    #[route("/admin/users/new")]
+    UserCreate {},
     #[route("/admin/users/:user_id")]
     UserDetailPage { user_id: String },
     #[route("/admin/rooms")]
@@ -215,6 +218,24 @@ fn Config() -> Element {
 fn Users() -> Element {
     rsx! {
         UserManager {}
+    }
+}
+
+/// User creation page component
+#[component]
+fn UserCreate() -> Element {
+    let navigator = use_navigator();
+    
+    rsx! {
+        UserForm {
+            user: None,
+            on_success: move |user| {
+                navigator.push(Route::Users {});
+            },
+            on_cancel: move |_| {
+                navigator.push(Route::Users {});
+            }
+        }
     }
 }
 

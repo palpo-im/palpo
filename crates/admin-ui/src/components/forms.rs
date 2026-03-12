@@ -374,24 +374,38 @@ pub fn UserForm(props: UserFormProps) -> Element {
 
     // Handle form submission
     let mut handle_submit = move |_| {
+        web_sys::console::log_1(&"Form submit handler called".into());
+        
         let username_valid = validate_username();
         let password_valid = validate_password();
         let confirm_valid = validate_confirm();
 
+        web_sys::console::log_1(&format!("Validation: username={}, password={}, confirm={}", username_valid, password_valid, confirm_valid).into());
+
         if !username_valid || !password_valid || !confirm_valid {
+            web_sys::console::log_1(&"Validation failed, returning".into());
             return;
         }
 
+        web_sys::console::log_1(&"Validation passed, creating request".into());
         is_loading.set(true);
         error.set(None);
 
+        // Convert username to Matrix user ID format (@localpart:server_name)
+        let user_id = if username().starts_with('@') {
+            username()
+        } else {
+            format!("@{}:localhost", username())
+        };
+
         let request = CreateUserRequest {
-            username: username(),
-            password: if password().is_empty() { None } else { Some(password()) },
-            display_name: if display_name().is_empty() { None } else { Some(display_name()) },
+            user_id,
+            displayname: if display_name().is_empty() { None } else { Some(display_name()) },
+            avatar_url: if avatar_url().is_empty() { None } else { Some(avatar_url()) },
             is_admin: is_admin(),
-            permissions: vec![],
-            send_notification: false,
+            is_guest: false,
+            user_type: None,
+            appservice_id: None,
         };
 
         // Spawn async task to create user
@@ -399,8 +413,8 @@ pub fn UserForm(props: UserFormProps) -> Element {
         let mut error_clone = error.clone();
         let mut is_loading_clone = is_loading.clone();
 
-        // Use wasm_bindgen_futures::spawn_local for WASM compatibility
-        wasm_bindgen_futures::spawn_local(async move {
+        // Use spawn for WASM compatibility
+        spawn(async move {
             // Use global API client
             let api = match crate::services::api_client::get_api_client() {
                 Ok(client) => crate::services::user_admin_api::UserAdminAPI::new(
@@ -587,6 +601,9 @@ pub fn UserForm(props: UserFormProps) -> Element {
                                 class: format!("px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white {}",
                                     if is_loading() { "bg-blue-400 cursor-not-allowed" } else { "bg-blue-600 hover:bg-blue-700" }),
                                 disabled: is_loading(),
+                                onclick: move |_| {
+                                    handle_submit(());
+                                },
                                 if is_loading() {
                                     "创建中..."
                                 } else {

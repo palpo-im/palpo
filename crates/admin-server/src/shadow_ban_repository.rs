@@ -127,7 +127,7 @@ impl ShadowBanRepository for DieselShadowBanRepository {
 
         let user_ids: Vec<String> = users::table
             .filter(users::shadow_banned.eq(true))
-            .select(users::name)
+            .select(users::id)
             .limit(limit)
             .offset(offset)
             .load(&mut conn)

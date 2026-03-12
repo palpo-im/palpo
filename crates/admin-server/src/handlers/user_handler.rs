@@ -87,18 +87,18 @@ pub struct LockStatusRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserResponse {
-    pub name: String,
+    pub user_id: String,           // Matrix user ID (e.g., @user:localhost)
+    pub username: String,          // localpart (e.g., "user")
     pub displayname: Option<String>,
     pub avatar_url: Option<String>,
     pub is_admin: bool,
     pub is_guest: bool,
-    pub is_deactivated: bool,
-    pub is_erased: bool,
+    pub is_local: bool,
+    pub server_name: String,
     pub shadow_banned: bool,
+    pub deactivated: bool,
     pub locked: bool,
-    pub creation_ts: i64,
-    pub last_seen_ts: Option<i64>,
-    pub user_type: Option<String>,
+    pub created_at: i64,
     pub appservice_id: Option<String>,
 }
 
@@ -234,7 +234,7 @@ pub async fn create_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
 
     match state.user_repo.create_user(&input).await {
         Ok(user) => {
-            tracing::info!("Created user: {}", user.name);
+            tracing::info!("Created user: {}", user.id);
             res.status_code(StatusCode::CREATED);
             res.render(Json(UserResponse::from(&user)));
         }
@@ -409,7 +409,7 @@ pub async fn update_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
 
     match state.user_repo.update_user(&user_id, &input).await {
         Ok(user) => {
-            tracing::info!("Updated user: {}", user.name);
+            tracing::info!("Updated user: {}", user.id);
             res.render(Json(UserResponse::from(&user)));
         }
         Err(e) => {
@@ -528,7 +528,7 @@ pub async fn get_admin_status(req: &mut Request, depot: &mut Depot, res: &mut Re
 
     match state.user_repo.get_user(&user_id).await {
         Ok(Some(user)) => {
-            res.render(Json(AdminStatusResponse { user_id: user.name, is_admin: user.is_admin }));
+            res.render(Json(AdminStatusResponse { user_id: user.id, is_admin: user.is_admin }));
         }
         Ok(None) => {
             res.status_code(StatusCode::NOT_FOUND);
@@ -737,18 +737,18 @@ pub async fn get_user_stats(depot: &mut Depot, res: &mut Response) {
 impl From<&User> for UserResponse {
     fn from(user: &User) -> Self {
         UserResponse {
-            name: user.name.clone(),
-            displayname: user.displayname.clone(),
-            avatar_url: user.avatar_url.clone(),
+            user_id: user.id.clone(),
+            username: user.localpart.clone(),
+            displayname: None, // Palpo schema doesn't have displayname
+            avatar_url: None,  // Palpo schema doesn't have avatar_url
             is_admin: user.is_admin,
             is_guest: user.is_guest,
-            is_deactivated: user.is_deactivated,
-            is_erased: user.is_erased,
+            is_local: user.is_local,
+            server_name: user.server_name.clone(),
             shadow_banned: user.shadow_banned,
-            locked: user.locked,
-            creation_ts: user.creation_ts,
-            last_seen_ts: user.last_seen_ts,
-            user_type: user.user_type.clone(),
+            deactivated: user.deactivated_at.is_some(),
+            locked: user.locked_at.is_some(),
+            created_at: user.created_at,
             appservice_id: user.appservice_id.clone(),
         }
     }
