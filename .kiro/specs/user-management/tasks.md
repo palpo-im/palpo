@@ -246,19 +246,19 @@ This task list tracks the implementation of the user-management feature for the 
 **Required for Web Projects**: Use Playwright/Cypress for real user workflows
 
 **Critical User Journeys**:
-- [ ] 3.4.1 Admin creates new user
+- [x] 3.4.1 Admin creates new user
   - Navigate to users page → Click "Create User" → Fill form → Check username availability → Generate password → Submit → Verify user appears in list
   - Validates: Requirements 1, 2, 3, 19
-- [ ] 3.4.2 Admin manages user devices
+- [x] 3.4.2 Admin manages user devices
   - Navigate to user detail → Click Devices tab → View device list → Delete device → Confirm → Verify device removed
   - Validates: Requirements 8
-- [ ] 3.4.3 Admin resets user password
+- [x] 3.4.3 Admin resets user password
   - Navigate to user detail → Click Security tab → Click "Reset Password" → Enter new password → Submit → Verify success message
   - Validates: Requirements 6
-- [ ] 3.4.4 Admin configures rate limits
+- [x] 3.4.4 Admin configures rate limits
   - Navigate to user detail → Click Rate Limit tab → Set limits → Save → Verify saved → Reset limits → Verify cleared
   - Validates: Requirements 11
-- [ ] 3.4.5 Admin searches and filters users
+- [x] 3.4.5 Admin searches and filters users
   - Navigate to users page → Enter search term → Apply admin filter → Apply deactivated filter → Sort by name → Verify results
   - Validates: Requirements 19
 
