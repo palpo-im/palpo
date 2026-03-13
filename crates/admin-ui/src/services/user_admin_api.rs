@@ -7,7 +7,7 @@ use crate::models::{
     CreateUserRequest, CreateUserResponse, UpdateUserRequest, UpdateUserResponse,
     ResetPasswordRequest, ResetPasswordResponse, DeactivateUserRequest, DeactivateUserResponse,
     BatchUserOperationRequest, BatchUserOperationResponse, ListUsersRequest, ListUsersResponse,
-    UserStatistics, BatchUserOperation,
+    UserStatistics, BatchUserOperation, User, UserResponse,
     WebConfigError, AuditAction, AuditTargetType,
 };
 use crate::services::api_client::{ApiClient, api_get_json, api_post_json_response, api_put_json_response};
@@ -29,6 +29,28 @@ impl UserAdminAPI {
             audit_logger,
             api_client,
         }
+    }
+
+    /// Get a single user by user_id
+    pub async fn get_user(&self, user_id: &str, admin_user: &str) -> Result<Option<User>, WebConfigError> {
+        // Check permissions
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for user management"));
+        }
+
+        let response: UserResponse = api_get_json(&format!("/api/v1/users/{}", user_id)).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            None,
+            &format!("Retrieved user {}", user_id),
+        ).await;
+
+        Ok(response.user)
     }
 
     /// List users with filtering and pagination
