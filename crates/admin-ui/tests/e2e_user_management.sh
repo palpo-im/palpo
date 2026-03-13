@@ -287,11 +287,152 @@ echo -e "${GREEN}✓ Test 3.4.1 completed${NC}"
 echo ""
 
 # ============================================
-# Test 3.4.2-3.4.5: Remaining Tests
+# Test 3.4.2: Admin Manages User Devices
 # ============================================
-echo "--- Test 3.4.2-3.4.5: Additional Tests ---"
-echo "Note: These tests require existing test data"
-echo "Skipping for now - can be added when test data is available"
+echo "--- Test 3.4.2: Admin Manages User Devices ---"
+
+# Navigate to the created user's detail page
+echo "Step 1: Navigate to user detail page"
+$BROWSER snapshot -i
+$BROWSER find text "newtestuser" click
+$BROWSER wait 2000
+
+# Click Devices tab
+echo "Step 2: Click Devices tab"
+$BROWSER snapshot -i
+$BROWSER find text "设备" click || $BROWSER find text "Devices" click
+$BROWSER wait 1000
+
+# Check if device list is displayed
+echo "Step 3: Verify device list"
+check_success "设备"
+check_success "ID"
+
+# Delete first device if exists
+echo "Step 4: Delete device (if exists)"
+if $BROWSER snapshot -i | grep -q "删除"; then
+    $BROWSER find text "删除" click
+    $BROWSER wait 1000
+    # Confirm deletion if dialog appears
+    $BROWSER find text "确定" click || true
+    $BROWSER wait 1000
+    check_success "已删除"
+else
+    echo "No devices to delete (this is normal for new users)"
+fi
+
+echo -e "${GREEN}✓ Test 3.4.2 completed${NC}"
+echo ""
+
+# ============================================
+# Test 3.4.3: Admin Resets User Password
+# ============================================
+echo "--- Test 3.4.3: Admin Resets User Password ---"
+
+# Navigate to Security tab
+echo "Step 1: Navigate to Security tab"
+$BROWSER snapshot -i
+$BROWSER find text "安全" click || $BROWSER find text "Security" click
+$BROWSER wait 1000
+
+# Click Reset Password button
+echo "Step 2: Click Reset Password"
+$BROWSER find text "重置密码" click || $BROWSER find text "Reset Password" click
+$BROWSER wait 1000
+
+# Enter new password
+echo "Step 3: Enter new password"
+$BROWSER snapshot -i
+$BROWSER fill @e1 "NewPass123!"
+$BROWSER fill @e2 "NewPass123!"
+
+# Submit password reset
+echo "Step 4: Submit password reset"
+$BROWSER find text "确定" click || $BROWSER find text "Submit" click
+$BROWSER wait 2000
+
+# Verify success
+echo "Step 5: Verify password reset"
+check_success "成功"
+check_success "密码"
+
+echo -e "${GREEN}✓ Test 3.4.3 completed${NC}"
+echo ""
+
+# ============================================
+# Test 3.4.4: Admin Configures Rate Limits
+# ============================================
+echo "--- Test 3.4.4: Admin Configures Rate Limits ---"
+
+# Navigate to Rate Limit tab
+echo "Step 1: Navigate to Rate Limit tab"
+$BROWSER snapshot -i
+$BROWSER find text "速率限制" click || $BROWSER find text "Rate Limit" click
+$BROWSER wait 1000
+
+# Set rate limits
+echo "Step 2: Set rate limits"
+$BROWSER snapshot -i
+$BROWSER fill @e1 "10"  # Max requests
+$BROWSER fill @e2 "60"  # Window seconds
+
+# Save rate limits
+echo "Step 3: Save rate limits"
+$BROWSER find text "保存" click || $BROWSER find text "Save" click
+$BROWSER wait 1000
+
+# Verify saved
+echo "Step 4: Verify rate limits saved"
+check_success "成功"
+check_success "10"
+
+# Reset rate limits
+echo "Step 5: Reset rate limits"
+$BROWSER find text "重置" click || $BROWSER find text "Reset" click
+$BROWSER wait 1000
+
+# Verify cleared
+echo "Step 6: Verify rate limits cleared"
+check_success "成功"
+
+echo -e "${GREEN}✓ Test 3.4.4 completed${NC}"
+echo ""
+
+# ============================================
+# Test 3.4.5: Admin Searches and Filters Users
+# ============================================
+echo "--- Test 3.4.5: Admin Searches and Filters Users ---"
+
+# Navigate back to users list
+echo "Step 1: Navigate back to users list"
+$BROWSER snapshot -i
+$BROWSER find text "用户管理" click || $BROWSER find text "用户" click
+$BROWSER wait 2000
+
+# Test search functionality
+echo "Step 2: Test search functionality"
+$BROWSER snapshot -i
+$BROWSER fill @e1 "newtestuser"
+$BROWSER wait 1000
+check_success "newtestuser"
+
+# Clear search
+echo "Step 3: Clear search"
+$BROWSER fill @e1 ""
+$BROWSER wait 1000
+
+# Test admin filter
+echo "Step 4: Test admin filter"
+$BROWSER snapshot -i
+$BROWSER find text "管理员" click
+$BROWSER wait 500
+
+# Test deactivated filter
+echo "Step 5: Test deactivated filter"
+$BROWSER find text "状态" click
+$BROWSER wait 500
+
+echo -e "${GREEN}✓ Test 3.4.5 completed${NC}"
 echo ""
 
 # ============================================
@@ -301,9 +442,9 @@ echo "========================================"
 echo "  Test Summary"
 echo "========================================"
 echo -e "${GREEN}✓ 3.4.1 Admin creates new user${NC}"
-echo "  3.4.2 Admin manages user devices (skipped)"
-echo "  3.4.3 Admin resets user password (skipped)"
-echo "  3.4.4 Admin configures rate limits (skipped)"
-echo "  3.4.5 Admin searches and filters users (skipped)"
+echo -e "${GREEN}✓ 3.4.2 Admin manages user devices${NC}"
+echo -e "${GREEN}✓ 3.4.3 Admin resets user password${NC}"
+echo -e "${GREEN}✓ 3.4.4 Admin configures rate limits${NC}"
+echo -e "${GREEN}✓ 3.4.5 Admin searches and filters users${NC}"
 echo ""
-echo "E2E tests completed!"
+echo "All E2E tests completed successfully!"
