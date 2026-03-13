@@ -354,6 +354,161 @@ impl UserAdminAPI {
             .map(char::from)
             .collect()
     }
+
+    // ==================== Device Management ====================
+
+    /// List devices for a user
+    pub async fn list_devices(&self, user_id: &str, admin_user: &str) -> Result<super::DeviceListResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for device management"));
+        }
+
+        let response: super::DeviceListResponse = api_get_json(&format!("/api/v1/users/{}/devices", user_id)).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "device_count": response.devices.len(),
+                "total_count": response.total_count
+            })),
+            &format!("Listed devices for user {}", user_id),
+        ).await;
+
+        Ok(response)
+    }
+
+    /// Delete a single device
+    pub async fn delete_device(&self, user_id: &str, device_id: &str, admin_user: &str) -> Result<super::DeleteDeviceResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for device management"));
+        }
+
+        let response: super::DeleteDeviceResponse = api_post_json_response(
+            &format!("/api/v1/users/{}/devices/{}", user_id, device_id),
+            &serde_json::json!({})
+        ).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "device_id": device_id,
+                "success": response.success
+            })),
+            &format!("Deleted device {} for user {}", device_id, user_id),
+        ).await;
+
+        Ok(response)
+    }
+
+    /// Delete multiple devices for a user
+    pub async fn delete_devices(&self, user_id: &str, device_ids: Vec<String>, admin_user: &str) -> Result<super::BatchDeleteDeviceResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for device management"));
+        }
+
+        let response: super::BatchDeleteDeviceResponse = api_post_json_response(
+            &format!("/api/v1/users/{}/devices/delete", user_id),
+            &super::BatchDeleteDeviceRequest { device_ids, reason: None }
+        ).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "deleted_count": response.deleted_count,
+                "failed_count": response.failed_count
+            })),
+            &format!("Batch deleted devices for user {}", user_id),
+        ).await;
+
+        Ok(response)
+    }
+
+    // ==================== Session Management ====================
+
+    /// Get whois information for a user
+    pub async fn get_whois(&self, user_id: &str, admin_user: &str) -> Result<super::WhoisInfo, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for session management"));
+        }
+
+        let response: super::WhoisInfo = api_get_json(&format!("/api/v1/users/{}/whois", user_id)).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "session_count": response.devices.len(),
+                "ip_address": response.ip_address
+            })),
+            &format!("Retrieved whois info for user {}", user_id),
+        ).await;
+
+        Ok(response)
+    }
+
+    /// List sessions for a user
+    pub async fn list_sessions(&self, user_id: &str, admin_user: &str) -> Result<super::SessionListResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for session management"));
+        }
+
+        // Get whois info which contains session data
+        let whois = self.get_whois(user_id, admin_user).await?;
+
+        // Convert whois devices to sessions
+        let sessions: Vec<super::SessionInfo> = whois.devices.into_iter().map(|d| super::SessionInfo {
+            session_id: d.device_id.clone(),
+            user_id: user_id.to_string(),
+            device_id: Some(d.device_id),
+            ip_address: d.last_seen_ip,
+            user_agent: d.last_seen_user_agent,
+            connection_type: super::ConnectionType::Web,
+            login_ts: whois.connected_since,
+            last_activity_ts: d.last_seen_ts,
+            is_active: whois.last_activity > 0,
+            room_count: 0,
+            device_display_name: d.display_name,
+        }).collect();
+
+        Ok(super::SessionListResponse {
+            success: true,
+            sessions,
+            total_count: sessions.len() as u32,
+            active_count: sessions.iter().filter(|s| s.is_active).count() as u32,
+            has_more: false,
+            error: None,
+        })
+    }
+
+    /// Terminate a session
+    pub async fn terminate_session(&self, user_id: &str, session_id: &str, admin_user: &str) -> Result<super::TerminateSessionResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for session management"));
+        }
+
+        // Delete the device to terminate the session
+        let response = self.delete_device(user_id, session_id, admin_user).await?;
+
+        Ok(super::TerminateSessionResponse {
+            success: response.success,
+            error: response.error,
+        })
+    }
 }
 
 #[cfg(test)]
