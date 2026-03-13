@@ -1,10 +1,15 @@
 //! User detail page component with tabbed interface
 
 use dioxus::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 use crate::app::Route;
 use crate::models::user::User;
+use crate::models::AuthState;
 use crate::components::loading::Spinner;
 use crate::components::feedback::ErrorMessage;
+use crate::services::user_admin_api::UserAdminAPI;
+use crate::utils::audit_logger::AuditLogger;
+use crate::services::api_client::ApiClient;
 
 /// Tab types for user detail page
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,8 +25,8 @@ enum UserDetailTab {
 #[component]
 pub fn UserDetail(user_id: String) -> Element {
     // State management
-    let mut user = use_signal(|| None::<User>);
-    let mut loading = use_signal(|| true);
+    let user = use_signal(|| None::<User>);
+    let loading = use_signal(|| true);
     let error = use_signal(|| None::<String>);
     let mut active_tab = use_signal(|| UserDetailTab::BasicInfo);
     let mut is_editing = use_signal(|| false);
@@ -31,23 +36,49 @@ pub fn UserDetail(user_id: String) -> Element {
     let mut edit_avatar_url = use_signal(String::new);
     let mut edit_is_admin = use_signal(|| false);
 
-    // Load user data effect (placeholder - will be implemented in Phase 2)
+    // Load user data effect
     use_effect(move || {
-        // TODO: Implement actual API call in Phase 2
-        // For now, create a mock user for UI testing
-        let mock_user = User {
-            user_id: user_id.clone(),
-            username: user_id.split(':').next().unwrap_or("user").trim_start_matches('@').to_string(),
-            display_name: Some("Test User".to_string()),
-            avatar_url: None,
-            is_admin: false,
-            is_deactivated: false,
-            creation_ts: 1640000000,
-            last_seen_ts: Some(1640100000),
-            permissions: vec![],
+        let user_id = user_id.clone();
+        let mut loading = loading;
+        let mut error = error;
+        let mut user = user;
+        let mut edit_display_name = edit_display_name;
+        let mut edit_avatar_url = edit_avatar_url;
+        let mut edit_is_admin = edit_is_admin;
+
+        // Get auth state
+        let auth_state = use_context::<Signal<AuthState>>();
+        let admin_user = match &*auth_state.read() {
+            AuthState::Authenticated(u) => u.username.clone(),
+            _ => "admin".to_string(),
         };
-        user.set(Some(mock_user));
-        loading.set(false);
+
+        // Create API instance
+        let audit_logger = AuditLogger::new(1000);
+        let api_client = ApiClient::new("http://localhost:8081");
+        let api = UserAdminAPI::new(audit_logger, api_client);
+
+        spawn_local(async move {
+            loading.set(true);
+            error.set(None);
+
+            // Call API to get user data
+            match api.get_user(&user_id, &admin_user).await {
+                Ok(Some(fetched_user)) => {
+                    user.set(Some(fetched_user.clone()));
+                    edit_display_name.set(fetched_user.display_name.clone().unwrap_or_default());
+                    edit_avatar_url.set(fetched_user.avatar_url.clone().unwrap_or_default());
+                    edit_is_admin.set(fetched_user.is_admin);
+                }
+                Ok(None) => {
+                    error.set(Some(format!("用户 {} 不存在", user_id)));
+                }
+                Err(e) => {
+                    error.set(Some(format!("获取用户信息失败: {}", e)));
+                }
+            }
+            loading.set(false);
+        });
     });
 
     // Initialize edit form when user data loads
