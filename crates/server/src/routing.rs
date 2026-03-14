@@ -3,12 +3,13 @@ mod appservice;
 mod client;
 mod federation;
 mod media;
+mod oauth2;
 
 use salvo::prelude::*;
 use salvo::serve_static::StaticDir;
 
 use crate::core::MatrixError;
-use crate::core::client::discovery::client::{ClientResBody, HomeServerInfo};
+use crate::core::client::discovery::client::{AuthenticationInfo, ClientResBody, HomeServerInfo};
 use crate::core::client::discovery::support::{Contact, SupportResBody};
 use crate::core::federation::directory::ServerResBody;
 use crate::{AppResult, JsonResult, config, hoops, json_ok};
@@ -42,11 +43,16 @@ pub fn root() -> Router {
         )
         .push(admin::router())
         .push(
-            Router::with_path(".well-known/matrix")
-                .push(Router::with_path("client").get(well_known_client))
-                .push(Router::with_path("support").get(well_known_support))
-                .push(Router::with_path("server").get(well_known_server)),
+            Router::with_path(".well-known")
+                .push(
+                    Router::with_path("matrix")
+                        .push(Router::with_path("client").get(well_known_client))
+                        .push(Router::with_path("support").get(well_known_support))
+                        .push(Router::with_path("server").get(well_known_server)),
+                )
+                .push(Router::with_path("openid-configuration").get(oauth2::openid_configuration)),
         )
+        .push(oauth2::router())
         .push(Router::with_path("{*path}").get(StaticDir::new("./static")))
 }
 
@@ -67,9 +73,19 @@ pub async fn limit_rate() -> AppResult<()> {
 fn well_known_client() -> JsonResult<ClientResBody> {
     let conf = config::get();
     let client_url = conf.well_known_client();
-    json_ok(ClientResBody::new(HomeServerInfo {
+    let mut body = ClientResBody::new(HomeServerInfo {
         base_url: client_url.clone(),
-    }))
+    });
+
+    // Add OIDC Authorization Server discovery (MSC3861)
+    if let Some(oidc) = conf.enabled_oidc() {
+        if oidc.enable_auth_server {
+            let issuer = format!("{}/", client_url.trim_end_matches('/'));
+            body.authentication = Some(AuthenticationInfo { issuer });
+        }
+    }
+
+    json_ok(body)
 }
 
 #[endpoint]

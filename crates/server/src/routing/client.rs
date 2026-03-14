@@ -5,7 +5,8 @@ mod auth;
 mod device;
 mod directory;
 mod key;
-mod oidc;
+pub(crate) mod oauth2;
+pub(crate) mod oidc;
 mod presence;
 mod profile;
 mod push_rule;
@@ -117,6 +118,14 @@ pub fn router() -> Router {
                 .push(Router::with_path("auth").get(oidc::oidc_auth))
                 .push(Router::with_path("callback").get(oidc::oidc_callback))
                 .push(Router::with_path("login").post(oidc::oidc_login)),
+        )
+        .push(
+            Router::with_path("v1")
+                .push(Router::with_path("auth_metadata").get(oauth2::auth_metadata)),
+        )
+        .push(
+            Router::with_path("unstable/org.matrix.msc2965")
+                .push(Router::with_path("auth_metadata").get(oauth2::auth_metadata)),
         )
         .push(unstable::router())
 }

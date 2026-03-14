@@ -86,6 +86,11 @@
 #
 # ip_lookup_strategy = 5
 
+# Allowed CORS origins. If empty, all origins are allowed.
+# Example: ["https://example.com", "https://app.example.com"]
+#
+# allowed_origins = []
+
 # Max request size for file uploads in bytes. Defaults to 20MB.
 #
 # max_upload_size = 20971520
@@ -1315,3 +1320,11 @@
 # Adds extra security to OAuth flow (recommended)
 #
 # enable_pkce = true
+
+# Enable Palpo as OAuth 2.0 Authorization Server (MSC3861)
+#
+# When true, Palpo advertises itself as an OIDC issuer in .well-known
+# and exposes /oauth2/* endpoints for Element X native OIDC login.
+# Requires at least one provider to be configured.
+#
+# enable_auth_server = false
