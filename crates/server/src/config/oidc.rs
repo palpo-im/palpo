@@ -106,6 +106,16 @@ pub struct OidcConfig {
     /// default: true
     #[serde(default = "default_true")]
     pub enable_pkce: bool,
+
+    /// Enable Palpo as OAuth 2.0 Authorization Server (MSC3861)
+    ///
+    /// When true, Palpo advertises itself as an OIDC issuer in .well-known
+    /// and exposes /oauth2/* endpoints for Element X native OIDC login.
+    /// Requires at least one provider to be configured.
+    ///
+    /// default: false
+    #[serde(default)]
+    pub enable_auth_server: bool,
 }
 
 #[derive(Clone, Deserialize)]

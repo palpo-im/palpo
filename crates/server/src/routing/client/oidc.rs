@@ -153,14 +153,14 @@ pub struct OidcProviderInfo {
 
 /// Supported OAuth/OIDC provider types
 #[derive(Debug, Clone, PartialEq)]
-enum ProviderType {
+pub(crate) enum ProviderType {
     Google,
     GitHub,
     Generic,
 }
 
 impl ProviderType {
-    fn from_issuer(issuer: &str) -> Self {
+    pub(crate) fn from_issuer(issuer: &str) -> Self {
         match issuer {
             "https://accounts.google.com" => Self::Google,
             "https://github.com" => Self::GitHub,
@@ -387,7 +387,7 @@ fn get_provider_config(provider_name: &str) -> Result<&'static OidcProviderConfi
 ///
 /// Attempts to fetch the .well-known/openid-configuration endpoint.
 /// Falls back to common endpoint patterns for known providers.
-async fn discover_provider_endpoints(
+pub(crate) async fn discover_provider_endpoints(
     provider_config: &OidcProviderConfig,
 ) -> Result<OidcProviderInfo, MatrixError> {
     let discovery_url = format!(
@@ -860,7 +860,7 @@ async fn exchange_code_for_tokens(
 /// ## Returned Information
 /// Typically includes: sub (subject), email, name, picture, email_verified, etc.
 /// The exact claims depend on the scopes requested and provider capabilities.
-async fn get_user_info_from_provider(
+pub(crate) async fn get_user_info_from_provider(
     access_token: &str,
     provider_info: &OidcProviderInfo,
     provider_config: &OidcProviderConfig,
@@ -977,7 +977,7 @@ async fn get_user_info_from_provider(
 /// - Email verification status (if required)
 /// - Account restrictions or blocklists (future enhancement)
 /// - Domain restrictions (future enhancement)
-fn validate_user_info(
+pub(crate) fn validate_user_info(
     user_info: &OidcUserInfo,
     oidc_config: &crate::config::OidcConfig,
 ) -> Result<(), MatrixError> {
@@ -1012,7 +1012,7 @@ fn validate_user_info(
 /// - All localparts are sanitized for Matrix compliance
 /// - Invalid characters are filtered out
 /// - Uniqueness is guaranteed by using provider ID as fallback
-fn generate_matrix_user_id(
+pub(crate) fn generate_matrix_user_id(
     user_info: &OidcUserInfo,
     oidc_config: &crate::config::OidcConfig,
     server_name: &str,
@@ -1060,7 +1060,7 @@ fn generate_matrix_user_id(
 ///
 /// Generates a human-readable display name from OIDC user information,
 /// considering provider-specific attribute mappings.
-fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProviderConfig) -> String {
+pub(crate) fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProviderConfig) -> String {
     // Check for custom attribute mapping first
     if let Some(_display_name_claim) = provider_config.attribute_mapping.get("display_name") {
         // This would require extending the user info structure to include arbitrary claims
@@ -1090,7 +1090,7 @@ fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProvide
 /// 2. Create new user record if needed (with OIDC type)
 /// 3. Update user profile with display name and avatar
 /// 4. Handle any database constraints or conflicts
-async fn create_or_get_user(
+pub(crate) async fn create_or_get_user(
     user_id: &str,
     display_name: &str,
     user_info: &OidcUserInfo,
@@ -1218,6 +1218,7 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
         is_used: false,
         expires_at: None, // OIDC tokens don't expire by default
         created_at: UnixMillis::now(),
+        oauth_client_id: None,
     };
 
     diesel::insert_into(user_access_tokens::table)
@@ -1233,10 +1234,10 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
 
 /// OAuth 2.0 token response from OIDC provider
 #[derive(Debug, Deserialize)]
-struct OAuthTokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: Option<i64>,
-    id_token: Option<String>,
-    refresh_token: Option<String>,
+pub(crate) struct OAuthTokenResponse {
+    pub(crate) access_token: String,
+    pub(crate) token_type: String,
+    pub(crate) expires_in: Option<i64>,
+    pub(crate) id_token: Option<String>,
+    pub(crate) refresh_token: Option<String>,
 }

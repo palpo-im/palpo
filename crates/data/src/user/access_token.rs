@@ -17,6 +17,7 @@ pub struct DbAccessToken {
     pub is_used: bool,
     pub expires_at: Option<UnixMillis>,
     pub created_at: UnixMillis,
+    pub oauth_client_id: Option<String>,
 }
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = user_access_tokens)]
@@ -30,6 +31,7 @@ pub struct NewDbAccessToken {
     pub is_used: bool,
     pub expires_at: Option<UnixMillis>,
     pub created_at: UnixMillis,
+    pub oauth_client_id: Option<String>,
 }
 
 impl NewDbAccessToken {
@@ -49,6 +51,7 @@ impl NewDbAccessToken {
             is_used: false,
             expires_at: None,
             created_at: UnixMillis::now(),
+            oauth_client_id: None,
         }
     }
 }

@@ -24,6 +24,13 @@ use crate::serde::JsonObject;
 //     }
 // };
 
+/// Authentication information for OIDC discovery (MSC3861).
+#[derive(ToSchema, Clone, Debug, Deserialize, Hash, Serialize)]
+pub struct AuthenticationInfo {
+    /// The issuer URL of the authorization server.
+    pub issuer: String,
+}
+
 /// Response type for the `client_well_known` endpoint.
 
 #[derive(ToSchema, Serialize, Debug)]
@@ -31,6 +38,14 @@ pub struct ClientResBody {
     /// Information about the homeserver to connect to.
     #[serde(rename = "m.homeserver")]
     pub homeserver: HomeServerInfo,
+
+    /// Information about the authorization server (MSC3861 OIDC).
+    #[serde(
+        default,
+        rename = "m.authentication",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub authentication: Option<AuthenticationInfo>,
 
     /// Information about the identity server to connect to.
     #[serde(
@@ -66,6 +81,7 @@ impl ClientResBody {
     pub fn new(homeserver: HomeServerInfo) -> Self {
         Self {
             homeserver,
+            authentication: None,
             identity_server: None,
             #[cfg(feature = "unstable-msc3488")]
             tile_server: None,

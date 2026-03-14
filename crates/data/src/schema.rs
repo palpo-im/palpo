@@ -791,6 +791,7 @@ diesel::table! {
         is_used -> Bool,
         expires_at -> Nullable<Int8>,
         created_at -> Int8,
+        oauth_client_id -> Nullable<Varchar>,
     }
 }
 
@@ -1106,6 +1107,41 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    oauth_clients (client_id) {
+        client_id -> Varchar,
+        client_name -> Nullable<Varchar>,
+        redirect_uris -> Text,
+        token_endpoint_auth_method -> Varchar,
+        grant_types -> Text,
+        response_types -> Text,
+        application_type -> Nullable<Varchar>,
+        last_used_at -> Nullable<Int8>,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    oauth_authorization_codes (code) {
+        code -> Varchar,
+        client_id -> Varchar,
+        user_id -> Varchar,
+        redirect_uri -> Text,
+        code_challenge -> Varchar,
+        code_challenge_method -> Varchar,
+        scope -> Varchar,
+        expires_at -> Int8,
+        created_at -> Int8,
+    }
+}
+
+diesel::joinable!(oauth_authorization_codes -> oauth_clients (client_id));
 diesel::joinable!(e2e_cross_signing_uia_bypass -> users (user_id));
 diesel::joinable!(user_external_ids -> users (user_id));
 diesel::joinable!(user_ratelimit_override -> users (user_id));
@@ -1142,6 +1178,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     events,
     lazy_load_deliveries,
     media_metadatas,
+    oauth_clients,
+    oauth_authorization_codes,
     media_thumbnails,
     media_url_previews,
     outgoing_requests,
