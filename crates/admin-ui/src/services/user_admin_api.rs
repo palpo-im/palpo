@@ -8,6 +8,10 @@ use crate::models::{
     ResetPasswordRequest, ResetPasswordResponse, DeactivateUserRequest, DeactivateUserResponse,
     BatchUserOperationRequest, BatchUserOperationResponse, ListUsersRequest, ListUsersResponse,
     UserStatistics, BatchUserOperation, User, UserResponse,
+    DeviceListRequest, DeviceListResponse, DeleteDeviceResponse,
+    BatchDeleteDeviceRequest, BatchDeleteDeviceResponse,
+    SessionListRequest, SessionListResponse, SessionInfo, ConnectionType, WhoisInfo, TerminateSessionResponse,
+    PusherListResponse, UpdatePusherRequest, UpdatePusherResponse, DeletePusherResponse,
     WebConfigError, AuditAction, AuditTargetType,
 };
 use crate::services::api_client::{ApiClient, api_get_json, api_post_json_response, api_put_json_response};
@@ -357,13 +361,13 @@ impl UserAdminAPI {
 
     // ==================== Device Management ====================
 
-    /// List devices for a user
-    pub async fn list_devices(&self, user_id: &str, admin_user: &str) -> Result<super::DeviceListResponse, WebConfigError> {
+    /// Get devices for a user (wrapper for user detail page)
+    pub async fn get_user_devices(&self, user_id: &str, request: DeviceListRequest, admin_user: &str) -> Result<DeviceListResponse, WebConfigError> {
         if !self.has_user_management_permission(admin_user).await? {
             return Err(WebConfigError::permission("Insufficient permissions for device management"));
         }
 
-        let response: super::DeviceListResponse = api_get_json(&format!("/api/v1/users/{}/devices", user_id)).await?;
+        let response: DeviceListResponse = api_get_json(&format!("/api/v1/users/{}/devices", user_id)).await?;
 
         // Log the action
         self.audit_logger.log_action(
@@ -382,12 +386,12 @@ impl UserAdminAPI {
     }
 
     /// Delete a single device
-    pub async fn delete_device(&self, user_id: &str, device_id: &str, admin_user: &str) -> Result<super::DeleteDeviceResponse, WebConfigError> {
+    pub async fn delete_device(&self, user_id: &str, device_id: &str, admin_user: &str) -> Result<DeleteDeviceResponse, WebConfigError> {
         if !self.has_user_management_permission(admin_user).await? {
             return Err(WebConfigError::permission("Insufficient permissions for device management"));
         }
 
-        let response: super::DeleteDeviceResponse = api_post_json_response(
+        let response: DeleteDeviceResponse = api_post_json_response(
             &format!("/api/v1/users/{}/devices/{}", user_id, device_id),
             &serde_json::json!({})
         ).await?;
@@ -409,14 +413,14 @@ impl UserAdminAPI {
     }
 
     /// Delete multiple devices for a user
-    pub async fn delete_devices(&self, user_id: &str, device_ids: Vec<String>, admin_user: &str) -> Result<super::BatchDeleteDeviceResponse, WebConfigError> {
+    pub async fn delete_devices(&self, user_id: &str, device_ids: Vec<String>, admin_user: &str) -> Result<BatchDeleteDeviceResponse, WebConfigError> {
         if !self.has_user_management_permission(admin_user).await? {
             return Err(WebConfigError::permission("Insufficient permissions for device management"));
         }
 
-        let response: super::BatchDeleteDeviceResponse = api_post_json_response(
+        let response: BatchDeleteDeviceResponse = api_post_json_response(
             &format!("/api/v1/users/{}/devices/delete", user_id),
-            &super::BatchDeleteDeviceRequest { device_ids, reason: None }
+            &BatchDeleteDeviceRequest { device_ids, reason: None }
         ).await?;
 
         // Log the action
@@ -437,13 +441,18 @@ impl UserAdminAPI {
 
     // ==================== Session Management ====================
 
+    /// Get sessions for a user (wrapper for user detail page)
+    pub async fn get_user_sessions(&self, user_id: &str, request: SessionListRequest, admin_user: &str) -> Result<SessionListResponse, WebConfigError> {
+        self.list_sessions(user_id, request, admin_user).await
+    }
+
     /// Get whois information for a user
-    pub async fn get_whois(&self, user_id: &str, admin_user: &str) -> Result<super::WhoisInfo, WebConfigError> {
+    pub async fn get_whois(&self, user_id: &str, admin_user: &str) -> Result<WhoisInfo, WebConfigError> {
         if !self.has_user_management_permission(admin_user).await? {
             return Err(WebConfigError::permission("Insufficient permissions for session management"));
         }
 
-        let response: super::WhoisInfo = api_get_json(&format!("/api/v1/users/{}/whois", user_id)).await?;
+        let response: WhoisInfo = api_get_json(&format!("/api/v1/users/{}/whois", user_id)).await?;
 
         // Log the action
         self.audit_logger.log_action(
@@ -462,7 +471,7 @@ impl UserAdminAPI {
     }
 
     /// List sessions for a user
-    pub async fn list_sessions(&self, user_id: &str, admin_user: &str) -> Result<super::SessionListResponse, WebConfigError> {
+    pub async fn list_sessions(&self, user_id: &str, request: SessionListRequest, admin_user: &str) -> Result<SessionListResponse, WebConfigError> {
         if !self.has_user_management_permission(admin_user).await? {
             return Err(WebConfigError::permission("Insufficient permissions for session management"));
         }
@@ -471,13 +480,13 @@ impl UserAdminAPI {
         let whois = self.get_whois(user_id, admin_user).await?;
 
         // Convert whois devices to sessions
-        let sessions: Vec<super::SessionInfo> = whois.devices.into_iter().map(|d| super::SessionInfo {
+        let sessions: Vec<SessionInfo> = whois.devices.into_iter().map(|d| SessionInfo {
             session_id: d.device_id.clone(),
             user_id: user_id.to_string(),
             device_id: Some(d.device_id),
             ip_address: d.last_seen_ip,
             user_agent: d.last_seen_user_agent,
-            connection_type: super::ConnectionType::Web,
+            connection_type: ConnectionType::Web,
             login_ts: whois.connected_since,
             last_activity_ts: d.last_seen_ts,
             is_active: whois.last_activity > 0,
@@ -485,18 +494,22 @@ impl UserAdminAPI {
             device_display_name: d.display_name,
         }).collect();
 
-        Ok(super::SessionListResponse {
+        // Calculate counts before moving sessions
+        let total_count = sessions.len() as u32;
+        let active_count = sessions.iter().filter(|s| s.is_active).count() as u32;
+
+        Ok(SessionListResponse {
             success: true,
             sessions,
-            total_count: sessions.len() as u32,
-            active_count: sessions.iter().filter(|s| s.is_active).count() as u32,
+            total_count,
+            active_count,
             has_more: false,
             error: None,
         })
     }
 
     /// Terminate a session
-    pub async fn terminate_session(&self, user_id: &str, session_id: &str, admin_user: &str) -> Result<super::TerminateSessionResponse, WebConfigError> {
+    pub async fn terminate_session(&self, user_id: &str, session_id: &str, admin_user: &str) -> Result<TerminateSessionResponse, WebConfigError> {
         if !self.has_user_management_permission(admin_user).await? {
             return Err(WebConfigError::permission("Insufficient permissions for session management"));
         }
@@ -504,10 +517,94 @@ impl UserAdminAPI {
         // Delete the device to terminate the session
         let response = self.delete_device(user_id, session_id, admin_user).await?;
 
-        Ok(super::TerminateSessionResponse {
+        Ok(TerminateSessionResponse {
             success: response.success,
             error: response.error,
         })
+    }
+
+    // ==================== Pusher Management ====================
+
+    /// Get pushers for a user (wrapper for user detail page)
+    pub async fn get_user_pushers(&self, user_id: &str, admin_user: &str) -> Result<PusherListResponse, WebConfigError> {
+        self.list_pushers(user_id, admin_user).await
+    }
+
+    /// List pushers for a user
+    pub async fn list_pushers(&self, user_id: &str, admin_user: &str) -> Result<PusherListResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for pusher management"));
+        }
+
+        let response: PusherListResponse = api_get_json(&format!("/api/v1/users/{}/pushers", user_id)).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "pusher_count": response.pushers.len()
+            })),
+            &format!("Listed pushers for user {}", user_id),
+        ).await;
+
+        Ok(response)
+    }
+
+    /// Update a pusher
+    pub async fn update_pusher(&self, user_id: &str, request: UpdatePusherRequest, admin_user: &str) -> Result<UpdatePusherResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for pusher management"));
+        }
+
+        let response: UpdatePusherResponse = api_put_json_response(
+            &format!("/api/v1/users/{}/pushers/{}", user_id, request.pusher_id),
+            &request
+        ).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "pusher_id": request.pusher_id,
+                "success": response.success
+            })),
+            &format!("Updated pusher {} for user {}", request.pusher_id, user_id),
+        ).await;
+
+        Ok(response)
+    }
+
+    /// Delete a pusher
+    pub async fn delete_pusher(&self, user_id: &str, pusher_id: &str, admin_user: &str) -> Result<DeletePusherResponse, WebConfigError> {
+        if !self.has_user_management_permission(admin_user).await? {
+            return Err(WebConfigError::permission("Insufficient permissions for pusher management"));
+        }
+
+        let response: DeletePusherResponse = api_post_json_response(
+            &format!("/api/v1/users/{}/pushers/{}/delete", user_id, pusher_id),
+            &serde_json::json!({})
+        ).await?;
+
+        // Log the action
+        self.audit_logger.log_action(
+            admin_user,
+            AuditAction::UserUpdate,
+            AuditTargetType::User,
+            user_id,
+            Some(serde_json::json!({
+                "pusher_id": pusher_id,
+                "success": response.success
+            })),
+            &format!("Deleted pusher {} for user {}", pusher_id, user_id),
+        ).await;
+
+        Ok(response)
     }
 }
 

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use crate::models::room::SortOrder;
+use chrono::{TimeZone, Utc};
 
 /// Device information for a user
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

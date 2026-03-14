@@ -56,6 +56,14 @@ pub struct UpdateUserResponse {
     pub error: Option<String>,
 }
 
+/// User get response (for single user retrieval)
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserResponse {
+    pub success: bool,
+    pub user: Option<User>,
+    pub error: Option<String>,
+}
+
 /// Password reset request
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ResetPasswordRequest {
@@ -141,7 +149,7 @@ pub struct ListUsersResponse {
 }
 
 /// User sort fields
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum UserSortField {
     Username,
     DisplayName,

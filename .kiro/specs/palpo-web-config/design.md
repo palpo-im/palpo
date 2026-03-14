@@ -35,10 +35,12 @@ graph TB
         MediaMgr[媒体管理器]
         FedMgr[联邦管理器]
         AppSvcMgr[Appservice管理器]
+        PalpoClient[PalpoClient\n/_synapse/admin/ HTTP客户端]
     end
     
     subgraph "数据层"
-        DB[(PostgreSQL数据库)]
+        DB[(PostgreSQL数据库\nwebui_admins + audit_logs)]
+        PalpoAPI[Palpo Matrix Server\n/_synapse/admin/ API]
         TOML[TOML配置文件]
         FS[文件系统]
     end
@@ -66,11 +68,12 @@ graph TB
     FedAPI --> FedMgr
     ASAPI --> AppSvcMgr
     
-    UserMgr --> DB
+    UserMgr --> PalpoClient
     RoomMgr --> DB
     MediaMgr --> FS
     FedMgr --> DB
     AppSvcMgr --> DB
+    PalpoClient --> PalpoAPI
 ```
 
 ### 技术栈
@@ -883,7 +886,7 @@ pub enum WebConfigError {
 | 模块分类 | 完成度 | 状态说明 |
 |---------|--------|---------|
 | 基础架构层 | 100% | ✅ 完全实现 |
-| 用户管理 | 90-95% | ✅ 后端完成，前端待完善 |
+| 用户管理 | ❌ 需重做 | 架构错误：直连数据库，应改为调用 Palpo HTTP API |
 | 配置管理 | 100% | ✅ 完全实现 |
 | 房间管理 | 70% | ⚠️ 基础功能完成，高级功能待实现 |
 | 媒体管理 | 80% | ⚠️ 基础功能完成，高级功能待实现 |
@@ -937,14 +940,13 @@ pub enum WebConfigError {
   - 服务器控制页面框架
   - 实现文件: `crates/admin-ui/src/pages/`
 
-#### 阶段二：用户管理功能 ✅ (90-95%)
-- **用户管理后端API** (任务组 14) - 已完成
-  - 所有用户管理API端点实现 (14.1-14.13)
-  - 属性测试 (14.14)
-  - 集成测试 (14.15)
-  - 回归测试检查点 (14.16)
-  - 实现文件: `crates/admin-server/src/handlers/user_handler.rs`, `crates/admin-server/src/handlers/device_handler.rs`, `crates/admin-server/src/handlers/session_handler.rs`, `crates/admin-server/src/handlers/rate_limit_handler.rs`, `crates/admin-server/src/handlers/media_handler.rs`, `crates/admin-server/src/handlers/shadow_ban_handler.rs`, `crates/admin-server/src/handlers/threepid_handler.rs`
-  - **参考**: `.kiro/specs/user-management/tasks.md` - 完整的Phase 1-3实现详情
+#### 阶段二：用户管理功能 ⚠️ (需要重做)
+- **用户管理后端API** (任务组 14) - **架构错误，需要重做**
+  - ❌ 当前实现直连 Palpo 数据库（错误架构）
+  - ✅ `palpo_client.rs` 已实现正确的 HTTP API 客户端，但未接入模块树
+  - 需要重做：将所有 handler 改为调用 `PalpoClient`，删除直连数据库的 Repository 层
+  - **正确架构**: Admin Server → PalpoClient → `/_synapse/admin/` HTTP API
+  - **参考**: `.kiro/specs/user-management/design.md` - 正确架构说明
 
 ### 待开发模块详情
 
@@ -1031,7 +1033,13 @@ pub enum WebConfigError {
 
 ### 技术债务和改进项
 
-#### 1. 文档同步 (优先级: 高)
+#### 1. 架构修复 (优先级: 紧急)
+- [ ] 将 `palpo_client.rs` 接入模块树（当前有 "file not included" 警告）
+- [ ] 重写用户管理 handler 改为调用 PalpoClient（当前直连 Palpo 数据库）
+- [ ] 删除错误的 Repository 层（`user_repository.rs` 等）
+- [ ] 清理 `schema.rs`，只保留 `webui_admins` 和 `audit_logs`
+
+#### 2. 文档同步 (优先级: 高)
 - [ ] 更新设计文档以反映实际的架构选择
 - [ ] 统一数据模型命名（设计文档 vs 实际实现）
 - [ ] 补充 API 文档和示例
@@ -1060,38 +1068,20 @@ pub enum WebConfigError {
 
 ### 下一步计划
 
-#### 当前焦点：阶段二 - 用户管理前端功能完善
+#### 当前焦点：修复用户管理架构（任务组 14-FIX）
 
 **优先任务** (按顺序执行):
-1. **任务15.1**: 完善用户列表功能
-   - 用户名可用性实时检查
-   - 密码生成器
-   - 批量操作（服务器通知、删除）
+1. **任务14-FIX.1**: 将 `palpo_client.rs` 接入模块树
+2. **任务14-FIX.2**: 补充 PalpoClient 缺失的方法
+3. **任务14-FIX.3**: 重写 `user_handler.rs` 使用 PalpoClient
+4. **任务14-FIX.4**: 重写 `device_handler.rs`、`session_handler.rs`
+5. **任务14-FIX.5**: 重写其余 handler（速率限制、媒体、shadow-ban、threepid）
+6. **任务14-FIX.6**: 删除直连数据库的 Repository 层
+7. **任务14-FIX.7**: 属性测试和集成测试
+8. **任务14-FIX.8**: 回归测试检查点
 
-2. **任务15.2**: 完善用户详情功能
-   - 设备管理标签页
-   - 连接信息标签页
-   - Pushers标签页
-
-3. **任务15.3**: 完善用户高级功能
-   - 成员资格标签页
-   - 速率限制配置
-   - 实验功能配置
-
-4. **任务15.4**: 完善用户账户数据功能
-   - 账户数据标签页
-   - 第三方标识管理
-   - SSO外部ID管理
-
-5. **任务15.5**: 实现批量用户注册页面
-   - CSV上传界面
-   - 导入预览和验证
-   - 导入结果显示
-
-6. **任务15.6**: 测试用户管理前端功能
-   - 业务逻辑单元测试
-   - 手动测试清单
-   - 可选E2E测试
+**完成后继续**:
+- **任务15.x**: 用户管理前端功能完善（基于修复后的后端 API）
 
 #### 后续计划
 

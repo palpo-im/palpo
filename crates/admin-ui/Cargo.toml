@@ -1,3 +1,6 @@
+[workspace]
+members = ["."]
+
 [package]
 name = "palpo-admin-ui"
 version = "0.1.0"
@@ -44,7 +47,7 @@ toml = "0.8"
 serde_yaml = "0.9"
 base64 = "0.21"
 rand = { version = "0.8", features = ["getrandom"] }
-regex.workspace = true
+regex = "1"
 
 # Conditional dependencies for different targets
 [target.'cfg(target_arch = "wasm32")'.dependencies]

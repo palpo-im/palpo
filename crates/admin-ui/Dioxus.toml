@@ -7,7 +7,7 @@ title = "Palpo 管理界面"
 base_path = "/"
 
 [web.watcher]
-watch_path = ["src", "../core/src"]
+watch_path = ["src"]
 reload_html = true
 index_on_404 = true
 

@@ -2,16 +2,31 @@
 
 use dioxus::prelude::*;
 use crate::hooks::use_auth;
+use crate::app::Route;
 use crate::components::ForgotPasswordModal;
 
 /// Login page component
 #[component]
 pub fn LoginPage() -> Element {
     let auth_context = use_auth();
+    let navigator = use_navigator();
     let mut username = use_signal(|| String::new());
     let mut password = use_signal(|| String::new());
     let mut show_error = use_signal(|| false);
     let mut show_forgot_password = use_signal(|| false);
+
+    // Redirect to dashboard after successful login
+    use_effect({
+        let auth_context = auth_context.clone();
+        let navigator = navigator.clone();
+        
+        move || {
+            if auth_context.is_authenticated() {
+                web_sys::console::log_1(&"Login successful, redirecting to dashboard...".into());
+                navigator.push(Route::Dashboard {});
+            }
+        }
+    });
 
     let handle_login = {
         let auth_context = auth_context.clone();
