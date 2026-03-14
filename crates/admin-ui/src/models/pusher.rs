@@ -79,11 +79,11 @@ pub struct DeletePusherResponse {
 
 impl PusherInfo {
     /// Get human-readable pusher kind
-    pub fn kind_display(&self) -> &'static str {
+    pub fn kind_display(&self) -> String {
         match self.kind {
-            PusherKind::Http => "HTTP 推送",
-            PusherKind::Email => "邮件推送",
-            PusherKind::Custom(ref s) => s.as_str(),
+            PusherKind::Http => "HTTP 推送".to_string(),
+            PusherKind::Email => "邮件推送".to_string(),
+            PusherKind::Custom(ref s) => s.clone(),
         }
     }
 

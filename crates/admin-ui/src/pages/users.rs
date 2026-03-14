@@ -1,11 +1,16 @@
 //! User management page component
 
 use dioxus::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 use crate::app::Route;
-use crate::models::user::{User, UserSortField};
+use crate::models::user::{User, UserSortField, ListUsersRequest};
+use crate::models::AuthState;
 use crate::models::room::SortOrder;
 use crate::components::loading::Spinner;
 use crate::components::feedback::ErrorMessage;
+use crate::services::user_admin_api::UserAdminAPI;
+use crate::utils::audit_logger::AuditLogger;
+use crate::services::api_client::ApiClient;
 
 /// User manager component with list, search, filter, and batch operations
 #[component]
@@ -29,10 +34,60 @@ pub fn UserManager() -> Element {
     let page_size = 20u32;
     let total_pages = (total_count() + page_size - 1) / page_size;
 
-    // Load users effect (placeholder - will be implemented in Phase 2)
+    // Get auth state to get current admin user
+    let auth_state = use_context::<Signal<AuthState>>();
+    let admin_user = match &*auth_state.read() {
+        AuthState::Authenticated(user) => user.username.clone(),
+        _ => "admin".to_string(), // Fallback
+    };
+    let admin_user_for_effect = admin_user.clone();
+
+    // Create API instance
+    let audit_logger = AuditLogger::new(1000);
+    let api_client = ApiClient::new("http://localhost:8081");
+    let api = UserAdminAPI::new(audit_logger, api_client);
+
+    // Load users from API
     use_effect(move || {
-        // TODO: Implement actual API call in Phase 2
-        loading.set(false);
+        let search = search_query();
+        let admin_filter = filter_admin();
+        let deactivated_filter = filter_deactivated();
+        let page = current_page();
+        let sort = sort_by();
+        let order = sort_order();
+        let api = api.clone();
+        let mut loading = loading;
+        let mut error = error;
+        let mut users = users;
+        let mut total_count = total_count;
+        let admin_user = admin_user_for_effect.clone();
+
+        spawn_local(async move {
+            loading.set(true);
+            error.set(None);
+
+            let request = ListUsersRequest {
+                limit: Some(page_size),
+                offset: Some(page * page_size),
+                search: if search.is_empty() { None } else { Some(search) },
+                filter_admin: admin_filter,
+                filter_deactivated: deactivated_filter,
+                sort_by: Some(sort),
+                sort_order: Some(order),
+            };
+
+            match api.list_users(request, &admin_user).await {
+                Ok(response) => {
+                    users.set(response.users);
+                    total_count.set(response.total_count);
+                }
+                Err(e) => {
+                    error.set(Some(e.to_string()));
+                    users.set(Vec::new());
+                }
+            }
+            loading.set(false);
+        });
     });
 
     rsx! {

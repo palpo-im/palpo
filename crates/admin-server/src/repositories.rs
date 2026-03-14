@@ -3,7 +3,7 @@
 /// This module provides the data access layer for user management operations.
 /// All repositories use direct PostgreSQL operations with Diesel ORM.
 
-pub use crate::user_repository::{UserRepository, DieselUserRepository, User, UserAttributes, CreateUserInput, UpdateUserInput, UserFilter, UserListResult, UserDetails};
+pub use crate::user_repository::{UserRepository, DieselUserRepository, User, CreateUserInput, UpdateUserInput, UserFilter, UserListResult, UserDetails};
 pub use crate::device_repository::{DeviceRepository, DieselDeviceRepository, Device, CreateDeviceInput, UpdateDeviceInput, DeviceFilter, DeviceListResult, DeviceWithSessions};
 pub use crate::session_repository::{SessionRepository, DieselSessionRepository, UserIp, SessionInfo, WhoisInfo, SessionFilter, SessionListResult};
 pub use crate::rate_limit_repository::{RateLimitRepository, DieselRateLimitRepository, UserRateLimitConfig, UpdateRateLimitInput};

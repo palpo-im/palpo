@@ -98,6 +98,7 @@ pub struct UserResponse {
     pub shadow_banned: bool,
     pub deactivated: bool,
     pub locked: bool,
+    #[serde(rename = "creation_ts")]
     pub created_at: i64,
     pub appservice_id: Option<String>,
 }
@@ -590,9 +591,9 @@ pub async fn get_shadow_banned(req: &mut Request, depot: &mut Depot, res: &mut R
         return;
     }
 
-    match state.user_repo.get_user_attributes(&user_id).await {
-        Ok(Some(attrs)) => {
-            res.render(Json(ShadowBanStatusResponse { user_id, shadow_banned: attrs.shadow_banned }));
+    match state.user_repo.get_user(&user_id).await {
+        Ok(Some(user)) => {
+            res.render(Json(ShadowBanStatusResponse { user_id, shadow_banned: user.shadow_banned }));
         }
         Ok(None) => {
             res.status_code(StatusCode::NOT_FOUND);
@@ -654,9 +655,10 @@ pub async fn get_locked(req: &mut Request, depot: &mut Depot, res: &mut Response
         return;
     }
 
-    match state.user_repo.get_user_attributes(&user_id).await {
-        Ok(Some(attrs)) => {
-            res.render(Json(LockStatusResponse { user_id, locked: attrs.locked }));
+    match state.user_repo.get_user(&user_id).await {
+        Ok(Some(user)) => {
+            let locked = user.locked_at.is_some();
+            res.render(Json(LockStatusResponse { user_id, locked }));
         }
         Ok(None) => {
             res.status_code(StatusCode::NOT_FOUND);

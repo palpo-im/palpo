@@ -1,15 +1,20 @@
 //! User detail page component with tabbed interface
 
 use dioxus::prelude::*;
+use dioxus_core::VNode;
 use wasm_bindgen_futures::spawn_local;
 use crate::app::Route;
 use crate::models::user::User;
 use crate::models::AuthState;
+use crate::models::device::{DeviceInfo, DeviceListRequest};
+use crate::models::session::{SessionInfo, SessionListRequest, WhoisInfo};
+use crate::models::pusher::{PusherInfo, PusherListResponse};
 use crate::components::loading::Spinner;
 use crate::components::feedback::ErrorMessage;
 use crate::services::user_admin_api::UserAdminAPI;
 use crate::utils::audit_logger::AuditLogger;
 use crate::services::api_client::ApiClient;
+use chrono::TimeZone;
 
 /// Tab types for user detail page
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,6 +37,7 @@ pub fn UserDetail(user_id: String) -> Element {
     let mut edit_display_name = use_signal(String::new);
     let mut edit_avatar_url = use_signal(String::new);
     let mut edit_is_admin = use_signal(|| false);
+    let auth_state = use_context::<Signal<AuthState>>();
 
     use_effect(move || {
         let user_id = user_id.clone();
@@ -42,7 +48,6 @@ pub fn UserDetail(user_id: String) -> Element {
         let mut edit_avatar_url = edit_avatar_url;
         let mut edit_is_admin = edit_is_admin;
 
-        let auth_state = use_context::<Signal<AuthState>>();
         let admin_user = match &*auth_state.read() {
             AuthState::Authenticated(u) => u.username.clone(),
             _ => "admin".to_string(),
@@ -254,33 +259,488 @@ fn PermissionsTab(user: User) -> Element {
 
 #[component]
 fn DevicesTab(user_id: String) -> Element {
+    let devices = use_signal(|| Vec::<DeviceInfo>::new());
+    let loading = use_signal(|| true);
+    let error = use_signal(|| None::<String>);
+    let selected_devices = use_signal(|| Vec::<String>::new());
+    let mut show_delete_confirm = use_signal(|| None::<String>); // device_id to delete
+    let auth_state = use_context::<Signal<AuthState>>();
+
+    // Clone user_id for delete_device closure
+    let user_id_for_delete = user_id.clone();
+
+    use_effect(move || {
+        let user_id = user_id.clone();
+        let mut loading = loading;
+        let mut error = error;
+        let mut devices = devices;
+
+        let admin_user = match &*auth_state.read() {
+            AuthState::Authenticated(u) => u.username.clone(),
+            _ => "admin".to_string(),
+        };
+
+        let audit_logger = AuditLogger::new(1000);
+        let api_client = ApiClient::new("http://localhost:8081");
+        let api = UserAdminAPI::new(audit_logger, api_client);
+
+        spawn_local(async move {
+            loading.set(true);
+            error.set(None);
+
+            match api.get_user_devices(&user_id, DeviceListRequest::default(), &admin_user).await {
+                Ok(response) => {
+                    if response.success {
+                        devices.set(response.devices);
+                    } else {
+                        error.set(response.error.or(Some("获取设备列表失败".to_string())));
+                    }
+                }
+                Err(e) => {
+                    error.set(Some(e.to_string()));
+                }
+            }
+            loading.set(false);
+        });
+    });
+
+    let delete_device = move |device_id: String| {
+        let user_id = user_id_for_delete.clone();
+        let mut error = error;
+        let mut devices = devices;
+        let mut show_delete_confirm = show_delete_confirm;
+
+        let admin_user = match &*auth_state.read() {
+            AuthState::Authenticated(u) => u.username.clone(),
+            _ => "admin".to_string(),
+        };
+
+        let audit_logger = AuditLogger::new(1000);
+        let api_client = ApiClient::new("http://localhost:8081");
+        let api = UserAdminAPI::new(audit_logger, api_client);
+
+        spawn_local(async move {
+            match api.delete_device(&user_id, &device_id, &admin_user).await {
+                Ok(response) => {
+                    if response.success {
+                        // Remove from local list
+                        devices.set(devices().into_iter().filter(|d| d.device_id != device_id).collect());
+                    } else {
+                        error.set(response.error.or(Some("删除设备失败".to_string())));
+                    }
+                }
+                Err(e) => {
+                    error.set(Some(e.to_string()));
+                }
+            }
+            show_delete_confirm.set(None);
+        });
+    };
+
     rsx! {
         div { class: "space-y-6",
-            h3 { class: "text-lg font-medium text-gray-900", "设备管理" }
-            div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4", p { class: "text-sm text-blue-800", "ℹ️ 设备管理功能将在第二阶段实现" } }
-            div { class: "text-center py-12", div { class: "text-gray-400 text-5xl mb-4", "📱" }, p { class: "text-gray-500 text-lg", "设备列表" }, p { class: "text-gray-400 text-sm mt-2", "此处将显示用户 {user_id} 的所有设备" } }
+            div { class: "flex items-center justify-between",
+                h3 { class: "text-lg font-medium text-gray-900", "设备管理" }
+                if !devices().is_empty() {
+                    div { class: "text-sm text-gray-500", "共 {devices().len()} 个设备" }
+                }
+            }
+
+            if let Some(err) = error() {
+                div { class: "p-4 bg-red-50 border border-red-200 rounded-md",
+                    p { class: "text-sm text-red-600", "{err}" }
+                }
+            }
+
+            if loading() {
+                div { class: "p-12 text-center",
+                    Spinner { size: "large".to_string(), message: Some("加载设备列表...".to_string()) }
+                }
+            } else if devices().is_empty() {
+                div { class: "text-center py-12",
+                    div { class: "text-gray-400 text-5xl mb-4", "📱" }
+                    p { class: "text-gray-500 text-lg", "暂无设备" }
+                    p { class: "text-gray-400 text-sm mt-2", "该用户还没有关联任何设备" }
+                }
+            } else {
+                div { class: "overflow-x-auto",
+                    table { class: "min-w-full divide-y divide-gray-200",
+                        thead { class: "bg-gray-50",
+                            tr {
+                                th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider", "设备" }
+                                th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider", "IP 地址" }
+                                th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider", "最后活跃" }
+                                th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider", "状态" }
+                                th { class: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider", "操作" }
+                            }
+                        }
+                        tbody { class: "bg-white divide-y divide-gray-200",
+                            for device in devices() {
+                                tr { class: "hover:bg-gray-50",
+                                    td { class: "px-6 py-4 whitespace-nowrap",
+                                        div { class: "flex items-center",
+                                            span { class: "text-2xl mr-3", "{device.device_icon()}" }
+                                            div {
+                                                div { class: "text-sm font-medium text-gray-900",
+                                                    "{device.display_name.as_ref().unwrap_or(&device.device_id)}"
+                                                }
+                                                div { class: "text-xs text-gray-500 font-mono", "{device.device_id}" }
+                                            }
+                                        }
+                                    }
+                                    td { class: "px-6 py-4 whitespace-nowrap text-sm text-gray-500",
+                                        "{device.last_seen_ip.as_ref().unwrap_or(&String::from(\"-\"))}"
+                                    }
+                                    td { class: "px-6 py-4 whitespace-nowrap text-sm text-gray-500",
+                                        "{device.last_seen_readable()}"
+                                    }
+                                    td { class: "px-6 py-4 whitespace-nowrap",
+                                        if device.is_suspended {
+                                            span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800", "已暂停" }
+                                        } else if device.is_active() {
+                                            span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800", "活跃" }
+                                        } else {
+                                            span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800", "离线" }
+                                        }
+                                    }
+                                    td { class: "px-6 py-4 whitespace-nowrap text-right text-sm font-medium",
+                                        button {
+                                            class: "text-red-600 hover:text-red-900",
+                                            onclick: move |_| show_delete_confirm.set(Some(device.device_id.clone())),
+                                            "删除"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Delete confirmation dialog
+            if let Some(device_id) = show_delete_confirm() {
+                crate::components::dialogs::ConfirmationDialog {
+                    dialog_type: crate::components::dialogs::DialogType::DeleteDevice,
+                    title: "确认删除设备".to_string(),
+                    message: "确定要删除此设备吗？该用户将需要重新登录才能使用此设备。".to_string(),
+                    target: device_id.clone(),
+                    visible: true,
+                    loading: loading(),
+                    on_confirm: move |_| delete_device(device_id.clone()),
+                    on_cancel: move |_| show_delete_confirm.set(None),
+                }
+            }
         }
     }
 }
 
 #[component]
 fn ConnectionsTab(user_id: String) -> Element {
+    let sessions = use_signal(|| Vec::<SessionInfo>::new());
+    let whois = use_signal(|| None::<WhoisInfo>);
+    let loading = use_signal(|| true);
+    let error = use_signal(|| None::<String>);
+    let active_sessions = use_signal(|| 0u32);
+    let current_user_id = use_signal(|| user_id.clone());
+    let auth_state = use_context::<Signal<AuthState>>();
+
+    use_effect(move || {
+        let user_id = user_id.clone();
+        let mut loading = loading;
+        let mut error = error;
+        let mut sessions = sessions;
+        let mut whois = whois;
+        let mut active_sessions = active_sessions;
+
+        let admin_user = match &*auth_state.read() {
+            AuthState::Authenticated(u) => u.username.clone(),
+            _ => "admin".to_string(),
+        };
+
+        let audit_logger = AuditLogger::new(1000);
+        let api_client = ApiClient::new("http://localhost:8081");
+        let api = UserAdminAPI::new(audit_logger, api_client);
+
+        spawn_local(async move {
+            loading.set(true);
+            error.set(None);
+
+            match api.get_user_sessions(&user_id, SessionListRequest::default(), &admin_user).await {
+                Ok(response) => {
+                    if response.success {
+                        sessions.set(response.sessions.clone());
+                        active_sessions.set(response.active_count);
+                    } else {
+                        error.set(response.error.or(Some("获取会话列表失败".to_string())));
+                    }
+                }
+                Err(e) => {
+                    error.set(Some(e.to_string()));
+                }
+            }
+
+            // Fetch whois info
+            match api.get_whois(&user_id, &admin_user).await {
+                Ok(response) => {
+                    whois.set(Some(response));
+                }
+                Err(_) => {
+                    // Whois is optional, don't show error
+                }
+            }
+
+            loading.set(false);
+        });
+    });
+
     rsx! {
         div { class: "space-y-6",
-            h3 { class: "text-lg font-medium text-gray-900", "连接信息" }
-            div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4", p { class: "text-sm text-blue-800", "ℹ️ 连接管理功能将在第二阶段实现" } }
-            div { class: "text-center py-12", div { class: "text-gray-400 text-5xl mb-4", "🔌" }, p { class: "text-gray-500 text-lg", "连接信息" }, p { class: "text-gray-400 text-sm mt-2", "此处将显示用户 {user_id} 的连接信息" } }
+            div { class: "flex items-center justify-between",
+                h3 { class: "text-lg font-medium text-gray-900", "连接信息" }
+                if !sessions().is_empty() {
+                    div { class: "text-sm text-gray-500", "共 {sessions().len()} 个会话，{active_sessions()} 个活跃" }
+                }
+            }
+
+            if let Some(err) = error() {
+                div { class: "p-4 bg-red-50 border border-red-200 rounded-md",
+                    p { class: "text-sm text-red-600", "{err}" }
+                }
+            }
+
+            if loading() {
+                div { class: "p-12 text-center",
+                    Spinner { size: "large".to_string(), message: Some("加载连接信息...".to_string()) }
+                }
+            } else if sessions().is_empty() {
+                div { class: "text-center py-12",
+                    div { class: "text-gray-400 text-5xl mb-4", "🔌" }
+                    p { class: "text-gray-500 text-lg", "暂无连接" }
+                    p { class: "text-gray-400 text-sm mt-2", "该用户当前没有活跃的连接" }
+                }
+            } else {
+                div { class: "grid gap-4",
+                    for session in sessions() {
+                        div { class: "bg-white border border-gray-200 rounded-lg p-4 hover:shadow-sm",
+                            div { class: "flex items-start justify-between",
+                                div { class: "flex items-start",
+                                    span { class: "text-3xl mr-4", "🖥️" }
+                                    div {
+                                        div { class: "flex items-center gap-2",
+                                            h4 { class: "text-sm font-medium text-gray-900",
+                                                "{display_device_name(session.device_display_name.clone())}"
+                                            }
+                                            if session.is_active {
+                                                span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800",
+                                                    "活跃"
+                                                }
+                                            } else {
+                                                span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800",
+                                                    "离线"
+                                                }
+                                            }
+                                        }
+                                        p { class: "text-xs text-gray-500 mt-1",
+                                            "IP: {display_ip_address(session.ip_address.clone())} • {display_user_agent(session.user_agent.clone())}"
+                                        }
+                                        p { class: "text-xs text-gray-400 mt-1",
+                                            "登录时间: {format_timestamp(session.login_ts)} • 最后活动: {format_timestamp(session.last_activity_ts)}"
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: "text-red-600 hover:text-red-900 text-sm",
+                                    disabled: !session.is_active,
+                                    onclick: move |_| {
+                                        let session_id = session.session_id.clone();
+                                        let user_id = current_user_id();
+                                        let mut sessions = sessions;
+                                        let mut error = error;
+                                        
+                                        let admin_user = match &*auth_state.read() {
+                                            AuthState::Authenticated(u) => u.username.clone(),
+                                            _ => "admin".to_string(),
+                                        };
+                                        
+                                        let audit_logger = AuditLogger::new(1000);
+                                        let api_client = ApiClient::new("http://localhost:8081");
+                                        let api = UserAdminAPI::new(audit_logger, api_client);
+                                        
+                                        spawn_local(async move {
+                                            match api.terminate_session(&user_id, &session_id, &admin_user).await {
+                                                Ok(response) => {
+                                                    if response.success {
+                                                        sessions.set(sessions().into_iter().filter(|s| s.session_id != session_id).collect());
+                                                    } else {
+                                                        error.set(response.error.or(Some("终止会话失败".to_string())));
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error.set(Some(e.to_string()));
+                                                }
+                                            }
+                                        });
+                                    },
+                                    "终止"
+                                }
+                            }
+                            div { class: "mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500",
+                                span { "会话ID: {session.session_id}" }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 #[component]
 fn PushersTab(user_id: String) -> Element {
+    let pushers = use_signal(|| Vec::<PusherInfo>::new());
+    let loading = use_signal(|| true);
+    let error = use_signal(|| None::<String>);
+    let current_user_id = use_signal(|| user_id.clone());
+    let auth_state = use_context::<Signal<AuthState>>();
+
+    use_effect(move || {
+        let user_id = user_id.clone();
+        let mut loading = loading;
+        let mut error = error;
+        let mut pushers = pushers;
+
+        let admin_user = match &*auth_state.read() {
+            AuthState::Authenticated(u) => u.username.clone(),
+            _ => "admin".to_string(),
+        };
+
+        let audit_logger = AuditLogger::new(1000);
+        let api_client = ApiClient::new("http://localhost:8081");
+        let api = UserAdminAPI::new(audit_logger, api_client);
+
+        spawn_local(async move {
+            loading.set(true);
+            error.set(None);
+
+            match api.get_user_pushers(&user_id, &admin_user).await {
+                Ok(response) => {
+                    if response.success {
+                        pushers.set(response.pushers);
+                    } else {
+                        error.set(response.error.or(Some("获取推送器列表失败".to_string())));
+                    }
+                }
+                Err(e) => {
+                    error.set(Some(e.to_string()));
+                }
+            }
+            loading.set(false);
+        });
+    });
+
     rsx! {
         div { class: "space-y-6",
-            h3 { class: "text-lg font-medium text-gray-900", "推送器配置" }
-            div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4", p { class: "text-sm text-blue-800", "ℹ️ 推送器管理功能将在第二阶段实现" } }
-            div { class: "text-center py-12", div { class: "text-gray-400 text-5xl mb-4", "🔔" }, p { class: "text-gray-500 text-lg", "推送器列表" }, p { class: "text-gray-400 text-sm mt-2", "此处将显示用户 {user_id} 的推送器配置" } }
+            div { class: "flex items-center justify-between",
+                h3 { class: "text-lg font-medium text-gray-900", "推送器配置" }
+                if !pushers().is_empty() {
+                    div { class: "text-sm text-gray-500", "共 {pushers().len()} 个推送器" }
+                }
+            }
+
+            if let Some(err) = error() {
+                div { class: "p-4 bg-red-50 border border-red-200 rounded-md",
+                    p { class: "text-sm text-red-600", "{err}" }
+                }
+            }
+
+            if loading() {
+                div { class: "p-12 text-center",
+                    Spinner { size: "large".to_string(), message: Some("加载推送器列表...".to_string()) }
+                }
+            } else if pushers().is_empty() {
+                div { class: "text-center py-12",
+                    div { class: "text-gray-400 text-5xl mb-4", "🔔" }
+                    p { class: "text-gray-500 text-lg", "暂无推送器" }
+                    p { class: "text-gray-400 text-sm mt-2", "该用户还没有配置任何推送器" }
+                }
+            } else {
+                div { class: "grid gap-4",
+                    for pusher in pushers() {
+                        div { class: "bg-white border border-gray-200 rounded-lg p-4 hover:shadow-sm",
+                            div { class: "flex items-start justify-between",
+                                div { class: "flex items-start",
+                                    span { class: "text-3xl mr-4", "{pusher.icon()}" }
+                                    div {
+                                        div { class: "flex items-center gap-2",
+                                            h4 { class: "text-sm font-medium text-gray-900",
+                                                "{pusher.app_display_name}"
+                                            }
+                                            if pusher.state == crate::models::pusher::PusherState::Active {
+                                                span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800",
+                                                    "{pusher.state_display()}"
+                                                }
+                                            } else {
+                                                span { class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800",
+                                                    "{pusher.state_display()}"
+                                                }
+                                            }
+                                        }
+                                        p { class: "text-xs text-gray-500 mt-1",
+                                            "{pusher.kind_display()} • {pusher.lang}"
+                                        }
+                                        if let Some(url_val) = &pusher.data.url {
+                                            p { class: "text-xs text-gray-400 font-mono mt-1 break-all", "{url_val}" }
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: "text-red-600 hover:text-red-900 text-sm",
+                                    onclick: move |_| {
+                                        let pusher_id = pusher.pusher_id.clone();
+                                        let user_id = current_user_id();
+                                        let mut pushers = pushers;
+                                        let mut error = error;
+                                        
+                                        let admin_user = match &*auth_state.read() {
+                                            AuthState::Authenticated(u) => u.username.clone(),
+                                            _ => "admin".to_string(),
+                                        };
+                                        
+                                        let audit_logger = AuditLogger::new(1000);
+                                        let api_client = ApiClient::new("http://localhost:8081");
+                                        let api = UserAdminAPI::new(audit_logger, api_client);
+                                        
+                                        spawn_local(async move {
+                                            match api.delete_pusher(&user_id, &pusher_id, &admin_user).await {
+                                                Ok(response) => {
+                                                    if response.success {
+                                                        pushers.set(pushers().into_iter().filter(|p| p.pusher_id != pusher_id).collect());
+                                                    } else {
+                                                        error.set(response.error.or(Some("删除推送器失败".to_string())));
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error.set(Some(e.to_string()));
+                                                }
+                                            }
+                                        });
+                                    },
+                                    "删除"
+                                }
+                            }
+                            div { class: "mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500",
+                                div { class: "flex items-center gap-4",
+                                    span { "ID: {pusher.pusher_id}" }
+                                    span { "{format_pusher_last_active(pusher.last_active_ts)}" }
+                                }
+                                if let Some(profile) = &pusher.profile_tag {
+                                    span { class: "font-mono", "Profile: {profile}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -289,4 +749,29 @@ fn format_timestamp(ts: u64) -> String {
     use chrono::{Utc, TimeZone};
     let dt = Utc.timestamp_opt(ts as i64, 0).single();
     match dt { Some(d) => d.format("%Y-%m-%d %H:%M:%S").to_string(), None => "无效时间".to_string() }
+}
+
+fn format_pusher_last_active(ts: Option<u64>) -> String {
+    match ts {
+        Some(timestamp) => {
+            let dt = chrono::Utc.timestamp_opt(timestamp as i64, 0).single();
+            match dt {
+                Some(d) => format!("最后活跃: {}", d.format("%Y-%m-%d %H:%M").to_string()),
+                None => "最后活跃: 未知".to_string()
+            }
+        }
+        None => "最后活跃: 从未".to_string()
+    }
+}
+
+fn display_device_name(device_display_name: Option<String>) -> String {
+    device_display_name.unwrap_or("未知设备".to_string())
+}
+
+fn display_ip_address(ip_address: Option<String>) -> String {
+    ip_address.unwrap_or("未知".to_string())
+}
+
+fn display_user_agent(user_agent: Option<String>) -> String {
+    user_agent.unwrap_or("未知浏览器".to_string())
 }
