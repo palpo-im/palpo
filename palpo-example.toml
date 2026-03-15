@@ -513,7 +513,7 @@
 
 # This item is undocumented. Please contribute documentation for it.
 #
-# http_client = false
+# http_client =
 
 # Enables configuration reload when the server receives SIGUSR1 on
 # supporting platforms.
