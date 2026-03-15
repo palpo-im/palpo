@@ -8,7 +8,12 @@ use std::sync::Arc;
 use salvo::prelude::*;
 use crate::types::AdminError;
 use crate::SessionManager;
-use crate::handlers::user_handler::ErrorResponse;
+
+/// Error response structure
+#[derive(Debug, serde::Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
 
 /// Authentication middleware that validates session tokens
 ///

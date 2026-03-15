@@ -61,17 +61,21 @@ pub mod user_migrations;
 pub use user_migrations::UserMigrationRunner;
 
 // Repository layer for user management
-pub mod repositories;
-pub use repositories::RepositoryFactory;
+// NOTE: Disabled - will be replaced with PalpoClient-based implementation
+// pub mod repositories;
+// pub use repositories::RepositoryFactory;
 
 // Individual repository modules (required for Diesel table macros)
-mod user_repository;
-mod device_repository;
-mod session_repository;
-mod rate_limit_repository;
-mod media_repository;
-mod shadow_ban_repository;
-mod threepid_repository;
+// NOTE: These modules are disabled because they try to access Palpo database tables directly.
+// According to the architecture design, user management should go through PalpoClient (HTTP API) instead.
+// These will be removed in a future refactoring task (user-management spec Part A.10).
+// mod user_repository;
+// mod device_repository;
+// mod session_repository;
+// mod rate_limit_repository;
+// mod media_repository;
+// mod shadow_ban_repository;
+// mod threepid_repository;
 
 // Password generator module
 pub mod password_generator;

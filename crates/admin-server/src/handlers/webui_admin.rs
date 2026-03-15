@@ -26,7 +26,6 @@ use std::sync::{Arc, OnceLock};
 
 use crate::migration_service::LegacyCredentials;
 use crate::types::AdminError;
-use crate::repositories::{DieselUserRepository, DieselDeviceRepository, DieselSessionRepository, DieselRateLimitRepository, DieselMediaRepository, DieselShadowBanRepository, DieselThreepidRepository};
 use crate::{MigrationService, SessionManager, WebUIAuthService, PalpoClient};
 
 /// Shared application state for handlers
@@ -67,15 +66,24 @@ pub fn get_user_app_state() -> &'static UserAppState {
 // ===== User App State =====
 
 /// User management application state
+/// NOTE: This struct is temporarily disabled because it depends on the repository layer
+/// which has been disabled. It will be rewritten to use PalpoClient in the user-management spec.
+/// 
+/// #[derive(Clone, Debug)]
+/// pub struct UserAppState {
+///     pub user_repo: Arc<DieselUserRepository>,
+///     pub device_repo: Arc<DieselDeviceRepository>,
+///     pub session_repo: Arc<DieselSessionRepository>,
+///     pub rate_limit_repo: Arc<DieselRateLimitRepository>,
+///     pub media_repo: Arc<DieselMediaRepository>,
+///     pub shadow_ban_repo: Arc<DieselShadowBanRepository>,
+///     pub threepid_repo: Arc<DieselThreepidRepository>,
+///     pub session_manager: Arc<SessionManager>,
+///     pub palpo_client: Arc<PalpoClient>,
+/// }
+
 #[derive(Clone, Debug)]
 pub struct UserAppState {
-    pub user_repo: Arc<DieselUserRepository>,
-    pub device_repo: Arc<DieselDeviceRepository>,
-    pub session_repo: Arc<DieselSessionRepository>,
-    pub rate_limit_repo: Arc<DieselRateLimitRepository>,
-    pub media_repo: Arc<DieselMediaRepository>,
-    pub shadow_ban_repo: Arc<DieselShadowBanRepository>,
-    pub threepid_repo: Arc<DieselThreepidRepository>,
     pub session_manager: Arc<SessionManager>,
     pub palpo_client: Arc<PalpoClient>,
 }
