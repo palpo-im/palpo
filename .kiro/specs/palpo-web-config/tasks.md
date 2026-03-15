@@ -27,7 +27,7 @@ This task list tracks the implementation of the Palpo Matrix server web admin in
 
 ### A.1 Implement ServerConfigAPI
 
-**Status**: [ ]
+**Status**: [x]
 
 **Files to create/modify**:
 - `crates/admin-server/src/handlers/server_config.rs` - Server configuration handler
@@ -54,7 +54,7 @@ cargo test --package palpo-admin-server server_config -- --nocapture
 
 ### A.2 Implement ServerControlAPI
 
-**Status**: [ ]
+**Status**: [x]
 
 **Files to create/modify**:
 - `crates/admin-server/src/handlers/server_control.rs` - Server control handler
