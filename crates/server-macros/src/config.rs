@@ -213,7 +213,18 @@ fn get_default(field: &Field) -> Option<String> {
                     _ => return None,
                 };
             }
-            Meta::Path { .. } => return Some("false".to_owned()),
+            Meta::Path { .. } => {
+                // #[serde(default)] — infer the default from the field type
+                return match get_type_name(field).as_deref() {
+                    Some("Option") => None, // Option<T> defaults to None, show empty
+                    Some("bool") => Some("false".to_owned()),
+                    Some("Vec") | Some("BTreeMap") | Some("HashMap") | Some("HashSet") => {
+                        Some("[]".to_owned())
+                    }
+                    Some("String") => Some("\"\"".to_owned()),
+                    _ => Some("false".to_owned()), // fallback for unknown types
+                };
+            }
             _ => return None,
         }
     }
