@@ -123,9 +123,6 @@ async fn main() -> Result<()> {
     // Initialize Matrix admin state
     matrix_admin::init_matrix_admin_state(matrix_admin_state);
 
-    // Create server control service
-    let server_control_api = Arc::new(ServerControlAPI::new());
-
     // Configure CORS - allow any origin for development
     let cors = Cors::new()
         .allow_origin(cors::Any)
