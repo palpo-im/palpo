@@ -72,7 +72,8 @@ fn well_known_client() -> JsonResult<ClientResBody> {
     });
 
     // Advertise external MAS as OIDC issuer (MSC3861)
-    if let Some(oidc) = conf.enabled_oidc() {
+    // Read mas_issuer directly from oidc config, independent of oidc.enable
+    if let Some(oidc) = conf.oidc.as_ref() {
         if let Some(issuer) = &oidc.mas_issuer {
             body.authentication = Some(AuthenticationInfo {
                 issuer: issuer.clone(),
