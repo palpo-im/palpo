@@ -6,23 +6,30 @@
 
 use std::time::SystemTime;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cookie::time::Duration;
 use diesel::prelude::*;
 use salvo::oapi::extract::JsonBody;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
-use url::form_urlencoded;
 
-use crate::config::{self, OidcProviderConfig};
+use crate::config::{self, OidcConfig};
 use crate::core::{MatrixError, OwnedDeviceId, UnixMillis};
 use crate::data::connect;
+use crate::data::oauth2::{DbOAuthAuthorizationCode, DbOAuthClient};
 use crate::data::schema::*;
 use crate::data::user::DbUser;
 use crate::routing::client::oauth2::{AuthMetadataResponse, build_auth_metadata};
+use crate::routing::client::oidc;
 use crate::{AppResult, JsonResult, data, json_ok, utils};
+
+/// Default Matrix scope for OAuth2 AS
+const MATRIX_SCOPE: &str = "urn:matrix:org.matrix.msc2967.client:api:*";
+
+/// Access token lifetime in seconds
+const TOKEN_EXPIRES_IN_SECS: i64 = 300;
+
+/// Authorization code lifetime in milliseconds (5 minutes)
+const AUTH_CODE_TTL_MS: i64 = 300_000;
 
 // =================== ROUTES ===================
 
@@ -33,6 +40,31 @@ pub fn router() -> salvo::Router {
         .push(salvo::Router::with_path("provider_callback").get(provider_callback))
         .push(salvo::Router::with_path("token").post(token_exchange))
         .push(salvo::Router::with_path("revoke").post(token_revoke))
+}
+
+// =================== HELPERS ===================
+
+/// Guard: require OIDC auth server to be enabled. Returns the OidcConfig.
+pub(crate) fn require_auth_server() -> AppResult<&'static OidcConfig> {
+    let conf = config::get();
+    let oidc = conf
+        .enabled_oidc()
+        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
+    if !oidc.enable_auth_server {
+        return Err(MatrixError::not_found("Authorization server not enabled").into());
+    }
+    Ok(oidc)
+}
+
+/// Build the provider callback URL from config.
+fn provider_callback_url() -> String {
+    let base = config::get().well_known_client();
+    format!("{}/oauth2/provider_callback", base.trim_end_matches('/'))
+}
+
+/// Simple percent-encoding for URL query values
+fn percent_encode(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 // =================== TYPES ===================
@@ -78,18 +110,10 @@ struct ClientRegistrationRequest {
     application_type: String,
 }
 
-fn default_auth_method() -> String {
-    "none".into()
-}
-fn default_response_types() -> Vec<String> {
-    vec!["code".into()]
-}
-fn default_grant_types() -> Vec<String> {
-    vec!["authorization_code".into(), "refresh_token".into()]
-}
-fn default_app_type() -> String {
-    "native".into()
-}
+fn default_auth_method() -> String { "none".into() }
+fn default_response_types() -> Vec<String> { vec!["code".into()] }
+fn default_grant_types() -> Vec<String> { vec!["authorization_code".into(), "refresh_token".into()] }
+fn default_app_type() -> String { "native".into() }
 
 #[derive(Debug, Serialize, ToSchema)]
 struct TokenResponse {
@@ -100,47 +124,25 @@ struct TokenResponse {
     scope: String,
 }
 
-#[derive(Debug, Serialize)]
-struct OAuth2Error {
-    error: String,
-    error_description: String,
-}
-
 // =================== ENDPOINTS ===================
 
 /// GET /.well-known/openid-configuration
 ///
 /// RFC 8414 Authorization Server Metadata discovery.
+/// Delegates to the same logic as auth_metadata.
 #[endpoint]
 pub async fn openid_configuration() -> JsonResult<AuthMetadataResponse> {
-    let conf = config::get();
-    let oidc = conf
-        .enabled_oidc()
-        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
-
-    if !oidc.enable_auth_server {
-        return Err(MatrixError::not_found("Authorization server not enabled").into());
-    }
-
-    let base = conf.well_known_client();
-    let base = base.trim_end_matches('/');
-    json_ok(build_auth_metadata(base))
+    let _ = require_auth_server()?;
+    let base = config::get().well_known_client();
+    json_ok(build_auth_metadata(base.trim_end_matches('/')))
 }
 
 /// POST /oauth2/register
 ///
 /// Dynamic Client Registration (RFC 7591).
-/// Element X registers itself on first use.
 #[endpoint]
 async fn client_register(body: JsonBody<ClientRegistrationRequest>) -> JsonResult<ClientRegistrationResponse> {
-    let conf = config::get();
-    let oidc = conf
-        .enabled_oidc()
-        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
-
-    if !oidc.enable_auth_server {
-        return Err(MatrixError::not_found("Authorization server not enabled").into());
-    }
+    let _ = require_auth_server()?;
 
     if body.redirect_uris.is_empty() {
         return Err(MatrixError::invalid_param("redirect_uris is required and must not be empty").into());
@@ -174,8 +176,8 @@ async fn client_register(body: JsonBody<ClientRegistrationRequest>) -> JsonResul
 
     json_ok(ClientRegistrationResponse {
         client_id,
-        client_id_issued_at: now / 1000, // seconds
-        client_id_expires_at: 0,         // never expires
+        client_id_issued_at: now / 1000,
+        client_id_expires_at: 0,
         redirect_uris: body.redirect_uris.clone(),
         token_endpoint_auth_method: body.token_endpoint_auth_method.clone(),
         response_types: body.response_types.clone(),
@@ -186,64 +188,44 @@ async fn client_register(body: JsonBody<ClientRegistrationRequest>) -> JsonResul
 /// GET /oauth2/authorize
 ///
 /// Authorization endpoint. Element X opens this in system browser.
-/// Validates the request, then redirects to the configured OAuth provider.
 #[endpoint]
 async fn authorize(req: &mut Request, res: &mut Response) -> AppResult<()> {
-    let conf = config::get();
-    let oidc = conf
-        .enabled_oidc()
-        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
-
-    if !oidc.enable_auth_server {
-        return Err(MatrixError::not_found("Authorization server not enabled").into());
-    }
+    let oidc = require_auth_server()?;
 
     // Extract Element X's request parameters
-    let client_id = req
-        .query::<String>("client_id")
+    let client_id = req.query::<String>("client_id")
         .ok_or_else(|| MatrixError::invalid_param("Missing client_id"))?;
-    let redirect_uri = req
-        .query::<String>("redirect_uri")
+    let redirect_uri = req.query::<String>("redirect_uri")
         .ok_or_else(|| MatrixError::invalid_param("Missing redirect_uri"))?;
-    let response_type = req
-        .query::<String>("response_type")
+    let response_type = req.query::<String>("response_type")
         .ok_or_else(|| MatrixError::invalid_param("Missing response_type"))?;
-    let state = req
-        .query::<String>("state")
+    let state = req.query::<String>("state")
         .ok_or_else(|| MatrixError::invalid_param("Missing state"))?;
-    let code_challenge = req
-        .query::<String>("code_challenge")
+    let code_challenge = req.query::<String>("code_challenge")
         .ok_or_else(|| MatrixError::invalid_param("Missing code_challenge"))?;
-    let code_challenge_method = req
-        .query::<String>("code_challenge_method")
+    let code_challenge_method = req.query::<String>("code_challenge_method")
         .unwrap_or_else(|| "S256".into());
-    let scope = req
-        .query::<String>("scope")
-        .unwrap_or_else(|| "urn:matrix:org.matrix.msc2967.client:api:*".into());
+    let scope = req.query::<String>("scope")
+        .unwrap_or_else(|| MATRIX_SCOPE.into());
 
-    // Validate response_type
     if response_type != "code" {
         return Err(MatrixError::invalid_param("response_type must be 'code'").into());
     }
-
-    // Validate code_challenge_method
     if code_challenge_method != "S256" {
         return Err(MatrixError::invalid_param("code_challenge_method must be 'S256'").into());
     }
 
-    // Validate client_id exists
+    // Validate client_id and get redirect_uris using proper model struct
+    let mut conn = connect()?;
     let client = oauth_clients::table
         .filter(oauth_clients::client_id.eq(&client_id))
-        .first::<(String, Option<String>, String, String, String, String, Option<String>, Option<i64>, i64)>(&mut connect()?)
+        .first::<DbOAuthClient>(&mut conn)
         .optional()
-        .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?;
+        .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?
+        .ok_or_else(|| MatrixError::invalid_param("Unknown client_id"))?;
 
-    let client = client.ok_or_else(|| MatrixError::invalid_param("Unknown client_id"))?;
-
-    // Validate redirect_uri matches registered URIs (exact string match)
-    let registered_uris: Vec<String> = serde_json::from_str(&client.2)
+    let registered_uris: Vec<String> = serde_json::from_str(&client.redirect_uris)
         .map_err(|_| MatrixError::unknown("Invalid registered redirect_uris"))?;
-
     if !registered_uris.iter().any(|uri| uri == &redirect_uri) {
         return Err(MatrixError::invalid_param("redirect_uri does not match registered URIs").into());
     }
@@ -251,26 +233,22 @@ async fn authorize(req: &mut Request, res: &mut Response) -> AppResult<()> {
     // Update last_used_at
     let _ = diesel::update(oauth_clients::table.filter(oauth_clients::client_id.eq(&client_id)))
         .set(oauth_clients::last_used_at.eq(Some(UnixMillis::now().get() as i64)))
-        .execute(&mut connect()?);
+        .execute(&mut conn);
 
-    // Determine which provider to use (default or first configured)
-    let provider_name = oidc
-        .default_provider
-        .clone()
+    // Determine which provider to use
+    let provider_name = oidc.default_provider.clone()
         .or_else(|| oidc.providers.keys().next().cloned())
         .ok_or_else(|| MatrixError::unknown("No OIDC provider configured"))?;
 
-    let provider_config = oidc.providers.get(&provider_name).ok_or_else(|| {
-        MatrixError::unknown(format!("Provider '{}' not found", provider_name))
-    })?;
+    let provider_config = oidc.providers.get(&provider_name)
+        .ok_or_else(|| MatrixError::unknown(format!("Provider '{}' not found", provider_name)))?;
 
-    // Discover provider endpoints
-    let provider_info = super::client::oidc::discover_provider_endpoints(provider_config).await?;
+    let provider_info = oidc::discover_provider_endpoints(provider_config).await?;
 
-    // Generate provider-leg security tokens
+    // Generate provider-leg PKCE using shared helper
     let provider_state = utils::random_string(32);
     let (provider_code_verifier, provider_code_challenge) = if oidc.enable_pkce {
-        let (v, c) = generate_pkce();
+        let (v, c) = oidc::generate_pkce_challenge();
         (Some(v), Some(c))
     } else {
         (None, None)
@@ -288,7 +266,7 @@ async fn authorize(req: &mut Request, res: &mut Response) -> AppResult<()> {
         provider_code_verifier,
         created_at: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs(),
     };
 
@@ -306,26 +284,22 @@ async fn authorize(req: &mut Request, res: &mut Response) -> AppResult<()> {
             .build(),
     );
 
-    // Build provider authorization URL (reusing oidc.rs pattern)
+    // Build provider authorization URL
     let mut auth_url = url::Url::parse(&provider_info.authorization_endpoint)
         .map_err(|e| MatrixError::unknown(format!("Invalid auth endpoint: {}", e)))?;
 
-    // The provider callback goes to our /oauth2/provider_callback
-    let provider_callback_url = format!("{}/oauth2/provider_callback", conf.well_known_client().trim_end_matches('/'));
-
+    let cb_url = provider_callback_url();
     {
         let mut q = auth_url.query_pairs_mut();
         q.append_pair("client_id", &provider_config.client_id)
-            .append_pair("redirect_uri", &provider_callback_url)
+            .append_pair("redirect_uri", &cb_url)
             .append_pair("response_type", "code")
             .append_pair("state", &provider_state)
             .append_pair("scope", &provider_config.scopes.join(" "));
-
         if let Some(challenge) = &provider_code_challenge {
             q.append_pair("code_challenge", challenge)
                 .append_pair("code_challenge_method", "S256");
         }
-
         for (key, value) in &provider_config.additional_params {
             q.append_pair(key, value);
         }
@@ -339,14 +313,9 @@ async fn authorize(req: &mut Request, res: &mut Response) -> AppResult<()> {
 /// GET /oauth2/provider_callback
 ///
 /// Handles the callback from the external OAuth provider.
-/// Creates/retrieves Matrix user, generates Palpo auth code,
-/// redirects back to Element X.
 #[endpoint]
 async fn provider_callback(req: &mut Request, res: &mut Response) -> AppResult<()> {
-    let conf = config::get();
-    let oidc = conf
-        .enabled_oidc()
-        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
+    let oidc = require_auth_server()?;
 
     // Handle provider errors
     if let Some(error) = req.query::<String>("error") {
@@ -355,78 +324,58 @@ async fn provider_callback(req: &mut Request, res: &mut Response) -> AppResult<(
         return Err(MatrixError::forbidden(format!("Provider auth failed: {}", desc), None).into());
     }
 
-    // Extract provider callback params
-    let code = req
-        .query::<String>("code")
+    let code = req.query::<String>("code")
         .ok_or_else(|| MatrixError::invalid_param("Missing code"))?;
-    let provider_state = req
-        .query::<String>("state")
+    let provider_state = req.query::<String>("state")
         .ok_or_else(|| MatrixError::invalid_param("Missing state"))?;
 
-    // Restore session
-    let session_cookie = req
-        .cookie("oauth2_session")
+    // Restore and validate session
+    let session_cookie = req.cookie("oauth2_session")
         .ok_or_else(|| MatrixError::unauthorized("OAuth2 session not found or expired"))?;
-
     let session: OAuth2Session = serde_json::from_str(session_cookie.value())
         .map_err(|e| MatrixError::unauthorized(format!("Invalid session: {}", e)))?;
 
-    // Validate provider state (CSRF)
     if provider_state != session.provider_state {
         return Err(MatrixError::forbidden("State mismatch", None).into());
     }
 
-    // Check session timeout
-    let now = SystemTime::now()
+    let now_secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
-    if now > session.created_at + oidc.session_timeout {
+    if now_secs > session.created_at + oidc.session_timeout {
         return Err(MatrixError::unauthorized("Session expired").into());
     }
 
-    // Get provider config
-    let provider_config = oidc.providers.get(&session.provider_name).ok_or_else(|| {
-        MatrixError::unknown(format!("Provider '{}' no longer configured", session.provider_name))
-    })?;
+    let provider_config = oidc.providers.get(&session.provider_name)
+        .ok_or_else(|| MatrixError::unknown(format!("Provider '{}' no longer configured", session.provider_name)))?;
 
-    let provider_info = super::client::oidc::discover_provider_endpoints(provider_config).await?;
+    let provider_info = oidc::discover_provider_endpoints(provider_config).await?;
+    let cb_url = provider_callback_url();
 
-    // The redirect_uri for the provider leg points to /oauth2/provider_callback
-    let provider_callback_url = format!("{}/oauth2/provider_callback", conf.well_known_client().trim_end_matches('/'));
-
-    // Exchange provider code for tokens
-    let token_response = exchange_provider_code(
+    // Exchange provider code using shared helper
+    let token_response = oidc::exchange_code_for_tokens(
         &code,
         provider_config,
         &provider_info,
-        &provider_callback_url,
+        &cb_url,
         session.provider_code_verifier.as_deref(),
-    )
-    .await?;
+    ).await?;
 
-    // Fetch user info from provider
-    let user_info = super::client::oidc::get_user_info_from_provider(
-        &token_response.access_token,
-        &provider_info,
-        provider_config,
-    )
-    .await?;
+    // Fetch and validate user info using shared helpers
+    let user_info = oidc::get_user_info_from_provider(
+        &token_response.access_token, &provider_info, provider_config,
+    ).await?;
+    oidc::validate_user_info(&user_info, oidc)?;
 
-    // Validate user info
-    super::client::oidc::validate_user_info(&user_info, oidc)?;
+    let matrix_user_id = oidc::generate_matrix_user_id(&user_info, oidc, config::get().server_name.as_str())?;
+    let display_name = oidc::generate_display_name(&user_info, provider_config);
+    let _user = oidc::create_or_get_user(&matrix_user_id, &display_name, &user_info, oidc).await?;
 
-    // Generate Matrix user ID and create/get user
-    let matrix_user_id = super::client::oidc::generate_matrix_user_id(&user_info, oidc, conf.server_name.as_str())?;
-    let display_name = super::client::oidc::generate_display_name(&user_info, provider_config);
-    let _user = super::client::oidc::create_or_get_user(&matrix_user_id, &display_name, &user_info, oidc).await?;
-
-    // Generate Palpo authorization code (>= 256 bits entropy)
+    // Generate and store Palpo authorization code
     let palpo_code = utils::random_string(43);
     let now_ms = UnixMillis::now().get() as i64;
-    let expires_at = now_ms + 300_000; // 5 minutes
 
-    // Store authorization code
     diesel::insert_into(oauth_authorization_codes::table)
         .values((
             oauth_authorization_codes::code.eq(&palpo_code),
@@ -436,27 +385,20 @@ async fn provider_callback(req: &mut Request, res: &mut Response) -> AppResult<(
             oauth_authorization_codes::code_challenge.eq(&session.ex_code_challenge),
             oauth_authorization_codes::code_challenge_method.eq("S256"),
             oauth_authorization_codes::scope.eq(&session.ex_scope),
-            oauth_authorization_codes::expires_at.eq(expires_at),
+            oauth_authorization_codes::expires_at.eq(now_ms + AUTH_CODE_TTL_MS),
             oauth_authorization_codes::created_at.eq(now_ms),
         ))
         .execute(&mut connect()?)
         .map_err(|e| MatrixError::unknown(format!("Failed to store auth code: {}", e)))?;
 
-    tracing::info!(
-        "OAuth2 provider_callback: generated auth code for user '{}', redirecting to Element X",
-        matrix_user_id
-    );
+    tracing::info!("OAuth2 provider_callback: issued auth code for user '{}'", matrix_user_id);
 
     // Build redirect URL back to Element X
-    // Custom schemes like io.element:/callback can't be parsed by url::Url,
-    // so we build the redirect string manually
     let separator = if session.ex_redirect_uri.contains('?') { "&" } else { "?" };
     let redirect = format!(
         "{}{}code={}&state={}",
-        session.ex_redirect_uri,
-        separator,
-        percent_encode(&palpo_code),
-        percent_encode(&session.ex_state),
+        session.ex_redirect_uri, separator,
+        percent_encode(&palpo_code), percent_encode(&session.ex_state),
     );
 
     res.render(Redirect::found(redirect));
@@ -464,20 +406,11 @@ async fn provider_callback(req: &mut Request, res: &mut Response) -> AppResult<(
 }
 
 /// POST /oauth2/token
-///
-/// Token endpoint. Handles both authorization_code and refresh_token grants.
 #[endpoint]
 async fn token_exchange(req: &mut Request) -> JsonResult<TokenResponse> {
+    let _ = require_auth_server()?;
     let conf = config::get();
-    let oidc = conf
-        .enabled_oidc()
-        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
 
-    if !oidc.enable_auth_server {
-        return Err(MatrixError::not_found("Authorization server not enabled").into());
-    }
-
-    // Parse form-encoded body
     let grant_type = req.form::<String>("grant_type").await
         .ok_or_else(|| MatrixError::invalid_param("Missing grant_type"))?;
 
@@ -496,26 +429,25 @@ async fn token_revoke(req: &mut Request, res: &mut Response) {
     let token = req.form::<String>("token").await;
 
     if let Some(token) = token {
-        // Try to find and remove the access token
-        let result = diesel::delete(
-            user_access_tokens::table.filter(user_access_tokens::token.eq(&token)),
-        )
-        .execute(&mut connect().unwrap());
+        if let Ok(mut conn) = connect() {
+            let deleted = diesel::delete(
+                user_access_tokens::table.filter(user_access_tokens::token.eq(&token)),
+            )
+            .execute(&mut conn)
+            .unwrap_or(0);
 
-        if let Ok(deleted) = result {
-            if deleted > 0 {
+            if deleted == 0 {
+                // Not an access token, try refresh token
+                let _ = diesel::delete(
+                    user_refresh_tokens::table.filter(user_refresh_tokens::token.eq(&token)),
+                )
+                .execute(&mut conn);
+            } else {
                 tracing::info!("OAuth2 revoke: revoked access token");
             }
         }
-
-        // Also try refresh tokens
-        let _ = diesel::delete(
-            user_refresh_tokens::table.filter(user_refresh_tokens::token.eq(&token)),
-        )
-        .execute(&mut connect().unwrap());
     }
 
-    // RFC 7009: always return 200
     res.status_code(StatusCode::OK);
 }
 
@@ -534,63 +466,60 @@ async fn handle_authorization_code_grant(
     let code_verifier = req.form::<String>("code_verifier").await
         .ok_or_else(|| MatrixError::invalid_param("Missing code_verifier"))?;
 
-    // Look up authorization code
+    let mut conn = connect()?;
+
+    // Look up authorization code using proper model struct
     let auth_code = oauth_authorization_codes::table
         .filter(oauth_authorization_codes::code.eq(&code))
-        .first::<(String, String, String, String, String, String, String, i64, i64)>(&mut connect()?)
+        .first::<DbOAuthAuthorizationCode>(&mut conn)
         .optional()
-        .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?;
+        .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?
+        .ok_or_else(|| MatrixError::invalid_param("Invalid or expired authorization code"))?;
 
-    let auth_code = auth_code.ok_or_else(|| MatrixError::invalid_param("Invalid or expired authorization code"))?;
-
-    let (stored_code, stored_client_id, stored_user_id, stored_redirect_uri, stored_challenge, _challenge_method, stored_scope, expires_at, _created_at) = auth_code;
+    let now = UnixMillis::now();
 
     // Verify not expired
-    if (UnixMillis::now().get() as i64) > expires_at {
-        // Delete expired code
-        let _ = diesel::delete(oauth_authorization_codes::table.filter(oauth_authorization_codes::code.eq(&stored_code)))
-            .execute(&mut connect()?);
+    if (now.get() as i64) > auth_code.expires_at {
+        let _ = diesel::delete(oauth_authorization_codes::table.filter(
+            oauth_authorization_codes::code.eq(&auth_code.code),
+        )).execute(&mut conn);
         return Err(MatrixError::invalid_param("Authorization code has expired").into());
     }
 
-    // Verify client_id matches
-    if client_id != stored_client_id {
+    // Verify client_id and redirect_uri match
+    if client_id != auth_code.client_id {
         return Err(MatrixError::invalid_param("client_id mismatch").into());
     }
-
-    // Verify redirect_uri matches
-    if redirect_uri != stored_redirect_uri {
+    if redirect_uri != auth_code.redirect_uri {
         return Err(MatrixError::invalid_param("redirect_uri mismatch").into());
     }
 
-    // Verify PKCE: BASE64URL(SHA256(code_verifier)) == stored_code_challenge
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(code_verifier.as_bytes());
-    let computed_challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
-
-    if computed_challenge != stored_challenge {
+    // Verify PKCE using shared helper
+    let computed_challenge = oidc::compute_s256_challenge(&code_verifier);
+    if computed_challenge != auth_code.code_challenge {
         return Err(MatrixError::invalid_param("PKCE verification failed").into());
     }
 
     // Delete used code (one-time use)
-    diesel::delete(oauth_authorization_codes::table.filter(oauth_authorization_codes::code.eq(&stored_code)))
-        .execute(&mut connect()?)
-        .map_err(|e| MatrixError::unknown(format!("Failed to delete auth code: {}", e)))?;
+    diesel::delete(oauth_authorization_codes::table.filter(
+        oauth_authorization_codes::code.eq(&auth_code.code),
+    ))
+    .execute(&mut conn)
+    .map_err(|e| MatrixError::unknown(format!("Failed to delete auth code: {}", e)))?;
 
-    // Create Matrix device and tokens for the user
-    let user_id = crate::core::identifiers::UserId::parse(&stored_user_id)
+    // Create Matrix device and tokens
+    let user_id = crate::core::identifiers::UserId::parse(&auth_code.user_id)
         .map_err(|_| MatrixError::unknown("Invalid stored user_id"))?;
 
     let user = users::table
         .filter(users::id.eq(&user_id))
-        .first::<DbUser>(&mut connect()?)
+        .first::<DbUser>(&mut conn)
         .map_err(|_| MatrixError::not_found("User not found"))?;
 
     let device_id: OwnedDeviceId = format!("OIDC_{}", utils::random_string(8)).into();
     let access_token = utils::random_string(64);
     let refresh_token_str = utils::random_string(64);
 
-    // Create device
     let new_device = crate::data::user::NewDbUserDevice {
         user_id: user.id.clone(),
         device_id: device_id.clone(),
@@ -598,46 +527,40 @@ async fn handle_authorization_code_grant(
         user_agent: Some("Element X".to_string()),
         is_hidden: false,
         last_seen_ip: None,
-        last_seen_at: Some(UnixMillis::now()),
-        created_at: UnixMillis::now(),
+        last_seen_at: Some(now),
+        created_at: now,
     };
 
     diesel::insert_into(user_devices::table)
         .values(&new_device)
         .on_conflict((user_devices::user_id, user_devices::device_id))
         .do_update()
-        .set(user_devices::last_seen_at.eq(Some(UnixMillis::now())))
-        .execute(&mut connect()?)
+        .set(user_devices::last_seen_at.eq(Some(now)))
+        .execute(&mut conn)
         .map_err(|e| MatrixError::unknown(format!("Failed to create device: {}", e)))?;
 
-    // Create refresh token
-    let expires_at = UnixMillis::now().get() + conf.refresh_token_ttl;
-    let ultimate_expires = UnixMillis::now().get() + conf.session_ttl;
+    let expires_at = now.get() + conf.refresh_token_ttl;
+    let ultimate_expires = now.get() + conf.session_ttl;
     let refresh_token_id = data::user::device::set_refresh_token(
-        &user.id,
-        &device_id,
-        &refresh_token_str,
-        expires_at,
-        ultimate_expires,
+        &user.id, &device_id, &refresh_token_str, expires_at, ultimate_expires,
     )?;
 
-    // Create access token with oauth_client_id binding
     let new_token = crate::data::user::NewDbAccessToken {
         user_id: user.id.clone(),
         device_id: device_id.clone(),
         token: access_token.clone(),
         puppets_user_id: None,
-        last_validated: Some(UnixMillis::now()),
+        last_validated: Some(now),
         refresh_token_id: Some(refresh_token_id),
         is_used: false,
-        expires_at: Some(UnixMillis(UnixMillis::now().get() + 300_000)), // 5 min
-        created_at: UnixMillis::now(),
+        expires_at: Some(UnixMillis(now.get() + AUTH_CODE_TTL_MS as u64)),
+        created_at: now,
         oauth_client_id: Some(client_id),
     };
 
     diesel::insert_into(user_access_tokens::table)
         .values(&new_token)
-        .execute(&mut connect()?)
+        .execute(&mut conn)
         .map_err(|e| MatrixError::unknown(format!("Failed to create access token: {}", e)))?;
 
     tracing::info!("OAuth2 token: issued tokens for user '{}' device '{}'", user.id, device_id);
@@ -646,8 +569,8 @@ async fn handle_authorization_code_grant(
         access_token,
         refresh_token: Some(refresh_token_str),
         token_type: "Bearer".into(),
-        expires_in: Some(300),
-        scope: stored_scope,
+        expires_in: Some(TOKEN_EXPIRES_IN_SECS),
+        scope: auth_code.scope,
     })
 }
 
@@ -660,19 +583,19 @@ async fn handle_refresh_token_grant(
     let client_id = req.form::<String>("client_id").await
         .ok_or_else(|| MatrixError::invalid_param("Missing client_id"))?;
 
-    // Find existing refresh token
+    let mut conn = connect()?;
+
     let existing = user_refresh_tokens::table
         .filter(user_refresh_tokens::token.eq(&refresh_token))
-        .first::<crate::data::user::DbRefreshToken>(&mut connect()?)
+        .first::<crate::data::user::DbRefreshToken>(&mut conn)
         .optional()
-        .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?;
+        .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?
+        .ok_or_else(|| MatrixError::invalid_param("Invalid refresh_token"))?;
 
-    let existing = existing.ok_or_else(|| MatrixError::invalid_param("Invalid refresh_token"))?;
-
-    // Verify the token's associated access token has the same oauth_client_id
+    // Verify client_id binding
     let access_token_entry = user_access_tokens::table
         .filter(user_access_tokens::refresh_token_id.eq(Some(existing.id)))
-        .first::<crate::data::user::DbAccessToken>(&mut connect()?)
+        .first::<crate::data::user::DbAccessToken>(&mut conn)
         .optional()
         .map_err(|e| MatrixError::unknown(format!("DB error: {}", e)))?;
 
@@ -682,27 +605,20 @@ async fn handle_refresh_token_grant(
         }
     }
 
-    // Generate new tokens
     let new_access_token = utils::random_string(64);
     let new_refresh_token = utils::random_string(64);
-    let expires_at = UnixMillis::now().get() + conf.refresh_token_ttl;
-    let ultimate_expires = UnixMillis::now().get() + conf.session_ttl;
+    let now = UnixMillis::now();
+    let expires_at = now.get() + conf.refresh_token_ttl;
+    let ultimate_expires = now.get() + conf.session_ttl;
 
     let new_refresh_id = data::user::device::set_refresh_token(
-        &existing.user_id,
-        &existing.device_id,
-        &new_refresh_token,
-        expires_at,
-        ultimate_expires,
+        &existing.user_id, &existing.device_id, &new_refresh_token,
+        expires_at, ultimate_expires,
     )?;
 
-    // Update access token
     if let Some(at) = access_token_entry {
         data::user::device::set_access_token(
-            &at.user_id,
-            &at.device_id,
-            &new_access_token,
-            Some(new_refresh_id),
+            &at.user_id, &at.device_id, &new_access_token, Some(new_refresh_id),
         )?;
     }
 
@@ -710,71 +626,7 @@ async fn handle_refresh_token_grant(
         access_token: new_access_token,
         refresh_token: Some(new_refresh_token),
         token_type: "Bearer".into(),
-        expires_in: Some(300),
-        scope: "urn:matrix:org.matrix.msc2967.client:api:*".into(),
+        expires_in: Some(TOKEN_EXPIRES_IN_SECS),
+        scope: MATRIX_SCOPE.into(),
     })
-}
-
-// =================== HELPERS ===================
-
-/// Simple percent-encoding for URL query values
-fn percent_encode(s: &str) -> String {
-    form_urlencoded::byte_serialize(s.as_bytes()).collect()
-}
-
-fn generate_pkce() -> (String, String) {
-    let verifier = utils::random_string(96);
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(verifier.as_bytes());
-    let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
-    (verifier, challenge)
-}
-
-/// Exchange provider authorization code for tokens.
-/// Similar to oidc.rs exchange_code_for_tokens but uses our provider_callback URL.
-async fn exchange_provider_code(
-    code: &str,
-    provider_config: &OidcProviderConfig,
-    provider_info: &super::client::oidc::OidcProviderInfo,
-    callback_url: &str,
-    code_verifier: Option<&str>,
-) -> Result<super::client::oidc::OAuthTokenResponse, MatrixError> {
-    let client = reqwest::Client::new();
-
-    let mut params = vec![
-        ("client_id", provider_config.client_id.as_str()),
-        ("client_secret", provider_config.client_secret.as_str()),
-        ("code", code),
-        ("grant_type", "authorization_code"),
-        ("redirect_uri", callback_url),
-    ];
-
-    if let Some(verifier) = code_verifier {
-        params.push(("code_verifier", verifier));
-    }
-
-    let provider_type = super::client::oidc::ProviderType::from_issuer(&provider_config.issuer);
-    let request = match provider_type {
-        super::client::oidc::ProviderType::GitHub => client
-            .post(&provider_info.token_endpoint)
-            .header("Accept", "application/json"),
-        _ => client.post(&provider_info.token_endpoint),
-    };
-
-    let response = request
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| MatrixError::unknown(format!("Token exchange failed: {}", e)))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(MatrixError::unknown(format!("Token exchange failed: HTTP {} - {}", status, text)));
-    }
-
-    response
-        .json()
-        .await
-        .map_err(|e| MatrixError::unknown(format!("Failed to parse token response: {}", e)))
 }

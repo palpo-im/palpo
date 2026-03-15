@@ -2,29 +2,15 @@
 
 use serde::Serialize;
 
-use crate::core::MatrixError;
 use crate::routing::prelude::*;
 
 /// GET /_matrix/client/v1/auth_metadata
 /// GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata
-///
-/// Returns the authorization server metadata that Element X uses
-/// to discover OIDC capabilities.
 #[endpoint]
 pub async fn auth_metadata() -> JsonResult<AuthMetadataResponse> {
-    let conf = config::get();
-    let oidc = conf
-        .enabled_oidc()
-        .ok_or_else(|| MatrixError::not_found("OIDC not enabled"))?;
-
-    if !oidc.enable_auth_server {
-        return Err(MatrixError::not_found("Authorization server not enabled").into());
-    }
-
-    let base_url = conf.well_known_client();
-    let base = base_url.trim_end_matches('/');
-
-    json_ok(build_auth_metadata(base))
+    let _ = crate::routing::oauth2::require_auth_server()?;
+    let base = config::get().well_known_client();
+    json_ok(build_auth_metadata(base.trim_end_matches('/')))
 }
 
 #[derive(Debug, Serialize, ToSchema)]

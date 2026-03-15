@@ -354,20 +354,21 @@ fn generate_random_string(length: usize) -> String {
 ///
 /// Returns (code_verifier, code_challenge) tuple
 /// Implements proper SHA256 hashing as required by OAuth 2.0 PKCE spec
-fn generate_pkce_challenge() -> (String, String) {
+pub(crate) fn generate_pkce_challenge() -> (String, String) {
+    let code_verifier = generate_random_string(96);
+    let code_challenge = compute_s256_challenge(&code_verifier);
+    (code_verifier, code_challenge)
+}
+
+/// Compute S256 code challenge from a verifier string (RFC 7636 Section 4.6).
+/// Returns BASE64URL(SHA256(verifier)).
+pub(crate) fn compute_s256_challenge(verifier: &str) -> String {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-    // Generate 128-bit random verifier (43-128 characters per RFC 7636)
-    let code_verifier = generate_random_string(96);
-
-    // Create SHA256 hash of verifier and base64url encode it (RFC 7636)
     let mut hasher = sha2::Sha256::new();
-    hasher.update(code_verifier.as_bytes());
-    let hash_result = hasher.finalize();
-    let code_challenge = URL_SAFE_NO_PAD.encode(&hash_result[..]);
-
-    (code_verifier, code_challenge)
+    hasher.update(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(hasher.finalize())
 }
 
 /// Get provider configuration by name
@@ -703,6 +704,7 @@ pub async fn oidc_callback(req: &mut Request) -> JsonResult<OidcLoginResponse> {
         &code,
         provider_config,
         &provider_info,
+        &provider_config.redirect_uri,
         session.code_verifier.as_deref(),
     )
     .await?;
@@ -787,10 +789,11 @@ pub async fn oidc_login(_depot: &mut Depot) -> JsonResult<OidcLoginResponse> {
 /// - Client secret is transmitted securely to provider
 /// - Request is made over HTTPS only
 /// - Response tokens are validated before use
-async fn exchange_code_for_tokens(
+pub(crate) async fn exchange_code_for_tokens(
     code: &str,
     provider_config: &OidcProviderConfig,
     provider_info: &OidcProviderInfo,
+    redirect_uri: &str,
     code_verifier: Option<&str>,
 ) -> Result<OAuthTokenResponse, MatrixError> {
     let client = reqwest::Client::new();
@@ -801,7 +804,7 @@ async fn exchange_code_for_tokens(
         ("client_secret", provider_config.client_secret.as_str()),
         ("code", code),
         ("grant_type", "authorization_code"),
-        ("redirect_uri", provider_config.redirect_uri.as_str()),
+        ("redirect_uri", redirect_uri),
     ];
 
     // Add PKCE verification if code_verifier is present

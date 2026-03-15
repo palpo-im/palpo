@@ -22,6 +22,7 @@ pub use pool::{DieselPool, PgPooledConnection, PoolError};
 
 pub mod media;
 pub mod misc;
+pub mod oauth2;
 pub mod room;
 pub mod schema;
 pub mod sending;
