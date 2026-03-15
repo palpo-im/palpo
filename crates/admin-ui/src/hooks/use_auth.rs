@@ -25,6 +25,14 @@ impl AuthContext {
                 Ok(response) => {
                     if response.success {
                         if let Some(user) = response.user {
+                            // Store token in localStorage directly
+                            let token = response.token.clone().unwrap_or_else(|| user.session_id.clone());
+                            if let Some(window) = web_sys::window() {
+                                if let Ok(Some(storage)) = window.local_storage() {
+                                    let _ = storage.set_item("auth_token", &token);
+                                }
+                            }
+                            
                             auth_state.set(AuthState::Authenticated(user));
                         } else {
                             auth_state.set(AuthState::Failed("No user data received".to_string()));

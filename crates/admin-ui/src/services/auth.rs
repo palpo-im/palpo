@@ -24,6 +24,11 @@ impl AuthService {
         Ok(Self { api_client })
     }
 
+    /// Get the API client
+    pub fn api_client(&self) -> &ApiClient {
+        &self.api_client
+    }
+
     /// Authenticate user with username and password
     pub async fn login(&self, username: String, password: String) -> WebConfigResult<LoginResponse> {
         let request = LoginRequest { username, password };
@@ -40,13 +45,6 @@ impl AuthService {
         
         let response = self.api_client.execute_request(config).await?;
         let login_response: LoginResponse = self.api_client.parse_json(response).await?;
-        
-        // Store token in API client if login successful
-        if login_response.success {
-            if let Some(token) = &login_response.token {
-                self.api_client.set_token(token)?;
-            }
-        }
         
         Ok(login_response)
     }

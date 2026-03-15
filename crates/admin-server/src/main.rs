@@ -81,11 +81,15 @@ async fn main() -> Result<()> {
     
     // Login to Palpo to get access token
     info!("Logging in to Palpo...");
-    if let Err(e) = palpo_client.login().await {
-        tracing::error!("Failed to login to Palpo: {}", e);
-        return Err(e.into());
+    match palpo_client.login().await {
+        Ok(_) => {
+            info!("Successfully logged in to Palpo");
+        }
+        Err(e) => {
+            tracing::warn!("Failed to login to Palpo: {}. Server will continue without Palpo connection.", e);
+            tracing::warn!("Palpo service can be started later via the UI");
+        }
     }
-    info!("Successfully logged in to Palpo");
 
     // Run admin-specific migrations
     info!("Running admin migrations...");

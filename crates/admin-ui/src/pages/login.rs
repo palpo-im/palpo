@@ -15,14 +15,16 @@ pub fn LoginPage() -> Element {
     let mut show_error = use_signal(|| false);
     let mut show_forgot_password = use_signal(|| false);
 
-    // Redirect to dashboard after successful login
+    // Watch auth_state and redirect when authenticated
     use_effect({
         let auth_context = auth_context.clone();
         let navigator = navigator.clone();
-        
         move || {
-            if auth_context.is_authenticated() {
-                web_sys::console::log_1(&"Login successful, redirecting to dashboard...".into());
+            // Read the signal to subscribe to changes
+            let is_auth = auth_context.is_authenticated();
+            
+            if is_auth {
+                web_sys::console::log_1(&"Redirecting to dashboard...".into());
                 navigator.push(Route::Dashboard {});
             }
         }
@@ -40,6 +42,7 @@ pub fn LoginPage() -> Element {
             }
             
             show_error.set(false);
+            web_sys::console::log_1(&format!("Attempting login for user: {}", username_val).into());
             auth_context.login(username_val, password_val);
         }
     };

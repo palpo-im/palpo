@@ -819,9 +819,54 @@ enum AdminRoute {
 }
 ```
 
+### 配置管理页面架构
+
+```
+ConfigManager (主组件)
+├── 标签页导航
+│   ├── "表单编辑" (默认)
+│   ├── "TOML 编辑"
+│   └── "导入/导出"
+├── 表单编辑模式 (ConfigFormEditor)
+│   ├── 左侧导航 (7 个配置分类)
+│   ├── 右侧表单 (动态表单)
+│   ├── 验证按钮
+│   ├── 保存/重置按钮
+│   └── 搜索框
+├── TOML 编辑模式 (TomlEditor)
+│   ├── 代码编辑器 (语法高亮、行号)
+│   ├── 验证按钮
+│   ├── 保存/重置按钮
+│   └── 错误提示区域
+└── 导入/导出模式 (ConfigImportExport)
+    ├── 导出功能 (JSON/YAML/TOML)
+    ├── 导入功能 (文件上传)
+    └── 预览区域
+```
+
 ### 状态管理
 
 ```rust
+// 配置编辑模式
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfigEditMode {
+    FormEdit,      // 表单编辑模式
+    TomlEdit,      // TOML 编辑模式
+    ImportExport,  // 导入/导出模式
+}
+
+// 配置编辑状态
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfigEditState {
+    pub mode: ConfigEditMode,
+    pub form_data: ServerConfig,
+    pub toml_content: String,
+    pub is_dirty: bool,
+    pub validation_errors: HashMap<String, String>,
+    pub is_loading: bool,
+    pub last_saved_at: Option<DateTime<Utc>>,
+}
+
 // 认证状态
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthState {

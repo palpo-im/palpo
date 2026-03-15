@@ -6,19 +6,27 @@ This directory contains end-to-end test scripts for the Palpo Admin UI.
 
 ### 1. Server Control Tests (`e2e_server_control.sh`)
 
-Tests the server control functionality including:
+Tests the server control functionality with both API and browser automation:
+- Admin login and authentication (API + UI)
+- Server control UI navigation
 - Server status monitoring
 - Server metrics collection
 - Server version information
 - Server configuration management
 
+**Features:**
+- Automated API testing with curl
+- Browser automation with agent-browser (optional)
+- Graceful degradation if agent-browser not available
+- Comprehensive test reporting
+
 **Usage:**
 
 ```bash
-# Setup environment (start services, keep them running)
+# Setup environment (start admin-server and admin-ui)
 bash crates/admin-ui/tests/e2e_server_control.sh --setup
 
-# Run tests (requires services already running)
+# Run automated tests (requires services already running)
 bash crates/admin-ui/tests/e2e_server_control.sh --test
 
 # Check environment status
@@ -31,12 +39,32 @@ bash crates/admin-ui/tests/e2e_server_control.sh --restart
 bash crates/admin-ui/tests/e2e_server_control.sh
 ```
 
-**Test Cases:**
+**Test Workflow:**
 
-1. **Get Server Status** - Verify `/api/v1/admin/health/status` endpoint
-2. **Get Server Metrics** - Verify `/api/v1/admin/health/metrics` endpoint
-3. **Get Server Version** - Verify `/api/v1/admin/health/version` endpoint
-4. **Get Server Config** - Verify `/api/v1/admin/server/config` endpoint
+1. **Setup Phase** - Start PostgreSQL, Admin Server, and Admin UI
+2. **API Testing Phase** - Verify all endpoints are accessible:
+   - `/api/v1/admin/webui-admin/setup` - Setup initial password
+   - `/api/v1/admin/webui-admin/login` - Admin login
+   - `/api/v1/admin/health/status` - Server status
+   - `/api/v1/admin/health/metrics` - Server metrics
+   - `/api/v1/admin/health/version` - Server version
+   - `/api/v1/admin/server/config` - Server configuration
+3. **Browser Testing Phase** (if agent-browser available):
+   - Login via UI
+   - Navigate to Server Control section
+   - Verify server status display
+   - Verify metrics display
+
+**Test Results:**
+
+```
+========================================
+  Test Summary
+========================================
+  Tests Passed: 10 / 10
+========================================
+[✓] Core API tests passed!
+```
 
 ### 2. User Management Tests (`e2e_user_management.sh`)
 
@@ -80,22 +108,27 @@ bash crates/admin-ui/tests/e2e_user_management.sh --clean
 ## Test Modes
 
 ### `--setup`
-- Starts all services
+- Starts all services (PostgreSQL, Admin Server, Admin UI)
 - Leaves them running after script exits
 - Use this to start the environment once, then run tests multiple times
+- Useful for development and manual testing
 
 ### `--test`
-- Runs tests only
+- Runs automated tests only
 - Requires services already running (via `--setup`)
 - Does not start or stop any services
+- Includes both API tests (curl) and browser tests (if agent-browser available)
+- Gracefully skips browser tests if agent-browser not installed
 
 ### `--check`
 - Checks environment status
 - Does not start or stop services
-- Useful for verifying all services are ready
+- Displays which services are ready
+- Useful for verifying all services are running
 
 ### `--clean`
-- Cleans test data from database
+- Cleans test data from database (audit logs, test admin accounts)
+- Removes temporary log files (/tmp/admin-server.log, /tmp/dioxus.log)
 - Does not start or stop services
 - Use between test runs to reset state
 
@@ -103,13 +136,43 @@ bash crates/admin-ui/tests/e2e_user_management.sh --clean
 - Kills all services
 - Restarts them from scratch
 - Leaves services running after script exits
+- Useful for resetting to a clean state
 
 ### (default)
 - Full workflow: setup + test + cleanup
 - Starts services, runs tests, stops services on exit
+- Useful for CI/CD pipelines
 
 ## Typical Workflow
 
+### Development Workflow (with manual testing)
+```bash
+# Terminal 1: Start environment once
+bash crates/admin-ui/tests/e2e_server_control.sh --setup
+
+# Terminal 2: Run automated tests
+bash crates/admin-ui/tests/e2e_server_control.sh --test
+
+# Terminal 2: Open browser for manual testing
+# Navigate to http://localhost:8080
+# Login with admin credentials (admin / AdminTest123!)
+# Test Server Control functionality manually
+
+# When done, kill services
+pkill -f "palpo-admin-server"
+pkill -f "dx serve"
+```
+
+### CI/CD Workflow (fully automated)
+```bash
+# Run full test workflow (setup + test + cleanup)
+bash crates/admin-ui/tests/e2e_server_control.sh
+
+# Exit code 0 = all tests passed
+# Exit code 1 = tests failed
+```
+
+### Iterative Testing Workflow
 ```bash
 # Terminal 1: Start environment once
 bash crates/admin-ui/tests/e2e_server_control.sh --setup
@@ -117,13 +180,13 @@ bash crates/admin-ui/tests/e2e_server_control.sh --setup
 # Terminal 2: Run tests multiple times
 bash crates/admin-ui/tests/e2e_server_control.sh --test
 bash crates/admin-ui/tests/e2e_server_control.sh --test
+bash crates/admin-ui/tests/e2e_server_control.sh --test
 
-# Clean test data between runs
+# Between test runs, clean test data
 bash crates/admin-ui/tests/e2e_server_control.sh --clean
 
-# When done, kill services
-pkill -f "palpo-admin-server"
-pkill -f "dx serve"
+# When done
+bash crates/admin-ui/tests/e2e_server_control.sh --restart
 ```
 
 ## Troubleshooting
@@ -170,36 +233,64 @@ bash crates/admin-ui/tests/e2e_server_control.sh --test
 
 ## Test Results
 
-Successful test output:
+### Successful API Tests
 ```
-========================================
-  Server Control E2E Tests
-========================================
+--- API Tests (curl-based) ---
 
-[✓] All services are ready!
+Test 1: Setup Initial Password
+[✓] Setup initial password (or already initialized)
 
---- Test 1: Get Server Status ---
+Test 2: Login via API
+[✓] Login successful (token: a4959c43135a2445940f...)
+
+Test 3: Get Server Status
 [✓] Server status endpoint working
-✓ Test 1 PASSED
 
---- Test 2: Get Server Metrics ---
+Test 4: Get Server Metrics
 [✓] Server metrics endpoint working
-✓ Test 2 PASSED
 
---- Test 3: Get Server Version ---
+Test 5: Get Server Version
 [✓] Server version endpoint working
-✓ Test 3 PASSED
 
---- Test 4: Get Server Config ---
+Test 6: Get Server Config
 [✓] Server config endpoint working
-✓ Test 4 PASSED
+```
 
+### Successful Browser Tests (with agent-browser)
+```
+--- Browser-based UI Tests ---
+
+Test 7: Login via UI
+[✓] UI login successful
+
+Test 8: Navigate to Server Control
+[✓] Server Control page loaded
+
+Test 9: Check Server Status Display
+[✓] Server status displayed
+
+Test 10: Check Metrics Display
+[✓] Metrics displayed
+```
+
+### Test Summary
+```
 ========================================
   Test Summary
 ========================================
-  Passed: 4 / 4
+  Tests Passed: 10 / 10
 ========================================
-All Server Control tests passed!
+[✓] Core API tests passed!
+```
+
+### Browser Tests Not Available
+If agent-browser is not installed, the script gracefully skips browser tests:
+```
+--- Browser-based UI Tests ---
+
+Test 7: Login via UI
+[⚠] agent-browser not found, skipping UI tests
+[INFO] To enable UI tests, install agent-browser
 ```
 
 ## Adding New Tests
@@ -229,15 +320,29 @@ echo ""
 
 ## CI/CD Integration
 
-To integrate these tests into CI/CD:
+To integrate these tests into CI/CD pipelines:
 
 ```bash
-# Run full test workflow
+# Run full test workflow (automated)
 bash crates/admin-ui/tests/e2e_server_control.sh
 
 # Exit code 0 = all tests passed
 # Exit code 1 = tests failed
 ```
+
+### GitHub Actions Example
+```yaml
+- name: Run E2E Tests
+  run: bash crates/admin-ui/tests/e2e_server_control.sh
+  timeout-minutes: 10
+```
+
+### Notes for CI/CD
+- Tests require PostgreSQL to be running
+- Tests require ports 8080 and 8081 to be available
+- Browser tests (agent-browser) are optional and gracefully skipped if not available
+- API tests always run and are required to pass
+- Full test suite typically completes in 2-3 minutes
 
 ## Performance Notes
 

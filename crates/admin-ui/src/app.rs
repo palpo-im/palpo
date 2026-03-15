@@ -72,10 +72,8 @@ impl Default for AppState {
 pub fn App() -> Element {
     // Initialize API client on app startup
     use_effect(|| {
-        // Get base URL from environment or use default
-        let base_url = web_sys::window()
-            .and_then(|w| w.location().origin().ok())
-            .unwrap_or_else(|| "http://localhost:8081".to_string());
+        // Use the admin server port directly
+        let base_url = "http://localhost:8081".to_string();
         
         init_api_client(base_url);
         
