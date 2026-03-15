@@ -2,7 +2,7 @@ use anyhow::Result;
 use palpo_admin_server::{
     handlers::{webui_admin, server_control, matrix_admin, user_handler, device_handler, session_handler, rate_limit_handler, shadow_ban_handler, threepid_handler, auth_middleware::AuthMiddleware},
     MigrationRunner, MigrationService, SessionManager, WebUIAuthService, ServerControlAPI,
-    MatrixAdminCreationService, AuthService, RepositoryFactory,
+    MatrixAdminCreationService, AuthService, RepositoryFactory, PalpoClient,
 };
 use palpo_data::DbConfig;
 use salvo::prelude::*;
@@ -65,6 +65,28 @@ async fn main() -> Result<()> {
     let matrix_creation_service = Arc::new(MatrixAdminCreationService::new(homeserver_url.clone()));
     let matrix_auth_service = Arc::new(AuthService::new());
 
+    // Initialize PalpoClient for admin API calls
+    let palpo_base_url = env::var("PALPO_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:8008".to_string());
+    let palpo_admin_username = env::var("PALPO_ADMIN_USERNAME")
+        .unwrap_or_else(|_| "admin".to_string());
+    let palpo_admin_password = env::var("PALPO_ADMIN_PASSWORD")
+        .unwrap_or_else(|_| "password".to_string());
+    
+    let palpo_client = Arc::new(PalpoClient::new(
+        palpo_base_url,
+        palpo_admin_username,
+        palpo_admin_password,
+    ));
+    
+    // Login to Palpo to get access token
+    info!("Logging in to Palpo...");
+    if let Err(e) = palpo_client.login().await {
+        tracing::error!("Failed to login to Palpo: {}", e);
+        return Err(e.into());
+    }
+    info!("Successfully logged in to Palpo");
+
     // Run admin-specific migrations
     info!("Running admin migrations...");
     if let Err(e) = migration_runner.run_migrations() {
@@ -114,6 +136,7 @@ async fn main() -> Result<()> {
         shadow_ban_repo: Arc::new(repo_factory.shadow_ban_repository()),
         threepid_repo: Arc::new(repo_factory.threepid_repository()),
         session_manager: session_manager.clone(),
+        palpo_client: palpo_client.clone(),
     };
 
     // Initialize user app state

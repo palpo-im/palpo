@@ -77,5 +77,9 @@ mod threepid_repository;
 pub mod password_generator;
 pub use password_generator::{PasswordConfig, PasswordError, generate_password, validate_password};
 
+// Palpo HTTP client for admin API calls
+pub mod palpo_client;
+pub use palpo_client::PalpoClient;
+
 // Re-export UserAppState
 pub use handlers::UserAppState;

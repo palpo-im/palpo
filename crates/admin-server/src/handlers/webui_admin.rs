@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 use crate::migration_service::LegacyCredentials;
 use crate::types::AdminError;
 use crate::repositories::{DieselUserRepository, DieselDeviceRepository, DieselSessionRepository, DieselRateLimitRepository, DieselMediaRepository, DieselShadowBanRepository, DieselThreepidRepository};
-use crate::{MigrationService, SessionManager, WebUIAuthService};
+use crate::{MigrationService, SessionManager, WebUIAuthService, PalpoClient};
 
 /// Shared application state for handlers
 ///
@@ -77,6 +77,7 @@ pub struct UserAppState {
     pub shadow_ban_repo: Arc<DieselShadowBanRepository>,
     pub threepid_repo: Arc<DieselThreepidRepository>,
     pub session_manager: Arc<SessionManager>,
+    pub palpo_client: Arc<PalpoClient>,
 }
 
 // ===== Request/Response Types =====

@@ -22,7 +22,7 @@ This task list tracks the implementation of the user management functionality fo
 - [ ] Not started
 - [x] Completed
 - [-] In progress
-- [~] Needs revision
+- [ ] Needs revision
 
 ---
 
