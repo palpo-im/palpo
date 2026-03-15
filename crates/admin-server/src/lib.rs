@@ -1,0 +1,93 @@
+/// Palpo Admin Server Library
+///
+/// This crate provides the admin server functionality for Palpo, implementing
+/// the first tier of the two-tier admin system. It operates independently of
+/// the Palpo Matrix server and provides:
+///
+/// - Web UI admin authentication (PostgreSQL-backed)
+/// - Session management
+/// - Server configuration management (planned)
+/// - Server lifecycle control (planned)
+/// - Database migrations for admin credentials
+
+// Core types used across the admin server
+pub mod types;
+pub use types::{
+    AdminError, CreateMatrixAdminResponse, ServerConfig, ServerStatus, SessionToken,
+    WebUIAdminCredentials,
+};
+
+// Database migrations for Web UI admin credentials
+pub mod migrations;
+pub use migrations::MigrationRunner;
+
+// Web UI authentication service (Tier 1 - independent of Palpo)
+pub mod webui_auth_service;
+pub use webui_auth_service::WebUIAuthService;
+
+// Session manager for Web UI admin sessions
+pub mod session_manager;
+pub use session_manager::SessionManager;
+
+// Migration service for legacy credential migration
+pub mod migration_service;
+pub use migration_service::{LegacyCredentials, MigrationService};
+
+// Matrix admin creation service (Tier 2 - requires Palpo running)
+pub mod matrix_admin_creation;
+pub use matrix_admin_creation::{MatrixAdminClient, MatrixAdminCreationService, UserInfoResponse};
+
+// Matrix authentication service (Tier 2 - Matrix standard login)
+pub mod matrix_auth_service;
+pub use matrix_auth_service::{AuthResult, AuthService};
+
+// HTTP handlers for REST API endpoints
+pub mod handlers;
+pub use handlers::AppState;
+
+// Server configuration API for managing Palpo server config
+pub mod server_config;
+pub use server_config::ServerConfigAPI;
+
+// Server control API for managing Palpo server lifecycle
+pub mod server_control;
+pub use server_control::{ServerControlAPI, ServerStatusInfo};
+
+// Server status monitoring API for health checks and metrics
+pub mod server_status;
+pub use server_status::{ServerStatusAPI, HealthStatus, HealthInfo, VersionInfo, SystemMetrics};
+
+// User management database schema
+pub mod schema;
+
+// User management migrations
+pub mod user_migrations;
+pub use user_migrations::UserMigrationRunner;
+
+// Repository layer for user management
+// NOTE: Disabled - will be replaced with PalpoClient-based implementation
+// pub mod repositories;
+// pub use repositories::RepositoryFactory;
+
+// Individual repository modules (required for Diesel table macros)
+// NOTE: These modules are disabled because they try to access Palpo database tables directly.
+// According to the architecture design, user management should go through PalpoClient (HTTP API) instead.
+// These will be removed in a future refactoring task (user-management spec Part A.10).
+// mod user_repository;
+// mod device_repository;
+// mod session_repository;
+// mod rate_limit_repository;
+// mod media_repository;
+// mod shadow_ban_repository;
+// mod threepid_repository;
+
+// Password generator module
+pub mod password_generator;
+pub use password_generator::{PasswordConfig, PasswordError, generate_password, validate_password};
+
+// Palpo HTTP client for admin API calls
+pub mod palpo_client;
+pub use palpo_client::PalpoClient;
+
+// Re-export UserAppState
+pub use handlers::UserAppState;

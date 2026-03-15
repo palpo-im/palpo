@@ -52,6 +52,7 @@ figment = { workspace = true, features = ["env", "toml", "yaml", "json"] }
 futures-util = { workspace = true, features = ["io"] }
 globwalk = { workspace = true }
 hickory-resolver = { workspace = true }
+hex = "0.4"
 hmac = { workspace = true }
 hyper-util = { workspace = true, features = ["client"] }
 image = { workspace = true }
@@ -191,10 +192,14 @@ tracing-subscriber = { workspace = true, features = [
 ] }
 ulid = { workspace = true }
 url = { workspace = true }
+urlencoding = "2.1"
 uuid = { version = "1.1.2", features = ["v4"] }
 webpage = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

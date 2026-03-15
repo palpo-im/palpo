@@ -40,6 +40,11 @@ pub static REPLICA_POOL: OnceLock<Option<DieselPool>> = OnceLock::new();
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 pub fn init(config: &DbConfig) {
+    // Check if already initialized (fast path)
+    if DIESEL_POOL.get().is_some() {
+        return; // Already initialized, skip
+    }
+    
     let builder = r2d2::Pool::builder()
         .max_size(config.pool_size)
         .min_idle(config.min_idle)
@@ -51,8 +56,17 @@ pub fn init(config: &DbConfig) {
 
     let pool =
         DieselPool::new(&config.url, config, builder).expect("diesel pool should be created");
-    DIESEL_POOL.set(pool).expect("diesel pool should be set");
-    migrate();
+    
+    // Use get_or_init to safely handle concurrent initialization
+    // This ensures only one pool is created even with multiple threads
+    let set_result = DIESEL_POOL.set(pool);
+    if set_result.is_err() {
+        // Pool was already set by another thread, that's okay
+        tracing::debug!("Database pool already initialized by another thread");
+    } else {
+        // We initialized the pool, run migrations
+        migrate();
+    }
 }
 pub fn migrate() {
     let conn = &mut connect().expect("db connect should worked");
