@@ -5,6 +5,7 @@
 pub mod webui_admin;
 pub mod server_config;
 pub mod server_control;
+pub mod server_status;
 pub mod matrix_admin;
 // NOTE: The following handlers are disabled because they depend on the repository layer
 // which has been disabled. They will be rewritten to use PalpoClient in the user-management spec.

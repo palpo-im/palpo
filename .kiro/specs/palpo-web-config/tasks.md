@@ -83,7 +83,7 @@ cargo test --package palpo-admin-server server_control -- --nocapture
 
 ### A.3 Implement Server Status Monitoring
 
-**Status**: [ ]
+**Status**: [x]
 
 **Files to create/modify**:
 - `crates/admin-server/src/handlers/server_status.rs` - Server status handler

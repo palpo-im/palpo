@@ -53,6 +53,10 @@ pub use server_config::ServerConfigAPI;
 pub mod server_control;
 pub use server_control::{ServerControlAPI, ServerStatusInfo};
 
+// Server status monitoring API for health checks and metrics
+pub mod server_status;
+pub use server_status::{ServerStatusAPI, HealthStatus, HealthInfo, VersionInfo, SystemMetrics};
+
 // User management database schema
 pub mod schema;
 

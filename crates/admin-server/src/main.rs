@@ -166,6 +166,18 @@ async fn main() -> Result<()> {
                 )
         )
         .push(
+            Router::with_path("/api/v1/admin/health")
+                .push(Router::with_path("/status")
+                    .get(palpo_admin_server::handlers::server_status::get_health)
+                )
+                .push(Router::with_path("/metrics")
+                    .get(palpo_admin_server::handlers::server_status::get_metrics)
+                )
+                .push(Router::with_path("/version")
+                    .get(palpo_admin_server::handlers::server_status::get_version)
+                )
+        )
+        .push(
             Router::with_path("/api/v1/admin/matrix-admin")
                 .push(Router::with_path("/create")
                     .post(matrix_admin::create_matrix_admin)
