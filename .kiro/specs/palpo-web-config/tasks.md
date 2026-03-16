@@ -28,7 +28,7 @@ This task list tracks the implementation of the Palpo Matrix server web admin in
 
 ### A.1 Implement Backend Configuration API
 
-**Status**: [ ] **NOT STARTED - 优先级: 最高**
+**Status**: [x] **COMPLETED**
 
 **Description**: 实现后端配置管理 API，支持表单编辑、TOML编辑、验证和导入/导出
 
@@ -84,7 +84,7 @@ This task list tracks the implementation of the Palpo Matrix server web admin in
 
 ### A.2 Implement Frontend TOML Editor
 
-**Status**: [ ] **NOT STARTED - 优先级: 最高**
+**Status**: [x] **COMPLETED**
 
 **Description**: 实现前端 TOML 编辑器，允许用户直接编辑 TOML 文件
 
@@ -126,7 +126,7 @@ This task list tracks the implementation of the Palpo Matrix server web admin in
 
 ### A.3 Implement Frontend Configuration Form Editor
 
-**Status**: [ ] **NOT STARTED - 优先级: 高**
+**Status**: [x] **COMPLETED**
 
 **Description**: 实现前端表单编辑模式，允许用户通过友好的表单界面编辑配置
 

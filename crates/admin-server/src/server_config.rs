@@ -5,8 +5,27 @@
 /// the Palpo server before starting it.
 
 use crate::types::{AdminError, ServerConfig};
+use serde_json::{json, Value as JsonValue};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
+
+/// Configuration metadata for a single field
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConfigFieldMetadata {
+    pub name: String,
+    pub description: String,
+    pub field_type: String,
+    pub default_value: Option<JsonValue>,
+    pub required: bool,
+    pub validation_rules: Option<HashMap<String, JsonValue>>,
+}
+
+/// Configuration metadata structure
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConfigMetadata {
+    pub fields: Vec<ConfigFieldMetadata>,
+}
 
 /// Server Configuration API service
 ///
@@ -131,6 +150,301 @@ impl ServerConfigAPI {
             tls_certificate: None,
             tls_private_key: None,
         }
+    }
+
+    /// Gets configuration metadata for form editing
+    ///
+    /// Returns metadata about all configuration fields including descriptions,
+    /// default values, and validation rules.
+    ///
+    /// # Returns
+    /// `ConfigMetadata` with field descriptions and validation rules
+    pub fn get_metadata() -> ConfigMetadata {
+        ConfigMetadata {
+            fields: vec![
+                ConfigFieldMetadata {
+                    name: "database_url".to_string(),
+                    description: "PostgreSQL database connection URL".to_string(),
+                    field_type: "string".to_string(),
+                    default_value: Some(JsonValue::String("postgresql://palpo:password@localhost/palpo".to_string())),
+                    required: true,
+                    validation_rules: Some({
+                        let mut rules = HashMap::new();
+                        rules.insert("pattern".to_string(), JsonValue::String("^postgresql://".to_string()));
+                        rules
+                    }),
+                },
+                ConfigFieldMetadata {
+                    name: "server_name".to_string(),
+                    description: "Matrix server name (domain)".to_string(),
+                    field_type: "string".to_string(),
+                    default_value: Some(JsonValue::String("localhost".to_string())),
+                    required: true,
+                    validation_rules: Some({
+                        let mut rules = HashMap::new();
+                        rules.insert("min_length".to_string(), JsonValue::Number(1.into()));
+                        rules
+                    }),
+                },
+                ConfigFieldMetadata {
+                    name: "bind_address".to_string(),
+                    description: "IP address to bind the server to".to_string(),
+                    field_type: "string".to_string(),
+                    default_value: Some(JsonValue::String("0.0.0.0".to_string())),
+                    required: true,
+                    validation_rules: None,
+                },
+                ConfigFieldMetadata {
+                    name: "port".to_string(),
+                    description: "Port number for the server".to_string(),
+                    field_type: "integer".to_string(),
+                    default_value: Some(JsonValue::Number(8008.into())),
+                    required: true,
+                    validation_rules: Some({
+                        let mut rules = HashMap::new();
+                        rules.insert("min".to_string(), JsonValue::Number(1.into()));
+                        rules.insert("max".to_string(), JsonValue::Number(65535.into()));
+                        rules
+                    }),
+                },
+                ConfigFieldMetadata {
+                    name: "tls_certificate".to_string(),
+                    description: "Path to TLS certificate file (optional)".to_string(),
+                    field_type: "string".to_string(),
+                    default_value: None,
+                    required: false,
+                    validation_rules: None,
+                },
+                ConfigFieldMetadata {
+                    name: "tls_private_key".to_string(),
+                    description: "Path to TLS private key file (optional)".to_string(),
+                    field_type: "string".to_string(),
+                    default_value: None,
+                    required: false,
+                    validation_rules: None,
+                },
+            ],
+        }
+    }
+
+    /// Converts ServerConfig to JSON for form display
+    ///
+    /// # Arguments
+    /// - `config` - Configuration to convert
+    ///
+    /// # Returns
+    /// JSON representation of the configuration
+    pub fn config_to_json(config: &ServerConfig) -> JsonValue {
+        json!({
+            "database_url": config.database_url,
+            "server_name": config.server_name,
+            "bind_address": config.bind_address,
+            "port": config.port,
+            "tls_certificate": config.tls_certificate,
+            "tls_private_key": config.tls_private_key,
+        })
+    }
+
+    /// Converts JSON to ServerConfig
+    ///
+    /// # Arguments
+    /// - `json` - JSON representation of configuration
+    ///
+    /// # Returns
+    /// - `Ok(ServerConfig)` - Parsed configuration
+    /// - `Err(AdminError)` - If JSON is invalid
+    pub fn json_to_config(json: &JsonValue) -> Result<ServerConfig, AdminError> {
+        let config = ServerConfig {
+            database_url: json["database_url"]
+                .as_str()
+                .ok_or_else(|| AdminError::InvalidInput("database_url must be a string".to_string()))?
+                .to_string(),
+            server_name: json["server_name"]
+                .as_str()
+                .ok_or_else(|| AdminError::InvalidInput("server_name must be a string".to_string()))?
+                .to_string(),
+            bind_address: json["bind_address"]
+                .as_str()
+                .ok_or_else(|| AdminError::InvalidInput("bind_address must be a string".to_string()))?
+                .to_string(),
+            port: json["port"]
+                .as_u64()
+                .ok_or_else(|| AdminError::InvalidInput("port must be a number".to_string()))?
+                as u16,
+            tls_certificate: json["tls_certificate"].as_str().map(|s| s.to_string()),
+            tls_private_key: json["tls_private_key"].as_str().map(|s| s.to_string()),
+        };
+        Ok(config)
+    }
+
+    /// Gets raw TOML file content
+    ///
+    /// # Returns
+    /// - `Ok(String)` - Raw TOML content
+    /// - `Err(AdminError)` - If file reading fails
+    pub async fn get_toml_content() -> Result<String, AdminError> {
+        let config_path = PathBuf::from(Self::CONFIG_PATH);
+        
+        if !config_path.exists() {
+            let default_config = Self::default_config();
+            let toml_content = toml::to_string_pretty(&default_config)?;
+            return Ok(toml_content);
+        }
+
+        fs::read_to_string(&config_path).await.map_err(|e| AdminError::IoError(e.to_string()))
+    }
+
+    /// Saves raw TOML content to file
+    ///
+    /// Validates TOML syntax and content before saving.
+    ///
+    /// # Arguments
+    /// - `content` - Raw TOML content
+    ///
+    /// # Returns
+    /// - `Ok(())` - TOML saved successfully
+    /// - `Err(AdminError)` - If validation or saving fails
+    pub async fn save_toml_content(content: &str) -> Result<(), AdminError> {
+        // Parse TOML to validate syntax
+        let config: ServerConfig = toml::from_str(content)?;
+        
+        // Validate configuration content
+        Self::validate_config(&config)?;
+
+        // Write to file
+        fs::write(Self::CONFIG_PATH, content).await.map_err(|e| AdminError::IoError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Validates TOML syntax and content
+    ///
+    /// # Arguments
+    /// - `content` - Raw TOML content to validate
+    ///
+    /// # Returns
+    /// - `Ok(())` - TOML is valid
+    /// - `Err(AdminError)` - If validation fails
+    pub fn validate_toml(content: &str) -> Result<(), AdminError> {
+        // Parse TOML to validate syntax
+        let config: ServerConfig = toml::from_str(content)?;
+        
+        // Validate configuration content
+        Self::validate_config(&config)
+    }
+
+    /// Parses TOML and returns as JSON
+    ///
+    /// # Arguments
+    /// - `content` - Raw TOML content
+    ///
+    /// # Returns
+    /// - `Ok(JsonValue)` - Parsed configuration as JSON
+    /// - `Err(AdminError)` - If parsing fails
+    pub fn parse_toml_to_json(content: &str) -> Result<JsonValue, AdminError> {
+        let config: ServerConfig = toml::from_str(content)?;
+        Ok(Self::config_to_json(&config))
+    }
+
+    /// Searches configuration items by label or description
+    ///
+    /// # Arguments
+    /// - `query` - Search query (case-insensitive)
+    ///
+    /// # Returns
+    /// Vector of matching field metadata
+    pub fn search_config(query: &str) -> Vec<ConfigFieldMetadata> {
+        let metadata = Self::get_metadata();
+        let query_lower = query.to_lowercase();
+        
+        metadata.fields.into_iter()
+            .filter(|field| {
+                field.name.to_lowercase().contains(&query_lower)
+                    || field.description.to_lowercase().contains(&query_lower)
+            })
+            .collect()
+    }
+
+    /// Resets configuration to last saved state
+    ///
+    /// Reloads configuration from file, discarding any unsaved changes.
+    ///
+    /// # Returns
+    /// - `Ok(ServerConfig)` - Reloaded configuration
+    /// - `Err(AdminError)` - If reading fails
+    pub async fn reset_config() -> Result<ServerConfig, AdminError> {
+        Self::get_config().await
+    }
+
+    /// Reloads configuration from file without restart
+    ///
+    /// # Returns
+    /// - `Ok(ServerConfig)` - Reloaded configuration
+    /// - `Err(AdminError)` - If reading fails
+    pub async fn reload_config() -> Result<ServerConfig, AdminError> {
+        Self::get_config().await
+    }
+
+    /// Exports configuration in specified format
+    ///
+    /// # Arguments
+    /// - `format` - Export format: "json", "yaml", or "toml"
+    ///
+    /// # Returns
+    /// - `Ok(String)` - Configuration in specified format
+    /// - `Err(AdminError)` - If export fails
+    pub async fn export_config(format: &str) -> Result<String, AdminError> {
+        let config = Self::get_config().await?;
+        
+        match format.to_lowercase().as_str() {
+            "json" => {
+                let json = Self::config_to_json(&config);
+                serde_json::to_string_pretty(&json)
+                    .map_err(|e| AdminError::InvalidInput(e.to_string()))
+            }
+            "yaml" => {
+                serde_yaml::to_string(&config)
+                    .map_err(|e| AdminError::InvalidInput(e.to_string()))
+            }
+            "toml" => {
+                toml::to_string_pretty(&config)
+                    .map_err(|e| AdminError::TomlError(e.to_string()))
+            }
+            _ => Err(AdminError::InvalidInput(format!("Unsupported format: {}", format))),
+        }
+    }
+
+    /// Imports configuration from specified format
+    ///
+    /// # Arguments
+    /// - `content` - Configuration content
+    /// - `format` - Import format: "json", "yaml", or "toml"
+    ///
+    /// # Returns
+    /// - `Ok(ServerConfig)` - Imported configuration
+    /// - `Err(AdminError)` - If import or validation fails
+    pub fn import_config(content: &str, format: &str) -> Result<ServerConfig, AdminError> {
+        let config = match format.to_lowercase().as_str() {
+            "json" => {
+                let json: JsonValue = serde_json::from_str(content)
+                    .map_err(|e| AdminError::InvalidInput(format!("Invalid JSON: {}", e)))?;
+                Self::json_to_config(&json)?
+            }
+            "yaml" => {
+                serde_yaml::from_str(content)
+                    .map_err(|e| AdminError::InvalidInput(format!("Invalid YAML: {}", e)))?
+            }
+            "toml" => {
+                toml::from_str(content)
+                    .map_err(|e| AdminError::TomlError(e.to_string()))?
+            }
+            _ => return Err(AdminError::InvalidInput(format!("Unsupported format: {}", format))),
+        };
+        
+        // Validate imported configuration
+        Self::validate_config(&config)?;
+        
+        Ok(config)
     }
 }
 

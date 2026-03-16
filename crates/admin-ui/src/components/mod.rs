@@ -8,6 +8,7 @@ pub mod layout;
 pub mod layout_example;
 pub mod forgot_password_modal;
 pub mod dialogs;
+pub mod toml_editor;
 
 // Re-export commonly used components
 pub use forms::{Button, Checkbox, Input, Select, TextArea, UserForm};
@@ -21,3 +22,4 @@ pub use loading::{
 pub use layout::{AdminLayout, Breadcrumb, BreadcrumbItem, Header, NavItem, Sidebar};
 pub use forgot_password_modal::ForgotPasswordModal;
 pub use dialogs::{ConfirmationDialog, PasswordResetDialog, SuccessDialog, DialogType};
+pub use toml_editor::{TomlEditor, TomlValidationError};
