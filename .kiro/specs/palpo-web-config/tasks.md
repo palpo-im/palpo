@@ -229,21 +229,25 @@ This task list tracks the implementation of the Palpo Matrix server web admin in
 
 **Status**: [ ] **NOT STARTED - 优先级: 中**
 
-**Description**: 实现配置导入/导出功能
+**Description**: 实现配置导入/导出功能（仅支持 TOML 格式，与 Palpo 兼容）
 
 **Files to create/modify**:
-- [ ] `crates/admin-ui/src/pages/config_import_export.rs` - Import/export page
+- [ ] `crates/admin-ui/src/pages/config_import_export.rs` - Import/export page (already exists, needs enhancement)
+- [ ] `crates/admin-ui/src/services/config_api.rs` - Add import/export API methods
 
 **Features to implement**:
-- [ ] Export current configuration as JSON/YAML/TOML
-- [ ] Import configuration from file (JSON/YAML/TOML)
-- [ ] Validate imported configuration before applying
-- [ ] Show preview of imported configuration
+- [ ] Export current configuration as TOML file (download)
+- [ ] Import configuration from TOML file (upload)
+- [ ] Validate imported TOML configuration before applying
+- [ ] Show preview of imported configuration with diff/summary
+- [ ] Backup current config before import
+- [ ] Rollback option if import fails
 
 **Tests**:
-- [ ] Test export to JSON/YAML/TOML
-- [ ] Test import from JSON/YAML/TOML
-- [ ] Test validation of imported config
+- [ ] Test export to TOML file
+- [ ] Test import from TOML file
+- [ ] Test validation of imported TOML config
+- [ ] Test backup/rollback functionality
 
 ---
 

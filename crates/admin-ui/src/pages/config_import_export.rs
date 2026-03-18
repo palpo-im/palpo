@@ -1,21 +1,18 @@
 //! Configuration Import/Export Page
 //!
-//! Provides comprehensive configuration import/export functionality with support for
-//! multiple formats, options configuration, preview, and conflict resolution.
+//! Provides configuration import/export functionality for TOML format (Palpo compatible).
 
 use dioxus::prelude::*;
-use crate::components::forms::{Button, TextArea, Select};
+use crate::components::forms::Button;
 use crate::components::feedback::{ErrorMessage, SuccessMessage};
 use crate::services::config_import_export_api::{
-    ConfigImportExportAPI, ConfigFormat, MergeStrategy, ExportOptions, ConfigImportRequest
+    ConfigImportExportAPI, ExportOptions, ConfigImportRequest, MergeStrategy, ConfigFormat
 };
 
 /// Main configuration import/export page component
 #[component]
 pub fn ConfigImportExportPage() -> Element {
     let mut active_tab = use_signal(|| "export".to_string());
-    let mut error = use_signal(|| None::<String>);
-    let mut success_message = use_signal(|| None::<String>);
 
     rsx! {
         div { class: "space-y-6",
@@ -24,7 +21,7 @@ pub fn ConfigImportExportPage() -> Element {
                     div { class: "flex justify-between items-center",
                         div {
                             h3 { class: "text-lg leading-6 font-medium text-gray-900", "配置导入/导出" }
-                            p { class: "mt-1 text-sm text-gray-500", "导出、导入和管理服务器配置" }
+                            p { class: "mt-1 text-sm text-gray-500", "导出和导入 TOML 格式的服务器配置" }
                         }
                         div { class: "flex space-x-3",
                             Button {
@@ -42,13 +39,6 @@ pub fn ConfigImportExportPage() -> Element {
                 }
             }
 
-            if let Some(msg) = success_message() {
-                SuccessMessage { message: msg, on_close: Some(EventHandler::new(move |_| success_message.set(None))) }
-            }
-            if let Some(err) = error() {
-                ErrorMessage { message: err, on_close: Some(EventHandler::new(move |_| error.set(None))) }
-            }
-
             match active_tab().as_str() {
                 "export" => rsx! { ExportPanel {} },
                 "import" => rsx! { ImportPanel {} },
@@ -61,8 +51,6 @@ pub fn ConfigImportExportPage() -> Element {
 /// Export configuration panel
 #[component]
 fn ExportPanel() -> Element {
-    let mut format = use_signal(|| ConfigFormat::Toml);
-    let mut include_sensitive = use_signal(|| false);
     let mut exported_content = use_signal(|| None::<String>);
     let mut is_loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
@@ -73,8 +61,8 @@ fn ExportPanel() -> Element {
             error.set(None);
 
             let options = ExportOptions {
-                format: format(),
-                include_sensitive: include_sensitive(),
+                format: ConfigFormat::Toml,
+                include_sensitive: false,
                 include_defaults: false,
                 sections: None,
                 encrypt: false,
@@ -100,36 +88,7 @@ fn ExportPanel() -> Element {
                 h4 { class: "text-md font-medium text-gray-900 mb-4", "导出配置" }
 
                 div { class: "space-y-4",
-                    Select {
-                        label: "导出格式".to_string(),
-                        value: format!("{:?}", format()),
-                        options: vec![
-                            ("Toml".to_string(), "TOML".to_string(), None),
-                            ("Json".to_string(), "JSON".to_string(), None),
-                            ("Yaml".to_string(), "YAML".to_string(), None),
-                        ],
-                        onchange: move |val: String| {
-                            format.set(match val.as_str() {
-                                "Json" => ConfigFormat::Json,
-                                "Yaml" => ConfigFormat::Yaml,
-                                _ => ConfigFormat::Toml,
-                            });
-                        }
-                    }
-
-                    div { class: "flex items-center",
-                        input {
-                            r#type: "checkbox",
-                            id: "include_sensitive",
-                            checked: include_sensitive(),
-                            onchange: move |evt| include_sensitive.set(evt.checked())
-                        }
-                        label {
-                            r#for: "include_sensitive",
-                            class: "ml-2 text-sm text-gray-700",
-                            "包含敏感数据（密码、密钥等）"
-                        }
-                    }
+                    p { class: "text-sm text-gray-600", "将当前服务器配置导出为 TOML 格式文件" }
 
                     Button {
                         variant: "primary".to_string(),
@@ -144,12 +103,23 @@ fn ExportPanel() -> Element {
 
                     if let Some(content) = exported_content() {
                         div { class: "mt-4",
-                            TextArea {
-                                label: "导出内容".to_string(),
-                                value: content.clone(),
-                                rows: 20.0,
+                            label { class: "block text-sm font-medium text-gray-700 mb-2", "导出内容" }
+                            textarea {
+                                class: "w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-sm",
+                                rows: "20",
                                 readonly: true,
-                                oninput: move |_| {}
+                                value: content.clone()
+                            }
+                            div { class: "mt-2",
+                                Button {
+                                    variant: "secondary".to_string(),
+                                    onclick: move |_| {
+                                        let _ = web_sys::window()
+                                            .and_then(|w| w.navigator().clipboard())
+                                            .map(|c| c.write_text(&content.clone()));
+                                    },
+                                    "复制到剪贴板"
+                                }
                             }
                         }
                     }
@@ -163,7 +133,6 @@ fn ExportPanel() -> Element {
 #[component]
 fn ImportPanel() -> Element {
     let mut import_content = use_signal(|| String::new());
-    let mut merge_strategy = use_signal(|| MergeStrategy::Replace);
     let mut is_loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut success = use_signal(|| None::<String>);
@@ -177,7 +146,7 @@ fn ImportPanel() -> Element {
             let request = ConfigImportRequest {
                 content: import_content(),
                 format: ConfigFormat::Toml,
-                merge_strategy: merge_strategy(),
+                merge_strategy: MergeStrategy::Replace,
                 validate_only: false,
                 backup_current: true,
                 encryption_key: None,
@@ -189,7 +158,7 @@ fn ImportPanel() -> Element {
                         success.set(Some("配置导入成功".to_string()));
                         import_content.set(String::new());
                     } else {
-                        error.set(Some(format!("导入失败: {:?}", result.errors)));
+                        error.set(Some(format!("导入失败: {}", result.errors.join(", "))));
                     }
                 }
                 Err(e) => {
@@ -207,26 +176,16 @@ fn ImportPanel() -> Element {
                 h4 { class: "text-md font-medium text-gray-900 mb-4", "导入配置" }
 
                 div { class: "space-y-4",
-                    TextArea {
-                        label: "配置内容".to_string(),
-                        value: import_content(),
-                        rows: 15.0,
-                        placeholder: "粘贴配置内容（TOML、JSON 或 YAML 格式）".to_string(),
-                        oninput: move |val: String| import_content.set(val)
-                    }
+                    p { class: "text-sm text-gray-600", "从 TOML 格式文件导入配置。导入前会自动备份当前配置。" }
 
-                    Select {
-                        label: "合并策略".to_string(),
-                        value: format!("{:?}", merge_strategy()),
-                        options: vec![
-                            ("Replace".to_string(), "替换（覆盖现有配置）".to_string(), None),
-                            ("Merge".to_string(), "合并（保留未修改的配置）".to_string(), None),
-                        ],
-                        onchange: move |val: String| {
-                            merge_strategy.set(match val.as_str() {
-                                "Merge" => MergeStrategy::Merge,
-                                _ => MergeStrategy::Replace,
-                            });
+                    div {
+                        label { class: "block text-sm font-medium text-gray-700 mb-2", "配置内容" }
+                        textarea {
+                            class: "w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-sm",
+                            rows: "15",
+                            placeholder: "粘贴 TOML 格式的配置内容",
+                            value: import_content(),
+                            oninput: move |evt| import_content.set(evt.value())
                         }
                     }
 
