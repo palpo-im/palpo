@@ -1,0 +1,784 @@
+/// Palpo Configuration
+///
+/// THIS FILE IS GENERATED. CHANGES/CONTRIBUTIONS IN THE REPO WILL BE
+/// OVERWRITTEN!
+///
+/// You should rename this file before configuring your server. Changes to
+/// documentation and defaults can be contributed in source code at
+/// crate/server/config/server.rs. This file is generated when building.
+///
+/// Any values pre-populated are the default values for said config option.
+///
+/// At the minimum, you MUST edit all the config options to your environment
+/// that say "YOU NEED TO EDIT THIS".
+///
+/// For more information, see:
+/// https://palpo.im/guide/configuration.html
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// listeners { }
+
+// The server_name is the pretty name of this server. It is used as a
+// suffix for user and room IDs/aliases.
+// YOU NEED TO EDIT THIS.
+//
+// example: "palpo.im"
+//
+// server_name "YOUR_SERVER_NAME"
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// home_page "..."
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// allow_check_for_updates true
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// max_concurrent_requests 100
+
+// Text which will be added to the end of the user's displayname upon
+// registration with a space before the text. In Conduit, this was the
+// lightning bolt emoji.
+//
+// To disable, set this to "" (an empty string).
+//
+// new_user_displayname_suffix "💕"
+
+// Enable to query all nameservers until the domain is found. Referred to
+// as "trust_negative_responses" in hickory_resolver. This can avoid
+// useless DNS queries if the first nameserver responds with NXDOMAIN or
+// an empty NOERROR response.
+//
+// query_all_nameservers false
+
+// Enable using *only* TCP for querying your specified nameservers instead
+// of UDP.
+//
+// If you are running palpo in a container environment, this config
+// option may need to be enabled. For more details, see:
+// https://palpo.im/troubleshooting.html#potential-dns-issues-when-using-docker
+//
+// query_over_tcp_only false
+
+// DNS A/AAAA record lookup strategy
+//
+// Takes a number of one of the following options:
+// 1 - Ipv4Only (Only query for A records, no AAAA/IPv6)
+// 2 - Ipv6Only (Only query for AAAA records, no A/IPv4)
+// 3 - Ipv4AndIpv6 (Query for A and AAAA records in parallel, uses whatever
+//     returns a successful response first)
+// 4 - Ipv6thenIpv4 (Query for AAAA record, if that fails then query the A record)
+// 5 - Ipv4thenIpv6 (Query for A record, if that fails then query the AAAA record)
+//
+// If you don't have IPv6 networking, then for better DNS performance it
+// may be suitable to set this to Ipv4Only (1) as you will never ever use
+// the AAAA record contents even if the AAAA record is successful instead
+// of the A record.
+//
+// ip_lookup_strategy 5
+
+// Max request size for file uploads in bytes. Defaults to 20MB.
+//
+// max_upload_size 20971520
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// max_fetch_prev_events 192
+
+// Default/base connection timeout. This is used only by URL
+// previews and update/news endpoint checks.
+//
+// request_conn_timeout 10000
+
+// Default/base request timeout. The time waiting to receive more
+// data from another server. This is used only by URL previews,
+// update/news, and misc endpoint checks.
+//
+// request_timeout 35000
+
+// Default/base request total timeout. The time limit for a whole
+// request. This is set very high to not cancel healthy requests while
+// serving as a backstop. This is used only by URL previews and update/news
+// endpoint checks.
+//
+// request_total_timeout 320000
+
+// Default/base idle connection pool timeout. This is used only
+// by URL previews and update/news endpoint checks.
+//
+// request_idle_timeout 5000
+
+// Default/base max idle connections per host. This is used only by URL
+// previews and update/news endpoint checks. Defaults to 1 as generally the
+// same open connection can be re-used.
+//
+// request_idle_per_host 1
+
+// Appservice URL request connection timeout. Defaults to 35 seconds as
+// generally appservices are hosted within the same network.
+//
+// appservice_timeout 35
+
+// Appservice URL idle connection pool timeout.
+//
+// appservice_idle_timeout 300000
+
+// Notification gateway pusher idle connection pool timeout.
+//
+// pusher_idle_timeout 15000
+
+// Maximum time to receive a request from a client.
+//
+// client_receive_timeout 75000
+
+// Maximum time to process a request received from a client.
+//
+// client_request_timeout 180000
+
+// Maximum time to transmit a response to a client.
+//
+// client_response_timeout 120000
+
+// Grace period for clean shutdown of client requests.
+//
+// client_shutdown_timeout 10000
+
+// Grace period for clean shutdown of federation requests.
+//
+// sender_shutdown_timeout 5000
+
+// Path to a file on the system that gets read for additional registration
+// tokens. Multiple tokens can be added if you separate them with whitespace.
+//
+// palpo must be able to access the file, and it must not be empty.
+//
+// example: "/etc/palpo/.reg_token"
+//
+// registration_token_file "/path/to/token"
+
+// Always calls /forget on behalf of the user if leaving a room. This is a
+// part of MSC4267 "Automatically forgetting rooms on leave".
+//
+// forget_forced_upon_leave false
+
+// Set this to true to require authentication on the normally
+// unauthenticated profile retrieval endpoints (GET)
+// "/_matrix/client/v3/profile/{user_id}".
+//
+// This can prevent profile scraping.
+//
+// require_auth_for_profile_requests false
+
+// Enables registration. If set to false, no users can register on this server.
+//
+// If set to true without a token configured, users can register with no
+// form of 2nd-step only if you set the following option to true:
+// `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse`
+//
+// If you would like registration only via token reg, please configure
+// `registration_token` or `registration_token_file`.
+//
+// allow_registration false
+
+// Enabling this setting opens registration to anyone without restrictions.
+// This makes your server vulnerable to abuse.
+//
+// yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse false
+
+// A static registration token that new users will have to provide when
+// creating an account. If unset and `allow_registration` is true,
+// you must set
+// `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse`
+// to true to allow open registration without any conditions.
+//
+// YOU NEED TO EDIT THIS OR USE registration_token_file.
+//
+// example: "o&^uCtes4HPf0Vu@F20jQeeWE7"
+//
+// registration_token "YOUR_TOKEN"
+
+// Controls whether encrypted rooms and events are allowed.
+//
+// allow_encryption true
+
+// Allow standard users to create rooms. Appservices and admins are always
+// allowed to create rooms.
+//
+// allow_room_creation true
+
+// Set to false to disable users from joining or creating room versions
+// that aren't officially supported by palpo.
+//
+// palpo officially supports room versions 6 - 11.
+//
+// palpo has slightly experimental (though works fine in practice)
+// support for versions 3 - 5.
+//
+// allow_unstable_room_versions true
+
+// Default room version palpo will create rooms with.
+//
+// Per spec, room version 11 is the default.
+//
+// default_room_version 11
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// allow_jaeger false
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// tracing_flame false
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// enable_admin_room false
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// appservice_registration_dir "./appservices"
+
+// Servers listed here will be used to gather public keys of other servers
+// (notary trusted key servers).
+//
+// Currently, palpo doesn't support inbound batched key requests, so
+// this list should only contain other Synapse servers.
+//
+// example:
+// trusted_servers {
+//     - "matrix.org"
+//     - "tchncs.de"
+// }
+//
+// trusted_servers {
+//     - "matrix.org"
+// }
+
+// OpenID token expiration/TTL.
+//
+// These are the OpenID tokens that are primarily used for Matrix account
+// integrations (e.g. Vector Integrations in Element), *not* OIDC/OpenID
+// Connect/etc.
+//
+// openid_token_ttl 3600
+
+// Allow an existing session to mint a login token for another client.
+// This requires interactive authentication, but has security ramifications
+// as a malicious client could use the mechanism to spawn more than one session.
+// Enabled by default.
+//
+// login_via_existing_session true
+
+// Login token expiration/TTL in milliseconds.
+//
+// These are short-lived tokens for the m.login.token endpoint.
+// This is used to allow existing sessions to create new sessions.
+// see login_via_existing_session.
+//
+// login_token_ttl 120000
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// refresh_token_ttl 0
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// session_ttl 0
+
+// List/vector of room IDs or room aliases that palpo will make newly
+// registered users join. The rooms specified must be rooms that you have
+// joined at least once on the server, and must be public.
+//
+// example:
+// auto_join_rooms {
+//     - "#palpo:example.com"
+//     - "!eoIzvAvVwY23LPDay8:example.com"
+// }
+//
+// auto_join_rooms { }
+
+// Config option to automatically deactivate the account of any user who
+// attempts to join a:
+// - banned room
+// - forbidden room alias
+// - room alias or ID with a forbidden server name
+//
+// This may be useful if all your banned lists consist of toxic rooms or
+// servers that no good faith user would ever attempt to join, and
+// to automatically remediate the problem without any admin user intervention.
+//
+// This will also make the user leave all rooms. Federation (e.g. remote
+// room invites) are ignored here.
+//
+// Defaults to false as rooms can be banned for non-moderation-related
+// reasons and this performs a full user deactivation.
+//
+// auto_deactivate_banned_room_attempts false
+
+// Block non-admin local users from sending room invites (local and
+// remote), and block non-admin users from receiving remote room invites.
+//
+// Admins are always allowed to send and receive all room invites.
+//
+// block_non_admin_invites false
+
+// Set this to true to allow your server's public room directory to be
+// federated. Set this to false to protect against /publicRooms spiders,
+// but will forbid external users from viewing your server's public room
+// directory. If federation is disabled entirely (`allow_federation`), this
+// is inherently false.
+//
+// allow_public_room_directory_over_federation false
+
+// Set this to true to allow your server's public room directory to be
+// queried without client authentication (access token) through the Client
+// APIs. Set this to false to protect against /publicRooms spiders.
+//
+// allow_public_room_directory_without_auth false
+
+// Set this to true to lock down your server's public room directory and
+// only allow admins to publish rooms to the room directory. Unpublishing
+// is still allowed by all users with this enabled.
+//
+// lockdown_public_room_directory false
+
+// This is a password that can be configured that will let you login to the
+// server bot account (currently `@conduit`) for emergency troubleshooting
+// purposes such as recovering/recreating your admin room, or inviting
+// yourself back.
+//
+// See https://palpo.im/troubleshooting.html#lost-access-to-admin-room for
+// other ways to get back into your admin room.
+//
+// Once this password is unset, all sessions will be logged out for
+// security purposes.
+//
+// example: "x7k9m2p5#n8w1%q4r6"
+//
+// emergency_password "YOUR_EMERGENCY_PASSWORD"
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// notification_push_path "/_matrix/push/v1/notify"
+
+// Set to true to allow user type "guest" registrations. Some clients like
+// Element attempt to register guest users automatically.
+//
+// allow_guest_registration false
+
+// Set to true to log guest registrations in the admin room. Note that
+// these may be noisy or unnecessary if you're a public homeserver.
+//
+// log_guest_registrations false
+
+// Set to true to allow guest registrations/users to auto join any rooms
+// specified in `auto_join_rooms`.
+//
+// allow_guests_auto_join_rooms false
+
+// List of forbidden server names via regex patterns that we will block
+// incoming AND outgoing federation with, and block client room joins /
+// remote user invites.
+//
+// example:
+// forbidden_remote_server_names {
+//     - "badserver\\.tld$"
+//     - "badphrase"
+//     - "19dollarfortnitecards"
+// }
+//
+// forbidden_remote_server_names { }
+
+// List of forbidden server names via regex patterns that we will block all
+// outgoing federated room directory requests for.
+//
+// forbidden_remote_room_directory_server_names { }
+
+// Vector list of IPv4 and IPv6 CIDR ranges / subnets *in quotes* that you
+// do not want palpo to send outbound requests to.
+//
+// To disable, set this to be an empty block.
+//
+// Defaults to RFC1918, unroutable, loopback, multicast, and testnet addresses.
+//
+// ip_range_denylist {
+//     - "127.0.0.0/8"
+//     - "10.0.0.0/8"
+//     - "172.16.0.0/12"
+//     - "192.168.0.0/16"
+//     - "100.64.0.0/10"
+//     - "192.0.0.0/24"
+//     - "169.254.0.0/16"
+//     - "192.88.99.0/24"
+//     - "198.18.0.0/15"
+//     - "192.0.2.0/24"
+//     - "198.51.100.0/24"
+//     - "203.0.113.0/24"
+//     - "224.0.0.0/4"
+//     - "::1/128"
+//     - "fe80::/10"
+//     - "fc00::/7"
+//     - "2001:db8::/32"
+//     - "ff00::/8"
+//     - "fec0::/10"
+// }
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// space_path "/path/to/space"
+
+// Whether to query the servers listed in trusted_servers first or query
+// the origin server first.
+//
+// query_trusted_key_servers_first false
+
+// Whether to query the servers listed in trusted_servers first
+// specifically on room joins.
+//
+// query_trusted_key_servers_first_on_join true
+
+// Only query trusted servers for keys and never the origin server.
+//
+// only_query_trusted_key_servers false
+
+// Maximum number of keys to request in each trusted server batch query.
+//
+// trusted_server_batch_size 1024
+
+// List of forbidden room aliases and room IDs as strings of regex patterns.
+//
+// forbidden_alias_names { }
+
+// List of forbidden username patterns/strings.
+//
+// forbidden_usernames { }
+
+// Retry failed and incomplete messages to remote servers immediately upon startup.
+//
+// startup_netburst true
+
+// Messages are dropped and not reattempted. The `startup_netburst` option
+// must be enabled for this value to have any effect.
+//
+// startup_netburst_keep 50
+
+// This item is undocumented. Please contribute documentation for it.
+//
+// http_client false
+
+// Enables configuration reload when the server receives SIGUSR1 on
+// supporting platforms.
+//
+// config_reload_signal true
+
+// Toggles ignore checking/validating TLS certificates.
+// This should NOT be used in production.
+//
+// allow_invalid_tls_certificates false
+
+// Number of sender task workers.
+//
+// sender_workers 0
+
+// tls {
+//     // enable false
+//
+//     // Path to a valid TLS certificate file.
+//     // cert "/path/to/my/certificate.crt"
+//
+//     // Path to a valid TLS certificate private key.
+//     // key "/path/to/my/certificate.key"
+//
+//     // Whether to listen and allow for HTTP and HTTPS connections (insecure!)
+//     // dual_protocol false
+// }
+
+// admin {
+//     // Controls whether admin room notices will be sent to the admin room.
+//     // room_notices true
+//
+//     // Allow admins to enter commands in rooms other than "#admins".
+//     // escape_commands false
+//
+//     // Automatically activate the palpo admin room console / CLI on startup.
+//     // console_automatic false
+//
+//     // List of admin commands to execute on startup.
+//     // startup_execute { }
+//
+//     // Ignore errors in startup commands.
+//     // execute_errors_ignore false
+//
+//     // List of admin commands to execute on SIGUSR2.
+//     // signal_execute { }
+//
+//     // Controls the max log level for admin command log captures.
+//     // log_capture "info"
+//
+//     // The default room tag to apply on the admin room.
+//     // room_tag "m.server_notice"
+//
+//     // Shared secret for MAS (Matrix Authentication Service) endpoints.
+//     // mas_secret false
+// }
+
+// jwt {
+//     // Enable JWT logins.
+//     // enable false
+//
+//     // Validation secret key.
+//     // secret "YOUR_SECRET"
+//
+//     // Format of the 'key': HMAC, B64HMAC, or ECDSA.
+//     // format "HMAC"
+//
+//     // Automatically create new user from a valid claim.
+//     // register_user true
+//
+//     // JWT algorithm.
+//     // algorithm "HS256"
+//
+//     // Optional audience claim list.
+//     // audience { }
+//
+//     // Optional issuer claim list.
+//     // issuer { }
+//
+//     // Require expiration claim.
+//     // require_exp false
+//
+//     // Require not-before claim.
+//     // require_nbf false
+//
+//     // Validate expiration time.
+//     // validate_exp true
+//
+//     // Validate not-before time.
+//     // validate_nbf true
+//
+//     // Bypass validation for diagnostic/debug use only.
+//     // validate_signature true
+// }
+
+// blurhash {
+//     // blurhash x component, 4 is recommended.
+//     // components_x 4
+//
+//     // blurhash y component, 3 is recommended.
+//     // components_y 3
+//
+//     // Max raw size that the server will blurhash. Default is 33.55MB.
+//     // Setting it to 0 disables blurhash.
+//     // max_raw_size 33554432
+// }
+
+// compression {
+//     // enable_zstd false
+//     // enable_gzip false
+//     // enable_brotli false
+// }
+
+// db {
+//     // Settings for the primary database. Default reads env var PALPO_DB_URL.
+//     // url "postgres://..."
+//
+//     // pool_size 10
+//     // min_idle 1
+//     // tcp_timeout 10
+//     // connection_timeout 10
+//     // statement_timeout 10
+//     // helper_threads 3
+//     // enforce_tls false
+// }
+
+// federation {
+//     // Controls whether federation is allowed or not.
+//     // enable true
+//
+//     // Allows federation requests to be made to itself.
+//     // allow_loopback false
+//
+//     // Allow federating device display names.
+//     // allow_device_name false
+//
+//     // Allow incoming federation profile lookups.
+//     // allow_inbound_profile_lookup true
+// }
+
+// client {
+//     // Well-known resolution connection timeout.
+//     // well_known_conn_timeout 6000
+//
+//     // HTTP well-known resolution request timeout.
+//     // well_known_timeout 10000
+//
+//     // Federation client request timeout.
+//     // federation_timeout 300000
+//
+//     // Federation client request retry times.
+//     // federation_retries 3
+//
+//     // Federation client idle connection pool timeout.
+//     // federation_idle_timeout 25
+//
+//     // Federation client max idle connections per host.
+//     // federation_idle_per_host 1
+// }
+
+// logger {
+//     // Max log level for palpo.
+//     // level "info"
+//
+//     // format "pretty"
+//
+//     // Output logs with ANSI colours.
+//     // ansi_colors true
+//
+//     // span_events "none"
+//     // filter_regex true
+//     // thread_ids false
+//     // guest_registrations false
+// }
+
+// media {
+//     // Enable the legacy unauthenticated Matrix media repository endpoints.
+//     // allow_legacy true
+//
+//     // freeze_legacy false
+//
+//     // Check consistency of the media directory at startup.
+//     // startup_check true
+//
+//     // Enable backward-compatibility with Conduit's media directory.
+//     // compat_file_link false
+//
+//     // Prune missing media from the database.
+//     // prune_missing false
+//
+//     // prevent_downloads_from { }
+// }
+
+// presence {
+//     // Allow local presence updates/requests.
+//     // allow_local true
+//
+//     // Allow incoming federated presence updates/requests.
+//     // allow_incoming true
+//
+//     // Allow outgoing presence updates/requests.
+//     // allow_outgoing true
+//
+//     // How many seconds without presence updates before you become idle.
+//     // idle_timeout 300000
+//
+//     // How many seconds without presence updates before you become offline.
+//     // offline_timeout 1800000
+//
+//     // Enable the presence idle timer for remote users.
+//     // timeout_remote_users true
+// }
+
+// read_receipt {
+//     // Allow receiving incoming read receipts from remote servers.
+//     // allow_incoming true
+//
+//     // Allow sending read receipts to remote servers.
+//     // allow_outgoing true
+// }
+
+// turn {
+//     // enable false
+//
+//     // Static TURN username.
+//     // username false
+//
+//     // Static TURN password.
+//     // password false
+//
+//     // Vector list of TURN URIs/servers to use.
+//     // uris {
+//     //     - "turn:example.turn.uri?transport=udp"
+//     //     - "turn:example.turn.uri?transport=tcp"
+//     // }
+//
+//     // TURN secret for HMAC-SHA1 hash.
+//     // secret false
+//
+//     // TURN secret file path.
+//     // secret_file "/etc/palpo/.turn_secret"
+//
+//     // TURN TTL, in seconds.
+//     // ttl 86400
+//
+//     // Allow guests to access TURN credentials.
+//     // allow_guests false
+// }
+
+// typing {
+//     // Allow incoming typing updates from federation.
+//     // allow_incoming true
+//
+//     // Allow outgoing typing updates to federation.
+//     // allow_outgoing true
+//
+//     // Maximum time federation user can indicate typing.
+//     // federation_timeout 30000
+//
+//     // Minimum time local client can indicate typing.
+//     // client_timeout_min 15000
+//
+//     // Maximum time local client can indicate typing.
+//     // client_timeout_max 45000
+// }
+
+// url_preview {
+//     // bound_interface "eth0"
+//     // domain_contains_allowlist { }
+//     // domain_explicit_allowlist { }
+//     // domain_explicit_denylist { }
+//     // url_contains_allowlist { }
+//     // max_spider_size 256000
+//     // check_root_domain false
+// }
+
+// well_known {
+//     // Client discovery endpoint.
+//     // client "https://matrix.palpo.im"
+//
+//     // Server discovery endpoint.
+//     // server "matrix.palpo.im:8448"
+//
+//     // support_page "https://example.com/matrix-support"
+//     // support_role "m.role.admin"
+//     // support_email "admin@example.com"
+//     // support_mxid "@admin:example.com"
+// }
+
+// oidc {
+//     // Enable OIDC/OAuth authentication.
+//     // enable false
+//
+//     // providers {
+//     //     github {
+//     //         issuer "https://github.com"
+//     //         client_id "your_app_id"
+//     //         client_secret "your_secret"
+//     //         redirect_uri "https://server/_matrix/client/oidc/callback"
+//     //         scopes {
+//     //             - "read:user"
+//     //             - "user:email"
+//     //         }
+//     //     }
+//     // }
+//
+//     // default_provider "github"
+//     // allow_registration true
+//     // user_mapping "email"
+//     // user_prefix ""
+//     // require_email_verified true
+//     // session_timeout 600
+//     // enable_pkce true
+// }

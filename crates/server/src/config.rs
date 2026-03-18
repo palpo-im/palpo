@@ -140,19 +140,7 @@ fn kdl_node_to_json(node: &KdlNode) -> serde_json::Value {
             let arr: Vec<serde_json::Value> = children
                 .nodes()
                 .iter()
-                .map(|n| {
-                    let child_args: Vec<serde_json::Value> = n
-                        .entries()
-                        .iter()
-                        .filter(|e| e.name().is_none())
-                        .map(|e| kdl_value_to_json(e.value()))
-                        .collect();
-                    if child_args.len() == 1 {
-                        child_args.into_iter().next().unwrap()
-                    } else {
-                        serde_json::Value::Array(child_args)
-                    }
-                })
+                .map(kdl_node_to_json)
                 .collect();
             return serde_json::Value::Array(arr);
         }
