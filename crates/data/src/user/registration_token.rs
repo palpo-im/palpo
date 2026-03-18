@@ -195,13 +195,13 @@ pub fn delete_registration_token(token: &str) -> DataResult<bool> {
 /// Generates a cryptographically random string of the specified length
 /// using only allowed characters (A-Za-z0-9._~-)
 pub fn generate_token(length: usize) -> String {
-    use rand::Rng;
+    use rand::RngExt as _;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-";
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..length)
         .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect()

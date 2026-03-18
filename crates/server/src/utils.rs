@@ -64,7 +64,7 @@ pub fn select_config_path() -> &'static str {
 }
 
 pub fn shuffle<T>(vec: &mut [T]) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     vec.shuffle(&mut rng);
 }
 
@@ -111,8 +111,8 @@ pub fn user_id_from_bytes(bytes: &[u8]) -> AppResult<OwnedUserId> {
 }
 
 pub fn random_string(length: usize) -> String {
-    rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    (&mut rand::rng())
+        .sample_iter(rand::distr::Alphanumeric)
         .take(length)
         .map(char::from)
         .collect()
