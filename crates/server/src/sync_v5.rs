@@ -523,8 +523,13 @@ async fn process_rooms(
         let mut timestamp: Option<_> = None;
         let mut invite_state = None;
         let new_room_id: &RoomId = (*room_id).as_ref();
+        let is_initial = *room_since_sn == 0
+            || !known_rooms
+                .values()
+                .any(|rooms| rooms.contains_key(room_id));
+
         let timeline = if all_invited_rooms.contains(&new_room_id) {
-            // TODO: figure out a timestamp we can use for remote invites
+            // Invited rooms have empty timeline, only stripped state
             invite_state = crate::room::user::invite_state(sender_id, room_id).ok();
             TimelineData {
                 events: Default::default(),
@@ -532,7 +537,17 @@ async fn process_rooms(
                 prev_batch: None,
                 next_batch: None,
             }
+        } else if is_initial {
+            // Initial sync: use topological ordering for best DAG representation
+            crate::sync_v3::load_timeline(
+                sender_id,
+                room_id,
+                None,
+                Some(BatchToken::LIVE_MAX),
+                Some(&RoomEventFilter::with_limit(*timeline_limit)),
+            )?
         } else {
+            // Incremental sync: use stream ordering to catch late-arriving events
             crate::sync_v3::load_timeline(
                 sender_id,
                 room_id,
@@ -781,12 +796,7 @@ async fn process_rooms(
                     Some(heroes_avatar) => Some(heroes_avatar),
                     _ => room::get_avatar_url(room_id).ok().flatten(),
                 },
-                initial: Some(
-                    room_since_sn == &0
-                        || !known_rooms
-                            .values()
-                            .any(|rooms| rooms.contains_key(room_id)),
-                ),
+                initial: Some(is_initial),
                 is_dm: Some(dm_rooms.contains(room_id)),
                 invite_state,
                 unread_notifications: sync_events::UnreadNotificationsCount {
