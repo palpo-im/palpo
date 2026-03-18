@@ -49,7 +49,7 @@ pub fn ConfigModeSwitcher() -> Element {
     };
 
     // Request a mode switch; shows dialog if dirty
-    let request_switch = move |target: ConfigMode| {
+    let mut request_switch = move |target: ConfigMode| {
         if *active_mode.read() == target {
             return;
         }
@@ -62,7 +62,7 @@ pub fn ConfigModeSwitcher() -> Element {
     };
 
     // Handle dialog action
-    let handle_dialog = move |action: DialogAction| {
+    let mut handle_dialog = move |action: DialogAction| {
         show_dialog.set(false);
         match action {
             DialogAction::Save => {

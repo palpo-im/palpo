@@ -79,7 +79,7 @@ struct SuccessResponse {
 }
 
 /// Configuration validation result from API
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ConfigValidationResult {
     pub is_valid: bool,
     pub errors: Vec<String>,
@@ -88,7 +88,7 @@ pub struct ConfigValidationResult {
 }
 
 /// Key configuration items shown in the pre-start summary
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ConfigSummary {
     pub server_name: String,
     pub database_url: String,

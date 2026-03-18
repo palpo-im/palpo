@@ -185,13 +185,17 @@ impl ConfigAPI {
     }
     
     /// Export configuration
-    pub async fn export_config(options: crate::services::config_import_export_api::ExportOptions) -> Result<crate::services::config_import_export_api::ConfigExportResponse, WebConfigError> {
-        crate::services::ConfigImportExportAPI::export_config(options).await
+    pub async fn export_config(options: crate::services::config_import_export_api::ExportOptions) -> Result<crate::services::config_import_export_api::ExportResponse, WebConfigError> {
+        crate::services::ConfigImportExportAPI::export_config(options)
+            .await
+            .map_err(|e| WebConfigError::client(e))
     }
     
     /// Import configuration
     pub async fn import_config(request: crate::services::config_import_export_api::ConfigImportRequest) -> Result<crate::services::config_import_export_api::ImportResult, WebConfigError> {
-        crate::services::ConfigImportExportAPI::import_config(request).await
+        crate::services::ConfigImportExportAPI::import_config(request)
+            .await
+            .map_err(|e| WebConfigError::client(e))
     }
     
     // Private helper methods

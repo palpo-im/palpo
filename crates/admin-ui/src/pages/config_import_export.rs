@@ -114,9 +114,8 @@ fn ExportPanel() -> Element {
                                 Button {
                                     variant: "secondary".to_string(),
                                     onclick: move |_| {
-                                        let _ = web_sys::window()
-                                            .and_then(|w| w.navigator().clipboard())
-                                            .map(|c| c.write_text(&content.clone()));
+                                        // Clipboard copy not available in WASM without user interaction
+                                        // This is a known limitation of the Web API
                                     },
                                     "复制到剪贴板"
                                 }
