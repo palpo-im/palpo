@@ -404,6 +404,7 @@ async fn process_lists(
                     required_state: BTreeSet::new(),
                     timeline_limit: 0_usize,
                     room_since_sn: since_sn,
+                    include_heroes: false,
                 });
 
                 let limit = list.room_details.timeline_limit.min(100);
@@ -416,6 +417,8 @@ async fn process_lists(
                 );
 
                 todo_room.timeline_limit = todo_room.timeline_limit.max(limit);
+                todo_room.include_heroes =
+                    todo_room.include_heroes || list.include_heroes.unwrap_or(false);
                 todo_room.room_since_sn = todo_room.room_since_sn.min(
                     known_rooms
                         .get(list_id.as_str())
@@ -472,6 +475,8 @@ fn fetch_subscriptions(
                 .map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
         );
         todo_room.timeline_limit = todo_room.timeline_limit.max(limit as usize);
+        todo_room.include_heroes =
+            todo_room.include_heroes || room.include_heroes.unwrap_or(false);
         todo_room.room_since_sn = todo_room.room_since_sn.min(
             known_rooms
                 .get("subscriptions")
@@ -511,12 +516,15 @@ async fn process_rooms(
     response: &mut SyncEventsResBody,
 ) -> AppResult<BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>> {
     let mut rooms = BTreeMap::new();
+    let receipts_enabled = req_body.extensions.receipts.enabled.unwrap_or(false);
+
     for (
         room_id,
         TodoRoom {
             required_state,
             timeline_limit,
             room_since_sn,
+            include_heroes,
         },
     ) in todo_rooms
     {
@@ -567,42 +575,47 @@ async fn process_rooms(
             );
         }
 
-        let last_private_read_update =
-            data::room::receipt::last_private_read_update_sn(sender_id, room_id)
-                .unwrap_or_default()
-                > *room_since_sn;
+        let receipt_size = if receipts_enabled {
+            let last_private_read_update =
+                data::room::receipt::last_private_read_update_sn(sender_id, room_id)
+                    .unwrap_or_default()
+                    > *room_since_sn;
 
-        let private_read_event = if last_private_read_update {
-            crate::room::receipt::last_private_read(sender_id, room_id).ok()
+            let private_read_event = if last_private_read_update {
+                crate::room::receipt::last_private_read(sender_id, room_id).ok()
+            } else {
+                None
+            };
+
+            let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)?
+                .into_iter()
+                .filter_map(|(read_user, content)| {
+                    if !crate::user::user_is_ignored(&read_user, sender_id) {
+                        Some(content)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if let Some(private_read_event) = private_read_event {
+                receipts.push(private_read_event);
+            }
+
+            let size = receipts.len();
+
+            if size > 0 {
+                response.extensions.receipts.rooms.insert(
+                    room_id.clone(),
+                    SyncReceiptEvent {
+                        content: combine_receipt_event_contents(receipts),
+                    },
+                );
+            }
+            size
         } else {
-            None
+            0
         };
-
-        let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)?
-            .into_iter()
-            .filter_map(|(read_user, content)| {
-                if !crate::user::user_is_ignored(&read_user, sender_id) {
-                    Some(content)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(private_read_event) = private_read_event {
-            receipts.push(private_read_event);
-        }
-
-        let receipt_size = receipts.len();
-
-        if receipt_size > 0 {
-            response.extensions.receipts.rooms.insert(
-                room_id.clone(),
-                SyncReceiptEvent {
-                    content: combine_receipt_event_contents(receipts),
-                },
-            );
-        }
 
         if room_since_sn != &0
             && timeline.events.is_empty()
@@ -741,59 +754,68 @@ async fn process_rooms(
 
         let required_state = required_state_events;
 
-        // Heroes - limit query to 6 members (5 heroes + sender) to avoid loading all members
-        let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
-            .into_iter()
-            .filter(|member| *member != sender_id)
-            .take(5)
-            .filter_map(|user_id| {
-                room::get_member(room_id, &user_id, None)
-                    .ok()
-                    .map(|member| sync_events::v5::SyncRoomHero {
-                        user_id,
-                        name: member.display_name,
-                        avatar: member.avatar_url,
-                    })
-            })
-            .collect();
+        // Heroes - only compute when requested or when room name isn't set
+        let room_name = room::get_name(room_id).ok();
+        let (heroes, hero_name, heroes_avatar) = if *include_heroes || room_name.is_none() {
+            let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
+                .into_iter()
+                .filter(|member| *member != sender_id)
+                .take(5)
+                .filter_map(|user_id| {
+                    room::get_member(room_id, &user_id, None)
+                        .ok()
+                        .map(|member| sync_events::v5::SyncRoomHero {
+                            user_id,
+                            name: member.display_name,
+                            avatar: member.avatar_url,
+                        })
+                })
+                .collect();
 
-        let name = match heroes.len().cmp(&(1_usize)) {
-            Ordering::Greater => {
-                let firsts = heroes[1..]
-                    .iter()
-                    .map(|h: &SyncRoomHero| h.name.clone().unwrap_or_else(|| h.user_id.to_string()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            let name = match heroes.len().cmp(&(1_usize)) {
+                Ordering::Greater => {
+                    let firsts = heroes[1..]
+                        .iter()
+                        .map(|h: &SyncRoomHero| {
+                            h.name.clone().unwrap_or_else(|| h.user_id.to_string())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
 
-                let last = heroes[0]
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| heroes[0].user_id.to_string());
+                    let last = heroes[0]
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| heroes[0].user_id.to_string());
 
-                Some(format!("{firsts} and {last}"))
-            }
-            Ordering::Equal => Some(
-                heroes[0]
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| heroes[0].user_id.to_string()),
-            ),
-            Ordering::Less => None,
-        };
+                    Some(format!("{firsts} and {last}"))
+                }
+                Ordering::Equal => Some(
+                    heroes[0]
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| heroes[0].user_id.to_string()),
+                ),
+                Ordering::Less => None,
+            };
 
-        let heroes_avatar = if heroes.len() == 1 {
-            heroes[0].avatar.clone()
+            let avatar = if heroes.len() == 1 {
+                heroes[0].avatar.clone()
+            } else {
+                None
+            };
+
+            (Some(heroes), name, avatar)
         } else {
-            None
+            (None, None, None)
         };
 
         let notify_summary = room::user::notify_summary(sender_id, room_id)?;
         rooms.insert(
             room_id.clone(),
             SyncRoom {
-                name: room::get_name(room_id).ok().or(name),
+                name: room_name.or(hero_name),
                 avatar: match heroes_avatar {
-                    Some(heroes_avatar) => Some(heroes_avatar),
+                    Some(ref heroes_avatar) => Some(heroes_avatar.clone()),
                     _ => room::get_avatar_url(room_id).ok().flatten(),
                 },
                 initial: Some(is_initial),
@@ -821,7 +843,7 @@ async fn process_rooms(
                 ),
                 num_live: Some(timeline.events.iter().filter(|(sn, _)| **sn > since_sn).count() as i64),
                 bump_stamp: timestamp.map(|t| t.get() as i64),
-                heroes: Some(heroes),
+                heroes,
             },
         );
     }
