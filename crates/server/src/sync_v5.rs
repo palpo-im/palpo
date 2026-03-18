@@ -527,38 +527,113 @@ async fn process_rooms(
             }
         }
 
-        let required_state = required_state
-            .iter()
-            .filter_map(|state| {
-                let state_key = match state.1.as_str() {
-                    "$LAZY" | "*" => return None,
-                    "$ME" => sender_id.as_str(),
-                    _ => state.1.as_str(),
-                };
+        let mut required_state_events = Vec::new();
+        let mut lazy_senders_collected = false;
 
-                let pdu = room::get_state(room_id, &state.0, state_key, None);
-                if let Ok(pdu) = &pdu {
-                    if is_required_state_send(
-                        sender_id.to_owned(),
-                        device_id.to_owned(),
-                        req_body.conn_id.clone(),
-                        pdu.event_sn,
-                    ) {
-                        None
-                    } else {
-                        mark_required_state_sent(
+        for rs in required_state.iter() {
+            match (rs.0.clone(), rs.1.as_str()) {
+                // $LAZY: return member state for timeline event senders
+                (ref event_type, "$LAZY") if *event_type == StateEventType::RoomMember => {
+                    if lazy_senders_collected {
+                        continue;
+                    }
+                    lazy_senders_collected = true;
+
+                    let senders: HashSet<&UserId> = timeline
+                        .events
+                        .iter()
+                        .map(|(_, pdu)| pdu.sender.as_ref())
+                        .collect();
+
+                    for sender in senders.into_iter().take(100) {
+                        if let Ok(pdu) =
+                            room::get_state(room_id, &StateEventType::RoomMember, sender.as_str(), None)
+                        {
+                            if !is_required_state_send(
+                                sender_id.to_owned(),
+                                device_id.to_owned(),
+                                req_body.conn_id.clone(),
+                                pdu.event_sn,
+                            ) {
+                                mark_required_state_sent(
+                                    sender_id.to_owned(),
+                                    device_id.to_owned(),
+                                    req_body.conn_id.clone(),
+                                    pdu.event_sn,
+                                );
+                                required_state_events.push(pdu.to_sync_state_event());
+                            }
+                        }
+                    }
+                }
+                // * state key: return all state events of this type
+                (ref event_type, "*") => {
+                    if let Ok(frame_id) = room::get_frame_id(room_id, None) {
+                        if let Ok(full_state) = state::get_full_state(frame_id) {
+                            for ((ty, _sk), pdu) in &full_state {
+                                if ty == event_type
+                                    && !is_required_state_send(
+                                        sender_id.to_owned(),
+                                        device_id.to_owned(),
+                                        req_body.conn_id.clone(),
+                                        pdu.event_sn,
+                                    )
+                                {
+                                    mark_required_state_sent(
+                                        sender_id.to_owned(),
+                                        device_id.to_owned(),
+                                        req_body.conn_id.clone(),
+                                        pdu.event_sn,
+                                    );
+                                    required_state_events.push(pdu.to_sync_state_event());
+                                }
+                            }
+                        }
+                    }
+                }
+                // $ME: substitute with the requester's user_id
+                (ref event_type, "$ME") => {
+                    if let Ok(pdu) = room::get_state(room_id, event_type, sender_id.as_str(), None)
+                    {
+                        if !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
                             pdu.event_sn,
-                        );
-                        Some(pdu.to_sync_state_event())
+                        ) {
+                            mark_required_state_sent(
+                                sender_id.to_owned(),
+                                device_id.to_owned(),
+                                req_body.conn_id.clone(),
+                                pdu.event_sn,
+                            );
+                            required_state_events.push(pdu.to_sync_state_event());
+                        }
                     }
-                } else {
-                    pdu.map(|s| s.to_sync_state_event()).ok()
                 }
-            })
-            .collect::<Vec<_>>();
+                // Specific state key
+                (ref event_type, state_key) => {
+                    if let Ok(pdu) = room::get_state(room_id, event_type, state_key, None) {
+                        if !is_required_state_send(
+                            sender_id.to_owned(),
+                            device_id.to_owned(),
+                            req_body.conn_id.clone(),
+                            pdu.event_sn,
+                        ) {
+                            mark_required_state_sent(
+                                sender_id.to_owned(),
+                                device_id.to_owned(),
+                                req_body.conn_id.clone(),
+                                pdu.event_sn,
+                            );
+                            required_state_events.push(pdu.to_sync_state_event());
+                        }
+                    }
+                }
+            }
+        }
+
+        let required_state = required_state_events;
 
         // Heroes - limit query to 6 members (5 heroes + sender) to avoid loading all members
         let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
