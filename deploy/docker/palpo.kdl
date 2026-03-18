@@ -1,0 +1,66 @@
+// =============================================================================
+//  This is the official example config for Palpo.
+//  If you use it for your server, you will need to adjust it to your own needs.
+//  At the very least, change the server_name field!
+// =============================================================================
+
+// The Palpo server needs all /_matrix/ requests to be reachable at
+// https://your.server.name/ on port 443 (client-server) and 8448 (federation).
+
+// If that's not possible for you, you can create /.well-known files to redirect
+// requests. See
+// https://matrix.org/docs/spec/client_server/latest#get-well-known-matrix-client
+// and
+// https://matrix.org/docs/spec/server_server/r0.1.4#get-well-known-matrix-server
+// for more information
+
+// The server_name is the pretty name of this server. It is used as a suffix for user
+// and room ids. Examples: matrix.org, palpo.im
+server_name "matrix.palpo.im"
+
+// Max size for uploads
+max_upload_size 20000000 // in bytes
+
+// Enables registration. If set to false, no users can register on this server.
+allow_registration true
+
+// Servers listed here will be used to gather public keys of other servers.
+// Generally, copying this exactly should be enough. (Currently, Palpo doesn't
+// support batched key requests, so this list should only contain Synapse
+// servers.)
+trusted_servers {
+    - "matrix.org"
+}
+
+// [keypair]
+// document = "MFECAQEwBQYDK2VwBCIEIJXK7IX/PTIr/9VrBwkdwJw+aeXjcNSSnAOetAY0Hfl/gSEAELqWFgDu6Ap47RzE1ehee2XCvGamRzu6u0N66lsgOJ0="
+// version = "1"
+
+// max_concurrent_requests 100 // How many requests Palpo sends to other servers at the same time
+// log "warn,state=warn,_=off,sled=off"
+
+listeners {
+    // The local address that the server listens on.
+    - address="0.0.0.0:8008"
+}
+
+presence {
+    allow_local true
+}
+
+federation {
+    enable true
+}
+
+db {
+    url "postgres://palpo:changeme@postgres:5432/palpo"
+    pool_size 10
+}
+
+well_known {
+    // Palpo handles the /.well-known/matrix/* endpoints, making both clients and servers try to access palpo with the host
+    // server_name and port 443 by default.
+    // If you want to override these defaults, uncomment and edit the following lines accordingly:
+    server "matrix.palpo.im"
+    client "https://matrix.palpo.im"
+}

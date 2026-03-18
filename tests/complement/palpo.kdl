@@ -1,0 +1,86 @@
+// =============================================================================
+//  This is the config for Palpo testing.
+//  If you use it for your server, you will need to adjust it to your own needs.
+//  At the very least, change the server_name field!
+// =============================================================================
+
+// The Palpo server needs all /_matrix/ requests to be reachable at
+// https://your.server.name/ on port 443 (client-server) and 8448 (federation).
+
+// If that's not possible for you, you can create /.well-known files to redirect
+// requests. See
+// https://matrix.org/docs/spec/client_server/latest#get-well-known-matrix-client
+// and
+// https://matrix.org/docs/spec/server_server/r0.1.4#get-well-known-matrix-server
+// for more information.
+
+// The server_name is the pretty name of this server. It is used as a suffix for user
+// and room ids. Examples: matrix.org, palpo.im
+server_name "your.server.name"
+listen_addr "0.0.0.0:8008"
+
+// The local address that the server listens on.
+//listen_addr "127.0.0.1:8008"
+//server_name "127.0.0.1"
+
+// Max size for uploads
+max_upload_size 20000000 // in bytes
+
+// Enables registration. If set to false, no users can register on this server.
+allow_registration true
+
+allow_check_for_updates true
+
+enable_admin_room false
+
+// Servers listed here will be used to gather public keys of other servers.
+// Generally, copying this exactly should be enough. (Currently, Palpo doesn't
+// support batched key requests, so this list should only contain Synapse
+// servers.)
+trusted_servers {
+}
+
+appservice_registration_dir "/complement/appservice"
+
+ip_range_denylist {
+}
+
+db {
+    url "postgres://postgres:postgres@127.0.0.1:5432/palpo"
+    pool_size 10
+}
+
+presence {
+    allow_local true
+}
+
+url_preview {
+    domain_contains_allowlist {
+        - "*"
+    }
+}
+
+federation {
+    enable true
+}
+
+client {
+    federation_retries 4
+    federation_timeout 2500
+}
+
+logger {
+    level "warn,palpo=warn,salvo=warn"
+    format "pretty" // pretty, json
+    ansi_colors false
+}
+
+// typing {
+//     allow_incoming true
+//     allow_outgoing true
+// }
+
+// keypair {
+//     document "MFECAQEwBQYDK2VwBCIEIJXK7IX/PTIr/9VrBwkdwJw+aeXjcNSSnAOetAY0Hfl/gSEAELqWFgDu6Ap47RzE1ehee2XCvGamRzu6u0N66lsgOJ0="
+//     version "1"
+// }
