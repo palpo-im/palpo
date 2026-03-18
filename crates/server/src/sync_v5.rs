@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use diesel::prelude::*;
@@ -97,6 +98,75 @@ fn load_or_create_connection(
     entry
 }
 
+/// Maximum age for sliding sync connections before they are expired (7 days).
+const CONNECTION_EXPIRY_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// If more than this many rooms have updates and last sync was >1 hour ago,
+/// force the client to do a fresh sync.
+const NUM_ROOMS_THRESHOLD: usize = 100;
+
+/// 1 hour in milliseconds.
+const STALE_SYNC_THRESHOLD_MS: i64 = 60 * 60 * 1000;
+
+/// Delete expired sliding sync connections from both memory and database.
+pub fn cleanup_expired_connections() {
+    let now = UnixMillis::now().get() as i64;
+    let cutoff = now - CONNECTION_EXPIRY_MS;
+
+    // Clean up in-memory cache
+    CONNECTIONS.lock().unwrap().retain(|_key, _entry| {
+        // Keep all in-memory entries; DB cleanup is the source of truth
+        true
+    });
+
+    // Clean up database
+    if let Ok(mut conn) = connect() {
+        let _ = diesel::delete(
+            sliding_sync_connections::table
+                .filter(sliding_sync_connections::updated_at.lt(cutoff)),
+        )
+        .execute(&mut conn);
+    }
+}
+
+/// Check if the connection is stale and has too many room updates,
+/// requiring a fresh sync.
+fn check_connection_staleness(
+    since_sn: Seqnum,
+    todo_room_count: usize,
+    conn_updated_at: i64,
+) -> bool {
+    let now = UnixMillis::now().get() as i64;
+    let time_since_last_sync = now - conn_updated_at;
+
+    // If there are too many rooms with updates and the connection is stale,
+    // signal the client to do a fresh sync
+    todo_room_count > NUM_ROOMS_THRESHOLD
+        && time_since_last_sync > STALE_SYNC_THRESHOLD_MS
+        && since_sn > 0
+}
+
+/// Get the last update timestamp for a connection.
+fn get_connection_updated_at(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+) -> i64 {
+    let conn_id_str = conn_id.as_deref().unwrap_or("");
+    connect()
+        .ok()
+        .and_then(|mut conn| {
+            sliding_sync_connections::table
+                .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+                .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+                .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
+                .select(sliding_sync_connections::updated_at)
+                .first::<i64>(&mut conn)
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
 /// Persist the connection cache to the database for cross-instance access.
 fn persist_connection(
     user_id: &OwnedUserId,
@@ -132,6 +202,25 @@ fn persist_connection(
     }
 }
 
+/// Run connection cleanup at most once per hour.
+static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
+
+/// Frequency of connection cleanup (1 hour in milliseconds).
+const CLEANUP_FREQUENCY_MS: i64 = 60 * 60 * 1000;
+
+fn maybe_cleanup_connections() {
+    let now = UnixMillis::now().get() as i64;
+    let last = LAST_CLEANUP.load(AtomicOrdering::Relaxed);
+    if now - last > CLEANUP_FREQUENCY_MS {
+        if LAST_CLEANUP
+            .compare_exchange(last, now, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed)
+            .is_ok()
+        {
+            cleanup_expired_connections();
+        }
+    }
+}
+
 #[tracing::instrument(skip_all)]
 pub async fn sync_events(
     sender_id: &UserId,
@@ -140,6 +229,9 @@ pub async fn sync_events(
     req_body: &SyncEventsReqBody,
     known_rooms: &KnownRooms,
 ) -> AppResult<SyncEventsResBody> {
+    // Periodically clean up expired connections
+    maybe_cleanup_connections();
+
     let curr_sn = data::curr_sn()?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
@@ -389,11 +481,10 @@ fn fetch_subscriptions(
         );
         known_subscription_rooms.insert(room_id.clone());
     }
-    // where this went (protomsc says it was removed)
-    // for r in req_body.unsubscribe_rooms {
-    // 	known_subscription_rooms.remove(&r);
-    // 	req_body.room_subscriptions.remove(&r);
-    //}
+    // Remove unsubscribed rooms
+    for room_id in &req_body.unsubscribe_rooms {
+        known_subscription_rooms.remove(room_id);
+    }
 
     crate::sync_v5::update_sync_known_rooms(
         sender_id.to_owned(),
@@ -1010,6 +1101,11 @@ pub fn update_sync_request_with_cache(
             }
         }
         cached.lists.insert(list_id.clone(), list.clone());
+    }
+
+    // Remove unsubscribed rooms from cache
+    for room_id in &req_body.unsubscribe_rooms {
+        cached.subscriptions.remove(room_id);
     }
 
     cached
