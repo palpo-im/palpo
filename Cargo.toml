@@ -27,44 +27,44 @@ palpo-server-macros = { version = "0.2.1", path = "crates/server-macros" }
 
 rust-argon2 = "3.0.0"
 ctor = "0.6.3"
-anyhow = "1.0.100"
-assert_matches2 = "0.1.0"
+anyhow = "1.0.102"
+assert_matches2 = "0.1.2"
 async-trait = "0.1.89"
 as_variant = "1.3.0"
 base64 = "0.22"
-bcrypt = "0.18.0"
+bcrypt = "0.19.0"
 blurhash = "0.2"
 bytes = "1.11.1"
 byteorder = "1.5.0"
 cargo_toml = "0.22.3"
 chksum = "0.4.0"
-chrono = { version = "0.4.43", features = ["serde"] }
-clap = { version = "4.5.57", default-features = false }
-config = "0.15.19"
-cookie = "0.18.0"
+chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4.6.0", default-features = false }
+config = "0.15.22"
+cookie = "0.18.1"
 core_affinity = "0.8.3"
 cyborgtime = "2.1.1"
 data-encoding = "2.10.0"
 date_header = "1.0.5"
-diesel = { version = "2.3.6" }
+diesel = { version = "2.3.7" }
 # diesel-async = { version = "0.6.1" }
 # diesel_full_text_search = { version = "2.2.0" }
 diesel_migrations = "2.3.1"
-dotenvy = "0.15.0"
+dotenvy = "0.15.7"
 ed25519-dalek = "2.2.0"
 either = { version = "1.15.0", default-features = false }
 fast32 = "1.0.3"
-figment = "0.10.8"
-futures-util = { version = "0.3.24", features = ["io"] }
+figment = "0.10.19"
+futures-util = { version = "0.3.32", features = ["io"] }
 form_urlencoded = "1"
-globwalk = "0.9.0"
+globwalk = "0.9.1"
 ipaddress = "0.1.3"
-hickory-resolver = "0.25.1"
+hickory-resolver = "0.25.2"
 hyper-util = "0.1.20"
 hmac = "0.12"
-html5ever = "0.38.0"
+html5ever = "0.39.0"
 http = "1.4.0"
-image = "0.25.9"
+image = "0.25.10"
 indexmap = "2.13.0"
 itertools = "0.14.0"
 jsonwebtoken = { version = "10.3.0", default-features = false, features = [
@@ -76,49 +76,49 @@ konst = "0.4.3"
 language-tags = { version = "0.3.2", features = ["serde"] }
 lru-cache = "0.1.2"
 maplit = "1.0.2"
-mime = "0.3.16"
+mime = "0.3.17"
 mime-infer = "4.0.1"
 # nix = "0.26.1"
 path-slash = "0.2.1"
 percent-encoding = "2"
 phf = { version = "0.13.1", features = ["macros"] }
 pkcs8 = "0.10.2"
-proc-macro-crate = "3.4.0"
+proc-macro-crate = "3.5.0"
 proc-macro2 = "1.0.106"
-pulldown-cmark = { version = "0.13.0", default-features = false }
-quote = "1.0.44"
-rand = "0.8"
-reqwest-middleware = "0.5.0"
-reqwest-retry = "0.9.0"
-rustyline-async = { version = "0.4.7" }
+pulldown-cmark = { version = "0.13.1", default-features = false }
+quote = "1.0.45"
+rand = "0.10"
+reqwest-middleware = "0.5.1"
+reqwest-retry = "0.9.1"
+rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
-reqwest = { version = "0.13.1", features = ["json", "form"] }
+reqwest = { version = "0.13.2", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.89.1", features = ["rustls"]}
+salvo = { version = "0.89.3", features = ["rustls"]}
 sanitize-filename = "0.6.0"
-scheduled-thread-pool = "0.2.0"
+scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 subtle = "2.6"
 serde_html_form = "0.4.0"
 serde_json = { version = "1.0.149" }
-serde-saphyr = { version = "0.0.17" }
+serde-saphyr = { version = "0.0.22" }
 serde_regex = { version = "1.1.0" }
 smallvec = { version = "1.15.1" }
-sha2 = "0.10.8"
+sha2 = "0.10.9"
 sha1 = "0.10.6"
-strum = "0.27.2"
-strum_macros = "0.27.2"
+strum = "0.28.0"
+strum_macros = "0.28.0"
 subslice = "0.2.3"
-syn = "2.0.114"
-tempfile = "3.24.0"
+syn = "2.0.117"
+tempfile = "3.27.0"
 termimad = { version = "0.34.1", default-features = false }
 textnonce = "1.0.0"
 thiserror = "2.0.18"
-tokio = { version = "1.46.1", features = ["macros", "parking_lot", "process"] }
+tokio = { version = "1.50.0", features = ["macros", "parking_lot", "process"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
-toml = { version = "0.9.8", default-features = false }
+toml = { version = "1.0.7", default-features = false }
 tower-service = "0.3.3"
 tracing = { version = "0.1.44", features = [
     "release_max_level_debug",
@@ -127,10 +127,10 @@ tracing = { version = "0.1.44", features = [
 ] }
 tracing-core = { version = "0.1.36" }
 tracing-futures = "0.2.5"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = { version = "2.5.8", default-features = false, features = ["serde"] }
-uuid = { version = "1.20.0", features = ["v4"] }
-ulid = "1.1.0"
+uuid = { version = "1.22.0", features = ["v4"] }
+ulid = "1.2.1"
 web-time = "1.1.0"
 webpage = { version = "2.0.1", default-features = false }
 wildmatch = "2.6.1"

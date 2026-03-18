@@ -59,7 +59,7 @@ fn test_event_sort() {
     // don't remove any events so we know it sorts them all correctly
     let mut events_to_sort = events.keys().cloned().collect::<Vec<_>>();
 
-    events_to_sort.shuffle(&mut rand::thread_rng());
+    events_to_sort.shuffle(&mut rand::rng());
 
     let power_level =
         resolved_power.get(&(StateEventType::RoomPowerLevels, "".to_owned())).cloned();

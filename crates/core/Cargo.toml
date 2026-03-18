@@ -114,7 +114,7 @@ futures-util = { workspace = true, features = ["io"] }
 globwalk = { workspace = true }
 html5ever = { workspace = true }
 http = { workspace = true }
-http-auth = { version = "0.1.9", default-features = false }
+http-auth = { version = "0.1.10", default-features = false }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 js_option = { workspace = true }

@@ -100,10 +100,11 @@ impl Scribe for ThumbnailResBody {
     ///
     /// Returns a tuple containing the boundary used
     fn render(self, res: &mut Response) {
-        use rand::Rng as _;
+        use rand::RngExt as _;
 
-        let boundary = rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
+        let mut rng = rand::rng();
+        let boundary = (&mut rng)
+            .sample_iter(rand::distr::Alphanumeric)
             .map(char::from)
             .take(GENERATED_BOUNDARY_LENGTH)
             .collect::<String>();

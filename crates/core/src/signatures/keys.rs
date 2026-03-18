@@ -6,7 +6,6 @@ use std::fmt::{Debug, Formatter, Result as FmtResult};
 use ed25519_dalek::pkcs8::ALGORITHM_OID;
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, SecretKey, Signer, SigningKey};
 use pkcs8::der::zeroize::Zeroizing;
-use rand::rngs::OsRng;
 use pkcs8::{DecodePrivateKey, EncodePrivateKey, ObjectIdentifier, PrivateKeyInfo};
 
 use crate::serde::Base64;
@@ -157,7 +156,12 @@ impl Ed25519KeyPair {
     ///
     /// Returns an error if the generation failed.
     pub fn generate() -> Result<Zeroizing<Vec<u8>>, Error> {
-        let signing_key = SigningKey::generate(&mut OsRng);
+        use rand::TryRng as _;
+
+        let mut secret_key = SecretKey::default();
+        let mut rng = rand::rngs::SysRng;
+        rng.try_fill_bytes(&mut secret_key).map_err(Error::Random)?;
+        let signing_key = SigningKey::from_bytes(&secret_key);
         Ok(signing_key
             .to_pkcs8_der()
             .map_err(Error::DerParse)?

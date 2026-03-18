@@ -193,7 +193,7 @@ pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<Alias
                 .json::<AliasResBody>()
                 .await?;
 
-        body.servers.shuffle(&mut rand::thread_rng());
+        body.servers.shuffle(&mut rand::rng());
 
         return Ok(body);
     }

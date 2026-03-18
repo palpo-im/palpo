@@ -25,6 +25,10 @@ pub enum Error {
     #[error("der parse error: {0}")]
     DerParse(ed25519_dalek::pkcs8::Error),
 
+    /// Wrapper for OS randomness failures.
+    #[error("randomness error: {0}")]
+    Random(#[source] rand::rngs::SysError),
+
     /// The signature's ID does not have exactly two components separated by a
     /// colon.
     #[error("malformed signature ID: expected exactly 2 segment separated by a colon, found {0}")]
