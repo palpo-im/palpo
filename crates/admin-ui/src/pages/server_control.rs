@@ -78,6 +78,24 @@ struct SuccessResponse {
     message: String,
 }
 
+/// Configuration validation result from API
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigValidationResult {
+    pub is_valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub config_summary: Option<ConfigSummary>,
+}
+
+/// Key configuration items shown in the pre-start summary
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigSummary {
+    pub server_name: String,
+    pub database_url: String,
+    pub port: u16,
+    pub federation_enabled: bool,
+}
+
 /// Format uptime in human-readable format
 fn format_uptime(seconds: i64) -> String {
     let hours = seconds / 3600;
@@ -117,6 +135,10 @@ pub fn ServerControlPage() -> Element {
     let mut show_start_confirm = use_signal(|| false);
     let mut show_stop_confirm = use_signal(|| false);
     let mut show_restart_confirm = use_signal(|| false);
+    // A.5: config validation before start
+    let mut show_validation_dialog = use_signal(|| false);
+    let mut validation_result = use_signal(|| None::<ConfigValidationResult>);
+    let mut is_validating = use_signal(|| false);
 
     // Fetch server status
     let fetch_status = use_callback(move |_| async move {
@@ -153,6 +175,40 @@ pub fn ServerControlPage() -> Element {
             }
         });
     });
+
+    // A.5: Validate config before showing start confirmation
+    let handle_validate_and_start = move |_| {
+        spawn(async move {
+            is_validating.set(true);
+            error_message.set(None);
+
+            match get_api_client() {
+                Ok(client) => {
+                    match client.get_json::<ConfigValidationResult>("/api/v1/admin/config/validate").await {
+                        Ok(result) => {
+                            validation_result.set(Some(result));
+                            show_validation_dialog.set(true);
+                        }
+                        Err(_) => {
+                            // If validation endpoint unavailable, fall back to direct confirm
+                            validation_result.set(Some(ConfigValidationResult {
+                                is_valid: true,
+                                errors: vec![],
+                                warnings: vec!["无法连接验证服务，请确认配置正确".to_string()],
+                                config_summary: None,
+                            }));
+                            show_validation_dialog.set(true);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error_message.set(Some(format!("API客户端错误: {}", e)));
+                }
+            }
+
+            is_validating.set(false);
+        });
+    };
 
     // Handle start server
     let handle_start = move |_| {
@@ -368,9 +424,9 @@ pub fn ServerControlPage() -> Element {
                     div { class: "flex space-x-3",
                         button {
                             class: "px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed",
-                            disabled: is_loading() || status_info().map(|s| s.status == ServerStatus::Running).unwrap_or(false),
-                            onclick: move |_| show_start_confirm.set(true),
-                            "启动服务器"
+                            disabled: is_loading() || is_validating() || status_info().map(|s| s.status == ServerStatus::Running).unwrap_or(false),
+                            onclick: handle_validate_and_start,
+                            if is_validating() { "验证配置中..." } else { "启动服务器" }
                         }
 
                         button {
@@ -385,6 +441,22 @@ pub fn ServerControlPage() -> Element {
                             disabled: is_loading() || status_info().map(|s| s.status != ServerStatus::Running).unwrap_or(true),
                             onclick: move |_| show_restart_confirm.set(true),
                             "重启服务器"
+                        }
+                    }
+                }
+            }
+
+            // Config Validation Dialog (A.5)
+            if show_validation_dialog() {
+                if let Some(result) = validation_result() {
+                    ConfigValidationDialog {
+                        result: result,
+                        on_confirm: move |_| {
+                            show_validation_dialog.set(false);
+                            show_start_confirm.set(true);
+                        },
+                        on_cancel: move |_| {
+                            show_validation_dialog.set(false);
                         }
                     }
                 }
@@ -466,5 +538,175 @@ fn ConfirmDialog(
                 }
             }
         }
+    }
+}
+
+/// Configuration validation dialog shown before server start (A.5)
+#[component]
+fn ConfigValidationDialog(
+    result: ConfigValidationResult,
+    on_confirm: EventHandler<MouseEvent>,
+    on_cancel: EventHandler<MouseEvent>,
+) -> Element {
+    let is_valid = result.is_valid;
+
+    rsx! {
+        div { class: "fixed inset-0 z-50 flex items-center justify-center",
+            div { class: "absolute inset-0 bg-gray-500 bg-opacity-75" }
+            div { class: "relative bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 z-10",
+                div { class: "px-6 py-4 border-b border-gray-200",
+                    h3 { class: "text-lg font-medium text-gray-900", "启动前配置验证" }
+                }
+                div { class: "px-6 py-4 space-y-4",
+                    div { class: "flex items-center space-x-3",
+                        if is_valid {
+                            span { class: "inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800",
+                                "✓ 配置有效"
+                            }
+                        } else {
+                            span { class: "inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800",
+                                "✗ 配置无效"
+                            }
+                        }
+                    }
+                    if let Some(summary) = &result.config_summary {
+                        div { class: "bg-gray-50 rounded-lg p-4 space-y-2",
+                            h4 { class: "text-sm font-medium text-gray-700", "配置摘要" }
+                            div { class: "grid grid-cols-2 gap-2 text-sm",
+                                span { class: "text-gray-500", "服务器名称:" }
+                                span { class: "text-gray-900 font-mono", "{summary.server_name}" }
+                                span { class: "text-gray-500", "监听端口:" }
+                                span { class: "text-gray-900 font-mono", "{summary.port}" }
+                                span { class: "text-gray-500", "联邦功能:" }
+                                span { class: "text-gray-900",
+                                    if summary.federation_enabled { "已启用" } else { "已禁用" }
+                                }
+                            }
+                        }
+                    }
+                    if !result.errors.is_empty() {
+                        div { class: "bg-red-50 border border-red-200 rounded-lg p-4",
+                            h4 { class: "text-sm font-medium text-red-900 mb-2", "配置错误" }
+                            ul { class: "space-y-1",
+                                for err in &result.errors {
+                                    li { class: "text-sm text-red-700", "• {err}" }
+                                }
+                            }
+                        }
+                    }
+                    if !result.warnings.is_empty() {
+                        div { class: "bg-amber-50 border border-amber-200 rounded-lg p-4",
+                            h4 { class: "text-sm font-medium text-amber-900 mb-2", "配置警告" }
+                            ul { class: "space-y-1",
+                                for warn in &result.warnings {
+                                    li { class: "text-sm text-amber-700", "⚠ {warn}" }
+                                }
+                            }
+                        }
+                    }
+                }
+                div { class: "px-6 py-4 bg-gray-50 flex justify-end space-x-3 rounded-b-lg",
+                    button {
+                        class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50",
+                        onclick: move |evt| on_cancel.call(evt),
+                        "取消"
+                    }
+                    button {
+                        class: if is_valid {
+                            "px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700"
+                        } else {
+                            "px-4 py-2 text-sm font-medium text-white bg-gray-400 border border-transparent rounded-md cursor-not-allowed"
+                        },
+                        disabled: !is_valid,
+                        onclick: move |evt| { if is_valid { on_confirm.call(evt); } },
+                        if is_valid { "配置已验证，继续启动" } else { "配置无效，无法启动" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_uptime_seconds_only() {
+        assert_eq!(format_uptime(45), "45秒");
+    }
+
+    #[test]
+    fn test_format_uptime_minutes() {
+        assert_eq!(format_uptime(125), "2分钟 5秒");
+    }
+
+    #[test]
+    fn test_format_uptime_hours() {
+        assert_eq!(format_uptime(3661), "1小时 1分钟 1秒");
+    }
+
+    #[test]
+    fn test_config_validation_valid() {
+        let r = ConfigValidationResult {
+            is_valid: true,
+            errors: vec![],
+            warnings: vec![],
+            config_summary: Some(ConfigSummary {
+                server_name: "example.com".to_string(),
+                database_url: "postgresql://localhost/palpo".to_string(),
+                port: 8008,
+                federation_enabled: true,
+            }),
+        };
+        assert!(r.is_valid);
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn test_config_validation_invalid() {
+        let r = ConfigValidationResult {
+            is_valid: false,
+            errors: vec!["server_name is required".to_string()],
+            warnings: vec![],
+            config_summary: None,
+        };
+        assert!(!r.is_valid);
+        assert_eq!(r.errors.len(), 1);
+    }
+
+    #[test]
+    fn test_config_validation_with_warnings() {
+        let r = ConfigValidationResult {
+            is_valid: true,
+            errors: vec![],
+            warnings: vec!["federation key not configured".to_string()],
+            config_summary: None,
+        };
+        assert!(r.is_valid);
+        assert_eq!(r.warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_start_blocked_when_invalid() {
+        let r = ConfigValidationResult {
+            is_valid: false,
+            errors: vec!["missing required field".to_string()],
+            warnings: vec![],
+            config_summary: None,
+        };
+        assert!(!r.is_valid);
+    }
+
+    #[test]
+    fn test_start_allowed_when_valid_no_errors() {
+        let r = ConfigValidationResult {
+            is_valid: true,
+            errors: vec![],
+            warnings: vec![],
+            config_summary: None,
+        };
+        assert!(r.is_valid);
+        assert!(r.errors.is_empty());
     }
 }
