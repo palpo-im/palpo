@@ -22,6 +22,32 @@ use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
 
+/// Sort rooms by last activity (most recent first) using event sequence numbers.
+fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
+    if rooms.is_empty() {
+        return Ok(());
+    }
+
+    let room_strs: Vec<&str> = rooms.iter().map(|r| r.as_str()).collect();
+
+    let results: Vec<(String, i64)> = event_points::table
+        .filter(event_points::room_id.eq_any(&room_strs))
+        .distinct_on(event_points::room_id)
+        .order_by((event_points::room_id.asc(), event_points::event_sn.desc()))
+        .select((event_points::room_id, event_points::event_sn))
+        .load(&mut connect()?)?;
+
+    let last_sn: BTreeMap<&str, i64> = results.iter().map(|(r, sn)| (r.as_str(), *sn)).collect();
+
+    rooms.sort_by(|a, b| {
+        let sn_a = last_sn.get(a.as_str()).copied().unwrap_or(0);
+        let sn_b = last_sn.get(b.as_str()).copied().unwrap_or(0);
+        sn_b.cmp(&sn_a)
+    });
+
+    Ok(())
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
@@ -169,7 +195,7 @@ pub async fn sync_events(
         known_rooms,
         &mut res_body,
     )
-    .await;
+    .await?;
 
     fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms)?;
 
@@ -198,7 +224,7 @@ async fn process_lists(
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
     res_body: &mut SyncEventsResBody,
-) -> KnownRooms {
+) -> AppResult<()> {
     for (list_id, list) in &req_body.lists {
         let active_rooms = match list.filters.clone().and_then(|f| f.is_invite) {
             Some(true) => all_invited_rooms,
@@ -211,25 +237,35 @@ async fn process_lists(
             None => active_rooms,
         };
 
-        let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
-        let mut ranges = list.ranges.clone();
-        if ranges.is_empty() {
-            ranges.push((0, 50));
-        }
+        // Sort rooms by last activity (most recent first)
+        let mut sorted_rooms: Vec<&RoomId> = active_rooms.to_vec();
+        sort_rooms_by_activity(&mut sorted_rooms)?;
+        let count = sorted_rooms.len();
 
-        for mut range in ranges {
-            if range == (0, 0) {
-                range.1 = active_rooms.len().min(range.0 + 19);
-            } else {
-                range.1 = range.1.clamp(range.0, active_rooms.len().max(range.0));
+        let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
+        let mut ops = Vec::new();
+        let ranges = list.ranges.clone();
+
+        for range in &ranges {
+            // Ranges are inclusive [start, end] per MSC4186
+            let start = range.0.min(count);
+            let end = (range.1 + 1).min(count); // convert to exclusive for slicing
+
+            if start >= end {
+                continue;
             }
 
-            let room_ids = active_rooms[range.0..range.1].to_vec();
+            let room_ids: Vec<&RoomId> = sorted_rooms[start..end].to_vec();
+            let owned_room_ids: Vec<OwnedRoomId> =
+                room_ids.iter().map(|r| (*r).to_owned()).collect();
 
-            let new_rooms: BTreeSet<OwnedRoomId> =
-                room_ids.clone().into_iter().map(From::from).collect();
-            new_known_rooms.extend(new_rooms);
-            // new_known_rooms.extend(room_ids..cloned());
+            ops.push(sync_events::v5::SyncListOp::Sync {
+                range: (start, end - 1), // back to inclusive for response
+                room_ids: owned_room_ids.clone(),
+            });
+
+            new_known_rooms.extend(owned_room_ids);
+
             for room_id in room_ids {
                 let todo_room = todo_rooms.entry(room_id.to_owned()).or_insert(TodoRoom {
                     required_state: BTreeSet::new(),
@@ -256,11 +292,10 @@ async fn process_lists(
                 );
             }
         }
+
         res_body.lists.insert(
             list_id.clone(),
-            sync_events::v5::SyncList {
-                count: active_rooms.len(),
-            },
+            sync_events::v5::SyncList { count, ops },
         );
 
         crate::sync_v5::update_sync_known_rooms(
@@ -272,7 +307,7 @@ async fn process_lists(
             since_sn,
         );
     }
-    BTreeMap::default()
+    Ok(())
 }
 
 fn fetch_subscriptions(

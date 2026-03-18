@@ -164,12 +164,49 @@ impl SyncEventsResBody {
             && self.txn_id.is_none()
     }
 }
-/// A sliding sync response updates to joiend rooms (see
-/// [`super::Response::lists`]).
+/// Type of operation for sliding window list updates.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op")]
+pub enum SyncListOp {
+    /// Full replacement of rooms in the given range.
+    #[serde(rename = "SYNC")]
+    Sync {
+        /// The inclusive range [start, end].
+        range: (usize, usize),
+        /// The room IDs in this range.
+        room_ids: Vec<OwnedRoomId>,
+    },
+    /// Insert a room at the given index, shifting subsequent rooms right.
+    #[serde(rename = "INSERT")]
+    Insert {
+        /// The index to insert at.
+        index: usize,
+        /// The room ID to insert.
+        room_id: OwnedRoomId,
+    },
+    /// Delete the room at the given index, shifting subsequent rooms left.
+    #[serde(rename = "DELETE")]
+    Delete {
+        /// The index to delete.
+        index: usize,
+    },
+    /// Invalidate the given range — client should forget those entries.
+    #[serde(rename = "INVALIDATE")]
+    Invalidate {
+        /// The inclusive range [start, end].
+        range: (usize, usize),
+    },
+}
+
+/// A sliding sync response updated list (see [`super::Response::lists`]).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SyncList {
     /// The total number of rooms found for this list.
     pub count: usize,
+
+    /// The sliding list operations to apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ops: Vec<SyncListOp>,
 }
 
 /// A sliding sync response updated room (see [`super::Response::rooms`]).
