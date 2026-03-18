@@ -283,7 +283,7 @@ pub async fn sync_events(
             account_data: collect_account_data(sync_info)?,
             e2ee: collect_e2ee(sync_info, &all_joined_rooms)?,
             to_device: collect_to_device(sync_info, next_batch),
-            receipts: collect_receipts(),
+            receipts: collect_receipts(sync_info),
             typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
         },
     };
@@ -986,8 +986,32 @@ fn collect_e2ee(
             left: device_list_left.into_iter().collect(),
         },
         device_one_time_keys_count: data::user::count_one_time_keys(sender_id, device_id)?,
-        device_unused_fallback_key_types: None,
+        device_unused_fallback_key_types: Some(get_unused_fallback_key_types(sender_id, device_id)),
     })
+}
+
+fn get_unused_fallback_key_types(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> Vec<DeviceKeyAlgorithm> {
+    connect()
+        .ok()
+        .and_then(|mut conn| {
+            e2e_fallback_keys::table
+                .filter(e2e_fallback_keys::user_id.eq(user_id.as_str()))
+                .filter(e2e_fallback_keys::device_id.eq(device_id.as_str()))
+                .filter(e2e_fallback_keys::used_at.is_null())
+                .select(e2e_fallback_keys::algorithm)
+                .load::<String>(&mut conn)
+                .ok()
+        })
+        .map(|algos| {
+            algos
+                .into_iter()
+                .map(|a| a.into())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_to_device(
@@ -1015,11 +1039,17 @@ fn collect_to_device(
     })
 }
 
-fn collect_receipts() -> sync_events::v5::Receipts {
+fn collect_receipts(
+    SyncInfo { req_body, .. }: SyncInfo<'_>,
+) -> sync_events::v5::Receipts {
+    if !req_body.extensions.receipts.enabled.unwrap_or(false) {
+        return sync_events::v5::Receipts::default();
+    }
+    // Room-level receipts are collected in process_rooms; this returns
+    // the container that process_rooms will populate.
     sync_events::v5::Receipts {
         rooms: BTreeMap::new(),
     }
-    // TODO: get explicitly requested read receipts
 }
 
 async fn collect_typing<'a, Rooms>(
@@ -1036,8 +1066,17 @@ where
         return Ok(Typing::default());
     }
 
+    let typing_rooms = &req_body.extensions.typing.rooms;
+
     let mut typing = Typing::new();
     for room_id in rooms {
+        // Filter by rooms config if specified
+        if let Some(room_filter) = typing_rooms {
+            if !room_filter.is_empty() && !room_filter.contains(&room_id.to_owned()) {
+                continue;
+            }
+        }
+
         typing.rooms.insert(
             room_id.to_owned(),
             room::typing::all_typings(room_id).await?,
