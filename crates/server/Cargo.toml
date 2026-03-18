@@ -49,6 +49,7 @@ dotenvy = { workspace = true }
 either = { workspace = true, features = ["serde"] }
 fast32 = { workspace = true }
 figment = { workspace = true, features = ["env", "toml", "yaml", "json"] }
+kdl = { workspace = true }
 futures-util = { workspace = true, features = ["io"] }
 globwalk = { workspace = true }
 hickory-resolver = { workspace = true }

@@ -7,6 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use figment::Figment;
 use figment::providers::{Env, Format, Json, Toml, Yaml};
+use kdl::{KdlDocument, KdlNode, KdlValue};
 use ipaddress::IPAddress;
 
 mod server;
@@ -91,7 +92,114 @@ fn figment_from_path<P: AsRef<Path>>(path: P) -> Figment {
         "yaml" | "yml" => Figment::new().merge(Yaml::file(path)),
         "json" => Figment::new().merge(Json::file(path)),
         "toml" => Figment::new().merge(Toml::file(path)),
+        "kdl" => {
+            let content = std::fs::read_to_string(path.as_ref())
+                .unwrap_or_else(|e| panic!("failed to read KDL config: {e}"));
+            let doc: KdlDocument = content.parse().unwrap_or_else(|e| panic!("failed to parse KDL config: {e}"));
+            let json_value = kdl_doc_to_json(&doc);
+            let json_str = serde_json::to_string(&json_value)
+                .unwrap_or_else(|e| panic!("failed to convert KDL config to JSON: {e}"));
+            Figment::new().merge(Json::string(&json_str))
+        }
         _ => panic!("unsupported config file format: {ext}"),
+    }
+}
+
+fn kdl_doc_to_json(doc: &KdlDocument) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for node in doc.nodes() {
+        let name = node.name().to_string();
+        let value = kdl_node_to_json(node);
+        map.insert(name, value);
+    }
+    serde_json::Value::Object(map)
+}
+
+fn kdl_node_to_json(node: &KdlNode) -> serde_json::Value {
+    let args: Vec<serde_json::Value> = node
+        .entries()
+        .iter()
+        .filter(|e| e.name().is_none())
+        .map(|e| kdl_value_to_json(e.value()))
+        .collect();
+
+    let props: Vec<(String, serde_json::Value)> = node
+        .entries()
+        .iter()
+        .filter_map(|e| e.name().map(|n| (n.to_string(), kdl_value_to_json(e.value()))))
+        .collect();
+
+    if let Some(children) = node.children() {
+        // Check if all children are dash nodes (KDL array convention)
+        let all_dashes = !children.nodes().is_empty()
+            && children
+                .nodes()
+                .iter()
+                .all(|n| n.name().to_string() == "-");
+        if all_dashes {
+            let arr: Vec<serde_json::Value> = children
+                .nodes()
+                .iter()
+                .map(|n| {
+                    let child_args: Vec<serde_json::Value> = n
+                        .entries()
+                        .iter()
+                        .filter(|e| e.name().is_none())
+                        .map(|e| kdl_value_to_json(e.value()))
+                        .collect();
+                    if child_args.len() == 1 {
+                        child_args.into_iter().next().unwrap()
+                    } else {
+                        serde_json::Value::Array(child_args)
+                    }
+                })
+                .collect();
+            return serde_json::Value::Array(arr);
+        }
+
+        let mut obj = serde_json::Map::new();
+        for (key, val) in props {
+            obj.insert(key, val);
+        }
+        for child_node in children.nodes() {
+            let child_name = child_node.name().to_string();
+            obj.insert(child_name, kdl_node_to_json(child_node));
+        }
+        serde_json::Value::Object(obj)
+    } else if !props.is_empty() {
+        let mut obj = serde_json::Map::new();
+        for (key, val) in props {
+            obj.insert(key, val);
+        }
+        serde_json::Value::Object(obj)
+    } else if args.len() == 1 {
+        args.into_iter().next().unwrap()
+    } else if args.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Array(args)
+    }
+}
+
+fn kdl_value_to_json(value: &KdlValue) -> serde_json::Value {
+    if let Some(s) = value.as_string() {
+        serde_json::Value::String(s.to_owned())
+    } else if let Some(i) = value.as_integer() {
+        if let Ok(n) = i64::try_from(i) {
+            serde_json::Value::Number(n.into())
+        } else if let Ok(n) = u64::try_from(i) {
+            serde_json::Value::Number(n.into())
+        } else {
+            serde_json::Value::Number(serde_json::Number::from_f64(i as f64).unwrap_or_else(|| 0.into()))
+        }
+    } else if let Some(f) = value.as_float() {
+        serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null)
+    } else if let Some(b) = value.as_bool() {
+        serde_json::Value::Bool(b)
+    } else {
+        serde_json::Value::Null
     }
 }
 
