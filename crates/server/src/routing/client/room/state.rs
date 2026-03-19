@@ -69,6 +69,10 @@ pub async fn report(
         _ => return Err(MatrixError::invalid_param("Invalid Event ID").into()),
     };
 
+    if let Some(true) = body.score.map(|s| !(-100..=0).contains(&s)) {
+        return Err(MatrixError::invalid_param("Invalid score, must be within 0 to -100").into());
+    };
+
     if let Some(true) = body.reason.clone().map(|s| s.chars().count() > 250) {
         return Err(MatrixError::invalid_param(
             "Reason too long, should be 250 characters or fewer",
@@ -82,11 +86,13 @@ pub async fn report(
                 Event ID: {:?}\n\
                 Room ID: {:?}\n\
                 Sent By: {:?}\n\n\
+                Report Score: {:?}\n\
                 Report Reason: {:?}",
             authed.user_id(),
             pdu.event_id,
             pdu.room_id,
             pdu.sender,
+            body.score,
             body.reason
         ),
         format!(
@@ -94,12 +100,13 @@ pub async fn report(
                 </a></summary><ul><li>Event Info<ul><li>Event ID: <code>{1:?}</code>\
                 <a href=\"https://matrix.to/#/{2:?}/{1:?}\">🔗</a></li><li>Room ID: <code>{2:?}</code>\
                 </li><li>Sent By: <a href=\"https://matrix.to/#/{3:?}\">{3:?}</a></li></ul></li><li>\
-                Report Info<ul><li>Report Reason: {4}</li></ul></li>\
+                Report Info<ul><li>Report Score: {4:?}</li><li>Report Reason: {5}</li></ul></li>\
                 </ul></details>",
             authed.user_id(),
             pdu.event_id,
             pdu.room_id,
             pdu.sender,
+            body.score,
             HtmlEscape(body.reason.as_deref().unwrap_or(""))
         ),
     )).await;

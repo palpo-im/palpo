@@ -148,19 +148,12 @@ impl From<InviteThreepid> for InvitationRecipient {
 pub struct InviteUserId {
     /// The Matrix identifier of the user to invite.
     pub user_id: OwnedUserId,
-
-    /// The reason for inviting the user.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
 }
 
 impl InviteUserId {
     /// Constructs a new `InviteUserId` with the given Matrix identifier.
     pub fn new(user_id: OwnedUserId) -> Self {
-        Self {
-            user_id,
-            reason: None,
-        }
+        Self { user_id }
     }
 }
 // /// `POST /_matrix/client/*/rooms/{room_id}/kick`
@@ -219,6 +212,10 @@ pub struct KickUserReqBody {
 /// Request type for the `invite_user` endpoint.
 #[derive(ToSchema, Deserialize, Debug)]
 pub struct InviteUserReqBody {
+    /// Optional reason for inviting the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+
     /// The user to invite.
     #[serde(flatten)]
     pub recipient: InvitationRecipient,

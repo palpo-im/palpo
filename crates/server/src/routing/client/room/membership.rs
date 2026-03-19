@@ -314,7 +314,7 @@ pub(super) async fn invite_user(
         authed.user_id(),
         &invite.user_id,
         &room_id.into_inner(),
-        invite.reason.clone(),
+        body.reason.clone(),
         false,
     )
     .await?;
