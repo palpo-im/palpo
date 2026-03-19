@@ -6,6 +6,7 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::Seqnum;
+use crate::core::UnixMillis;
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
@@ -14,7 +15,6 @@ use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_conte
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{AnyRawAccountDataEvent, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
-use crate::core::UnixMillis;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::{BatchToken, ignored_filter};
@@ -244,7 +244,10 @@ async fn process_lists(
 
         let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
         let mut ops = Vec::new();
-        let ranges = list.ranges.clone();
+        let mut ranges = list.ranges.clone();
+        if ranges.is_empty() {
+            ranges.push((0, 50));
+        }
 
         for range in &ranges {
             // Ranges are inclusive [start, end] per MSC4186
@@ -293,10 +296,9 @@ async fn process_lists(
             }
         }
 
-        res_body.lists.insert(
-            list_id.clone(),
-            sync_events::v5::SyncList { count, ops },
-        );
+        res_body
+            .lists
+            .insert(list_id.clone(), sync_events::v5::SyncList { count, ops });
 
         crate::sync_v5::update_sync_known_rooms(
             sender_id.to_owned(),
