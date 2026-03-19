@@ -7,16 +7,18 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::Seqnum;
+use crate::core::UnixMillis;
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
 use crate::core::device::DeviceLists;
+use crate::core::events::direct::DirectEventContent;
 use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_contents};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
-use crate::core::events::direct::DirectEventContent;
-use crate::core::events::{AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType};
+use crate::core::events::{
+    AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType,
+};
 use crate::core::identifiers::*;
-use crate::core::UnixMillis;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::{BatchToken, ignored_filter};
@@ -113,17 +115,39 @@ pub fn cleanup_expired_connections() {
     let now = UnixMillis::now().get() as i64;
     let cutoff = now - CONNECTION_EXPIRY_MS;
 
-    // Clean up in-memory cache
-    CONNECTIONS.lock().unwrap().retain(|_key, _entry| {
-        // Keep all in-memory entries; DB cleanup is the source of truth
-        true
-    });
+    let expired_keys: HashSet<(OwnedUserId, OwnedDeviceId, Option<String>)> = connect()
+        .ok()
+        .and_then(|mut conn| {
+            sliding_sync_connections::table
+                .filter(sliding_sync_connections::updated_at.lt(cutoff))
+                .select((
+                    sliding_sync_connections::user_id,
+                    sliding_sync_connections::device_id,
+                    sliding_sync_connections::conn_id,
+                ))
+                .load::<(String, String, String)>(&mut conn)
+                .ok()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(user_id, device_id, conn_id)| {
+            Some((
+                OwnedUserId::try_from(user_id).ok()?,
+                OwnedDeviceId::try_from(device_id.as_str()).ok()?,
+                (!conn_id.is_empty()).then_some(conn_id),
+            ))
+        })
+        .collect();
+
+    CONNECTIONS
+        .lock()
+        .unwrap()
+        .retain(|key, _entry| !expired_keys.contains(key));
 
     // Clean up database
     if let Ok(mut conn) = connect() {
         let _ = diesel::delete(
-            sliding_sync_connections::table
-                .filter(sliding_sync_connections::updated_at.lt(cutoff)),
+            sliding_sync_connections::table.filter(sliding_sync_connections::updated_at.lt(cutoff)),
         )
         .execute(&mut conn);
     }
@@ -331,8 +355,7 @@ async fn process_lists(
     res_body: &mut SyncEventsResBody,
 ) -> AppResult<()> {
     for (list_id, list) in &req_body.lists {
-        let mut active_rooms: Vec<&RoomId> = match list.filters.as_ref().and_then(|f| f.is_invite)
-        {
+        let mut active_rooms: Vec<&RoomId> = match list.filters.as_ref().and_then(|f| f.is_invite) {
             Some(true) => all_invited_rooms.to_vec(),
             Some(false) => all_joined_rooms.to_vec(),
             None => all_rooms.to_vec(),
@@ -377,7 +400,10 @@ async fn process_lists(
 
         let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
         let mut ops = Vec::new();
-        let ranges = list.ranges.clone();
+        let mut ranges = list.ranges.clone();
+        if ranges.is_empty() {
+            ranges.push((0, 50));
+        }
 
         for range in &ranges {
             // Ranges are inclusive [start, end] per MSC4186
@@ -426,10 +452,9 @@ async fn process_lists(
             }
         }
 
-        res_body.lists.insert(
-            list_id.clone(),
-            sync_events::v5::SyncList { count, ops },
-        );
+        res_body
+            .lists
+            .insert(list_id.clone(), sync_events::v5::SyncList { count, ops });
 
         crate::sync_v5::update_sync_known_rooms(
             sender_id.to_owned(),
@@ -652,9 +677,12 @@ async fn process_rooms(
                         .collect();
 
                     for sender in senders.into_iter().take(100) {
-                        if let Ok(pdu) =
-                            room::get_state(room_id, &StateEventType::RoomMember, sender.as_str(), None)
-                        {
+                        if let Ok(pdu) = room::get_state(
+                            room_id,
+                            &StateEventType::RoomMember,
+                            sender.as_str(),
+                            None,
+                        ) {
                             if !is_required_state_send(
                                 sender_id.to_owned(),
                                 device_id.to_owned(),
@@ -819,7 +847,13 @@ async fn process_rooms(
                         .try_into()
                         .unwrap_or(0),
                 ),
-                num_live: Some(timeline.events.iter().filter(|(sn, _)| **sn > since_sn).count() as i64),
+                num_live: Some(
+                    timeline
+                        .events
+                        .iter()
+                        .filter(|(sn, _)| **sn > since_sn)
+                        .count() as i64,
+                ),
                 bump_stamp: timestamp.map(|t| t.get() as i64),
                 heroes: Some(heroes),
             },
