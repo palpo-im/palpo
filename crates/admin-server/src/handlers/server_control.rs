@@ -183,6 +183,16 @@ pub async fn start_server(res: &mut Response) {
                 error: "TLS private key file not found".to_string(),
             }));
         }
+        Err(AdminError::PalpoBinaryNotFound(path)) => {
+            tracing::error!("Palpo binary not found at: {}", path);
+            res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+            res.render(Json(ErrorResponse {
+                error: format!(
+                    "找不到 Palpo 可执行文件: {}。请将 palpo 可执行文件放置在与 admin-server 相同的目录下。",
+                    path
+                ),
+            }));
+        }
         Err(AdminError::ServerStartFailed(msg)) => {
             tracing::error!("Failed to start server: {}", msg);
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);

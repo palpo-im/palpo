@@ -43,18 +43,48 @@ pub struct SessionToken {
 /// Web UI admins can configure these settings before starting the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    /// PostgreSQL database connection URL
-    pub database_url: String,
-    /// Matrix server name (domain)
+    /// Matrix server name (domain:port for local testing)
     pub server_name: String,
-    /// IP address to bind the server to
-    pub bind_address: String,
-    /// Port number for the server
-    pub port: u16,
-    /// Optional path to TLS certificate file
-    pub tls_certificate: Option<String>,
-    /// Optional path to TLS private key file
-    pub tls_private_key: Option<String>,
+    /// Enables user registration
+    #[serde(default = "default_allow_registration")]
+    pub allow_registration: bool,
+    /// List of listeners for the server
+    #[serde(rename = "listeners")]
+    pub listener_configs: Vec<ListenerConfig>,
+    /// Database configuration section
+    #[serde(rename = "db")]
+    pub database: DatabaseConfig,
+    /// Well-known endpoints configuration for local testing
+    #[serde(rename = "well_known")]
+    pub well_known: WellKnownConfig,
+}
+
+/// Listener configuration for server binding
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenerConfig {
+    /// Address and port to bind to (e.g., "0.0.0.0:8008")
+    pub address: String,
+}
+
+/// Database configuration section
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    /// PostgreSQL database connection URL
+    pub url: String,
+}
+
+/// Well-known endpoints configuration for local testing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WellKnownConfig {
+    /// Server well-known endpoint
+    pub server: String,
+    /// Client well-known endpoint
+    pub client: String,
+}
+
+// Default value helpers
+fn default_allow_registration() -> bool {
+    true
 }
 
 /// Palpo server status
@@ -151,6 +181,10 @@ pub enum AdminError {
     /// Palpo server is already running
     #[error("Server already running")]
     ServerAlreadyRunning,
+
+    /// Palpo binary not found at the expected path
+    #[error("Palpo binary not found at '{0}'. Please place the palpo executable in the same directory as admin-server.")]
+    PalpoBinaryNotFound(String),
 
     /// Failed to start the Palpo server
     #[error("Failed to start server: {0}")]
