@@ -941,9 +941,9 @@ async fn load_left_room(
         limited = false;
     }
     let prev_batch = if limited {
-        timeline.events.first().map(|(sn, _)| sn.to_string())
+        timeline.events.first().map(|(sn, _)| BatchToken::new_live(*sn).to_string())
     } else {
-        timeline.events.last().map(|(sn, _)| sn.to_string())
+        timeline.events.last().map(|(sn, _)| BatchToken::new_live(*sn).to_string())
     };
 
     // let left_event = timeline::get_pdu(&left_event_id).map(|pdu| pdu.to_sync_room_event());
