@@ -432,7 +432,7 @@ async fn process_rooms(
         let prev_batch = timeline
             .events
             .first()
-            .and_then(|(sn, _)| if *sn == 0 { None } else { Some(sn.to_string()) });
+            .and_then(|(sn, _)| if *sn == 0 { None } else { Some(BatchToken::new_live(*sn).to_string()) });
 
         let room_events: Vec<_> = timeline
             .events
