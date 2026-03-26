@@ -329,7 +329,8 @@ impl ServerConfigAPI {
 
     /// Saves raw TOML content to file
     ///
-    /// Validates TOML syntax and content before saving.
+    /// Validates TOML syntax before saving. Does not validate against ServerConfig
+    /// schema since the raw palpo.toml has a different structure.
     ///
     /// # Arguments
     /// - `content` - Raw TOML content
@@ -338,11 +339,9 @@ impl ServerConfigAPI {
     /// - `Ok(())` - TOML saved successfully
     /// - `Err(AdminError)` - If validation or saving fails
     pub async fn save_toml_content(content: &str) -> Result<(), AdminError> {
-        // Parse TOML to validate syntax
-        let config: ServerConfig = toml::from_str(content)?;
-        
-        // Validate configuration content
-        Self::validate_config(&config)?;
+        // Validate TOML syntax only (not against ServerConfig schema)
+        content.parse::<toml::Value>()
+            .map_err(|e| AdminError::TomlError(e.to_string()))?;
 
         // Write to file
         fs::write(Self::CONFIG_PATH, content).await.map_err(|e| AdminError::IoError(e.to_string()))?;
@@ -350,20 +349,21 @@ impl ServerConfigAPI {
         Ok(())
     }
 
-    /// Validates TOML syntax and content
+    /// Validates TOML syntax
+    ///
+    /// Only validates TOML syntax, not content against ServerConfig schema,
+    /// since the raw palpo.toml has a different structure.
     ///
     /// # Arguments
     /// - `content` - Raw TOML content to validate
     ///
     /// # Returns
-    /// - `Ok(())` - TOML is valid
-    /// - `Err(AdminError)` - If validation fails
+    /// - `Ok(())` - TOML syntax is valid
+    /// - `Err(AdminError)` - If syntax is invalid
     pub fn validate_toml(content: &str) -> Result<(), AdminError> {
-        // Parse TOML to validate syntax
-        let config: ServerConfig = toml::from_str(content)?;
-        
-        // Validate configuration content
-        Self::validate_config(&config)
+        content.parse::<toml::Value>()
+            .map_err(|e| AdminError::TomlError(e.to_string()))?;
+        Ok(())
     }
 
     /// Parses TOML and returns as JSON
@@ -372,11 +372,13 @@ impl ServerConfigAPI {
     /// - `content` - Raw TOML content
     ///
     /// # Returns
-    /// - `Ok(JsonValue)` - Parsed configuration as JSON
+    /// - `Ok(JsonValue)` - Parsed TOML as JSON
     /// - `Err(AdminError)` - If parsing fails
     pub fn parse_toml_to_json(content: &str) -> Result<JsonValue, AdminError> {
-        let config: ServerConfig = toml::from_str(content)?;
-        Ok(Self::config_to_json(&config))
+        let value: toml::Value = content.parse()
+            .map_err(|e: toml::de::Error| AdminError::TomlError(e.to_string()))?;
+        serde_json::to_value(&value)
+            .map_err(|e| AdminError::InvalidInput(e.to_string()))
     }
 
     /// Searches configuration items by label or description

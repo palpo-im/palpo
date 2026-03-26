@@ -18,3 +18,4 @@ examples/with-*/space/
 _*.md
 .gitnexus/
 .DS_Store
+.codebuddy/

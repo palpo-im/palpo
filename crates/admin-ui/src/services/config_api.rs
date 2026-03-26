@@ -876,86 +876,61 @@ impl ConfigAPI {
         origin.starts_with("http://") || origin.starts_with("https://")
     }
 
-    /// Get raw TOML file content
+    /// Get raw TOML file content from backend API
     pub async fn get_toml_content() -> Result<String, WebConfigError> {
-        let config_path = Self::get_config_path()?;
-        fs_compat::read_to_string(&config_path)
-            .await
-            .map_err(|e| WebConfigError::filesystem_with_path(
-                format!("Failed to read TOML file: {}", e),
-                &config_path
-            ))
+        use crate::services::api_client::api_get_json;
+        
+        let response: serde_json::Value = api_get_json("/api/v1/config/toml").await
+            .map_err(|e| WebConfigError::client(format!("Failed to fetch TOML: {}", e)))?;
+        
+        response["data"]["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| WebConfigError::client("Invalid response: missing content field"))
     }
 
-    /// Save raw TOML file content
+    /// Save raw TOML file content via backend API
     pub async fn save_toml_content(content: &str) -> Result<(), WebConfigError> {
-        let config_path = Self::get_config_path()?;
+        use crate::services::api_client::api_post_json_response;
         
-        // Validate TOML syntax first
-        let validation = Self::validate_toml(content).await?;
-        if !validation.is_valid {
-            return Err(WebConfigError::validation(
-                validation.error_message.unwrap_or_else(|| "Invalid TOML".to_string())
-            ));
+        let request = serde_json::json!({ "content": content });
+        let response: serde_json::Value = api_post_json_response("/api/v1/config/toml", &request).await
+            .map_err(|e| WebConfigError::client(format!("Failed to save TOML: {}", e)))?;
+        
+        if response["success"].as_bool().unwrap_or(false) {
+            Ok(())
+        } else {
+            let error = response["error"].as_str().unwrap_or("Unknown error").to_string();
+            Err(WebConfigError::validation(error))
         }
-        
-        // Create backup before updating
-        Self::create_backup(&config_path).await?;
-        
-        // Write TOML content to file
-        fs_compat::write(&config_path, content.to_string())
-            .await
-            .map_err(|e| WebConfigError::filesystem_with_path(
-                format!("Failed to write TOML file: {}", e),
-                &config_path
-            ))
     }
 
-    /// Validate TOML syntax and content
+    /// Validate TOML syntax and content via backend API
     pub async fn validate_toml(content: &str) -> Result<TomlValidationResult, WebConfigError> {
-        // Try to parse TOML
-        match toml::from_str::<WebConfigData>(content) {
-            Ok(config) => {
-                // TOML syntax is valid, now validate content
-                match Self::validate_config(&config).await {
-                    Ok(validation_result) => {
-                        Ok(TomlValidationResult {
-                            is_valid: validation_result.valid,
-                            error_message: if validation_result.valid {
-                                None
-                            } else {
-                                Some(validation_result.errors.into_iter()
-                                    .map(|e| e.message)
-                                    .collect::<Vec<_>>()
-                                    .join("; "))
-                            },
-                            line: None,
-                            column: None,
-                        })
-                    }
-                    Err(e) => {
-                        Ok(TomlValidationResult {
-                            is_valid: false,
-                            error_message: Some(e.to_string()),
-                            line: None,
-                            column: None,
-                        })
-                    }
-                }
-            }
-            Err(e) => {
-                // Parse TOML syntax error
-                let error_msg = e.to_string();
-                let (line, column) = Self::extract_line_column_from_error(&error_msg);
-                
-                Ok(TomlValidationResult {
-                    is_valid: false,
-                    error_message: Some(error_msg),
-                    line,
-                    column,
-                })
-            }
-        }
+        use crate::services::api_client::api_post_json_response;
+        
+        let request = serde_json::json!({ "content": content });
+        let response: serde_json::Value = api_post_json_response("/api/v1/config/toml/validate", &request).await
+            .map_err(|e| WebConfigError::client(format!("Failed to validate TOML: {}", e)))?;
+        
+        let is_valid = response["valid"].as_bool().unwrap_or(false);
+        let error_message = if is_valid {
+            None
+        } else {
+            response["errors"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| Some("TOML validation failed".to_string()))
+        };
+        
+        Ok(TomlValidationResult {
+            is_valid,
+            error_message,
+            line: None,
+            column: None,
+        })
     }
 
     /// Extract line and column information from TOML parse error

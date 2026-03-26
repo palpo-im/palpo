@@ -128,7 +128,7 @@ impl ServerStatusAPI {
         // Get memory info using sysinfo
         #[cfg(feature = "sysinfo")]
         {
-            use sysinfo::{System, SystemExt, ProcessExt};
+            use sysinfo::System;
             let mut sys = System::new_all();
             sys.refresh_all();
 
@@ -137,12 +137,12 @@ impl ServerStatusAPI {
             let memory_usage_percent = (used_memory as f64 / total_memory as f64) * 100.0;
 
             SystemMetrics {
-                cpu_usage: sys.global_cpu_info().cpu_usage() as f64,
+                cpu_usage: sys.global_cpu_usage() as f64,
                 memory_usage_mb: used_memory / 1024,
                 total_memory_mb: total_memory / 1024,
                 memory_usage_percent,
                 active_connections: 0, // Would need to query Palpo for this
-                uptime_seconds: sys.uptime(),
+                uptime_seconds: System::uptime(),
             }
         }
 

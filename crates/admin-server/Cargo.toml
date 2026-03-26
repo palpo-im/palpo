@@ -11,8 +11,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
-sysinfo = []
+default = ["sysinfo"]
+sysinfo = ["dep:sysinfo"]
 
 [dependencies]
 palpo-data = { workspace = true }
@@ -37,6 +37,7 @@ urlencoding = "2.1"
 async-trait = "0.1"
 uuid = { version = "1.11", features = ["v4"] }
 serde_yaml = "0.9"
+sysinfo = { version = "0.33", optional = true }
 
 [dev-dependencies]
 futures = "0.3"

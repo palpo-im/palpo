@@ -72,8 +72,8 @@ if [ "$MODE" = "help" ]; then
     echo "  4. Validate Configuration File"
     echo "  5. Start Palpo Server via API (/server/start)"
     echo "  6. Get Server Status (After Start - Running)"
-    echo "  7. Get Performance Metrics (/health/metrics)"
-    echo "  8. Get Version Information (/health/version)"
+    echo "  7. Get Performance Metrics (via Admin API /admin/health/metrics)"
+    echo "  8. Get Version Information (/_matrix/client/versions)"
     echo "  9. Get Server Configuration (/server/config)"
     echo ""
     exit 0
@@ -348,9 +348,11 @@ run_comprehensive_tests() {
         sleep 5
         
         # Check 1: Verify Palpo process is actually running
+        # Note: pgrep -xf matches against short comm name, but macOS reports full path.
+        # Use pgrep -f with a pattern that matches the palpo binary but excludes admin-server/postgres.
         PALPO_PID=""
-        if pgrep -f "target/release/palpo" > /dev/null; then
-            PALPO_PID=$(pgrep -f "target/release/palpo")
+        if pgrep -f "/palpo --config" > /dev/null 2>&1; then
+            PALPO_PID=$(pgrep -f "/palpo --config" | head -1)
             log_info "Palpo process found with PID: $PALPO_PID"
         else
             log_error "Palpo process not found after start command"
@@ -359,18 +361,18 @@ run_comprehensive_tests() {
             return 1
         fi
         
-        # Check 2: Verify port is bound and service responds to health check
+        # Check 2: Verify port is bound and Palpo responds to Matrix endpoint
         PALPO_HEALTHY=false
-        for i in {1..15}; do
+        for i in $(seq 1 15); do
             if check_port $PALPO_PORT; then
-                # Try to get a response from the health endpoint
-                HEALTH_RESPONSE=$(curl -s --connect-timeout 2 "http://localhost:$PALPO_PORT/health/version")
-                if [ -n "$HEALTH_RESPONSE" ] && (echo "$HEALTH_RESPONSE" | grep -q "version\|build"); then
-                    log_success "Palpo server is running on port $PALPO_PORT and responding to health checks"
+                # Palpo is a Matrix server — use the standard /_matrix/client/versions endpoint
+                HEALTH_RESPONSE=$(curl -s --connect-timeout 2 "http://localhost:$PALPO_PORT/_matrix/client/versions")
+                if [ -n "$HEALTH_RESPONSE" ] && (echo "$HEALTH_RESPONSE" | grep -q "versions\|unstable_features"); then
+                    log_success "Palpo server is running on port $PALPO_PORT and responding to Matrix API"
                     PALPO_HEALTHY=true
                     break
                 else
-                    log_info "Port $PALPO_PORT is open but health check failed, retrying... ($i/15)"
+                    log_info "Port $PALPO_PORT is open but Matrix API check failed, retrying... ($i/15)"
                 fi
             else
                 log_info "Waiting for Palpo to bind to port $PALPO_PORT... ($i/15)"
@@ -386,10 +388,10 @@ run_comprehensive_tests() {
             log_error "  - Missing dependencies or invalid configuration"
             
             # Check if process is still running
-            if pgrep -f "target/release/palpo" > /dev/null; then
+            if pgrep -f "/palpo --config" > /dev/null 2>&1; then
                 log_error "Palpo process is still running but not responding - possible deadlock or initialization hang"
                 # Kill the hanging process
-                pkill -f "target/release/palpo"
+                pkill -f "/palpo --config"
             else
                 log_error "Palpo process has exited - likely crashed during startup"
             fi
@@ -421,46 +423,30 @@ run_comprehensive_tests() {
     fi
     echo ""
     
-    # Step 7: Get Performance Metrics
-    echo "Test 7: Get Performance Metrics (/health/metrics)"
-    METRICS_RESULT=$(curl -s "http://localhost:$PALPO_PORT/health/metrics")
-    if [ -n "$METRICS_RESULT" ] && (echo "$METRICS_RESULT" | grep -q "cpu\|memory\|process" || echo "$METRICS_RESULT" | head -1 | grep -q "# HELP"); then
-        log_success "Performance metrics retrieved successfully"
-        echo "  Sample metrics: $(echo "$METRICS_RESULT" | head -3 | tr '\n' ' ')"
+    # Step 7: Get Performance Metrics via Admin API
+    echo "Test 7: Get Performance Metrics (via Admin API /admin/health/metrics)"
+    METRICS_RESULT=$(make_api_call "GET" "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/health/metrics")
+    if [ -n "$METRICS_RESULT" ] && (echo "$METRICS_RESULT" | grep -q "cpu\|memory\|process\|uptime"); then
+        log_success "Performance metrics retrieved successfully via Admin API"
+        echo "  Sample metrics: $(echo "$METRICS_RESULT" | head -1 | tr -d '\n')"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        # Try alternative metrics endpoint if the first one fails
-        METRICS_RESULT_ALT=$(curl -s "http://localhost:$PALPO_PORT/_synapse/metrics")
-        if [ -n "$METRICS_RESULT_ALT" ] && (echo "$METRICS_RESULT_ALT" | grep -q "cpu\|memory\|process" || echo "$METRICS_RESULT_ALT" | head -1 | grep -q "# HELP"); then
-            log_success "Performance metrics retrieved from alternative endpoint"
-            echo "  Sample metrics: $(echo "$METRICS_RESULT_ALT" | head -3 | tr '\n' ' ')"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-        else
-            log_warn "Performance metrics endpoints returned empty or unexpected response"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-        fi
+        log_warn "Admin metrics endpoint returned empty or unexpected response (may not be implemented yet)"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     fi
     echo ""
     
-    # Step 8: Get Version Information
-    echo "Test 8: Get Version Information"
-    # Try multiple version endpoints to ensure compatibility
-    VERSION_RESULT=$(curl -s "http://localhost:$PALPO_PORT/health/version")
-    if echo "$VERSION_RESULT" | grep -q "version\|build"; then
-        log_success "Version information retrieved from /health/version"
+    # Step 8: Get Version Information from Matrix API
+    echo "Test 8: Get Version Information (/_matrix/client/versions)"
+    VERSION_RESULT=$(curl -s "http://localhost:$PALPO_PORT/_matrix/client/versions")
+    if echo "$VERSION_RESULT" | grep -q "versions\|unstable_features"; then
+        log_success "Version information retrieved from /_matrix/client/versions"
         echo "  Version info: $(echo "$VERSION_RESULT" | tr -d '\n')"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        # Try Synapse-compatible endpoint
-        VERSION_RESULT_ALT=$(curl -s "http://localhost:$PALPO_PORT/_synapse/admin/v1/server_version")
-        if echo "$VERSION_RESULT_ALT" | grep -q "server_version\|version"; then
-            log_success "Version information retrieved from Synapse-compatible endpoint"
-            echo "  Version info: $(echo "$VERSION_RESULT_ALT" | tr -d '\n')"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-        else
-            log_error "Failed to retrieve version information from any endpoint"
-            return 1
-        fi
+        log_error "Failed to retrieve version information from /_matrix/client/versions"
+        echo "  Response: $VERSION_RESULT"
+        return 1
     fi
     echo ""
     
@@ -530,10 +516,10 @@ clean_test_data() {
         log_success "No palpo-admin-server processes running"
     fi
     
-    # Check and kill Palpo processes
-    if pgrep -f "target/release/palpo" > /dev/null; then
+    # Check and kill Palpo processes (exclude admin-server and postgres)
+    if pgrep -f "/palpo --config" > /dev/null 2>&1; then
         log_warn "Found running Palpo processes"
-        pkill -f "target/release/palpo"
+        pkill -f "/palpo --config"
         log_success "Killed Palpo processes"
     else
         log_success "No Palpo processes running"
@@ -587,7 +573,7 @@ cleanup() {
         log_success "Killed remaining palpo-admin-server processes"
     fi
     
-    if pkill -f "target/release/palpo" 2>/dev/null; then
+    if pkill -f "/palpo --config" 2>/dev/null; then
         log_success "Killed remaining Palpo processes"
     fi
 }
