@@ -308,6 +308,25 @@ pub struct ReqListFilters {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_invite: Option<bool>,
 
+    /// Whether to return DM rooms, only non-DM rooms or both.
+    ///
+    /// If unset, both DM and non-DM rooms are returned. If true, only DM
+    /// rooms are returned. If false, only non-DM rooms are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_dm: Option<bool>,
+
+    /// Whether to return encrypted rooms, only unencrypted rooms or both.
+    ///
+    /// If unset, both encrypted and unencrypted rooms are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_encrypted: Option<bool>,
+
+    /// Only list rooms of these create-types, or all.
+    ///
+    /// This can be used to filter to only spaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub room_types: Vec<RoomTypeFilter>,
+
     /// Only list rooms that are not of these create-types, or all.
     ///
     /// Same as "room_types" but inverted. This can be used to filter out spaces
