@@ -8,7 +8,7 @@ use salvo::prelude::*;
 use salvo::serve_static::StaticDir;
 
 use crate::core::MatrixError;
-use crate::core::client::discovery::client::{ClientResBody, HomeServerInfo};
+use crate::core::client::discovery::client::{AuthenticationInfo, ClientResBody, HomeServerInfo};
 use crate::core::client::discovery::support::{Contact, SupportResBody};
 use crate::core::federation::directory::ServerResBody;
 use crate::{AppResult, JsonResult, config, hoops, json_ok};
@@ -67,9 +67,21 @@ pub async fn limit_rate() -> AppResult<()> {
 fn well_known_client() -> JsonResult<ClientResBody> {
     let conf = config::get();
     let client_url = conf.well_known_client();
-    json_ok(ClientResBody::new(HomeServerInfo {
+    let mut body = ClientResBody::new(HomeServerInfo {
         base_url: client_url.clone(),
-    }))
+    });
+
+    // Advertise external MAS as OIDC issuer (MSC3861)
+    // Read mas_issuer directly from oidc config, independent of oidc.enable
+    if let Some(oidc) = conf.oidc.as_ref() {
+        if let Some(issuer) = &oidc.mas_issuer {
+            body.authentication = Some(AuthenticationInfo {
+                issuer: issuer.clone(),
+            });
+        }
+    }
+
+    json_ok(body)
 }
 
 #[endpoint]
