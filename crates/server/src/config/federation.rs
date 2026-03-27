@@ -1,7 +1,10 @@
 use serde::Deserialize;
 
+use crate::core::ServerName;
 use crate::core::serde::default_true;
 use crate::macros::config_example;
+
+use super::WildCardedDomain;
 
 #[config_example(filename = "palpo-example.toml", section = "federation")]
 #[derive(Clone, Debug, Deserialize)]
@@ -38,6 +41,38 @@ pub struct FederationConfig {
     /// This is inherently false if `allow_federation` is disabled
     #[serde(default = "default_true")]
     pub allow_inbound_profile_lookup: bool,
+
+    /// Allowlist of servers permitted to federate. If set, only servers
+    /// matching these patterns can communicate. Supports wildcards: `*.example.com`.
+    /// When `None`, all servers are allowed (subject to `denied_servers`).
+    #[serde(default)]
+    pub allowed_servers: Option<Vec<WildCardedDomain>>,
+
+    /// Denylist of servers blocked from federation. Takes precedence over
+    /// `allowed_servers`. Supports wildcards: `*.evil.com`.
+    #[serde(default)]
+    pub denied_servers: Vec<WildCardedDomain>,
+}
+
+impl FederationConfig {
+    /// Check if a remote server is allowed to federate with this server.
+    /// Denied servers are checked first (deny takes precedence), then
+    /// allowed servers (if configured).
+    pub fn is_server_allowed(&self, server: &ServerName) -> bool {
+        if !self.enable {
+            return false;
+        }
+        let host = server.host();
+        // Deny list takes precedence
+        if self.denied_servers.iter().any(|d| d.matches(host)) {
+            return false;
+        }
+        // If allow list is set, server must match at least one pattern
+        if let Some(ref allowed) = self.allowed_servers {
+            return allowed.iter().any(|a| a.matches(host));
+        }
+        true
+    }
 }
 
 impl Default for FederationConfig {
@@ -47,6 +82,8 @@ impl Default for FederationConfig {
             allow_loopback: false,
             allow_device_name: false,
             allow_inbound_profile_lookup: true,
+            allowed_servers: None,
+            denied_servers: Vec::new(),
         }
     }
 }
