@@ -7,9 +7,10 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::{
-    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, FederationConfig, HttpClientConfig,
-    JwtConfig, LoggerConfig, MediaConfig, OidcConfig, PresenceConfig, ProxyConfig,
-    ReadReceiptConfig, TurnConfig, TypingConfig, UrlPreviewConfig, WellKnownConfig,
+    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelegatedAuthConfig,
+    FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig, OidcConfig,
+    PresenceConfig, ProxyConfig, ReadReceiptConfig, TurnConfig, TypingConfig, UrlPreviewConfig,
+    WellKnownConfig,
 };
 use crate::core::serde::{default_false, default_true};
 use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
@@ -734,6 +735,9 @@ pub struct ServerConfig {
     // external structure; separate section
     pub oidc: Option<OidcConfig>,
 
+    // external structure; separate section
+    pub delegated_auth: Option<DelegatedAuthConfig>,
+
     // // external structure; separate section
     // #[serde(default)]
     // pub appservice: BTreeMap<String, AppService>,
@@ -758,6 +762,23 @@ impl ServerConfig {
         } else {
             None
         }
+    }
+
+    pub fn enabled_delegated_auth(&self) -> Option<&DelegatedAuthConfig> {
+        if let Some(da) = self.delegated_auth.as_ref() {
+            if da.enable { Some(da) } else { None }
+        } else {
+            None
+        }
+    }
+
+    pub fn introspection_endpoint(&self) -> Option<String> {
+        let da = self.enabled_delegated_auth()?;
+        Some(da.introspection_endpoint.clone().unwrap_or_else(|| {
+            let issuer = da.issuer.as_deref().unwrap_or("");
+            let base = issuer.trim_end_matches('/');
+            format!("{base}/oauth2/introspect")
+        }))
     }
 
     pub fn enabled_oidc(&self) -> Option<&OidcConfig> {

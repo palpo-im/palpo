@@ -15,7 +15,7 @@ use crate::data::schema::*;
 use crate::data::user::{DbUser, NewDbUser};
 use crate::exts::*;
 use crate::{
-    AppError, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
+    AppError, AppResult, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
     SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops, json_ok, user, utils,
 };
 
@@ -52,7 +52,11 @@ pub fn authed_router() -> Router {
 /// when logging in.
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
-    let flows = vec![LoginType::password(), LoginType::appservice()];
+    let flows = if config::get().enabled_delegated_auth().is_some() {
+        vec![LoginType::Sso(crate::core::client::session::SsoLoginType::new())]
+    } else {
+        vec![LoginType::password(), LoginType::appservice()]
+    };
     Ok(Json(LoginTypesResBody::new(flows)))
 }
 
@@ -72,6 +76,12 @@ async fn login(
     req: &mut Request,
     res: &mut Response,
 ) -> JsonResult<LoginResBody> {
+    if config::get().enabled_delegated_auth().is_some() {
+        return Err(
+            MatrixError::forbidden("This server uses delegated authentication. Use the OIDC provider to log in.", None).into(),
+        );
+    }
+
     // Validate login method
     // TODO: Other login methods
     let user_id = match &body.login_info {
@@ -424,13 +434,53 @@ async fn refresh_access_token(
 }
 
 #[endpoint]
-async fn redirect(_aa: AuthArgs, _redirect_url: QueryParam<String>) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+async fn redirect(
+    _aa: AuthArgs,
+    redirect_url: QueryParam<String, true>,
+    res: &mut Response,
+) -> AppResult<()> {
+    let conf = config::get();
+    let da = conf
+        .enabled_delegated_auth()
+        .ok_or_else(|| MatrixError::not_found("SSO is not enabled on this server"))?;
+    let issuer = da
+        .issuer
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown("Delegated auth issuer not configured"))?;
+
+    // Redirect to the authorization server's authorize endpoint.
+    // The auth server (Pasion) handles the full OIDC flow and redirects back.
+    let auth_url = format!(
+        "{}/authorize?response_type=code&redirect_url={}",
+        issuer.trim_end_matches('/'),
+        url::form_urlencoded::byte_serialize(redirect_url.as_bytes()).collect::<String>()
+    );
+
+    res.render(salvo::prelude::Redirect::found(auth_url));
+    Ok(())
 }
 
 #[endpoint]
-async fn provider_url(_aa: AuthArgs) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+async fn provider_url(
+    _aa: AuthArgs,
+    redirect_url: QueryParam<String, true>,
+    res: &mut Response,
+) -> AppResult<()> {
+    let conf = config::get();
+    let da = conf
+        .enabled_delegated_auth()
+        .ok_or_else(|| MatrixError::not_found("SSO is not enabled on this server"))?;
+    let issuer = da
+        .issuer
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown("Delegated auth issuer not configured"))?;
+
+    let auth_url = format!(
+        "{}/authorize?response_type=code&redirect_url={}",
+        issuer.trim_end_matches('/'),
+        url::form_urlencoded::byte_serialize(redirect_url.as_bytes()).collect::<String>()
+    );
+
+    res.render(salvo::prelude::Redirect::found(auth_url));
+    Ok(())
 }

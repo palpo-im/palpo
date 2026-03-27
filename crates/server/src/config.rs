@@ -54,6 +54,8 @@ mod well_known;
 pub use well_known::*;
 mod oidc;
 pub use oidc::*;
+mod delegated_auth;
+pub use delegated_auth::*;
 
 use crate::AppResult;
 use crate::core::client::discovery::capabilities::RoomVersionStability;
