@@ -62,6 +62,14 @@ pub fn sender() -> mpsc::UnboundedSender<(OutgoingKind, SendingEventType, i64)> 
     MPSC_SENDER.get().expect("sender should set").clone()
 }
 
+fn should_send_federation_target(
+    server: &ServerName,
+    own_server_name: &ServerName,
+    federation: &crate::config::FederationConfig,
+) -> bool {
+    server != own_server_name && federation.is_server_allowed(server)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OutgoingKind {
     Appservice(String),
@@ -194,11 +202,15 @@ pub fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
     servers: S,
     pdu_id: &EventId,
 ) -> AppResult<()> {
+    let conf = config::get();
     let requests = servers
         .into_iter()
         .filter_map(|server| {
-            if server == config::get().server_name {
+            if server == conf.server_name {
                 warn!("not sending pdu to ourself: {server}");
+                None
+            } else if !should_send_federation_target(&server, &conf.server_name, &conf.federation) {
+                debug!("not sending pdu to denied server: {server}");
                 None
             } else {
                 Some((
@@ -242,8 +254,16 @@ pub fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
     let mut serialized = EduBuf::new();
     serde_json::to_writer(&mut serialized, &edu).map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
 
+    let conf = config::get();
     let requests = servers
         .into_iter()
+        .filter(|server| {
+            if !should_send_federation_target(server, &conf.server_name, &conf.federation) {
+                debug!("not sending edu to denied server: {server}");
+                return false;
+            }
+            true
+        })
         .map(|server| {
             (
                 OutgoingKind::Normal(server),
@@ -270,6 +290,12 @@ pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
     let mut serialized = EduBuf::new();
     serde_json::to_writer(&mut serialized, &edu).map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
 
+    let conf = config::get();
+    if !should_send_federation_target(server, &conf.server_name, &conf.federation) {
+        debug!("not sending edu to denied server: {server}");
+        return Ok(());
+    }
+
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
     let key = queue_request(&outgoing_kind, &event)?;
@@ -284,6 +310,12 @@ pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
 pub fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<()> {
     let mut serialized = EduBuf::new();
     serde_json::to_writer(&mut serialized, &edu).map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
+
+    let conf = config::get();
+    if !should_send_federation_target(server, &conf.server_name, &conf.federation) {
+        debug!("not sending reliable edu to denied server: {server}");
+        return Ok(());
+    }
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized);
@@ -443,7 +475,6 @@ async fn send_events(
             for event in &events {
                 match event {
                     SendingEventType::Pdu(pdu_id) => {
-                        // TODO: check room version and remove event_id if needed
                         let raw = crate::sending::convert_to_outgoing_federation_event(
                             timeline::get_pdu_json(pdu_id)
                                 .map_err(|e| (OutgoingKind::Normal(server.clone()), e))?
@@ -806,6 +837,10 @@ fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
 }
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
+///
+/// Strips internal fields (`event_sn`, `transaction_id`) and conditionally removes
+/// `event_id` based on the room version. Room versions V1/V2 require `event_id` in
+/// the federation format; V3+ derive it from the event hash.
 #[tracing::instrument]
 pub fn convert_to_outgoing_federation_event(
     mut pdu_json: CanonicalJsonObject,
@@ -817,29 +852,82 @@ pub fn convert_to_outgoing_federation_event(
         unsigned.remove("transaction_id");
     }
 
-    pdu_json.remove("event_id");
-    pdu_json.remove("event_sn");
+    // Determine room version to decide whether to strip event_id.
+    // V1/V2 require event_id in federation format; V3+ derive it from content hash.
+    let room_version = pdu_json
+        .get("room_id")
+        .and_then(|v| v.as_str())
+        .and_then(|r| <&RoomId>::try_from(r).ok())
+        .and_then(|r| crate::room::get_version(r).ok())
+        .unwrap_or(RoomVersionId::V11);
+    crate::federation::maybe_strip_event_id(&mut pdu_json, &room_version);
 
-    // TODO: another option would be to convert it to a canonical string to validate size
-    // and return a Result<RawJson<...>>
-    // serde_json::from_str::<RawJson<_>>(
-    //     crate::core::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is valid
-    // serde_json::Value"), )
-    // .expect("RawJson::from_value always works")
+    pdu_json.remove("event_sn");
 
     to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
 }
 
-fn reqwest_client_builder(_config: &ServerConfig) -> AppResult<reqwest::ClientBuilder> {
-    let reqwest_client_builder = reqwest::Client::builder()
+fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBuilder> {
+    let mut reqwest_client_builder = reqwest::Client::builder()
         .pool_max_idle_per_host(0)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60 * 3));
 
-    // TODO: add proxy support
-    // if let Some(proxy) = config.to_proxy()? {
-    //     reqwest_client_builder = reqwest_client_builder.proxy(proxy);
-    // }
+    if let Some(ref proxy_config) = config.proxy {
+        if let Some(proxy) = proxy_config.to_proxy()? {
+            reqwest_client_builder = reqwest_client_builder.proxy(proxy);
+        }
+    }
 
     Ok(reqwest_client_builder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::FederationConfig;
+
+    #[test]
+    fn outbound_federation_target_respects_self_allow_and_deny_rules() {
+        let own_server = OwnedServerName::try_from("palpo.example").unwrap();
+        let remote = OwnedServerName::try_from("remote.example").unwrap();
+        let denied = OwnedServerName::try_from("blocked.example").unwrap();
+
+        let default_federation = FederationConfig::default();
+        assert!(should_send_federation_target(
+            &remote,
+            &own_server,
+            &default_federation
+        ));
+        assert!(!should_send_federation_target(
+            &own_server,
+            &own_server,
+            &default_federation
+        ));
+
+        let denied_federation = FederationConfig {
+            denied_servers: vec!["blocked.example".parse().unwrap()],
+            ..FederationConfig::default()
+        };
+        assert!(!should_send_federation_target(
+            &denied,
+            &own_server,
+            &denied_federation
+        ));
+
+        let allow_only = FederationConfig {
+            allowed_servers: Some(vec!["*.example".parse().unwrap()]),
+            ..FederationConfig::default()
+        };
+        assert!(should_send_federation_target(
+            &remote,
+            &own_server,
+            &allow_only
+        ));
+        assert!(!should_send_federation_target(
+            &OwnedServerName::try_from("elsewhere.test").unwrap(),
+            &own_server,
+            &allow_only
+        ));
+    }
 }
