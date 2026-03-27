@@ -450,12 +450,22 @@ fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
         .issuer
         .as_deref()
         .ok_or_else(|| MatrixError::unknown("Delegated auth issuer not configured"))?;
+    let client_id = da
+        .client_id
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown("Delegated auth client_id not configured"))?;
 
-    Ok(format!(
-        "{}/authorize?response_type=code&redirect_url={}",
-        issuer.trim_end_matches('/'),
-        url::form_urlencoded::byte_serialize(redirect_url.as_bytes()).collect::<String>()
-    ))
+    let state = utils::random_string(TOKEN_LENGTH);
+    let authorize_url = format!("{}/authorize", issuer.trim_end_matches('/'));
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_url", redirect_url)
+        .append_pair("scope", "openid urn:matrix:org.matrix.msc2967.client:api:*")
+        .append_pair("state", &state)
+        .finish();
+
+    Ok(format!("{authorize_url}?{params}"))
 }
 
 #[endpoint]

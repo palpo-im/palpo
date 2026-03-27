@@ -25,6 +25,10 @@ pub struct DelegatedAuthConfig {
     /// Defaults to "{issuer}/oauth2/introspect" if not set.
     pub introspection_endpoint: Option<String>,
 
+    /// The OAuth2 client_id that Palpo uses when redirecting users to the
+    /// authorization server for SSO login.
+    pub client_id: Option<String>,
+
     /// Optional URL for account management UI.
     /// Included in the well-known client response under m.authentication.
     pub account_management_url: Option<String>,
