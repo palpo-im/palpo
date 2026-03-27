@@ -362,6 +362,23 @@ impl ApiClient {
         Err(last_error.unwrap_or_else(|| WebConfigError::network("Request failed after all retries")))
     }
 
+    /// Execute a request without applying error interceptor (for login/validate etc.)
+    /// Returns the raw response even for non-2xx status codes
+    pub async fn execute_request_raw(&self, mut config: RequestConfig) -> WebConfigResult<Response> {
+        // Apply default settings
+        if config.timeout.is_none() {
+            config.timeout = Some(self.default_timeout);
+        }
+
+        // Apply request interceptors (for auth header)
+        for interceptor in self.request_interceptors.borrow().iter() {
+            interceptor.intercept(&mut config)?;
+        }
+
+        // Send request directly without error interceptor
+        self.send_request(&config).await
+    }
+
     /// Send HTTP request
     async fn send_request(&self, config: &RequestConfig) -> WebConfigResult<Response> {
         let opts = RequestInit::new();

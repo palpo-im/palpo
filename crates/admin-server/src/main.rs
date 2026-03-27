@@ -145,7 +145,8 @@ async fn main() -> Result<()> {
                 .push(Router::with_path("/login").post(webui_admin::login))
                 .push(Router::with_path("/change-password").post(webui_admin::change_password))
                 .push(Router::with_path("/logout").post(webui_admin::logout))
-                .push(Router::with_path("/migrate").post(webui_admin::migrate)),
+                .push(Router::with_path("/migrate").post(webui_admin::migrate))
+                .push(Router::with_path("/validate").post(webui_admin::validate_session)),
         )
         .push(
             Router::with_path("/api/v1/admin/server")

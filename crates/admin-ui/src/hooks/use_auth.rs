@@ -130,7 +130,7 @@ pub fn use_auth() -> AuthContext {
         }
     };
 
-    // Validate session on component mount
+    // Validate session on component mount (only if token exists)
     use_effect({
         let auth_service = auth_service.clone();
         let mut auth_state = auth_state;
@@ -138,16 +138,39 @@ pub fn use_auth() -> AuthContext {
         move || {
             let auth_service = auth_service.clone();
             spawn_local(async move {
+                // Check if token exists before validating
+                if !auth_service.api_client().has_token() {
+                    web_sys::console::log_1(&"use_auth: no token found, skipping validation".into());
+                    auth_state.set(AuthState::Unauthenticated);
+                    return;
+                }
+                
+                web_sys::console::log_1(&"use_auth: validating session...".into());
                 match auth_service.validate_session().await {
                     Ok(response) => {
                         if response.valid {
                             if let Some(user) = response.user {
+                                web_sys::console::log_1(&format!(
+                                    "use_auth: session valid for user {}",
+                                    user.username
+                                ).into());
                                 auth_state.set(AuthState::Authenticated(user));
+                            } else {
+                                web_sys::console::log_1(&"use_auth: valid but no user data".into());
+                                auth_state.set(AuthState::Unauthenticated);
                             }
+                        } else {
+                            web_sys::console::log_1(&"use_auth: session invalid".into());
+                            auth_state.set(AuthState::Unauthenticated);
                         }
                     }
-                    Err(_) => {
-                        // Silently fail - user is just not authenticated
+                    Err(e) => {
+                        web_sys::console::log_1(&format!(
+                            "use_auth: validate_session error: {}",
+                            e
+                        ).into());
+                        // On error, set to Unauthenticated so UI doesn't hang on loading spinner
+                        auth_state.set(AuthState::Unauthenticated);
                     }
                 }
             });

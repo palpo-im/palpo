@@ -25,22 +25,51 @@ impl ConfigAPI {
     
     /// Get current server configuration
     pub async fn get_config() -> Result<ServerConfigResponse, WebConfigError> {
-        let config_path = Self::get_config_path()?;
-        let config_content = fs_compat::read_to_string(&config_path)
-            .await
-            .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to read config file: {}", e), &config_path))?;
+        #[cfg(target_arch = "wasm32")]
+        {
+            // In WASM, fetch from HTTP API instead of filesystem
+            use crate::services::api_client::api_get_json;
+            
+            // First try to get TOML content and parse it
+            let response: serde_json::Value = api_get_json("/api/v1/config/toml").await
+                .map_err(|e| WebConfigError::client(format!("Failed to fetch config: {}", e)))?;
+            
+            let toml_content = response["data"]["content"]
+                .as_str()
+                .ok_or_else(|| WebConfigError::client("Invalid response: missing content field"))?;
+            
+            let config: WebConfigData = toml::from_str(toml_content)
+                .map_err(|e| WebConfigError::ParseError { 
+                    message: format!("Failed to parse TOML: {}", e),
+                    format: "TOML".to_string(),
+                })?;
+            
+            Ok(ServerConfigResponse {
+                config,
+                last_modified: None,
+                checksum: None,
+            })
+        }
         
-        let config: WebConfigData = toml::from_str(&config_content)
-            .map_err(|e| WebConfigError::ParseError { 
-                message: format!("Failed to parse TOML: {}", e),
-                format: "TOML".to_string(),
-            })?;
-        
-        Ok(ServerConfigResponse {
-            config,
-            last_modified: Self::get_file_modified_time(&config_path).await?,
-            checksum: Self::calculate_checksum(&config_content),
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let config_path = Self::get_config_path()?;
+            let config_content = fs_compat::read_to_string(&config_path)
+                .await
+                .map_err(|e| WebConfigError::filesystem_with_path(format!("Failed to read config file: {}", e), &config_path))?;
+            
+            let config: WebConfigData = toml::from_str(&config_content)
+                .map_err(|e| WebConfigError::ParseError { 
+                    message: format!("Failed to parse TOML: {}", e),
+                    format: "TOML".to_string(),
+                })?;
+            
+            Ok(ServerConfigResponse {
+                config,
+                last_modified: Some(Self::get_file_modified_time(&config_path).await?),
+                checksum: Some(Self::calculate_checksum(&config_content)),
+            })
+        }
     }
     
     /// Update server configuration
@@ -967,8 +996,8 @@ impl ConfigAPI {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ServerConfigResponse {
     pub config: WebConfigData,
-    pub last_modified: SystemTime,
-    pub checksum: String,
+    pub last_modified: Option<SystemTime>,
+    pub checksum: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

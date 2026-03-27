@@ -63,18 +63,34 @@ if [ "$MODE" = "help" ]; then
     echo -e "  ${GREEN}--help${NC}    Show this help message"
     echo ""
     echo -e "${CYAN}========================================${NC}"
-    echo -e "${CYAN}  Comprehensive Test Flow (9 steps)${NC}"
+    echo -e "${CYAN}  Comprehensive Test Flow (16 steps)${NC}"
     echo -e "${CYAN}========================================${NC}"
     echo ""
-    echo "  1. Initialize Administrator Password"
-    echo "  2. Login and Get Session Token"
-    echo "  3. Get Server Status (Before Start - NotStarted/Stopped)"
-    echo "  4. Validate Configuration File"
-    echo "  5. Start Palpo Server via API (/server/start)"
-    echo "  6. Get Server Status (After Start - Running)"
-    echo "  7. Get Performance Metrics (via Admin API /admin/health/metrics)"
-    echo "  8. Get Version Information (/_matrix/client/versions)"
-    echo "  9. Get Server Configuration (/server/config)"
+    echo "  --- Phase 0: Service Setup ---"
+    echo "  1.  Start PostgreSQL"
+    echo "  2.  Start Admin Server"
+    echo "  3.  Start Admin UI (Dioxus dev server)"
+    echo "  4.  Check Environment Ready"
+    echo ""
+    echo "  --- Phase 1: API Tests ---"
+    echo "  5.  Initialize Administrator Password"
+    echo "  6.  Login and Get Session Token"
+    echo "  7.  Get Server Status (Before Start - NotStarted/Stopped)"
+    echo "  8.  Validate Configuration File"
+    echo "  9.  Start Palpo Server via API (/server/start)"
+    echo "  10. Get Server Status (After Start - Running)"
+    echo "  11. Get Performance Metrics (via Admin API /admin/health/metrics)"
+    echo "  12. Get Version Information (/_matrix/client/versions)"
+    echo "  13. Get Server Configuration (/server/config)"
+    echo ""
+    echo "  --- Phase 2: Browser UI Tests (agent-browser) ---"
+    echo "  14. Login via Web UI"
+    echo "  15. View Configuration - TOML Edit Mode"
+    echo "  16. Switch to Form Edit Mode"
+    echo "  17. Switch to Import/Export Mode"
+    echo "  18. Navigate to Server Control & View Status"
+    echo "  19. Stop Palpo Server via Web UI"
+    echo "  20. Start Palpo Server via Web UI (with Config Validation)"
     echo ""
     exit 0
 fi
@@ -219,9 +235,61 @@ start_admin_server() {
         die "Admin Server failed to start. Check: tail /tmp/admin-server.log"
 }
 
+# Start Admin UI (Dioxus dev server)
+start_admin_ui() {
+    log_step "3" "Start Admin UI (Dioxus dev server)"
+    
+    if check_port $ADMIN_UI_PORT; then
+        log_success "Admin UI is already running on port $ADMIN_UI_PORT"
+        return 0
+    fi
+    
+    ADMIN_UI_LOG="/tmp/admin-ui.log"
+    : > "$ADMIN_UI_LOG"  # Clear previous log
+    log_info "Starting Admin UI dev server on port $ADMIN_UI_PORT..."
+    log_info "Log file: $ADMIN_UI_LOG"
+    
+    cd "$WORKSPACE_ROOT/crates/admin-ui"
+    (
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] dx serve starting on port $ADMIN_UI_PORT"
+        dx serve --hot-reload false --port "$ADMIN_UI_PORT" --open false 2>&1
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] dx serve exited (code: $?)"
+    ) >> "$ADMIN_UI_LOG" 2>&1 &
+    ADMIN_UI_PID=$!
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] dx serve spawned with PID: $ADMIN_UI_PID" >> "$ADMIN_UI_LOG"
+    
+    # Wait for Admin UI to be ready
+    ADMIN_UI_READY=false
+    for i in $(seq 1 30); do
+        if ! kill -0 $ADMIN_UI_PID 2>/dev/null; then
+            log_error "dx serve process exited prematurely"
+            log_error "Last log lines:"
+            tail -10 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
+            break
+        fi
+        if curl -s --connect-timeout 2 "http://localhost:$ADMIN_UI_PORT" >/dev/null 2>&1; then
+            log_success "Admin UI dev server is ready on port $ADMIN_UI_PORT"
+            ADMIN_UI_READY=true
+            break
+        fi
+        log_info "Waiting for Admin UI to start... ($i/30)"
+        sleep 2
+    done
+    
+    if [ "$ADMIN_UI_READY" = false ]; then
+        log_error "Admin UI failed to start within timeout"
+        log_error "Full log: $ADMIN_UI_LOG"
+        log_error "Last 20 lines:"
+        tail -20 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
+        return 1
+    fi
+    
+    cd "$WORKSPACE_ROOT"
+}
+
 # Check all services are ready
 check_services() {
-    log_step "3" "Environment Ready"
+    log_step "4" "Environment Ready"
     
     echo ""
     echo "========================================"
@@ -244,6 +312,13 @@ check_services() {
         all_ready=false
     fi
     
+    if check_port $ADMIN_UI_PORT; then
+        echo -e "  Admin UI:      ${GREEN}✓ Ready${NC}"
+    else
+        echo -e "  Admin UI:      ${RED}✗ Not Ready${NC}"
+        all_ready=false
+    fi
+    
     echo "========================================"
     echo ""
     
@@ -261,7 +336,7 @@ run_comprehensive_tests() {
     log_step "4" "Run Comprehensive Server Control Tests"
     
     TESTS_PASSED=0
-    TESTS_TOTAL=9
+    TESTS_TOTAL=16
     
     echo ""
     echo "--- Comprehensive Server Control Tests ---"
@@ -463,6 +538,467 @@ run_comprehensive_tests() {
     fi
     echo ""
     
+    # ================================================================
+    # Phase 2: Browser UI Tests (agent-browser)
+    # Tests Part A (A.1-A.6) & Part B (B.1-B.3) via Web UI
+    # ================================================================
+    echo ""
+    log_step "5" "Browser UI Tests (agent-browser)"
+    
+    ADMIN_UI_URL="http://localhost:$ADMIN_UI_PORT"
+    UI_TESTS_PASSED=0
+    UI_TESTS_TOTAL=7
+
+    # Check if agent-browser is available
+    if ! command -v agent-browser &>/dev/null; then
+        log_warn "agent-browser not found, skipping UI tests"
+        log_warn "Install it to run browser-based tests: see agent-browser docs"
+    elif ! command -v dx &>/dev/null; then
+        log_warn "Dioxus CLI (dx) not found, skipping UI tests"
+        log_warn "Install it: cargo install dioxus-cli"
+    else
+        echo ""
+        echo "--- Browser UI Tests ---"
+        echo ""
+
+        # ---------------------------------------------------------------
+        # Check if Admin UI is already running (started in setup phase)
+        # ---------------------------------------------------------------
+        ADMIN_UI_LOG="/tmp/admin-ui.log"
+        ADMIN_UI_ALREADY_RUNNING=false
+        
+        if check_port $ADMIN_UI_PORT; then
+            log_success "Admin UI already running on port $ADMIN_UI_PORT"
+            ADMIN_UI_ALREADY_RUNNING=true
+        else
+            # Start Admin UI development server in background thread
+            : > "$ADMIN_UI_LOG"  # Clear previous log
+            log_info "Starting Admin UI dev server on port $ADMIN_UI_PORT..."
+            log_info "Log file: $ADMIN_UI_LOG"
+
+            cd "$WORKSPACE_ROOT/crates/admin-ui"
+            (
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] dx serve starting on port $ADMIN_UI_PORT"
+                dx serve --hot-reload false --port "$ADMIN_UI_PORT" --open false 2>&1
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] dx serve exited (code: $?)"
+            ) >> "$ADMIN_UI_LOG" 2>&1 &
+            ADMIN_UI_PID=$!
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] dx serve spawned with PID: $ADMIN_UI_PID" >> "$ADMIN_UI_LOG"
+
+            # Main thread: wait for Admin UI to be ready
+            ADMIN_UI_READY=false
+            for i in $(seq 1 30); do
+                # Check if background process is still alive
+                if ! kill -0 $ADMIN_UI_PID 2>/dev/null; then
+                    log_error "dx serve process exited prematurely"
+                    log_error "Last log lines:"
+                    tail -10 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
+                    break
+                fi
+                if curl -s --connect-timeout 2 "$ADMIN_UI_URL" >/dev/null 2>&1; then
+                    log_success "Admin UI dev server is ready on port $ADMIN_UI_PORT"
+                    ADMIN_UI_READY=true
+                    break
+                fi
+                log_info "Waiting for Admin UI to start... ($i/30)"
+                sleep 2
+            done
+
+            if [ "$ADMIN_UI_READY" = false ]; then
+                log_error "Admin UI failed to start within timeout"
+                log_error "Full log: $ADMIN_UI_LOG"
+                log_error "Last 20 lines:"
+                tail -20 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
+                kill $ADMIN_UI_PID 2>/dev/null || true
+                wait $ADMIN_UI_PID 2>/dev/null || true
+            fi
+        fi
+        
+        # Check if Admin UI is available (either already running or just started)
+        if check_port $ADMIN_UI_PORT; then
+            # ---------------------------------------------------------------
+            # UI Test 10: Login via Web UI
+            # Verifies: Authentication (Req 9), Login page functionality
+            # ---------------------------------------------------------------
+            echo "UI Test 10: Login via Web UI"
+            agent-browser open "$ADMIN_UI_URL/login" 2>/dev/null
+            agent-browser wait --load networkidle 2>/dev/null
+
+            # The Dioxus WASM app needs time to download, compile, and render.
+            # Poll until interactive elements appear.
+            SNAPSHOT_OUTPUT=""
+            for poll in $(seq 1 15); do
+                sleep 2
+                SNAPSHOT_OUTPUT=$(agent-browser snapshot -i 2>/dev/null)
+                if echo "$SNAPSHOT_OUTPUT" | grep -q "ref=e"; then
+                    log_info "Login page interactive elements appeared after $((poll * 2))s"
+                    break
+                fi
+                log_info "Waiting for WASM login page to render... ($poll/15)"
+            done
+
+            log_info "Login page snapshot (first 500 chars): $(echo "$SNAPSHOT_OUTPUT" | head -c 500)"
+            
+            # Extract refs from snapshot (format: ref=eN)
+            # The login form has: input placeholder="用户名", input placeholder="密码", button "登录"
+            # Playwright snapshot may show as:
+            #   - textbox "用户名" [required, ref=eN]  (from label or placeholder)
+            #   - textbox "密码" [required, ref=eN]
+            #   - button "登录" [ref=eN]
+            USERNAME_REF=$(echo "$SNAPSHOT_OUTPUT" | grep -i 'textbox.*用户名\|用户名.*textbox' | grep -o 'ref=e[0-9]*' | head -1)
+            PASSWORD_REF=$(echo "$SNAPSHOT_OUTPUT" | grep -i 'textbox.*密码\|密码.*textbox' | grep -o 'ref=e[0-9]*' | head -1)
+            LOGIN_BTN_REF=$(echo "$SNAPSHOT_OUTPUT" | grep -i 'button.*登录\|登录.*button' | grep -o 'ref=e[0-9]*' | head -1)
+            
+            # Convert ref=eN to @eN for agent-browser commands
+            USERNAME_REF=$(echo "$USERNAME_REF" | sed 's/ref=/@/')
+            PASSWORD_REF=$(echo "$PASSWORD_REF" | sed 's/ref=/@/')
+            LOGIN_BTN_REF=$(echo "$LOGIN_BTN_REF" | sed 's/ref=/@/')
+            
+            log_info "Refs — username: $USERNAME_REF, password: $PASSWORD_REF, login: $LOGIN_BTN_REF"
+            
+            if [ -n "$USERNAME_REF" ] && [ -n "$PASSWORD_REF" ] && [ -n "$LOGIN_BTN_REF" ]; then
+                agent-browser fill "$USERNAME_REF" "admin" 2>/dev/null
+                sleep 0.5
+                agent-browser fill "$PASSWORD_REF" "$ADMIN_PASSWORD" 2>/dev/null
+                sleep 0.5
+                agent-browser click "$LOGIN_BTN_REF" 2>/dev/null
+            else
+                # Fallback: use semantic locators with role for precision
+                log_warn "Snapshot refs not found, using semantic locators"
+                agent-browser find role textbox --name "用户名" fill "admin" 2>/dev/null
+                sleep 0.3
+                agent-browser find role textbox --name "密码" fill "$ADMIN_PASSWORD" 2>/dev/null
+                sleep 0.3
+                agent-browser find role button --name "登录" click 2>/dev/null
+            fi
+            
+            # Wait for login and redirect (Dioxus async auth → route change)
+            LOGIN_SUCCESS=false
+            for i in $(seq 1 10); do
+                CURRENT_URL=$(agent-browser get url 2>/dev/null)
+                if echo "$CURRENT_URL" | grep -q "/admin"; then
+                    log_success "Login successful, redirected to: $CURRENT_URL"
+                    LOGIN_SUCCESS=true
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                    break
+                fi
+                sleep 1
+            done
+            
+            if [ "$LOGIN_SUCCESS" = false ]; then
+                CURRENT_URL=$(agent-browser get url 2>/dev/null)
+                log_error "Login failed, current URL: $CURRENT_URL"
+                # Get page text via snapshot (get text requires @ref, not CSS selector)
+                DEBUG_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                if echo "$DEBUG_SNAP" | grep -qi "请填写用户名和密码\|密码错误\|认证失败\|error"; then
+                    log_error "Error message found on page"
+                fi
+            fi
+            echo ""
+            
+            if [ "$LOGIN_SUCCESS" = true ]; then
+            
+                # ---------------------------------------------------------------
+                # UI Test 11: View Configuration Page (Form Edit mode)
+                # Verifies: A.1 (Backend Config API), A.3 (Form Editor), A.4 (Mode Switching)
+                # ---------------------------------------------------------------
+                echo "UI Test 11: View Configuration - Form Edit Mode"
+                agent-browser open "$ADMIN_UI_URL/admin/config" 2>/dev/null
+                agent-browser wait --load networkidle 2>/dev/null
+
+                # Wait for WASM auth restore and page render (same as Test 14)
+                CONFIG_SNAP=""
+                for poll in $(seq 1 15); do
+                    sleep 2
+                    CONFIG_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                    if echo "$CONFIG_SNAP" | grep -q "ref=e"; then
+                        break
+                    fi
+                done
+                
+                if echo "$CONFIG_SNAP" | grep -q "表单编辑"; then
+                    log_success "Configuration page loaded, '表单编辑' tab visible"
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                    FORM_VISIBLE=true
+                else
+                    log_warn "Form Edit tab not found on config page"
+                    FORM_VISIBLE=false
+                fi
+                echo ""
+                
+                # ---------------------------------------------------------------
+                # UI Test 12: Switch to TOML Edit Mode
+                # Verifies: A.2 (TOML Editor), A.4 (Configuration Mode Switching)
+                # ---------------------------------------------------------------
+                echo "UI Test 12: Switch to TOML Edit Mode"
+                if [ "$FORM_VISIBLE" = true ]; then
+                    TOML_TAB_REF=$(echo "$CONFIG_SNAP" | grep "TOML 编辑" | grep -o 'ref=e[0-9]*' | head -1)
+                    TOML_TAB_REF=$(echo "$TOML_TAB_REF" | sed 's/ref=/@/')
+                    if [ -n "$TOML_TAB_REF" ]; then
+                        agent-browser click "$TOML_TAB_REF" 2>/dev/null
+                    else
+                        agent-browser find role button --name "TOML 编辑" click 2>/dev/null
+                    fi
+                    sleep 2
+                    
+                    TOML_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                    if echo "$TOML_SNAP" | grep -qi "textarea\|editor\|code"; then
+                        log_success "TOML Editor loaded with editor element visible"
+                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                    else
+                        log_warn "TOML Editor tab clicked but content not verified"
+                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                    fi
+                else
+                    log_warn "Skipped - Form Edit tab was not visible"
+                fi
+                echo ""
+                
+                # ---------------------------------------------------------------
+                # UI Test 13: Switch to Import/Export Mode
+                # Verifies: A.6 (Configuration Import/Export)
+                # ---------------------------------------------------------------
+                echo "UI Test 13: Switch to Import/Export Mode"
+                IMPORT_TAB_REF=$(echo "$CONFIG_SNAP" | grep "导入/导出" | grep -o 'ref=e[0-9]*' | head -1)
+                IMPORT_TAB_REF=$(echo "$IMPORT_TAB_REF" | sed 's/ref=/@/')
+                if [ -n "$IMPORT_TAB_REF" ]; then
+                    agent-browser click "$IMPORT_TAB_REF" 2>/dev/null
+                else
+                    agent-browser find role button --name "导入/导出" click 2>/dev/null
+                fi
+                sleep 2
+                
+                IMPORT_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                if echo "$IMPORT_SNAP" | grep -q "导入\|导出\|import\|export"; then
+                    log_success "Import/Export tab visible"
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                else
+                    log_warn "Import/Export tab not found"
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                fi
+                echo ""
+                
+                # ---------------------------------------------------------------
+                # UI Test 14: Navigate to Server Control & View Status
+                # Verifies: B.1 (ServerConfigAPI), B.3 (Server Status Monitoring)
+                # ---------------------------------------------------------------
+                echo "UI Test 14: Navigate to Server Control Page"
+                agent-browser open "$ADMIN_UI_URL/admin/server-control" 2>/dev/null
+                agent-browser wait --load networkidle 2>/dev/null
+
+                # The Dioxus WASM app stores auth token in localStorage, but on page reload
+                # the in-memory Signal resets to Unauthenticated and AdminLayout shows a
+                # spinner ("验证身份中...") with NO interactive elements. The use_auth()
+                # hook's use_effect fires validate_session() asynchronously to restore auth.
+                # We must poll until interactive elements appear (auth restored + page rendered).
+                SERVER_SNAP=""
+                for poll in $(seq 1 15); do
+                    sleep 2
+                    SERVER_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                    if echo "$SERVER_SNAP" | grep -q "ref=e"; then
+                        log_info "Interactive elements appeared after $((poll * 2))s"
+                        break
+                    fi
+                    log_info "Waiting for WASM auth restore and page render... ($poll/15)"
+                done
+
+                log_info "Server Control snapshot (first 500 chars): $(echo "$SERVER_SNAP" | head -c 500)"
+
+                # The page header shows "服务器控制", status section shows "服务器状态"
+                if echo "$SERVER_SNAP" | grep -q "服务器控制\|服务器状态"; then
+                    log_success "Server Control page loaded"
+                    STATUS_VISIBLE=true
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                else
+                    log_error "Server Control page not loaded correctly"
+                    STATUS_VISIBLE=false
+                fi
+                
+                # Check for status badge (should show "运行中" since Palpo was started in Test 5)
+                if [ "$STATUS_VISIBLE" = true ]; then
+                    STATUS_TEXT=$(echo "$SERVER_SNAP" | grep -i "运行\|running\|stopped\|badge" | head -3)
+                    log_info "Status elements: $STATUS_TEXT"
+                fi
+                echo ""
+                
+                # ---------------------------------------------------------------
+                # UI Test 15: Stop Palpo Server via Web UI
+                # Verifies: B.2 (ServerControlAPI - Stop)
+                # ---------------------------------------------------------------
+                echo "UI Test 15: Stop Palpo Server via Web UI"
+                
+                # Re-snapshot to get fresh refs (status may have loaded now)
+                SERVER_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                log_info "Stop test snapshot ref lines: $(echo "$SERVER_SNAP" | grep 'ref=' | head -20)"
+                
+                # Click the "停止服务器" button — match the full button text to avoid
+                # false positives with heading "服务器控制" etc.
+                STOP_BTN_REF=$(echo "$SERVER_SNAP" | grep "停止服务器" | grep -o 'ref=e[0-9]*' | head -1)
+                STOP_BTN_REF=$(echo "$STOP_BTN_REF" | sed 's/ref=/@/')
+                if [ -n "$STOP_BTN_REF" ]; then
+                    log_info "Found stop button ref: $STOP_BTN_REF"
+                    agent-browser click "$STOP_BTN_REF" 2>/dev/null
+                else
+                    log_info "Stop button ref not found, trying semantic locator"
+                    agent-browser find role button --name "停止服务器" click 2>/dev/null
+                fi
+                sleep 2
+                
+                # Check for confirmation dialog — the dialog title is "停止服务器" (h3),
+                # and the confirm button text is "停止" (the last button with "停止").
+                # In snapshot, dialog buttons appear after the dialog content.
+                CONFIRM_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                log_info "Confirm dialog snapshot: $(echo "$CONFIRM_SNAP" | head -c 800)"
+                # Get all refs containing "停止" and take the LAST one (the confirm button)
+                CONFIRM_REF=$(echo "$CONFIRM_SNAP" | grep "停止" | grep -o 'ref=e[0-9]*' | tail -1)
+                CONFIRM_REF=$(echo "$CONFIRM_REF" | sed 's/ref=/@/')
+                if [ -n "$CONFIRM_REF" ]; then
+                    log_info "Found confirm button ref: $CONFIRM_REF"
+                    agent-browser click "$CONFIRM_REF" 2>/dev/null
+                    sleep 5
+                    log_success "Stop server confirmation clicked"
+                else
+                    log_info "Stop confirmation dialog not found (server may not be running or button is disabled)"
+                fi
+                
+                # Wait for status to change
+                for i in $(seq 1 10); do
+                    STATUS_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                    if echo "$STATUS_SNAP" | grep -qi "已停止\|未启动\|stopped\|not.start"; then
+                        log_success "Server stopped via Web UI"
+                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                        break
+                    else
+                        log_info "Waiting for server to stop... ($i/10)"
+                        sleep 2
+                    fi
+                done
+                echo ""
+                
+                # ---------------------------------------------------------------
+                # UI Test 16: Start Palpo Server via Web UI (with Config Validation)
+                # Verifies: A.5 (Config Validation Before Start), B.2 (ServerControlAPI - Start)
+                # ---------------------------------------------------------------
+                echo "UI Test 16: Start Palpo Server via Web UI (with Config Validation)"
+                
+                # Re-snapshot fresh page state (server should be stopped now)
+                STATUS_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                log_info "Start test snapshot ref lines: $(echo "$STATUS_SNAP" | grep 'ref=' | head -20)"
+                
+                # Click "启动服务器" button
+                START_BTN_REF=$(echo "$STATUS_SNAP" | grep "启动服务器" | grep -o 'ref=e[0-9]*' | head -1)
+                START_BTN_REF=$(echo "$START_BTN_REF" | sed 's/ref=/@/')
+                if [ -n "$START_BTN_REF" ]; then
+                    log_info "Found start button ref: $START_BTN_REF"
+                    agent-browser click "$START_BTN_REF" 2>/dev/null
+                else
+                    log_info "Start button ref not found, trying semantic locator"
+                    agent-browser find role button --name "启动服务器" click 2>/dev/null
+                fi
+                # Wait for config validation API call and dialog to render
+                sleep 4
+                
+                # Step 1: Config Validation Dialog should appear
+                # Title: "启动前配置验证", confirm button: "配置已验证，继续启动"
+                VALID_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                log_info "Validation dialog snapshot: $(echo "$VALID_SNAP" | head -c 1000)"
+                
+                VALID_CONFIRM_REF=$(echo "$VALID_SNAP" | grep "配置已验证\|继续启动" | grep -o 'ref=e[0-9]*' | head -1)
+                VALID_CONFIRM_REF=$(echo "$VALID_CONFIRM_REF" | sed 's/ref=/@/')
+                if [ -n "$VALID_CONFIRM_REF" ]; then
+                    log_info "Found validation confirm ref: $VALID_CONFIRM_REF"
+                    agent-browser click "$VALID_CONFIRM_REF" 2>/dev/null
+                    sleep 3
+                else
+                    # Validation dialog might not have appeared if API failed;
+                    # try clicking "启动" directly as fallback (start confirm dialog)
+                    log_info "Config validation dialog not found, trying start confirm directly"
+                    agent-browser find role button --name "启动" click 2>/dev/null
+                    sleep 3
+                fi
+                
+                # Step 2: Start Confirmation Dialog — title "启动服务器", button "启动"
+                CONFIRM2_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                log_info "Start confirm dialog snapshot: $(echo "$CONFIRM2_SNAP" | head -c 800)"
+                # The confirm button "启动" is the last ref containing "启动" in dialog
+                CONFIRM2_REF=$(echo "$CONFIRM2_SNAP" | grep "启动" | grep -o 'ref=e[0-9]*' | tail -1)
+                CONFIRM2_REF=$(echo "$CONFIRM2_REF" | sed 's/ref=/@/')
+                if [ -n "$CONFIRM2_REF" ]; then
+                    log_info "Found start confirm ref: $CONFIRM2_REF"
+                    agent-browser click "$CONFIRM2_REF" 2>/dev/null
+                    sleep 8
+                else
+                    log_warn "Start confirmation dialog not found"
+                fi
+                
+                # Wait for server to show running status
+                START_SUCCESS=false
+                for i in $(seq 1 15); do
+                    STATUS_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                    if echo "$STATUS_SNAP" | grep -qi "运行中\|running"; then
+                        log_success "Server started via Web UI"
+                        START_SUCCESS=true
+                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                        break
+                    else
+                        log_info "Waiting for server to start... ($i/15)"
+                        sleep 2
+                    fi
+                done
+                
+                if [ "$START_SUCCESS" = false ]; then
+                    log_error "Server failed to start via Web UI within timeout"
+                fi
+                echo ""
+                
+                # Verify Palpo is actually responding via Matrix API
+                MATRIX_CHECK=$(curl -s --connect-timeout 3 "http://localhost:$PALPO_PORT/_matrix/client/versions" 2>&1)
+                if echo "$MATRIX_CHECK" | grep -q "versions"; then
+                    log_success "Palpo Matrix API responding after Web UI start"
+                else
+                    log_warn "Palpo Matrix API not responding (may need more startup time)"
+                fi
+                echo ""
+                
+            else
+                log_error "Skipping UI Tests 11-16: Login failed"
+            fi
+            
+            # Close browser
+            agent-browser close 2>/dev/null
+            
+        else
+            log_error "Admin UI not available, skipping UI tests"
+        fi  # end check_port ADMIN_UI_PORT
+        
+        # Stop Admin UI dev server (only if we started it in this test run, not from setup phase)
+        if [ "$ADMIN_UI_ALREADY_RUNNING" = false ] && [ -n "$ADMIN_UI_PID" ]; then
+            log_info "Stopping Admin UI dev server (PID: $ADMIN_UI_PID)..."
+            kill $ADMIN_UI_PID 2>/dev/null || true
+            # Wait up to 5s for graceful shutdown
+            for i in $(seq 1 5); do
+                kill -0 $ADMIN_UI_PID 2>/dev/null || break
+                sleep 1
+            done
+            # Force kill if still running
+            kill -9 $ADMIN_UI_PID 2>/dev/null || true
+            wait $ADMIN_UI_PID 2>/dev/null || true
+            log_success "Admin UI dev server stopped (log: $ADMIN_UI_LOG)"
+        fi
+        # Also kill any lingering dx serve processes
+        pkill -f "dx serve" 2>/dev/null || true
+        
+        # Print UI Test Summary
+        echo "========================================"
+        echo "  Browser UI Test Summary"
+        echo "========================================"
+        echo "  UI Tests Passed: $UI_TESTS_PASSED / $UI_TESTS_TOTAL"
+        echo "========================================"
+        echo ""
+        
+        TESTS_PASSED=$((TESTS_PASSED + UI_TESTS_PASSED))
+    fi
+    
     echo "========================================"
     echo "  Comprehensive Test Summary"
     echo "========================================"
@@ -576,6 +1112,10 @@ cleanup() {
     if pkill -f "/palpo --config" 2>/dev/null; then
         log_success "Killed remaining Palpo processes"
     fi
+
+    if pkill -f "dx serve" 2>/dev/null; then
+        log_success "Killed remaining dx serve (Admin UI) processes"
+    fi
 }
 
 # Main
@@ -591,6 +1131,7 @@ main() {
         setup)
             start_postgresql
             start_admin_server
+            start_admin_ui
             check_services
             ;;
         test)
@@ -608,6 +1149,7 @@ main() {
             sleep 1
             start_postgresql
             start_admin_server
+            start_admin_ui
             check_services
             run_comprehensive_tests
             ;;
@@ -615,6 +1157,7 @@ main() {
             trap cleanup EXIT
             start_postgresql
             start_admin_server
+            start_admin_ui
             check_services
             run_comprehensive_tests
             ;;

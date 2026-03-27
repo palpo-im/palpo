@@ -23,6 +23,7 @@
 
 use dioxus::prelude::*;
 use crate::services::api_client::get_api_client;
+use crate::pages::config_mode_switcher::ConfigModeSwitcher;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
@@ -159,11 +160,13 @@ pub fn ServerControlPage() -> Element {
         }
     });
 
-    // Poll status every 3 seconds
+    // Poll status every 3 seconds, starting immediately
     use_effect(move || {
         spawn(async move {
+            // Fetch immediately on mount
+            let _ = fetch_status.call(());
+            
             loop {
-                let _ = fetch_status.call(());
                 #[cfg(target_arch = "wasm32")]
                 {
                     gloo_timers::future::sleep(std::time::Duration::from_secs(3)).await;
@@ -172,6 +175,7 @@ pub fn ServerControlPage() -> Element {
                 {
                     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                 }
+                let _ = fetch_status.call(());
             }
         });
     });
@@ -303,10 +307,10 @@ pub fn ServerControlPage() -> Element {
             div { class: "bg-white shadow rounded-lg",
                 div { class: "px-4 py-5 sm:p-6",
                     h3 { class: "text-lg leading-6 font-medium text-gray-900",
-                        "服务器控制"
+                        "服务器管理"
                     }
                     p { class: "mt-1 text-sm text-gray-500",
-                        "管理 Palpo Matrix 服务器生命周期"
+                        "管理 Palpo Matrix 服务器配置与生命周期"
                     }
                 }
             }
@@ -348,6 +352,19 @@ pub fn ServerControlPage() -> Element {
                         }
                     }
                 }
+            }
+
+            // Server Config Editor Section
+            div { class: "bg-white shadow rounded-lg",
+                div { class: "px-4 py-5 sm:p-6",
+                    h4 { class: "text-base font-medium text-gray-900 mb-1",
+                        "服务器配置编辑"
+                    }
+                    p { class: "text-sm text-gray-500 mb-4",
+                        "编辑和管理 Palpo 服务器配置文件"
+                    }
+                }
+                ConfigModeSwitcher {}
             }
 
             // Server Status Card
@@ -407,8 +424,20 @@ pub fn ServerControlPage() -> Element {
                             }
                         }
                     } else {
-                        div { class: "flex justify-center py-8",
-                            div { class: "animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" }
+                        div { class: "space-y-4",
+                            // Default to NotStarted when no status info available
+                            div { class: "flex items-center space-x-3",
+                                span { class: "text-sm font-medium text-gray-700",
+                                    "状态:"
+                                }
+                                span {
+                                    class: "px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800",
+                                    "未启动"
+                                }
+                            }
+                            p { class: "text-sm text-gray-500",
+                                "服务器未运行，您可以点击下方的"启动服务器"按钮来启动它。"
+                            }
                         }
                     }
                 }

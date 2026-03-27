@@ -96,6 +96,7 @@ pub struct StatusResponse {
     /// Whether initial setup is needed (no admin exists)
     pub needs_setup: bool,
     /// Whether legacy credentials might exist (client should check localStorage)
+    #[serde(rename = "has_legacy_credentials")]
     pub check_legacy: bool,
 }
 
@@ -200,6 +201,115 @@ pub struct MigrateResponse {
 pub struct ErrorResponse {
     /// Error message
     pub error: String,
+}
+
+// ===== Session Validation =====
+
+/// Request body for session validation endpoint
+#[derive(Debug, Deserialize)]
+pub struct ValidateSessionRequest {
+    /// Session token to validate
+    pub token: String,
+}
+
+/// Response for session validation
+#[derive(Debug, Serialize)]
+pub struct ValidateSessionResponse {
+    /// Whether the session is valid
+    pub valid: bool,
+    /// User information (if valid)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<UserInfo>,
+    /// Error message (if invalid)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// POST /api/v1/admin/webui-admin/validate
+///
+/// Validates a session token and returns user information if valid.
+/// Used by the WASM frontend to restore auth state after page reload.
+///
+/// # Request Body
+///
+/// ```json
+/// {
+///   "token": "session_token_here"
+/// }
+/// ```
+///
+/// # Response
+///
+/// - 200 OK: Session is valid
+/// - 401 Unauthorized: Session expired or invalid
+/// - 400 Bad Request: Missing token
+#[handler]
+pub async fn validate_session(req: &mut Request, res: &mut Response) {
+    let state = get_app_state();
+
+    let body = match req.parse_json::<ValidateSessionRequest>().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Invalid validate request: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse {
+                error: "Invalid request body".to_string(),
+            }));
+            return;
+        }
+    };
+
+    if body.token.is_empty() {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse {
+            error: "Missing token".to_string(),
+        }));
+        return;
+    }
+
+    match state.session_manager.validate_session(&body.token).await {
+        Ok(username) => {
+            tracing::debug!("Session validated for user: {}", username);
+            // expires_at: 24h from now as RFC3339 (matches client AdminUser.expires_at)
+            let expires_at = chrono::Utc::now() + chrono::Duration::hours(24);
+            res.render(Json(ValidateSessionResponse {
+                valid: true,
+                user: Some(UserInfo {
+                    user_id: username.clone(),
+                    username: username.clone(),
+                    is_admin: true,
+                    session_id: body.token,
+                    expires_at: expires_at.to_rfc3339(),
+                    permissions: vec!["SystemAdmin".to_string()],
+                }),
+                error: None,
+            }));
+        }
+        Err(AdminError::SessionExpired) => {
+            tracing::warn!("Session expired during validation");
+            res.render(Json(ValidateSessionResponse {
+                valid: false,
+                user: None,
+                error: Some("Session expired".to_string()),
+            }));
+        }
+        Err(AdminError::InvalidSessionToken) => {
+            tracing::warn!("Invalid session token during validation");
+            res.render(Json(ValidateSessionResponse {
+                valid: false,
+                user: None,
+                error: Some("Invalid session token".to_string()),
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Session validation error: {}", e);
+            res.render(Json(ValidateSessionResponse {
+                valid: false,
+                user: None,
+                error: Some("Validation failed".to_string()),
+            }));
+        }
+    }
 }
 
 // ===== Handler Functions =====

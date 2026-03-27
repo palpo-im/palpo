@@ -34,7 +34,8 @@ enum DialogAction {
 ///   - 继续编辑 (Cancel) → stay in current mode
 #[component]
 pub fn ConfigModeSwitcher() -> Element {
-    let mut active_mode = use_signal(|| ConfigMode::Form);
+    // Default to TOML mode since the actual config format doesn't match WebConfigData structure
+    let mut active_mode = use_signal(|| ConfigMode::Toml);
     // Tracks whether the currently-active editor has unsaved changes.
     // Child editors update this via the `on_dirty_change` callback.
     let mut is_dirty = use_signal(|| false);

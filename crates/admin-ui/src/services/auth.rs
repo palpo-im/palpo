@@ -43,7 +43,10 @@ impl AuthService {
         ).without_auth();
         config = config.with_json_body(&request)?;
         
-        let response = self.api_client.execute_request(config).await?;
+        // Use execute_request_raw to get raw response (even for non-2xx status codes)
+        let response = self.api_client.execute_request_raw(config).await?;
+        
+        // Parse the response as LoginResponse (handles both success and error responses)
         let login_response: LoginResponse = self.api_client.parse_json(response).await?;
         
         Ok(login_response)
@@ -51,12 +54,13 @@ impl AuthService {
 
     /// Logout current user
     pub async fn logout(&self, session_id: String) -> WebConfigResult<()> {
-        let request = LogoutRequest { session_id };
+        let request = LogoutRequest { token: session_id };
         
-        let _response = self.api_client.post_json("/api/auth/logout", &request).await?;
+        // Try to call logout API, ignore errors (e.g. if backend session already expired)
+        let _ = self.api_client.post_json("/api/v1/admin/webui-admin/logout", &request).await;
         
-        // Clear stored token
-        self.api_client.clear_token()?;
+        // Always clear stored token
+        let _ = self.api_client.clear_token();
         
         Ok(())
     }
@@ -68,7 +72,7 @@ impl AuthService {
         
         let request = ValidateSessionRequest { token };
         let validation_response: ValidateSessionResponse = self.api_client
-            .post_json_response("/api/auth/validate", &request).await?;
+            .post_json_response("/api/v1/admin/webui-admin/validate", &request).await?;
         
         // Clear token if session is invalid
         if !validation_response.valid {
@@ -118,11 +122,11 @@ impl AuthService {
 impl Default for AuthService {
     fn default() -> Self {
         // Try to use global API client, fallback to creating a new one
+        // pointing to the admin server (port 8081), not the Palpo server (port 8008)
         match Self::from_global() {
             Ok(service) => service,
             Err(_) => {
-                // Create a default API client if global one is not available
-                let api_client = crate::services::api_client::ApiClient::default();
+                let api_client = crate::services::api_client::ApiClient::new("http://localhost:8081");
                 Self::new(api_client)
             }
         }

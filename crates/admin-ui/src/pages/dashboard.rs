@@ -1,7 +1,9 @@
 //! Admin dashboard page component
 
 use dioxus::prelude::*;
+use dioxus_router::Link;
 use crate::hooks::use_auth;
+use crate::app::Route;
 
 /// Admin dashboard component
 #[component]
@@ -133,34 +135,18 @@ pub fn AdminDashboard() -> Element {
                         "快速操作"
                     }
                     div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3",
-                        // Server control
+                        // Server management
                         div { class: "relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm flex items-center space-x-3 hover:border-gray-400 focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500",
                             div { class: "flex-shrink-0",
                                 span { class: "text-2xl", "🎛️" }
                             }
                             div { class: "flex-1 min-w-0",
-                                a { 
-                                    href: "/admin/server-control",
+                                Link {
+                                    to: Route::ServerControl {},
                                     class: "focus:outline-none",
                                     span { class: "absolute inset-0", "aria-hidden": "true" }
-                                    p { class: "text-sm font-medium text-gray-900", "服务器控制" }
-                                    p { class: "text-sm text-gray-500", "启动/停止/重启服务器" }
-                                }
-                            }
-                        }
-
-                        // Config management
-                        div { class: "relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm flex items-center space-x-3 hover:border-gray-400 focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500",
-                            div { class: "flex-shrink-0",
-                                span { class: "text-2xl", "⚙️" }
-                            }
-                            div { class: "flex-1 min-w-0",
-                                a { 
-                                    href: "/admin/config",
-                                    class: "focus:outline-none",
-                                    span { class: "absolute inset-0", "aria-hidden": "true" }
-                                    p { class: "text-sm font-medium text-gray-900", "配置管理" }
-                                    p { class: "text-sm text-gray-500", "管理服务器配置" }
+                                    p { class: "text-sm font-medium text-gray-900", "服务器管理" }
+                                    p { class: "text-sm text-gray-500", "管理服务器配置与状态" }
                                 }
                             }
                         }
@@ -171,8 +157,8 @@ pub fn AdminDashboard() -> Element {
                                 span { class: "text-2xl", "👥" }
                             }
                             div { class: "flex-1 min-w-0",
-                                a { 
-                                    href: "/admin/users",
+                                Link {
+                                    to: Route::Users {},
                                     class: "focus:outline-none",
                                     span { class: "absolute inset-0", "aria-hidden": "true" }
                                     p { class: "text-sm font-medium text-gray-900", "用户管理" }
@@ -187,8 +173,8 @@ pub fn AdminDashboard() -> Element {
                                 span { class: "text-2xl", "🏠" }
                             }
                             div { class: "flex-1 min-w-0",
-                                a { 
-                                    href: "/admin/rooms",
+                                Link {
+                                    to: Route::Rooms {},
                                     class: "focus:outline-none",
                                     span { class: "absolute inset-0", "aria-hidden": "true" }
                                     p { class: "text-sm font-medium text-gray-900", "房间管理" }

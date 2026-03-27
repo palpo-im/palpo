@@ -10,7 +10,9 @@ pub struct AdminUser {
     pub is_admin: bool,
     pub session_id: String,
     pub expires_at: String, // RFC3339 timestamp string
-    pub permissions: Vec<Permission>,
+    /// Permissions as strings from backend, converted to Permission enum internally
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 impl PartialEq for AdminUser {
@@ -70,6 +72,8 @@ pub struct LoginRequest {
 /// Login response
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LoginResponse {
+    /// Success status (defaults to false if not present in response)
+    #[serde(default)]
     pub success: bool,
     pub token: Option<String>,
     pub user: Option<AdminUser>,
@@ -105,28 +109,28 @@ pub struct ValidateSessionResponse {
 /// Logout request
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LogoutRequest {
-    pub session_id: String,
+    pub token: String,
 }
 
 impl AdminUser {
     /// Check if user has a specific permission
     pub fn has_permission(&self, permission: &Permission) -> bool {
         // System admin has all permissions
-        if self.permissions.contains(&Permission::SystemAdmin) {
+        if self.permissions.iter().any(|p| p == "SystemAdmin") {
             return true;
         }
         
-        self.permissions.contains(permission)
+        self.permissions.iter().any(|p| p == permission.as_str())
     }
 
     /// Check if user has any of the specified permissions
     pub fn has_any_permission(&self, permissions: &[Permission]) -> bool {
         // System admin has all permissions
-        if self.permissions.contains(&Permission::SystemAdmin) {
+        if self.permissions.iter().any(|p| p == "SystemAdmin") {
             return true;
         }
 
-        permissions.iter().any(|p| self.permissions.contains(p))
+        permissions.iter().any(|p| self.has_permission(p))
     }
 
     /// Check if the session is still valid (not expired)
@@ -195,6 +199,21 @@ impl Default for AuthState {
 }
 
 impl Permission {
+    /// Get string representation of the permission
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Permission::ConfigManagement => "ConfigManagement",
+            Permission::UserManagement => "UserManagement",
+            Permission::RoomManagement => "RoomManagement",
+            Permission::FederationManagement => "FederationManagement",
+            Permission::MediaManagement => "MediaManagement",
+            Permission::AppserviceManagement => "AppserviceManagement",
+            Permission::ServerControl => "ServerControl",
+            Permission::AuditLogAccess => "AuditLogAccess",
+            Permission::SystemAdmin => "SystemAdmin",
+        }
+    }
+
     /// Get human-readable description of the permission
     pub fn description(&self) -> &'static str {
         match self {

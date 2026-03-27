@@ -51,9 +51,25 @@ pub struct LoginRequest {
 /// Response after successful login
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
+    /// Success status
     pub success: bool,
-    pub token: String,
-    pub message: Option<String>,
+    /// Session token for authenticated requests
+    pub token: Option<String>,
+    /// User information
+    pub user: Option<UserInfo>,
+    /// Error message if login failed
+    pub error: Option<String>,
+}
+
+/// User information in login response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserInfo {
+    pub user_id: String,
+    pub username: String,
+    pub is_admin: bool,
+    pub session_id: String,
+    pub expires_at: String,
+    pub permissions: Vec<String>,
 }
 
 /// Request to change password

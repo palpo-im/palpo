@@ -33,15 +33,27 @@ pub struct BreadcrumbItem {
 pub fn AdminLayout() -> Element {
     let auth_context = use_auth();
     let mut show_mobile_menu = use_signal(|| false);
+    let navigator = use_navigator();
 
-    // Check authentication
-    if !auth_context.is_authenticated() {
+    // Check authentication state
+    if auth_context.is_authenticating() {
+        // Show loading spinner only while validating session
         return rsx! {
             div { class: "flex items-center justify-center min-h-screen bg-gray-50",
                 div { class: "text-center",
                     div { class: "animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" }
                     p { class: "mt-4 text-gray-600", "验证身份中..." }
                 }
+            }
+        };
+    }
+
+    if !auth_context.is_authenticated() {
+        // Not authenticated - redirect to login
+        navigator.push(Route::Login {});
+        return rsx! {
+            div { class: "flex items-center justify-center min-h-screen bg-gray-50",
+                p { class: "text-gray-600", "正在跳转到登录页面..." }
             }
         };
     }
@@ -90,7 +102,7 @@ pub fn Sidebar(
         },
         NavItem {
             id: "server-control",
-            label: "服务器控制",
+            label: "服务器管理",
             icon: "🎛️",
             route: "/admin/server-control".to_string(),
         },
@@ -99,12 +111,6 @@ pub fn Sidebar(
             label: "创建管理员",
             icon: "👤",
             route: "/admin/matrix-admin-create".to_string(),
-        },
-        NavItem {
-            id: "config",
-            label: "配置管理",
-            icon: "⚙️",
-            route: "/admin/config".to_string(),
         },
         NavItem {
             id: "users",
@@ -352,7 +358,7 @@ fn get_breadcrumbs(route: &Route) -> Vec<BreadcrumbItem> {
         }
         Route::ServerControl {} => {
             breadcrumbs.push(BreadcrumbItem {
-                label: "服务器控制".to_string(),
+                label: "服务器管理".to_string(),
                 route: None,
             });
         }
