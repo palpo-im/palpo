@@ -148,7 +148,7 @@ impl EventEnum<'_> {
         }
     }
 
-    /// Generate an `AnyFull*EventContent` enum.
+    /// Generate an `Any*EventContentChange` enum.
     pub(super) fn expand_full_content_enum(&self) -> syn::Result<TokenStream> {
         let palpo_core = self.palpo_core;
 
@@ -168,7 +168,7 @@ impl EventEnum<'_> {
                 #(
                     #variant_docs
                     #( #variant_attrs )*
-                    #variants(#palpo_core::events::FullStateEventContent<#event_content_types>),
+                    #variants(#palpo_core::events::StateEventContentChange<#event_content_types>),
                 )*
                 #[doc(hidden)]
                 _Custom {
