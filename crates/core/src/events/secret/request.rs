@@ -3,7 +3,6 @@
 //! [`m.secret.request`]: https://spec.matrix.org/latest/client-server-api/#msecretrequest
 
 use salvo::oapi::ToSchema;
-use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
 use crate::events::GlobalAccountDataEventType;
@@ -53,67 +52,59 @@ impl ToDeviceSecretRequestEventContent {
 }
 
 /// Action for an `m.secret.request` event.
-#[derive(ToSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(try_from = "RequestActionJsonRepr")]
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+#[serde(tag = "action", rename_all = "snake_case")]
 pub enum RequestAction {
     /// Request a secret by its name.
-    Request(SecretName),
+    Request(SecretRequestAction),
 
     /// Cancel a request for a secret.
     RequestCancellation,
 
     #[doc(hidden)]
-    #[salvo(schema(skip))]
-    _Custom(PrivOwnedStr),
+    #[serde(untagged)]
+    _Custom(CustomRequestAction),
 }
 
-impl Serialize for RequestAction {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut st = serializer.serialize_struct("request_action", 2)?;
-
+impl RequestAction {
+    /// Access the `action` field of this action.
+    pub fn action(&self) -> &str {
         match self {
-            Self::Request(name) => {
-                st.serialize_field("name", name)?;
-                st.serialize_field("action", "request")?;
-                st.end()
-            }
-            Self::RequestCancellation => {
-                st.serialize_field("action", "request_cancellation")?;
-                st.end()
-            }
-            RequestAction::_Custom(custom) => {
-                st.serialize_field("action", &custom.0)?;
-                st.end()
-            }
+            Self::Request(_) => "request",
+            Self::RequestCancellation => "request_cancellation",
+            Self::_Custom(custom) => &custom.action,
         }
     }
 }
 
-#[derive(Deserialize)]
-struct RequestActionJsonRepr {
-    action: String,
-    name: Option<SecretName>,
+impl From<SecretRequestAction> for RequestAction {
+    fn from(value: SecretRequestAction) -> Self {
+        Self::Request(value)
+    }
 }
 
-impl TryFrom<RequestActionJsonRepr> for RequestAction {
-    type Error = &'static str;
+/// Details about a secret to request in a [`RequestAction`].
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SecretRequestAction {
+    /// The name of the requested secret.
+    pub name: SecretName,
+}
 
-    fn try_from(value: RequestActionJsonRepr) -> Result<Self, Self::Error> {
-        match value.action.as_str() {
-            "request" => {
-                if let Some(name) = value.name {
-                    Ok(RequestAction::Request(name))
-                } else {
-                    Err("A secret name is required when the action is \"request\".")
-                }
-            }
-            "request_cancellation" => Ok(RequestAction::RequestCancellation),
-            _ => Ok(RequestAction::_Custom(PrivOwnedStr(value.action.into()))),
-        }
+impl SecretRequestAction {
+    /// Construct a new `SecretRequestAction` for the given secret name.
+    pub fn new(name: SecretName) -> Self {
+        Self { name }
     }
+}
+
+/// A custom [`RequestAction`].
+#[doc(hidden)]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+pub struct CustomRequestAction {
+    /// The action of the request.
+    pub action: String,
 }
 
 /// The name of a secret.
