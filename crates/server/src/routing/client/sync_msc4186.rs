@@ -59,13 +59,19 @@ pub(super) async fn sync_events_v5(
             .await?;
 
     if since_sn > data::curr_sn()? || (args.pos.is_some() && res_body.is_empty()) {
-        // Hang a few seconds so requests are not spammed
-        // Stop hanging if new info arrives
+        // No new events for this client — wait for changes instead of returning
+        // immediately, which would cause the client to spin in a tight polling loop.
         let default = Duration::from_secs(30);
         let duration = cmp::min(args.timeout.unwrap_or(default), default);
-        // Setup watchers, so if there's no response, we can wait for them
-        let watcher = crate::watcher::watch(sender_id, device_id);
-        _ = tokio::time::timeout(duration, watcher).await;
+        // Enforce a minimum wait on subsequent syncs. Without this, clients
+        // sending timeout=0 would create a tight loop (~3ms/request) when idle.
+        // The watcher still wakes us immediately when real events arrive, so
+        // responsiveness is not affected.
+        if args.pos.is_some() {
+            let duration = cmp::max(duration, Duration::from_secs(3));
+            let watcher = crate::watcher::watch(sender_id, device_id);
+            _ = tokio::time::timeout(duration, watcher).await;
+        }
         res_body =
             crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)
                 .await?;
