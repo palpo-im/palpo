@@ -80,6 +80,14 @@ pub struct Capabilities {
     )]
     pub profile_fields: Option<ProfileFieldsCapability>,
 
+    /// Capability to indicate if the server automatically forgets rooms that the user leaves.
+    #[serde(
+        rename = "m.forget_forced_upon_leave",
+        default,
+        skip_serializing_if = "ForgetForcedUponLeaveCapability::is_default"
+    )]
+    pub forget_forced_upon_leave: ForgetForcedUponLeaveCapability,
+
     /// Any other custom capabilities that the server supports outside of the
     /// specification, labeled using the Java package naming convention and
     /// stored as arbitrary JSON values.
@@ -112,6 +120,9 @@ impl Capabilities {
             #[allow(deprecated)]
             "m.set_avatar_url" => Some(Cow::Owned(serialize(&self.set_avatar_url))),
             "m.3pid_changes" => Some(Cow::Owned(serialize(&self.thirdparty_id_changes))),
+            "m.forget_forced_upon_leave" => {
+                Some(Cow::Owned(serialize(&self.forget_forced_upon_leave)))
+            }
             _ => self.custom_capabilities.get(capability).map(Cow::Borrowed),
         }
     }
@@ -130,6 +141,9 @@ impl Capabilities {
             #[allow(deprecated)]
             "m.set_avatar_url" => self.set_avatar_url = from_json_value(value)?,
             "m.3pid_changes" => self.thirdparty_id_changes = from_json_value(value)?,
+            "m.forget_forced_upon_leave" => {
+                self.forget_forced_upon_leave = from_json_value(value)?;
+            }
             _ => {
                 self.custom_capabilities
                     .insert(capability.to_owned(), value);
@@ -365,5 +379,28 @@ impl ProfileFieldsCapability {
             // The default is that any field is allowed.
             true
         }
+    }
+}
+
+/// Information about the `m.forget_forced_upon_leave` capability.
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ForgetForcedUponLeaveCapability {
+    /// Whether the server will automatically forget any room that the user leaves.
+    ///
+    /// This behavior applies irrespective of whether the user has left the room on their own
+    /// or has been kicked or banned from the room by another user.
+    pub enabled: bool,
+}
+
+impl ForgetForcedUponLeaveCapability {
+    /// Creates a new `ForgetForcedUponLeaveCapability` with the given enabled flag.
+    pub fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    /// Returns whether all fields have their default value.
+    pub fn is_default(&self) -> bool {
+        !self.enabled
     }
 }

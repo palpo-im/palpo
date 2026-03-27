@@ -119,18 +119,42 @@ pub struct UnbanUserReqBody {
     pub reason: Option<String>,
 }
 
-/// Distinguishes between invititations by Matrix or third party identifiers.
+/// Distinguishes between invitations by Matrix or third party identifiers.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum InvitationRecipient {
     /// Used to invite user by their Matrix identifier.
-    UserId {
-        /// Matrix identifier of user.
-        user_id: OwnedUserId,
-    },
+    UserId(InviteUserId),
 
     /// Used to invite user by a third party identifier.
     ThirdPartyId(InviteThreepid),
+}
+
+impl From<InviteUserId> for InvitationRecipient {
+    fn from(value: InviteUserId) -> Self {
+        Self::UserId(value)
+    }
+}
+
+impl From<InviteThreepid> for InvitationRecipient {
+    fn from(value: InviteThreepid) -> Self {
+        Self::ThirdPartyId(value)
+    }
+}
+
+/// Data to invite a user by Matrix identifier.
+#[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
+#[non_exhaustive]
+pub struct InviteUserId {
+    /// The Matrix identifier of the user to invite.
+    pub user_id: OwnedUserId,
+}
+
+impl InviteUserId {
+    /// Constructs a new `InviteUserId` with the given Matrix identifier.
+    pub fn new(user_id: OwnedUserId) -> Self {
+        Self { user_id }
+    }
 }
 // /// `POST /_matrix/client/*/rooms/{room_id}/kick`
 // ///
@@ -188,13 +212,13 @@ pub struct KickUserReqBody {
 /// Request type for the `invite_user` endpoint.
 #[derive(ToSchema, Deserialize, Debug)]
 pub struct InviteUserReqBody {
-    /// The user to invite.
-    #[serde(flatten)]
-    pub recipient: InvitationRecipient,
-
     /// Optional reason for inviting the user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+
+    /// The user to invite.
+    #[serde(flatten)]
+    pub recipient: InvitationRecipient,
 }
 
 // /// `POST /_matrix/client/*/rooms/{room_id}/leave`

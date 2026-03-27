@@ -94,7 +94,7 @@ async fn register(
     };
 
     let mut appservice = None;
-    if body.login_type == Some(LoginType::Appservice) {
+    if body.login_type == Some(LoginType::ApplicationService) {
         let token = aa.require_access_token()?;
         let matched = crate::appservices()
             .into_iter()
@@ -127,7 +127,7 @@ async fn register(
         auth_error: None,
     };
 
-    if body.login_type != Some(LoginType::Appservice) && !is_guest {
+    if body.login_type != Some(LoginType::ApplicationService) && !is_guest {
         if let Some(auth) = &body.auth {
             let (authed, uiaa) = crate::uiaa::try_auth(
                 &UserId::parse_with_server_name("", &conf.server_name)
@@ -243,7 +243,7 @@ async fn register(
         //     if crate::room::user::join_count(&admin_room)? == 1 {
         //         crate::admin::make_admin(&user_id).await?;
         //         warn!("Granting {} admin privileges as the first user", user_id);
-        //     } else if body.login_type != Some(LoginType::Appservice) {
+        //     } else if body.login_type != Some(LoginType::ApplicationService) {
         //         info!("New user {} registered on this server.", user_id);
         //         let _ = crate::admin::send_message(RoomMessageEventContent::notice_plain(format!(
         //             "New user {user_id} registered on this server."
