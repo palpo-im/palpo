@@ -433,12 +433,15 @@ async fn refresh_access_token(
     })
 }
 
-#[endpoint]
-async fn redirect(
-    _aa: AuthArgs,
-    redirect_url: QueryParam<String, true>,
-    res: &mut Response,
-) -> AppResult<()> {
+/// Extract redirectUrl from query string (Element sends camelCase `redirectUrl`).
+fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
+    req.query::<String>("redirectUrl")
+        .or_else(|| req.query::<String>("redirect_url"))
+        .ok_or_else(|| MatrixError::bad_json("Missing redirectUrl parameter"))
+}
+
+/// Build the authorization URL for the delegated auth issuer.
+fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
     let conf = config::get();
     let da = conf
         .enabled_delegated_auth()
@@ -448,39 +451,25 @@ async fn redirect(
         .as_deref()
         .ok_or_else(|| MatrixError::unknown("Delegated auth issuer not configured"))?;
 
-    // Redirect to the authorization server's authorize endpoint.
-    // The auth server (Pasion) handles the full OIDC flow and redirects back.
-    let auth_url = format!(
+    Ok(format!(
         "{}/authorize?response_type=code&redirect_url={}",
         issuer.trim_end_matches('/'),
         url::form_urlencoded::byte_serialize(redirect_url.as_bytes()).collect::<String>()
-    );
+    ))
+}
 
+#[endpoint]
+async fn redirect(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
+    let redirect_url = get_redirect_url(req)?;
+    let auth_url = build_sso_redirect_url(&redirect_url)?;
     res.render(salvo::prelude::Redirect::found(auth_url));
     Ok(())
 }
 
 #[endpoint]
-async fn provider_url(
-    _aa: AuthArgs,
-    redirect_url: QueryParam<String, true>,
-    res: &mut Response,
-) -> AppResult<()> {
-    let conf = config::get();
-    let da = conf
-        .enabled_delegated_auth()
-        .ok_or_else(|| MatrixError::not_found("SSO is not enabled on this server"))?;
-    let issuer = da
-        .issuer
-        .as_deref()
-        .ok_or_else(|| MatrixError::unknown("Delegated auth issuer not configured"))?;
-
-    let auth_url = format!(
-        "{}/authorize?response_type=code&redirect_url={}",
-        issuer.trim_end_matches('/'),
-        url::form_urlencoded::byte_serialize(redirect_url.as_bytes()).collect::<String>()
-    );
-
+async fn provider_url(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
+    let redirect_url = get_redirect_url(req)?;
+    let auth_url = build_sso_redirect_url(&redirect_url)?;
     res.render(salvo::prelude::Redirect::found(auth_url));
     Ok(())
 }
