@@ -154,12 +154,17 @@ impl SyncEventsResBody {
             ..Default::default()
         }
     }
+    /// Returns `true` if the response contains no meaningful changes for the client.
+    ///
+    /// List counts alone (without room updates, extensions, or txn_id) are not
+    /// considered meaningful — the client already knows these from prior responses.
+    /// This is used by the long-polling logic to decide whether to wait for new events
+    /// instead of returning immediately.
     pub fn is_empty(&self) -> bool {
-        self.lists.is_empty()
-            && (self.rooms.is_empty()
-                || self.rooms.iter().all(|(_id, r)| {
-                    r.timeline.is_empty() && r.required_state.is_empty() && r.invite_state.is_none()
-                }))
+        (self.rooms.is_empty()
+            || self.rooms.iter().all(|(_id, r)| {
+                r.timeline.is_empty() && r.required_state.is_empty() && r.invite_state.is_none()
+            }))
             && self.extensions.is_empty()
             && self.txn_id.is_none()
     }
