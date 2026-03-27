@@ -1,8 +1,5 @@
 //! Matrix user identifiers.
 
-use std::rc::Rc;
-use std::sync::Arc;
-
 use diesel::expression::AsExpression;
 use palpo_identifiers_validation::MAX_BYTES;
 pub use palpo_identifiers_validation::user_id::localpart_is_fully_conforming;
@@ -36,7 +33,7 @@ impl UserId {
     /// localpart consisting of 12 random ASCII characters.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(server_name: &ServerName) -> OwnedUserId {
-        Self::from_borrowed(&format!(
+        Self::from_borrowed_unchecked(&format!(
             "@{}:{}",
             super::generate_localpart(12).to_lowercase(),
             server_name
@@ -62,41 +59,7 @@ impl UserId {
             Self::parse(id)
         } else {
             let _ = localpart_is_fully_conforming(id_str)?;
-            Ok(Self::from_borrowed(&format!("@{id_str}:{server_name}")).to_owned())
-        }
-    }
-
-    /// Variation of [`parse_with_server_name`] that returns `Rc<Self>`.
-    ///
-    /// [`parse_with_server_name`]: Self::parse_with_server_name
-    pub fn parse_with_server_name_rc(
-        id: impl AsRef<str> + Into<Rc<str>>,
-        server_name: &ServerName,
-    ) -> Result<Rc<Self>, IdParseError> {
-        let id_str = id.as_ref();
-
-        if id_str.starts_with('@') {
-            Self::parse_rc(id)
-        } else {
-            let _ = localpart_is_fully_conforming(id_str)?;
-            Ok(Self::from_rc(format!("@{id_str}:{server_name}").into()))
-        }
-    }
-
-    /// Variation of [`parse_with_server_name`] that returns `Arc<Self>`.
-    ///
-    /// [`parse_with_server_name`]: Self::parse_with_server_name
-    pub fn parse_with_server_name_arc(
-        id: impl AsRef<str> + Into<Arc<str>>,
-        server_name: &ServerName,
-    ) -> Result<Arc<Self>, IdParseError> {
-        let id_str = id.as_ref();
-
-        if id_str.starts_with('@') {
-            Self::parse_arc(id)
-        } else {
-            let _ = localpart_is_fully_conforming(id_str)?;
-            Ok(Self::from_arc(format!("@{id_str}:{server_name}").into()))
+            Ok(Self::from_borrowed_unchecked(&format!("@{id_str}:{server_name}")).to_owned())
         }
     }
 
@@ -107,7 +70,7 @@ impl UserId {
 
     /// Returns the server name of the user ID.
     pub fn server_name(&self) -> &ServerName {
-        ServerName::from_borrowed(&self.as_str()[self.colon_idx() + 1..])
+        ServerName::from_borrowed_unchecked(&self.as_str()[self.colon_idx() + 1..])
     }
 
     /// Validate this user ID against the strict or historical grammar.

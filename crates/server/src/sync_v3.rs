@@ -841,7 +841,7 @@ async fn load_left_room(
     let conf = crate::config::get();
     if !room::room_exists(room_id)? {
         let event = PduEvent {
-            event_id: EventId::new(&conf.server_name),
+            event_id: EventId::new_v1(&conf.server_name),
             sender: sender_id.to_owned(),
             origin_server_ts: UnixMillis::now(),
             event_ty: TimelineEventType::RoomMember,
