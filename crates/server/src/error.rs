@@ -144,7 +144,7 @@ impl Writer for AppError {
                 if res.status_code.map(|c| c.is_success()).unwrap_or(true) {
                     let code = if let Some(error) = &uiaa.auth_error {
                         match &error.kind {
-                            ErrorKind::Forbidden { .. } | ErrorKind::UserDeactivated => {
+                            ErrorKind::Forbidden | ErrorKind::UserDeactivated => {
                                 StatusCode::FORBIDDEN
                             }
                             ErrorKind::NotFound => StatusCode::NOT_FOUND,

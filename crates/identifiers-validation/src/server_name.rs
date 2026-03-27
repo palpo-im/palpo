@@ -32,6 +32,10 @@ pub fn validate(server_name: &str) -> Result<(), Error> {
         end_of_host
     };
 
+    if end_of_host == 0 {
+        return Err(Error::InvalidServerName);
+    }
+
     if server_name.len() != end_of_host
         && (
             // hostname is followed by something other than ":port"

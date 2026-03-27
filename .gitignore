@@ -1,4 +1,4 @@
-/target
+target/
 **/*.rs.bk
 /.cargo
 .env.local
@@ -16,3 +16,5 @@ __*
 examples/with-*/data/
 examples/with-*/space/
 _*.md
+.gitnexus/
+.DS_Store

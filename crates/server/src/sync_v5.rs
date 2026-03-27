@@ -5,8 +5,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::core::Seqnum;
-use crate::core::UnixMillis;
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
@@ -16,6 +14,7 @@ use crate::core::events::room::member::{MembershipState, RoomMemberEventContent}
 use crate::core::events::direct::DirectEventContent;
 use crate::core::events::{AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
+use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::{BatchToken, ignored_filter};
@@ -52,6 +51,8 @@ fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
+    #[serde(default)]
+    list_counts: BTreeMap<String, usize>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
     known_rooms: KnownRooms, // For every room, the room_since_sn number
     extensions: sync_events::v5::ExtensionsConfig,
@@ -454,13 +455,18 @@ async fn process_rooms(
         };
 
         if req_body.extensions.account_data.enabled == Some(true) {
-            response.extensions.account_data.rooms.insert(
-                room_id.to_owned(),
+            let room_account_data =
                 data::user::data_changes(Some(room_id), sender_id, *room_since_sn, None)?
                     .into_iter()
                     .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
-                    .collect::<Vec<_>>(),
-            );
+                    .collect::<Vec<_>>();
+            if !room_account_data.is_empty() {
+                response
+                    .extensions
+                    .account_data
+                    .rooms
+                    .insert(room_id.to_owned(), room_account_data);
+            }
         }
 
         let last_private_read_update =
@@ -508,10 +514,13 @@ async fn process_rooms(
             continue;
         }
 
-        let prev_batch = timeline
-            .events
-            .first()
-            .and_then(|(sn, _)| if *sn == 0 { None } else { Some(sn.to_string()) });
+        let prev_batch = timeline.events.first().and_then(|(sn, _)| {
+            if *sn == 0 {
+                None
+            } else {
+                Some(BatchToken::new_live(*sn).to_string())
+            }
+        });
 
         let room_events: Vec<_> = timeline
             .events
@@ -864,10 +873,10 @@ where
 
     let mut typing = Typing::new();
     for room_id in rooms {
-        typing.rooms.insert(
-            room_id.to_owned(),
-            room::typing::all_typings(room_id).await?,
-        );
+        let typing_event = room::typing::all_typings(room_id).await?;
+        if !typing_event.content.user_ids.is_empty() {
+            typing.rooms.insert(room_id.to_owned(), typing_event);
+        }
     }
 
     Ok(typing)
@@ -911,7 +920,10 @@ pub fn update_sync_request_with_cache(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
-) -> BTreeMap<String, BTreeMap<OwnedRoomId, i64>> {
+) -> (
+    BTreeMap<String, BTreeMap<OwnedRoomId, i64>>,
+    BTreeMap<String, usize>,
+) {
     let cached = load_or_create_connection(&user_id, &device_id, &req_body.conn_id);
     let cached = &mut cached.lock().unwrap();
 
@@ -1003,9 +1015,22 @@ pub fn update_sync_request_with_cache(
 
     cached.extensions = req_body.extensions.clone();
     let known = cached.known_rooms.clone();
+    let list_counts = cached.list_counts.clone();
     // Persist to DB for cross-instance availability
     persist_connection(&user_id, &device_id, &req_body.conn_id, cached);
-    known
+    (known, list_counts)
+}
+
+pub fn update_sync_list_counts(
+    user_id: OwnedUserId,
+    device_id: OwnedDeviceId,
+    conn_id: Option<String>,
+    list_counts: BTreeMap<String, usize>,
+) {
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let cached = &mut entry.lock().unwrap();
+    cached.list_counts = list_counts;
+    persist_connection(&user_id, &device_id, &conn_id, cached);
 }
 
 pub fn update_sync_subscriptions(

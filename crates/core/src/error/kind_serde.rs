@@ -190,7 +190,7 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::ConnectionTimeout => ErrorKind::ConnectionTimeout,
             ErrorCode::DuplicateAnnotation => ErrorKind::DuplicateAnnotation,
             ErrorCode::Exclusive => ErrorKind::Exclusive,
-            ErrorCode::Forbidden => ErrorKind::forbidden(),
+            ErrorCode::Forbidden => ErrorKind::Forbidden,
             ErrorCode::GuestAccessForbidden => ErrorKind::GuestAccessForbidden,
             ErrorCode::IncompatibleRoomVersion => ErrorKind::IncompatibleRoomVersion {
                 room_version: from_json_value(
@@ -201,7 +201,6 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::InvalidParam => ErrorKind::InvalidParam,
             ErrorCode::InvalidRoomState => ErrorKind::InvalidRoomState,
             ErrorCode::InvalidUsername => ErrorKind::InvalidUsername,
-            #[cfg(feature = "unstable-msc4380")]
             ErrorCode::InviteBlocked => ErrorKind::InviteBlocked,
             ErrorCode::LimitExceeded => ErrorKind::LimitExceeded {
                 retry_after: retry_after_ms
@@ -231,6 +230,7 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::ThreepidInUse => ErrorKind::ThreepidInUse,
             ErrorCode::ThreepidMediumNotSupported => ErrorKind::ThreepidMediumNotSupported,
             ErrorCode::ThreepidNotFound => ErrorKind::ThreepidNotFound,
+            ErrorCode::TokenIncorrect => ErrorKind::TokenIncorrect,
             ErrorCode::TooLarge => ErrorKind::TooLarge,
             ErrorCode::UnableToAuthorizeJoin => ErrorKind::UnableToAuthorizeJoin,
             ErrorCode::UnableToGrantJoin => ErrorKind::UnableToGrantJoin,
@@ -411,10 +411,7 @@ pub enum ErrorCode {
     ///
     /// The invite was interdicted by moderation tools or configured access controls without having
     /// been witnessed by the invitee.
-    ///
-    /// Unstable prefix intentionally shared with MSC4155 for compatibility.
-    #[cfg(feature = "unstable-msc4380")]
-    #[palpo_enum(rename = "ORG.MATRIX.MSC4155.INVITE_BLOCKED")]
+    #[palpo_enum(alias = "ORG.MATRIX.MSC4155.INVITE_BLOCKED")]
     InviteBlocked,
 
     /// `M_LIMIT_EXCEEDED`
@@ -525,6 +522,11 @@ pub enum ErrorCode {
     ///
     /// [third-party identifier]: https://spec.matrix.org/latest/client-server-api/#adding-account-administrative-contact-information
     ThreepidNotFound,
+
+    /// `M_TOKEN_INCORRECT`
+    ///
+    /// The token that the user entered to validate the session is incorrect.
+    TokenIncorrect,
 
     /// `M_TOO_LARGE`
     ///

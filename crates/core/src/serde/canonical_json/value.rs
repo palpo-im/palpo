@@ -184,7 +184,15 @@ impl TryFrom<JsonValue> for CanonicalJsonValue {
         Ok(match val {
             JsonValue::Bool(b) => Self::Bool(b),
             JsonValue::Number(num) => {
-                Self::Integer(num.as_i64().ok_or(CanonicalJsonError::IntConvert)?)
+                // Treat float separately to get a better error message.
+                if !num.is_i64() && !num.is_u64() && num.is_f64() {
+                    return Err(CanonicalJsonError::InvalidType("float".to_owned()));
+                }
+
+                Self::Integer(
+                    num.as_i64()
+                        .ok_or(CanonicalJsonError::IntegerOutOfRange)?,
+                )
             }
             JsonValue::Array(vec) => Self::Array(
                 vec.into_iter()

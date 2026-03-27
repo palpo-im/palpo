@@ -841,7 +841,7 @@ async fn load_left_room(
     let conf = crate::config::get();
     if !room::room_exists(room_id)? {
         let event = PduEvent {
-            event_id: EventId::new(&conf.server_name),
+            event_id: EventId::new_v1(&conf.server_name),
             sender: sender_id.to_owned(),
             origin_server_ts: UnixMillis::now(),
             event_ty: TimelineEventType::RoomMember,
@@ -941,9 +941,9 @@ async fn load_left_room(
         limited = false;
     }
     let prev_batch = if limited {
-        timeline.events.first().map(|(sn, _)| sn.to_string())
+        timeline.events.first().map(|(sn, _)| BatchToken::new_live(*sn).to_string())
     } else {
-        timeline.events.last().map(|(sn, _)| sn.to_string())
+        timeline.events.last().map(|(sn, _)| BatchToken::new_live(*sn).to_string())
     };
 
     // let left_event = timeline::get_pdu(&left_event_id).map(|pdu| pdu.to_sync_room_event());

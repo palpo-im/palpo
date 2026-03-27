@@ -2,8 +2,8 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::events::{AnyStateEvent, AnyStateEventContent, StateEventType};
-use crate::serde::RawJson;
-use crate::{OwnedEventId, OwnedRoomId, UnixMillis};
+use crate::serde::{RawJson, StringEnum};
+use crate::{OwnedEventId, OwnedRoomId, PrivOwnedStr, UnixMillis};
 
 // /// `GET /_matrix/client/*/rooms/{room_id}/state/{eventType}/{stateKey}`
 // ///
@@ -44,8 +44,10 @@ pub struct StateEventsForKeyReqArgs {
 }
 
 /// The format to use for the returned data.
-#[derive(ToSchema, Default, Deserialize, Debug, PartialEq, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
+#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
+#[derive(ToSchema, Default, Clone, StringEnum)]
+#[palpo_enum(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum StateEventFormat {
     /// Will return only the content of the state event.
     ///
@@ -56,6 +58,10 @@ pub enum StateEventFormat {
     /// Will return the entire event in the usual format suitable for clients, including fields
     /// like event ID, sender and timestamp.
     Event,
+
+    #[doc(hidden)]
+    #[salvo(schema(value_type = String))]
+    _Custom(PrivOwnedStr),
 }
 
 #[derive(ToParameters, Deserialize, Debug)]
