@@ -1,0 +1,71 @@
+name: Complement tests
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - 'tests/complement/**'
+      - '.github/workflows/complement.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - 'tests/complement/**'
+      - '.github/workflows/complement.yml'
+  workflow_dispatch:
+
+jobs:
+  complement:
+    name: Complement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Clone Complement
+        run: git clone --depth 1 https://github.com/matrix-org/complement.git /tmp/complement
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build complement-palpo image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tests/complement/Dockerfile.github
+          tags: complement-palpo
+          load: true
+          cache-from: type=gha,scope=complement
+          cache-to: type=gha,mode=max,scope=complement
+
+      - name: Run Complement tests
+        run: |
+          cd /tmp/complement
+          COMPLEMENT_BASE_IMAGE=complement-palpo \
+            COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
+            go test -v -count=1 -timeout 60m \
+            ./tests/csapi \
+            ./tests \
+            2>&1 | tee results.log
+        continue-on-error: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: complement-results
+          path: /tmp/complement/results.log
+          retention-days: 14

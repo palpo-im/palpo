@@ -1,0 +1,74 @@
+### Single-stage Dockerfile for GitHub CI Complement testing
+### Optimized for layer caching with Docker Buildx / GHA cache
+
+FROM rust:latest
+
+# Install system dependencies (PostgreSQL, Caddy, tools)
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+    libclang-dev postgresql postgresql-contrib debian-keyring \
+    debian-archive-keyring apt-transport-https \
+    curl \
+    && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/testing/gpg.key' \
+    | gpg --dearmor -o /usr/share/keyrings/caddy-testing-archive-keyring.gpg \
+    && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/testing/debian.deb.txt' \
+    | tee /etc/apt/sources.list.d/caddy-testing.list \
+    && apt-get update \
+    && apt-get install -y caddy systemctl inetutils-ping libnss3-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+# Copy dependency manifests first for better layer caching
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core-macros/Cargo.toml crates/core-macros/Cargo.toml
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/data/Cargo.toml crates/data/Cargo.toml
+COPY crates/identifiers-validation/Cargo.toml crates/identifiers-validation/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/server-macros/Cargo.toml crates/server-macros/Cargo.toml
+
+# Create dummy src files so cargo can resolve dependencies and cache them
+RUN mkdir -p crates/core-macros/src crates/core/src crates/data/src \
+    crates/identifiers-validation/src crates/server/src crates/server-macros/src && \
+    echo "fn main() {}" > crates/server/src/main.rs && \
+    touch crates/core-macros/src/lib.rs crates/core/src/lib.rs crates/data/src/lib.rs \
+    crates/identifiers-validation/src/lib.rs crates/server-macros/src/lib.rs
+
+# Pre-fetch and compile dependencies (cached unless Cargo.toml/Cargo.lock change)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build 2>/dev/null || true
+
+# Copy actual source code
+COPY crates crates
+
+# Build palpo binary (only recompiles project code, deps are cached)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build \
+    && cp target/debug/palpo palpo
+
+# Copy test configuration
+COPY tests/complement/palpo.toml palpo.toml
+COPY tests/complement/caddy.json caddy.json
+COPY tests/complement/startup.sh startup.sh
+
+ENV PALPO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/palpo"
+ENV PALPO_CONFIG=/work/palpo.toml
+ENV LOG_FORMAT=text
+
+# Configure PostgreSQL: trust auth and bump max connections
+RUN PG_VERSION=$(ls /etc/postgresql/) && \
+    sed -i "s%127.0.0.1/32            md5%127.0.0.1/32            trust%g" /etc/postgresql/${PG_VERSION}/main/pg_hba.conf && \
+    sed -i 's/max_connections = 100/max_connections = 2000/g' /etc/postgresql/${PG_VERSION}/main/postgresql.conf && \
+    chmod +x /work/startup.sh
+
+# Initialize PostgreSQL database
+RUN PG_VERSION=$(ls /etc/postgresql/) && \
+    pg_ctlcluster ${PG_VERSION} main start && \
+    su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'postgres';\"" && \
+    su - postgres -c "createdb palpo"
+
+EXPOSE 8008 8448
+
+CMD /work/startup.sh
