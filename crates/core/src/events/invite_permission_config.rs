@@ -1,68 +1,54 @@
-//! Types for the [`m.invite_permission_config`] account data event.
+//! Types for the [`m.invite_permission_config`] account data.
 //!
 //! [`m.invite_permission_config`]: https://github.com/matrix-org/matrix-spec-proposals/pull/4380
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::macros::EventContent;
+use crate::macros::{EventContent, StringEnum};
+use crate::PrivOwnedStr;
 
-/// The content of an `m.invite_permission_config` event.
+/// The content of an [`m.invite_permission_config`] account data.
 ///
-/// A single property: `block_all`.
+/// Controls whether invites to this account are permitted.
+///
+/// [`m.invite_permission_config`]: https://github.com/matrix-org/matrix-spec-proposals/pull/4380
 #[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize, EventContent)]
+#[non_exhaustive]
 #[palpo_event(
     kind = GlobalAccountData,
-    type = "org.matrix.msc4380.invite_permission_config",
-    alias = "m.invite_permission_config",
+    type = "m.invite_permission_config",
 )]
 pub struct InvitePermissionConfigEventContent {
-    /// When set to true, indicates that the user does not wish to receive *any* room invites, and
-    /// they should be blocked.
-    #[serde(default)]
-    #[serde(deserialize_with = "crate::serde::default_on_error")]
-    pub block_all: bool,
+    /// The default action chosen by the user that the homeserver should perform automatically when
+    /// receiving an invitation for this account.
+    ///
+    /// A missing, invalid or unsupported value means that the user wants to receive invites as
+    /// normal.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde::default_on_error",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_action: Option<InvitePermissionAction>,
 }
 
 impl InvitePermissionConfigEventContent {
-    /// Creates a new `InvitePermissionConfigEventContent` from the desired boolean state.
-    pub fn new(block_all: bool) -> Self {
-        Self { block_all }
+    /// Creates a new empty `InvitePermissionConfigEventContent`.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use assert_matches2::assert_matches;
-//     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+/// Possible actions in response to an invite.
+#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
+#[derive(ToSchema, Clone, StringEnum)]
+#[palpo_enum(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum InvitePermissionAction {
+    /// Reject the invite.
+    Block,
 
-//     use super::InvitePermissionConfigEventContent;
-//     use crate::AnyGlobalAccountDataEvent;
-
-//     #[test]
-//     fn serialization() {
-//         let invite_permission_config = InvitePermissionConfigEventContent::new(true);
-
-//         let json = json!({
-//             "block_all": true
-//         });
-
-//         assert_eq!(to_json_value(invite_permission_config).unwrap(), json);
-//     }
-
-//     #[test]
-//     fn deserialization() {
-//         let json = json!({
-//             "content": {
-//                 "block_all": true
-//             },
-//             "type": "m.invite_permission_config"
-//         });
-
-//         assert_matches!(
-//             from_json_value::<AnyGlobalAccountDataEvent>(json),
-//             Ok(AnyGlobalAccountDataEvent::InvitePermissionConfig(ev))
-//         );
-//         assert!(ev.content.block_all);
-//     }
-// }
+    #[doc(hidden)]
+    _Custom(PrivOwnedStr),
+}

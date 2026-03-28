@@ -126,7 +126,9 @@ impl MatrixError {
         Self::new(ErrorKind::BadStatus { status, body: None }, body)
     }
     pub fn forbidden(body: impl Into<ErrorBody>, authenticate: Option<AuthenticateError>) -> Self {
-        Self::new(ErrorKind::Forbidden { authenticate }, body)
+        let mut error = Self::new(ErrorKind::Forbidden, body);
+        error.authenticate = authenticate;
+        error
     }
     #[cfg(feature = "unstable-msc4186")]
     pub fn unknown_pos(body: impl Into<ErrorBody>) -> Self {
@@ -194,7 +196,7 @@ impl Scribe for MatrixError {
             let code = self.status_code.unwrap_or_else(|| {
                 use ErrorKind::*;
                 match self.kind.clone() {
-                    Forbidden { .. }
+                    Forbidden
                     | GuestAccessForbidden
                     | ThreepidAuthFailed
                     | ThreepidDenied => StatusCode::FORBIDDEN,

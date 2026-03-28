@@ -69,7 +69,7 @@ impl<'a> EventEnum<'a> {
 
         let kind = data.kind;
         let content_enum = format_ident!("Any{kind}Content");
-        let full_content_enum = format_ident!("AnyFull{kind}Content");
+        let full_content_enum = format_ident!("Any{kind}ContentChange");
         let event_type_enum = kind.to_event_type_enum();
 
         Self {
@@ -485,13 +485,13 @@ impl EventEnumVariation<'_> {
                                 #( #variant_attrs )*
                                 Self::#variants(event) => match event {
                                     #palpo_core::events::#event_struct::Original(ev) => #full_content_enum::#variants(
-                                        #palpo_core::events::FullStateEventContent::Original {
+                                        #palpo_core::events::StateEventContentChange::Original {
                                             content: ev.content.clone(),
                                             prev_content: ev.unsigned.prev_content.clone()
                                         }
                                     ),
                                     #palpo_core::events::#event_struct::Redacted(ev) => #full_content_enum::#variants(
-                                        #palpo_core::events::FullStateEventContent::Redacted(
+                                        #palpo_core::events::StateEventContentChange::Redacted(
                                             ev.content.clone()
                                         )
                                     ),

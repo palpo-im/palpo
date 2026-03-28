@@ -6,8 +6,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::core::Seqnum;
-use crate::core::UnixMillis;
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
@@ -19,11 +17,12 @@ use crate::core::events::{
     AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType,
 };
 use crate::core::identifiers::*;
+use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::{BatchToken, ignored_filter};
-use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
+use crate::room::{self, filter_rooms, state, timeline};
 use crate::{AppResult, data, extract_variant};
 
 /// Sort rooms by last activity (most recent first) using event sequence numbers.
@@ -55,6 +54,8 @@ fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
+    #[serde(default)]
+    list_counts: BTreeMap<String, usize>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
     known_rooms: KnownRooms, // For every room, the room_since_sn number
     extensions: sync_events::v5::ExtensionsConfig,
@@ -430,6 +431,7 @@ async fn process_lists(
                     required_state: BTreeSet::new(),
                     timeline_limit: 0_usize,
                     room_since_sn: since_sn,
+                    include_heroes: false,
                 });
 
                 let limit = list.room_details.timeline_limit.min(100);
@@ -442,6 +444,8 @@ async fn process_lists(
                 );
 
                 todo_room.timeline_limit = todo_room.timeline_limit.max(limit);
+                todo_room.include_heroes =
+                    todo_room.include_heroes || list.include_heroes.unwrap_or(false);
                 todo_room.room_since_sn = todo_room.room_since_sn.min(
                     known_rooms
                         .get(list_id.as_str())
@@ -497,6 +501,8 @@ fn fetch_subscriptions(
                 .map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
         );
         todo_room.timeline_limit = todo_room.timeline_limit.max(limit as usize);
+        todo_room.include_heroes =
+            todo_room.include_heroes || room.include_heroes.unwrap_or(false);
         todo_room.room_since_sn = todo_room.room_since_sn.min(
             known_rooms
                 .get("subscriptions")
@@ -536,12 +542,15 @@ async fn process_rooms(
     response: &mut SyncEventsResBody,
 ) -> AppResult<BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>> {
     let mut rooms = BTreeMap::new();
+    let receipts_enabled = req_body.extensions.receipts.enabled.unwrap_or(false);
+
     for (
         room_id,
         TodoRoom {
             required_state,
             timeline_limit,
             room_since_sn,
+            include_heroes,
         },
     ) in todo_rooms
     {
@@ -583,51 +592,61 @@ async fn process_rooms(
         };
 
         if req_body.extensions.account_data.enabled == Some(true) {
-            response.extensions.account_data.rooms.insert(
-                room_id.to_owned(),
+            let room_account_data =
                 data::user::data_changes(Some(room_id), sender_id, *room_since_sn, None)?
                     .into_iter()
                     .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
-                    .collect::<Vec<_>>(),
-            );
+                    .collect::<Vec<_>>();
+            if !room_account_data.is_empty() {
+                response
+                    .extensions
+                    .account_data
+                    .rooms
+                    .insert(room_id.to_owned(), room_account_data);
+            }
         }
 
-        let last_private_read_update =
-            data::room::receipt::last_private_read_update_sn(sender_id, room_id)
-                .unwrap_or_default()
-                > *room_since_sn;
+        let receipt_size = if receipts_enabled {
+            let last_private_read_update =
+                data::room::receipt::last_private_read_update_sn(sender_id, room_id)
+                    .unwrap_or_default()
+                    > *room_since_sn;
 
-        let private_read_event = if last_private_read_update {
-            crate::room::receipt::last_private_read(sender_id, room_id).ok()
+            let private_read_event = if last_private_read_update {
+                crate::room::receipt::last_private_read(sender_id, room_id).ok()
+            } else {
+                None
+            };
+
+            let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)?
+                .into_iter()
+                .filter_map(|(read_user, content)| {
+                    if !crate::user::user_is_ignored(&read_user, sender_id) {
+                        Some(content)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if let Some(private_read_event) = private_read_event {
+                receipts.push(private_read_event);
+            }
+
+            let size = receipts.len();
+
+            if size > 0 {
+                response.extensions.receipts.rooms.insert(
+                    room_id.clone(),
+                    SyncReceiptEvent {
+                        content: combine_receipt_event_contents(receipts),
+                    },
+                );
+            }
+            size
         } else {
-            None
+            0
         };
-
-        let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)?
-            .into_iter()
-            .filter_map(|(read_user, content)| {
-                if !crate::user::user_is_ignored(&read_user, sender_id) {
-                    Some(content)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(private_read_event) = private_read_event {
-            receipts.push(private_read_event);
-        }
-
-        let receipt_size = receipts.len();
-
-        if receipt_size > 0 {
-            response.extensions.receipts.rooms.insert(
-                room_id.clone(),
-                SyncReceiptEvent {
-                    content: combine_receipt_event_contents(receipts),
-                },
-            );
-        }
 
         if room_since_sn != &0
             && timeline.events.is_empty()
@@ -637,10 +656,13 @@ async fn process_rooms(
             continue;
         }
 
-        let prev_batch = timeline
-            .events
-            .first()
-            .and_then(|(sn, _)| if *sn == 0 { None } else { Some(sn.to_string()) });
+        let prev_batch = timeline.events.first().and_then(|(sn, _)| {
+            if *sn == 0 {
+                None
+            } else {
+                Some(BatchToken::new_live(*sn).to_string())
+            }
+        });
 
         let room_events: Vec<_> = timeline
             .events
@@ -769,59 +791,68 @@ async fn process_rooms(
 
         let required_state = required_state_events;
 
-        // Heroes - limit query to 6 members (5 heroes + sender) to avoid loading all members
-        let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
-            .into_iter()
-            .filter(|member| *member != sender_id)
-            .take(5)
-            .filter_map(|user_id| {
-                room::get_member(room_id, &user_id, None)
-                    .ok()
-                    .map(|member| sync_events::v5::SyncRoomHero {
-                        user_id,
-                        name: member.display_name,
-                        avatar: member.avatar_url,
-                    })
-            })
-            .collect();
+        // Heroes - only compute when requested or when room name isn't set
+        let room_name = room::get_name(room_id).ok();
+        let (heroes, hero_name, heroes_avatar) = if *include_heroes || room_name.is_none() {
+            let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
+                .into_iter()
+                .filter(|member| *member != sender_id)
+                .take(5)
+                .filter_map(|user_id| {
+                    room::get_member(room_id, &user_id, None)
+                        .ok()
+                        .map(|member| sync_events::v5::SyncRoomHero {
+                            user_id,
+                            name: member.display_name,
+                            avatar: member.avatar_url,
+                        })
+                })
+                .collect();
 
-        let name = match heroes.len().cmp(&(1_usize)) {
-            Ordering::Greater => {
-                let firsts = heroes[1..]
-                    .iter()
-                    .map(|h: &SyncRoomHero| h.name.clone().unwrap_or_else(|| h.user_id.to_string()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            let name = match heroes.len().cmp(&(1_usize)) {
+                Ordering::Greater => {
+                    let firsts = heroes[1..]
+                        .iter()
+                        .map(|h: &SyncRoomHero| {
+                            h.name.clone().unwrap_or_else(|| h.user_id.to_string())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
 
-                let last = heroes[0]
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| heroes[0].user_id.to_string());
+                    let last = heroes[0]
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| heroes[0].user_id.to_string());
 
-                Some(format!("{firsts} and {last}"))
-            }
-            Ordering::Equal => Some(
-                heroes[0]
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| heroes[0].user_id.to_string()),
-            ),
-            Ordering::Less => None,
-        };
+                    Some(format!("{firsts} and {last}"))
+                }
+                Ordering::Equal => Some(
+                    heroes[0]
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| heroes[0].user_id.to_string()),
+                ),
+                Ordering::Less => None,
+            };
 
-        let heroes_avatar = if heroes.len() == 1 {
-            heroes[0].avatar.clone()
+            let avatar = if heroes.len() == 1 {
+                heroes[0].avatar.clone()
+            } else {
+                None
+            };
+
+            (Some(heroes), name, avatar)
         } else {
-            None
+            (None, None, None)
         };
 
         let notify_summary = room::user::notify_summary(sender_id, room_id)?;
         rooms.insert(
             room_id.clone(),
             SyncRoom {
-                name: room::get_name(room_id).ok().or(name),
+                name: room_name.or(hero_name),
                 avatar: match heroes_avatar {
-                    Some(heroes_avatar) => Some(heroes_avatar),
+                    Some(ref heroes_avatar) => Some(heroes_avatar.clone()),
                     _ => room::get_avatar_url(room_id).ok().flatten(),
                 },
                 initial: Some(is_initial),
@@ -855,7 +886,7 @@ async fn process_rooms(
                         .count() as i64,
                 ),
                 bump_stamp: timestamp.map(|t| t.get() as i64),
-                heroes: Some(heroes),
+                heroes,
             },
         );
     }
@@ -1111,10 +1142,10 @@ where
             }
         }
 
-        typing.rooms.insert(
-            room_id.to_owned(),
-            room::typing::all_typings(room_id).await?,
-        );
+        let typing_event = room::typing::all_typings(room_id).await?;
+        if !typing_event.content.user_ids.is_empty() {
+            typing.rooms.insert(room_id.to_owned(), typing_event);
+        }
     }
 
     Ok(typing)
@@ -1158,7 +1189,10 @@ pub fn update_sync_request_with_cache(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
-) -> BTreeMap<String, BTreeMap<OwnedRoomId, i64>> {
+) -> (
+    BTreeMap<String, BTreeMap<OwnedRoomId, i64>>,
+    BTreeMap<String, usize>,
+) {
     let cached = load_or_create_connection(&user_id, &device_id, &req_body.conn_id);
     let cached = &mut cached.lock().unwrap();
 
@@ -1255,9 +1289,22 @@ pub fn update_sync_request_with_cache(
 
     cached.extensions = req_body.extensions.clone();
     let known = cached.known_rooms.clone();
+    let list_counts = cached.list_counts.clone();
     // Persist to DB for cross-instance availability
     persist_connection(&user_id, &device_id, &req_body.conn_id, cached);
-    known
+    (known, list_counts)
+}
+
+pub fn update_sync_list_counts(
+    user_id: OwnedUserId,
+    device_id: OwnedDeviceId,
+    conn_id: Option<String>,
+    list_counts: BTreeMap<String, usize>,
+) {
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let cached = &mut entry.lock().unwrap();
+    cached.list_counts = list_counts;
+    persist_connection(&user_id, &device_id, &conn_id, cached);
 }
 
 pub fn update_sync_subscriptions(

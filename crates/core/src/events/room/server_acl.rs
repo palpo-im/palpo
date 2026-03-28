@@ -68,8 +68,13 @@ impl RoomServerAclEventContent {
 
         let host = server_name.host();
 
-        self.deny.iter().all(|d| !WildMatch::new(d).matches(host))
-            && self.allow.iter().any(|a| WildMatch::new(a).matches(host))
+        self.deny
+            .iter()
+            .all(|d| !WildMatch::new_case_insensitive(d).matches(host))
+            && self
+                .allow
+                .iter()
+                .any(|a| WildMatch::new_case_insensitive(a).matches(host))
     }
 }
 

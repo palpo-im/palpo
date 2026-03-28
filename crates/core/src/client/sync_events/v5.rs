@@ -42,6 +42,7 @@ pub struct TodoRoom {
     pub required_state: BTreeSet<TypeStateKey>,
     pub timeline_limit: usize,
     pub room_since_sn: Seqnum,
+    pub include_heroes: bool,
 }
 impl TodoRoom {
     pub fn new(
@@ -53,6 +54,7 @@ impl TodoRoom {
             required_state,
             timeline_limit,
             room_since_sn,
+            include_heroes: false,
         }
     }
 }
@@ -154,13 +156,16 @@ impl SyncEventsResBody {
             ..Default::default()
         }
     }
-    pub fn is_empty(&self) -> bool {
-        self.lists.is_empty()
-            && (self.rooms.is_empty()
-                || self.rooms.iter().all(|(_id, r)| {
-                    r.timeline.is_empty() && r.required_state.is_empty() && r.invite_state.is_none()
-                }))
-            && self.extensions.is_empty()
+    /// Returns `true` if the response contains no meaningful changes for the client.
+    ///
+    /// List counts and static extension metadata are not treated as incremental
+    /// updates for long-polling decisions.
+    pub fn is_empty_for_long_poll(&self) -> bool {
+        (self.rooms.is_empty()
+            || self.rooms.iter().all(|(_id, r)| {
+                r.timeline.is_empty() && r.required_state.is_empty() && r.invite_state.is_none()
+            }))
+            && self.extensions.is_empty_for_long_poll()
             && self.txn_id.is_none()
     }
 }
@@ -545,6 +550,17 @@ impl Extensions {
             && self.receipts.is_empty()
             && self.typing.is_empty()
     }
+
+    /// Whether the extension carries meaningful incremental updates for long-polling.
+    pub fn is_empty_for_long_poll(&self) -> bool {
+        self.to_device
+            .as_ref()
+            .is_none_or(|to| to.events.is_empty())
+            && self.e2ee.is_empty_for_long_poll()
+            && self.account_data.is_empty()
+            && self.receipts.is_empty()
+            && self.typing.is_empty()
+    }
 }
 
 /// To-device messages extension configuration.
@@ -653,6 +669,14 @@ impl E2ee {
             && self.device_one_time_keys_count.is_empty()
             && self.device_unused_fallback_key_types.is_none()
     }
+
+    /// Whether the e2ee extension has meaningful incremental updates for long-polling.
+    ///
+    /// One-time key counts are device metadata; they should not keep an otherwise
+    /// idle sliding-sync response from long-polling.
+    pub fn is_empty_for_long_poll(&self) -> bool {
+        self.device_lists.is_empty() && self.device_unused_fallback_key_types.is_none()
+    }
 }
 
 /// Account-data extension configuration.
@@ -714,7 +738,7 @@ pub struct AccountData {
 impl AccountData {
     /// Whether all fields are empty or `None`.
     pub fn is_empty(&self) -> bool {
-        self.global.is_empty() && self.rooms.is_empty()
+        self.global.is_empty() && self.rooms.values().all(Vec::is_empty)
     }
 }
 
@@ -864,6 +888,82 @@ impl Typing {
 
     /// Whether all fields are empty or `None`.
     pub fn is_empty(&self) -> bool {
-        self.rooms.is_empty()
+        self.rooms
+            .values()
+            .all(|event| event.content.user_ids.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{E2ee, Extensions, SyncEventsResBody, Typing};
+    use crate::events::typing::{SyncTypingEvent, TypingEventContent};
+    use crate::{DeviceKeyAlgorithm, RoomId};
+
+    #[test]
+    fn long_poll_ignores_list_counts_and_static_extension_metadata() {
+        let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
+
+        let mut response = SyncEventsResBody::new("539".to_owned());
+        response
+            .lists
+            .insert("all_rooms".to_owned(), super::SyncList { count: 1, ops: Vec::new() });
+        response
+            .extensions
+            .account_data
+            .rooms
+            .insert(room_id.clone(), Vec::new());
+        response.extensions.typing.rooms.insert(
+            room_id,
+            SyncTypingEvent {
+                content: TypingEventContent::new(Vec::new()),
+            },
+        );
+        response.extensions.e2ee = E2ee {
+            device_one_time_keys_count: BTreeMap::from([(
+                DeviceKeyAlgorithm::SignedCurve25519,
+                42,
+            )]),
+            ..Default::default()
+        };
+
+        assert!(response.is_empty_for_long_poll());
+        assert!(!response.extensions.is_empty());
+    }
+
+    #[test]
+    fn long_poll_still_treats_real_e2ee_updates_as_non_empty() {
+        let response = SyncEventsResBody {
+            extensions: Extensions {
+                e2ee: E2ee {
+                    device_lists: crate::device::DeviceLists {
+                        changed: vec!["@alice:example.org".parse().unwrap()],
+                        left: Vec::new(),
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!response.is_empty_for_long_poll());
+    }
+
+    #[test]
+    fn typing_is_empty_when_all_rooms_have_no_typing_users() {
+        let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
+        let typing = Typing {
+            rooms: BTreeMap::from([(
+                room_id,
+                SyncTypingEvent {
+                    content: TypingEventContent::new(Vec::new()),
+                },
+            )]),
+        };
+
+        assert!(typing.is_empty());
     }
 }

@@ -6,41 +6,77 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 
+mod serializer;
 mod value;
 
+pub use self::serializer::Serializer as CanonicalJsonSerializer;
 pub use self::value::{CanonicalJsonObject, CanonicalJsonValue};
 use crate::room_version_rules::RedactionRules;
 use crate::serde::RawJson;
 
-const CANONICALJSON_MAX_INT: i64 = (2i64.pow(53)) - 1;
-const CANONICALJSON_MIN_INT: i64 = -CANONICALJSON_MAX_INT;
+pub(crate) const CANONICALJSON_MAX_INT: i64 = (2i64.pow(53)) - 1;
+pub(crate) const CANONICALJSON_MIN_INT: i64 = -CANONICALJSON_MAX_INT;
 
 /// The set of possible errors when serializing to canonical JSON.
 #[derive(Debug)]
 #[allow(clippy::exhaustive_enums)]
 pub enum CanonicalJsonError {
-    IntConvert,
-    InvalidIntRange,
-    /// An error occurred while serializing/deserializing.
-    SerDe(serde_json::Error),
+    /// The integer value is out of canonical JSON range.
+    IntegerOutOfRange,
+
+    /// The given type cannot be serialized to canonical JSON.
+    InvalidType(String),
+
+    /// The given type cannot be serialized to an object key.
+    InvalidObjectKeyType(String),
+
+    /// The same object key was serialized twice.
+    DuplicateObjectKey(String),
+
+    /// An error occurred while re-serializing a [`serde_json::value::RawValue`].
+    InvalidRawValue(serde_json::Error),
+
+    /// Another error happened.
+    Other(String),
 }
 
 impl fmt::Display for CanonicalJsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CanonicalJsonError::IntConvert => f.write_str("number found is not a valid `int`"),
-            CanonicalJsonError::InvalidIntRange => {
-                write!(f, "integer is out of range for canonical JSON")
+            Self::IntegerOutOfRange => {
+                f.write_str("integer is out of range for canonical JSON")
             }
-            CanonicalJsonError::SerDe(err) => write!(f, "serde Error: {err}"),
+            Self::InvalidType(ty) => {
+                write!(f, "{ty} cannot be serialized as canonical JSON")
+            }
+            Self::InvalidObjectKeyType(ty) => {
+                write!(f, "{ty} cannot be used as an object key, expected a string type")
+            }
+            Self::InvalidRawValue(error) => {
+                write!(f, "invalid raw value: {error}")
+            }
+            Self::DuplicateObjectKey(key) => {
+                write!(f, "duplicate object key `{key}`")
+            }
+            Self::Other(msg) => f.write_str(msg),
         }
     }
 }
 
 impl std::error::Error for CanonicalJsonError {}
+
+impl serde::ser::Error for CanonicalJsonError {
+    fn custom<T>(msg: T) -> Self
+    where
+        T: fmt::Display,
+    {
+        Self::Other(msg.to_string())
+    }
+}
+
 impl From<serde_json::Error> for CanonicalJsonError {
     fn from(value: serde_json::Error) -> Self {
-        Self::SerDe(value)
+        Self::InvalidRawValue(value)
     }
 }
 
@@ -125,31 +161,28 @@ pub fn try_from_json_map(
 pub fn to_canonical_object<T: serde::Serialize>(
     value: T,
 ) -> Result<CanonicalJsonObject, CanonicalJsonError> {
-    use serde::ser::Error;
-
-    match serde_json::to_value(value).map_err(CanonicalJsonError::SerDe)? {
-        serde_json::Value::Object(map) => try_from_json_map(map),
-        _ => Err(CanonicalJsonError::SerDe(serde_json::Error::custom(
-            "Value must be an object",
-        ))),
+    match to_canonical_value(value)? {
+        CanonicalJsonValue::Object(obj) => Ok(obj),
+        _ => Err(CanonicalJsonError::Other("Value must be an object".to_owned())),
     }
 }
 
 /// Fallible conversion from any value that impl's `Serialize` to a
 /// `CanonicalJsonValue`.
+///
+/// Uses a custom serializer that correctly handles `serde_json::value::RawValue`
+/// and rejects floats, duplicate keys, and out-of-range integers.
 pub fn to_canonical_value<T: Serialize>(
     value: T,
 ) -> Result<CanonicalJsonValue, CanonicalJsonError> {
-    serde_json::to_value(value)
-        .map_err(CanonicalJsonError::SerDe)?
-        .try_into()
+    value.serialize(CanonicalJsonSerializer)
 }
 
 pub fn from_canonical_value<T>(value: CanonicalJsonObject) -> Result<T, CanonicalJsonError>
 where
     T: DeserializeOwned,
 {
-    serde_json::from_value(serde_json::to_value(value)?).map_err(CanonicalJsonError::SerDe)
+    serde_json::from_value(serde_json::to_value(value)?).map_err(CanonicalJsonError::from)
 }
 
 pub fn validate_canonical_json(json: &CanonicalJsonObject) -> Result<(), CanonicalJsonError> {
@@ -165,7 +198,7 @@ pub fn validate_canonical_json(json: &CanonicalJsonObject) -> Result<(), Canonic
             }
             CanonicalJsonValue::Integer(value) => {
                 if *value < CANONICALJSON_MIN_INT || *value > CANONICALJSON_MAX_INT {
-                    return Err(CanonicalJsonError::InvalidIntRange);
+                    return Err(CanonicalJsonError::IntegerOutOfRange);
                 }
             }
             _ => {}
