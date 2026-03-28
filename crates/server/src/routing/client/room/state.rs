@@ -272,7 +272,8 @@ pub async fn send_typing(
         return Err(MatrixError::forbidden("You are not in this room.", None).into());
     }
 
-    if let Typing::Yes(duration) = body.state {
+    if let Typing::Yes(info) = body.state {
+        let duration = info.timeout;
         room::typing::add_typing(
             authed.user_id(),
             &args.room_id,

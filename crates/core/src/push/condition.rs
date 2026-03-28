@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::ops::RangeBounds;
+use std::pin::Pin;
 use std::str::FromStr;
-#[cfg(feature = "unstable-msc4306")]
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use regex::bytes::Regex;
 use salvo::oapi::ToSchema;
@@ -10,12 +11,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::Value as JsonValue;
 use wildmatch::WildMatch;
 
-#[cfg(feature = "unstable-msc4306")]
-use crate::EventId;
 use crate::macros::StringEnum;
 use crate::power_levels::NotificationPowerLevels;
 use crate::room_version_rules::RoomPowerLevelsRules;
-use crate::{OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId};
+use crate::{EventId, OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId};
 
 mod flattened_json;
 mod push_condition_serde;

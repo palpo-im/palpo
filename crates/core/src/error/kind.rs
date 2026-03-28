@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use super::{ErrorCode, RetryAfter};
-use crate::error::AuthenticateError;
 use crate::{PrivOwnedStr, RoomVersionId};
 
 /// An enum for the error kind.
@@ -119,11 +118,7 @@ pub enum ErrorKind {
     /// `M_FORBIDDEN`
     ///
     /// Forbidden access, e.g. joining a room without permission, failed login.
-    #[non_exhaustive]
-    Forbidden {
-        /// The `WWW-Authenticate` header error message.
-        authenticate: Option<AuthenticateError>,
-    },
+    Forbidden,
 
     /// `M_GUEST_ACCESS_FORBIDDEN`
     ///
@@ -165,7 +160,6 @@ pub enum ErrorKind {
     ///
     /// The invite was interdicted by moderation tools or configured access controls without having
     /// been witnessed by the invitee.
-    #[cfg(feature = "unstable-msc4380")]
     InviteBlocked,
 
     /// `M_LIMIT_EXCEEDED`
@@ -281,6 +275,11 @@ pub enum ErrorKind {
     ///
     /// [third-party identifier]: https://spec.matrix.org/latest/client-server-api/#adding-account-administrative-contact-information
     ThreepidNotFound,
+
+    /// `M_TOKEN_INCORRECT`
+    ///
+    /// The token that the user entered to validate the session is incorrect.
+    TokenIncorrect,
 
     /// `M_TOO_LARGE`
     ///
@@ -421,19 +420,6 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    /// Constructs an empty [`ErrorKind::Forbidden`] variant.
-    pub fn forbidden() -> Self {
-        Self::Forbidden { authenticate: None }
-    }
-
-    /// Constructs an [`ErrorKind::Forbidden`] variant with the given
-    /// `WWW-Authenticate` header error message.
-    pub fn forbidden_with_authenticate(authenticate: AuthenticateError) -> Self {
-        Self::Forbidden {
-            authenticate: Some(authenticate),
-        }
-    }
-
     /// Get the [`ErrorCode`] for this `ErrorKind`.
     pub fn code(&self) -> ErrorCode {
         match self {
@@ -452,13 +438,12 @@ impl ErrorKind {
             ErrorKind::ConnectionTimeout => ErrorCode::ConnectionTimeout,
             ErrorKind::DuplicateAnnotation => ErrorCode::DuplicateAnnotation,
             ErrorKind::Exclusive => ErrorCode::Exclusive,
-            ErrorKind::Forbidden { .. } => ErrorCode::Forbidden,
+            ErrorKind::Forbidden => ErrorCode::Forbidden,
             ErrorKind::GuestAccessForbidden => ErrorCode::GuestAccessForbidden,
             ErrorKind::IncompatibleRoomVersion { .. } => ErrorCode::IncompatibleRoomVersion,
             ErrorKind::InvalidParam => ErrorCode::InvalidParam,
             ErrorKind::InvalidRoomState => ErrorCode::InvalidRoomState,
             ErrorKind::InvalidUsername => ErrorCode::InvalidUsername,
-            #[cfg(feature = "unstable-msc4380")]
             ErrorKind::InviteBlocked => ErrorCode::InviteBlocked,
             ErrorKind::LimitExceeded { .. } => ErrorCode::LimitExceeded,
             ErrorKind::MissingParam => ErrorCode::MissingParam,
@@ -476,6 +461,7 @@ impl ErrorKind {
             ErrorKind::ThreepidInUse => ErrorCode::ThreepidInUse,
             ErrorKind::ThreepidMediumNotSupported => ErrorCode::ThreepidMediumNotSupported,
             ErrorKind::ThreepidNotFound => ErrorCode::ThreepidNotFound,
+            ErrorKind::TokenIncorrect => ErrorCode::TokenIncorrect,
             ErrorKind::TooLarge => ErrorCode::TooLarge,
             ErrorKind::UnableToAuthorizeJoin => ErrorCode::UnableToAuthorizeJoin,
             ErrorKind::UnableToGrantJoin => ErrorCode::UnableToGrantJoin,

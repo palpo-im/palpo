@@ -51,11 +51,10 @@ impl EventId {
     /// Attempts to generate an `EventId` for the given origin server with a
     /// localpart consisting of 18 random ASCII characters.
     ///
-    /// This should only be used for events in the original format  as used by
+    /// This should only be used for events in the original format as used by
     /// Matrix room versions 1 and 2.
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(server_name: &ServerName) -> OwnedEventId {
-        Self::from_borrowed(&format!("${}:{server_name}", super::generate_localpart(18))).to_owned()
+    pub fn new_v1(server_name: &ServerName) -> OwnedEventId {
+        Self::from_borrowed_unchecked(&format!("${}:{server_name}", super::generate_localpart(18))).to_owned()
     }
 
     /// Returns the event's unique ID.
@@ -74,7 +73,7 @@ impl EventId {
     /// versions 1 and 2.
     pub fn server_name(&self) -> Option<&ServerName> {
         self.colon_idx()
-            .map(|idx| ServerName::from_borrowed(&self.as_str()[idx + 1..]))
+            .map(|idx| ServerName::from_borrowed_unchecked(&self.as_str()[idx + 1..]))
     }
 
     fn colon_idx(&self) -> Option<usize> {
@@ -117,7 +116,7 @@ mod tests {
     fn generate_random_valid_event_id() {
         use crate::server_name;
 
-        let event_id = EventId::new(server_name!("example.com"));
+        let event_id = EventId::new_v1(server_name!("example.com"));
         let id_str = event_id.as_str();
 
         assert!(id_str.starts_with('$'));

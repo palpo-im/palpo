@@ -201,7 +201,7 @@ impl IdDst {
         quote! {
             #[automatically_derived]
             impl #impl_generics #borrowed_type {
-                pub(super) const fn from_borrowed(s: &::std::primitive::str) -> &Self {
+                pub(super) const fn from_borrowed_unchecked(s: &::std::primitive::str) -> &Self {
                     unsafe { ::std::mem::transmute(s) }
                 }
 
@@ -300,7 +300,7 @@ impl IdDst {
                 ) -> ::std::result::Result<#owned_type, #palpo_core::IdParseError> {
                     let s = s.as_ref();
                     #validate(s)?;
-                    ::std::result::Result::Ok(#ident::from_borrowed(s).to_owned())
+                    ::std::result::Result::Ok(#ident::from_borrowed_unchecked(s).to_owned())
                 }
 
                 #[doc = #parse_box_doc_header]
@@ -363,7 +363,7 @@ impl IdDst {
 
                 fn try_from(s: &'a ::std::primitive::str) -> ::std::result::Result<Self, Self::Error> {
                     #validate(s)?;
-                    ::std::result::Result::Ok(<#borrowed_type>::from_borrowed(s))
+                    ::std::result::Result::Ok(<#borrowed_type>::from_borrowed_unchecked(s))
                 }
             }
 
@@ -391,7 +391,7 @@ impl IdDst {
             #[automatically_derived]
             impl<'a, #generic_params> ::std::convert::From<&'a ::std::primitive::str> for &'a #borrowed_type {
                 fn from(s: &'a ::std::primitive::str) -> Self {
-                    <#borrowed_type>::from_borrowed(s)
+                    <#borrowed_type>::from_borrowed_unchecked(s)
                 }
             }
 
@@ -504,6 +504,21 @@ impl IdDst {
                         // #[cfg(palpo_identifiers_storage = "Arc")]
                         inner: #ident::from_arc(self.as_str().into()),
                     }
+                }
+            }
+
+            #[automatically_derived]
+            impl #impl_generics #owned_type {
+                /// Extracts the inner `Arc<str>` storage without validation.
+                pub(super) fn into_inner(self) -> ::std::sync::Arc<::std::primitive::str> {
+                    // SAFETY: #borrowed_type is #[repr(transparent)] over str.
+                    unsafe { ::std::sync::Arc::from_raw(::std::sync::Arc::into_raw(self.inner) as *const ::std::primitive::str) }
+                }
+
+                /// Creates this type from a `String`, without validating.
+                pub(super) fn from_string_unchecked(s: ::std::string::String) -> Self {
+                    let arc: ::std::sync::Arc<::std::primitive::str> = s.into();
+                    Self { inner: <#borrowed_type>::from_arc(arc) }
                 }
             }
 

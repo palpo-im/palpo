@@ -42,6 +42,7 @@ pub struct TodoRoom {
     pub required_state: BTreeSet<TypeStateKey>,
     pub timeline_limit: usize,
     pub room_since_sn: Seqnum,
+    pub include_heroes: bool,
 }
 impl TodoRoom {
     pub fn new(
@@ -53,6 +54,7 @@ impl TodoRoom {
             required_state,
             timeline_limit,
             room_since_sn,
+            include_heroes: false,
         }
     }
 }
@@ -154,22 +156,62 @@ impl SyncEventsResBody {
             ..Default::default()
         }
     }
-    pub fn is_empty(&self) -> bool {
-        self.lists.is_empty()
-            && (self.rooms.is_empty()
-                || self.rooms.iter().all(|(_id, r)| {
-                    r.timeline.is_empty() && r.required_state.is_empty() && r.invite_state.is_none()
-                }))
-            && self.extensions.is_empty()
+    /// Returns `true` if the response contains no meaningful changes for the client.
+    ///
+    /// List counts and static extension metadata are not treated as incremental
+    /// updates for long-polling decisions.
+    pub fn is_empty_for_long_poll(&self) -> bool {
+        (self.rooms.is_empty()
+            || self.rooms.iter().all(|(_id, r)| {
+                r.timeline.is_empty() && r.required_state.is_empty() && r.invite_state.is_none()
+            }))
+            && self.extensions.is_empty_for_long_poll()
             && self.txn_id.is_none()
     }
 }
-/// A sliding sync response updates to joiend rooms (see
-/// [`super::Response::lists`]).
+/// Type of operation for sliding window list updates.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op")]
+pub enum SyncListOp {
+    /// Full replacement of rooms in the given range.
+    #[serde(rename = "SYNC")]
+    Sync {
+        /// The inclusive range [start, end].
+        range: (usize, usize),
+        /// The room IDs in this range.
+        room_ids: Vec<OwnedRoomId>,
+    },
+    /// Insert a room at the given index, shifting subsequent rooms right.
+    #[serde(rename = "INSERT")]
+    Insert {
+        /// The index to insert at.
+        index: usize,
+        /// The room ID to insert.
+        room_id: OwnedRoomId,
+    },
+    /// Delete the room at the given index, shifting subsequent rooms left.
+    #[serde(rename = "DELETE")]
+    Delete {
+        /// The index to delete.
+        index: usize,
+    },
+    /// Invalidate the given range — client should forget those entries.
+    #[serde(rename = "INVALIDATE")]
+    Invalidate {
+        /// The inclusive range [start, end].
+        range: (usize, usize),
+    },
+}
+
+/// A sliding sync response updated list (see [`super::Response::lists`]).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SyncList {
     /// The total number of rooms found for this list.
     pub count: usize,
+
+    /// The sliding list operations to apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ops: Vec<SyncListOp>,
 }
 
 /// A sliding sync response updated room (see [`super::Response::rooms`]).
@@ -270,6 +312,25 @@ pub struct ReqListFilters {
     /// returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_invite: Option<bool>,
+
+    /// Whether to return DM rooms, only non-DM rooms or both.
+    ///
+    /// If unset, both DM and non-DM rooms are returned. If true, only DM
+    /// rooms are returned. If false, only non-DM rooms are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_dm: Option<bool>,
+
+    /// Whether to return encrypted rooms, only unencrypted rooms or both.
+    ///
+    /// If unset, both encrypted and unencrypted rooms are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_encrypted: Option<bool>,
+
+    /// Only list rooms of these create-types, or all.
+    ///
+    /// This can be used to filter to only spaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub room_types: Vec<RoomTypeFilter>,
 
     /// Only list rooms that are not of these create-types, or all.
     ///
@@ -489,6 +550,17 @@ impl Extensions {
             && self.receipts.is_empty()
             && self.typing.is_empty()
     }
+
+    /// Whether the extension carries meaningful incremental updates for long-polling.
+    pub fn is_empty_for_long_poll(&self) -> bool {
+        self.to_device
+            .as_ref()
+            .is_none_or(|to| to.events.is_empty())
+            && self.e2ee.is_empty_for_long_poll()
+            && self.account_data.is_empty()
+            && self.receipts.is_empty()
+            && self.typing.is_empty()
+    }
 }
 
 /// To-device messages extension configuration.
@@ -597,6 +669,14 @@ impl E2ee {
             && self.device_one_time_keys_count.is_empty()
             && self.device_unused_fallback_key_types.is_none()
     }
+
+    /// Whether the e2ee extension has meaningful incremental updates for long-polling.
+    ///
+    /// One-time key counts are device metadata; they should not keep an otherwise
+    /// idle sliding-sync response from long-polling.
+    pub fn is_empty_for_long_poll(&self) -> bool {
+        self.device_lists.is_empty() && self.device_unused_fallback_key_types.is_none()
+    }
 }
 
 /// Account-data extension configuration.
@@ -658,7 +738,7 @@ pub struct AccountData {
 impl AccountData {
     /// Whether all fields are empty or `None`.
     pub fn is_empty(&self) -> bool {
-        self.global.is_empty() && self.rooms.is_empty()
+        self.global.is_empty() && self.rooms.values().all(Vec::is_empty)
     }
 }
 
@@ -808,6 +888,82 @@ impl Typing {
 
     /// Whether all fields are empty or `None`.
     pub fn is_empty(&self) -> bool {
-        self.rooms.is_empty()
+        self.rooms
+            .values()
+            .all(|event| event.content.user_ids.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{E2ee, Extensions, SyncEventsResBody, Typing};
+    use crate::events::typing::{SyncTypingEvent, TypingEventContent};
+    use crate::{DeviceKeyAlgorithm, RoomId};
+
+    #[test]
+    fn long_poll_ignores_list_counts_and_static_extension_metadata() {
+        let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
+
+        let mut response = SyncEventsResBody::new("539".to_owned());
+        response
+            .lists
+            .insert("all_rooms".to_owned(), super::SyncList { count: 1, ops: Vec::new() });
+        response
+            .extensions
+            .account_data
+            .rooms
+            .insert(room_id.clone(), Vec::new());
+        response.extensions.typing.rooms.insert(
+            room_id,
+            SyncTypingEvent {
+                content: TypingEventContent::new(Vec::new()),
+            },
+        );
+        response.extensions.e2ee = E2ee {
+            device_one_time_keys_count: BTreeMap::from([(
+                DeviceKeyAlgorithm::SignedCurve25519,
+                42,
+            )]),
+            ..Default::default()
+        };
+
+        assert!(response.is_empty_for_long_poll());
+        assert!(!response.extensions.is_empty());
+    }
+
+    #[test]
+    fn long_poll_still_treats_real_e2ee_updates_as_non_empty() {
+        let response = SyncEventsResBody {
+            extensions: Extensions {
+                e2ee: E2ee {
+                    device_lists: crate::device::DeviceLists {
+                        changed: vec!["@alice:example.org".parse().unwrap()],
+                        left: Vec::new(),
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!response.is_empty_for_long_poll());
+    }
+
+    #[test]
+    fn typing_is_empty_when_all_rooms_have_no_typing_users() {
+        let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
+        let typing = Typing {
+            rooms: BTreeMap::from([(
+                room_id,
+                SyncTypingEvent {
+                    content: TypingEventContent::new(Vec::new()),
+                },
+            )]),
+        };
+
+        assert!(typing.is_empty());
     }
 }

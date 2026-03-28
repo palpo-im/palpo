@@ -22,7 +22,10 @@ pub mod room;
 #[cfg(feature = "unstable-msc4143")]
 pub mod rtc;
 pub mod search;
-pub mod server;
+pub mod admin;
+#[doc(hidden)]
+#[deprecated = "Renamed to `admin`."]
+pub use admin as server;
 pub mod session;
 pub mod space;
 pub mod state;
