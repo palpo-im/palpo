@@ -136,7 +136,7 @@ mod tests {
         let mut response = SyncEventsResBody::new("42".to_owned());
         response
             .lists
-            .insert("all_rooms".to_owned(), SyncList { count: 2 });
+            .insert("all_rooms".to_owned(), SyncList { count: 2, ops: Vec::new() });
 
         assert!(has_list_count_changes(
             &response,

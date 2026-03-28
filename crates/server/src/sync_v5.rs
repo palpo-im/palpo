@@ -11,7 +11,8 @@ use crate::core::client::sync_events::{self};
 use crate::core::device::DeviceLists;
 use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_contents};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
-use crate::core::events::{AnyRawAccountDataEvent, StateEventType, TimelineEventType};
+use crate::core::events::direct::DirectEventContent;
+use crate::core::events::{AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
@@ -20,6 +21,32 @@ use crate::event::{BatchToken, ignored_filter};
 use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
+
+/// Sort rooms by last activity (most recent first) using event sequence numbers.
+fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
+    if rooms.is_empty() {
+        return Ok(());
+    }
+
+    let room_strs: Vec<&str> = rooms.iter().map(|r| r.as_str()).collect();
+
+    let results: Vec<(String, i64)> = event_points::table
+        .filter(event_points::room_id.eq_any(&room_strs))
+        .distinct_on(event_points::room_id)
+        .order_by((event_points::room_id.asc(), event_points::event_sn.desc()))
+        .select((event_points::room_id, event_points::event_sn))
+        .load(&mut connect()?)?;
+
+    let last_sn: BTreeMap<&str, i64> = results.iter().map(|(r, sn)| (r.as_str(), *sn)).collect();
+
+    rooms.sort_by(|a, b| {
+        let sn_a = last_sn.get(a.as_str()).copied().unwrap_or(0);
+        let sn_b = last_sn.get(b.as_str()).copied().unwrap_or(0);
+        sn_b.cmp(&sn_a)
+    });
+
+    Ok(())
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SlidingSyncCache {
@@ -139,6 +166,15 @@ pub async fn sync_events(
     let all_joined_rooms = all_joined_rooms.iter().map(AsRef::as_ref).collect();
     let all_invited_rooms = all_invited_rooms.iter().map(AsRef::as_ref).collect();
 
+    // Load DM room set from m.direct account data
+    let dm_rooms: HashSet<OwnedRoomId> = data::user::get_data::<DirectEventContent>(
+        sender_id,
+        None,
+        &GlobalAccountDataEventType::Direct.to_string(),
+    )
+    .map(|direct| direct.0.values().flatten().cloned().collect())
+    .unwrap_or_default();
+
     let mut todo_rooms: TodoRooms = BTreeMap::new();
 
     let sync_info = SyncInfo {
@@ -166,17 +202,19 @@ pub async fn sync_events(
         &all_invited_rooms,
         &all_joined_rooms,
         &all_rooms,
+        &dm_rooms,
         &mut todo_rooms,
         known_rooms,
         &mut res_body,
     )
-    .await;
+    .await?;
 
     fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms)?;
 
     res_body.rooms = process_rooms(
         sync_info,
         &all_invited_rooms,
+        &dm_rooms,
         &todo_rooms,
         known_rooms,
         &mut res_body,
@@ -196,41 +234,83 @@ async fn process_lists(
     all_invited_rooms: &Vec<&RoomId>,
     all_joined_rooms: &Vec<&RoomId>,
     all_rooms: &Vec<&RoomId>,
+    dm_rooms: &HashSet<OwnedRoomId>,
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
     res_body: &mut SyncEventsResBody,
-) -> KnownRooms {
+) -> AppResult<()> {
     for (list_id, list) in &req_body.lists {
-        let active_rooms = match list.filters.clone().and_then(|f| f.is_invite) {
-            Some(true) => all_invited_rooms,
-            Some(false) => all_joined_rooms,
-            None => all_rooms,
-        };
-        let active_rooms = match list.filters.clone().map(|f| f.not_room_types) {
-            Some(filter) if filter.is_empty() => active_rooms,
-            Some(value) => &filter_rooms(active_rooms, &value, true),
-            None => active_rooms,
+        let mut active_rooms: Vec<&RoomId> = match list.filters.as_ref().and_then(|f| f.is_invite)
+        {
+            Some(true) => all_invited_rooms.to_vec(),
+            Some(false) => all_joined_rooms.to_vec(),
+            None => all_rooms.to_vec(),
         };
 
+        // Apply not_room_types filter
+        if let Some(filter) = list.filters.as_ref().map(|f| &f.not_room_types) {
+            if !filter.is_empty() {
+                active_rooms = filter_rooms(&active_rooms, filter, true);
+            }
+        }
+
+        // Apply room_types filter
+        if let Some(filter) = list.filters.as_ref().and_then(|f| {
+            if f.room_types.is_empty() {
+                None
+            } else {
+                Some(&f.room_types)
+            }
+        }) {
+            active_rooms = filter_rooms(&active_rooms, filter, false);
+        }
+
+        // Apply is_dm filter
+        match list.filters.as_ref().and_then(|f| f.is_dm) {
+            Some(true) => active_rooms.retain(|r| dm_rooms.contains(*r)),
+            Some(false) => active_rooms.retain(|r| !dm_rooms.contains(*r)),
+            None => {}
+        }
+
+        // Apply is_encrypted filter
+        match list.filters.as_ref().and_then(|f| f.is_encrypted) {
+            Some(true) => active_rooms.retain(|r| room::is_encrypted(r)),
+            Some(false) => active_rooms.retain(|r| !room::is_encrypted(r)),
+            None => {}
+        }
+
+        // Sort rooms by last activity (most recent first)
+        let mut sorted_rooms = active_rooms;
+        sort_rooms_by_activity(&mut sorted_rooms)?;
+        let count = sorted_rooms.len();
+
         let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
+        let mut ops = Vec::new();
         let mut ranges = list.ranges.clone();
         if ranges.is_empty() {
             ranges.push((0, 50));
         }
 
-        for mut range in ranges {
-            if range == (0, 0) {
-                range.1 = active_rooms.len().min(range.0 + 19);
-            } else {
-                range.1 = range.1.clamp(range.0, active_rooms.len().max(range.0));
+        for range in &ranges {
+            // Ranges are inclusive [start, end] per MSC4186
+            let start = range.0.min(count);
+            let end = (range.1 + 1).min(count); // convert to exclusive for slicing
+
+            if start >= end {
+                continue;
             }
 
-            let room_ids = active_rooms[range.0..range.1].to_vec();
+            let room_ids: Vec<&RoomId> = sorted_rooms[start..end].to_vec();
+            let owned_room_ids: Vec<OwnedRoomId> =
+                room_ids.iter().map(|r| (*r).to_owned()).collect();
 
-            let new_rooms: BTreeSet<OwnedRoomId> =
-                room_ids.clone().into_iter().map(From::from).collect();
-            new_known_rooms.extend(new_rooms);
-            // new_known_rooms.extend(room_ids..cloned());
+            ops.push(sync_events::v5::SyncListOp::Sync {
+                range: (start, end - 1), // back to inclusive for response
+                room_ids: owned_room_ids.clone(),
+            });
+
+            new_known_rooms.extend(owned_room_ids);
+
             for room_id in room_ids {
                 let todo_room = todo_rooms.entry(room_id.to_owned()).or_insert(TodoRoom {
                     required_state: BTreeSet::new(),
@@ -257,12 +337,10 @@ async fn process_lists(
                 );
             }
         }
-        res_body.lists.insert(
-            list_id.clone(),
-            sync_events::v5::SyncList {
-                count: active_rooms.len(),
-            },
-        );
+
+        res_body
+            .lists
+            .insert(list_id.clone(), sync_events::v5::SyncList { count, ops });
 
         crate::sync_v5::update_sync_known_rooms(
             sender_id.to_owned(),
@@ -273,7 +351,7 @@ async fn process_lists(
             since_sn,
         );
     }
-    BTreeMap::default()
+    Ok(())
 }
 
 fn fetch_subscriptions(
@@ -336,9 +414,10 @@ async fn process_rooms(
         sender_id,
         req_body,
         device_id,
-        ..
+        since_sn,
     }: SyncInfo<'_>,
     all_invited_rooms: &[&RoomId],
+    dm_rooms: &HashSet<OwnedRoomId>,
     todo_rooms: &TodoRooms,
     known_rooms: &KnownRooms,
     response: &mut SyncEventsResBody,
@@ -553,7 +632,7 @@ async fn process_rooms(
                             .values()
                             .any(|rooms| rooms.contains_key(room_id)),
                 ),
-                is_dm: None,
+                is_dm: Some(dm_rooms.contains(room_id)),
                 invite_state,
                 unread_notifications: sync_events::UnreadNotificationsCount {
                     notification_count: Some(notify_summary.all_notification_count()),
@@ -575,7 +654,7 @@ async fn process_rooms(
                         .try_into()
                         .unwrap_or(0),
                 ),
-                num_live: None, // Count events in timeline greater than global sync counter
+                num_live: Some(timeline.events.iter().filter(|(sn, _)| **sn > since_sn).count() as i64),
                 bump_stamp: timestamp.map(|t| t.get() as i64),
                 heroes: Some(heroes),
             },
@@ -859,8 +938,9 @@ pub fn update_sync_request_with_cache(
             match (&mut list.filters, cached_list.filters.clone()) {
                 (Some(filters), Some(cached_filters)) => {
                     some_or_sticky(&mut filters.is_invite, cached_filters.is_invite);
-                    // TODO (morguldir): Find out how a client can unset this, probably need
-                    // to change into an option inside palpo
+                    some_or_sticky(&mut filters.is_dm, cached_filters.is_dm);
+                    some_or_sticky(&mut filters.is_encrypted, cached_filters.is_encrypted);
+                    list_or_sticky(&mut filters.room_types, &cached_filters.room_types);
                     list_or_sticky(&mut filters.not_room_types, &cached_filters.not_room_types);
                 }
                 (_, Some(cached_filters)) => list.filters = Some(cached_filters),
