@@ -1135,6 +1135,13 @@ where
 
     let mut typing = Typing::new();
     for room_id in rooms {
+        // Filter by rooms config if specified
+        if let Some(room_filter) = typing_rooms {
+            if !room_filter.is_empty() && !room_filter.contains(&room_id.to_owned()) {
+                continue;
+            }
+        }
+
         let typing_event = room::typing::all_typings(room_id).await?;
         if !typing_event.content.user_ids.is_empty() {
             typing.rooms.insert(room_id.to_owned(), typing_event);
