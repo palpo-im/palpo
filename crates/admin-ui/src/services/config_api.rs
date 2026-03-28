@@ -27,22 +27,38 @@ impl ConfigAPI {
     pub async fn get_config() -> Result<ServerConfigResponse, WebConfigError> {
         #[cfg(target_arch = "wasm32")]
         {
-            // In WASM, fetch from HTTP API instead of filesystem
+            // In WASM, fetch from HTTP API
             use crate::services::api_client::api_get_json;
+            use crate::models::config::BackendServerConfig;
             
-            // First try to get TOML content and parse it
-            let response: serde_json::Value = api_get_json("/api/v1/config/toml").await
-                .map_err(|e| WebConfigError::client(format!("Failed to fetch config: {}", e)))?;
+            web_sys::console::log_1(&"ConfigAPI: Fetching config from /api/v1/config/form".into());
             
-            let toml_content = response["data"]["content"]
-                .as_str()
-                .ok_or_else(|| WebConfigError::client("Invalid response: missing content field"))?;
-            
-            let config: WebConfigData = toml::from_str(toml_content)
-                .map_err(|e| WebConfigError::ParseError { 
-                    message: format!("Failed to parse TOML: {}", e),
-                    format: "TOML".to_string(),
+            // Fetch from the form API which returns structured JSON
+            let response: serde_json::Value = api_get_json("/api/v1/config/form").await
+                .map_err(|e| {
+                    web_sys::console::log_1(&format!("ConfigAPI: Failed to fetch: {}", e).into());
+                    WebConfigError::client(format!("Failed to fetch config: {}", e))
                 })?;
+            
+            web_sys::console::log_1(&format!("ConfigAPI: Response received: {:?}", response).into());
+            
+            // Parse the backend response
+            let backend_config: BackendServerConfig = serde_json::from_value(
+                response["data"].clone()
+            ).map_err(|e| {
+                web_sys::console::log_1(&format!("ConfigAPI: Failed to parse: {}", e).into());
+                WebConfigError::ParseError { 
+                    message: format!("Failed to parse backend config: {}", e),
+                    format: "JSON".to_string(),
+                }
+            })?;
+            
+            web_sys::console::log_1(&format!("ConfigAPI: Parsed backend config, server_name = {}", backend_config.server_name).into());
+            
+            // Convert to frontend structure
+            let config = WebConfigData::from(backend_config);
+            
+            web_sys::console::log_1(&format!("ConfigAPI: Converted to frontend config, server_name = {}", config.server.server_name).into());
             
             Ok(ServerConfigResponse {
                 config,

@@ -37,7 +37,7 @@ pub fn FederationManager() -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Header
             div { class: "flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4",
                 div {

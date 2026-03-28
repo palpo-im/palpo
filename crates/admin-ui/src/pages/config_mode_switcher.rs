@@ -101,9 +101,9 @@ pub fn ConfigModeSwitcher() -> Element {
     };
 
     rsx! {
-        div { class: "space-y-0",
-            // Tab bar
-            div { class: "bg-white shadow rounded-t-lg border-b border-gray-200",
+        div { class: "flex flex-col h-full min-h-0",
+            // Tab bar - Fixed height
+            div { class: "bg-white border-b border-gray-200 flex-shrink-0",
                 div { class: "px-4 flex items-center space-x-0",
                     button {
                         class: "{form_tab_class}",
@@ -133,8 +133,8 @@ pub fn ConfigModeSwitcher() -> Element {
                 }
             }
 
-            // Active editor
-            div { class: "mt-0",
+            // Active editor - Takes remaining space
+            div { class: "flex-1 min-h-0 overflow-hidden",
                 match *active_mode.read() {
                     ConfigMode::Form => rsx! {
                         ConfigManager {}

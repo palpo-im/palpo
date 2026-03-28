@@ -235,7 +235,7 @@ pub fn MatrixAdminCreatePage() -> Element {
     };
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Header
             div { class: "bg-white shadow rounded-lg",
                 div { class: "px-4 py-5 sm:p-6",

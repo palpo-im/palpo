@@ -29,13 +29,19 @@ pub struct ExportOptions {
     pub encryption_key: Option<String>,
 }
 
-/// Export response
+/// Export response (matches backend response format)
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportResponse {
     pub content: String,
     pub format: String,
-    pub size_bytes: usize,
-    pub timestamp: String,
+}
+
+/// API response wrapper (backend wraps all responses in {success, data/error})
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiResponse<T> {
+    pub success: bool,
+    pub data: Option<T>,
+    pub error: Option<String>,
 }
 
 /// Import request
@@ -64,23 +70,27 @@ pub struct ConfigImportExportAPI;
 
 impl ConfigImportExportAPI {
     /// Export current configuration as TOML
-    pub async fn export_config(options: ExportOptions) -> Result<ExportResponse, String> {
+    pub async fn export_config(_options: ExportOptions) -> Result<ExportResponse, String> {
         let client = get_api_client()
             .map_err(|e| format!("API client error: {}", e))?;
 
         let request = serde_json::json!({
             "format": "toml",
-            "include_sensitive": options.include_sensitive,
-            "include_defaults": options.include_defaults,
         });
 
-        client
-            .post_json_response::<_, ExportResponse>(
-                "/api/v1/admin/config/export",
+        let response = client
+            .post_json_response::<_, ApiResponse<ExportResponse>>(
+                "/api/v1/config/export",
                 &request,
             )
             .await
-            .map_err(|e| format!("Export failed: {}", e))
+            .map_err(|e| format!("Export failed: {}", e))?;
+
+        if response.success {
+            response.data.ok_or_else(|| "No data in response".to_string())
+        } else {
+            Err(response.error.unwrap_or_else(|| "Export failed".to_string()))
+        }
     }
 
     /// Import configuration from TOML
@@ -91,21 +101,21 @@ impl ConfigImportExportAPI {
         let payload = serde_json::json!({
             "content": request.content,
             "format": "toml",
-            "merge_strategy": match request.merge_strategy {
-                MergeStrategy::Replace => "replace",
-                MergeStrategy::Merge => "merge",
-            },
-            "validate_only": request.validate_only,
-            "backup_current": request.backup_current,
         });
 
-        client
-            .post_json_response::<_, ImportResult>(
-                "/api/v1/admin/config/import",
+        let response = client
+            .post_json_response::<_, ApiResponse<ImportResult>>(
+                "/api/v1/config/import",
                 &payload,
             )
             .await
-            .map_err(|e| format!("Import failed: {}", e))
+            .map_err(|e| format!("Import failed: {}", e))?;
+
+        if response.success {
+            response.data.ok_or_else(|| "No data in response".to_string())
+        } else {
+            Err(response.error.unwrap_or_else(|| "Import failed".to_string()))
+        }
     }
 
     /// Validate TOML configuration without importing

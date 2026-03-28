@@ -11,7 +11,7 @@ pub fn AdminDashboard() -> Element {
     let auth_context = use_auth();
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Welcome section
             div { class: "bg-white overflow-hidden shadow rounded-lg",
                 div { class: "px-4 py-5 sm:p-6",

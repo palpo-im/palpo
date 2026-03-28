@@ -62,7 +62,7 @@ pub fn ServerStatusPage() -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Header
             div {
                 h2 { class: "text-2xl font-bold text-gray-900", "服务器状态" }

@@ -73,11 +73,9 @@ pub fn AdminLayout() -> Element {
                     on_menu_toggle: move |_| show_mobile_menu.set(!show_mobile_menu())
                 }
                 
-                // Page content
-                div { class: "flex-1 overflow-auto",
-                    div { class: "container mx-auto px-4 sm:px-6 lg:px-8 py-6",
-                        Outlet::<Route> {}
-                    }
+                // Page content - flex container for full-height pages
+                div { class: "flex-1 overflow-auto h-full",
+                    Outlet::<Route> {}
                 }
             }
         }

@@ -73,7 +73,7 @@ pub fn RoomDetailPage(room_id: String) -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Header with back button
             div { class: "flex items-center gap-4",
                 Link {
@@ -243,7 +243,7 @@ fn BasicInfoTab(
     on_block: EventHandler<()>,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Room avatar and basic info
             div { class: "flex items-start gap-6",
                 // Avatar
@@ -416,7 +416,7 @@ fn InfoItem(label: String, value: String) -> Element {
 #[component]
 fn MembersTab(room_id: String, members: Vec<RoomMember>) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4",
                 p { class: "text-sm text-blue-800",
                     "ℹ️ 成员管理功能将在第三阶段实现"
@@ -438,7 +438,7 @@ fn MembersTab(room_id: String, members: Vec<RoomMember>) -> Element {
 #[component]
 fn StateEventsTab(room_id: String) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4",
                 p { class: "text-sm text-blue-800",
                     "ℹ️ 状态事件管理功能将在第三阶段实现"
@@ -460,7 +460,7 @@ fn StateEventsTab(room_id: String) -> Element {
 #[component]
 fn MediaTab(room_id: String) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4",
                 p { class: "text-sm text-blue-800",
                     "ℹ️ 媒体管理功能将在第三阶段实现"
@@ -482,7 +482,7 @@ fn MediaTab(room_id: String) -> Element {
 #[component]
 fn ForwardExtremitiesTab(room_id: String) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4",
                 p { class: "text-sm text-blue-800",
                     "ℹ️ 前沿终点管理功能将在第三阶段实现"

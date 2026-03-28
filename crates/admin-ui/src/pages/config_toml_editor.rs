@@ -54,7 +54,7 @@ pub fn ConfigTomlEditorPage() -> Element {
 
     // Handle validation
     let handle_validate = {
-        move |_| {
+        move |_: Event<MouseEvent>| {
             let content = toml_content.read().clone();
             let validate_toml = async move {
                 match ConfigAPI::validate_toml(&content).await {
@@ -84,8 +84,7 @@ pub fn ConfigTomlEditorPage() -> Element {
 
     // Handle save
     let handle_save = {
-        move |_| {
-            let content = toml_content.read().clone();
+        move |content: String| {
             let save_toml = async move {
                 is_saving.set(true);
                 
@@ -127,7 +126,7 @@ pub fn ConfigTomlEditorPage() -> Element {
 
     // Handle reset
     let handle_reset = {
-        move |_| {
+        move |_: ()| {
             let reset_toml = async move {
                 is_loading.set(true);
                 match ConfigAPI::get_toml_content().await {
@@ -150,51 +149,14 @@ pub fn ConfigTomlEditorPage() -> Element {
     };
 
     rsx! {
-        div { class: "space-y-6",
-            // Header
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
-                    div { class: "flex justify-between items-center",
-                        div {
-                            h3 { class: "text-lg leading-6 font-medium text-gray-900",
-                                "TOML 编辑器"
-                            }
-                            p { class: "mt-1 text-sm text-gray-500",
-                                "直接编辑 palpo.toml 配置文件"
-                            }
-                        }
-                        div { class: "flex space-x-3",
-                            button {
-                                class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50",
-                                onclick: handle_validate,
-                                "验证 TOML"
-                            }
-                        }
-                    }
-                    
-                    // Messages
-                    if let Some(msg) = success_message() {
-                        div { class: "mt-4",
-                            SuccessMessage { message: msg }
-                        }
-                    }
-                    if let Some(err) = error() {
-                        div { class: "mt-4",
-                            ErrorMessage { message: err }
-                        }
-                    }
-                }
-            }
-
-            // Editor
+        div { class: "flex flex-col h-full min-h-0",
+            // Editor - Takes full height
             if is_loading() {
-                div { class: "bg-white shadow rounded-lg p-12",
-                    div { class: "flex justify-center",
-                        Spinner { size: "large".to_string() }
-                    }
+                div { class: "flex-1 flex items-center justify-center",
+                    Spinner { size: "large".to_string() }
                 }
             } else {
-                div { class: "bg-white shadow rounded-lg",
+                div { class: "flex-1 min-h-0",
                     TomlEditor {
                         content: toml_content(),
                         onchange: handle_content_change,
@@ -205,6 +167,18 @@ pub fn ConfigTomlEditorPage() -> Element {
                         is_loading: is_saving(),
                         show_line_numbers: true,
                     }
+                }
+            }
+            
+            // Messages at bottom
+            if let Some(msg) = success_message() {
+                div { class: "flex-shrink-0 mt-2",
+                    SuccessMessage { message: msg }
+                }
+            }
+            if let Some(err) = error() {
+                div { class: "flex-shrink-0 mt-2",
+                    ErrorMessage { message: err }
                 }
             }
         }

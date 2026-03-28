@@ -92,8 +92,17 @@ pub fn ConfigManager() -> Element {
     // Load configuration context with API methods
     let config_context = use_config_loader();
     
+    // Debug: log initial state
+    web_sys::console::log_1(&"ConfigManager: Initializing".into());
+    web_sys::console::log_1(&format!("ConfigManager: is_loading = {}", config_context.is_loading()).into());
+    web_sys::console::log_1(&format!("ConfigManager: has_config = {}", config_context.current_config().is_some()).into());
+    
     // Local reactive state for form management
-    let mut form_data = use_signal(|| config_context.current_config().unwrap_or_default());
+    let mut form_data = use_signal(|| {
+        let config = config_context.current_config().unwrap_or_default();
+        web_sys::console::log_1(&format!("ConfigManager: Initial form_data = {:?}", config.server.server_name).into());
+        config
+    });
     let mut validation_errors = use_signal(|| HashMap::<String, String>::new());
     let mut is_dirty = use_signal(|| false);
     let mut save_success = use_signal(|| false);
@@ -107,8 +116,12 @@ pub fn ConfigManager() -> Element {
     {
         let config_context = config_context.clone();
         use_effect(move || {
+            web_sys::console::log_1(&"ConfigManager: use_effect triggered".into());
             if let Some(config) = config_context.current_config() {
+                web_sys::console::log_1(&format!("ConfigManager: Setting form_data with config, server_name = {}", config.server.server_name).into());
                 form_data.set(config);
+            } else {
+                web_sys::console::log_1(&"ConfigManager: No config available in context".into());
             }
         });
     }
@@ -150,7 +163,7 @@ pub fn ConfigManager() -> Element {
     let error = config_context.error();
     
     let element: Element = rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Header section with title and action buttons
             div { class: "bg-white shadow rounded-lg",
                 div { class: "px-4 py-5 sm:p-6",
@@ -473,7 +486,7 @@ fn ServerConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "服务器配置" }
             
             if matches_search("服务器名称", Some("Matrix服务器的域名"), &search_query) {
@@ -539,7 +552,7 @@ fn DatabaseConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "数据库配置" }
             
             if matches_search("数据库连接字符串", Some("PostgreSQL数据库连接URL"), &search_query) {
@@ -623,7 +636,7 @@ fn FederationConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "联邦配置" }
             
             if matches_search("启用联邦功能", Some("启用与其他Matrix服务器的联邦通信"), &search_query) {
@@ -683,7 +696,7 @@ fn AuthConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "认证配置" }
             
             if matches_search("启用用户注册", Some("允许新用户注册账号"), &search_query) {
@@ -750,7 +763,7 @@ fn MediaConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "媒体配置" }
             
             if matches_search("存储路径", Some("媒体文件的存储目录"), &search_query) {
@@ -816,7 +829,7 @@ fn NetworkConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "网络配置" }
             
             if matches_search("请求超时", Some("HTTP请求的超时时间（秒）"), &search_query) {
@@ -905,7 +918,7 @@ fn LoggingConfigForm(
     search_query: String,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             h4 { class: "text-lg font-medium text-gray-900", "日志配置" }
             
             if matches_search("日志级别", Some("日志记录的详细程度"), &search_query) {

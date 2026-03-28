@@ -79,6 +79,13 @@ struct SuccessResponse {
     message: String,
 }
 
+/// Backend response for config validation
+#[derive(Debug, Deserialize)]
+struct ValidateConfigResponse {
+    valid: bool,
+    errors: Vec<String>,
+}
+
 /// Configuration validation result from API
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ConfigValidationResult {
@@ -188,20 +195,42 @@ pub fn ServerControlPage() -> Element {
 
             match get_api_client() {
                 Ok(client) => {
-                    match client.get_json::<ConfigValidationResult>("/api/v1/admin/config/validate").await {
-                        Ok(result) => {
-                            validation_result.set(Some(result));
-                            show_validation_dialog.set(true);
+                    // First, get current configuration
+                    match client.get_json::<serde_json::Value>("/api/v1/admin/server/config").await {
+                        Ok(config_response) => {
+                            // Extract config from response
+                            let config = config_response.get("config").cloned().unwrap_or(serde_json::json!({}));
+                            
+                            // Validate the configuration
+                            let validate_body = serde_json::json!({ "config": config });
+                            match client.post_json_response::<serde_json::Value, ValidateConfigResponse>(
+                                "/api/v1/admin/server/config/validate",
+                                &validate_body
+                            ).await {
+                                Ok(validate_result) => {
+                                    validation_result.set(Some(ConfigValidationResult {
+                                        is_valid: validate_result.valid,
+                                        errors: validate_result.errors,
+                                        warnings: vec![],
+                                        config_summary: None,
+                                    }));
+                                    show_validation_dialog.set(true);
+                                }
+                                Err(e) => {
+                                    // Validation API failed, show warning dialog
+                                    validation_result.set(Some(ConfigValidationResult {
+                                        is_valid: true,
+                                        errors: vec![],
+                                        warnings: vec![format!("无法验证配置: {}", e)],
+                                        config_summary: None,
+                                    }));
+                                    show_validation_dialog.set(true);
+                                }
+                            }
                         }
-                        Err(_) => {
-                            // If validation endpoint unavailable, fall back to direct confirm
-                            validation_result.set(Some(ConfigValidationResult {
-                                is_valid: true,
-                                errors: vec![],
-                                warnings: vec!["无法连接验证服务，请确认配置正确".to_string()],
-                                config_summary: None,
-                            }));
-                            show_validation_dialog.set(true);
+                        Err(e) => {
+                            // Failed to get config, show error
+                            error_message.set(Some(format!("获取配置失败: {}", e)));
                         }
                     }
                 }
@@ -302,10 +331,10 @@ pub fn ServerControlPage() -> Element {
     };
 
     rsx! {
-        div { class: "space-y-6",
-            // Header
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
+        div { class: "flex flex-col h-full p-4 sm:p-6",
+            // Header - Fixed height
+            div { class: "bg-white shadow rounded-lg flex-shrink-0",
+                div { class: "px-4 py-3 sm:px-6 sm:py-4",
                     h3 { class: "text-lg leading-6 font-medium text-gray-900",
                         "服务器管理"
                     }
@@ -315,11 +344,11 @@ pub fn ServerControlPage() -> Element {
                 }
             }
 
-            // Success/Error messages
+            // Success/Error messages - Fixed height when present
             if let Some(success) = success_message() {
-                div { class: "bg-white shadow rounded-lg",
-                    div { class: "px-4 py-5 sm:p-6",
-                        div { class: "rounded-md bg-green-50 p-4",
+                div { class: "bg-white shadow rounded-lg flex-shrink-0 mt-4",
+                    div { class: "px-4 py-3",
+                        div { class: "rounded-md bg-green-50 p-3",
                             div { class: "flex",
                                 div { class: "flex-shrink-0",
                                     svg { class: "h-5 w-5 text-green-400", xmlns: "http://www.w3.org/2000/svg", view_box: "0 0 20 20", fill: "currentColor",
@@ -336,9 +365,9 @@ pub fn ServerControlPage() -> Element {
             }
 
             if let Some(error) = error_message() {
-                div { class: "bg-white shadow rounded-lg",
-                    div { class: "px-4 py-5 sm:p-6",
-                        div { class: "rounded-md bg-red-50 p-4",
+                div { class: "bg-white shadow rounded-lg flex-shrink-0 mt-4",
+                    div { class: "px-4 py-3",
+                        div { class: "rounded-md bg-red-50 p-3",
                             div { class: "flex",
                                 div { class: "flex-shrink-0",
                                     svg { class: "h-5 w-5 text-red-400", xmlns: "http://www.w3.org/2000/svg", view_box: "0 0 20 20", fill: "currentColor",
@@ -354,122 +383,128 @@ pub fn ServerControlPage() -> Element {
                 }
             }
 
-            // Server Config Editor Section
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
-                    h4 { class: "text-base font-medium text-gray-900 mb-1",
+            // Server Config Editor Section - Flexible, takes remaining space
+            div { class: "bg-white shadow rounded-lg flex-1 flex flex-col min-h-0 mt-4",
+                div { class: "px-4 py-2 sm:px-6 sm:py-3 flex-shrink-0 border-b border-gray-100",
+                    h4 { class: "text-base font-medium text-gray-900",
                         "服务器配置编辑"
                     }
-                    p { class: "text-sm text-gray-500 mb-4",
+                    p { class: "text-sm text-gray-500",
                         "编辑和管理 Palpo 服务器配置文件"
                     }
                 }
-                ConfigModeSwitcher {}
+                // Editor takes all remaining space
+                div { class: "flex-1 min-h-0 overflow-hidden",
+                    ConfigModeSwitcher {}
+                }
             }
 
-            // Server Status Card
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
-                    h4 { class: "text-base font-medium text-gray-900 mb-4",
-                        "服务器状态"
-                    }
-
-                    if let Some(info) = status_info() {
-                        div { class: "space-y-4",
-                            // Status badge
-                            div { class: "flex items-center space-x-3",
-                                span { class: "text-sm font-medium text-gray-700",
-                                    "状态:"
-                                }
-                                span {
-                                    class: "px-3 py-1 rounded-full text-sm font-medium {info.status.badge_class()}",
-                                    "{info.status.display_text()}"
-                                }
-                            }
-
-                            // Process ID
-                            if let Some(pid) = info.pid {
-                                div { class: "flex items-center space-x-3",
-                                    span { class: "text-sm font-medium text-gray-700",
-                                        "进程 ID:"
-                                    }
-                                    span { class: "text-sm text-gray-900",
-                                        "{pid}"
-                                    }
-                                }
-                            }
-
-                            // Started at
-                            if let Some(started_at) = info.started_at {
-                                div { class: "flex items-center space-x-3",
-                                    span { class: "text-sm font-medium text-gray-700",
-                                        "启动时间:"
-                                    }
-                                    span { class: "text-sm text-gray-900",
-                                        {started_at.format("%Y-%m-%d %H:%M:%S").to_string()}
-                                    }
-                                }
-                            }
-
-                            // Uptime
-                            if let Some(uptime) = info.uptime_seconds {
-                                div { class: "flex items-center space-x-3",
-                                    span { class: "text-sm font-medium text-gray-700",
-                                        "运行时长:"
-                                    }
-                                    span { class: "text-sm text-gray-900",
-                                        "{format_uptime(uptime)}"
-                                    }
-                                }
-                            }
+            // Server Status & Controls - Fixed at bottom, side by side
+            div { class: "grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 flex-shrink-0",
+                // Server Status Card
+                div { class: "bg-white shadow rounded-lg",
+                    div { class: "px-4 py-4 sm:p-5",
+                        h4 { class: "text-base font-medium text-gray-900 mb-3",
+                            "服务器状态"
                         }
-                    } else {
-                        div { class: "space-y-4",
-                            // Default to NotStarted when no status info available
-                            div { class: "flex items-center space-x-3",
-                                span { class: "text-sm font-medium text-gray-700",
-                                    "状态:"
+
+                        if let Some(info) = status_info() {
+                            div { class: "space-y-3",
+                                // Status badge
+                                div { class: "flex items-center space-x-3",
+                                    span { class: "text-sm font-medium text-gray-700",
+                                        "状态:"
+                                    }
+                                    span {
+                                        class: "px-3 py-1 rounded-full text-sm font-medium {info.status.badge_class()}",
+                                        "{info.status.display_text()}"
+                                    }
                                 }
-                                span {
-                                    class: "px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800",
-                                    "未启动"
+
+                                // Process ID
+                                if let Some(pid) = info.pid {
+                                    div { class: "flex items-center space-x-3",
+                                        span { class: "text-sm font-medium text-gray-700",
+                                            "进程 ID:"
+                                        }
+                                        span { class: "text-sm text-gray-900",
+                                            "{pid}"
+                                        }
+                                    }
+                                }
+
+                                // Started at
+                                if let Some(started_at) = info.started_at {
+                                    div { class: "flex items-center space-x-3",
+                                        span { class: "text-sm font-medium text-gray-700",
+                                            "启动时间:"
+                                        }
+                                        span { class: "text-sm text-gray-900",
+                                            {started_at.format("%Y-%m-%d %H:%M:%S").to_string()}
+                                        }
+                                    }
+                                }
+
+                                // Uptime
+                                if let Some(uptime) = info.uptime_seconds {
+                                    div { class: "flex items-center space-x-3",
+                                        span { class: "text-sm font-medium text-gray-700",
+                                            "运行时长:"
+                                        }
+                                        span { class: "text-sm text-gray-900",
+                                            "{format_uptime(uptime)}"
+                                        }
+                                    }
                                 }
                             }
-                            p { class: "text-sm text-gray-500",
-                                "服务器未运行，您可以点击下方的"启动服务器"按钮来启动它。"
+                        } else {
+                            div { class: "space-y-3",
+                                // Default to NotStarted when no status info available
+                                div { class: "flex items-center space-x-3",
+                                    span { class: "text-sm font-medium text-gray-700",
+                                        "状态:"
+                                    }
+                                    span {
+                                        class: "px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800",
+                                        "未启动"
+                                    }
+                                }
+                                p { class: "text-sm text-gray-500",
+                                    "服务器未运行，您可以点击右侧"启动服务器"按钮来启动它。"
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Control Buttons
-            div { class: "bg-white shadow rounded-lg",
-                div { class: "px-4 py-5 sm:p-6",
-                    h4 { class: "text-base font-medium text-gray-900 mb-4",
-                        "服务器操作"
-                    }
-
-                    div { class: "flex space-x-3",
-                        button {
-                            class: "px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed",
-                            disabled: is_loading() || is_validating() || status_info().map(|s| s.status == ServerStatus::Running).unwrap_or(false),
-                            onclick: handle_validate_and_start,
-                            if is_validating() { "验证配置中..." } else { "启动服务器" }
+                // Control Buttons
+                div { class: "bg-white shadow rounded-lg",
+                    div { class: "px-4 py-4 sm:p-5",
+                        h4 { class: "text-base font-medium text-gray-900 mb-3",
+                            "服务器操作"
                         }
 
-                        button {
-                            class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed",
-                            disabled: is_loading() || status_info().map(|s| s.status != ServerStatus::Running).unwrap_or(true),
-                            onclick: move |_| show_stop_confirm.set(true),
-                            "停止服务器"
-                        }
+                        div { class: "flex flex-wrap gap-3",
+                            button {
+                                class: "px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed",
+                                disabled: is_loading() || is_validating() || status_info().map(|s| s.status == ServerStatus::Running).unwrap_or(false),
+                                onclick: handle_validate_and_start,
+                                if is_validating() { "验证配置中..." } else { "启动服务器" }
+                            }
 
-                        button {
-                            class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed",
-                            disabled: is_loading() || status_info().map(|s| s.status != ServerStatus::Running).unwrap_or(true),
-                            onclick: move |_| show_restart_confirm.set(true),
-                            "重启服务器"
+                            button {
+                                class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed",
+                                disabled: is_loading() || status_info().map(|s| s.status != ServerStatus::Running).unwrap_or(true),
+                                onclick: move |_| show_stop_confirm.set(true),
+                                "停止服务器"
+                            }
+
+                            button {
+                                class: "px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed",
+                                disabled: is_loading() || status_info().map(|s| s.status != ServerStatus::Running).unwrap_or(true),
+                                onclick: move |_| show_restart_confirm.set(true),
+                                "重启服务器"
+                            }
                         }
                     }
                 }

@@ -148,7 +148,7 @@ pub fn PasswordChangePage() -> Element {
                 // Password change form
                 div { class: "bg-white shadow rounded-lg p-6",
                     form {
-                        class: "space-y-6",
+                        class: "p-4 sm:p-6 space-y-6",
                         onsubmit: handle_submit,
 
                         // Current password field

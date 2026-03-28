@@ -37,7 +37,7 @@ pub fn ConfigTemplatePage() -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             // Header
             div { class: "bg-white shadow rounded-lg",
                 div { class: "px-4 py-5 sm:p-6",
@@ -344,7 +344,7 @@ fn TemplatePreview(
                 }
 
                 // Template details
-                div { class: "space-y-6",
+                div { class: "p-4 sm:p-6 space-y-6",
                     // Required fields
                     div {
                         h5 { class: "text-sm font-medium text-gray-900 mb-3", "必填字段" }

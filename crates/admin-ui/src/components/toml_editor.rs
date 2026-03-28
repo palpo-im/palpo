@@ -47,9 +47,9 @@ pub fn TomlEditor(props: TomlEditorProps) -> Element {
     let char_count = current_content.read().len();
 
     rsx! {
-        div { class: "rounded-lg overflow-hidden border border-gray-300 shadow-sm",
+        div { class: "rounded-lg overflow-hidden border border-gray-300 shadow-sm flex flex-col h-full",
             // Toolbar
-            div { class: "flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50",
+            div { class: "flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0",
                 div { class: "flex items-center space-x-1",
                     // File icon and name
                     div { class: "flex items-center space-x-2 mr-3",
@@ -143,11 +143,11 @@ pub fn TomlEditor(props: TomlEditorProps) -> Element {
                 }
             }
 
-            // Editor container - light theme
-            div { class: "flex bg-white",
+            // Editor container - light theme, flexible height
+            div { class: "flex bg-white flex-1 min-h-0 overflow-hidden",
                 // Line numbers gutter
                 if props.show_line_numbers {
-                    div { class: "select-none text-right pr-4 pl-4 py-3 text-xs leading-[1.6] font-mono text-gray-400 bg-gray-50 border-r border-gray-200 overflow-hidden flex-shrink-0",
+                    div { class: "select-none text-right pr-4 pl-4 py-3 text-xs leading-[1.6] font-mono text-gray-400 bg-gray-50 border-r border-gray-200 overflow-y-auto flex-shrink-0",
                         style: "min-width: 60px;",
                         for (i, _line) in current_content.read().lines().enumerate() {
                             div { key: "{i}",
@@ -158,10 +158,10 @@ pub fn TomlEditor(props: TomlEditorProps) -> Element {
                     }
                 }
 
-                // Code textarea
+                // Code textarea - flexible height
                 textarea {
                     class: "flex-1 p-3 font-mono text-sm leading-[1.6] text-gray-800 bg-white border-none focus:outline-none resize-none",
-                    style: "tab-size: 2; min-height: 500px;",
+                    style: "tab-size: 2; min-height: 100px;",
                     value: "{current_content()}",
                     oninput: move |evt| {
                         let new_content = evt.value().clone();
@@ -184,7 +184,7 @@ pub fn TomlEditor(props: TomlEditorProps) -> Element {
             }
 
             // Status bar - light theme
-            div { class: "flex items-center justify-between px-3 py-1.5 bg-gray-50 border-t border-gray-200 text-gray-500 text-xs select-none",
+            div { class: "flex items-center justify-between px-3 py-1.5 bg-gray-50 border-t border-gray-200 text-gray-500 text-xs select-none flex-shrink-0",
                 div { class: "flex items-center space-x-4",
                     // Language indicator
                     div { class: "flex items-center space-x-1",
@@ -215,7 +215,7 @@ pub fn TomlEditor(props: TomlEditorProps) -> Element {
 
             // Validation errors panel
             if !props.errors.is_empty() {
-                div { class: "bg-red-50 border-t border-red-200 p-3",
+                div { class: "bg-red-50 border-t border-red-200 p-3 flex-shrink-0",
                     div { class: "flex items-start space-x-2",
                         svg { class: "w-4 h-4 text-red-500 mt-0.5 flex-shrink-0", xmlns: "http://www.w3.org/2000/svg", fill: "none", view_box: "0 0 24 24", stroke: "currentColor", stroke_width: "2",
                             path { stroke_linecap: "round", stroke_linejoin: "round", d: "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" }

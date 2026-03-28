@@ -16,10 +16,12 @@ pub struct ConfigContext {
 impl ConfigContext {
     /// Load configuration from server
     pub fn load_config(&self) {
+        web_sys::console::log_1(&"ConfigContext: load_config() called".into());
         let config_service = self.config_service.clone();
         let mut app_state = self.app_state;
         
         spawn_local(async move {
+            web_sys::console::log_1(&"ConfigContext: Starting config load".into());
             app_state.with_mut(|state| {
                 state.is_loading = true;
                 state.error = None;
@@ -27,12 +29,14 @@ impl ConfigContext {
             
             match config_service.get_config().await {
                 Ok(config) => {
+                    web_sys::console::log_1(&format!("ConfigContext: Config loaded successfully, server_name = {}", config.server.server_name).into());
                     app_state.with_mut(|state| {
                         state.config = Some(config);
                         state.is_loading = false;
                     });
                 }
                 Err(error) => {
+                    web_sys::console::log_1(&format!("ConfigContext: Failed to load config: {}", error.user_message()).into());
                     app_state.with_mut(|state| {
                         state.error = Some(error.user_message());
                         state.is_loading = false;

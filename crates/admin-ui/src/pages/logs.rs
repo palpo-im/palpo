@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn AuditLogs() -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "bg-white shadow rounded-lg",
                 div { class: "px-4 py-5 sm:p-6",
                     h3 { class: "text-lg leading-6 font-medium text-gray-900",

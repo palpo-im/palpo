@@ -88,7 +88,7 @@ pub fn UserDetail(user_id: String) -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "flex items-center gap-4",
                 Link {
                     to: Route::Users {},
@@ -186,7 +186,7 @@ fn BasicInfoTab(
     on_deactivate: EventHandler<()>,
 ) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "flex items-start gap-6",
                 div { class: "flex-shrink-0",
                     if let Some(url) = &user.avatar_url {
@@ -243,7 +243,7 @@ fn BasicInfoTab(
 #[component]
 fn PermissionsTab(user: User) -> Element {
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "bg-blue-50 border border-blue-200 rounded-lg p-4", p { class: "text-sm text-blue-800", "ℹ️ 权限管理功能将在第二阶段实现" } }
             h3 { class: "text-lg font-medium text-gray-900 mb-4", "当前权限" }
             if user.permissions.is_empty() {
@@ -338,7 +338,7 @@ fn DevicesTab(user_id: String) -> Element {
     };
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "flex items-center justify-between",
                 h3 { class: "text-lg font-medium text-gray-900", "设备管理" }
                 if !devices().is_empty() {
@@ -494,7 +494,7 @@ fn ConnectionsTab(user_id: String) -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "flex items-center justify-between",
                 h3 { class: "text-lg font-medium text-gray-900", "连接信息" }
                 if !sessions().is_empty() {
@@ -639,7 +639,7 @@ fn PushersTab(user_id: String) -> Element {
     });
 
     rsx! {
-        div { class: "space-y-6",
+        div { class: "p-4 sm:p-6 space-y-6",
             div { class: "flex items-center justify-between",
                 h3 { class: "text-lg font-medium text-gray-900", "推送器配置" }
                 if !pushers().is_empty() {
