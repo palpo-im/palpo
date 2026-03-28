@@ -907,7 +907,7 @@ mod tests {
         let mut response = SyncEventsResBody::new("539".to_owned());
         response
             .lists
-            .insert("all_rooms".to_owned(), super::SyncList { count: 1 });
+            .insert("all_rooms".to_owned(), super::SyncList { count: 1, ops: Vec::new() });
         response
             .extensions
             .account_data
