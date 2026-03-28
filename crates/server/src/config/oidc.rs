@@ -106,6 +106,20 @@ pub struct OidcConfig {
     /// default: true
     #[serde(default = "default_true")]
     pub enable_pkce: bool,
+
+    /// External MAS (Matrix Authentication Service) issuer URL
+    ///
+    /// When set, Palpo advertises this URL as the OIDC issuer in
+    /// .well-known/matrix/client (m.authentication), enabling Element X
+    /// and other MSC3861-compatible clients to use the external MAS
+    /// for native OIDC login.
+    ///
+    /// This field is independent of `enable` above. Even with
+    /// enable = false (legacy OIDC client disabled), setting mas_issuer
+    /// will still advertise the issuer in .well-known discovery.
+    ///
+    /// example: "https://auth.example.com/"
+    pub mas_issuer: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]

@@ -30,14 +30,14 @@ pub async fn require_admin(depot: &mut Depot) -> AppResult<()> {
 /// Middleware to authenticate MAS requests via shared secret
 #[handler]
 pub async fn auth_by_mas_secret(aa: crate::AuthArgs) -> AppResult<()> {
-    let token = aa
-        .require_access_token()
-        .map_err(crate::AppError::from)?;
+    let token = aa.require_access_token().map_err(crate::AppError::from)?;
     let conf = crate::config::get();
     let Some(mas_secret) = &conf.admin.mas_secret else {
-        return Err(
-            MatrixError::forbidden("MAS endpoints are not configured on this server", None).into(),
-        );
+        return Err(MatrixError::forbidden(
+            "MAS endpoints are not configured on this server",
+            None,
+        )
+        .into());
     };
     if token != mas_secret.as_str() {
         return Err(MatrixError::forbidden("Invalid MAS secret", None).into());
@@ -68,12 +68,14 @@ pub fn router() -> Router {
                 .push(user_lookup::router()),
         )
     }
-    // MAS modern endpoints - separate auth via shared secret
-    admin = admin.push(
-        Router::with_path("_synapse/mas")
-            .hoop(auth_by_mas_secret)
-            .push(mas::router()),
-    );
+    for v in ["_palpo/admin", "_synapse/admin"] {
+        // MAS modern endpoints - separate auth via shared secret
+        admin = admin.push(
+            Router::with_path(v)
+                .hoop(auth_by_mas_secret)
+                .push(mas::router()),
+        );
+    }
     admin
 }
 

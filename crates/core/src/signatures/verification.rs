@@ -34,13 +34,9 @@ impl Verifier for Ed25519Verifier {
         signature: &[u8],
         message: &[u8],
     ) -> Result<(), Error> {
-        VerifyingKey::from_bytes(
-            public_key
-                .try_into()
-                .map_err(|_| ParseError::PublicKey(ed25519_dalek::SignatureError::new()))?,
-        )
-        .map_err(ParseError::PublicKey)?
-        .verify(
+        VerifyingKey::try_from(public_key)
+            .map_err(ParseError::PublicKey)?
+            .verify(
             message,
             &signature.try_into().map_err(ParseError::Signature)?,
         )

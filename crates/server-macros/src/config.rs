@@ -213,12 +213,26 @@ fn get_default(field: &Field) -> Option<String> {
                     _ => return None,
                 };
             }
-            Meta::Path { .. } => return Some("false".to_owned()),
+            Meta::Path { .. } => return infer_default_from_type_name(get_type_name(field).as_deref()),
             _ => return None,
         }
     }
 
     None
+}
+
+fn infer_default_from_type_name(type_name: Option<&str>) -> Option<String> {
+    match type_name {
+        Some("Option") => None, // Option<T> defaults to None, show empty
+        Some("bool") => Some("false".to_owned()),
+        Some("Vec") | Some("HashSet") => Some("[]".to_owned()),
+        Some("BTreeMap") | Some("HashMap") => Some("{}".to_owned()),
+        Some("String") => Some("\"\"".to_owned()),
+        Some("u8") | Some("u16") | Some("u32") | Some("u64") | Some("u128") | Some("usize")
+        | Some("i8") | Some("i16") | Some("i32") | Some("i64") | Some("i128") | Some("isize")
+        | Some("f32") | Some("f64") => Some("0".to_owned()),
+        _ => None,
+    }
 }
 
 fn get_doc_comment(field: &Field) -> Option<String> {
@@ -289,4 +303,29 @@ fn get_type_name(field: &Field) -> Option<String> {
         .iter()
         .next()
         .map(|segment| segment.ident.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::infer_default_from_type_name;
+
+    #[test]
+    fn infers_default_for_common_builtin_types() {
+        assert_eq!(infer_default_from_type_name(Some("bool")).as_deref(), Some("false"));
+        assert_eq!(infer_default_from_type_name(Some("String")).as_deref(), Some("\"\""));
+        assert_eq!(infer_default_from_type_name(Some("Vec")).as_deref(), Some("[]"));
+        assert_eq!(infer_default_from_type_name(Some("usize")).as_deref(), Some("0"));
+        assert_eq!(infer_default_from_type_name(Some("Option")), None);
+    }
+
+    #[test]
+    fn infers_map_defaults_as_toml_tables() {
+        assert_eq!(infer_default_from_type_name(Some("BTreeMap")).as_deref(), Some("{}"));
+        assert_eq!(infer_default_from_type_name(Some("HashMap")).as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn leaves_custom_defaultable_structs_without_scalar_placeholder() {
+        assert_eq!(infer_default_from_type_name(Some("HttpClientConfig")), None);
+    }
 }

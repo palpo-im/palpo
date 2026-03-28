@@ -307,12 +307,12 @@ pub(super) async fn invite_user(
         return Err(MatrixError::forbidden("you are not allowed to invite users", None).into());
     }
 
-    let InvitationRecipient::UserId { user_id } = &body.recipient else {
+    let InvitationRecipient::UserId(invite) = &body.recipient else {
         return Err(MatrixError::not_found("user not found").into());
     };
     crate::membership::invite_user(
         authed.user_id(),
-        user_id,
+        &invite.user_id,
         &room_id.into_inner(),
         body.reason.clone(),
         false,
