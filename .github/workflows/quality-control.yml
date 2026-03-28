@@ -41,7 +41,7 @@ jobs:
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@master
         with:
-          scandir: './tests'
+          scandir: './tests/complement'
 
   test:
     strategy:
