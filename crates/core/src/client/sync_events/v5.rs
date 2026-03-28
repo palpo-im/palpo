@@ -42,6 +42,7 @@ pub struct TodoRoom {
     pub required_state: BTreeSet<TypeStateKey>,
     pub timeline_limit: usize,
     pub room_since_sn: Seqnum,
+    pub include_heroes: bool,
 }
 impl TodoRoom {
     pub fn new(
@@ -53,6 +54,7 @@ impl TodoRoom {
             required_state,
             timeline_limit,
             room_since_sn,
+            include_heroes: false,
         }
     }
 }
