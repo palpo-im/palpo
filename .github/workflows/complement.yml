@@ -59,7 +59,7 @@ jobs:
             go test -json -count=1 -timeout 60m \
             ./tests/csapi \
             ./tests \
-            2>&1 | tee results.jsonl
+            | tee results.jsonl
         continue-on-error: true
 
       - name: Generate sorted test results
@@ -67,8 +67,9 @@ jobs:
         run: |
           cd /tmp/complement
           # Extract final test results (pass/fail/skip), sort by test name
-          jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' \
-            results.jsonl > _raw_results.jsonl
+          grep '^{' results.jsonl \
+            | jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' \
+            > _raw_results.jsonl
           # Sort: fail first, then skip, then pass; within each group sort by test name
           jq -sc 'sort_by(
             (if .Action == "fail" then 0 elif .Action == "skip" then 1 else 2 end),

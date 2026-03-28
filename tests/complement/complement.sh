@@ -66,18 +66,19 @@ set +e
 COMPLEMENT_BASE_IMAGE=complement-palpo \
     COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
     go test -json -count=1 -timeout 60m \
-    ${RUN_ARG} \
-    ${COMPLEMENT_ARGS:-} \
+    "${RUN_ARG}" \
+    ${COMPLEMENT_ARGS:+"${COMPLEMENT_ARGS}"} \
     ./tests/csapi \
     ./tests \
-    2>&1 | tee "${RESULTS_DIR}/results.jsonl"
+    | tee "${RESULTS_DIR}/results.jsonl"
 TEST_EXIT=$?
 set -e
 
 # Extract final test results (pass/fail/skip), sort by test name
 echo "--- Generating sorted results ---"
-jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' \
-    "${RESULTS_DIR}/results.jsonl" > "${RESULTS_DIR}/_raw_results.jsonl"
+grep '^{' "${RESULTS_DIR}/results.jsonl" \
+    | jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' \
+    > "${RESULTS_DIR}/_raw_results.jsonl"
 # Sort: fail first, then skip, then pass; within each group sort by test name
 jq -sc 'sort_by(
     (if .Action == "fail" then 0 elif .Action == "skip" then 1 else 2 end),
