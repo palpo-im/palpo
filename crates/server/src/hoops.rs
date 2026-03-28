@@ -7,6 +7,7 @@ use crate::core::MatrixError;
 
 mod auth;
 pub use auth::*;
+pub mod introspection;
 
 #[handler]
 pub async fn ensure_accept(req: &mut Request) {

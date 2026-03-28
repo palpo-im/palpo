@@ -71,9 +71,14 @@ fn well_known_client() -> JsonResult<ClientResBody> {
         base_url: client_url.clone(),
     });
 
-    // Advertise external MAS as OIDC issuer (MSC3861)
-    // Read mas_issuer directly from oidc config, independent of oidc.enable
-    if let Some(oidc) = conf.oidc.as_ref() {
+    // Advertise OIDC issuer (MSC3861) — prefer delegated_auth, fall back to oidc.mas_issuer
+    if let Some(da) = conf.enabled_delegated_auth() {
+        if let Some(issuer) = &da.issuer {
+            body.authentication = Some(AuthenticationInfo {
+                issuer: issuer.clone(),
+            });
+        }
+    } else if let Some(oidc) = conf.oidc.as_ref() {
         if let Some(issuer) = &oidc.mas_issuer {
             body.authentication = Some(AuthenticationInfo {
                 issuer: issuer.clone(),

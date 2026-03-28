@@ -52,6 +52,12 @@ pub async fn auth_by_signatures(
 
 async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
     let token = aa.require_access_token()?;
+
+    // Delegated auth: validate token via external introspection endpoint
+    if config::get().enabled_delegated_auth().is_some() {
+        return auth_by_delegated_token(token, &aa, depot).await;
+    }
+
     let access_token = match user_access_tokens::table
         .filter(user_access_tokens::token.eq(token))
         .first::<DbAccessToken>(&mut connect()?)
@@ -128,6 +134,63 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         }
         Err(MatrixError::unknown_token("unknown access token", true).into())
     }
+}
+
+/// Validate a token via the external authorization server's introspection endpoint.
+async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> AppResult<()> {
+    let result = super::introspection::introspect_token(token).await?;
+
+    if !result.active {
+        return Err(MatrixError::unknown_token("Token is not active", true).into());
+    }
+
+    let username = result
+        .username
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown_token("No username in introspection response", true))?;
+
+    let conf = config::get();
+    let user_id = UserId::parse_with_server_name(username, &conf.server_name)
+        .map_err(|_| MatrixError::unknown_token("Invalid username in token", true))?;
+
+    // User should already be provisioned by the auth service via MAS admin endpoints
+    let user = users::table
+        .find(&user_id)
+        .first::<DbUser>(&mut connect()?)
+        .map_err(|_| MatrixError::unknown_token("User not found (not yet provisioned?)", true))?;
+
+    // Extract device_id from introspection response, scope, or query param
+    let device_id_str = result.device_id.or_else(|| {
+        result
+            .scope
+            .as_deref()
+            .and_then(super::introspection::device_id_from_scope)
+    }).or_else(|| aa.device_id.clone());
+
+    let user_device = if let Some(did) = &device_id_str {
+        let device_id: OwnedDeviceId = did.as_str().into();
+        user_devices::table
+            .filter(user_devices::user_id.eq(&user_id))
+            .filter(user_devices::device_id.eq(&device_id))
+            .first::<DbUserDevice>(&mut connect()?)
+            .map_err(|_| {
+                MatrixError::unknown_token("Device not found (not yet provisioned?)", true)
+            })?
+    } else {
+        // No device_id — use first available device for this user
+        user_devices::table
+            .filter(user_devices::user_id.eq(&user_id))
+            .first::<DbUserDevice>(&mut connect()?)
+            .map_err(|_| MatrixError::unknown_token("No device found for user", true))?
+    };
+
+    depot.inject(AuthedInfo {
+        user,
+        user_device,
+        access_token_id: None,
+        appservice: None,
+    });
+    Ok(())
 }
 
 /// Get or create a user for an appservice
