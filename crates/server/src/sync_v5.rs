@@ -1142,6 +1142,7 @@ where
             }
         }
 
+
         let typing_event = room::typing::all_typings(room_id).await?;
         if !typing_event.content.user_ids.is_empty() {
             typing.rooms.insert(room_id.to_owned(), typing_event);
