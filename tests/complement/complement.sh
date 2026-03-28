@@ -59,23 +59,37 @@ if [ -n "$TEST_FILTER" ]; then
     RUN_ARG="-run ${TEST_FILTER}"
 fi
 
+RESULTS_DIR="${RESULTS_DIR:-$COMPLEMENT_SRC}"
+
 echo "--- Running Complement tests ---"
 set +e
 COMPLEMENT_BASE_IMAGE=complement-palpo \
     COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
-    go test -v -count=1 -timeout 60m \
+    go test -json -count=1 -timeout 60m \
     ${RUN_ARG} \
     ${COMPLEMENT_ARGS:-} \
     ./tests/csapi \
     ./tests \
-    2>&1 | tee "${RESULTS_FILE:-/dev/stdout}"
+    2>&1 | tee "${RESULTS_DIR}/results.jsonl"
 TEST_EXIT=$?
 set -e
 
-if [ $TEST_EXIT -ne 0 ]; then
-    echo "--- Complement tests finished with failures (exit code: $TEST_EXIT) ---"
-else
-    echo "--- Complement tests passed ---"
-fi
+# Extract final test results (pass/fail/skip), sort by test name
+echo "--- Generating sorted results ---"
+jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' \
+    "${RESULTS_DIR}/results.jsonl" > "${RESULTS_DIR}/_raw_results.jsonl"
+# Sort: fail first, then skip, then pass; within each group sort by test name
+jq -sc 'sort_by(
+    (if .Action == "fail" then 0 elif .Action == "skip" then 1 else 2 end),
+    .Test
+  )[]' "${RESULTS_DIR}/_raw_results.jsonl" > "${RESULTS_DIR}/__test_all.result.jsonl"
+rm -f "${RESULTS_DIR}/_raw_results.jsonl"
+
+echo "=== Test Summary ==="
+echo "Total: $(wc -l < "${RESULTS_DIR}/__test_all.result.jsonl")"
+echo "Pass:  $(grep -c '"pass"' "${RESULTS_DIR}/__test_all.result.jsonl" || true)"
+echo "Fail:  $(grep -c '"fail"' "${RESULTS_DIR}/__test_all.result.jsonl" || true)"
+echo "Skip:  $(grep -c '"skip"' "${RESULTS_DIR}/__test_all.result.jsonl" || true)"
+echo "Results: ${RESULTS_DIR}/__test_all.result.jsonl"
 
 exit $TEST_EXIT

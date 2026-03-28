@@ -56,16 +56,37 @@ jobs:
           cd /tmp/complement
           COMPLEMENT_BASE_IMAGE=complement-palpo \
             COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
-            go test -v -count=1 -timeout 60m \
+            go test -json -count=1 -timeout 60m \
             ./tests/csapi \
             ./tests \
-            2>&1 | tee results.log
+            2>&1 | tee results.jsonl
         continue-on-error: true
+
+      - name: Generate sorted test results
+        if: always()
+        run: |
+          cd /tmp/complement
+          # Extract final test results (pass/fail/skip), sort by test name
+          jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' \
+            results.jsonl > _raw_results.jsonl
+          # Sort: fail first, then skip, then pass; within each group sort by test name
+          jq -sc 'sort_by(
+            (if .Action == "fail" then 0 elif .Action == "skip" then 1 else 2 end),
+            .Test
+          )[]' _raw_results.jsonl > __test_all.result.jsonl
+          rm -f _raw_results.jsonl
+          echo "=== Test Summary ==="
+          echo "Total: $(wc -l < __test_all.result.jsonl)"
+          echo "Pass:  $(grep -c '"pass"' __test_all.result.jsonl || true)"
+          echo "Fail:  $(grep -c '"fail"' __test_all.result.jsonl || true)"
+          echo "Skip:  $(grep -c '"skip"' __test_all.result.jsonl || true)"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: complement-results
-          path: /tmp/complement/results.log
+          path: |
+            /tmp/complement/__test_all.result.jsonl
+            /tmp/complement/results.jsonl
           retention-days: 14
