@@ -19,6 +19,9 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
+use crate::data::schema::*;
+use crate::event::{BatchToken, ignored_filter};
+use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::room::{self, filter_rooms, state, timeline};
 use crate::{AppResult, data, extract_variant};
 
