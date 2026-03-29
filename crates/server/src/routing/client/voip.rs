@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use salvo::prelude::*;
 use sha1::Sha1;
 
