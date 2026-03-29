@@ -15,7 +15,7 @@ use crate::data::schema::*;
 use crate::data::user::{DbUser, NewDbUser};
 use crate::exts::*;
 use crate::{
-    AppError, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
+    AppError, AppResult, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
     SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops, json_ok, user, utils,
 };
 
@@ -52,7 +52,11 @@ pub fn authed_router() -> Router {
 /// when logging in.
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
-    let flows = vec![LoginType::password(), LoginType::appservice()];
+    let flows = if config::get().enabled_delegated_auth().is_some() {
+        vec![LoginType::Sso(crate::core::client::session::SsoLoginType::new())]
+    } else {
+        vec![LoginType::password(), LoginType::appservice()]
+    };
     Ok(Json(LoginTypesResBody::new(flows)))
 }
 
@@ -72,6 +76,12 @@ async fn login(
     req: &mut Request,
     res: &mut Response,
 ) -> JsonResult<LoginResBody> {
+    if config::get().enabled_delegated_auth().is_some() {
+        return Err(
+            MatrixError::forbidden("This server uses delegated authentication. Use the OIDC provider to log in.", None).into(),
+        );
+    }
+
     // Validate login method
     // TODO: Other login methods
     let user_id = match &body.login_info {
@@ -423,14 +433,53 @@ async fn refresh_access_token(
     })
 }
 
-#[endpoint]
-async fn redirect(_aa: AuthArgs, _redirect_url: QueryParam<String>) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+/// Extract redirectUrl from query string (Element sends camelCase `redirectUrl`).
+fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
+    req.query::<String>("redirectUrl")
+        .or_else(|| req.query::<String>("redirect_url"))
+        .ok_or_else(|| MatrixError::bad_json("Missing redirectUrl parameter"))
+}
+
+/// Build the authorization URL for the delegated auth issuer.
+fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
+    let conf = config::get();
+    let da = conf
+        .enabled_delegated_auth()
+        .ok_or_else(|| MatrixError::not_found("SSO is not enabled on this server"))?;
+    let issuer = da
+        .issuer
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown("Delegated auth issuer not configured"))?;
+    let client_id = da
+        .client_id
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown("Delegated auth client_id not configured"))?;
+
+    let state = utils::random_string(TOKEN_LENGTH);
+    let authorize_url = format!("{}/authorize", issuer.trim_end_matches('/'));
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_url", redirect_url)
+        .append_pair("scope", "openid urn:matrix:org.matrix.msc2967.client:api:*")
+        .append_pair("state", &state)
+        .finish();
+
+    Ok(format!("{authorize_url}?{params}"))
 }
 
 #[endpoint]
-async fn provider_url(_aa: AuthArgs) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+async fn redirect(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
+    let redirect_url = get_redirect_url(req)?;
+    let auth_url = build_sso_redirect_url(&redirect_url)?;
+    res.render(salvo::prelude::Redirect::found(auth_url));
+    Ok(())
+}
+
+#[endpoint]
+async fn provider_url(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
+    let redirect_url = get_redirect_url(req)?;
+    let auth_url = build_sso_redirect_url(&redirect_url)?;
+    res.render(salvo::prelude::Redirect::found(auth_url));
+    Ok(())
 }
