@@ -5,8 +5,8 @@
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::macros::{EventContent, StringEnum};
 use crate::PrivOwnedStr;
+use crate::macros::{EventContent, StringEnum};
 
 /// The content of an [`m.invite_permission_config`] account data.
 ///

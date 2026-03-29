@@ -114,7 +114,9 @@ impl<'de> Deserialize<'de> for Typing {
 
         Ok(if repr.typing {
             Typing::Yes(TypingInfo {
-                timeout: repr.timeout.ok_or_else(|| D::Error::missing_field("timeout"))?,
+                timeout: repr
+                    .timeout
+                    .ok_or_else(|| D::Error::missing_field("timeout"))?,
             })
         } else {
             Typing::No

@@ -104,7 +104,7 @@ tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 ulid = { workspace = true }
 url = { workspace = true }
-uuid = { version = "1.23.0", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true

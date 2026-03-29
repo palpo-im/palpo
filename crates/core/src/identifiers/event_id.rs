@@ -54,7 +54,8 @@ impl EventId {
     /// This should only be used for events in the original format as used by
     /// Matrix room versions 1 and 2.
     pub fn new_v1(server_name: &ServerName) -> OwnedEventId {
-        Self::from_borrowed_unchecked(&format!("${}:{server_name}", super::generate_localpart(18))).to_owned()
+        Self::from_borrowed_unchecked(&format!("${}:{server_name}", super::generate_localpart(18)))
+            .to_owned()
     }
 
     /// Returns the event's unique ID.

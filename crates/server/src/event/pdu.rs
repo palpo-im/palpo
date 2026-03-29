@@ -482,7 +482,9 @@ impl PduEvent {
 
     #[tracing::instrument]
     pub fn to_room_event(&self) -> RawJson<AnyTimelineEvent> {
-        let age = UnixMillis::now().get().saturating_sub(self.origin_server_ts.get());
+        let age = UnixMillis::now()
+            .get()
+            .saturating_sub(self.origin_server_ts.get());
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,

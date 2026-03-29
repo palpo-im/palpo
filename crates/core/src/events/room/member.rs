@@ -350,10 +350,12 @@ impl From<RoomMemberEventContent> for PossiblyRedactedRoomMemberEventContent {
             display_name: c.display_name,
             is_direct: c.is_direct,
             membership: c.membership,
-            third_party_invite: c.third_party_invite.map(|i| PossiblyRedactedThirdPartyInvite {
-                display_name: Some(i.display_name),
-                signed: i.signed,
-            }),
+            third_party_invite: c
+                .third_party_invite
+                .map(|i| PossiblyRedactedThirdPartyInvite {
+                    display_name: Some(i.display_name),
+                    signed: i.signed,
+                }),
             blurhash: c.blurhash,
             reason: c.reason,
             join_authorized_via_users_server: c.join_authorized_via_users_server,
@@ -368,10 +370,12 @@ impl From<RedactedRoomMemberEventContent> for PossiblyRedactedRoomMemberEventCon
             display_name: None,
             is_direct: None,
             membership: c.membership,
-            third_party_invite: c.third_party_invite.map(|i| PossiblyRedactedThirdPartyInvite {
-                display_name: None,
-                signed: i.signed,
-            }),
+            third_party_invite: c
+                .third_party_invite
+                .map(|i| PossiblyRedactedThirdPartyInvite {
+                    display_name: None,
+                    signed: i.signed,
+                }),
             blurhash: None,
             reason: None,
             join_authorized_via_users_server: c.join_authorized_via_users_server,

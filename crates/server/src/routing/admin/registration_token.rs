@@ -100,7 +100,9 @@ pub fn list_registration_tokens(
 ) -> JsonResult<ListRegistrationTokensResponse> {
     let tokens = data::user::list_registration_tokens(query.valid)?;
     let registration_tokens = tokens.into_iter().map(Into::into).collect();
-    json_ok(ListRegistrationTokensResponse { registration_tokens })
+    json_ok(ListRegistrationTokensResponse {
+        registration_tokens,
+    })
 }
 
 /// Create a new registration token
@@ -149,10 +151,10 @@ pub fn create_registration_token(
     // Validate uses_allowed
     if let Some(uses) = body.uses_allowed {
         if uses < 0 {
-            return Err(
-                MatrixError::invalid_param("uses_allowed must be a non-negative integer or null")
-                    .into(),
-            );
+            return Err(MatrixError::invalid_param(
+                "uses_allowed must be a non-negative integer or null",
+            )
+            .into());
         }
     }
 
@@ -165,7 +167,8 @@ pub fn create_registration_token(
     }
 
     // Create the token
-    let created = data::user::create_registration_token(&token, body.uses_allowed, body.expiry_time)?;
+    let created =
+        data::user::create_registration_token(&token, body.uses_allowed, body.expiry_time)?;
     if !created {
         return Err(MatrixError::invalid_param(format!("Token already exists: {}", token)).into());
     }
@@ -208,10 +211,10 @@ pub fn update_registration_token(
     // Validate uses_allowed if provided
     if let Some(Some(uses)) = body.uses_allowed {
         if uses < 0 {
-            return Err(
-                MatrixError::invalid_param("uses_allowed must be a non-negative integer or null")
-                    .into(),
-            );
+            return Err(MatrixError::invalid_param(
+                "uses_allowed must be a non-negative integer or null",
+            )
+            .into());
         }
     }
 

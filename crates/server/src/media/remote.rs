@@ -94,9 +94,11 @@ async fn fetch_thumbnail_authenticated(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
-    use crate::core::http_headers::ContentDisposition;
-    use reqwest::header;
     use std::str::FromStr;
+
+    use reqwest::header;
+
+    use crate::core::http_headers::ContentDisposition;
 
     let target_server = server.unwrap_or(mxc.server_name);
     let origin = target_server.origin().await;
@@ -116,7 +118,8 @@ async fn fetch_thumbnail_authenticated(
     .into_inner();
 
     // Send federation request
-    let response = crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
+    let response =
+        crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
 
     // Extract content from response headers
     let content_type = response
@@ -187,9 +190,11 @@ async fn fetch_thumbnail_unauthenticated(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
-    use crate::core::http_headers::ContentDisposition;
-    use reqwest::header;
     use std::str::FromStr;
+
+    use reqwest::header;
+
+    use crate::core::http_headers::ContentDisposition;
 
     let target_server = server.unwrap_or(mxc.server_name);
     let origin = target_server.origin().await;
@@ -212,7 +217,8 @@ async fn fetch_thumbnail_unauthenticated(
     .into_inner();
 
     // Send federation request
-    let response = crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
+    let response =
+        crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
 
     // Extract content from response headers
     let content_type = response

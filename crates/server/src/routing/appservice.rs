@@ -8,9 +8,8 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use subtle::ConstantTimeEq;
 
-use crate::appservice;
 use crate::core::appservice::ping::SendPingReqBody;
-use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok};
+use crate::{AuthArgs, EmptyResult, MatrixError, appservice, empty_ok};
 
 pub fn router() -> Router {
     Router::with_path("app").oapi_tag("appservice").push(

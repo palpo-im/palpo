@@ -112,8 +112,7 @@ pub fn try_auth(
             if Some(t.token.trim()) == conf.registration_token.as_deref() {
                 uiaa_info.completed.push(AuthType::RegistrationToken);
             } else {
-                uiaa_info.auth_error =
-                    Some(AuthError::forbidden("Invalid registration token."));
+                uiaa_info.auth_error = Some(AuthError::forbidden("Invalid registration token."));
                 return Ok((false, uiaa_info));
             }
         }

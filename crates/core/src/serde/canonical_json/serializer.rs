@@ -2,14 +2,12 @@
 
 use std::fmt;
 
-use serde::{
-    de::{Error, Unexpected},
-    ser::{Impossible, Serialize},
-};
+use serde::de::{Error, Unexpected};
+use serde::ser::{Impossible, Serialize};
 
 use super::{
-    CanonicalJsonError, CanonicalJsonObject, CanonicalJsonValue, to_canonical_value,
-    CANONICALJSON_MAX_INT, CANONICALJSON_MIN_INT,
+    CANONICALJSON_MAX_INT, CANONICALJSON_MIN_INT, CanonicalJsonError, CanonicalJsonObject,
+    CanonicalJsonValue, to_canonical_value,
 };
 
 /// Type alias for serialization results.
@@ -562,9 +560,7 @@ impl serde::Serializer for ObjectKeySerializer {
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
-        Err(CanonicalJsonError::InvalidObjectKeyType(
-            "tuple".to_owned(),
-        ))
+        Err(CanonicalJsonError::InvalidObjectKeyType("tuple".to_owned()))
     }
 
     fn serialize_tuple_struct(

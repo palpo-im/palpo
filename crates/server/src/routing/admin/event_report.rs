@@ -178,9 +178,7 @@ pub fn delete_event_report(report_id: PathParam<i64>) -> EmptyResult {
 
     let deleted = data::room::delete_event_report(report_id)?;
     if !deleted {
-        return Err(
-            MatrixError::not_found(format!("Event report {} not found", report_id)).into(),
-        );
+        return Err(MatrixError::not_found(format!("Event report {} not found", report_id)).into());
     }
 
     empty_ok()
