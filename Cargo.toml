@@ -130,7 +130,7 @@ tracing-core = { version = "0.1.36" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = { version = "2.5.8", default-features = false, features = ["serde"] }
-uuid = { version = "1.22.0", features = ["v4"] }
+uuid = { version = "1.23.0", features = ["v4"] }
 ulid = "1.2.1"
 web-time = "1.1.0"
 webpage = { version = "2.0.1", default-features = false }

@@ -192,7 +192,7 @@ tracing-subscriber = { workspace = true, features = [
 ] }
 ulid = { workspace = true }
 url = { workspace = true }
-uuid = { version = "1.22.0", features = ["v4"] }
+uuid = { version = "1.23.0", features = ["v4"] }
 webpage = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
