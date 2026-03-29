@@ -74,7 +74,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: palpo-im/palpo
           # Prevent `latest` to be updated for each new tag pushed.
@@ -167,7 +167,7 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       - name: Calculate docker image tag
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ matrix.repository }}
           flavor: |
