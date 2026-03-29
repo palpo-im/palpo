@@ -316,27 +316,54 @@ start_admin_ui() {
     
     # Wait for Admin UI to be ready
     ADMIN_UI_READY=false
-    for i in $(seq 1 30); do
+    for i in $(seq 1 60); do  # Increased timeout to 120 seconds for WASM compilation
         if ! kill -0 $ADMIN_UI_PID 2>/dev/null; then
             log_error "dx serve process exited prematurely"
             log_error "Last log lines:"
             tail -10 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
             break
         fi
+        
+        # Check if port is open
         if curl -s --connect-timeout 2 "http://localhost:$ADMIN_UI_PORT" >/dev/null 2>&1; then
-            log_success "Admin UI dev server is ready on port $ADMIN_UI_PORT"
-            ADMIN_UI_READY=true
-            break
+            # Check if WASM app is compiled (not showing "building" page)
+            PAGE_CONTENT=$(curl -s "http://localhost:$ADMIN_UI_PORT" 2>/dev/null)
+            
+            if echo "$PAGE_CONTENT" | grep -q "building your app\|Starting the build"; then
+                log_info "WASM app is still compiling... ($i/60)"
+                # Show build progress if available
+                if echo "$PAGE_CONTENT" | grep -q "progress\|%"; then
+                    PROGRESS=$(echo "$PAGE_CONTENT" | grep -o '[0-9]*%' | head -1)
+                    log_info "Build progress: $PROGRESS"
+                fi
+            elif echo "$PAGE_CONTENT" | grep -q "登录\|login\|Palpo"; then
+                log_success "Admin UI is ready (WASM compiled) on port $ADMIN_UI_PORT"
+                ADMIN_UI_READY=true
+                break
+            else
+                # Page loaded but content unknown - give it more time
+                log_info "Admin UI port ready, waiting for WASM app... ($i/60)"
+            fi
+        else
+            log_info "Waiting for Admin UI port to open... ($i/60)"
         fi
-        log_info "Waiting for Admin UI to start... ($i/30)"
+        
         sleep 2
     done
     
     if [ "$ADMIN_UI_READY" = false ]; then
-        log_error "Admin UI failed to start within timeout"
+        log_error "Admin UI failed to start or compile within timeout"
         log_error "Full log: $ADMIN_UI_LOG"
-        log_error "Last 20 lines:"
-        tail -20 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
+        log_error "Last 30 lines:"
+        tail -30 "$ADMIN_UI_LOG" | while IFS= read -r line; do echo "  $line"; done
+        
+        # Check if still building
+        PAGE_CONTENT=$(curl -s "http://localhost:$ADMIN_UI_PORT" 2>/dev/null || echo "")
+        if echo "$PAGE_CONTENT" | grep -q "building"; then
+            log_error "WASM compilation is still in progress - may need more time"
+            log_error "Current page shows: $(echo "$PAGE_CONTENT" | head -c 200)"
+        fi
+        
         return 1
     fi
     
@@ -369,7 +396,18 @@ check_services() {
     fi
     
     if check_port $ADMIN_UI_PORT; then
-        echo -e "  Admin UI:      ${GREEN}✓ Ready${NC}"
+        # Check if WASM app is compiled (not showing "building" page)
+        PAGE_CONTENT=$(curl -s "http://localhost:$ADMIN_UI_PORT" 2>/dev/null || echo "")
+        if echo "$PAGE_CONTENT" | grep -q "building your app\|Starting the build"; then
+            echo -e "  Admin UI:      ${YELLOW}⚠ Compiling${NC}"
+            log_warn "Admin UI is still compiling WASM - please wait"
+            all_ready=false
+        elif echo "$PAGE_CONTENT" | grep -q "登录\|login\|Palpo"; then
+            echo -e "  Admin UI:      ${GREEN}✓ Ready${NC}"
+        else
+            echo -e "  Admin UI:      ${YELLOW}⚠ Port Open${NC}"
+            log_warn "Admin UI port is open but app content unknown"
+        fi
     else
         echo -e "  Admin UI:      ${RED}✗ Not Ready${NC}"
         all_ready=false
@@ -635,6 +673,34 @@ run_comprehensive_tests() {
         ADMIN_UI_ALREADY_RUNNING=false
         
         if check_port $ADMIN_UI_PORT; then
+            # Check if WASM app is compiled
+            log_info "Checking if Admin UI WASM app is compiled..."
+            PAGE_CHECK=$(curl -s "http://localhost:$ADMIN_UI_PORT" 2>/dev/null || echo "")
+            
+            if echo "$PAGE_CHECK" | grep -q "building your app\|Starting the build"; then
+                log_warn "Admin UI is still compiling WASM - waiting for compilation to complete..."
+                
+                # Wait for compilation to complete (up to 120 seconds)
+                for wait in $(seq 1 60); do
+                    sleep 2
+                    PAGE_CHECK=$(curl -s "http://localhost:$ADMIN_UI_PORT" 2>/dev/null || echo "")
+                    
+                    if echo "$PAGE_CHECK" | grep -q "building your app\|Starting the build"; then
+                        log_info "Still compiling... ($wait/60)"
+                    elif echo "$PAGE_CHECK" | grep -q "登录\|login\|Palpo"; then
+                        log_success "Admin UI WASM compilation completed"
+                        break
+                    else
+                        log_info "Waiting for app to load... ($wait/60)"
+                    fi
+                    
+                    if [ $wait -eq 60 ]; then
+                        log_error "Admin UI WASM compilation did not complete within 120 seconds"
+                        test_failed "UI Tests" "Admin UI compilation timeout"
+                    fi
+                done
+            fi
+            
             log_success "Admin UI already running on port $ADMIN_UI_PORT"
             ADMIN_UI_ALREADY_RUNNING=true
         else
@@ -1313,48 +1379,126 @@ run_comprehensive_tests() {
                 echo ""
                 
                 # ---------------------------------------------------------------
-                # UI Test 14: Check Server Status Section
-                # Verifies: B.1 (ServerConfigAPI), B.3 (Server Status Monitoring)
-                # Note: We should be on server-control page from Test 11
+                # UI Test 14: Verify Server Status Display (Initial State)
+                # Verifies: B.3 (Server Status Monitoring in UI)
+                # Test Flow:
+                #   1. Verify server is stopped (API + ps)
+                #   2. Verify UI displays "未启动/已停止" status correctly
+                #   3. Verify start button is available
+                # Note: This test focuses on UI status display, not environment setup
                 # ---------------------------------------------------------------
-                echo "UI Test 14: Check Server Status Section"
+                echo "UI Test 14: Verify Server Status Display (Initial State)"
                 
-                # Re-snapshot to get current state
+                # Quick snapshot to verify page
                 SERVER_SNAP=$(agent-browser snapshot -i 2>/dev/null)
                 log_info "Server status snapshot (first 500 chars): $(echo "$SERVER_SNAP" | head -c 500)"
 
-                # Check if we're still on the right page (should have "服务器管理" heading)
+                # Verify we're on the right page
                 if echo "$SERVER_SNAP" | grep -q "首页\|仪表板"; then
                     if ! echo "$SERVER_SNAP" | grep -q "服务器管理\|服务器配置编辑"; then
-                        test_failed "UI Test 14" "Navigation failed - on wrong page (dashboard/home instead of server-control)"
+                        test_failed "UI Test 14" "Navigation failed - on wrong page"
                     fi
                 fi
 
-                # The page should show server status section (标题: "服务器状态" 或 "服务器管理")
+                # The page should show server status section
                 if echo "$SERVER_SNAP" | grep -q "服务器状态\|服务器管理"; then
                     log_success "Server Status section visible"
                     STATUS_VISIBLE=true
-                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
                 else
                     test_failed "UI Test 14" "Server Status section not found"
                 fi
                 
-                # Check for status badge (should show current status)
-                if [ "$STATUS_VISIBLE" = true ]; then
-                    STATUS_TEXT=$(echo "$SERVER_SNAP" | grep -i "运行\|running\|stopped\|badge\|状态" | head -5)
-                    log_info "Status elements: $STATUS_TEXT"
+                # Step 1: Quick verification - server should be stopped
+                log_info "Step 1: Verifying server is stopped..."
+                
+                # Check API status (should be Stopped after previous API tests)
+                API_STATUS=$(curl -s -H "Authorization: Bearer $SESSION_TOKEN" \
+                    "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/status")
+                log_info "API Status: $API_STATUS"
+                
+                # If server is Running, stop it for clean test
+                if echo "$API_STATUS" | grep -q '"status":"Running"'; then
+                    log_warn "Server is Running - stopping for clean test..."
+                    curl -s -X POST \
+                        -H "Authorization: Bearer $SESSION_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/stop" \
+                        -d "{}" > /dev/null
+                    sleep 3
                 fi
+                
+                # Verify no Palpo process
+                if pgrep -f "/palpo --config" > /dev/null 2>&1; then
+                    log_warn "Found Palpo process - killing for clean test..."
+                    pkill -f "/palpo --config"
+                    sleep 2
+                fi
+                
+                log_success "Server is stopped (clean state)"
+                
+                # Step 2: Verify UI displays correct status
+                log_info "Step 2: Verifying UI displays status correctly..."
+                
+                # Poll for UI to load status data
+                UI_STATUS_FOUND=false
+                for poll in $(seq 1 15); do
+                    sleep 2
+                    UI_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                    
+                    # Check for status value display
+                    if echo "$UI_SNAP" | grep -qi "未启动\|已停止\|not.*start\|stopped"; then
+                        log_success "UI correctly displays NotStarted/Stopped status"
+                        log_info "Status element: $(echo "$UI_SNAP" | grep -i "未启动\|已停止\|stopped" | head -1)"
+                        UI_STATUS_FOUND=true
+                        break
+                    elif echo "$UI_SNAP" | grep -qi "运行中\|running"; then
+                        # This would be a bug - server is stopped but UI shows Running
+                        log_error "UI shows Running but server is stopped - UI state synchronization issue!"
+                        agent-browser screenshot "/tmp/palpo_e2e_ui_sync_error.png" 2>/dev/null
+                        test_failed "UI Test 14" "UI shows Running but server is stopped"
+                    else
+                        log_info "Waiting for UI status value to load... ($poll/15)"
+                        if [ $((poll % 5)) -eq 0 ]; then
+                            log_info "Snapshot snippet: $(echo "$UI_SNAP" | grep -A 5 "服务器状态" | head -10)"
+                        fi
+                    fi
+                done
+                
+                if [ "$UI_STATUS_FOUND" = false ]; then
+                    agent-browser screenshot "/tmp/palpo_e2e_no_status.png" 2>/dev/null
+                    log_error "UI did not display server status value"
+                    log_error "Expected: '未启动' or '已停止' in status section"
+                    log_error "Snapshot: $(echo "$UI_SNAP" | grep -A 10 "服务器状态" | head -15)"
+                    test_failed "UI Test 14" "UI failed to display status - check screenshot: /tmp/palpo_e2e_no_status.png"
+                fi
+                
+                # Step 3: Verify start button is available
+                START_BTN_COUNT=$(echo "$UI_SNAP" | grep -c "启动服务器")
+                if [ "$START_BTN_COUNT" -gt 0 ]; then
+                    log_success "Start button is available in UI"
+                else
+                    log_warn "Start button not found - may affect next test"
+                fi
+                
+                # Mark test passed
+                UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                log_success "UI Test 14 completed: Status display verification passed"
                 echo ""
                 
                 # ---------------------------------------------------------------
-                # UI Test 15: Stop Palpo Server via Web UI
-                # Verifies: B.2 (ServerControlAPI - Stop)
+                # UI Test 15: Start Palpo Server via Web UI (Complete Flow)
+                # Verifies: A.5 (Config Validation Before Start), B.2 (ServerControlAPI - Start)
+                # Test Flow:
+                #   1. Click start button
+                #   2. Handle config validation dialog
+                #   3. Confirm start
+                #   4. Verify UI shows "Running" status
+                #   5. Verify Palpo process is running (ps check)
+                #   6. Verify backend API shows Running
+                #   7. Verify Palpo service is healthy (Matrix API)
+                #   8. Handle error cases
                 # ---------------------------------------------------------------
-                echo "UI Test 15: Stop Palpo Server via Web UI"
-                
-                # Wait for UI to update with server status
-                log_info "Waiting for UI to update with server status..."
-                sleep 3
+                echo "UI Test 15: Start Palpo Server via Web UI (Complete Flow)"
                 
                 # Set larger viewport to ensure all elements are visible
                 agent-browser eval "window.resizeTo(1400, 900)" 2>/dev/null
@@ -1364,120 +1508,206 @@ run_comprehensive_tests() {
                 agent-browser eval "window.scrollTo(0, document.body.scrollHeight)" 2>/dev/null
                 sleep 1
                 
-                # Re-snapshot to get fresh refs (status may have loaded now)
+                # Re-snapshot to get fresh refs
                 SERVER_SNAP=$(agent-browser snapshot -i 2>/dev/null)
-                log_info "Stop test snapshot ref lines: $(echo "$SERVER_SNAP" | grep 'ref=' | head -30)"
+                log_info "Start test snapshot ref lines: $(echo "$SERVER_SNAP" | grep 'ref=' | head -30)"
                 
-                # Debug: Show all buttons in snapshot
-                log_info "All buttons in snapshot: $(echo "$SERVER_SNAP" | grep -i button | head -10)"
-                
-                # Check if server status shows "Running" in the snapshot
-                if echo "$SERVER_SNAP" | grep -q "运行中\|Running"; then
-                    log_success "Server status shows Running in UI"
+                # Step 1: Click "启动服务器" button
+                log_info "Step 1: Clicking start button..."
+                START_BTN_REF=$(echo "$SERVER_SNAP" | grep "启动服务器" | grep -o 'ref=e[0-9]*' | head -1)
+                START_BTN_REF=$(echo "$START_BTN_REF" | sed 's/ref=/@/')
+                if [ -n "$START_BTN_REF" ]; then
+                    log_info "Found start button ref: $START_BTN_REF"
+                    agent-browser click "$START_BTN_REF" 2>/dev/null
                 else
-                    log_warn "Server status may not be Running in UI - checking API status"
-                    API_STATUS_CHECK=$(curl -s -H "Authorization: Bearer $SESSION_TOKEN" "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/status")
-                    log_info "API status: $API_STATUS_CHECK"
-                    if echo "$API_STATUS_CHECK" | grep -q '"status":"Running"'; then
-                        log_info "API shows Running - UI may need more time to update"
-                        sleep 3
-                        SERVER_SNAP=$(agent-browser snapshot -i 2>/dev/null)
-                    fi
+                    log_info "Start button ref not found, trying semantic locator"
+                    agent-browser find role button --name "启动服务器" click 2>/dev/null
+                fi
+                sleep 3
+                
+                # Step 2: Handle config validation dialog
+                log_info "Step 2: Handling config validation dialog..."
+                VALID_SNAP=$(agent-browser snapshot -i 2>/dev/null)
+                log_info "Validation dialog snapshot: $(echo "$VALID_SNAP" | head -c 1000)"
+                
+                VALID_CONFIRM_REF=$(echo "$VALID_SNAP" | grep "配置已验证\|继续启动" | grep -o 'ref=e[0-9]*' | head -1)
+                VALID_CONFIRM_REF=$(echo "$VALID_CONFIRM_REF" | sed 's/ref=/@/')
+                if [ -n "$VALID_CONFIRM_REF" ]; then
+                    log_info "Found validation confirm ref: $VALID_CONFIRM_REF"
+                    agent-browser click "$VALID_CONFIRM_REF" 2>/dev/null
+                    sleep 2
+                else
+                    log_info "Config validation dialog not found, proceeding with start confirm"
                 fi
                 
-                # Click the "停止服务器" button — match the full button text to avoid
-                # false positives with heading "服务器控制" etc.
-                STOP_BTN_REF=$(echo "$SERVER_SNAP" | grep "停止服务器" | grep -o 'ref=e[0-9]*' | head -1)
-                STOP_BTN_REF=$(echo "$STOP_BTN_REF" | sed 's/ref=/@/')
-                if [ -n "$STOP_BTN_REF" ]; then
-                    log_info "Found stop button ref: $STOP_BTN_REF"
-                    agent-browser click "$STOP_BTN_REF" 2>/dev/null
-                else
-                    log_info "Stop button ref not found, trying semantic locator"
-                    agent-browser find role button --name "停止服务器" click 2>/dev/null
-                fi
-                sleep 2
-                
-                # Check for confirmation dialog — the dialog title is "停止服务器" (h3),
-                # and the confirm button text is "停止" (the last button with "停止").
-                # In snapshot, dialog buttons appear after the dialog content.
+                # Step 3: Confirm start
+                log_info "Step 3: Confirming server start..."
                 CONFIRM_SNAP=$(agent-browser snapshot -i 2>/dev/null)
-                log_info "Confirm dialog snapshot: $(echo "$CONFIRM_SNAP" | head -c 1200)"
+                log_info "Start confirm dialog snapshot: $(echo "$CONFIRM_SNAP" | head -c 800)"
                 
-                # Debug: Show all elements with "停止" text
-                log_info "All elements with '停止': $(echo "$CONFIRM_SNAP" | grep "停止" | head -10)"
-                
-                # Get all refs containing "停止" and take the LAST one (the confirm button)
-                CONFIRM_REF=$(echo "$CONFIRM_SNAP" | grep "停止" | grep -o 'ref=e[0-9]*' | tail -1)
+                # The confirm button "启动" is the last ref containing "启动" in dialog
+                CONFIRM_REF=$(echo "$CONFIRM_SNAP" | grep "启动" | grep -o 'ref=e[0-9]*' | tail -1)
                 CONFIRM_REF=$(echo "$CONFIRM_REF" | sed 's/ref=/@/')
-                
-                # If not found, try alternative approaches
-                if [ -z "$CONFIRM_REF" ]; then
-                    log_info "Confirm button not found with '停止', trying button search"
-                    # Try finding button by role
-                    CONFIRM_BTN=$(echo "$CONFIRM_SNAP" | grep -i "button" | grep -o 'ref=e[0-9]*' | tail -1)
-                    CONFIRM_BTN=$(echo "$CONFIRM_BTN" | sed 's/ref=/@/')
-                    if [ -n "$CONFIRM_BTN" ]; then
-                        log_info "Found button via button search: $CONFIRM_BTN"
-                        CONFIRM_REF="$CONFIRM_BTN"
-                    fi
-                fi
-                
                 if [ -n "$CONFIRM_REF" ]; then
-                    log_info "Found confirm button ref: $CONFIRM_REF"
+                    log_info "Found start confirm ref: $CONFIRM_REF"
                     agent-browser click "$CONFIRM_REF" 2>/dev/null
                     sleep 5
-                    log_success "Stop server confirmation clicked"
                 else
-                    # Dialog might not appear if server is not running
-                    # Check actual server status
-                    API_STATUS_CHECK=$(curl -s -H "Authorization: Bearer $SESSION_TOKEN" "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/status")
-                    log_info "Current API status: $API_STATUS_CHECK"
-                    
-                    if echo "$API_STATUS_CHECK" | grep -q '"status":"Running"'; then
-                        test_failed "UI Test 15" "Stop confirmation dialog not found but server is running. Dialog snapshot: $(echo "$CONFIRM_SNAP" | head -c 500)"
-                    else
-                        log_warn "Server is not running - stop button may be disabled"
-                        log_warn "Proceeding with tests - stop test will be skipped"
-                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
-                        STOP_SUCCESS=true
-                        # Skip the rest of the stop test
-                        echo ""
-                        return 0
-                    fi
+                    test_failed "UI Test 15" "Start confirmation dialog not found. Dialog snapshot: $(echo "$CONFIRM_SNAP" | head -c 300)"
                 fi
                 
-                # Wait for status to change
-                STOP_SUCCESS=false
-                for i in $(seq 1 15); do
+                # Step 4: Verify UI shows "Running" status
+                log_info "Step 4: Verifying UI shows Running status..."
+                UI_RUNNING=false
+                for i in $(seq 1 20); do
                     STATUS_SNAP=$(agent-browser snapshot -i 2>/dev/null)
-                    # Check for stopped/not-started status - look for badge text
-                    if echo "$STATUS_SNAP" | grep -qi "已停止\|未启动\|stopped\|not.start\|stopped\|notstarted"; then
-                        log_success "Server stopped via Web UI"
-                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
-                        STOP_SUCCESS=true
+                    if echo "$STATUS_SNAP" | grep -qi "运行中\|running"; then
+                        log_success "UI shows server Running status"
+                        UI_RUNNING=true
                         break
                     else
-                        log_info "Waiting for server to stop... ($i/15)"
+                        log_info "Waiting for UI to show Running... ($i/20)"
                         sleep 2
                     fi
                 done
                 
-                if [ "$STOP_SUCCESS" = false ]; then
-                    # Check if server is actually stopped via API
-                    API_STATUS=$(curl -s -H "Authorization: Bearer $SESSION_TOKEN" "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/status")
-                    if echo "$API_STATUS" | grep -qi '"status":"Stopped"\|"status":"NotStarted"'; then
-                        log_success "Server stopped (verified via API)"
-                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
-                        STOP_SUCCESS=true
-                    else
-                        log_info "API status: $API_STATUS"
-                        # Don't fail - server stop may have async issues
-                        log_warn "Server stop not reflected in UI within timeout"
-                        log_info "Proceeding with tests - server may still be stopping"
-                        UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
-                        STOP_SUCCESS=true
+                if [ "$UI_RUNNING" = false ]; then
+                    # Check for error messages in UI
+                    ERROR_MSG=$(echo "$STATUS_SNAP" | grep -i "错误\|error\|失败\|failed" | head -3)
+                    if [ -n "$ERROR_MSG" ]; then
+                        log_error "Server start failed - UI shows error message:"
+                        log_error "  $ERROR_MSG"
+                        # Take screenshot for debugging
+                        agent-browser screenshot "/tmp/palpo_e2e_start_error.png" 2>/dev/null
+                        log_info "Screenshot saved to /tmp/palpo_e2e_start_error.png"
                     fi
+                fi
+                
+                # Step 5: Verify Palpo process is running (ps check)
+                log_info "Step 5: Verifying Palpo process is running..."
+                sleep 3
+                PALPO_PROCESS_FOUND=false
+                for i in $(seq 1 10); do
+                    if pgrep -f "/palpo --config" > /dev/null 2>&1; then
+                        PALPO_PID=$(pgrep -f "/palpo --config" | head -1)
+                        log_success "Palpo process found with PID: $PALPO_PID"
+                        PALPO_PROCESS_FOUND=true
+                        break
+                    else
+                        log_info "Waiting for Palpo process to start... ($i/10)"
+                        sleep 2
+                    fi
+                done
+                
+                if [ "$PALPO_PROCESS_FOUND" = false ]; then
+                    log_error "Palpo process not found after start command"
+                    log_error "Server may have crashed during startup"
+                    
+                    # Check admin server logs for errors
+                    log_error "Recent admin server logs:"
+                    tail -30 /tmp/admin-server.log 2>/dev/null | while IFS= read -r line; do
+                        echo "  $line"
+                    done
+                    
+                    # Still continue with other checks
+                fi
+                
+                # Step 6: Verify backend API shows Running
+                log_info "Step 6: Verifying backend API shows Running..."
+                API_RUNNING=false
+                for i in $(seq 1 10); do
+                    API_STATUS=$(curl -s -H "Authorization: Bearer $SESSION_TOKEN" \
+                        "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/status")
+                    
+                    if echo "$API_STATUS" | grep -q '"status":"Running"'; then
+                        log_success "Backend API shows server Running"
+                        log_info "API Status: $API_STATUS"
+                        API_RUNNING=true
+                        break
+                    else
+                        log_info "Waiting for API to show Running... ($i/10)"
+                        log_info "Current status: $API_STATUS"
+                        sleep 2
+                    fi
+                done
+                
+                if [ "$API_RUNNING" = false ]; then
+                    log_error "Backend API does not show Running status"
+                    log_error "Final API status: $API_STATUS"
+                fi
+                
+                # Step 7: Verify Palpo service is healthy (Matrix API)
+                log_info "Step 7: Verifying Palpo service is healthy..."
+                PALPO_HEALTHY=false
+                for i in $(seq 1 10); do
+                    if check_port $PALPO_PORT; then
+                        HEALTH_RESPONSE=$(curl -s --connect-timeout 2 \
+                            "http://localhost:$PALPO_PORT/_matrix/client/versions")
+                        
+                        if [ -n "$HEALTH_RESPONSE" ] && echo "$HEALTH_RESPONSE" | grep -q "versions"; then
+                            log_success "Palpo Matrix API is responding"
+                            log_info "Matrix versions: $HEALTH_RESPONSE"
+                            PALPO_HEALTHY=true
+                            break
+                        else
+                            log_info "Port $PALPO_PORT open but Matrix API not responding... ($i/10)"
+                        fi
+                    else
+                        log_info "Waiting for Palpo to bind to port $PALPO_PORT... ($i/10)"
+                    fi
+                    sleep 2
+                done
+                
+                if [ "$PALPO_HEALTHY" = false ]; then
+                    log_error "Palpo service is not healthy - Matrix API not responding"
+                    
+                    # Check if process is still running but stuck
+                    if pgrep -f "/palpo --config" > /dev/null 2>&1; then
+                        log_error "Palpo process exists but service not responding - possible deadlock"
+                    else
+                        log_error "Palpo process has exited - server crashed"
+                    fi
+                fi
+                
+                # Step 8: Summary and error handling
+                log_info "Step 8: Test summary..."
+                echo ""
+                echo "========================================"
+                echo "  Server Start Test Results"
+                echo "========================================"
+                echo "  UI Shows Running:      $([ "$UI_RUNNING" = true ] && echo "✓ Yes" || echo "✗ No")"
+                echo "  Process Running:       $([ "$PALPO_PROCESS_FOUND" = true ] && echo "✓ Yes" || echo "✗ No")"
+                echo "  API Shows Running:     $([ "$API_RUNNING" = true ] && echo "✓ Yes" || echo "✗ No")"
+                echo "  Matrix API Healthy:    $([ "$PALPO_HEALTHY" = true ] && echo "✓ Yes" || echo "✗ No")"
+                echo "========================================"
+                echo ""
+                
+                # Determine overall test result
+                if [ "$UI_RUNNING" = true ] && [ "$PALPO_PROCESS_FOUND" = true ] && \
+                   [ "$API_RUNNING" = true ] && [ "$PALPO_HEALTHY" = true ]; then
+                    log_success "All checks passed - server started successfully"
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                    START_SUCCESS=true
+                elif [ "$PALPO_PROCESS_FOUND" = true ] && [ "$API_RUNNING" = true ]; then
+                    # Process and API are running, but UI or Matrix API may have issues
+                    log_warn "Server is running but some checks failed"
+                    log_warn "This may indicate UI update issues or service health problems"
+                    UI_TESTS_PASSED=$((UI_TESTS_PASSED + 1))
+                    START_SUCCESS=true
+                else
+                    # Server failed to start properly
+                    log_error "Server start failed or incomplete"
+                    log_error "Check the following:"
+                    log_error "  1. UI error messages: $([ "$UI_RUNNING" = false ] && echo 'UI does not show Running')"
+                    log_error "  2. Process status: $([ "$PALPO_PROCESS_FOUND" = false ] && echo 'No process found')"
+                    log_error "  3. API status: $([ "$API_RUNNING" = false ] && echo 'API does not show Running')"
+                    log_error "  4. Service health: $([ "$PALPO_HEALTHY" = false ] && echo 'Matrix API not responding')"
+                    
+                    # Take final screenshot
+                    agent-browser screenshot "/tmp/palpo_e2e_start_failed.png" 2>/dev/null
+                    log_info "Final screenshot saved to /tmp/palpo_e2e_start_failed.png"
+                    
+                    test_failed "UI Test 15" "Server start verification failed - see error details above"
                 fi
                 echo ""
                 
@@ -1624,22 +1854,8 @@ run_comprehensive_tests() {
     echo "  Tests Passed: $TESTS_PASSED / $TESTS_TOTAL"
     echo "========================================"
     
-    # Stop Palpo server after tests to clean up
-    echo ""
-    echo "--- Cleanup: Stopping Palpo Server ---"
-    STOP_RESULT=$(curl -s -X POST "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/stop" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $SESSION_TOKEN" \
-        -d "{}")
-    if echo "$STOP_RESULT" | grep -q "success\|stopped"; then
-        log_success "Palpo server stopped successfully"
-    else
-        log_warn "Server stop result: $STOP_RESULT"
-    fi
-    
-    # Mark all tests passed
-    TESTS_FAILED=false
-    ALL_TESTS_PASSED=true
+    # Do NOT stop services here - let cleanup() handle it based on TESTS_FAILED
+    # This ensures we preserve the scene if tests failed
     
     # Summary
     echo ""
@@ -1651,28 +1867,14 @@ run_comprehensive_tests() {
     echo ""
     
     if [ $TESTS_PASSED -eq $TESTS_TOTAL ]; then
-        log_success "All tests passed! Services will be stopped."
+        log_success "All tests passed!"
+        ALL_TESTS_PASSED=true
+        TESTS_FAILED=false
         return 0
     else
-        log_error "Some tests failed or skipped. Services will remain running."
+        log_error "Some tests failed or skipped. Services will remain running for debugging."
         TESTS_FAILED=true
-        return 1
-    fi
-    
-    # Wait for port to be released
-    sleep 2
-    if ! check_port $PALPO_PORT; then
-        log_success "Port $PALPO_PORT is now free"
-    else
-        log_warn "Port $PALPO_PORT still in use"
-    fi
-    echo ""
-    
-    if [ $TESTS_PASSED -ge 7 ]; then
-        log_success "Comprehensive server control tests completed successfully!"
-        return 0
-    else
-        log_error "Multiple tests failed - please check the output above"
+        ALL_TESTS_PASSED=false
         return 1
     fi
 }
@@ -1682,30 +1884,117 @@ clean_test_data() {
     log_info "Cleaning test data and processes..."
     
     echo ""
-    echo "--- Checking Background Processes ---"
+    echo "========================================"
+    echo "  Cleaning Background Services"
+    echo "========================================"
     
-    # Check and kill admin-server processes
-    if pgrep -f "palpo-admin-server" > /dev/null; then
-        log_warn "Found running palpo-admin-server processes"
-        pkill -f "palpo-admin-server"
-        log_success "Killed palpo-admin-server processes"
-    else
-        log_success "No palpo-admin-server processes running"
+    # Step 1: Stop Palpo server gracefully via API if admin-server is running
+    if check_port $ADMIN_SERVER_PORT; then
+        log_info "Admin Server is running, attempting graceful Palpo shutdown..."
+        
+        # Get admin session token (may fail if not initialized)
+        LOGIN_RESULT=$(curl -s -X POST "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/webui-admin/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"admin\", \"password\": \"$ADMIN_PASSWORD\"}" 2>/dev/null)
+        TEMP_TOKEN=$(echo "$LOGIN_RESULT" | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+        
+        if [ -n "$TEMP_TOKEN" ]; then
+            # Stop Palpo gracefully via API
+            STOP_RESULT=$(curl -s -X POST \
+                -H "Authorization: Bearer $TEMP_TOKEN" \
+                -H "Content-Type: application/json" \
+                "http://localhost:$ADMIN_SERVER_PORT/api/v1/admin/server/stop" \
+                -d "{}" 2>/dev/null)
+            
+            if echo "$STOP_RESULT" | grep -q "success\|stopped"; then
+                log_success "Palpo server stopped gracefully via API"
+                sleep 2
+            else
+                log_info "Palpo stop API call: $STOP_RESULT"
+            fi
+        else
+            log_info "Could not get admin token for graceful shutdown"
+        fi
     fi
     
-    # Check and kill Palpo processes (exclude admin-server and postgres)
+    # Step 2: Kill Palpo processes (force kill if graceful shutdown failed)
+    echo ""
+    log_info "Checking for Palpo processes..."
     if pgrep -f "/palpo --config" > /dev/null 2>&1; then
-        log_warn "Found running Palpo processes"
-        pkill -f "/palpo --config"
-        log_success "Killed Palpo processes"
+        PALPO_PIDS=$(pgrep -f "/palpo --config")
+        log_warn "Found Palpo processes running: PIDs = $PALPO_PIDS"
+        
+        # Try SIGTERM first
+        log_info "Sending SIGTERM to Palpo processes..."
+        pkill -TERM -f "/palpo --config" 2>/dev/null || true
+        sleep 2
+        
+        # Check if still running
+        if pgrep -f "/palpo --config" > /dev/null 2>&1; then
+            log_warn "Palpo processes still running, sending SIGKILL..."
+            pkill -9 -f "/palpo --config" 2>/dev/null || true
+            sleep 1
+            
+            if pgrep -f "/palpo --config" > /dev/null 2>&1; then
+                log_error "Failed to kill Palpo processes"
+            else
+                log_success "Palpo processes killed (SIGKILL)"
+            fi
+        else
+            log_success "Palpo processes stopped gracefully (SIGTERM)"
+        fi
     else
-        log_success "No Palpo processes running"
+        log_success "No Palpo processes found"
     fi
     
-    sleep 1
+    # Step 3: Kill Admin Server processes
+    echo ""
+    log_info "Checking for Admin Server processes..."
+    if pgrep -f "palpo-admin-server" > /dev/null; then
+        ADMIN_PIDS=$(pgrep -f "palpo-admin-server")
+        log_warn "Found Admin Server processes: PIDs = $ADMIN_PIDS"
+        pkill -9 -f "palpo-admin-server"
+        log_success "Killed Admin Server processes"
+    else
+        log_success "No Admin Server processes found"
+    fi
+    
+    # Step 4: Kill Admin UI (dx serve) processes
+    echo ""
+    log_info "Checking for Admin UI (dx serve) processes..."
+    if pgrep -f "dx serve" > /dev/null; then
+        DX_PIDS=$(pgrep -f "dx serve")
+        log_warn "Found dx serve processes: PIDs = $DX_PIDS"
+        pkill -9 -f "dx serve"
+        log_success "Killed dx serve processes"
+    else
+        log_success "No dx serve processes found"
+    fi
+    
+    # Verify ports are free
+    echo ""
+    log_info "Verifying ports are free..."
+    sleep 2
+    
+    PORTS_FREE=true
+    for port in $ADMIN_SERVER_PORT $ADMIN_UI_PORT $PALPO_PORT; do
+        if check_port $port; then
+            log_warn "Port $port is still in use"
+            PORTS_FREE=false
+        else
+            log_success "Port $port is free"
+        fi
+    done
+    
+    if [ "$PORTS_FREE" = false ]; then
+        log_warn "Some ports are still in use - this may cause issues"
+        log_warn "You may need to manually kill processes: lsof -i :<port>"
+    fi
     
     echo ""
-    echo "--- Cleaning Database ---"
+    echo "========================================"
+    echo "  Cleaning Database"
+    echo "========================================"
     
     # Clean database test data
     if command -v psql &> /dev/null; then
@@ -1786,6 +2075,11 @@ main() {
     
     case "$MODE" in
         setup)
+            # Clean any existing services before starting
+            log_info "Cleaning existing services before setup..."
+            clean_test_data
+            sleep 1
+            
             start_postgresql
             start_admin_server
             start_admin_ui

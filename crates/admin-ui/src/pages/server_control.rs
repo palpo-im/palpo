@@ -149,40 +149,58 @@ pub fn ServerControlPage() -> Element {
     let mut is_validating = use_signal(|| false);
 
     // Fetch server status
-    let fetch_status = use_callback(move |_| async move {
-        match get_api_client() {
-            Ok(client) => {
-                match client.get_json::<ServerStatusInfo>("/api/v1/admin/server/status").await {
-                    Ok(info) => {
-                        status_info.set(Some(info));
-                    }
-                    Err(e) => {
-                        web_sys::console::error_1(&format!("Failed to fetch status: {}", e).into());
+    let fetch_status = move || {
+        spawn(async move {
+            match get_api_client() {
+                Ok(client) => {
+                    match client.get_json::<ServerStatusInfo>("/api/v1/admin/server/status").await {
+                        Ok(info) => {
+                            status_info.set(Some(info));
+                            error_message.set(None);
+                        }
+                        Err(e) => {
+                            let error_msg = format!("Failed to fetch status: {}", e);
+                            web_sys::console::error_1(&error_msg.clone().into());
+                            error_message.set(Some(error_msg));
+                        }
                     }
                 }
+                Err(e) => {
+                    let error_msg = format!("API client error: {}", e);
+                    web_sys::console::error_1(&error_msg.clone().into());
+                    error_message.set(Some(error_msg));
+                }
             }
-            Err(e) => {
-                web_sys::console::error_1(&format!("API client error: {}", e).into());
-            }
-        }
-    });
+        });
+    };
 
-    // Poll status every 3 seconds, starting immediately
+    // Use a global-like flag to prevent multiple polling loops
+    let mut polling_started = use_signal(|| false);
+
+    // Poll status every 1 second for faster UI updates, starting immediately
     use_effect(move || {
+        // Prevent multiple polling loops from starting
+        if *polling_started.read() {
+            return;
+        }
+        
+        // Mark polling as started
+        polling_started.set(true);
+        
         spawn(async move {
             // Fetch immediately on mount
-            let _ = fetch_status.call(());
+            fetch_status();
             
             loop {
                 #[cfg(target_arch = "wasm32")]
                 {
-                    gloo_timers::future::sleep(std::time::Duration::from_secs(3)).await;
+                    gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
-                let _ = fetch_status.call(());
+                fetch_status();
             }
         });
     });
@@ -256,7 +274,8 @@ pub fn ServerControlPage() -> Element {
                     match client.post_json_response::<(), SuccessResponse>("/api/v1/admin/server/start", &()).await {
                         Ok(resp) => {
                             success_message.set(Some(resp.message));
-                            let _ = fetch_status.call(());
+                            // Immediately refresh status after start
+                            fetch_status();
                         }
                         Err(e) => {
                             error_message.set(Some(format!("启动服务器失败: {}", e)));
@@ -285,7 +304,8 @@ pub fn ServerControlPage() -> Element {
                     match client.post_json_response::<(), SuccessResponse>("/api/v1/admin/server/stop", &()).await {
                         Ok(resp) => {
                             success_message.set(Some(resp.message));
-                            let _ = fetch_status.call(());
+                            // Immediately refresh status after stop
+                            fetch_status();
                         }
                         Err(e) => {
                             error_message.set(Some(format!("停止服务器失败: {}", e)));
@@ -314,7 +334,7 @@ pub fn ServerControlPage() -> Element {
                     match client.post_json_response::<(), SuccessResponse>("/api/v1/admin/server/restart", &()).await {
                         Ok(resp) => {
                             success_message.set(Some(resp.message));
-                            let _ = fetch_status.call(());
+                            fetch_status();
                         }
                         Err(e) => {
                             error_message.set(Some(format!("重启服务器失败: {}", e)));
@@ -458,19 +478,33 @@ pub fn ServerControlPage() -> Element {
                                 }
                             }
                         } else {
+                            // Show loading or error state when status_info is None
                             div { class: "space-y-3",
-                                // Default to NotStarted when no status info available
                                 div { class: "flex items-center space-x-3",
                                     span { class: "text-sm font-medium text-gray-700",
                                         "状态:"
                                     }
-                                    span {
-                                        class: "px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800",
-                                        "未启动"
+                                    if let Some(err) = error_message() {
+                                        span {
+                                            class: "px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800",
+                                            "错误"
+                                        }
+                                    } else {
+                                        span {
+                                            class: "px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600",
+                                            "加载中..."
+                                        }
                                     }
                                 }
-                                p { class: "text-sm text-gray-500",
-                                    "服务器未运行，您可以点击右侧"启动服务器"按钮来启动它。"
+                                // Show error message if API failed
+                                if let Some(err) = error_message() {
+                                    div { class: "text-xs text-red-600 bg-red-50 p-2 rounded",
+                                        "{err}"
+                                    }
+                                } else {
+                                    div { class: "text-xs text-gray-500",
+                                        "正在获取服务器状态信息..."
+                                    }
                                 }
                             }
                         }

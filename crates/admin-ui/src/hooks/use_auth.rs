@@ -25,12 +25,19 @@ impl AuthContext {
                 Ok(response) => {
                     if response.success {
                         if let Some(user) = response.user {
-                            // Store token in localStorage directly
+                            // Store token in localStorage
                             let token = response.token.clone().unwrap_or_else(|| user.session_id.clone());
                             if let Some(window) = web_sys::window() {
                                 if let Ok(Some(storage)) = window.local_storage() {
                                     let _ = storage.set_item("auth_token", &token);
                                 }
+                            }
+                            
+                            // CRITICAL: Set token in API client's TokenManager for authentication
+                            if let Err(e) = crate::services::api_client::set_auth_token(&token) {
+                                web_sys::console::error_1(&format!("Failed to set auth token in API client: {}", e).into());
+                            } else {
+                                web_sys::console::log_1(&format!("Auth token set in API client for user: {}", user.username).into());
                             }
                             
                             auth_state.set(AuthState::Authenticated(user));
@@ -59,6 +66,22 @@ impl AuthContext {
                 let session_id = user.session_id.clone();
                 let _ = auth_service.logout(session_id).await;
             }
+            
+            // Clear token from localStorage
+            if let Some(window) = web_sys::window() {
+                if let Ok(Some(storage)) = window.local_storage() {
+                    let _ = storage.remove_item("auth_token");
+                }
+            }
+            
+            // Clear token from API client's TokenManager
+            if let Err(e) = crate::services::api_client::clear_auth_token() {
+                web_sys::console::error_1(&format!("Failed to clear auth token: {}", e).into());
+            }
+            
+            // Reset session validation flag for next login
+            crate::services::api_client::reset_session_validation();
+            
             auth_state.set(AuthState::Unauthenticated);
         });
     }
@@ -120,7 +143,7 @@ impl AuthContext {
 pub fn use_auth() -> AuthContext {
     // Get the auth state from context
     let auth_state = use_context::<Signal<AuthState>>();
-    
+
     // Create auth service using global API client
     let auth_service = match AuthService::from_global() {
         Ok(service) => service,
@@ -130,46 +153,61 @@ pub fn use_auth() -> AuthContext {
         }
     };
 
-    // Validate session on component mount (only if token exists)
     use_effect({
         let auth_service = auth_service.clone();
         let mut auth_state = auth_state;
-        
+
         move || {
+            // Check global flag to prevent duplicate validation
+            if crate::services::api_client::is_session_validation_initiated() {
+                return;
+            }
+
+            // Mark as initiated immediately using global flag
+            crate::services::api_client::set_session_validation_initiated();
+
             let auth_service = auth_service.clone();
             spawn_local(async move {
+                // Restore token from localStorage to TokenManager on page refresh
+                let has_token = auth_service.api_client().has_token();
+
+                if !has_token {
+                    // Try to restore token from localStorage
+                    if let Some(window) = web_sys::window() {
+                        if let Ok(Some(storage)) = window.local_storage() {
+                            if let Ok(Some(token)) = storage.get_item("auth_token") {
+                                if !token.is_empty() {
+                                    if let Err(e) = crate::services::api_client::set_auth_token(&token) {
+                                        web_sys::console::error_1(&format!("Failed to restore auth token: {}", e).into());
+                                        auth_state.set(AuthState::Unauthenticated);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Check if token exists before validating
                 if !auth_service.api_client().has_token() {
-                    web_sys::console::log_1(&"use_auth: no token found, skipping validation".into());
                     auth_state.set(AuthState::Unauthenticated);
                     return;
                 }
-                
-                web_sys::console::log_1(&"use_auth: validating session...".into());
+
                 match auth_service.validate_session().await {
                     Ok(response) => {
                         if response.valid {
                             if let Some(user) = response.user {
-                                web_sys::console::log_1(&format!(
-                                    "use_auth: session valid for user {}",
-                                    user.username
-                                ).into());
                                 auth_state.set(AuthState::Authenticated(user));
                             } else {
-                                web_sys::console::log_1(&"use_auth: valid but no user data".into());
                                 auth_state.set(AuthState::Unauthenticated);
                             }
                         } else {
-                            web_sys::console::log_1(&"use_auth: session invalid".into());
                             auth_state.set(AuthState::Unauthenticated);
                         }
                     }
                     Err(e) => {
-                        web_sys::console::log_1(&format!(
-                            "use_auth: validate_session error: {}",
-                            e
-                        ).into());
-                        // On error, set to Unauthenticated so UI doesn't hang on loading spinner
+                        web_sys::console::error_1(&format!("Session validation error: {}", e).into());
                         auth_state.set(AuthState::Unauthenticated);
                     }
                 }

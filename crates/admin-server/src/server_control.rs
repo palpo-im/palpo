@@ -284,9 +284,10 @@ impl ServerControlAPI {
     ///
     /// This method:
     /// 1. Checks if server is running
-    /// 2. Sends termination signal to the process
-    /// 3. Waits for the process to exit
-    /// 4. Updates the process state
+    /// 2. Sends SIGTERM (Unix) or termination signal for graceful shutdown
+    /// 3. Waits up to 10 seconds for graceful exit
+    /// 4. Falls back to SIGKILL if graceful shutdown times out
+    /// 5. Updates the process state
     ///
     /// # Returns
     ///
@@ -323,24 +324,53 @@ impl ServerControlAPI {
         };
 
         if let Some(mut child) = child {
-            // Attempt graceful shutdown by killing the process
-            if let Err(e) = child.kill().await {
-                error!("Failed to kill Palpo process: {}", e);
-                let mut state = self.process_state.lock().unwrap();
-                state.status = ServerStatus::Error;
-                return Err(AdminError::ServerStopFailed(format!(
-                    "Failed to kill process: {}",
-                    e
-                )));
+            // Step 1: Attempt graceful shutdown with SIGTERM (Unix only)
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                
+                if let Some(pid) = child.id() {
+                    info!("Sending SIGTERM to Palpo process (PID: {})", pid);
+                    match kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                        Ok(()) => info!("SIGTERM sent successfully"),
+                        Err(e) => warn!("Failed to send SIGTERM: {}, falling back to kill", e),
+                    }
+                }
             }
 
-            // Wait for process to exit
-            match child.wait().await {
-                Ok(status) => {
-                    info!("Palpo server stopped with status: {}", status);
+            // Step 2: Wait for graceful exit with timeout (10 seconds)
+            let timeout_duration = tokio::time::Duration::from_secs(10);
+            match tokio::time::timeout(timeout_duration, child.wait()).await {
+                Ok(Ok(status)) => {
+                    info!("Palpo server stopped gracefully with status: {}", status);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!("Error waiting for process to exit: {}", e);
+                }
+                Err(_) => {
+                    // Step 3: Timeout - force kill
+                    warn!("Graceful shutdown timeout after 10s, sending SIGKILL");
+                    
+                    if let Err(e) = child.kill().await {
+                        error!("Failed to kill Palpo process: {}", e);
+                        let mut state = self.process_state.lock().unwrap();
+                        state.status = ServerStatus::Error;
+                        return Err(AdminError::ServerStopFailed(format!(
+                            "Failed to kill process after timeout: {}",
+                            e
+                        )));
+                    }
+
+                    // Wait for process to be reaped
+                    match child.wait().await {
+                        Ok(status) => {
+                            info!("Palpo server killed with status: {}", status);
+                        }
+                        Err(e) => {
+                            warn!("Error waiting for killed process: {}", e);
+                        }
+                    }
                 }
             }
         }

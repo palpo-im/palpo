@@ -560,6 +560,7 @@ impl Default for ApiClient {
 
 thread_local! {
     static API_CLIENT: RefCell<Option<ApiClient>> = RefCell::new(None);
+    static SESSION_VALIDATION_INITIATED: RefCell<bool> = RefCell::new(false);
 }
 
 /// Initialize the global API client
@@ -639,6 +640,25 @@ pub fn clear_auth_token() -> WebConfigResult<()> {
 /// Check if global client has authentication token
 pub fn has_auth_token() -> bool {
     get_api_client().map(|client| client.has_token()).unwrap_or(false)
+}
+
+/// Check if session validation has been initiated
+pub fn is_session_validation_initiated() -> bool {
+    SESSION_VALIDATION_INITIATED.with(|initiated| *initiated.borrow())
+}
+
+/// Mark session validation as initiated
+pub fn set_session_validation_initiated() {
+    SESSION_VALIDATION_INITIATED.with(|initiated| {
+        *initiated.borrow_mut() = true;
+    });
+}
+
+/// Reset session validation flag (for logout)
+pub fn reset_session_validation() {
+    SESSION_VALIDATION_INITIATED.with(|initiated| {
+        *initiated.borrow_mut() = false;
+    });
 }
 
 #[cfg(test)]
