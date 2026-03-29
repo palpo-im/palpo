@@ -86,7 +86,7 @@ phf = { version = "0.13.1", features = ["macros"] }
 pkcs8 = "0.10.2"
 proc-macro-crate = "3.5.0"
 proc-macro2 = "1.0.106"
-pulldown-cmark = { version = "0.13.1", default-features = false }
+pulldown-cmark = { version = "0.13.3", default-features = false }
 quote = "1.0.45"
 rand = "0.10"
 reqwest-middleware = "0.5.1"
