@@ -86,7 +86,11 @@ pub async fn query_keys<F: Fn(&UserId) -> bool>(
 
     let mut failures = BTreeMap::new();
 
-    let back_off = |id| match BAD_QUERY_RATE_LIMITER.write().unwrap_or_else(|e| e.into_inner()).entry(id) {
+    let back_off = |id| match BAD_QUERY_RATE_LIMITER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(id)
+    {
         hash_map::Entry::Vacant(e) => {
             e.insert((Instant::now(), 1));
         }

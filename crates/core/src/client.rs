@@ -1,4 +1,5 @@
 pub mod account;
+pub mod admin;
 pub mod appservice;
 pub mod backup;
 pub mod dehydrated_device;
@@ -22,7 +23,6 @@ pub mod room;
 #[cfg(feature = "unstable-msc4143")]
 pub mod rtc;
 pub mod search;
-pub mod admin;
 #[doc(hidden)]
 #[deprecated = "Renamed to `admin`."]
 pub use admin as server;

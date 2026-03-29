@@ -134,9 +134,13 @@ mod tests {
     #[test]
     fn list_count_changes_are_still_treated_as_meaningful() {
         let mut response = SyncEventsResBody::new("42".to_owned());
-        response
-            .lists
-            .insert("all_rooms".to_owned(), SyncList { count: 2, ops: Vec::new() });
+        response.lists.insert(
+            "all_rooms".to_owned(),
+            SyncList {
+                count: 2,
+                ops: Vec::new(),
+            },
+        );
 
         assert!(has_list_count_changes(
             &response,

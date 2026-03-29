@@ -7,8 +7,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use figment::Figment;
 use figment::providers::{Env, Format, Json, Toml, Yaml};
-use kdl::{KdlDocument, KdlNode, KdlValue};
 use ipaddress::IPAddress;
+use kdl::{KdlDocument, KdlNode, KdlValue};
 
 mod server;
 pub use server::*;
@@ -97,7 +97,9 @@ fn figment_from_path<P: AsRef<Path>>(path: P) -> Figment {
         "kdl" => {
             let content = std::fs::read_to_string(path.as_ref())
                 .unwrap_or_else(|e| panic!("failed to read KDL config: {e}"));
-            let doc: KdlDocument = content.parse().unwrap_or_else(|e| panic!("failed to parse KDL config: {e}"));
+            let doc: KdlDocument = content
+                .parse()
+                .unwrap_or_else(|e| panic!("failed to parse KDL config: {e}"));
             let json_value = kdl_doc_to_json(&doc);
             let json_str = serde_json::to_string(&json_value)
                 .unwrap_or_else(|e| panic!("failed to convert KDL config to JSON: {e}"));
@@ -128,22 +130,19 @@ fn kdl_node_to_json(node: &KdlNode) -> serde_json::Value {
     let props: Vec<(String, serde_json::Value)> = node
         .entries()
         .iter()
-        .filter_map(|e| e.name().map(|n| (n.to_string(), kdl_value_to_json(e.value()))))
+        .filter_map(|e| {
+            e.name()
+                .map(|n| (n.to_string(), kdl_value_to_json(e.value())))
+        })
         .collect();
 
     if let Some(children) = node.children() {
         // Check if all children are dash nodes (KDL array convention)
         let all_dashes = !children.nodes().is_empty()
-            && children
-                .nodes()
-                .iter()
-                .all(|n| n.name().to_string() == "-");
+            && children.nodes().iter().all(|n| n.name().to_string() == "-");
         if all_dashes {
-            let arr: Vec<serde_json::Value> = children
-                .nodes()
-                .iter()
-                .map(kdl_node_to_json)
-                .collect();
+            let arr: Vec<serde_json::Value> =
+                children.nodes().iter().map(kdl_node_to_json).collect();
             return serde_json::Value::Array(arr);
         }
 
@@ -180,7 +179,9 @@ fn kdl_value_to_json(value: &KdlValue) -> serde_json::Value {
         } else if let Ok(n) = u64::try_from(i) {
             serde_json::Value::Number(n.into())
         } else {
-            serde_json::Value::Number(serde_json::Number::from_f64(i as f64).unwrap_or_else(|| 0.into()))
+            serde_json::Value::Number(
+                serde_json::Number::from_f64(i as f64).unwrap_or_else(|| 0.into()),
+            )
         }
     } else if let Some(f) = value.as_float() {
         serde_json::Number::from_f64(f)

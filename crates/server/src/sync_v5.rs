@@ -21,8 +21,8 @@ use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::{BatchToken, ignored_filter};
-use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::room::{self, filter_rooms, state, timeline};
+use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
 
 /// Sort rooms by last activity (most recent first) using event sequence numbers.
@@ -501,8 +501,7 @@ fn fetch_subscriptions(
                 .map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
         );
         todo_room.timeline_limit = todo_room.timeline_limit.max(limit as usize);
-        todo_room.include_heroes =
-            todo_room.include_heroes || room.include_heroes.unwrap_or(false);
+        todo_room.include_heroes = todo_room.include_heroes || room.include_heroes.unwrap_or(false);
         todo_room.room_since_sn = todo_room.room_since_sn.min(
             known_rooms
                 .get("subscriptions")
@@ -1070,12 +1069,7 @@ fn get_unused_fallback_key_types(
                 .load::<String>(&mut conn)
                 .ok()
         })
-        .map(|algos| {
-            algos
-                .into_iter()
-                .map(|a| a.into())
-                .collect()
-        })
+        .map(|algos| algos.into_iter().map(|a| a.into()).collect())
         .unwrap_or_default()
 }
 
@@ -1104,9 +1098,7 @@ fn collect_to_device(
     })
 }
 
-fn collect_receipts(
-    SyncInfo { req_body, .. }: SyncInfo<'_>,
-) -> sync_events::v5::Receipts {
+fn collect_receipts(SyncInfo { req_body, .. }: SyncInfo<'_>) -> sync_events::v5::Receipts {
     if !req_body.extensions.receipts.enabled.unwrap_or(false) {
         return sync_events::v5::Receipts::default();
     }
@@ -1141,7 +1133,6 @@ where
                 continue;
             }
         }
-
 
         let typing_event = room::typing::all_typings(room_id).await?;
         if !typing_event.content.user_ids.is_empty() {

@@ -60,7 +60,8 @@ async fn access_control(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("*");
     let allowed_origins = &crate::config::get().allowed_origins;
-    let allow_origin = if allowed_origins.is_empty() || allowed_origins.iter().any(|o| o == origin) {
+    let allow_origin = if allowed_origins.is_empty() || allowed_origins.iter().any(|o| o == origin)
+    {
         origin.to_owned()
     } else {
         // If origin is not in the allowed list, don't set credentials
@@ -68,7 +69,9 @@ async fn access_control(
     };
     headers.insert(
         "Access-Control-Allow-Origin",
-        allow_origin.parse().unwrap_or_else(|_| "*".parse().unwrap()),
+        allow_origin
+            .parse()
+            .unwrap_or_else(|_| "*".parse().unwrap()),
     );
     headers.insert(
         "Access-Control-Allow-Methods",
@@ -92,10 +95,7 @@ async fn access_control(
         "Content-Security-Policy",
         "frame-ancestors 'self'".parse().unwrap(),
     );
-    headers.insert(
-        "X-Content-Type-Options",
-        "nosniff".parse().unwrap(),
-    );
+    headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
     ctrl.call_next(req, depot, res).await;
     // headers.insert("Cross-Origin-Embedder-Policy", "require-corp".parse().unwrap());
     // headers.insert("Cross-Origin-Opener-Policy", "same-origin".parse().unwrap());

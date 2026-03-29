@@ -13,6 +13,7 @@ use salvo::oapi::ToSchema;
 use serde::Serialize;
 use tokio::sync::{Semaphore, broadcast};
 
+use crate::appservice::DbRegistration;
 use crate::core::appservice::Registration;
 use crate::core::federation::discovery::{OldVerifyKey, ServerSigningKeys};
 use crate::core::identifiers::*;
@@ -21,7 +22,6 @@ use crate::core::{Seqnum, UnixMillis};
 use crate::data::misc::DbServerSigningKeys;
 use crate::data::schema::*;
 use crate::data::user::{NewDbUser, NewDbUserDevice};
-use crate::appservice::DbRegistration;
 use crate::data::{connect, diesel_exists};
 use crate::utils::{MutexMap, MutexMapGuard, SeqnumQueue, SeqnumQueueFuture, SeqnumQueueGuard};
 use crate::{AppResult, SigningKeys};
@@ -190,12 +190,15 @@ pub fn appservices() -> &'static Vec<Registration> {
                     appservice_registrations::url.eq(&db_registration.url),
                     appservice_registrations::as_token.eq(&db_registration.as_token),
                     appservice_registrations::hs_token.eq(&db_registration.hs_token),
-                    appservice_registrations::sender_localpart.eq(&db_registration.sender_localpart),
+                    appservice_registrations::sender_localpart
+                        .eq(&db_registration.sender_localpart),
                     appservice_registrations::namespaces.eq(&db_registration.namespaces),
                     appservice_registrations::rate_limited.eq(&db_registration.rate_limited),
                     appservice_registrations::protocols.eq(&db_registration.protocols),
-                    appservice_registrations::receive_ephemeral.eq(&db_registration.receive_ephemeral),
-                    appservice_registrations::device_management.eq(&db_registration.device_management),
+                    appservice_registrations::receive_ephemeral
+                        .eq(&db_registration.receive_ephemeral),
+                    appservice_registrations::device_management
+                        .eq(&db_registration.device_management),
                 ))
                 .execute(&mut conn)
             {

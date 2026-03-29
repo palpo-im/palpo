@@ -15,8 +15,9 @@ use crate::data::schema::*;
 use crate::data::user::{DbUser, NewDbUser};
 use crate::exts::*;
 use crate::{
-    AppError, AppResult, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
-    SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops, json_ok, user, utils,
+    AppError, AppResult, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult,
+    MatrixError, SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops, json_ok, user,
+    utils,
 };
 
 pub fn public_router() -> Router {
@@ -53,7 +54,9 @@ pub fn authed_router() -> Router {
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
     let flows = if config::get().enabled_delegated_auth().is_some() {
-        vec![LoginType::Sso(crate::core::client::session::SsoLoginType::new())]
+        vec![LoginType::Sso(
+            crate::core::client::session::SsoLoginType::new(),
+        )]
     } else {
         vec![LoginType::password(), LoginType::appservice()]
     };
@@ -77,9 +80,11 @@ async fn login(
     res: &mut Response,
 ) -> JsonResult<LoginResBody> {
     if config::get().enabled_delegated_auth().is_some() {
-        return Err(
-            MatrixError::forbidden("This server uses delegated authentication. Use the OIDC provider to log in.", None).into(),
-        );
+        return Err(MatrixError::forbidden(
+            "This server uses delegated authentication. Use the OIDC provider to log in.",
+            None,
+        )
+        .into());
     }
 
     // Validate login method

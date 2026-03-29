@@ -1,7 +1,7 @@
 use salvo::prelude::*;
 
 use crate::core::MatrixError;
-use crate::{config, hoops, json_ok, JsonResult};
+use crate::{JsonResult, config, hoops, json_ok};
 
 pub(super) fn router() -> Router {
     Router::with_path("unstable")
@@ -58,7 +58,10 @@ async fn auth_issuer(res: &mut Response) -> JsonResult<serde_json::Value> {
 
     match issuer {
         Some(issuer) => json_ok(serde_json::json!({ "issuer": issuer })),
-        None => Err(MatrixError::not_found("OIDC discovery has not been configured on this homeserver.").into()),
+        None => Err(MatrixError::not_found(
+            "OIDC discovery has not been configured on this homeserver.",
+        )
+        .into()),
     }
 }
 
@@ -88,10 +91,10 @@ async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::Value> {
     let issuer = match issuer {
         Some(issuer) => issuer,
         None => {
-            return Err(
-                MatrixError::not_found("OIDC discovery has not been configured on this homeserver.")
-                    .into(),
-            );
+            return Err(MatrixError::not_found(
+                "OIDC discovery has not been configured on this homeserver.",
+            )
+            .into());
         }
     };
 
@@ -101,14 +104,10 @@ async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::Value> {
     );
 
     let client = reqwest::Client::new();
-    let response = client
-        .get(&metadata_url)
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to fetch OIDC metadata from {}: {}", metadata_url, e);
-            MatrixError::unknown(format!("Failed to fetch OIDC metadata: {e}"))
-        })?;
+    let response = client.get(&metadata_url).send().await.map_err(|e| {
+        tracing::error!("Failed to fetch OIDC metadata from {}: {}", metadata_url, e);
+        MatrixError::unknown(format!("Failed to fetch OIDC metadata: {e}"))
+    })?;
 
     if !response.status().is_success() {
         tracing::error!(

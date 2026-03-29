@@ -394,8 +394,7 @@ pub fn get_user_media_statistics(
             LIMIT {} OFFSET {}",
             order_col, order_dir, limit, offset
         );
-        let rows = diesel::sql_query(&data_sql)
-            .load::<UserMediaStatsRow>(&mut conn)?;
+        let rows = diesel::sql_query(&data_sql).load::<UserMediaStatsRow>(&mut conn)?;
         (rows, total)
     };
 

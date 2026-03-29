@@ -4,13 +4,13 @@ use diesel::prelude::*;
 use salvo::oapi::extract::PathParam;
 use salvo::prelude::*;
 
+use crate::core::UnixMillis;
 use crate::core::authentication::TokenType;
 use crate::core::client::user::RequstOpenidTokenResBody;
 use crate::core::identifiers::*;
-use crate::core::UnixMillis;
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::{config, utils, AuthArgs, DepotExt, JsonResult, MatrixError, json_ok};
+use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, config, json_ok, utils};
 
 const OPENID_TOKEN_LENGTH: usize = 64;
 
@@ -29,11 +29,9 @@ pub(super) async fn request_token(
     // Verify the user is requesting a token for themselves
     let user_id = user_id.into_inner();
     if authed.user_id() != &user_id {
-        return Err(MatrixError::forbidden(
-            "Cannot request OpenID token for another user.",
-            None,
-        )
-        .into());
+        return Err(
+            MatrixError::forbidden("Cannot request OpenID token for another user.", None).into(),
+        );
     }
 
     let conf = config::get();

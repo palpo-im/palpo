@@ -43,14 +43,15 @@ pub enum CanonicalJsonError {
 impl fmt::Display for CanonicalJsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::IntegerOutOfRange => {
-                f.write_str("integer is out of range for canonical JSON")
-            }
+            Self::IntegerOutOfRange => f.write_str("integer is out of range for canonical JSON"),
             Self::InvalidType(ty) => {
                 write!(f, "{ty} cannot be serialized as canonical JSON")
             }
             Self::InvalidObjectKeyType(ty) => {
-                write!(f, "{ty} cannot be used as an object key, expected a string type")
+                write!(
+                    f,
+                    "{ty} cannot be used as an object key, expected a string type"
+                )
             }
             Self::InvalidRawValue(error) => {
                 write!(f, "invalid raw value: {error}")
@@ -163,7 +164,9 @@ pub fn to_canonical_object<T: serde::Serialize>(
 ) -> Result<CanonicalJsonObject, CanonicalJsonError> {
     match to_canonical_value(value)? {
         CanonicalJsonValue::Object(obj) => Ok(obj),
-        _ => Err(CanonicalJsonError::Other("Value must be an object".to_owned())),
+        _ => Err(CanonicalJsonError::Other(
+            "Value must be an object".to_owned(),
+        )),
     }
 }
 

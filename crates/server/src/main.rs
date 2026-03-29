@@ -61,6 +61,10 @@ pub use diesel::result::Error as DieselError;
 use dotenvy::dotenv;
 pub use error::AppError;
 use figment::providers::Env;
+pub use jsonwebtoken as jwt;
+pub use palpo_core as core;
+pub use palpo_data as data;
+pub use palpo_server_macros as macros;
 use salvo::catcher::Catcher;
 use salvo::compression::{Compression, CompressionLevel};
 use salvo::conn::rustls::{Keycert, RustlsConfig};
@@ -70,9 +74,6 @@ use salvo::http::Method;
 use salvo::logging::Logger;
 use salvo::prelude::*;
 use tracing_futures::Instrument;
-pub use {
-    jsonwebtoken as jwt, palpo_core as core, palpo_data as data, palpo_server_macros as macros,
-};
 
 use crate::config::ServerConfig;
 

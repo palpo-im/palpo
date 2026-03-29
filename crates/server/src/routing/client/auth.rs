@@ -5,7 +5,8 @@ use salvo::prelude::*;
 use crate::core::client::uiaa::AuthType;
 use crate::core::identifiers::{OwnedDeviceId, OwnedUserId};
 use crate::core::serde::JsonValue;
-use crate::data::{connect, schema::user_uiaa_datas};
+use crate::data::connect;
+use crate::data::schema::user_uiaa_datas;
 use crate::{AuthArgs, MatrixError, config};
 
 pub fn authed_router() -> Router {
@@ -77,7 +78,14 @@ async fn uiaa_fallback(
 
 fn load_uiaa_info_by_session(
     session: &str,
-) -> Result<(OwnedUserId, OwnedDeviceId, crate::core::client::uiaa::UiaaInfo), crate::AppError> {
+) -> Result<
+    (
+        OwnedUserId,
+        OwnedDeviceId,
+        crate::core::client::uiaa::UiaaInfo,
+    ),
+    crate::AppError,
+> {
     let record = user_uiaa_datas::table
         .filter(user_uiaa_datas::session.eq(session))
         .select((

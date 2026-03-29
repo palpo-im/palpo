@@ -2,10 +2,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use diesel::prelude::*;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{Mutex, mpsc};
-
-use diesel::prelude::*;
 
 use super::{
     EduBuf, EduVec, MPSC_RECEIVER, MPSC_SENDER, OutgoingKind, SELECT_EDU_LIMIT,
@@ -52,7 +51,9 @@ async fn process() -> AppResult<()> {
         if entry.len() > 512 {
             error!(
                 "Too many pending events ({}) for {:?}, dropping oldest event {:?}",
-                entry.len(), outgoing_kind, id
+                entry.len(),
+                outgoing_kind,
+                id
             );
             super::delete_request(id)?;
             continue;

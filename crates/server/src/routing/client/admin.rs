@@ -5,7 +5,7 @@ use salvo::prelude::*;
 
 use crate::core::client::server::{ConnectionInfo, DeviceInfo, SessionInfo, UserInfoResBody};
 use crate::core::identifiers::*;
-use crate::{data, AuthArgs, DepotExt, JsonResult, MatrixError, json_ok};
+use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, data, json_ok};
 
 pub fn authed_router() -> Router {
     Router::with_path("admin/whois/{user_id}").get(whois)

@@ -19,9 +19,9 @@ use crate::events::typing::TypingEvent;
 #[cfg(feature = "unstable-msc4203")]
 use crate::events::{AnyToDeviceEvent, AnyToDeviceEventContent, ToDeviceEventType};
 use crate::sending::{SendRequest, SendResult};
-use crate::serde::{JsonObject, JsonValue, RawJson, RawJsonValue, from_raw_json_value};
 #[cfg(feature = "unstable-msc4203")]
 use crate::serde::JsonCastable;
+use crate::serde::{JsonObject, JsonValue, RawJson, RawJsonValue, from_raw_json_value};
 #[cfg(feature = "unstable-msc4203")]
 use crate::{OwnedDeviceId, OwnedUserId, UserId};
 
@@ -89,7 +89,6 @@ pub struct PushEventsReqBody {
     // )]
     // pub device_unused_fallback_key_types: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId,
     // Vec<DeviceKeyAlgorithm>>>,
-
     /// A list of ephemeral events (typing, presence, receipts).
     ///
     /// We intentionally use `EphemeralData` instead of federation `Edu`: appservice transactions

@@ -24,13 +24,13 @@ pub use session::*;
 pub mod external_id;
 pub mod presence;
 pub mod registration_token;
-pub use registration_token::*;
 use std::mem;
 
 use diesel::dsl;
 use diesel::prelude::*;
 pub use external_id::*;
 pub use presence::*;
+pub use registration_token::*;
 
 use crate::core::events::AnyStrippedStateEvent;
 use crate::core::identifiers::*;

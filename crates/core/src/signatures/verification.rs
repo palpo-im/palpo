@@ -37,11 +37,11 @@ impl Verifier for Ed25519Verifier {
         VerifyingKey::try_from(public_key)
             .map_err(ParseError::PublicKey)?
             .verify(
-            message,
-            &signature.try_into().map_err(ParseError::Signature)?,
-        )
-        .map_err(VerificationError::Signature)
-        .map_err(Error::from)
+                message,
+                &signature.try_into().map_err(ParseError::Signature)?,
+            )
+            .map_err(VerificationError::Signature)
+            .map_err(Error::from)
     }
 }
 

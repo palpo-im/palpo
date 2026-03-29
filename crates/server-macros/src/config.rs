@@ -213,7 +213,9 @@ fn get_default(field: &Field) -> Option<String> {
                     _ => return None,
                 };
             }
-            Meta::Path { .. } => return infer_default_from_type_name(get_type_name(field).as_deref()),
+            Meta::Path { .. } => {
+                return infer_default_from_type_name(get_type_name(field).as_deref());
+            }
             _ => return None,
         }
     }
@@ -311,17 +313,35 @@ mod tests {
 
     #[test]
     fn infers_default_for_common_builtin_types() {
-        assert_eq!(infer_default_from_type_name(Some("bool")).as_deref(), Some("false"));
-        assert_eq!(infer_default_from_type_name(Some("String")).as_deref(), Some("\"\""));
-        assert_eq!(infer_default_from_type_name(Some("Vec")).as_deref(), Some("[]"));
-        assert_eq!(infer_default_from_type_name(Some("usize")).as_deref(), Some("0"));
+        assert_eq!(
+            infer_default_from_type_name(Some("bool")).as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            infer_default_from_type_name(Some("String")).as_deref(),
+            Some("\"\"")
+        );
+        assert_eq!(
+            infer_default_from_type_name(Some("Vec")).as_deref(),
+            Some("[]")
+        );
+        assert_eq!(
+            infer_default_from_type_name(Some("usize")).as_deref(),
+            Some("0")
+        );
         assert_eq!(infer_default_from_type_name(Some("Option")), None);
     }
 
     #[test]
     fn infers_map_defaults_as_toml_tables() {
-        assert_eq!(infer_default_from_type_name(Some("BTreeMap")).as_deref(), Some("{}"));
-        assert_eq!(infer_default_from_type_name(Some("HashMap")).as_deref(), Some("{}"));
+        assert_eq!(
+            infer_default_from_type_name(Some("BTreeMap")).as_deref(),
+            Some("{}")
+        );
+        assert_eq!(
+            infer_default_from_type_name(Some("HashMap")).as_deref(),
+            Some("{}")
+        );
     }
 
     #[test]

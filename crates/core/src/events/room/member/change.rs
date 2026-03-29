@@ -106,7 +106,8 @@ pub(super) fn membership_change<'a>(
     sender: &UserId,
     state_key: &UserId,
 ) -> MembershipChange<'a> {
-    use {MembershipChange as Ch, MembershipState as St};
+    use MembershipChange as Ch;
+    use MembershipState as St;
 
     let prev_details = match prev_details {
         Some(prev) => prev,

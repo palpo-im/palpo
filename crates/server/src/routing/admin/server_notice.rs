@@ -11,6 +11,7 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::value::to_raw_value;
 
+use crate::core::events::TimelineEventType;
 use crate::core::events::room::create::RoomCreateEventContent;
 use crate::core::events::room::guest_access::{GuestAccess, RoomGuestAccessEventContent};
 use crate::core::events::room::history_visibility::{
@@ -21,10 +22,9 @@ use crate::core::events::room::member::{MembershipState, RoomMemberEventContent}
 use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::events::room::name::RoomNameEventContent;
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
-use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
-use crate::core::room_version_rules::RoomIdFormatVersion;
 use crate::core::room::JoinRule;
+use crate::core::room_version_rules::RoomIdFormatVersion;
 use crate::room::timeline;
 use crate::{JsonResult, MatrixError, PduBuilder, config, data, json_ok, room};
 
@@ -98,9 +98,8 @@ pub async fn send_server_notice(
     let room_version = crate::room::get_version(&room_id)?;
 
     let pdu = if event_type == "m.room.message" {
-        let content: RoomMessageEventContent =
-            serde_json::from_value(body.content)
-                .map_err(|e| MatrixError::invalid_param(format!("Invalid content: {e}")))?;
+        let content: RoomMessageEventContent = serde_json::from_value(body.content)
+            .map_err(|e| MatrixError::invalid_param(format!("Invalid content: {e}")))?;
         timeline::build_and_append_pdu(
             PduBuilder::timeline(&content),
             server_user,

@@ -97,11 +97,9 @@ async fn get_protocol(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<
 
         let path = format!("protocol/{protocol_id}");
         let request = appservice_get_request(base_url, &path)?;
-        let protocol_data = sending::send_appservice_request::<Protocol>(
-            appservice.registration.clone(),
-            request,
-        )
-        .await?;
+        let protocol_data =
+            sending::send_appservice_request::<Protocol>(appservice.registration.clone(), request)
+                .await?;
 
         return json_ok(ProtocolResBody::new(protocol_data));
     }
@@ -242,10 +240,7 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
 ///
 /// Retrieve Matrix users bridged to the matched third party users.
 #[endpoint]
-async fn protocol_users(
-    _aa: AuthArgs,
-    protocol: PathParam<String>,
-) -> JsonResult<UsersResBody> {
+async fn protocol_users(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<UsersResBody> {
     let protocol_id = protocol.into_inner();
     let mut result = Vec::new();
 

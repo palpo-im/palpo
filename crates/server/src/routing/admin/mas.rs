@@ -20,8 +20,7 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::identifiers::*;
-use crate::{EmptyResult, JsonResult, MatrixError};
-use crate::{config, data, empty_ok, json_ok, user, utils};
+use crate::{EmptyResult, JsonResult, MatrixError, config, data, empty_ok, json_ok, user, utils};
 
 fn localpart_to_user_id(localpart: &str) -> crate::AppResult<OwnedUserId> {
     let s = format!("@{}:{}", localpart, config::server_name());
@@ -197,10 +196,13 @@ pub async fn upsert_device(body: JsonBody<UpsertDeviceReqBody>) -> EmptyResult {
     if data::user::device::is_device_exists(&user_id, &device_id)? {
         if let Some(display_name) = body.display_name {
             data::user::device::update_device(
-                &user_id, &device_id,
+                &user_id,
+                &device_id,
                 data::user::device::DeviceUpdate {
                     display_name: Some(Some(display_name)),
-                    user_agent: None, last_seen_ip: None, last_seen_at: None,
+                    user_agent: None,
+                    last_seen_ip: None,
+                    last_seen_at: None,
                 },
             )?;
         }
@@ -220,10 +222,13 @@ pub async fn update_device_display_name(
     let user_id = localpart_to_user_id(&body.localpart)?;
     let device_id: OwnedDeviceId = body.device_id.into();
     data::user::device::update_device(
-        &user_id, &device_id,
+        &user_id,
+        &device_id,
         data::user::device::DeviceUpdate {
             display_name: Some(Some(body.display_name)),
-            user_agent: None, last_seen_ip: None, last_seen_at: None,
+            user_agent: None,
+            last_seen_ip: None,
+            last_seen_at: None,
         },
     )?;
     empty_ok()
@@ -245,8 +250,10 @@ pub async fn sync_devices(body: JsonBody<SyncDevicesReqBody>) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
     let current_devices = data::user::device::get_devices(&user_id)?;
-    let current_ids: HashSet<String> =
-        current_devices.iter().map(|d| d.device_id.to_string()).collect();
+    let current_ids: HashSet<String> = current_devices
+        .iter()
+        .map(|d| d.device_id.to_string())
+        .collect();
     for device in &current_devices {
         if !body.devices.contains(device.device_id.as_str()) {
             let _ = data::user::device::remove_device(&user_id, &device.device_id);

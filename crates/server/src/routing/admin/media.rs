@@ -170,7 +170,8 @@ pub fn delete_media_by_date_size(
     }
 
     let local_server = &config::get().server_name;
-    let (deleted_media, total) = data::media::delete_old_local_media(local_server, before_ts, size_gt)?;
+    let (deleted_media, total) =
+        data::media::delete_old_local_media(local_server, before_ts, size_gt)?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -212,7 +213,8 @@ pub fn list_user_media(
         return Err(MatrixError::not_found("Unknown user").into());
     }
 
-    let (media_list, total) = data::media::list_media_by_user(&user_id, from, limit, order_by, dir)?;
+    let (media_list, total) =
+        data::media::list_media_by_user(&user_id, from, limit, order_by, dir)?;
 
     let media: Vec<MediaInfo> = media_list.into_iter().map(Into::into).collect();
     let next_token = if (from + limit) < total {
@@ -266,10 +268,10 @@ pub fn purge_media_cache(before_ts: QueryParam<i64, true>) -> JsonResult<PurgeMe
     let before_ts = before_ts.into_inner();
 
     if before_ts < 0 {
-        return Err(
-            MatrixError::invalid_param("Query parameter before_ts must be a positive integer")
-                .into(),
-        );
+        return Err(MatrixError::invalid_param(
+            "Query parameter before_ts must be a positive integer",
+        )
+        .into());
     }
     if before_ts < 30000000000 {
         return Err(MatrixError::invalid_param(

@@ -189,10 +189,7 @@ impl TryFrom<JsonValue> for CanonicalJsonValue {
                     return Err(CanonicalJsonError::InvalidType("float".to_owned()));
                 }
 
-                Self::Integer(
-                    num.as_i64()
-                        .ok_or(CanonicalJsonError::IntegerOutOfRange)?,
-                )
+                Self::Integer(num.as_i64().ok_or(CanonicalJsonError::IntegerOutOfRange)?)
             }
             JsonValue::Array(vec) => Self::Array(
                 vec.into_iter()

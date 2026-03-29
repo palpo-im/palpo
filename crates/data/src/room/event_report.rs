@@ -119,11 +119,7 @@ pub fn list_event_reports(filter: &EventReportFilter) -> DataResult<(Vec<EventRe
     let total = count_query.count().get_result::<i64>(&mut connect()?)?;
 
     // Apply ordering - default is backwards (newest first)
-    let direction_forward = filter
-        .direction
-        .as_ref()
-        .map(|d| d == "f")
-        .unwrap_or(false);
+    let direction_forward = filter.direction.as_ref().map(|d| d == "f").unwrap_or(false);
 
     if direction_forward {
         query = query.order(event_reports::id.asc());

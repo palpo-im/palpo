@@ -196,10 +196,9 @@ impl Scribe for MatrixError {
             let code = self.status_code.unwrap_or_else(|| {
                 use ErrorKind::*;
                 match self.kind.clone() {
-                    Forbidden
-                    | GuestAccessForbidden
-                    | ThreepidAuthFailed
-                    | ThreepidDenied => StatusCode::FORBIDDEN,
+                    Forbidden | GuestAccessForbidden | ThreepidAuthFailed | ThreepidDenied => {
+                        StatusCode::FORBIDDEN
+                    }
                     Unauthorized | UnknownToken { .. } | MissingToken => StatusCode::UNAUTHORIZED,
                     NotFound | Unrecognized => StatusCode::NOT_FOUND,
                     LimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,

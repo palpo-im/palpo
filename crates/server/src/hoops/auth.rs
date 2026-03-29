@@ -8,11 +8,10 @@ use salvo::prelude::*;
 use subtle::ConstantTimeEq;
 
 use crate::appservice::RegistrationInfo;
-use crate::core::UnixMillis;
 use crate::core::federation::authentication::XMatrix;
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
-use crate::core::signatures;
+use crate::core::{UnixMillis, signatures};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::{DbAccessToken, DbUser, DbUserDevice, NewDbUser, NewDbUserDevice};
@@ -91,7 +90,12 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         let appservices = crate::appservices();
         for appservice in appservices {
             // Use constant-time comparison to prevent timing attacks
-            if appservice.as_token.as_bytes().ct_eq(token.as_bytes()).into() {
+            if appservice
+                .as_token
+                .as_bytes()
+                .ct_eq(token.as_bytes())
+                .into()
+            {
                 let appservice_info: RegistrationInfo = appservice.to_owned().try_into()?;
 
                 // Check if the appservice is masquerading as another user
@@ -110,7 +114,8 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
 
                     // Get or create the masqueraded user
                     let user = get_or_create_appservice_user(&user_id, &appservice.id)?;
-                    let user_device = get_or_create_appservice_device(&user_id, aa.device_id.as_deref())?;
+                    let user_device =
+                        get_or_create_appservice_device(&user_id, aa.device_id.as_deref())?;
                     (user, user_device)
                 } else {
                     // Use the appservice's main user
@@ -160,12 +165,15 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         .map_err(|_| MatrixError::unknown_token("User not found (not yet provisioned?)", true))?;
 
     // Extract device_id from introspection response, scope, or query param
-    let device_id_str = result.device_id.or_else(|| {
-        result
-            .scope
-            .as_deref()
-            .and_then(super::introspection::device_id_from_scope)
-    }).or_else(|| aa.device_id.clone());
+    let device_id_str = result
+        .device_id
+        .or_else(|| {
+            result
+                .scope
+                .as_deref()
+                .and_then(super::introspection::device_id_from_scope)
+        })
+        .or_else(|| aa.device_id.clone());
 
     let user_device = if let Some(did) = &device_id_str {
         let device_id: OwnedDeviceId = did.as_str().into();
@@ -223,7 +231,10 @@ fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) -> AppRe
     // Create a profile for the user
     let display_name = user_id.localpart().to_owned();
     if let Err(e) = crate::data::user::set_display_name(user_id, &display_name) {
-        tracing::warn!("failed to set profile for appservice user (non-fatal): {}", e);
+        tracing::warn!(
+            "failed to set profile for appservice user (non-fatal): {}",
+            e
+        );
     }
 
     Ok(user)

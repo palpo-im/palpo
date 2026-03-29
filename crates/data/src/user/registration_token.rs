@@ -75,7 +75,8 @@ pub fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<Registrat
     if let Some(is_valid) = valid {
         let now = UnixMillis::now().get() as i64;
         if is_valid {
-            // Valid tokens: not expired AND (uses_allowed is null OR completed + pending < uses_allowed)
+            // Valid tokens: not expired AND (uses_allowed is null OR completed + pending <
+            // uses_allowed)
             query = query
                 .filter(
                     user_registration_tokens::expires_at
@@ -85,22 +86,21 @@ pub fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<Registrat
                 .filter(
                     user_registration_tokens::uses_allowed
                         .is_null()
-                        .or((user_registration_tokens::completed + user_registration_tokens::pending)
+                        .or((user_registration_tokens::completed
+                            + user_registration_tokens::pending)
                             .lt(user_registration_tokens::uses_allowed.assume_not_null())),
                 );
         } else {
-            // Invalid tokens: expired OR (uses_allowed is not null AND completed + pending >= uses_allowed)
+            // Invalid tokens: expired OR (uses_allowed is not null AND completed + pending >=
+            // uses_allowed)
             query = query.filter(
                 user_registration_tokens::expires_at
                     .is_not_null()
                     .and(user_registration_tokens::expires_at.le(now))
-                    .or(user_registration_tokens::uses_allowed
-                        .is_not_null()
-                        .and(
-                            (user_registration_tokens::completed
-                                + user_registration_tokens::pending)
-                                .ge(user_registration_tokens::uses_allowed.assume_not_null()),
-                        )),
+                    .or(user_registration_tokens::uses_allowed.is_not_null().and(
+                        (user_registration_tokens::completed + user_registration_tokens::pending)
+                            .ge(user_registration_tokens::uses_allowed.assume_not_null()),
+                    )),
             );
         }
     }
@@ -163,15 +163,19 @@ pub fn update_registration_token(
     let mut conn = connect()?;
 
     if let Some(new_uses_allowed) = uses_allowed {
-        diesel::update(user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)))
-            .set(user_registration_tokens::uses_allowed.eq(new_uses_allowed))
-            .execute(&mut conn)?;
+        diesel::update(
+            user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
+        )
+        .set(user_registration_tokens::uses_allowed.eq(new_uses_allowed))
+        .execute(&mut conn)?;
     }
 
     if let Some(new_expires_at) = expires_at {
-        diesel::update(user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)))
-            .set(user_registration_tokens::expires_at.eq(new_expires_at))
-            .execute(&mut conn)?;
+        diesel::update(
+            user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
+        )
+        .set(user_registration_tokens::expires_at.eq(new_expires_at))
+        .execute(&mut conn)?;
     }
 
     // Return updated token
@@ -209,7 +213,9 @@ pub fn generate_token(length: usize) -> String {
 
 /// Check if a token string contains only valid characters
 pub fn is_valid_token_chars(token: &str) -> bool {
-    token.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '~' || c == '-')
+    token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '~' || c == '-')
 }
 
 /// Check if a registration token is valid for use

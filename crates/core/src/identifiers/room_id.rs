@@ -39,7 +39,8 @@ impl RoomId {
     /// [`RoomIdFormatVersion::V2`]: crate::room_version_rules::RoomIdFormatVersion::V2
     /// [`RoomVersionRules`]: crate::room_version_rules::RoomVersionRules
     pub fn new_v1(server_name: &ServerName) -> OwnedRoomId {
-        Self::from_borrowed_unchecked(&format!("!{}:{server_name}", super::generate_localpart(18))).to_owned()
+        Self::from_borrowed_unchecked(&format!("!{}:{server_name}", super::generate_localpart(18)))
+            .to_owned()
     }
 
     /// Construct an `OwnedRoomId` using the reference hash of the `m.room.create` event of the

@@ -907,9 +907,13 @@ mod tests {
         let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
 
         let mut response = SyncEventsResBody::new("539".to_owned());
-        response
-            .lists
-            .insert("all_rooms".to_owned(), super::SyncList { count: 1, ops: Vec::new() });
+        response.lists.insert(
+            "all_rooms".to_owned(),
+            super::SyncList {
+                count: 1,
+                ops: Vec::new(),
+            },
+        );
         response
             .extensions
             .account_data
