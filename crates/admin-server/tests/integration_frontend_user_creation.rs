@@ -159,7 +159,7 @@ mod frontend_user_creation_tests {
                     Ok(user)
                 }
                 Err(e) => {
-                    state.error = Some(e);
+                    state.error = Some(e.clone());
                     state.is_loading = false;
                     Err(e)
                 }
