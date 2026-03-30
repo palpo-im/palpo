@@ -155,12 +155,15 @@ pub fn ServerControlPage() -> Element {
                 Ok(client) => {
                     match client.get_json::<ServerStatusInfo>("/api/v1/admin/server/status").await {
                         Ok(info) => {
+                            web_sys::console::log_1(&format!("Status updated: {:?}", info.status).into());
                             status_info.set(Some(info));
                             error_message.set(None);
                         }
                         Err(e) => {
                             let error_msg = format!("Failed to fetch status: {}", e);
                             web_sys::console::error_1(&error_msg.clone().into());
+                            // Clear status_info on error to show loading state
+                            status_info.set(None);
                             error_message.set(Some(error_msg));
                         }
                     }
@@ -168,6 +171,8 @@ pub fn ServerControlPage() -> Element {
                 Err(e) => {
                     let error_msg = format!("API client error: {}", e);
                     web_sys::console::error_1(&error_msg.clone().into());
+                    // Clear status_info on error to show loading state
+                    status_info.set(None);
                     error_message.set(Some(error_msg));
                 }
             }
@@ -435,9 +440,12 @@ pub fn ServerControlPage() -> Element {
                                     span { class: "text-sm font-medium text-gray-700",
                                         "状态:"
                                     }
+                                    // Add data-testid for reliable test selection
                                     span {
                                         class: "px-3 py-1 rounded-full text-sm font-medium {info.status.badge_class()}",
-                                        "{info.status.display_text()}"
+                                        "data-testid": "server-status-badge",
+                                        // Explicitly render status text for better accessibility
+                                        {info.status.display_text()}
                                     }
                                 }
 
