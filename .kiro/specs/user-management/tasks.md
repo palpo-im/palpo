@@ -292,7 +292,7 @@ cargo build --package palpo-admin-server
 
 ### A.11 Write Property-Based Tests (PalpoClient)
 
-**Status**: [ ] **NOT STARTED**
+**Status**: [x] **COMPLETED**
 
 **File**: `crates/admin-server/tests/property_user_palpo_api.rs`
 
@@ -310,7 +310,7 @@ cargo test --package palpo-admin-server --test property_user_palpo_api -- --noca
 
 ### A.12 Write Integration Tests (PalpoClient)
 
-**Status**: [ ] **NOT STARTED**
+**Status**: [x] **COMPLETED**
 
 **File**: `crates/admin-server/tests/integration_user_palpo_api.rs`
 
@@ -329,7 +329,7 @@ cargo test --package palpo-admin-server --test integration_user_palpo_api -- --n
 
 ### A.13 Update Frontend API Client
 
-**Status**: [ ] **NOT STARTED**
+**Status**: [x] **COMPLETED**
 
 **File**: `crates/admin-ui/src/services/user_admin_api.rs`
 
@@ -527,9 +527,9 @@ cargo test --package palpo-admin-server --test integration_user_management -- --
 | A.8 Rewrite shadow_ban_handler | [x] **COMPLETED** |
 | A.9 Rewrite threepid_handler | [x] **COMPLETED** |
 | A.10 Delete repository files | [x] **COMPLETED** |
-| A.11 Property-based tests | [ ] NOT STARTED |
-| A.12 Integration tests | [ ] NOT STARTED |
-| A.13 Update frontend API client | [ ] NOT STARTED |
+| A.11 Property-based tests | [x] **COMPLETED** |
+| A.12 Integration tests | [x] **COMPLETED** |
+| A.13 Update frontend API client | [x] **COMPLETED** |
 
 ### Frontend Enhancement Tasks (B.1-B.6)
 | Task | Status |

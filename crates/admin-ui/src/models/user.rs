@@ -4,18 +4,68 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use crate::models::auth::Permission;
 
-/// User information for management
+/// User information for management (matches backend UserResponse)
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct User {
     pub user_id: String,
     pub username: String,
-    pub display_name: Option<String>,
+    // New field names matching backend
+    pub displayname: Option<String>,
     pub avatar_url: Option<String>,
     pub is_admin: bool,
-    pub is_deactivated: bool,
+    pub is_guest: bool,
+    pub is_local: bool,
+    pub server_name: String,
+    pub shadow_banned: bool,
+    pub deactivated: bool,
+    pub locked: bool,
     pub creation_ts: u64,
     pub last_seen_ts: Option<u64>,
     pub permissions: Vec<Permission>,
+    // Legacy field aliases for backward compatibility
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub is_deactivated: bool,
+}
+
+impl User {
+    /// Create User from backend response, populating both new and legacy fields
+    pub fn from_backend_response(
+        user_id: String,
+        username: String,
+        displayname: Option<String>,
+        avatar_url: Option<String>,
+        is_admin: bool,
+        is_guest: bool,
+        is_local: bool,
+        server_name: String,
+        shadow_banned: bool,
+        deactivated: bool,
+        locked: bool,
+        creation_ts: u64,
+        last_seen_ts: Option<u64>,
+    ) -> Self {
+        Self {
+            user_id: user_id.clone(),
+            username,
+            displayname: displayname.clone(),
+            avatar_url,
+            is_admin,
+            is_guest,
+            is_local,
+            server_name,
+            shadow_banned,
+            deactivated,
+            locked,
+            creation_ts,
+            last_seen_ts,
+            // Legacy fields
+            display_name: displayname,
+            is_deactivated: deactivated,
+            permissions: Vec::new(),
+        }
+    }
 }
 
 /// User creation request (matches backend Palpo schema)

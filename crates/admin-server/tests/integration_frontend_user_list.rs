@@ -9,6 +9,7 @@
 mod frontend_user_list_tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
+    use serde::{Serialize, Deserialize};
 
     // Mock types for frontend integration testing
 
