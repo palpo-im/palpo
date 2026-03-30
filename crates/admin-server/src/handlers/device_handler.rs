@@ -2,6 +2,7 @@
 ///
 /// This module implements device management API endpoints using Salvo framework.
 /// All endpoints require authentication via Bearer token.
+/// Uses PalpoClient to communicate with Palpo Matrix server via HTTP API.
 ///
 /// Endpoints:
 /// - GET /api/v1/users/{user_id}/devices - List user devices
@@ -13,23 +14,21 @@
 
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use crate::repositories::{DieselDeviceRepository, Device, DeviceFilter, DeviceWithSessions};
-use crate::device_repository::DeviceRepository;
+use std::sync::{Arc, OnceLock};
+
+use crate::palpo_client::{PalpoClient, PalpoDevice};
 
 use super::auth_middleware::require_auth;
 use super::validation::{validate_user_id, validate_device_id, validate_limit, validate_offset};
 
 // ===== Request Types =====
 
-/// Device list query parameters
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeviceListQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
 
-/// Device list response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceListResponse {
     pub devices: Vec<DeviceResponse>,
@@ -38,7 +37,6 @@ pub struct DeviceListResponse {
     pub offset: i64,
 }
 
-/// Device response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceResponse {
     pub device_id: String,
@@ -50,7 +48,20 @@ pub struct DeviceResponse {
     pub created_ts: i64,
 }
 
-/// Device with sessions response
+impl DeviceResponse {
+    pub fn from_palpo_device(device: &PalpoDevice, user_id: &str) -> Self {
+        Self {
+            device_id: device.device_id.clone(),
+            user_id: user_id.to_string(),
+            display_name: device.display_name.clone(),
+            last_seen_ts: device.last_seen_ts,
+            last_seen_ip: device.last_seen_ip.clone(),
+            last_seen_user_agent: None,
+            created_ts: device.last_seen_ts.unwrap_or(0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceWithSessionsResponse {
     pub device: DeviceResponse,
@@ -59,19 +70,16 @@ pub struct DeviceWithSessionsResponse {
     pub user_agent: Option<String>,
 }
 
-/// Update device request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateDeviceRequest {
     pub display_name: Option<String>,
 }
 
-/// Delete device request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteDeviceRequest {
     pub device_ids: Vec<String>,
 }
 
-/// Batch delete response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchDeleteResponse {
     pub success: bool,
@@ -79,49 +87,42 @@ pub struct BatchDeleteResponse {
     pub message: String,
 }
 
-/// Generic success response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
 }
 
-/// Device count response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceCountResponse {
     pub user_id: String,
     pub device_count: i64,
 }
 
-/// Standard error response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
 }
 
 // ===== Handler State =====
 
-/// Device handler state containing the repository
 #[derive(Clone, Debug)]
 pub struct DeviceHandlerState {
-    pub device_repo: Arc<DieselDeviceRepository>,
+    pub palpo_client: Arc<PalpoClient>,
 }
 
 impl DeviceHandlerState {
-    pub fn new(device_repo: Arc<DieselDeviceRepository>) -> Self {
-        Self { device_repo }
+    pub fn new(palpo_client: Arc<PalpoClient>) -> Self {
+        Self { palpo_client }
     }
 }
 
-/// Global device handler state
-static DEVICE_HANDLER_STATE: std::sync::OnceLock<DeviceHandlerState> = std::sync::OnceLock::new();
+static DEVICE_HANDLER_STATE: OnceLock<DeviceHandlerState> = OnceLock::new();
 
-/// Initialize the global device handler state
 pub fn init_device_handler_state(state: DeviceHandlerState) {
     DEVICE_HANDLER_STATE.set(state).expect("Device handler state already initialized");
 }
 
-/// Get the global device handler state
 fn get_device_handler_state() -> &'static DeviceHandlerState {
     DEVICE_HANDLER_STATE.get().expect("Device handler state not initialized")
 }
@@ -136,55 +137,30 @@ pub async fn list_user_devices(req: &mut Request, depot: &mut Depot, res: &mut R
     let state = get_device_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
     }
 
     let query = req.parse_queries::<DeviceListQuery>().unwrap_or_default();
+    let limit = validate_limit(query.limit).unwrap_or(50);
+    let offset = validate_offset(query.offset).unwrap_or(0);
 
-    // Validate pagination parameters
-    let limit = match validate_limit(query.limit) {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::warn!("Invalid limit parameter: {}", e);
-            res.status_code(StatusCode::BAD_REQUEST);
-            res.render(Json(ErrorResponse { error: format!("Invalid limit: {}", e) }));
-            return;
-        }
-    };
-
-    let offset = match validate_offset(query.offset) {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!("Invalid offset parameter: {}", e);
-            res.status_code(StatusCode::BAD_REQUEST);
-            res.render(Json(ErrorResponse { error: format!("Invalid offset: {}", e) }));
-            return;
-        }
-    };
-
-    let filter = DeviceFilter {
-        user_id: Some(user_id.clone()),
-        limit: Some(limit),
-        offset: Some(offset),
-    };
-
-    match state.device_repo.list_devices(&filter).await {
+    match state.palpo_client.list_user_devices(&user_id).await {
         Ok(result) => {
-            let devices: Vec<DeviceResponse> = result.devices.iter().map(DeviceResponse::from).collect();
+            let devices: Vec<DeviceResponse> = result.devices.iter()
+                .map(|d| DeviceResponse::from_palpo_device(&d, &user_id))
+                .collect();
             res.render(Json(DeviceListResponse {
                 devices,
-                total_count: result.total_count,
+                total_count: result.total,
                 limit,
                 offset,
             }));
         }
         Err(e) => {
-            tracing::error!("Failed to list devices: {}", e);
+            tracing::error!("Failed to list user devices: {}", e);
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render(Json(ErrorResponse { error: "Failed to list devices".to_string() }));
         }
@@ -200,28 +176,27 @@ pub async fn get_device(req: &mut Request, depot: &mut Depot, res: &mut Response
     let user_id = req.param::<String>("user_id").unwrap_or_default();
     let device_id = req.param::<String>("device_id").unwrap_or_default();
 
-    // Validate parameters
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
     }
 
     if let Err(e) = validate_device_id(&device_id) {
-        tracing::warn!("Invalid device_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid device_id: {}", e) }));
         return;
     }
 
-    match state.device_repo.get_device(&user_id, &device_id).await {
-        Ok(Some(device)) => {
-            res.render(Json(DeviceResponse::from(&device)));
-        }
-        Ok(None) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            res.render(Json(ErrorResponse { error: format!("Device {} not found for user {}", device_id, user_id) }));
+    // Get all devices and find the specific one
+    match state.palpo_client.list_user_devices(&user_id).await {
+        Ok(result) => {
+            if let Some(device) = result.devices.iter().find(|d| d.device_id == device_id) {
+                res.render(Json(DeviceResponse::from_palpo_device(device, &user_id)));
+            } else {
+                res.status_code(StatusCode::NOT_FOUND);
+                res.render(Json(ErrorResponse { error: "Device not found".to_string() }));
+            }
         }
         Err(e) => {
             tracing::error!("Failed to get device: {}", e);
@@ -232,54 +207,31 @@ pub async fn get_device(req: &mut Request, depot: &mut Depot, res: &mut Response
 }
 
 /// PUT /api/v1/users/{user_id}/devices/{device_id} - Update device
+/// NOTE: Palpo API doesn't support updating device display_name via admin API
 #[handler]
 pub async fn update_device(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     if !require_auth(depot, res) { return; }
 
-    let state = get_device_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
     let device_id = req.param::<String>("device_id").unwrap_or_default();
 
-    // Validate parameters
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
     }
 
     if let Err(e) = validate_device_id(&device_id) {
-        tracing::warn!("Invalid device_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid device_id: {}", e) }));
         return;
     }
 
-    let body = match req.parse_json::<UpdateDeviceRequest>().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("Invalid update device request: {}", e);
-            res.status_code(StatusCode::BAD_REQUEST);
-            res.render(Json(ErrorResponse { error: "Invalid request body".to_string() }));
-            return;
-        }
-    };
-
-    let input = crate::repositories::UpdateDeviceInput {
-        display_name: body.display_name,
-    };
-
-    match state.device_repo.update_device(&user_id, &device_id, &input).await {
-        Ok(device) => {
-            tracing::info!("Updated device {} for user {}", device_id, user_id);
-            res.render(Json(DeviceResponse::from(&device)));
-        }
-        Err(e) => {
-            tracing::error!("Failed to update device: {}", e);
-            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            res.render(Json(ErrorResponse { error: "Failed to update device".to_string() }));
-        }
-    }
+    // Palpo admin API doesn't support updating device
+    res.status_code(StatusCode::NOT_IMPLEMENTED);
+    res.render(Json(ErrorResponse { 
+        error: "Device update is not supported by Palpo server".to_string() 
+    }));
 }
 
 /// DELETE /api/v1/users/{user_id}/devices/{device_id} - Delete single device
@@ -291,33 +243,32 @@ pub async fn delete_device(req: &mut Request, depot: &mut Depot, res: &mut Respo
     let user_id = req.param::<String>("user_id").unwrap_or_default();
     let device_id = req.param::<String>("device_id").unwrap_or_default();
 
-    // Validate parameters
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
     }
 
     if let Err(e) = validate_device_id(&device_id) {
-        tracing::warn!("Invalid device_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid device_id: {}", e) }));
         return;
     }
 
-    if let Err(e) = state.device_repo.delete_device(&user_id, &device_id).await {
-        tracing::error!("Failed to delete device: {}", e);
-        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-        res.render(Json(ErrorResponse { error: "Failed to delete device".to_string() }));
-        return;
+    match state.palpo_client.delete_user_device(&user_id, &device_id).await {
+        Ok(_) => {
+            tracing::info!("Deleted device {} for user {}", device_id, user_id);
+            res.render(Json(SuccessResponse {
+                success: true,
+                message: format!("Device {} deleted", device_id),
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete device: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to delete device".to_string() }));
+        }
     }
-
-    tracing::info!("Deleted device {} for user {}", device_id, user_id);
-    res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("Device {} deleted successfully", device_id),
-    }));
 }
 
 /// POST /api/v1/users/{user_id}/devices/delete - Batch delete devices
@@ -328,9 +279,7 @@ pub async fn delete_devices(req: &mut Request, depot: &mut Depot, res: &mut Resp
     let state = get_device_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
@@ -339,37 +288,25 @@ pub async fn delete_devices(req: &mut Request, depot: &mut Depot, res: &mut Resp
     let body = match req.parse_json::<DeleteDeviceRequest>().await {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!("Invalid delete devices request: {}", e);
             res.status_code(StatusCode::BAD_REQUEST);
             res.render(Json(ErrorResponse { error: "Invalid request body".to_string() }));
             return;
         }
     };
 
-    // Validate device IDs
-    for device_id in &body.device_ids {
-        if let Err(e) = validate_device_id(device_id) {
-            tracing::warn!("Invalid device_id in batch delete: {}", e);
-            res.status_code(StatusCode::BAD_REQUEST);
-            res.render(Json(ErrorResponse { error: format!("Invalid device_id: {}", e) }));
-            return;
-        }
-    }
-
-    // Limit batch size
-    if body.device_ids.len() > 100 {
+    if body.device_ids.is_empty() {
         res.status_code(StatusCode::BAD_REQUEST);
-        res.render(Json(ErrorResponse { error: "Cannot delete more than 100 devices at once".to_string() }));
+        res.render(Json(ErrorResponse { error: "No device IDs provided".to_string() }));
         return;
     }
 
-    match state.device_repo.delete_devices(&user_id, &body.device_ids).await {
-        Ok(count) => {
-            tracing::info!("Deleted {} devices for user {}", count, user_id);
+    match state.palpo_client.delete_user_devices(&user_id, &body.device_ids).await {
+        Ok(_) => {
+            tracing::info!("Deleted {} devices for user {}", body.device_ids.len(), user_id);
             res.render(Json(BatchDeleteResponse {
                 success: true,
-                deleted_count: count,
-                message: format!("Deleted {} devices successfully", count),
+                deleted_count: body.device_ids.len() as u64,
+                message: format!("Deleted {} devices", body.device_ids.len()),
             }));
         }
         Err(e) => {
@@ -388,32 +325,52 @@ pub async fn delete_all_user_devices(req: &mut Request, depot: &mut Depot, res: 
     let state = get_device_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
     }
 
-    match state.device_repo.delete_all_user_devices(&user_id).await {
-        Ok(count) => {
-            tracing::info!("Deleted all {} devices for user {}", count, user_id);
-            res.render(Json(BatchDeleteResponse {
-                success: true,
-                deleted_count: count,
-                message: format!("Deleted all {} devices successfully", count),
-            }));
+    // First get all devices, then delete them
+    match state.palpo_client.list_user_devices(&user_id).await {
+        Ok(result) => {
+            if result.devices.is_empty() {
+                res.render(Json(SuccessResponse {
+                    success: true,
+                    message: "No devices to delete".to_string(),
+                }));
+                return;
+            }
+
+            let device_ids: Vec<String> = result.devices.iter()
+                .map(|d| d.device_id.clone())
+                .collect();
+
+            match state.palpo_client.delete_user_devices(&user_id, &device_ids).await {
+                Ok(_) => {
+                    tracing::info!("Deleted all {} devices for user {}", device_ids.len(), user_id);
+                    res.render(Json(BatchDeleteResponse {
+                        success: true,
+                        deleted_count: device_ids.len() as u64,
+                        message: format!("Deleted {} devices", device_ids.len()),
+                    }));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to delete all devices: {}", e);
+                    res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                    res.render(Json(ErrorResponse { error: "Failed to delete devices".to_string() }));
+                }
+            }
         }
         Err(e) => {
-            tracing::error!("Failed to delete all devices: {}", e);
+            tracing::error!("Failed to get user devices: {}", e);
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            res.render(Json(ErrorResponse { error: "Failed to delete devices".to_string() }));
+            res.render(Json(ErrorResponse { error: "Failed to get devices".to_string() }));
         }
     }
 }
 
-/// GET /api/v1/users/{user_id}/devices/count - Get device count
+/// GET /api/v1/users/{user_id}/devices/count - Get user device count
 #[handler]
 pub async fn get_user_device_count(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     if !require_auth(depot, res) { return; }
@@ -421,52 +378,23 @@ pub async fn get_user_device_count(req: &mut Request, depot: &mut Depot, res: &m
     let state = get_device_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
-        tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
         res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
         return;
     }
 
-    match state.device_repo.get_user_device_count(&user_id).await {
-        Ok(count) => {
+    match state.palpo_client.list_user_devices(&user_id).await {
+        Ok(result) => {
             res.render(Json(DeviceCountResponse {
                 user_id,
-                device_count: count,
+                device_count: result.total,
             }));
         }
         Err(e) => {
             tracing::error!("Failed to get device count: {}", e);
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render(Json(ErrorResponse { error: "Failed to get device count".to_string() }));
-        }
-    }
-}
-
-// ===== Conversion Implementations =====
-
-impl From<&Device> for DeviceResponse {
-    fn from(device: &Device) -> Self {
-        DeviceResponse {
-            device_id: device.device_id.clone(),
-            user_id: device.user_id.clone(),
-            display_name: device.display_name.clone(),
-            last_seen_ts: device.last_seen_ts,
-            last_seen_ip: device.last_seen_ip.clone(),
-            last_seen_user_agent: device.last_seen_user_agent.clone(),
-            created_ts: device.created_ts,
-        }
-    }
-}
-
-impl From<&DeviceWithSessions> for DeviceWithSessionsResponse {
-    fn from(d: &DeviceWithSessions) -> Self {
-        DeviceWithSessionsResponse {
-            device: DeviceResponse::from(&d.device),
-            ip_addresses: d.ip_addresses.clone(),
-            last_seen: d.last_seen,
-            user_agent: d.user_agent.clone(),
         }
     }
 }

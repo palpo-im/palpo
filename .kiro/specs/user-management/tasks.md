@@ -533,7 +533,7 @@ cargo test --package palpo-admin-server --test integration_user_management -- --
 | A.1 Integrate PalpoClient | [x] **COMPLETED** |
 | A.2 Add missing methods | [x] **COMPLETED** |
 | A.3 Rewrite user_handler | [x] **COMPLETED** |
-| A.4 Rewrite device_handler | [ ] NOT STARTED |
+| A.4 Rewrite device_handler | [x] **COMPLETED** |
 | A.5 Rewrite session_handler | [ ] NOT STARTED (Blocked by A.2) |
 | A.6 Rewrite rate_limit_handler | [ ] NOT STARTED (Blocked by A.2) |
 | A.7 Rewrite media_handler | [ ] NOT STARTED (Blocked by A.2) |
