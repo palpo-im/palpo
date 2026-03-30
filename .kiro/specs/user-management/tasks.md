@@ -534,11 +534,11 @@ cargo test --package palpo-admin-server --test integration_user_management -- --
 | A.2 Add missing methods | [x] **COMPLETED** |
 | A.3 Rewrite user_handler | [x] **COMPLETED** |
 | A.4 Rewrite device_handler | [x] **COMPLETED** |
-| A.5 Rewrite session_handler | [ ] NOT STARTED (Blocked by A.2) |
-| A.6 Rewrite rate_limit_handler | [ ] NOT STARTED (Blocked by A.2) |
-| A.7 Rewrite media_handler | [ ] NOT STARTED (Blocked by A.2) |
-| A.8 Rewrite shadow_ban_handler | [ ] NOT STARTED (Blocked by A.2) |
-| A.9 Rewrite threepid_handler | [ ] NOT STARTED (Blocked by A.2) |
+| A.5 Rewrite session_handler | [x] **COMPLETED** |
+| A.6 Rewrite rate_limit_handler | [x] **COMPLETED** |
+| A.7 Rewrite media_handler | [x] **COMPLETED** |
+| A.8 Rewrite shadow_ban_handler | [x] **COMPLETED** |
+| A.9 Rewrite threepid_handler | [x] **COMPLETED** |
 | A.10 Delete repository files | [ ] NOT STARTED (Blocked by A.3-A.9) |
 | A.11 Property-based tests | [ ] NOT STARTED |
 | A.12 Integration tests | [ ] NOT STARTED |

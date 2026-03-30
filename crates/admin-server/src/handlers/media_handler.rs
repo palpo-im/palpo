@@ -1,30 +1,32 @@
 /// Media Handler - HTTP handlers for media management API
 ///
-/// This module implements media management API endpoints:
-/// - List user media
-/// - Get media count
-/// - Get media size
-/// - Delete media
-/// - Delete all user media
+/// This module implements media management API endpoints using Salvo framework.
+/// All endpoints require authentication via Bearer token.
+/// Uses PalpoClient to communicate with Palpo Matrix server via HTTP API.
 ///
-/// Note: Actual media files are stored on disk, this tracks metadata.
+/// Endpoints:
+/// - GET /api/v1/users/{user_id}/media - List user media
+/// - GET /api/v1/users/{user_id}/media/count - Get media count
+/// - GET /api/v1/users/{user_id}/media/size - Get total media size
+/// - DELETE /api/v1/users/{user_id}/media - Delete all user media
 
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use crate::repositories::DieselMediaRepository;
-use crate::media_repository::MediaRepository;
+use crate::palpo_client::{PalpoClient, PalpoMedia};
 
-/// Media list query parameters
+use super::auth_middleware::require_auth;
+use super::validation::validate_user_id;
+
+// ===== Request Types =====
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MediaListQuery {
-    pub user_id: String,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
 
-/// Media list response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaListResponse {
     pub media: Vec<MediaResponse>,
@@ -34,38 +36,46 @@ pub struct MediaListResponse {
     pub offset: i64,
 }
 
-/// Media response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaResponse {
     pub media_id: String,
     pub user_id: String,
-    pub media_type: String,
-    pub file_path: String,
+    pub media_type: Option<String>,
+    pub upload_name: Option<String>,
     pub file_size: i64,
-    pub created_ts: i64,
+    pub created_ts: Option<i64>,
 }
 
-/// Media count response
+impl MediaResponse {
+    pub fn from_palpo_media(media: &PalpoMedia, user_id: &str) -> Self {
+        Self {
+            media_id: media.media_id.clone(),
+            user_id: user_id.to_string(),
+            media_type: media.media_type.clone(),
+            upload_name: media.upload_name.clone(),
+            file_size: media.size.unwrap_or(0),
+            created_ts: media.created_ts,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaCountResponse {
     pub user_id: String,
     pub media_count: i64,
 }
 
-/// Media size response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaSizeResponse {
     pub user_id: String,
     pub total_size: i64,
 }
 
-/// Delete media request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteMediaRequest {
     pub media_ids: Vec<String>,
 }
 
-/// Batch delete response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchDeleteResponse {
     pub success: bool,
@@ -73,67 +83,73 @@ pub struct BatchDeleteResponse {
     pub message: String,
 }
 
-/// Generic success response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
 }
 
-/// Standard error response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Media handler state
+// ===== Handler State =====
+
 #[derive(Clone, Debug)]
 pub struct MediaHandlerState {
-    pub media_repo: Arc<DieselMediaRepository>,
+    pub palpo_client: Arc<PalpoClient>,
 }
 
 impl MediaHandlerState {
-    pub fn new(media_repo: Arc<DieselMediaRepository>) -> Self {
-        Self { media_repo }
+    pub fn new(palpo_client: Arc<PalpoClient>) -> Self {
+        Self { palpo_client }
     }
 }
 
-/// Global media handler state
-static MEDIA_HANDLER_STATE: std::sync::OnceLock<MediaHandlerState> = std::sync::OnceLock::new();
+static MEDIA_HANDLER_STATE: OnceLock<MediaHandlerState> = OnceLock::new();
 
-/// Initialize the global media handler state
 pub fn init_media_handler_state(state: MediaHandlerState) {
     MEDIA_HANDLER_STATE.set(state).expect("Media handler state already initialized");
 }
 
-/// Get the global media handler state
 fn get_media_handler_state() -> &'static MediaHandlerState {
     MEDIA_HANDLER_STATE.get().expect("Media handler state not initialized")
 }
 
-/// List media for a user
+// ===== Handler Functions =====
+
+/// GET /api/v1/users/{user_id}/media - List user media
 #[handler]
-pub async fn list_user_media(req: &mut Request, res: &mut Response) {
+pub async fn list_user_media(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
     let state = get_media_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
+    if let Err(e) = validate_user_id(&user_id) {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
     let query = req.parse_queries::<MediaListQuery>().unwrap_or_default();
+    let limit = query.limit.unwrap_or(50);
+    let offset = query.offset.unwrap_or(0);
 
-    let filter = crate::repositories::MediaFilter {
-        user_id,
-        limit: query.limit,
-        offset: query.offset,
-    };
-
-    match state.media_repo.get_user_media(&filter).await {
+    match state.palpo_client.list_user_media(&user_id).await {
         Ok(result) => {
-            let media: Vec<MediaResponse> = result.media.iter().map(MediaResponse::from).collect();
+            let media: Vec<MediaResponse> = result.media.iter()
+                .map(|m| MediaResponse::from_palpo_media(&m, &user_id))
+                .collect();
+            let total_size: i64 = result.media.iter().map(|m| m.size.unwrap_or(0)).sum();
+
             res.render(Json(MediaListResponse {
                 media,
-                total_count: result.total_count,
-                total_size: result.total_size,
-                limit: result.limit,
-                offset: result.offset,
+                total_count: result.total,
+                total_size,
+                limit,
+                offset,
             }));
         }
         Err(e) => {
@@ -144,17 +160,25 @@ pub async fn list_user_media(req: &mut Request, res: &mut Response) {
     }
 }
 
-/// Get media count for a user
+/// GET /api/v1/users/{user_id}/media/count - Get media count
 #[handler]
-pub async fn get_user_media_count(req: &mut Request, res: &mut Response) {
+pub async fn get_user_media_count(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
     let state = get_media_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    match state.media_repo.get_user_media_count(&user_id).await {
-        Ok(count) => {
+    if let Err(e) = validate_user_id(&user_id) {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.palpo_client.list_user_media(&user_id).await {
+        Ok(result) => {
             res.render(Json(MediaCountResponse {
                 user_id,
-                media_count: count,
+                media_count: result.total,
             }));
         }
         Err(e) => {
@@ -165,17 +189,26 @@ pub async fn get_user_media_count(req: &mut Request, res: &mut Response) {
     }
 }
 
-/// Get total media size for a user
+/// GET /api/v1/users/{user_id}/media/size - Get total media size
 #[handler]
-pub async fn get_user_media_size(req: &mut Request, res: &mut Response) {
+pub async fn get_user_media_size(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
+
     let state = get_media_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    match state.media_repo.get_user_media_size(&user_id).await {
-        Ok(size) => {
+    if let Err(e) = validate_user_id(&user_id) {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.palpo_client.list_user_media(&user_id).await {
+        Ok(result) => {
+            let total_size: i64 = result.media.iter().map(|m| m.size.unwrap_or(0)).sum();
             res.render(Json(MediaSizeResponse {
                 user_id,
-                total_size: size,
+                total_size,
             }));
         }
         Err(e) => {
@@ -186,77 +219,33 @@ pub async fn get_user_media_size(req: &mut Request, res: &mut Response) {
     }
 }
 
-/// Delete a single media
+/// DELETE /api/v1/users/{user_id}/media - Delete all user media
 #[handler]
-pub async fn delete_media(req: &mut Request, res: &mut Response) {
-    let state = get_media_handler_state();
-    let media_id = req.param::<String>("media_id").unwrap_or_default();
+pub async fn delete_all_user_media(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    if !require_auth(depot, res) { return; }
 
-    if let Err(e) = state.media_repo.delete_media(&media_id).await {
-        tracing::error!("Failed to delete media: {}", e);
-        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-        res.render(Json(ErrorResponse { error: "Failed to delete media".to_string() }));
-        return;
-    }
-
-    res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("Media {} deleted successfully", media_id),
-    }));
-}
-
-/// Delete multiple media
-#[handler]
-pub async fn delete_media_batch(req: &mut Request, res: &mut Response) {
-    let state = get_media_handler_state();
-    let body = req.parse_json::<DeleteMediaRequest>().await.unwrap_or(DeleteMediaRequest { media_ids: vec![] });
-
-    let mut deleted_count = 0;
-    for media_id in &body.media_ids {
-        if state.media_repo.delete_media(media_id).await.is_ok() {
-            deleted_count += 1;
-        }
-    }
-
-    res.render(Json(BatchDeleteResponse {
-        success: true,
-        deleted_count,
-        message: format!("Deleted {} media items", deleted_count),
-    }));
-}
-
-/// Delete all media for a user
-#[handler]
-pub async fn delete_all_user_media(req: &mut Request, res: &mut Response) {
     let state = get_media_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    match state.media_repo.delete_all_user_media(&user_id).await {
-        Ok(count) => {
+    if let Err(e) = validate_user_id(&user_id) {
+        res.status_code(StatusCode::BAD_REQUEST);
+        res.render(Json(ErrorResponse { error: format!("Invalid user_id: {}", e) }));
+        return;
+    }
+
+    match state.palpo_client.delete_user_media(&user_id).await {
+        Ok(result) => {
+            tracing::info!("Deleted {} media items for user {}", result.total_deleted, user_id);
             res.render(Json(BatchDeleteResponse {
                 success: true,
-                deleted_count: count,
-                message: format!("Deleted {} media items for user {}", count, user_id),
+                deleted_count: result.total_deleted as u64,
+                message: format!("Deleted {} media items", result.total_deleted),
             }));
         }
         Err(e) => {
             tracing::error!("Failed to delete user media: {}", e);
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render(Json(ErrorResponse { error: "Failed to delete user media".to_string() }));
-        }
-    }
-}
-
-// Conversion implementations
-impl From<&crate::repositories::MediaMetadata> for MediaResponse {
-    fn from(m: &crate::repositories::MediaMetadata) -> Self {
-        MediaResponse {
-            media_id: m.media_id.clone(),
-            user_id: m.user_id.clone(),
-            media_type: m.media_type.clone(),
-            file_path: m.file_path.clone(),
-            file_size: m.file_size,
-            created_ts: m.created_ts,
         }
     }
 }
