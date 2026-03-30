@@ -89,5 +89,9 @@ pub use password_generator::{PasswordConfig, PasswordError, generate_password, v
 pub mod palpo_client;
 pub use palpo_client::PalpoClient;
 
+// Tests for PalpoClient types
+#[cfg(test)]
+mod palpo_client_tests;
+
 // Re-export UserAppState
 pub use handlers::UserAppState;
