@@ -147,6 +147,116 @@ pub struct PalpoServerVersion {
     pub python_version: Option<String>,
 }
 
+/// Whois response - user connection info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoWhoisResponse {
+    pub user_id: String,
+    pub devices: Vec<PalpoWhoisDevice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoWhoisDevice {
+    pub device_id: String,
+    pub sessions: Vec<PalpoWhoisSession>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoWhoisSession {
+    pub connections: Vec<PalpoWhoisConnection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoWhoisConnection {
+    pub ip: String,
+    pub port: Option<u16>,
+    pub user_agent: Option<String>,
+    pub last_seen: Option<i64>,
+}
+
+/// User joined rooms response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoUserJoinedRoomsResponse {
+    pub joined_rooms: Vec<String>,
+    pub total: i64,
+}
+
+/// Rate limit configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoRateLimitConfig {
+    pub messages_per_second: Option<i64>,
+    pub burst_count: Option<i64>,
+}
+
+/// User media list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoMediaListResponse {
+    pub media: Vec<PalpoMedia>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoMedia {
+    pub media_id: String,
+    pub upload_name: Option<String>,
+    pub media_type: Option<String>,
+    pub size: Option<i64>,
+    pub created_ts: Option<i64>,
+    pub last_access_ts: Option<i64>,
+    pub quarantined_by: Option<String>,
+}
+
+/// Media delete response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoMediaDeleteResponse {
+    pub deleted_media: Vec<String>,
+    pub total_deleted: i64,
+}
+
+/// Pusher list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoPusherListResponse {
+    pub pushers: Vec<PalpoPusher>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoPusher {
+    pub pushkey: String,
+    pub kind: Option<String>,
+    pub app_id: String,
+    pub device_id: String,
+    pub ts: Option<i64>,
+    pub expiry: Option<i64>,
+    pub data: Option<PalpoPusherData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoPusherData {
+    pub url: Option<String>,
+    pub format: Option<String>,
+}
+
+/// Login as user response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoLoginAsUserResponse {
+    pub access_token: String,
+    pub device_id: String,
+    pub user_id: String,
+}
+
+/// Third-party ID user search response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoThreepidUserSearchResponse {
+    pub threepids: Vec<PalpoThreepidUser>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalpoThreepidUser {
+    pub medium: String,
+    pub address: String,
+    pub user_id: String,
+}
+
 // ===== Request Types =====
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -540,5 +650,133 @@ impl PalpoClient {
         let resp = self.get("/_synapse/admin/v1/server_version").await?;
         let resp = Self::check_response(resp, "get_server_version").await?;
         resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse server version: {}", e)))
+    }
+
+    // ===== Whois API =====
+
+    /// Get user connection information (IP, user agent, etc.)
+    /// GET /_synapse/admin/v1/whois/{user_id}
+    pub async fn get_whois(&self, user_id: &str) -> Result<PalpoWhoisResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/whois/{}", user_id);
+        let resp = self.get(&path).await?;
+        let resp = Self::check_response(resp, "get_whois").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse whois response: {}", e)))
+    }
+
+    // ===== User Rooms API =====
+
+    /// List rooms a user has joined
+    /// GET /_synapse/admin/v1/users/{user_id}/joined_rooms
+    pub async fn list_user_joined_rooms(&self, user_id: &str) -> Result<PalpoUserJoinedRoomsResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/joined_rooms", user_id);
+        let resp = self.get(&path).await?;
+        let resp = Self::check_response(resp, "list_user_joined_rooms").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse joined rooms: {}", e)))
+    }
+
+    // ===== Rate Limit API =====
+
+    /// Get user-specific rate limit settings
+    /// GET /_synapse/admin/v1/users/{user_id}/override_ratelimit
+    pub async fn get_user_rate_limit(&self, user_id: &str) -> Result<Option<PalpoRateLimitConfig>, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/override_ratelimit", user_id);
+        let resp = self.get(&path).await?;
+        let resp = Self::check_response(resp, "get_user_rate_limit").await?;
+        // If 404, user has no custom rate limit
+        if resp.status() == 404 {
+            return Ok(None);
+        }
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse rate limit: {}", e)))
+    }
+
+    /// Set user-specific rate limit
+    /// POST /_synapse/admin/v1/users/{user_id}/override_ratelimit
+    pub async fn set_user_rate_limit(&self, user_id: &str, config: &PalpoRateLimitConfig) -> Result<PalpoRateLimitConfig, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/override_ratelimit", user_id);
+        let resp = self.post(&path, config).await?;
+        let resp = Self::check_response(resp, "set_user_rate_limit").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse rate limit response: {}", e)))
+    }
+
+    /// Delete user-specific rate limit (revert to default)
+    /// DELETE /_synapse/admin/v1/users/{user_id}/override_ratelimit
+    pub async fn delete_user_rate_limit(&self, user_id: &str) -> Result<(), AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/override_ratelimit", user_id);
+        let resp = self.delete::<()>(&path, None).await?;
+        Self::check_response(resp, "delete_user_rate_limit").await?;
+        Ok(())
+    }
+
+    // ===== User Media API =====
+
+    /// List media uploaded by a user
+    /// GET /_synapse/admin/v1/users/{user_id}/media
+    pub async fn list_user_media(&self, user_id: &str) -> Result<PalpoMediaListResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/media", user_id);
+        let resp = self.get(&path).await?;
+        let resp = Self::check_response(resp, "list_user_media").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse media list: {}", e)))
+    }
+
+    /// Delete media uploaded by a user
+    /// DELETE /_synapse/admin/v1/users/{user_id}/media
+    pub async fn delete_user_media(&self, user_id: &str) -> Result<PalpoMediaDeleteResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/media", user_id);
+        let resp = self.delete(&path, None::<&()>).await?;
+        let resp = Self::check_response(resp, "delete_user_media").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse media delete response: {}", e)))
+    }
+
+    // ===== Pushers API =====
+
+    /// List pushers for a user
+    /// GET /_synapse/admin/v1/users/{user_id}/pushers
+    pub async fn list_user_pushers(&self, user_id: &str) -> Result<PalpoPusherListResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/pushers", user_id);
+        let resp = self.get(&path).await?;
+        let resp = Self::check_response(resp, "list_user_pushers").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse pushers: {}", e)))
+    }
+
+    // ===== Shadow Ban API =====
+
+    /// Shadow ban a user (they won't see their messages in room lists)
+    /// POST /_synapse/admin/v1/users/{user_id}/shadow_ban
+    pub async fn shadow_ban_user(&self, user_id: &str) -> Result<(), AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/shadow_ban", user_id);
+        let resp = self.post(&path, &()).await?;
+        Self::check_response(resp, "shadow_ban_user").await?;
+        Ok(())
+    }
+
+    /// Remove shadow ban from a user
+    /// DELETE /_synapse/admin/v1/users/{user_id}/shadow_ban
+    pub async fn unshadow_ban_user(&self, user_id: &str) -> Result<(), AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/shadow_ban", user_id);
+        let resp = self.delete::<()>(&path, None).await?;
+        Self::check_response(resp, "unshadow_ban_user").await?;
+        Ok(())
+    }
+
+    // ===== Login As User API =====
+
+    /// Generate an access token to login as a specific user
+    /// POST /_synapse/admin/v1/users/{user_id}/login
+    pub async fn login_as_user(&self, user_id: &str) -> Result<PalpoLoginAsUserResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/users/{}/login", user_id);
+        let resp = self.post(&path, &()).await?;
+        let resp = Self::check_response(resp, "login_as_user").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse login response: {}", e)))
+    }
+
+    // ===== Third-Party ID API =====
+
+    /// Find user by third-party ID (email or phone)
+    /// GET /_synapse/admin/v1/threepid/{medium}/users/{address}
+    pub async fn find_user_by_threepid(&self, medium: &str, address: &str) -> Result<PalpoThreepidUserSearchResponse, AdminError> {
+        let path = format!("/_synapse/admin/v1/threepid/{}/users/{}", medium, address);
+        let resp = self.get(&path).await?;
+        let resp = Self::check_response(resp, "find_user_by_threepid").await?;
+        resp.json().await.map_err(|e| AdminError::MatrixApiError(format!("Failed to parse threepid search: {}", e)))
     }
 }

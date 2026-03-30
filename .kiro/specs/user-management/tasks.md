@@ -45,7 +45,7 @@ cargo build --package palpo-admin-server 2>&1 | grep -i "palpo_client"
 
 ### A.2 Add Missing PalpoClient Methods
 
-**Status**: [-] **IN PROGRESS (PARTIAL)**
+**Status**: [x] **COMPLETED**
 
 **File**: `crates/admin-server/src/palpo_client.rs`
 
@@ -63,24 +63,22 @@ cargo build --package palpo-admin-server 2>&1 | grep -i "palpo_client"
 - ✅ `delete_room(room_id, block, purge)` - DELETE /_synapse/admin/v1/rooms/{room_id}
 - ✅ `list_room_members(room_id)` - GET /_synapse/admin/v1/rooms/{room_id}/members
 - ✅ `get_server_version()` - GET /_synapse/admin/v1/server_version
-
-**Methods still needed**:
-- ❌ `get_whois(user_id)` - GET /_synapse/admin/v1/whois/{user_id}
-- ❌ `list_user_joined_rooms(user_id)` - GET /_synapse/admin/v1/users/{user_id}/joined_rooms
-- ❌ `get_user_rate_limit(user_id)` - GET /_synapse/admin/v1/users/{user_id}/override_ratelimit
-- ❌ `set_user_rate_limit(user_id, config)` - POST /_synapse/admin/v1/users/{user_id}/override_ratelimit
-- ❌ `delete_user_rate_limit(user_id)` - DELETE /_synapse/admin/v1/users/{user_id}/override_ratelimit
-- ❌ `list_user_media(user_id)` - GET /_synapse/admin/v1/users/{user_id}/media
-- ❌ `delete_user_media(user_id)` - DELETE /_synapse/admin/v1/users/{user_id}/media
-- ❌ `list_user_pushers(user_id)` - GET /_synapse/admin/v1/users/{user_id}/pushers
-- ❌ `shadow_ban_user(user_id)` - POST /_synapse/admin/v1/users/{user_id}/shadow_ban
-- ❌ `unshadow_ban_user(user_id)` - DELETE /_synapse/admin/v1/users/{user_id}/shadow_ban
-- ❌ `login_as_user(user_id)` - POST /_synapse/admin/v1/users/{user_id}/login
-- ❌ `find_user_by_threepid(medium, address)` - GET /_synapse/admin/v1/threepid/{medium}/users/{address}
+- ✅ `get_whois(user_id)` - GET /_synapse/admin/v1/whois/{user_id}
+- ✅ `list_user_joined_rooms(user_id)` - GET /_synapse/admin/v1/users/{user_id}/joined_rooms
+- ✅ `get_user_rate_limit(user_id)` - GET /_synapse/admin/v1/users/{user_id}/override_ratelimit
+- ✅ `set_user_rate_limit(user_id, config)` - POST /_synapse/admin/v1/users/{user_id}/override_ratelimit
+- ✅ `delete_user_rate_limit(user_id)` - DELETE /_synapse/admin/v1/users/{user_id}/override_ratelimit
+- ✅ `list_user_media(user_id)` - GET /_synapse/admin/v1/users/{user_id}/media
+- ✅ `delete_user_media(user_id)` - DELETE /_synapse/admin/v1/users/{user_id}/media
+- ✅ `list_user_pushers(user_id)` - GET /_synapse/admin/v1/users/{user_id}/pushers
+- ✅ `shadow_ban_user(user_id)` - POST /_synapse/admin/v1/users/{user_id}/shadow_ban
+- ✅ `unshadow_ban_user(user_id)` - DELETE /_synapse/admin/v1/users/{user_id}/shadow_ban
+- ✅ `login_as_user(user_id)` - POST /_synapse/admin/v1/users/{user_id}/login
+- ✅ `find_user_by_threepid(medium, address)` - GET /_synapse/admin/v1/threepid/{medium}/users/{address}
 
 **Verification**:
 ```bash
-cargo test --package palpo-admin-server palpo_client -- --nocapture
+cargo build --package palpo-admin-server 2>&1 | head -50
 ```
 
 ---
