@@ -2,6 +2,7 @@
 ///
 /// This module implements all user management API endpoints using Salvo framework.
 /// All endpoints require authentication via Bearer token.
+/// Uses PalpoClient to communicate with Palpo Matrix server via HTTP API.
 ///
 /// Endpoints:
 /// - POST /api/v1/users - Create a new user
@@ -22,9 +23,9 @@
 
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use crate::repositories::{DieselUserRepository, User, CreateUserInput, UpdateUserInput, UserFilter, UserDetails};
-use crate::user_repository::UserRepository;
+use std::sync::{Arc, OnceLock};
+
+use crate::palpo_client::{CreateOrUpdateUserRequest, ListUsersQuery, PalpoClient, PalpoUser};
 
 use super::auth_middleware::require_auth;
 use super::validation::{
@@ -87,8 +88,8 @@ pub struct LockStatusRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserResponse {
-    pub user_id: String,           // Matrix user ID (e.g., @user:localhost)
-    pub username: String,          // localpart (e.g., "user")
+    pub user_id: String,
+    pub username: String,
     pub displayname: Option<String>,
     pub avatar_url: Option<String>,
     pub is_admin: bool,
@@ -98,9 +99,31 @@ pub struct UserResponse {
     pub shadow_banned: bool,
     pub deactivated: bool,
     pub locked: bool,
-    #[serde(rename = "creation_ts")]
-    pub created_at: i64,
-    pub appservice_id: Option<String>,
+}
+
+impl UserResponse {
+    pub fn from_palpo_user(user: &PalpoUser, server_name: &str) -> Self {
+        let username = user.name
+            .trim_start_matches('@')
+            .split(':')
+            .next()
+            .unwrap_or(&user.name)
+            .to_string();
+
+        Self {
+            user_id: user.name.clone(),
+            username,
+            displayname: user.displayname.clone(),
+            avatar_url: user.avatar_url.clone(),
+            is_admin: user.admin,
+            is_guest: user.is_guest.unwrap_or(false),
+            is_local: user.name.ends_with(&format!(":{}", server_name)),
+            server_name: server_name.to_string(),
+            shadow_banned: user.shadow_banned,
+            deactivated: user.deactivated,
+            locked: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,24 +136,85 @@ pub struct UserListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserDetailsResponse {
-    pub user: UserResponse,
-    pub device_count: i64,
-    pub session_count: i64,
-    pub joined_room_count: i64,
+    pub user_id: String,
+    pub username: String,
+    pub displayname: Option<String>,
+    pub avatar_url: Option<String>,
+    pub is_admin: bool,
+    pub is_guest: bool,
+    pub is_local: bool,
+    pub server_name: String,
+    pub shadow_banned: bool,
+    pub deactivated: bool,
+    pub locked: bool,
+    pub creation_ts: Option<i64>,
+    pub threepids: Vec<ThreepidInfo>,
+    pub external_ids: Vec<ExternalIdInfo>,
+    pub user_type: Option<String>,
+    pub appservice_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreepidInfo {
+    pub medium: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalIdInfo {
+    pub auth_provider: String,
+    pub external_id: String,
+}
+
+impl UserDetailsResponse {
+    pub fn from_palpo_user(user: &PalpoUser, server_name: &str) -> Self {
+        let username = user.name
+            .trim_start_matches('@')
+            .split(':')
+            .next()
+            .unwrap_or(&user.name)
+            .to_string();
+
+        Self {
+            user_id: user.name.clone(),
+            username,
+            displayname: user.displayname.clone(),
+            avatar_url: user.avatar_url.clone(),
+            is_admin: user.admin,
+            is_guest: user.is_guest.unwrap_or(false),
+            is_local: user.name.ends_with(&format!(":{}", server_name)),
+            server_name: server_name.to_string(),
+            shadow_banned: user.shadow_banned,
+            deactivated: user.deactivated,
+            locked: false,
+            creation_ts: user.creation_ts,
+            threepids: user.threepids.iter().map(|t| ThreepidInfo {
+                medium: t.medium.clone(),
+                address: t.address.clone(),
+            }).collect(),
+            external_ids: user.external_ids.iter().map(|e| ExternalIdInfo {
+                auth_provider: e.auth_provider.clone(),
+                external_id: e.external_id.clone(),
+            }).collect(),
+            user_type: user.user_type.clone(),
+            appservice_id: user.appservice_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsernameAvailabilityResponse {
-    pub username: String,
     pub available: bool,
+    pub username: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserStatsResponse {
     pub total_users: i64,
-    pub admin_count: i64,
-    pub deactivated_count: i64,
-    pub active_count: i64,
+    pub active_users: i64,
+    pub inactive_users: i64,
+    pub admin_users: i64,
+    pub guest_users: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,38 +237,34 @@ pub struct LockStatusResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessResponse {
-    pub success: bool,
     pub message: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
 }
 
-// ===== Handler State =====
+// ===== State =====
 
-/// User handler state containing the repository
 #[derive(Clone, Debug)]
 pub struct UserHandlerState {
-    pub user_repo: Arc<DieselUserRepository>,
+    pub palpo_client: Arc<PalpoClient>,
+    pub server_name: String,
 }
 
 impl UserHandlerState {
-    pub fn new(user_repo: Arc<DieselUserRepository>) -> Self {
-        Self { user_repo }
+    pub fn new(palpo_client: Arc<PalpoClient>, server_name: String) -> Self {
+        Self { palpo_client, server_name }
     }
 }
 
-/// Global user handler state
-static USER_HANDLER_STATE: std::sync::OnceLock<UserHandlerState> = std::sync::OnceLock::new();
+static USER_HANDLER_STATE: OnceLock<UserHandlerState> = OnceLock::new();
 
-/// Initialize the global user handler state
 pub fn init_user_handler_state(state: UserHandlerState) {
     USER_HANDLER_STATE.set(state).expect("User handler state already initialized");
 }
 
-/// Get the global user handler state
 fn get_user_handler_state() -> &'static UserHandlerState {
     USER_HANDLER_STATE.get().expect("User handler state not initialized")
 }
@@ -207,7 +287,6 @@ pub async fn create_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
         }
     };
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&body.user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -215,7 +294,6 @@ pub async fn create_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
         return;
     }
 
-    // Validate displayname if provided
     if let Err(e) = validate_displayname(body.displayname.as_deref()) {
         tracing::warn!("Invalid displayname: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -223,21 +301,19 @@ pub async fn create_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
         return;
     }
 
-    let input = CreateUserInput {
-        user_id: body.user_id,
+    let create_req = CreateOrUpdateUserRequest {
         displayname: body.displayname,
         avatar_url: body.avatar_url,
-        is_admin: body.is_admin,
-        is_guest: body.is_guest,
+        admin: Some(body.is_admin),
         user_type: body.user_type,
-        appservice_id: body.appservice_id,
+        ..Default::default()
     };
 
-    match state.user_repo.create_user(&input).await {
+    match state.palpo_client.create_or_update_user(&body.user_id, &create_req).await {
         Ok(user) => {
-            tracing::info!("Created user: {}", user.id);
+            tracing::info!("Created user: {}", user.name);
             res.status_code(StatusCode::CREATED);
-            res.render(Json(UserResponse::from(&user)));
+            res.render(Json(UserResponse::from_palpo_user(&user, &state.server_name)));
         }
         Err(e) => {
             tracing::error!("Failed to create user: {}", e);
@@ -255,7 +331,6 @@ pub async fn list_users(req: &mut Request, depot: &mut Depot, res: &mut Response
     let state = get_user_handler_state();
     let query = req.parse_queries::<UserListQuery>().unwrap_or_default();
 
-    // Validate pagination parameters
     let limit = match validate_limit(query.limit) {
         Ok(l) => l,
         Err(e) => {
@@ -276,21 +351,23 @@ pub async fn list_users(req: &mut Request, depot: &mut Depot, res: &mut Response
         }
     };
 
-    let filter = UserFilter {
-        is_admin: query.is_admin,
-        is_deactivated: query.is_deactivated,
-        shadow_banned: query.shadow_banned,
-        search_term: query.search,
+    let list_query = ListUsersQuery {
+        from: Some(offset),
         limit: Some(limit),
-        offset: Some(offset),
+        search_term: query.search.clone(),
+        admins: query.is_admin,
+        deactivated: query.is_deactivated,
+        ..Default::default()
     };
 
-    match state.user_repo.list_users(&filter).await {
+    match state.palpo_client.list_users(&list_query).await {
         Ok(result) => {
-            let users: Vec<UserResponse> = result.users.iter().map(UserResponse::from).collect();
+            let users: Vec<UserResponse> = result.users.iter()
+                .map(|u| UserResponse::from_palpo_user(&u, &state.server_name))
+                .collect();
             res.render(Json(UserListResponse {
                 users,
-                total_count: result.total_count,
+                total_count: result.total,
                 limit,
                 offset,
             }));
@@ -311,7 +388,6 @@ pub async fn get_user(req: &mut Request, depot: &mut Depot, res: &mut Response) 
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -319,13 +395,9 @@ pub async fn get_user(req: &mut Request, depot: &mut Depot, res: &mut Response) 
         return;
     }
 
-    match state.user_repo.get_user(&user_id).await {
-        Ok(Some(user)) => {
-            res.render(Json(UserResponse::from(&user)));
-        }
-        Ok(None) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            res.render(Json(ErrorResponse { error: format!("User not found: {}", user_id) }));
+    match state.palpo_client.get_user(&user_id).await {
+        Ok(user) => {
+            res.render(Json(UserResponse::from_palpo_user(&user, &state.server_name)));
         }
         Err(e) => {
             tracing::error!("Failed to get user: {}", e);
@@ -343,7 +415,6 @@ pub async fn get_user_details(req: &mut Request, depot: &mut Depot, res: &mut Re
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -351,13 +422,9 @@ pub async fn get_user_details(req: &mut Request, depot: &mut Depot, res: &mut Re
         return;
     }
 
-    match state.user_repo.get_user_details(&user_id).await {
-        Ok(Some(details)) => {
-            res.render(Json(UserDetailsResponse::from(&details)));
-        }
-        Ok(None) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            res.render(Json(ErrorResponse { error: format!("User not found: {}", user_id) }));
+    match state.palpo_client.get_user(&user_id).await {
+        Ok(user) => {
+            res.render(Json(UserDetailsResponse::from_palpo_user(&user, &state.server_name)));
         }
         Err(e) => {
             tracing::error!("Failed to get user details: {}", e);
@@ -375,7 +442,6 @@ pub async fn update_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -393,7 +459,6 @@ pub async fn update_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
         }
     };
 
-    // Validate displayname if provided
     if let Err(e) = validate_displayname(body.displayname.as_deref()) {
         tracing::warn!("Invalid displayname: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -401,17 +466,18 @@ pub async fn update_user(req: &mut Request, depot: &mut Depot, res: &mut Respons
         return;
     }
 
-    let input = UpdateUserInput {
+    let update_req = CreateOrUpdateUserRequest {
         displayname: body.displayname,
         avatar_url: body.avatar_url,
-        is_admin: body.is_admin,
+        admin: body.is_admin,
         user_type: body.user_type,
+        ..Default::default()
     };
 
-    match state.user_repo.update_user(&user_id, &input).await {
+    match state.palpo_client.create_or_update_user(&user_id, &update_req).await {
         Ok(user) => {
-            tracing::info!("Updated user: {}", user.id);
-            res.render(Json(UserResponse::from(&user)));
+            tracing::info!("Updated user: {}", user.name);
+            res.render(Json(UserResponse::from_palpo_user(&user, &state.server_name)));
         }
         Err(e) => {
             tracing::error!("Failed to update user: {}", e);
@@ -429,7 +495,6 @@ pub async fn deactivate_user(req: &mut Request, depot: &mut Depot, res: &mut Res
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -439,7 +504,7 @@ pub async fn deactivate_user(req: &mut Request, depot: &mut Depot, res: &mut Res
 
     let body = req.parse_json::<DeactivateUserRequest>().await.unwrap_or(DeactivateUserRequest { erase: false });
 
-    if let Err(e) = state.user_repo.deactivate_user(&user_id, body.erase).await {
+    if let Err(e) = state.palpo_client.deactivate_user(&user_id, body.erase).await {
         tracing::error!("Failed to deactivate user: {}", e);
         res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
         res.render(Json(ErrorResponse { error: "Failed to deactivate user".to_string() }));
@@ -448,12 +513,11 @@ pub async fn deactivate_user(req: &mut Request, depot: &mut Depot, res: &mut Res
 
     tracing::info!("Deactivated user: {} (erase: {})", user_id, body.erase);
     res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("User {} deactivated successfully", user_id),
+        message: format!("User {} deactivated", user_id),
     }));
 }
 
-/// POST /api/v1/users/{user_id}/reactivate - Reactivate user
+/// POST /api/v1/users/{user_id}/reactivate - Reactivate deactivated user
 #[handler]
 pub async fn reactivate_user(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     if !require_auth(depot, res) { return; }
@@ -461,7 +525,6 @@ pub async fn reactivate_user(req: &mut Request, depot: &mut Depot, res: &mut Res
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -469,18 +532,29 @@ pub async fn reactivate_user(req: &mut Request, depot: &mut Depot, res: &mut Res
         return;
     }
 
-    if let Err(e) = state.user_repo.reactivate_user(&user_id).await {
-        tracing::error!("Failed to reactivate user: {}", e);
-        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-        res.render(Json(ErrorResponse { error: "Failed to reactivate user".to_string() }));
-        return;
-    }
+    // Reactivation is done by creating/updating the user with empty password
+    let reactivate_req = CreateOrUpdateUserRequest {
+        displayname: None,
+        avatar_url: None,
+        admin: None,
+        user_type: None,
+        password: Some("".to_string()),
+        ..Default::default()
+    };
 
-    tracing::info!("Reactivated user: {}", user_id);
-    res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("User {} reactivated successfully", user_id),
-    }));
+    match state.palpo_client.create_or_update_user(&user_id, &reactivate_req).await {
+        Ok(_) => {
+            tracing::info!("Reactivated user: {}", user_id);
+            res.render(Json(SuccessResponse {
+                message: format!("User {} reactivated", user_id),
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to reactivate user: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to reactivate user".to_string() }));
+        }
+    }
 }
 
 /// GET /api/v1/users/username-available/{username} - Check username availability
@@ -491,7 +565,6 @@ pub async fn check_username_available(req: &mut Request, depot: &mut Depot, res:
     let state = get_user_handler_state();
     let username = req.param::<String>("username").unwrap_or_default();
 
-    // Validate username format
     if let Err(e) = validate_username(&username) {
         tracing::warn!("Invalid username format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -499,14 +572,31 @@ pub async fn check_username_available(req: &mut Request, depot: &mut Depot, res:
         return;
     }
 
-    match state.user_repo.is_username_available(&username).await {
-        Ok(available) => {
-            res.render(Json(UsernameAvailabilityResponse { username, available }));
+    // Construct full user_id
+    let user_id = format!("@{}:{}", username, state.server_name);
+
+    match state.palpo_client.get_user(&user_id).await {
+        Ok(_) => {
+            // User exists, so username is not available
+            res.render(Json(UsernameAvailabilityResponse {
+                available: false,
+                username,
+            }));
         }
         Err(e) => {
-            tracing::error!("Failed to check username: {}", e);
-            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            res.render(Json(ErrorResponse { error: "Failed to check username".to_string() }));
+            // Check if it's a 404 error by looking at the message
+            let err_msg = e.to_string();
+            if err_msg.contains("404") || err_msg.contains("not found") || err_msg.contains("User not found") {
+                // User doesn't exist, username is available
+                res.render(Json(UsernameAvailabilityResponse {
+                    available: true,
+                    username,
+                }));
+            } else {
+                tracing::error!("Failed to check username availability: {}", e);
+                res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                res.render(Json(ErrorResponse { error: "Failed to check username availability".to_string() }));
+            }
         }
     }
 }
@@ -519,7 +609,6 @@ pub async fn get_admin_status(req: &mut Request, depot: &mut Depot, res: &mut Re
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -527,13 +616,12 @@ pub async fn get_admin_status(req: &mut Request, depot: &mut Depot, res: &mut Re
         return;
     }
 
-    match state.user_repo.get_user(&user_id).await {
-        Ok(Some(user)) => {
-            res.render(Json(AdminStatusResponse { user_id: user.id, is_admin: user.is_admin }));
-        }
-        Ok(None) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            res.render(Json(ErrorResponse { error: format!("User not found: {}", user_id) }));
+    match state.palpo_client.get_user(&user_id).await {
+        Ok(user) => {
+            res.render(Json(AdminStatusResponse {
+                user_id: user.name,
+                is_admin: user.admin,
+            }));
         }
         Err(e) => {
             tracing::error!("Failed to get admin status: {}", e);
@@ -551,7 +639,6 @@ pub async fn set_admin_status(req: &mut Request, depot: &mut Depot, res: &mut Re
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -559,20 +646,40 @@ pub async fn set_admin_status(req: &mut Request, depot: &mut Depot, res: &mut Re
         return;
     }
 
-    let body = req.parse_json::<AdminStatusRequest>().await.unwrap_or(AdminStatusRequest { is_admin: false });
+    let body = match req.parse_json::<AdminStatusRequest>().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Invalid admin status request: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse { error: "Invalid request body".to_string() }));
+            return;
+        }
+    };
 
-    if let Err(e) = state.user_repo.set_admin_status(&user_id, body.is_admin).await {
-        tracing::error!("Failed to set admin status: {}", e);
-        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-        res.render(Json(ErrorResponse { error: "Failed to set admin status".to_string() }));
-        return;
+    // Get current user and update admin status
+    let update_req = CreateOrUpdateUserRequest {
+        displayname: None,
+        avatar_url: None,
+        admin: Some(body.is_admin),
+        user_type: None,
+        password: None,
+        ..Default::default()
+    };
+
+    match state.palpo_client.create_or_update_user(&user_id, &update_req).await {
+        Ok(user) => {
+            tracing::info!("Set admin status for user: {} -> {}", user.name, body.is_admin);
+            res.render(Json(AdminStatusResponse {
+                user_id: user.name,
+                is_admin: user.admin,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to set admin status: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to set admin status".to_string() }));
+        }
     }
-
-    tracing::info!("Set admin status for {}: {}", user_id, body.is_admin);
-    res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("Admin status set to {} for user {}", body.is_admin, user_id),
-    }));
 }
 
 /// GET /api/v1/users/{user_id}/shadow-ban - Get shadow ban status
@@ -583,7 +690,6 @@ pub async fn get_shadow_banned(req: &mut Request, depot: &mut Depot, res: &mut R
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -591,13 +697,12 @@ pub async fn get_shadow_banned(req: &mut Request, depot: &mut Depot, res: &mut R
         return;
     }
 
-    match state.user_repo.get_user(&user_id).await {
-        Ok(Some(user)) => {
-            res.render(Json(ShadowBanStatusResponse { user_id, shadow_banned: user.shadow_banned }));
-        }
-        Ok(None) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            res.render(Json(ErrorResponse { error: format!("User not found: {}", user_id) }));
+    match state.palpo_client.get_user(&user_id).await {
+        Ok(user) => {
+            res.render(Json(ShadowBanStatusResponse {
+                user_id: user.name,
+                shadow_banned: user.shadow_banned,
+            }));
         }
         Err(e) => {
             tracing::error!("Failed to get shadow ban status: {}", e);
@@ -615,7 +720,6 @@ pub async fn set_shadow_banned(req: &mut Request, depot: &mut Depot, res: &mut R
     let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -623,31 +727,46 @@ pub async fn set_shadow_banned(req: &mut Request, depot: &mut Depot, res: &mut R
         return;
     }
 
-    let body = req.parse_json::<ShadowBanRequest>().await.unwrap_or(ShadowBanRequest { shadow_banned: false });
+    let body = match req.parse_json::<ShadowBanRequest>().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Invalid shadow ban request: {}", e);
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(ErrorResponse { error: "Invalid request body".to_string() }));
+            return;
+        }
+    };
 
-    if let Err(e) = state.user_repo.set_shadow_banned(&user_id, body.shadow_banned).await {
-        tracing::error!("Failed to set shadow ban: {}", e);
-        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-        res.render(Json(ErrorResponse { error: "Failed to set shadow ban".to_string() }));
-        return;
+    let result = if body.shadow_banned {
+        state.palpo_client.shadow_ban_user(&user_id).await
+    } else {
+        state.palpo_client.unshadow_ban_user(&user_id).await
+    };
+
+    match result {
+        Ok(_) => {
+            tracing::info!("Set shadow ban for user: {} -> {}", user_id, body.shadow_banned);
+            res.render(Json(ShadowBanStatusResponse {
+                user_id,
+                shadow_banned: body.shadow_banned,
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to set shadow ban: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to set shadow ban".to_string() }));
+        }
     }
-
-    tracing::info!("Set shadow ban for {}: {}", user_id, body.shadow_banned);
-    res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("Shadow ban set to {} for user {}", body.shadow_banned, user_id),
-    }));
 }
 
 /// GET /api/v1/users/{user_id}/locked - Get locked status
+/// NOTE: Locked status is not directly available in Palpo API, always returns false
 #[handler]
 pub async fn get_locked(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     if !require_auth(depot, res) { return; }
 
-    let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -655,32 +774,21 @@ pub async fn get_locked(req: &mut Request, depot: &mut Depot, res: &mut Response
         return;
     }
 
-    match state.user_repo.get_user(&user_id).await {
-        Ok(Some(user)) => {
-            let locked = user.locked_at.is_some();
-            res.render(Json(LockStatusResponse { user_id, locked }));
-        }
-        Ok(None) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            res.render(Json(ErrorResponse { error: format!("User not found: {}", user_id) }));
-        }
-        Err(e) => {
-            tracing::error!("Failed to get locked status: {}", e);
-            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            res.render(Json(ErrorResponse { error: "Failed to get locked status".to_string() }));
-        }
-    }
+    // Palpo API doesn't support locked status, always return false
+    res.render(Json(LockStatusResponse {
+        user_id,
+        locked: false,
+    }));
 }
 
 /// PUT /api/v1/users/{user_id}/locked - Set locked status
+/// NOTE: Locked status is not directly available in Palpo API
 #[handler]
 pub async fn set_locked(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     if !require_auth(depot, res) { return; }
 
-    let state = get_user_handler_state();
     let user_id = req.param::<String>("user_id").unwrap_or_default();
 
-    // Validate user_id format
     if let Err(e) = validate_user_id(&user_id) {
         tracing::warn!("Invalid user_id format: {}", e);
         res.status_code(StatusCode::BAD_REQUEST);
@@ -688,19 +796,10 @@ pub async fn set_locked(req: &mut Request, depot: &mut Depot, res: &mut Response
         return;
     }
 
-    let body = req.parse_json::<LockStatusRequest>().await.unwrap_or(LockStatusRequest { locked: false });
-
-    if let Err(e) = state.user_repo.set_locked(&user_id, body.locked).await {
-        tracing::error!("Failed to set locked status: {}", e);
-        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-        res.render(Json(ErrorResponse { error: "Failed to set locked status".to_string() }));
-        return;
-    }
-
-    tracing::info!("Set locked status for {}: {}", user_id, body.locked);
-    res.render(Json(SuccessResponse {
-        success: true,
-        message: format!("Locked status set to {} for user {}", body.locked, user_id),
+    // Palpo API doesn't support locked status
+    res.status_code(StatusCode::NOT_IMPLEMENTED);
+    res.render(Json(ErrorResponse { 
+        error: "Locked status is not supported by Palpo server".to_string() 
     }));
 }
 
@@ -710,59 +809,34 @@ pub async fn get_user_stats(depot: &mut Depot, res: &mut Response) {
     if !require_auth(depot, res) { return; }
 
     let state = get_user_handler_state();
-    let total = match state.user_repo.get_user_count().await {
-        Ok(c) => c,
+
+    // Get all users to calculate stats
+    let list_query = ListUsersQuery {
+        from: Some(0),
+        limit: Some(1000),
+        ..Default::default()
+    };
+
+    match state.palpo_client.list_users(&list_query).await {
+        Ok(result) => {
+            let total = result.total;
+            let active = result.users.iter().filter(|u| !u.deactivated).count() as i64;
+            let inactive = result.users.iter().filter(|u| u.deactivated).count() as i64;
+            let admins = result.users.iter().filter(|u| u.admin).count() as i64;
+            let guests = result.users.iter().filter(|u| u.is_guest.unwrap_or(false)).count() as i64;
+
+            res.render(Json(UserStatsResponse {
+                total_users: total,
+                active_users: active,
+                inactive_users: inactive,
+                admin_users: admins,
+                guest_users: guests,
+            }));
+        }
         Err(e) => {
-            tracing::error!("Failed to get user count: {}", e);
-            0
-        }
-    };
-    let admins = match state.user_repo.get_admin_count().await {
-        Ok(c) => c,
-        Err(_) => 0
-    };
-    let deactivated = match state.user_repo.get_deactivated_count().await {
-        Ok(c) => c,
-        Err(_) => 0
-    };
-
-    res.render(Json(UserStatsResponse {
-        total_users: total,
-        admin_count: admins,
-        deactivated_count: deactivated,
-        active_count: total - deactivated,
-    }));
-}
-
-// ===== Conversion Implementations =====
-
-impl From<&User> for UserResponse {
-    fn from(user: &User) -> Self {
-        UserResponse {
-            user_id: user.id.clone(),
-            username: user.localpart.clone(),
-            displayname: None, // Palpo schema doesn't have displayname
-            avatar_url: None,  // Palpo schema doesn't have avatar_url
-            is_admin: user.is_admin,
-            is_guest: user.is_guest,
-            is_local: user.is_local,
-            server_name: user.server_name.clone(),
-            shadow_banned: user.shadow_banned,
-            deactivated: user.deactivated_at.is_some(),
-            locked: user.locked_at.is_some(),
-            created_at: user.created_at,
-            appservice_id: user.appservice_id.clone(),
-        }
-    }
-}
-
-impl From<&UserDetails> for UserDetailsResponse {
-    fn from(details: &UserDetails) -> Self {
-        UserDetailsResponse {
-            user: UserResponse::from(&details.user),
-            device_count: details.device_count,
-            session_count: details.session_count,
-            joined_room_count: details.joined_room_count,
+            tracing::error!("Failed to get user stats: {}", e);
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(ErrorResponse { error: "Failed to get user stats".to_string() }));
         }
     }
 }

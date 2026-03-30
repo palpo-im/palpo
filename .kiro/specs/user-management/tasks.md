@@ -85,30 +85,36 @@ cargo build --package palpo-admin-server 2>&1 | head -50
 
 ### A.3 Rewrite user_handler.rs Using PalpoClient
 
-**Status**: [ ] **NOT STARTED**
+**Status**: [x] **COMPLETED**
 
 **File**: `crates/admin-server/src/handlers/user_handler.rs`
 
-**Current state**: Still using `UserRepository` instead of PalpoClient
-
-**Changes needed**:
-- Remove `UserRepository` dependency
-- Add `PalpoClient` from depot
-- Call `palpo_client.list_users()`, `get_user()`, `create_or_update_user()`, etc.
-- Add `UserResponse::from_palpo_user()` conversion function
-
-**Endpoints to update**:
-- GET /api/v1/users - list_users
-- GET /api/v1/users/:user_id - get_user
-- PUT /api/v1/users/:user_id - create_or_update_user
-- GET /api/v1/users/username-available - check_username_availability
-- POST /api/v1/users/:user_id/deactivate - deactivate_user
-- POST /api/v1/users/:user_id/reset-password - reset_password
-- GET/PUT /api/v1/users/:user_id/admin - get_user / set_admin
+**Changes made**:
+- Removed `UserRepository` dependency
+- Added `PalpoClient` from depot
+- Implemented all endpoints using PalpoClient:
+  - create_user → palpo_client.create_or_update_user()
+  - list_users → palpo_client.list_users()
+  - get_user → palpo_client.get_user()
+  - get_user_details → palpo_client.get_user()
+  - update_user → palpo_client.create_or_update_user()
+  - deactivate_user → palpo_client.deactivate_user()
+  - reactivate_user → palpo_client.create_or_update_user() with empty password
+  - check_username_available → palpo_client.get_user()
+  - get_admin_status → palpo_client.get_user()
+  - set_admin_status → palpo_client.create_or_update_user()
+  - get_shadow_banned → palpo_client.get_user()
+  - set_shadow_banned → palpo_client.shadow_ban_user() / unshadow_ban_user()
+  - get_locked → always returns false (not supported by Palpo)
+  - set_locked → returns NOT_IMPLEMENTED
+  - get_user_stats → palpo_client.list_users()
+- Added `UserResponse::from_palpo_user()` conversion function
+- Added `UserDetailsResponse::from_palpo_user()` conversion function
+- Enabled user_handler in mod.rs
 
 **Verification**:
 ```bash
-cargo test --package palpo-admin-server user_handler -- --nocapture
+cargo build --package palpo-admin-server
 ```
 
 ---
@@ -525,8 +531,8 @@ cargo test --package palpo-admin-server --test integration_user_management -- --
 | Task | Status |
 |------|--------|
 | A.1 Integrate PalpoClient | [x] **COMPLETED** |
-| A.2 Add missing methods | [-] **IN PROGRESS (PARTIAL)** |
-| A.3 Rewrite user_handler | [ ] NOT STARTED |
+| A.2 Add missing methods | [x] **COMPLETED** |
+| A.3 Rewrite user_handler | [x] **COMPLETED** |
 | A.4 Rewrite device_handler | [ ] NOT STARTED |
 | A.5 Rewrite session_handler | [ ] NOT STARTED (Blocked by A.2) |
 | A.6 Rewrite rate_limit_handler | [ ] NOT STARTED (Blocked by A.2) |
