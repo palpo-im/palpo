@@ -21,9 +21,19 @@ pub fn router() -> Router {
             .push(
                 Router::with_path("query")
                     .post(query_keys_batch)
-                    .push(Router::with_path("{server_name}").get(query_keys_from_server)),
+                    .push(
+                        Router::with_path("{server_name}")
+                            .get(query_keys_from_server)
+                            // Deprecated: /_matrix/key/v2/query/{serverName}/{keyId}
+                            .push(Router::with_path("{key_id}").get(query_keys_from_server)),
+                    ),
             )
-            .push(Router::with_path("server").get(server_signing_keys)),
+            .push(
+                Router::with_path("server")
+                    .get(server_signing_keys)
+                    // Deprecated: /_matrix/key/v2/server/{keyId}
+                    .push(Router::with_path("{key_id}").get(server_signing_keys)),
+            ),
     )
 }
 

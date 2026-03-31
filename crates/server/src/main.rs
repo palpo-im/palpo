@@ -136,6 +136,9 @@ pub(crate) struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Install rustls CryptoProvider for TLS (federation + outbound HTTPS)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     if dotenvy::from_filename(".env.local").is_err() {
         tracing::debug!(".env.local file is not found");
     }

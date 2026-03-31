@@ -550,6 +550,11 @@ pub async fn send_federation_request(
     request: reqwest::Request,
     timeout_secs: Option<u64>,
 ) -> AppResult<reqwest::Response> {
+    if !crate::config::get().federation.is_server_allowed(destination) {
+        return Err(AppError::public(format!(
+            "Federation with server {destination} is not allowed by policy"
+        )));
+    }
     debug!("waiting for permit");
     let max_request = max_request();
     let permit = max_request.acquire().await;
@@ -854,13 +859,24 @@ pub fn convert_to_outgoing_federation_event(
 
     // Determine room version to decide whether to strip event_id.
     // V1/V2 require event_id in federation format; V3+ derive it from content hash.
-    let room_version = pdu_json
+    // On lookup failure, keep event_id — safe for all versions (V3+ receivers ignore it),
+    // but stripping it on V1/V2 would produce malformed events.
+    match pdu_json
         .get("room_id")
         .and_then(|v| v.as_str())
         .and_then(|r| <&RoomId>::try_from(r).ok())
         .and_then(|r| crate::room::get_version(r).ok())
-        .unwrap_or(RoomVersionId::V11);
-    crate::federation::maybe_strip_event_id(&mut pdu_json, &room_version);
+    {
+        Some(room_version) => {
+            crate::federation::maybe_strip_event_id(&mut pdu_json, &room_version);
+        }
+        None => {
+            warn!(
+                room_id = ?pdu_json.get("room_id"),
+                "room version lookup failed, keeping event_id to avoid V1/V2 breakage"
+            );
+        }
+    }
 
     pdu_json.remove("event_sn");
 
@@ -872,6 +888,10 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
         .pool_max_idle_per_host(0)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60 * 3));
+
+    if config.allow_invalid_tls_certificates {
+        reqwest_client_builder = reqwest_client_builder.danger_accept_invalid_certs(true);
+    }
 
     if let Some(ref proxy_config) = config.proxy {
         if let Some(proxy) = proxy_config.to_proxy()? {

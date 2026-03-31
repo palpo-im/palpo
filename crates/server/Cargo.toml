@@ -143,6 +143,7 @@ reqwest = { workspace = true, features = ["json"] }
 reqwest-middleware = { workspace = true }
 reqwest-retry = { workspace = true }
 ring = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rust-argon2 = { workspace = true }
 salvo = { workspace = true, features = [
     "compression",

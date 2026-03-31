@@ -39,7 +39,9 @@ fn merge_signing_keys_for_storage(
 
     keys.verify_keys.extend(new_keys.verify_keys);
     keys.old_verify_keys.extend(new_keys.old_verify_keys);
-    keys.signatures.extend(new_keys.signatures);
+    for (server, new_sigs) in new_keys.signatures {
+        keys.signatures.entry(server).or_default().extend(new_sigs);
+    }
     keys.valid_until_ts = keys.valid_until_ts.max(new_keys.valid_until_ts);
 
     keys
@@ -345,5 +347,26 @@ mod tests {
         assert!(merged.old_verify_keys.contains_key(&retired_key_id));
         assert!(merged.signatures.contains_key(&old_notary));
         assert!(merged.signatures.contains_key(&new_notary));
+    }
+
+    #[test]
+    fn merge_signatures_from_same_server_retains_all_key_ids() {
+        let server_name = OwnedServerName::try_from("remote.example").unwrap();
+        let notary = "notary.example";
+
+        let mut existing = ServerSigningKeys::new(server_name.clone(), UnixMillis(100));
+        existing.signatures = signatures(notary, "ed25519:key1", "sig-a");
+
+        let mut new_keys = ServerSigningKeys::new(server_name.clone(), UnixMillis(200));
+        new_keys.signatures = signatures(notary, "ed25519:key2", "sig-b");
+
+        let merged = merge_signing_keys_for_storage(Some(existing), new_keys);
+
+        let notary_sigs = &merged.signatures[&OwnedServerName::try_from(notary).unwrap()];
+        assert_eq!(notary_sigs.len(), 2, "both key IDs from the same server must be retained");
+        let key1: OwnedServerSigningKeyId = "ed25519:key1".try_into().unwrap();
+        let key2: OwnedServerSigningKeyId = "ed25519:key2".try_into().unwrap();
+        assert_eq!(notary_sigs[&key1], "sig-a");
+        assert_eq!(notary_sigs[&key2], "sig-b");
     }
 }

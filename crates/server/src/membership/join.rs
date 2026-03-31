@@ -200,8 +200,14 @@ pub async fn join_room(
 
     // It has enough fields to be called a proper event now
     let mut join_event = join_event_stub;
+
+    // Strip event_id for V3+ rooms before converting to federation wire format.
+    // We must do this here because convert_to_outgoing_federation_event cannot look
+    // up the room version — this room isn't in our DB yet during a federation join.
+    let mut outgoing = join_event.clone();
+    maybe_strip_event_id(&mut outgoing, &room_version);
     let body = SendJoinReqBody(crate::sending::convert_to_outgoing_federation_event(
-        join_event.clone(),
+        outgoing,
     ));
     info!("asking {remote_server} for send_join");
     let send_join_request = crate::core::federation::membership::send_join_request(
