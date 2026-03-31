@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use diesel::prelude::*;
 use indexmap::IndexMap;
@@ -29,6 +30,7 @@ use crate::event::{
     PduBuilder, PduEvent, ensure_event_sn, gen_event_id_canonical_json, parse_fetched_pdu,
 };
 use crate::federation::maybe_strip_event_id;
+use crate::room::state::{CompressedEvent, DeltaInfo};
 use crate::room::{state, timeline};
 use crate::sending::send_edu_server;
 use crate::{
@@ -429,28 +431,24 @@ pub async fn join_room(
     //     return Err(MatrixError::invalid_param("Auth check failed when running send_json auth
     // check").into()); }
 
-    // info!("saving state from send_join");
-    // let DeltaInfo {
-    //     frame_id,
-    //     appended,
-    //     disposed,
-    // } = state::save_state(
-    //     room_id,
-    //     Arc::new(
-    //         state
-    //             .into_iter()
-    //             .map(|(k, (_event_id, event_sn))| Ok(CompressedEvent::new(k, event_sn)))
-    //             .collect::<AppResult<_>>()?,
-    //     ),
-    // )?;
-
-    // state::force_state(room_id, frame_id, appended, disposed)?;
-
-    // info!("Updating joined counts for new room");
-    // room::update_joined_servers(room_id)?;
-    // room::update_currents(room_id)?;
-
     let state_lock = room::lock_state(room_id).await;
+
+    info!("saving state from send_join");
+    let DeltaInfo {
+        frame_id,
+        appended,
+        disposed,
+    } = state::save_state(
+        room_id,
+        Arc::new(
+            state
+                .into_iter()
+                .map(|(k, (_event_id, event_sn))| Ok(CompressedEvent::new(k, event_sn)))
+                .collect::<AppResult<_>>()?,
+        ),
+    )?;
+
+    state::force_state(room_id, frame_id, appended, disposed)?;
     info!("appending new room join event");
     diesel::insert_into(events::table)
         .values(NewDbEvent::from_canonical_json(
