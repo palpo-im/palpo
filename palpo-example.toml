@@ -810,6 +810,17 @@
 #
 # allow_inbound_profile_lookup =
 
+# Allowlist of servers permitted to federate. If set, only servers
+# matching these patterns can communicate. Supports wildcards: `*.example.com`.
+# When `None`, all servers are allowed (subject to `denied_servers`).
+#
+# allowed_servers = false
+
+# Denylist of servers blocked from federation. Takes precedence over
+# `allowed_servers`. Supports wildcards: `*.evil.com`.
+#
+# denied_servers = false
+
 # [client]
 
 # Well-known resolution connection timeout.

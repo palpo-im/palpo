@@ -20,9 +20,7 @@ use salvo::prelude::*;
 
 use crate::core::directory::Server;
 use crate::core::federation::directory::ServerVersionResBody;
-use crate::{
-    AppError, AppResult, AuthArgs, EmptyResult, JsonResult, config, empty_ok, hoops, json_ok,
-};
+use crate::{AppError, AppResult, AuthArgs, JsonResult, config, hoops, json_ok};
 
 pub fn router() -> Router {
     Router::with_path("federation")
@@ -72,9 +70,10 @@ async fn check_federation_enabled() -> AppResult<()> {
 }
 
 #[endpoint]
-async fn get_versions(_aa: AuthArgs) -> EmptyResult {
-    // TODO: https://github.com/matrix-org/matrix-spec-proposals/pull/3723
-    empty_ok()
+async fn get_versions(_aa: AuthArgs) -> JsonResult<serde_json::Value> {
+    json_ok(serde_json::json!({
+        "versions": ["v1"]
+    }))
 }
 /// #GET /_matrix/federation/v1/version
 /// Get version information on this server.

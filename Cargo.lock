@@ -3696,6 +3696,7 @@ dependencies = [
  "reqwest-retry",
  "ring",
  "rust-argon2",
+ "rustls",
  "rustyline-async",
  "salvo",
  "sanitize-filename",

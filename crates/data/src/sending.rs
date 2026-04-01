@@ -65,7 +65,16 @@ pub fn get_destination_rooms(server: &ServerName) -> DataResult<Vec<OwnedRoomId>
 }
 
 /// Reset retry timings for a destination
-pub fn reset_destination_retry(_server: &ServerName) -> DataResult<()> {
-    // TODO: Implement retry timing reset when retry tracking is added
+pub fn reset_destination_retry(server: &ServerName) -> DataResult<()> {
+    diesel::update(
+        outgoing_requests::table
+            .filter(outgoing_requests::kind.eq("normal"))
+            .filter(outgoing_requests::server_id.eq(server.as_str())),
+    )
+    .set((
+        outgoing_requests::retry_count.eq(0),
+        outgoing_requests::last_failed_at.eq(None::<i64>),
+    ))
+    .execute(&mut connect()?)?;
     Ok(())
 }
