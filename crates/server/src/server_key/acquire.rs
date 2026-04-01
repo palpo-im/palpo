@@ -7,7 +7,7 @@ use futures_util::stream::FuturesUnordered;
 use tokio::time::{Instant, timeout_at};
 
 use super::{
-    add_signing_keys, batch_notary_request, key_exists, server_request, verify_key_exists,
+    add_signing_keys, batch_notary_request, key_exists, server_request, verify_keys_for,
 };
 use crate::config;
 use crate::core::federation::discovery::ServerSigningKeys;
@@ -118,17 +118,27 @@ where
 {
     let mut missing = Batch::new();
     for (server, key_ids) in batch {
-        for key_id in key_ids {
-            if !verify_key_exists(server, key_id).unwrap_or(false) {
-                missing
-                    .entry(server.into())
-                    .or_default()
-                    .push(key_id.into());
-            }
+        let available_keys = verify_keys_for(server);
+        let missing_key_ids = missing_local_key_ids(&available_keys, key_ids);
+        if !missing_key_ids.is_empty() {
+            missing.insert(server.into(), missing_key_ids);
         }
     }
 
     missing
+}
+
+fn missing_local_key_ids<'a, K>(
+    available_keys: &super::VerifyKeys,
+    key_ids: K,
+) -> Vec<OwnedServerSigningKeyId>
+where
+    K: Iterator<Item = &'a ServerSigningKeyId>,
+{
+    key_ids
+        .filter(|key_id| !available_keys.contains_key(*key_id))
+        .map(Into::into)
+        .collect()
 }
 
 async fn acquire_origins<I>(batch: I) -> Batch
@@ -221,4 +231,38 @@ async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKe
 
 fn keys_count(batch: &Batch) -> usize {
     batch.iter().flat_map(|(_, key_ids)| key_ids.iter()).count()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::missing_local_key_ids;
+    use crate::core::federation::discovery::VerifyKey;
+    use crate::core::serde::Base64;
+    use crate::core::OwnedServerSigningKeyId;
+
+    #[test]
+    fn acquire_locals_treats_our_configured_signing_key_as_available() {
+        let local_key_id: OwnedServerSigningKeyId =
+            "ed25519:local"
+                .try_into()
+                .expect("configured key id should be valid");
+        let available_keys = BTreeMap::from([(
+            local_key_id.clone(),
+            VerifyKey {
+                key: Base64::new(vec![1, 2, 3]),
+            },
+        )]);
+
+        let missing = missing_local_key_ids(
+            &available_keys,
+            std::iter::once(local_key_id.as_ref()),
+        );
+
+        assert!(
+            missing.is_empty(),
+            "the local configured signing key should not be marked missing"
+        );
+    }
 }

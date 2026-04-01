@@ -298,6 +298,12 @@ pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
         return Ok(());
     }
 
+    let conf = config::get();
+    if !should_send_federation_target(server, &conf.server_name, &conf.federation) {
+        debug!("not sending edu to denied server: {server}");
+        return Ok(());
+    }
+
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
     let key = queue_request(&outgoing_kind, &event)?;
@@ -313,6 +319,12 @@ pub fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<
     let mut serialized = EduBuf::new();
     serde_json::to_writer(&mut serialized, &edu)
         .map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
+
+    let conf = config::get();
+    if !should_send_federation_target(server, &conf.server_name, &conf.federation) {
+        debug!("not sending reliable edu to denied server: {server}");
+        return Ok(());
+    }
 
     let conf = config::get();
     if !should_send_federation_target(server, &conf.server_name, &conf.federation) {

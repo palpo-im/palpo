@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::time::Duration;
 
 use diesel::prelude::*;
 use indexmap::IndexMap;
@@ -29,12 +31,16 @@ use crate::event::{
     PduBuilder, PduEvent, ensure_event_sn, gen_event_id_canonical_json, parse_fetched_pdu,
 };
 use crate::federation::maybe_strip_event_id;
+use crate::room::state::{CompressedEvent, DeltaInfo};
 use crate::room::{state, timeline};
 use crate::sending::send_edu_server;
 use crate::{
     AppError, AppResult, GetUrlOrigin, IsRemoteOrLocal, MatrixError, OptionalExtension, SnPduEvent,
     config, data, room, sending,
 };
+
+const MAKE_JOIN_INVITE_RACE_RETRY_LIMIT: usize = 3;
+const MAKE_JOIN_INVITE_RACE_RETRY_MESSAGE: &str = "cannot join a room that is not `public`";
 
 pub async fn join_room(
     sender: &DbUser,
@@ -429,28 +435,24 @@ pub async fn join_room(
     //     return Err(MatrixError::invalid_param("Auth check failed when running send_json auth
     // check").into()); }
 
-    // info!("saving state from send_join");
-    // let DeltaInfo {
-    //     frame_id,
-    //     appended,
-    //     disposed,
-    // } = state::save_state(
-    //     room_id,
-    //     Arc::new(
-    //         state
-    //             .into_iter()
-    //             .map(|(k, (_event_id, event_sn))| Ok(CompressedEvent::new(k, event_sn)))
-    //             .collect::<AppResult<_>>()?,
-    //     ),
-    // )?;
-
-    // state::force_state(room_id, frame_id, appended, disposed)?;
-
-    // info!("Updating joined counts for new room");
-    // room::update_joined_servers(room_id)?;
-    // room::update_currents(room_id)?;
-
     let state_lock = room::lock_state(room_id).await;
+
+    info!("saving state from send_join");
+    let DeltaInfo {
+        frame_id,
+        appended,
+        disposed,
+    } = state::save_state(
+        room_id,
+        Arc::new(
+            state
+                .into_iter()
+                .map(|(k, (_event_id, event_sn))| Ok(CompressedEvent::new(k, event_sn)))
+                .collect::<AppResult<_>>()?,
+        ),
+    )?;
+
+    state::force_state(room_id, frame_id, appended, disposed)?;
     info!("appending new room join event");
     diesel::insert_into(events::table)
         .values(NewDbEvent::from_canonical_json(
@@ -544,6 +546,7 @@ async fn make_join_request(
     room_id: &RoomId,
     servers: &[OwnedServerName],
 ) -> AppResult<(MakeJoinResBody, OwnedServerName)> {
+    let invited_locally = room::user::is_invited(user_id, room_id).unwrap_or(false);
     let mut last_join_error = Err(StatusError::bad_request()
         .brief("no server available to assist in joining")
         .into());
@@ -552,35 +555,118 @@ async fn make_join_request(
         if remote_server == &config::get().server_name {
             continue;
         }
-        info!("asking {remote_server} for make_join");
-        let make_join_request = crate::core::federation::membership::make_join_request(
-            &remote_server.origin().await,
-            MakeJoinReqArgs {
-                room_id: room_id.to_owned(),
-                user_id: user_id.to_owned(),
-                ver: config::supported_room_versions(),
-            },
-        )?
-        .into_inner();
-        let make_join_response =
-            crate::sending::send_federation_request(remote_server, make_join_request, None).await;
-        match make_join_response {
-            Ok(make_join_response) => {
-                let res_body = make_join_response.json::<MakeJoinResBody>().await;
-                last_join_error = res_body
-                    .map(|r| (r, remote_server.clone()))
-                    .map_err(Into::into);
+        for attempt in 0..=MAKE_JOIN_INVITE_RACE_RETRY_LIMIT {
+            info!("asking {remote_server} for make_join");
+            let make_join_request = crate::core::federation::membership::make_join_request(
+                &remote_server.origin().await,
+                MakeJoinReqArgs {
+                    room_id: room_id.to_owned(),
+                    user_id: user_id.to_owned(),
+                    ver: config::supported_room_versions(),
+                },
+            )?
+            .into_inner();
+            let make_join_response =
+                crate::sending::send_federation_request(remote_server, make_join_request, None)
+                    .await;
+            match make_join_response {
+                Ok(make_join_response) => {
+                    let res_body = make_join_response.json::<MakeJoinResBody>().await;
+                    last_join_error = res_body
+                        .map(|r| (r, remote_server.clone()))
+                        .map_err(Into::into);
+                }
+                Err(e) => {
+                    tracing::error!("make_join_request failed: {e:?}");
+                    last_join_error = Err(e);
+                }
             }
-            Err(e) => {
-                tracing::error!("make_join_request failed: {e:?}");
-                last_join_error = Err(e);
-            }
-        }
 
-        if last_join_error.is_ok() {
+            if last_join_error.is_ok() {
+                break;
+            }
+
+            if let Err(ref error) = last_join_error
+                && should_retry_make_join_after_error(error, invited_locally, attempt)
+            {
+                let delay_ms = 50 * (attempt as u64 + 1);
+                tracing::warn!(
+                    ?remote_server,
+                    ?room_id,
+                    ?user_id,
+                    attempt = attempt + 1,
+                    delay_ms,
+                    "retrying transient make_join invite visibility race"
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+
             break;
         }
     }
 
     last_join_error
+}
+
+fn should_retry_make_join_after_error(
+    error: &AppError,
+    invited_locally: bool,
+    attempt: usize,
+) -> bool {
+    invited_locally
+        && attempt < MAKE_JOIN_INVITE_RACE_RETRY_LIMIT
+        && matches!(
+            error,
+            AppError::Matrix(MatrixError {
+                status_code: Some(status),
+                ..
+            }) if *status == salvo::http::StatusCode::FORBIDDEN
+                && error.to_string().contains(MAKE_JOIN_INVITE_RACE_RETRY_MESSAGE)
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use salvo::http::StatusCode;
+
+    use super::should_retry_make_join_after_error;
+    use crate::core::MatrixError;
+    use crate::AppError;
+
+    #[test]
+    fn retries_only_transient_invite_visibility_errors_for_invited_users() {
+        let mut error = MatrixError::forbidden("cannot join a room that is not `public`", None);
+        error.status_code = Some(StatusCode::FORBIDDEN);
+
+        assert!(should_retry_make_join_after_error(
+            &AppError::Matrix(error.clone()),
+            true,
+            0
+        ));
+        assert!(!should_retry_make_join_after_error(
+            &AppError::Matrix(error),
+            false,
+            0
+        ));
+    }
+
+    #[test]
+    fn does_not_retry_after_retry_budget_is_exhausted_or_for_other_errors() {
+        let mut forbidden = MatrixError::forbidden("cannot join a room that is not `public`", None);
+        forbidden.status_code = Some(StatusCode::FORBIDDEN);
+        assert!(!should_retry_make_join_after_error(
+            &AppError::Matrix(forbidden),
+            true,
+            3
+        ));
+
+        let mut different = MatrixError::forbidden("some real permission failure", None);
+        different.status_code = Some(StatusCode::FORBIDDEN);
+        assert!(!should_retry_make_join_after_error(
+            &AppError::Matrix(different),
+            true,
+            0
+        ));
+    }
 }
