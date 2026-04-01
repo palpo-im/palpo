@@ -1,4 +1,4 @@
-FROM rust:latest
+FROM rust:bookworm
 
 # COPY <<EOF /etc/apt/sources.list
 # deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware
