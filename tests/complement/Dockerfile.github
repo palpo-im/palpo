@@ -40,6 +40,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 COPY crates crates
 
+# Touch all source files so cargo detects they are newer than the dummy
+# artifacts compiled in the dependency-caching step above.  BuildKit's COPY
+# preserves the build-context mtime, which can be older than the cached
+# compilation outputs, causing cargo to skip recompilation entirely.
+RUN find crates -name '*.rs' -exec touch {} +
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build \
