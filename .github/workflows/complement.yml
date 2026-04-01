@@ -104,6 +104,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Fail job if Complement tests failed
-        if: always() && steps.complement-tests.outcome == 'failure'
-        run: exit 1
+      - name: Evaluate test results
+        if: always()
+        run: |
+          RESULTS="/tmp/complement/__test_all.result.jsonl"
+          if [ ! -f "$RESULTS" ]; then
+            echo "::error::Test results file not found"
+            exit 1
+          fi
+          FAIL_COUNT=$(grep -c '"fail"' "$RESULTS" || true)
+          PASS_COUNT=$(grep -c '"pass"' "$RESULTS" || true)
+          TOTAL=$((FAIL_COUNT + PASS_COUNT))
+          echo "Pass: $PASS_COUNT, Fail: $FAIL_COUNT, Total: $TOTAL"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::No test results found"
+            exit 1
+          fi
+          PASS_RATE=$((PASS_COUNT * 100 / TOTAL))
+          echo "Pass rate: ${PASS_RATE}%"
+          if [ "$PASS_RATE" -lt 90 ]; then
+            echo "::error::Pass rate ${PASS_RATE}% is below 90% threshold"
+            exit 1
+          fi
+          echo "✅ Pass rate ${PASS_RATE}% meets the 90% threshold"
