@@ -289,6 +289,10 @@ async fn auth_by_signatures_inner(req: &mut Request, depot: &mut Depot) -> AppRe
     )]);
 
     let origin = &x_matrix.origin;
+    if !config::get().federation.is_server_allowed(origin) {
+        return Err(MatrixError::forbidden("Federation with this server is not allowed.", None).into());
+    }
+
     let signatures = BTreeMap::from_iter([(
         origin.as_str().to_owned(),
         CanonicalJsonValue::Object(origin_signatures),

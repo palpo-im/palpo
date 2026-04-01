@@ -29,27 +29,41 @@ pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;
 pub type PubKeys = PublicKeySet;
 
-fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<()> {
-    let server: &palpo_core::OwnedServerName = &new_keys.server_name;
-
-    // (timo) Not atomic, but this is not critical
-    let keys = server_signing_keys::table
-        .find(server)
-        .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect()?)
-        .optional()?;
-    let mut keys = if let Some(keys) = keys {
-        serde_json::from_value::<ServerSigningKeys>(keys)?
-    } else {
-        // Just insert "now", it doesn't matter
-        ServerSigningKeys::new(server.to_owned(), UnixMillis::now())
-    };
+fn merge_signing_keys_for_storage(
+    existing: Option<ServerSigningKeys>,
+    new_keys: ServerSigningKeys,
+) -> ServerSigningKeys {
+    let server = new_keys.server_name.clone();
+    let mut keys =
+        existing.unwrap_or_else(|| ServerSigningKeys::new(server, new_keys.valid_until_ts));
 
     keys.verify_keys.extend(new_keys.verify_keys);
     keys.old_verify_keys.extend(new_keys.old_verify_keys);
+    for (server, new_sigs) in new_keys.signatures {
+        keys.signatures.entry(server).or_default().extend(new_sigs);
+    }
+    keys.valid_until_ts = keys.valid_until_ts.max(new_keys.valid_until_ts);
+
+    keys
+}
+
+pub(crate) fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<()> {
+    let server = new_keys.server_name.clone();
+
+    // (timo) Not atomic, but this is not critical
+    let existing = server_signing_keys::table
+        .find(&server)
+        .select(server_signing_keys::key_data)
+        .first::<JsonValue>(&mut connect()?)
+        .optional()?;
+    let existing = existing
+        .map(serde_json::from_value::<ServerSigningKeys>)
+        .transpose()?;
+    let keys = merge_signing_keys_for_storage(existing, new_keys);
+
     diesel::insert_into(server_signing_keys::table)
         .values(DbServerSigningKeys {
-            server_id: server.to_owned(),
+            server_id: server.clone(),
             key_data: serde_json::to_value(&keys)?,
             updated_at: UnixMillis::now(),
             created_at: UnixMillis::now(),
@@ -282,4 +296,77 @@ pub fn hash_and_sign_event(
         &version_rules.redaction,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::core::OwnedServerName;
+
+    fn signatures(
+        server: &str,
+        key_id: &str,
+        sig: &str,
+    ) -> BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, String>> {
+        BTreeMap::from([(
+            OwnedServerName::try_from(server).unwrap(),
+            BTreeMap::from([(key_id.try_into().unwrap(), sig.to_owned())]),
+        )])
+    }
+
+    #[test]
+    fn merge_signing_keys_keeps_latest_validity_and_signatures() {
+        let server_name = OwnedServerName::try_from("remote.example").unwrap();
+        let old_key_id: OwnedServerSigningKeyId = "ed25519:old".try_into().unwrap();
+        let retired_key_id: OwnedServerSigningKeyId = "ed25519:retired".try_into().unwrap();
+        let old_notary = OwnedServerName::try_from("old-notary.example").unwrap();
+        let new_notary = OwnedServerName::try_from("new-notary.example").unwrap();
+        let mut existing = ServerSigningKeys::new(server_name.clone(), UnixMillis(100));
+        existing.verify_keys.insert(
+            old_key_id.clone(),
+            VerifyKey::from_bytes(vec![1, 2, 3]),
+        );
+        existing.signatures = signatures("old-notary.example", "ed25519:old", "old-signature");
+
+        let mut new_keys = ServerSigningKeys::new(server_name.clone(), UnixMillis(200));
+        new_keys.old_verify_keys.insert(
+            retired_key_id.clone(),
+            crate::core::federation::discovery::OldVerifyKey::new(
+                UnixMillis(150),
+                Base64::new(vec![4, 5, 6]),
+            ),
+        );
+        new_keys.signatures = signatures("new-notary.example", "ed25519:new", "new-signature");
+
+        let merged = merge_signing_keys_for_storage(Some(existing), new_keys);
+
+        assert_eq!(merged.valid_until_ts, UnixMillis(200));
+        assert!(merged.verify_keys.contains_key(&old_key_id));
+        assert!(merged.old_verify_keys.contains_key(&retired_key_id));
+        assert!(merged.signatures.contains_key(&old_notary));
+        assert!(merged.signatures.contains_key(&new_notary));
+    }
+
+    #[test]
+    fn merge_signatures_from_same_server_retains_all_key_ids() {
+        let server_name = OwnedServerName::try_from("remote.example").unwrap();
+        let notary = "notary.example";
+
+        let mut existing = ServerSigningKeys::new(server_name.clone(), UnixMillis(100));
+        existing.signatures = signatures(notary, "ed25519:key1", "sig-a");
+
+        let mut new_keys = ServerSigningKeys::new(server_name.clone(), UnixMillis(200));
+        new_keys.signatures = signatures(notary, "ed25519:key2", "sig-b");
+
+        let merged = merge_signing_keys_for_storage(Some(existing), new_keys);
+
+        let notary_sigs = &merged.signatures[&OwnedServerName::try_from(notary).unwrap()];
+        assert_eq!(notary_sigs.len(), 2, "both key IDs from the same server must be retained");
+        let key1: OwnedServerSigningKeyId = "ed25519:key1".try_into().unwrap();
+        let key2: OwnedServerSigningKeyId = "ed25519:key2".try_into().unwrap();
+        assert_eq!(notary_sigs[&key1], "sig-a");
+        assert_eq!(notary_sigs[&key2], "sig-b");
+    }
 }
