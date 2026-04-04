@@ -92,6 +92,8 @@ pub enum AppError {
     SystemTime(#[from] std::time::SystemTimeError),
     #[error("ReqwestMiddlewareError: `{0}`")]
     ReqwestMiddleware(#[from] reqwest_middleware::Error),
+    #[error("OpenDAL error: `{0}`")]
+    OpenDal(#[from] opendal::Error),
 }
 
 impl AppError {

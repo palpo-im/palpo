@@ -2,12 +2,10 @@ mod preview;
 mod remote;
 use std::cmp;
 use std::num::Saturating;
-use std::path::PathBuf;
 
 use diesel::prelude::*;
 pub use preview::*;
 pub use remote::*;
-use tokio::io::AsyncWriteExt;
 
 use crate::core::http_headers::ContentDisposition;
 use crate::core::media::ResizeMethod;
@@ -15,7 +13,7 @@ use crate::core::{Mxc, OwnedMxcUri, ServerName, UnixMillis, UserId};
 use crate::data::connect;
 use crate::data::media::NewDbThumbnail;
 use crate::data::schema::*;
-use crate::{AppResult, config, data};
+use crate::{AppResult, config, data, storage};
 
 #[derive(Debug)]
 pub struct FileMeta {
@@ -109,32 +107,26 @@ impl Default for Dimension {
     }
 }
 
-pub fn get_media_path(server_name: &ServerName, media_id: &str) -> PathBuf {
-    let server_name = if server_name == config::server_name() {
+/// Resolve the effective server_name string used in storage keys.
+fn effective_server_name(server_name: &ServerName) -> &str {
+    if server_name == config::server_name() {
         "_"
     } else {
         server_name.as_str()
-    };
-    let mut r = PathBuf::new();
-    r.push(config::space_path());
-    r.push("media");
-    r.push(server_name);
-    // let extension = extension.unwrap_or_default();
-    // if !extension.is_empty() {
-    //     r.push(format!("{media_id}.{extension}"));
-    // } else {
-    r.push(media_id);
-    // }
-    r
+    }
 }
+
+/// Build the storage key for a media file.
+pub fn media_storage_key(server_name: &ServerName, media_id: &str) -> String {
+    storage::media_key(effective_server_name(server_name), media_id)
+}
+
 
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> AppResult<()> {
     data::media::delete_media(server_name, media_id)?;
-    let path = get_media_path(server_name, media_id);
-    if path.exists()
-        && let Err(e) = tokio::fs::remove_file(path).await
-    {
-        tracing::error!("failed to delete media file: {e}");
+    let key = media_storage_key(server_name, media_id);
+    if let Err(e) = storage::delete(&key).await {
+        tracing::error!("failed to delete media file '{key}': {e}");
     }
     Ok(())
 }
@@ -199,21 +191,19 @@ pub async fn save_thumbnail(
     Ok(())
 }
 
+/// Build the storage key for a thumbnail file.
+pub fn thumbnail_storage_key(server_name: &ServerName, media_id: &str, thumbnail_id: i64) -> String {
+    storage::thumbnail_key(effective_server_name(server_name), media_id, thumbnail_id)
+}
+
 pub async fn save_thumbnail_file(
     server_name: &ServerName,
     media_id: &str,
     thumbnail_id: i64,
     file: &[u8],
-) -> AppResult<PathBuf> {
-    let thumb_path = get_thumbnail_path(server_name, media_id, thumbnail_id);
-    let mut f = tokio::fs::File::create(&thumb_path).await?;
-    f.write_all(file).await?;
-    Ok(thumb_path)
+) -> AppResult<String> {
+    let key = thumbnail_storage_key(server_name, media_id, thumbnail_id);
+    storage::write(&key, file).await?;
+    Ok(key)
 }
 
-pub fn get_thumbnail_path(server_name: &ServerName, media_id: &str, thumbnail_id: i64) -> PathBuf {
-    get_media_path(
-        server_name,
-        &format!("{media_id}.thumbnails/{thumbnail_id}"),
-    )
-}

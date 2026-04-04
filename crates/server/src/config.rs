@@ -38,6 +38,8 @@ mod logger;
 pub use logger::*;
 mod media;
 pub use media::*;
+mod storage;
+pub use storage::*;
 mod presence;
 pub use presence::*;
 mod proxy;
@@ -233,9 +235,6 @@ pub fn server_user() -> crate::data::user::DbUser {
     crate::data::user::get_user(server_user_id()).expect("server user should exist in the database")
 }
 
-pub fn space_path() -> &'static str {
-    get().space_path.deref()
-}
 pub fn server_name() -> &'static ServerName {
     get().server_name.deref()
 }

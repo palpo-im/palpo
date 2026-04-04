@@ -30,6 +30,7 @@ pub mod exts;
 pub mod federation;
 pub mod media;
 pub mod membership;
+pub mod storage;
 pub mod room;
 pub mod sending;
 pub mod server_key;
@@ -163,6 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     crate::logging::init()?;
     crate::data::init(&conf.db.clone().into_data_db_config());
+    crate::storage::init(&conf.storage)
+        .expect("Failed to initialize storage backend");
     // Force-load appservice registrations during startup so database rows
     // are up-to-date with the configured registration directory.
     let _ = crate::appservices();

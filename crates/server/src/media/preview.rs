@@ -1,18 +1,16 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
 use ipaddress::IPAddress;
 use serde::Serialize;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use url::Url;
 
 use crate::core::identifiers::*;
 use crate::core::{MatrixError, UnixMillis};
 use crate::data::media::{DbUrlPreview, NewDbMetadata, NewDbUrlPreview};
-use crate::{AppResult, config, data, utils};
+use crate::{AppResult, config, data, storage, utils};
 
 static URL_PREVIEW_MUTEX: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(Default::default);
@@ -322,14 +320,9 @@ async fn download_image(url: &Url) -> AppResult<UrlPreviewData> {
         media_id: &utils::random_string(crate::MXC_LENGTH),
     };
 
-    let dest_path = crate::media::get_media_path(&conf.server_name, mxc.media_id);
-    let dest_path = Path::new(&dest_path);
-    if !dest_path.exists() {
-        let parent_dir = utils::fs::get_parent_dir(dest_path);
-        std::fs::create_dir_all(&parent_dir)?;
-
-        let mut file = tokio::fs::File::create(dest_path).await?;
-        file.write_all(&image).await?;
+    let key = crate::media::media_storage_key(&conf.server_name, mxc.media_id);
+    if !storage::exists(&key).await? {
+        storage::write(&key, &image).await?;
         let metadata = NewDbMetadata {
             media_id: mxc.media_id.to_string(),
             origin_server: conf.server_name.clone(),

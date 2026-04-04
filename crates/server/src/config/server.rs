@@ -9,8 +9,8 @@ use serde::de::IgnoredAny;
 use super::{
     AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelegatedAuthConfig,
     FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig, OidcConfig,
-    PresenceConfig, ProxyConfig, ReadReceiptConfig, TurnConfig, TypingConfig, UrlPreviewConfig,
-    WellKnownConfig,
+    PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig, TypingConfig,
+    UrlPreviewConfig, WellKnownConfig,
 };
 use crate::core::serde::{default_false, default_true};
 use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
@@ -77,7 +77,7 @@ impl ListenerConfig {
 ### https://palpo.im/guide/configuration.html
 "#,
     ignore = "catch_others federation well_known compression typing read_receipt presence \
-        admin url_preview turn media blurhash keypair ldap proxy jwt oidc logger db appservice"
+        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
@@ -551,8 +551,6 @@ pub struct ServerConfig {
     #[serde(default = "default_ip_range_denylist")]
     pub ip_range_denylist: Vec<String>,
 
-    #[serde(default = "default_space_path")]
-    pub space_path: String,
 
     // pub auto_acme: Option<AcmeConfig>,
     /// Whether to query the servers listed in trusted_servers first or query
@@ -666,6 +664,10 @@ pub struct ServerConfig {
     // external structure; separate section
     #[serde(default)]
     pub media: MediaConfig,
+
+    // external structure; separate section
+    #[serde(default)]
+    pub storage: StorageConfig,
 
     // external structure; separate section
     pub turn: Option<TurnConfig>,
@@ -1143,9 +1145,6 @@ fn default_trusted_server_batch_size() -> usize {
     256
 }
 
-fn default_space_path() -> String {
-    "./space".into()
-}
 
 fn default_startup_netburst_keep() -> i64 {
     50
