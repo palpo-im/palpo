@@ -71,6 +71,8 @@ pub struct ProvisionUserReqBody {
     pub set_emails: Option<Vec<String>>,
     #[serde(default)]
     pub unset_emails: bool,
+    #[serde(default)]
+    pub admin: bool,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -169,6 +171,9 @@ pub async fn provision_user(
         data::user::replace_threepids(&user_id, &entries)?;
     } else if body.unset_emails {
         data::user::replace_threepids(&user_id, &[])?;
+    }
+    if body.admin {
+        data::user::set_admin(&user_id, true)?;
     }
     empty_ok()
 }

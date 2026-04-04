@@ -11,24 +11,27 @@ use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, admin, json_ok, room};
 pub fn router() -> Router {
     Router::new()
         .push(
-            Router::with_path("v1").push(
-                Router::with_path("rooms").get(list_rooms).push(
-                    Router::with_path("{room_id}")
-                        .get(get_room)
-                        .push(Router::with_path("hierarchy").get(get_hierarchy))
-                        .push(Router::with_path("members").get(get_room_members))
-                        .push(Router::with_path("state").get(get_room_state))
-                        .push(Router::with_path("messages").get(get_room_messages))
-                        .push(
-                            Router::with_path("block")
-                                .get(get_room_block)
-                                .put(set_room_block),
-                        )
-                        .push(
-                            Router::with_path("forward_extremities").get(get_forward_extremities),
-                        ),
-                ),
-            ),
+            Router::with_path("v1")
+                .push(
+                    Router::with_path("rooms").get(list_rooms).push(
+                        Router::with_path("{room_id}")
+                            .get(get_room)
+                            .push(Router::with_path("hierarchy").get(get_hierarchy))
+                            .push(Router::with_path("members").get(get_room_members))
+                            .push(Router::with_path("state").get(get_room_state))
+                            .push(Router::with_path("messages").get(get_room_messages))
+                            .push(
+                                Router::with_path("block")
+                                    .get(get_room_block)
+                                    .put(set_room_block),
+                            )
+                            .push(
+                                Router::with_path("forward_extremities")
+                                    .get(get_forward_extremities),
+                            ),
+                    ),
+                )
+                .push(Router::with_path("purge_history/{room_id}").post(purge_history)),
         )
         .push(
             Router::with_path("v2").push(Router::with_path("rooms/{room_id}").delete(delete_room)),
@@ -467,15 +470,6 @@ pub async fn delete_room(
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    // Explicitly reject purge requests until full purge is implemented
-    if body.purge {
-        return Err(MatrixError::bad_status(
-            Some(salvo::http::StatusCode::NOT_IMPLEMENTED),
-            "Room purge is not supported yet",
-        )
-        .into());
-    }
-
     let members = room::get_members(&room_id)?;
     let kicked_users: Vec<String> = members
         .iter()
@@ -495,19 +489,73 @@ pub async fn delete_room(
     // Disable the room (prevents new joins/messages)
     room::disable_room(&room_id, true)?;
 
-    // TODO: Implement actual purge when purge=true
-    // This would require:
-    // 1. Delete events from events table
-    // 2. Delete event data from event_datas table
-    // 3. Delete state from room_state tables
-    // 4. Clean up room_users entries
-    // For now, we only disable the room
+    if body.purge {
+        // Purge all non-state events by using a far-future timestamp
+        let _ = crate::data::room::timeline::purge_room_history(
+            &room_id,
+            i64::MAX,
+        );
+    }
 
     json_ok(DeleteRoomResponse {
         kicked_users,
         failed_to_kick_users: Vec::new(),
         local_aliases,
         new_room_id: None,
+    })
+}
+
+/// Purge history request
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PurgeHistoryReqBody {
+    #[serde(default)]
+    pub purge_up_to_ts: Option<i64>,
+    #[serde(default)]
+    pub purge_up_to_event_id: Option<String>,
+}
+
+/// Purge history response
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PurgeHistoryResponse {
+    pub purge_id: String,
+    pub deleted_events: i64,
+}
+
+/// Purge room history before a given timestamp or event
+#[endpoint]
+pub fn purge_history(
+    room_id: PathParam<OwnedRoomId>,
+    body: JsonBody<PurgeHistoryReqBody>,
+) -> JsonResult<PurgeHistoryResponse> {
+    let room_id = room_id.into_inner();
+    let body = body.into_inner();
+
+    if !room::room_exists(&room_id)? {
+        return Err(MatrixError::not_found("Room not found").into());
+    }
+
+    let before_ts = if let Some(ts) = body.purge_up_to_ts {
+        ts
+    } else if let Some(ref event_id) = body.purge_up_to_event_id {
+        let event_id = <&EventId>::try_from(event_id.as_str())
+            .map_err(|_| MatrixError::invalid_param("Invalid event_id"))?;
+        let sn_pdu = room::timeline::get_pdu(event_id)
+            .map_err(|_| MatrixError::not_found("Event not found"))?;
+        sn_pdu.pdu.origin_server_ts.get() as i64
+    } else {
+        return Err(MatrixError::missing_param(
+            "Must provide purge_up_to_ts or purge_up_to_event_id",
+        )
+        .into());
+    };
+
+    let deleted_events = crate::data::room::timeline::purge_room_history(&room_id, before_ts)?;
+
+    let purge_id = format!("{}_{}", room_id, chrono::Utc::now().timestamp_millis());
+
+    json_ok(PurgeHistoryResponse {
+        purge_id,
+        deleted_events,
     })
 }
 
