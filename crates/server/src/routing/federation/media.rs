@@ -1,25 +1,20 @@
-use std::fs;
 use std::io::Cursor;
-use std::path::Path;
 use std::str::FromStr;
 
 use diesel::prelude::*;
 use image::imageops::FilterType;
 use mime::Mime;
 use palpo_core::http_headers::ContentDispositionType;
-use salvo::fs::NamedFile;
 use salvo::prelude::*;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 
 use crate::core::UnixMillis;
 use crate::core::federation::media::*;
 use crate::data::connect;
 use crate::data::media::*;
 use crate::data::schema::*;
-use crate::media::get_media_path;
+use crate::media::{media_storage_key, thumbnail_storage_key};
 use crate::utils::content_disposition::make_content_disposition;
-use crate::{AppResult, AuthArgs, MatrixError, config, hoops};
+use crate::{AppResult, AuthArgs, MatrixError, config, hoops, storage};
 
 pub fn router() -> Router {
     Router::with_path("media")
@@ -35,7 +30,7 @@ pub fn router() -> Router {
 #[endpoint]
 pub async fn get_content(
     args: ContentReqArgs,
-    req: &mut Request,
+    _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
     let server_name = &config::get().server_name;
@@ -52,12 +47,11 @@ pub async fn get_content(
                     .unwrap_or(mime::APPLICATION_OCTET_STREAM)
             });
 
-        let path = get_media_path(server_name, &args.media_id);
-        if Path::new(&path).exists() {
-            NamedFile::builder(path)
-                .content_type(content_type)
-                .send(req.headers(), res)
-                .await;
+        let key = media_storage_key(server_name, &args.media_id);
+        if storage::exists(&key).await? {
+            let data = storage::read(&key).await?;
+            res.add_header("Content-Type", content_type.to_string(), true)?;
+            res.body = salvo::http::ResBody::Once(data.into());
             Ok(())
         } else {
             Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into())
@@ -76,16 +70,14 @@ pub async fn get_thumbnail(
     res: &mut Response,
 ) -> AppResult<()> {
     let server_name = &config::get().server_name;
-    if let Some(DbThumbnail { content_type, .. }) = crate::data::media::get_thumbnail_by_dimension(
+    if let Some(DbThumbnail { id, content_type, .. }) = crate::data::media::get_thumbnail_by_dimension(
         server_name,
         &args.media_id,
         args.width,
         args.height,
     )? {
-        let thumb_path = get_media_path(
-            server_name,
-            &format!("{}.{}x{}", args.media_id, args.width, args.height),
-        );
+        let key = thumbnail_storage_key(server_name, &args.media_id, id);
+        let file_data = storage::read(&key).await?;
 
         let content_disposition = make_content_disposition(
             Some(ContentDispositionType::Inline),
@@ -93,7 +85,7 @@ pub async fn get_thumbnail(
             None,
         );
         let content = Content {
-            file: fs::read(&thumb_path)?,
+            file: file_data,
             content_type,
             content_disposition: Some(content_disposition),
         };
@@ -108,18 +100,19 @@ pub async fn get_thumbnail(
     let (width, height, crop) =
         crate::media::thumbnail_properties(args.width, args.height).unwrap_or((0, 0, false)); // 0, 0 because that's the original file
 
-    let thumb_path = get_media_path(server_name, &format!("{}.{width}x{height}", &args.media_id));
-    if let Some(DbThumbnail { content_type, .. }) =
+    if let Some(DbThumbnail { id, content_type, .. }) =
         crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)?
     {
         // Using saved thumbnail
+        let key = thumbnail_storage_key(server_name, &args.media_id, id);
+        let file_data = storage::read(&key).await?;
         let content_disposition = make_content_disposition(
             Some(ContentDispositionType::Inline),
             content_type.as_deref(),
             None,
         );
         let content = Content {
-            file: fs::read(&thumb_path)?,
+            file: file_data,
             content_type,
             content_disposition: Some(content_disposition),
         };
@@ -135,9 +128,11 @@ pub async fn get_thumbnail(
         ..
     })) = crate::data::media::get_metadata(server_name, &args.media_id)
     {
-        // Generate a thumbnail
-        let image_path = get_media_path(server_name, &args.media_id);
-        if let Ok(image) = image::open(&image_path) {
+        // Generate a thumbnail: read original from storage
+        let image_key = media_storage_key(server_name, &args.media_id);
+        let image_data = storage::read(&image_key).await?;
+
+        if let Ok(image) = image::load_from_memory(&image_data) {
             let original_width = image.width();
             let original_height = image.height();
             if width > original_width || height > original_height {
@@ -147,7 +142,7 @@ pub async fn get_thumbnail(
                     None,
                 );
                 let content = Content {
-                    file: fs::read(&image_path)?,
+                    file: image_data,
                     content_type,
                     content_disposition: Some(content_disposition),
                 };
@@ -163,7 +158,6 @@ pub async fn get_thumbnail(
                 image.resize_to_fill(width, height, FilterType::CatmullRom)
             } else {
                 let (exact_width, exact_height) = {
-                    // Copied from image::dynimage::resize_dimensions
                     let ratio = u64::from(original_width) * u64::from(height);
                     let nratio = u64::from(width) * u64::from(original_height);
 
@@ -206,7 +200,7 @@ pub async fn get_thumbnail(
                 .values(&NewDbThumbnail {
                     media_id: args.media_id.clone(),
                     origin_server: server_name.to_owned(),
-                    content_type: Some("mage/png".to_owned()),
+                    content_type: Some("image/png".to_owned()),
                     disposition_type: None,
                     file_size: thumbnail_bytes.len() as i64,
                     width: width as i32,
@@ -215,8 +209,13 @@ pub async fn get_thumbnail(
                     created_at: UnixMillis::now(),
                 })
                 .execute(&mut connect()?)?;
-            let mut f = File::create(&thumb_path).await?;
-            f.write_all(&thumbnail_bytes).await?;
+
+            // Save to storage backend
+            let thumb_key = media_storage_key(
+                server_name,
+                &format!("{}.{width}x{height}", &args.media_id),
+            );
+            storage::write(&thumb_key, &thumbnail_bytes).await?;
 
             let content_disposition = make_content_disposition(
                 Some(ContentDispositionType::Inline),
@@ -237,7 +236,7 @@ pub async fn get_thumbnail(
         } else {
             let content_disposition = make_content_disposition(None, content_type.as_deref(), None);
             let content = Content {
-                file: fs::read(&image_path)?,
+                file: image_data,
                 content_type,
                 content_disposition: Some(content_disposition),
             };

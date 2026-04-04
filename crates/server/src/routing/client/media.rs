@@ -1,18 +1,13 @@
-use std::fs;
 use std::io::Cursor;
-use std::path::Path;
 use std::str::FromStr;
 
 use diesel::prelude::*;
 use image::imageops::FilterType;
 use mime::Mime;
 use reqwest::Url;
-use salvo::fs::NamedFile;
 use salvo::http::header::CONTENT_TYPE;
 use salvo::http::{HeaderValue, ResBody};
 use salvo::prelude::*;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::core::UnixMillis;
@@ -25,7 +20,7 @@ use crate::exts::*;
 use crate::media::*;
 use crate::{
     AppResult, AuthArgs, EmptyResult, JsonResult, MatrixError, config, empty_ok, hoops, json_ok,
-    utils,
+    storage, utils,
 };
 
 pub fn self_auth_router() -> Router {
@@ -53,7 +48,7 @@ pub fn self_auth_router() -> Router {
 #[endpoint]
 pub async fn get_content(
     args: ContentReqArgs,
-    req: &mut Request,
+    _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
     if let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id)? {
@@ -69,16 +64,18 @@ pub async fn get_content(
                     .unwrap_or(mime::APPLICATION_OCTET_STREAM)
             });
 
-        let path = get_media_path(&args.server_name, &args.media_id);
-        if Path::new(&path).exists() {
+        let key = media_storage_key(&args.server_name, &args.media_id);
+        if storage::exists(&key).await? {
+            let data = storage::read(&key).await?;
+            res.add_header(CONTENT_TYPE, content_type.to_string(), true)?;
             if let Some(file_name) = &metadata.file_name {
-                NamedFile::builder(path).attached_name(file_name)
-            } else {
-                NamedFile::builder(path)
+                res.add_header(
+                    "Content-Disposition",
+                    format!(r#"attachment; filename="{file_name}""#),
+                    true,
+                )?;
             }
-            .content_type(content_type)
-            .send(req.headers(), res)
-            .await;
+            res.body = ResBody::Once(data.into());
             Ok(())
         } else {
             Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into())
@@ -98,7 +95,7 @@ pub async fn get_content(
 #[endpoint]
 pub async fn get_content_with_filename(
     args: ContentWithFileNameReqArgs,
-    req: &mut Request,
+    _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
     let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id)?
@@ -119,25 +116,15 @@ pub async fn get_content_with_filename(
         res.headers_mut().insert(CONTENT_TYPE, content_type);
     }
 
-    let path = get_media_path(&args.server_name, &args.media_id);
-    if Path::new(&path).exists() {
-        let file = NamedFile::builder(path)
-            .content_type(
-                metadata
-                    .content_type
-                    .as_deref()
-                    .and_then(|c| Mime::from_str(c).ok())
-                    .unwrap_or(mime::APPLICATION_OCTET_STREAM),
-            )
-            .attached_name(args.filename)
-            .build()
-            .await?;
-        // if let Some(Ok(content_disposition)) =
-        // metadata.content_disposition.as_deref().map(HeaderValue::from_str) {
-        //     file.set_content_disposition(content_disposition);
-        // }
-        file.send(req.headers(), res).await;
-
+    let key = media_storage_key(&args.server_name, &args.media_id);
+    if storage::exists(&key).await? {
+        let data = storage::read(&key).await?;
+        res.add_header(
+            "Content-Disposition",
+            format!(r#"attachment; filename="{}""#, args.filename),
+            true,
+        )?;
+        res.body = ResBody::Once(data.into());
         Ok(())
     } else if *args.server_name != config::get().server_name && args.allow_remote {
         let mxc = format!("mxc://{}/{}", args.server_name, args.media_id);
@@ -160,7 +147,7 @@ pub fn create_mxc_uri(_aa: AuthArgs) -> JsonResult<CreateMxcUriResBody> {
 /// Permanently save media in the server.
 ///
 /// - Some metadata will be saved in the database
-/// - Media will be saved in the media/ directory
+/// - Media will be saved via the configured storage backend
 #[endpoint]
 pub async fn create_content(
     _aa: AuthArgs,
@@ -168,7 +155,6 @@ pub async fn create_content(
     req: &mut Request,
     _depot: &mut Depot,
 ) -> JsonResult<CreateContentResBody> {
-    // let authed = depot.take_authed_info()?;
     let file_name = args.filename.clone();
     let file_extension = file_name.as_deref().map(utils::fs::get_file_ext);
 
@@ -176,8 +162,6 @@ pub async fn create_content(
         .payload_with_max_size(config::get().max_upload_size as usize)
         .await
         .map_err(|e| MatrixError::too_large(format!("Failed to read upload payload: {e}")))?;
-    // let checksum = utils::hash::hash_data_sha2_256(payload)?;
-    // let media_id = checksum.to_base32_crockford();
 
     let media_id = utils::base32_crockford(Uuid::new_v4().as_bytes());
     let mxc = Mxc {
@@ -186,23 +170,10 @@ pub async fn create_content(
     };
 
     let conf = crate::config::get();
-    let dest_path = get_media_path(&conf.server_name, &media_id);
+    let key = media_storage_key(&conf.server_name, &media_id);
 
-    // let dest_path = Path::new(&dest_path);
-    // if dest_path.exists() {
-    //     let metadata = fs::metadata(dest_path)?;
-    //     if metadata.len() != payload.len() as u64 {
-    //         if let Err(e) = fs::remove_file(dest_path) {
-    //             tracing::error!(error = ?e, "remove media file failed");
-    //         }
-    //     }
-    // }
-    if !dest_path.exists() {
-        let parent_dir = utils::fs::get_parent_dir(&dest_path);
-        fs::create_dir_all(&parent_dir)?;
-
-        let mut file = File::create(dest_path).await?;
-        file.write_all(payload).await?;
+    if !storage::exists(&key).await? {
+        storage::write(&key, payload).await?;
 
         let metadata = NewDbMetadata {
             media_id: media_id.clone(),
@@ -218,7 +189,6 @@ pub async fn create_content(
         };
 
         crate::data::media::insert_metadata(&metadata)?;
-        // TODO: thumbnail support
     } else {
         return Err(MatrixError::cannot_overwrite_media("Media ID already has content").into());
     }
@@ -238,7 +208,6 @@ pub async fn upload_content(
     req: &mut Request,
     _depot: &mut Depot,
 ) -> EmptyResult {
-    // let authed = depot.take_authed_info()?;
     let file_name = args.filename.clone();
     let file_extension = file_name.as_deref().map(utils::fs::get_file_ext);
 
@@ -248,26 +217,10 @@ pub async fn upload_content(
         .await
         .map_err(|e| MatrixError::too_large(format!("Failed to read upload payload: {e}")))?;
 
-    // let mxc = format!("mxc://{}/{}", crate::config::get().server_name, args.media_id);
+    let key = media_storage_key(&conf.server_name, &args.media_id);
 
-    let conf = crate::config::get();
-
-    let dest_path = get_media_path(&conf.server_name, &args.media_id);
-    let dest_path = Path::new(&dest_path);
-    // if dest_path.exists() {
-    //     let metadata = fs::metadata(dest_path)?;
-    //     if metadata.len() != payload.len() as u64 {
-    //         if let Err(e) = fs::remove_file(dest_path) {
-    //             tracing::error!(error = ?e, "remove media file failed");
-    //         }
-    //     }
-    // }
-    if !dest_path.exists() {
-        let parent_dir = utils::fs::get_parent_dir(dest_path);
-        fs::create_dir_all(&parent_dir)?;
-
-        let mut file = File::create(dest_path).await?;
-        file.write_all(payload).await?;
+    if !storage::exists(&key).await? {
+        storage::write(&key, payload).await?;
 
         let metadata = NewDbMetadata {
             media_id: args.media_id.clone(),
@@ -287,7 +240,6 @@ pub async fn upload_content(
 
         crate::data::media::insert_metadata(&metadata)?;
 
-        // TODO: thumbnail support
         empty_ok()
     } else {
         Err(MatrixError::cannot_overwrite_media("Media ID already has content").into())
@@ -347,7 +299,7 @@ pub async fn preview_url(
 pub async fn get_thumbnail(
     _aa: AuthArgs,
     args: ThumbnailReqArgs,
-    req: &mut Request,
+    _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
     if args.server_name.is_remote() && args.allow_remote {
@@ -368,13 +320,14 @@ pub async fn get_thumbnail(
         *res.headers_mut() = response.headers().clone();
         let bytes = response.bytes().await?;
 
-        let thumb_path = get_media_path(
+        // Cache the remote thumbnail via storage backend
+        let cache_key = media_storage_key(
             &args.server_name,
             &format!("{}.{}x{}", args.media_id, args.width, args.height),
         );
-        std::fs::create_dir_all(utils::fs::get_parent_dir(&thumb_path))?;
-        let mut f = File::create(&thumb_path).await?;
-        f.write_all(&bytes).await?;
+        if let Err(e) = storage::write(&cache_key, &bytes).await {
+            tracing::warn!("Failed to cache remote thumbnail: {e}");
+        }
 
         res.body = ResBody::Once(bytes);
         return Ok(());
@@ -388,28 +341,15 @@ pub async fn get_thumbnail(
     ) {
         Ok(Some(DbThumbnail {
             id,
-            // content_disposition,
             content_type,
             ..
         })) => {
-            let thumbnail_path = get_thumbnail_path(&args.server_name, &args.media_id, id);
-
+            let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
+            let data = storage::read(&key).await?;
+            let ct = content_type.as_deref().unwrap_or("application/octet-stream");
             res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
-            let _file = NamedFile::builder(&thumbnail_path)
-                .content_type(if let Some(content_type) = &content_type {
-                    Mime::from_str(content_type)
-                        .ok()
-                        .unwrap_or(mime::APPLICATION_OCTET_STREAM)
-                } else {
-                    mime::APPLICATION_OCTET_STREAM
-                })
-                .build()
-                .await?;
-            // if let Some(Ok(content_disposition)) =
-            // content_disposition.as_deref().map(HeaderValue::from_str) {
-            //     file.set_content_disposition(content_disposition);
-            // }
-
+            res.add_header(CONTENT_TYPE, ct, true)?;
+            res.body = ResBody::Once(data.into());
             return Ok(());
         }
         Err(e) => {
@@ -430,24 +370,11 @@ pub async fn get_thumbnail(
         width,
         height,
     )? {
-        let thumbnail_path = get_thumbnail_path(&args.server_name, &args.media_id, id);
-        // Using saved thumbnail
-        let file = NamedFile::builder(&thumbnail_path)
-            .content_type(if let Some(content_type) = &content_type {
-                Mime::from_str(content_type)
-                    .ok()
-                    .unwrap_or(mime::APPLICATION_OCTET_STREAM)
-            } else {
-                mime::APPLICATION_OCTET_STREAM
-            })
-            .build()
-            .await?;
-        // if let Some(Ok(content_disposition)) =
-        // content_disposition.as_deref().map(HeaderValue::from_str) {
-        //     file.set_content_disposition(content_disposition);
-        // }
-        file.send(req.headers(), res).await;
-
+        let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
+        let data = storage::read(&key).await?;
+        let ct = content_type.as_deref().unwrap_or("application/octet-stream");
+        res.add_header(CONTENT_TYPE, ct, true)?;
+        res.body = ResBody::Once(data.into());
         Ok(())
     } else if let Ok(Some(DbMetadata {
         disposition_type: _,
@@ -455,26 +382,19 @@ pub async fn get_thumbnail(
         ..
     })) = crate::data::media::get_metadata(&args.server_name, &args.media_id)
     {
-        // Generate a thumbnail
-        let image_path = get_media_path(&args.server_name, &args.media_id);
-        if let Ok(image) = image::open(&image_path) {
+        // Generate a thumbnail: read original image from storage
+        let image_key = media_storage_key(&args.server_name, &args.media_id);
+        let image_data = storage::read(&image_key).await?;
+        let ct = content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
+
+        if let Ok(image) = image::load_from_memory(&image_data) {
             let original_width = image.width();
             let original_height = image.height();
             if width > original_width || height > original_height {
-                let file = NamedFile::builder(&image_path)
-                    .content_type(
-                        content_type
-                            .as_deref()
-                            .and_then(|c| Mime::from_str(c).ok())
-                            .unwrap_or(mime::APPLICATION_OCTET_STREAM),
-                    )
-                    .build()
-                    .await?;
-                // if let Some(Ok(content_disposition)) =
-                // content_disposition.as_deref().map(HeaderValue::from_str) {
-                //     file.set_content_disposition(content_disposition);
-                // }
-                file.send(req.headers(), res).await;
+                res.add_header(CONTENT_TYPE, ct, true)?;
+                res.body = ResBody::Once(image_data.into());
                 return Ok(());
             }
 
@@ -482,7 +402,6 @@ pub async fn get_thumbnail(
                 image.resize_to_fill(width, height, FilterType::CatmullRom)
             } else {
                 let (exact_width, exact_height) = {
-                    // Copied from image::dynimage::resize_dimensions
                     let ratio = u64::from(original_width) * u64::from(height);
                     let nratio = u64::from(width) * u64::from(original_height);
 
@@ -562,39 +481,16 @@ pub async fn get_thumbnail(
                     .first::<i64>(&mut connect()?)?
             };
 
-            let thumbnail_path =
-                get_thumbnail_path(&args.server_name, &args.media_id, thumbnail_id);
-            let file = NamedFile::builder(&thumbnail_path)
-                .content_type(
-                    content_type
-                        .as_deref()
-                        .and_then(|c| Mime::from_str(c).ok())
-                        .unwrap_or(mime::APPLICATION_OCTET_STREAM),
-                )
-                .build()
-                .await?;
-            // if let Some(Ok(content_disposition)) =
-            // content_disposition.as_deref().map(HeaderValue::from_str) {
-            //     file.set_content_disposition(content_disposition);
-            // }
-            file.send(req.headers(), res).await;
+            // Return the newly generated thumbnail
+            let key = thumbnail_storage_key(&args.server_name, &args.media_id, thumbnail_id);
+            let data = storage::read(&key).await?;
+            res.add_header(CONTENT_TYPE, "image/png", true)?;
+            res.body = ResBody::Once(data.into());
             Ok(())
         } else {
             // Couldn't parse file to generate thumbnail, send original
-            let file = NamedFile::builder(&image_path)
-                .content_type(
-                    content_type
-                        .as_deref()
-                        .and_then(|c| Mime::from_str(c).ok())
-                        .unwrap_or(mime::APPLICATION_OCTET_STREAM),
-                )
-                .build()
-                .await?;
-            // if let Some(Ok(content_disposition)) =
-            // content_disposition.as_deref().map(HeaderValue::from_str) {
-            //     file.set_content_disposition(content_disposition);
-            // }
-            file.send(req.headers(), res).await;
+            res.add_header(CONTENT_TYPE, ct, true)?;
+            res.body = ResBody::Once(image_data.into());
             Ok(())
         }
     } else {

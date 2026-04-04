@@ -570,9 +570,9 @@ pub async fn delete_remote_media(
         return Ok(());
     }
 
-    let path = crate::media::get_media_path(server_name, media_id);
-    if let Err(e) = std::fs::remove_file(&path) {
-        warn!("failed to delete local media file {path:?}: {e}");
+    let key = crate::media::media_storage_key(server_name, media_id);
+    if let Err(e) = crate::storage::delete(&key).await {
+        warn!("failed to delete media file '{key}': {e}");
     }
 
     Ok(())
