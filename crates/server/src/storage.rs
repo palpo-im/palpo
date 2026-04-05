@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use opendal::{Operator, layers::LoggingLayer};
 
@@ -6,6 +7,11 @@ use crate::AppResult;
 use crate::config::StorageConfig;
 
 static OPERATOR: OnceLock<Operator> = OnceLock::new();
+static REDIRECT_CONFIG: OnceLock<Option<RedirectConfig>> = OnceLock::new();
+
+struct RedirectConfig {
+    presign_expiry: Duration,
+}
 
 /// Initialize the global storage operator from configuration.
 /// Must be called once at startup after config is loaded.
@@ -14,6 +20,21 @@ pub fn init(config: &StorageConfig) -> AppResult<()> {
     OPERATOR
         .set(op)
         .map_err(|_| crate::AppError::public("Storage operator already initialized"))?;
+
+    let redirect = match config {
+        StorageConfig::S3 {
+            redirect,
+            presign_expiry,
+            ..
+        } if *redirect => Some(RedirectConfig {
+            presign_expiry: Duration::from_secs(*presign_expiry),
+        }),
+        _ => None,
+    };
+    REDIRECT_CONFIG
+        .set(redirect)
+        .map_err(|_| crate::AppError::public("Redirect config already initialized"))?;
+
     Ok(())
 }
 
@@ -22,6 +43,26 @@ pub fn operator() -> &'static Operator {
     OPERATOR
         .get()
         .expect("Storage operator not initialized. Call storage::init() first.")
+}
+
+/// Whether redirect mode is enabled (S3 with presigned URLs).
+pub fn is_redirect_enabled() -> bool {
+    REDIRECT_CONFIG
+        .get()
+        .map(|c| c.is_some())
+        .unwrap_or(false)
+}
+
+/// Generate a presigned URL for reading the given key.
+/// Returns `None` if redirect is not enabled.
+pub async fn presign_read(key: &str) -> AppResult<Option<String>> {
+    let Some(Some(config)) = REDIRECT_CONFIG.get() else {
+        return Ok(None);
+    };
+    let presigned = operator()
+        .presign_read(key, config.presign_expiry)
+        .await?;
+    Ok(Some(presigned.uri().to_string()))
 }
 
 fn build_operator(config: &StorageConfig) -> AppResult<Operator> {
@@ -35,6 +76,7 @@ fn build_operator(config: &StorageConfig) -> AppResult<Operator> {
             secret_access_key,
             prefix,
             path_style,
+            ..
         } => build_s3_operator(
             bucket,
             region,

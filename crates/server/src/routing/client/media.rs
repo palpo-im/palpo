@@ -66,6 +66,11 @@ pub async fn get_content(
 
         let key = media_storage_key(&args.server_name, &args.media_id);
         if storage::exists(&key).await? {
+            // Try presigned URL redirect for S3 storage
+            if let Some(url) = storage::presign_read(&key).await? {
+                res.render(Redirect::found(url));
+                return Ok(());
+            }
             let data = storage::read(&key).await?;
             res.add_header(CONTENT_TYPE, content_type.to_string(), true)?;
             if let Some(file_name) = &metadata.file_name {
@@ -118,6 +123,11 @@ pub async fn get_content_with_filename(
 
     let key = media_storage_key(&args.server_name, &args.media_id);
     if storage::exists(&key).await? {
+        // Try presigned URL redirect for S3 storage
+        if let Some(url) = storage::presign_read(&key).await? {
+            res.render(Redirect::found(url));
+            return Ok(());
+        }
         let data = storage::read(&key).await?;
         res.add_header(
             "Content-Disposition",
@@ -345,6 +355,11 @@ pub async fn get_thumbnail(
             ..
         })) => {
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
+            // Try presigned URL redirect for S3 storage
+            if let Some(url) = storage::presign_read(&key).await? {
+                res.render(Redirect::found(url));
+                return Ok(());
+            }
             let data = storage::read(&key).await?;
             let ct = content_type.as_deref().unwrap_or("application/octet-stream");
             res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
@@ -371,6 +386,11 @@ pub async fn get_thumbnail(
         height,
     )? {
         let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
+        // Try presigned URL redirect for S3 storage
+        if let Some(url) = storage::presign_read(&key).await? {
+            res.render(Redirect::found(url));
+            return Ok(());
+        }
         let data = storage::read(&key).await?;
         let ct = content_type.as_deref().unwrap_or("application/octet-stream");
         res.add_header(CONTENT_TYPE, ct, true)?;
