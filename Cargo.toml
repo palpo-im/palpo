@@ -97,7 +97,7 @@ rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
 reqwest = { version = "0.13.2", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.89.3", features = ["rustls"]}
+salvo = { version = "0.91.1", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
