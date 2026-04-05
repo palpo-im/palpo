@@ -68,7 +68,7 @@ html5ever = "0.39.0"
 http = "1.4.0"
 image = "0.25.10"
 opendal = { version = "0.55.0", default-features = false }
-indexmap = "2.13.0"
+indexmap = "2.13.1"
 itertools = "0.14.0"
 jsonwebtoken = { version = "10.3.0", default-features = false, features = [
     "use_pem",
