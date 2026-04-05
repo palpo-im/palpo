@@ -49,6 +49,11 @@ pub async fn get_content(
 
         let key = media_storage_key(server_name, &args.media_id);
         if storage::exists(&key).await? {
+            // Try presigned URL redirect for S3 storage
+            if let Some(url) = storage::presign_read(&key).await? {
+                res.render(salvo::prelude::Redirect::found(url));
+                return Ok(());
+            }
             let data = storage::read(&key).await?;
             res.add_header("Content-Type", content_type.to_string(), true)?;
             res.body = salvo::http::ResBody::Once(data.into());
@@ -77,6 +82,14 @@ pub async fn get_thumbnail(
         args.height,
     )? {
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
+        // Try presigned URL redirect for S3 storage
+        if let Some(url) = storage::presign_read(&key).await? {
+            res.render(ThumbnailResBody {
+                content: FileOrLocation::Location(url),
+                metadata: ContentMetadata::new(),
+            });
+            return Ok(());
+        }
         let file_data = storage::read(&key).await?;
 
         let content_disposition = make_content_disposition(
@@ -105,6 +118,14 @@ pub async fn get_thumbnail(
     {
         // Using saved thumbnail
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
+        // Try presigned URL redirect for S3 storage
+        if let Some(url) = storage::presign_read(&key).await? {
+            res.render(ThumbnailResBody {
+                content: FileOrLocation::Location(url),
+                metadata: ContentMetadata::new(),
+            });
+            return Ok(());
+        }
         let file_data = storage::read(&key).await?;
         let content_disposition = make_content_disposition(
             Some(ContentDispositionType::Inline),

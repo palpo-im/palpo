@@ -57,6 +57,16 @@ pub enum StorageConfig {
         /// Enable path-style access (required for MinIO). Defaults to false.
         #[serde(default)]
         path_style: bool,
+
+        /// Redirect media downloads to S3 presigned URLs instead of proxying
+        /// through the server. Saves bandwidth and reduces server load.
+        /// Defaults to true.
+        #[serde(default = "default_redirect")]
+        redirect: bool,
+
+        /// Presigned URL expiry in seconds. Defaults to 300 (5 minutes).
+        #[serde(default = "default_presign_expiry")]
+        presign_expiry: u64,
     },
 }
 
@@ -78,4 +88,12 @@ fn default_s3_region() -> String {
 
 fn default_s3_prefix() -> String {
     "media/".to_owned()
+}
+
+fn default_redirect() -> bool {
+    true
+}
+
+fn default_presign_expiry() -> u64 {
+    300
 }
