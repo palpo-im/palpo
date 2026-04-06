@@ -368,14 +368,68 @@ async fn get_access_token(
 /// - Deletes device metadata (device id, device display name, last seen ip, last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
+/// - With delegated auth: revokes the OAuth2 token at the auth provider
 #[endpoint]
-async fn logout(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
+async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyResult {
     let Ok(authed) = depot.authed_info() else {
         return empty_ok();
     };
 
+    // When using delegated auth, also revoke the access token at the OIDC
+    // provider so that the browser session is properly invalidated.
+    if let Some(da) = config::get().enabled_delegated_auth() {
+        if let Some(token) = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        {
+            if let Err(e) = revoke_delegated_token(da, token).await {
+                tracing::warn!("Failed to revoke delegated auth token: {e}");
+            }
+        }
+    }
+
     data::user::device::remove_device(authed.user_id(), authed.device_id())?;
     empty_ok()
+}
+
+/// Call the OIDC provider's revocation endpoint to end the OAuth2 session.
+async fn revoke_delegated_token(
+    da: &config::DelegatedAuthConfig,
+    access_token: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let issuer = da
+        .issuer
+        .as_deref()
+        .ok_or("delegated auth issuer not configured")?;
+    let mas_secret = config::get()
+        .admin
+        .mas_secret
+        .as_deref()
+        .ok_or("admin.mas_secret not configured")?;
+
+    let revocation_url = format!("{}/oauth2/revoke", issuer.trim_end_matches('/'));
+
+    let client = crate::sending::default_client();
+    let response = client
+        .post(&revocation_url)
+        .bearer_auth(mas_secret)
+        .form(&[
+            ("token", access_token),
+            ("token_type_hint", "access_token"),
+        ])
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        tracing::warn!(
+            "Token revocation returned status: {}",
+            response.status()
+        );
+    }
+
+    Ok(())
 }
 
 /// #POST /_matrix/client/r0/logout/all
