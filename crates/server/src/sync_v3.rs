@@ -22,7 +22,7 @@ use crate::core::serde::RawJson;
 use crate::core::{Seqnum, UnixMillis};
 use crate::event::{BatchToken, EventHash, PduEvent, SnPduEvent};
 use crate::room::{state, timeline};
-use crate::{AppError, AppResult, config, data, extract_variant, room};
+use crate::{AppError, AppResult, MatrixError, config, data, extract_variant, room};
 
 pub const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] = &[
     TimelineEventType::CallInvite,
@@ -57,7 +57,10 @@ pub async fn sync_events(
         None => FilterDefinition::default(),
         Some(Filter::FilterDefinition(filter)) => filter.to_owned(),
         Some(Filter::FilterId(filter_id)) => {
-            data::user::get_filter(sender_id, filter_id.parse::<i64>().unwrap_or_default())?
+            let filter_id: i64 = filter_id
+                .parse()
+                .map_err(|_| MatrixError::invalid_param("Invalid filter ID"))?;
+            data::user::get_filter(sender_id, filter_id)?
         }
     };
     let _lazy_load_enabled = filter.room.state.lazy_load_options.is_enabled()

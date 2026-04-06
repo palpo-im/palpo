@@ -204,10 +204,9 @@ pub async fn find_from_openid_token(token: &str) -> AppResult<OwnedUserId> {
 /// Creates a short-lived login token, which can be used to log in using the
 /// `m.login.token` mechanism.
 pub fn create_login_token(user_id: &UserId, token: &str) -> AppResult<u64> {
-    use std::num::Saturating as Sat;
-
     let expires_in = crate::config::get().login_token_ttl;
-    let expires_at = (Sat(UnixMillis::now().get()) + Sat(expires_in)).0 as i64;
+    let now = UnixMillis::now().get();
+    let expires_at = now.saturating_add(expires_in).min(i64::MAX as u64) as i64;
 
     diesel::insert_into(user_login_tokens::table)
         .values((

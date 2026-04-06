@@ -156,7 +156,7 @@ fn get_event_auth_chain(room_id: &RoomId, event_id: &EventId) -> AppResult<Vec<S
 
 fn get_cached_auth_chain(cache_key: &[Seqnum]) -> AppResult<Option<Arc<Vec<Seqnum>>>> {
     // Check RAM cache
-    if let Some(result) = AUTH_CHAIN_CACHE.lock().unwrap().get_mut(cache_key) {
+    if let Some(result) = AUTH_CHAIN_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(cache_key) {
         return Ok(Some(Arc::clone(result)));
     }
 
