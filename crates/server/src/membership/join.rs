@@ -366,7 +366,7 @@ pub async fn join_room(
                 AppError::public("invalid pdu in send_join response.")
             })?;
 
-            NewDbEvent::from_canonical_json(&event_id, event_sn, &value, false)?.save()?;
+            NewDbEvent::from_canonical_json_with_room_id(&event_id, event_sn, &value, false, room_id)?.save()?;
             DbEventData {
                 event_id: pdu.event_id.to_owned(),
                 event_sn,
@@ -401,7 +401,7 @@ pub async fn join_room(
 
         if !timeline::has_pdu(&event_id) {
             let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id)?;
-            NewDbEvent::from_canonical_json(&event_id, event_sn, &value, false)?.save()?;
+            NewDbEvent::from_canonical_json_with_room_id(&event_id, event_sn, &value, false, room_id)?.save()?;
             DbEventData {
                 event_id: event_id.to_owned(),
                 event_sn,
@@ -455,11 +455,12 @@ pub async fn join_room(
     state::force_state(room_id, frame_id, appended, disposed)?;
     info!("appending new room join event");
     diesel::insert_into(events::table)
-        .values(NewDbEvent::from_canonical_json(
+        .values(NewDbEvent::from_canonical_json_with_room_id(
             &event_id,
             join_event_sn,
             &join_event,
             false,
+            room_id,
         )?)
         .on_conflict_do_nothing()
         .execute(&mut connect()?)?;
@@ -508,16 +509,29 @@ pub async fn get_first_user_can_issue_invite(
     invitee_id: &UserId,
     restriction_rooms: &[OwnedRoomId],
 ) -> AppResult<OwnedUserId> {
-    if restriction_rooms.iter().any(|restriction_room_id| {
+    let invitee_in_restriction_room = restriction_rooms.iter().any(|restriction_room_id| {
         room::user::is_joined(invitee_id, restriction_room_id).unwrap_or(false)
-    }) {
-        for joined_user in room::joined_users(room_id, None)? {
+    });
+    if !invitee_in_restriction_room {
+        debug!(
+            "get_first_user_can_issue_invite: invitee {invitee_id} not in any restriction room {:?}",
+            restriction_rooms
+        );
+    }
+    if invitee_in_restriction_room {
+        let joined_users: Vec<_> = room::joined_users(room_id, None)?;
+        for joined_user in &joined_users {
             if joined_user.server_name() == config::get().server_name
-                && room::user_can_invite(room_id, &joined_user, invitee_id).await
+                && room::user_can_invite(room_id, joined_user, invitee_id).await
             {
-                return Ok(joined_user);
+                return Ok(joined_user.clone());
             }
         }
+        debug!(
+            "get_first_user_can_issue_invite: no local user with invite power in room {room_id}, \
+             checked {} joined users",
+            joined_users.len()
+        );
     }
     Err(MatrixError::not_found("no user can issue invite in this room").into())
 }

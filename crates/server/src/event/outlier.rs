@@ -134,7 +134,7 @@ impl OutlierPdu {
         }
         let (event_sn, event_guard) = ensure_event_sn(&room_id, &pdu.event_id)?;
         let mut db_event =
-            NewDbEvent::from_canonical_json(&pdu.event_id, event_sn, &json_data, is_backfill)?;
+            NewDbEvent::from_canonical_json_with_room_id(&pdu.event_id, event_sn, &json_data, is_backfill, &room_id)?;
         db_event.is_outlier = true;
         db_event.soft_failed = soft_failed;
         db_event.is_rejected = pdu.rejection_reason.is_some();

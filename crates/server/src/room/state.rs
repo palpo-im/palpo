@@ -432,7 +432,7 @@ pub fn get_auth_events(
     let mut sauth_events = auth_types
         .into_iter()
         .filter_map(|(event_type, state_key)| {
-            get_field_id(&event_type.to_string().into(), &state_key)
+            ensure_field_id(&event_type.to_string().into(), &state_key)
                 .ok()
                 .map(|field_id| (field_id, (event_type, state_key)))
         })

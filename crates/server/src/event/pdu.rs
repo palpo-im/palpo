@@ -1000,8 +1000,17 @@ impl PduBuilder {
                     Ok(pdu.into_inner())
                 }
             } else {
+                // If the state event is not found in auth_events, try to look it up
+                // directly from room state as a fallback.
+                if let Ok(state_pdu) = crate::room::get_state(room_id, &k, &s, None) {
+                    return Ok(state_pdu.pdu);
+                }
+                warn!(
+                    "hash_sign: missing state event in auth_events for room {room_id}, event_type: {k}, state_key: {s}, auth_events keys: {:?}",
+                    auth_events.keys().collect::<Vec<_>>()
+                );
                 Err(StateError::other(format!(
-                    "failed hash and sigin event, missing state event, event_type: {k}, state_key:{s}"
+                    "failed hash and sign event, missing state event, event_type: {k}, state_key:{s}"
                 )))
             }
         };
