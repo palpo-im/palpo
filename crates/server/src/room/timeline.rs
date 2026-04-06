@@ -325,6 +325,9 @@ pub async fn append_pdu(
     let mut notifies = Vec::new();
     let mut highlights = Vec::new();
 
+    // Fetch power levels once for the room, outside the per-user loop
+    let power_levels = crate::room::get_power_levels(pdu.room_id()).await.ok();
+
     for user_id in super::get_our_real_users(&pdu.room_id)?.iter() {
         // Don't notify the user of their own events
         if user_id == &pdu.sender {
@@ -341,11 +344,11 @@ pub async fn append_pdu(
         let mut highlight = false;
         let mut notify = false;
 
-        if let Ok(power_levels) = crate::room::get_power_levels(pdu.room_id()).await {
+        if let Some(power_levels) = &power_levels {
             for action in data::user::pusher::get_actions(
                 user_id,
                 &rules_for_user,
-                &power_levels,
+                power_levels,
                 &sync_pdu,
                 &pdu.room_id,
             )
@@ -373,12 +376,14 @@ pub async fn append_pdu(
         {
             error!("failed to upsert event push action: {}", e);
         }
-        push_action::refresh_notify_summary(&pdu.sender, &pdu.room_id)?;
 
         for push_key in data::user::pusher::get_push_keys(user_id)? {
             crate::sending::send_push_pdu(&pdu.event_id, user_id, push_key)?;
         }
     }
+
+    // Refresh notification summary once after processing all users
+    push_action::refresh_notify_summary(&pdu.sender, &pdu.room_id)?;
 
     match pdu.event_ty {
         TimelineEventType::RoomRedaction => {
