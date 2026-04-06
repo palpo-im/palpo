@@ -42,7 +42,21 @@ trusted_servers = []
 appservice_registration_dir = "/complement/appservice"
 
 # Disable rate limiting for Complement tests
-rate_limit_max_requests = 0
+[rc_login]
+per_second = 9999.0
+burst = 9999
+
+[rc_registration]
+per_second = 9999.0
+burst = 9999
+
+[rc_password]
+per_second = 9999.0
+burst = 9999
+
+[rc_message]
+per_second = 9999.0
+burst = 9999
 
 ip_range_denylist = []
 

@@ -105,47 +105,87 @@ async fn access_control(
     // headers.insert("Cross-Origin-Opener-Policy", "same-origin".parse().unwrap());
 }
 
-/// Per-IP rate limiter state: maps IP → (window_start, request_count)
-static RATE_LIMIT_MAP: LazyLock<Mutex<HashMap<String, (Instant, u32)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Token-bucket rate limiter: maps IP → (available_tokens, last_check_time)
+struct RateLimiter {
+    buckets: Mutex<HashMap<String, (f64, Instant)>>,
+}
 
-#[handler]
-pub async fn limit_rate(req: &mut Request) -> AppResult<()> {
-    let config = crate::config::get();
-    let max_requests = config.rate_limit_max_requests;
-
-    // 0 means rate limiting is disabled
-    if max_requests == 0 {
-        return Ok(());
-    }
-
-    let ip = match req.remote_addr() {
-        salvo::conn::SocketAddr::IPv4(a) => a.ip().to_string(),
-        salvo::conn::SocketAddr::IPv6(a) => a.ip().to_string(),
-        _ => String::new(),
-    };
-
-    if ip.is_empty() {
-        return Ok(());
-    }
-
-    let window_secs = config.rate_limit_window_secs;
-    let mut map = RATE_LIMIT_MAP.lock().unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
-    let entry = map.entry(ip).or_insert((now, 0));
-
-    if now.duration_since(entry.0).as_secs() >= window_secs {
-        // Reset window
-        *entry = (now, 1);
-        Ok(())
-    } else {
-        entry.1 += 1;
-        if entry.1 > max_requests {
-            Err(MatrixError::limit_exceeded("Too many requests. Please try again later.", None).into())
-        } else {
-            Ok(())
+impl RateLimiter {
+    fn new() -> Self {
+        Self {
+            buckets: Mutex::new(HashMap::new()),
         }
     }
+
+    fn check(&self, ip: &str, cfg: &crate::config::RateLimitConfig) -> AppResult<()> {
+        if cfg.per_second <= 0.0 || cfg.burst == 0 {
+            return Ok(());
+        }
+
+        let mut map = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let burst = cfg.burst as f64;
+        let entry = map.entry(ip.to_owned()).or_insert((burst, now));
+
+        // Refill tokens based on elapsed time
+        let elapsed = now.duration_since(entry.1).as_secs_f64();
+        entry.1 = now;
+        entry.0 = (entry.0 + elapsed * cfg.per_second).min(burst);
+
+        // Try to consume 1 token
+        if entry.0 >= 1.0 {
+            entry.0 -= 1.0;
+            Ok(())
+        } else {
+            Err(MatrixError::limit_exceeded("Too many requests. Please try again later.", None).into())
+        }
+    }
+}
+
+fn extract_ip(req: &Request) -> Option<String> {
+    match req.remote_addr() {
+        salvo::conn::SocketAddr::IPv4(a) => Some(a.ip().to_string()),
+        salvo::conn::SocketAddr::IPv6(a) => Some(a.ip().to_string()),
+        _ => None,
+    }
+}
+
+static LOGIN_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static REGISTRATION_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static PASSWORD_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static MESSAGE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+
+#[handler]
+pub async fn limit_rate_login(req: &mut Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        LOGIN_LIMITER.check(&ip, &crate::config::get().rc_login)?;
+    }
+    Ok(())
+}
+
+#[handler]
+pub async fn limit_rate_registration(req: &mut Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        REGISTRATION_LIMITER.check(&ip, &crate::config::get().rc_registration)?;
+    }
+    Ok(())
+}
+
+#[handler]
+pub async fn limit_rate_password(req: &mut Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        PASSWORD_LIMITER.check(&ip, &crate::config::get().rc_password)?;
+    }
+    Ok(())
+}
+
+/// General rate limiter for authenticated API endpoints.
+#[handler]
+pub async fn limit_rate(req: &mut Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        MESSAGE_LIMITER.check(&ip, &crate::config::get().rc_message)?;
+    }
+    Ok(())
 }
 
 // utf8 will cause complement testing fail.

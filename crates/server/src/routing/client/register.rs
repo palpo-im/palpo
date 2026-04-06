@@ -24,7 +24,7 @@ use crate::{
 
 pub fn public_router() -> Router {
     Router::with_path("register").push(
-        Router::with_hoop(hoops::limit_rate)
+        Router::with_hoop(hoops::limit_rate_registration)
             .push(Router::with_path("available").get(available))
             .post(register)
             .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),

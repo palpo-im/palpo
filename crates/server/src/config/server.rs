@@ -286,20 +286,32 @@ pub struct ServerConfig {
     /// example: "/etc/palpo/.reg_token"
     pub registration_token_file: Option<PathBuf>,
 
-    /// Maximum number of requests per IP within the rate limit window for
-    /// sensitive endpoints (login, register, password change).
+    /// Per-IP rate limiting for login endpoints.
+    /// Uses token-bucket algorithm: tokens refill at `per_second` rate,
+    /// up to `burst` capacity. Each request costs 1 token.
+    /// Set `per_second` to 0 to disable.
     ///
-    /// Set to 0 to disable rate limiting entirely.
-    ///
-    /// default: 30
-    #[serde(default = "default_rate_limit_max_requests")]
-    pub rate_limit_max_requests: u32,
+    /// default: { per_second = 0.003, burst = 5 } (~1 login per 5 min, burst of 5)
+    #[serde(default = "default_rc_login")]
+    pub rc_login: RateLimitConfig,
 
-    /// Rate limit window duration in seconds.
+    /// Per-IP rate limiting for registration endpoints.
     ///
-    /// default: 60
-    #[serde(default = "default_rate_limit_window_secs")]
-    pub rate_limit_window_secs: u64,
+    /// default: { per_second = 0.17, burst = 3 } (~1 per 6s, burst of 3)
+    #[serde(default = "default_rc_registration")]
+    pub rc_registration: RateLimitConfig,
+
+    /// Per-IP rate limiting for password change / account deactivation.
+    ///
+    /// default: { per_second = 0.17, burst = 3 }
+    #[serde(default = "default_rc_password")]
+    pub rc_password: RateLimitConfig,
+
+    /// Per-IP rate limiting for general API endpoints.
+    ///
+    /// default: { per_second = 10.0, burst = 50 }
+    #[serde(default = "default_rc_message")]
+    pub rc_message: RateLimitConfig,
 
     /// Always calls /forget on behalf of the user if leaving a room. This is a
     /// part of MSC4267 "Automatically forgetting rooms on leave"
@@ -1313,10 +1325,39 @@ fn default_pusher_idle_timeout() -> u64 {
     15_000
 }
 
-fn default_rate_limit_max_requests() -> u32 {
-    30
+/// Token-bucket rate limit settings.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RateLimitConfig {
+    /// Tokens refilled per second. Set to 0 to disable this rate limiter.
+    pub per_second: f64,
+    /// Maximum token capacity (burst size).
+    pub burst: u32,
 }
 
-fn default_rate_limit_window_secs() -> u64 {
-    60
+fn default_rc_login() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.003,
+        burst: 5,
+    }
+}
+
+fn default_rc_registration() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.17,
+        burst: 3,
+    }
+}
+
+fn default_rc_password() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.17,
+        burst: 3,
+    }
+}
+
+fn default_rc_message() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 10.0,
+        burst: 50,
+    }
 }

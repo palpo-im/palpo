@@ -171,16 +171,24 @@
 #
 # registration_token_file =
 
-# Maximum number of requests per IP within the rate limit window for
-# sensitive endpoints (login, register, password change).
+# Per-IP rate limiting for login endpoints.
+# Uses token-bucket algorithm: tokens refill at `per_second` rate,
+# up to `burst` capacity. Each request costs 1 token.
+# Set `per_second` to 0 to disable.
 #
-# Set to 0 to disable rate limiting entirely.
-#
-# rate_limit_max_requests = 30
+# rc_login = { per_second = 0.003, burst = 5 } (~1 login per 5 min, burst of 5)
 
-# Rate limit window duration in seconds.
+# Per-IP rate limiting for registration endpoints.
 #
-# rate_limit_window_secs = 60
+# rc_registration = { per_second = 0.17, burst = 3 } (~1 per 6s, burst of 3)
+
+# Per-IP rate limiting for password change / account deactivation.
+#
+# rc_password = { per_second = 0.17, burst = 3 }
+
+# Per-IP rate limiting for general API endpoints.
+#
+# rc_message = { per_second = 10.0, burst = 50 }
 
 # Always calls /forget on behalf of the user if leaving a room. This is a
 # part of MSC4267 "Automatically forgetting rooms on leave"

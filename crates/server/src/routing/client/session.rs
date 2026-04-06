@@ -23,7 +23,7 @@ use crate::{
 pub fn public_router() -> Router {
     Router::new().push(
         Router::with_path("login")
-            .hoop(hoops::limit_rate)
+            .hoop(hoops::limit_rate_login)
             .get(login_types)
             .post(login)
             .push(
@@ -37,7 +37,7 @@ pub fn authed_router() -> Router {
     Router::new()
         .push(
             Router::with_path("login")
-                .hoop(hoops::limit_rate)
+                .hoop(hoops::limit_rate_login)
                 .push(Router::with_path("get_token").post(get_access_token)),
         )
         .push(Router::with_path("refresh").post(refresh_access_token))
