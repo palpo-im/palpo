@@ -17,6 +17,12 @@ pub fn increment_notification_counts(
         .select((event_points::room_id, event_points::thread_id))
         .first::<(OwnedRoomId, Option<OwnedEventId>)>(&mut connect()?)?;
 
+    let stream_ordering = events::table
+        .find(event_id)
+        .select(events::stream_ordering)
+        .first::<i64>(&mut connect()?)
+        .unwrap_or(1);
+
     for user_id in notifies {
         let rows = if let Some(thread_id) = &thread_id {
             diesel::update(
@@ -51,8 +57,7 @@ pub fn increment_notification_counts(
                     event_push_summaries::notification_count.eq(1),
                     event_push_summaries::unread_count.eq(1),
                     event_push_summaries::thread_id.eq(&thread_id),
-                    event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
-                                                                  * ordering */
+                    event_push_summaries::stream_ordering.eq(stream_ordering),
                 ))
                 .execute(&mut connect()?)?;
         }
@@ -89,8 +94,7 @@ pub fn increment_notification_counts(
                     event_push_summaries::highlight_count.eq(1),
                     event_push_summaries::unread_count.eq(1),
                     event_push_summaries::thread_id.eq(&thread_id),
-                    event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
-                                                                  * ordering */
+                    event_push_summaries::stream_ordering.eq(stream_ordering),
                 ))
                 .execute(&mut connect()?)?;
         }
@@ -198,6 +202,18 @@ pub fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<(
             .filter(event_push_summaries::thread_id.ne_all(&thread_ids)),
     )
     .execute(&mut connect()?)?;
+    // Get the latest stream_ordering for this room's push actions
+    let latest_stream_ordering: i64 = event_push_actions::table
+        .filter(event_push_actions::user_id.eq(user_id))
+        .filter(event_push_actions::room_id.eq(room_id))
+        .filter(event_push_actions::stream_ordering.is_not_null())
+        .order(event_push_actions::stream_ordering.desc())
+        .select(event_push_actions::stream_ordering)
+        .first::<Option<i64>>(&mut connect()?)
+        .ok()
+        .flatten()
+        .unwrap_or(1);
+
     for thread_id in &thread_ids {
         let query = event_push_actions::table
             .filter(event_push_actions::user_id.eq(user_id))
@@ -237,8 +253,7 @@ pub fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<(
                     event_push_summaries::notification_count.eq(notification_count),
                     event_push_summaries::highlight_count.eq(highlight_count),
                     event_push_summaries::unread_count.eq(unread_count),
-                    event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
-                                                                  * ordering */
+                    event_push_summaries::stream_ordering.eq(latest_stream_ordering),
                 ))
                 .execute(&mut connect()?)?;
         }
@@ -281,8 +296,7 @@ pub fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<(
                 event_push_summaries::notification_count.eq(notification_count),
                 event_push_summaries::highlight_count.eq(highlight_count),
                 event_push_summaries::unread_count.eq(unread_count),
-                event_push_summaries::stream_ordering.eq(1), /* TODO: use the correct stream
-                                                              * ordering */
+                event_push_summaries::stream_ordering.eq(latest_stream_ordering),
             ))
             .execute(&mut connect()?)?;
     }
