@@ -144,6 +144,14 @@ type_complexity = "allow"
 too_many_arguments = "allow"
 large_enum_variant = "allow"
 
+[patch.crates-io]
+salvo = { git = "https://github.com/salvo-rs/salvo.git", branch = "main" }
+salvo_core = { git = "https://github.com/salvo-rs/salvo.git", branch = "main" }
+salvo-oapi = { git = "https://github.com/salvo-rs/salvo.git", branch = "main" }
+salvo-oapi-macros = { git = "https://github.com/salvo-rs/salvo.git", branch = "main" }
+salvo_macros = { git = "https://github.com/salvo-rs/salvo.git", branch = "main" }
+salvo-serde-util = { git = "https://github.com/salvo-rs/salvo.git", branch = "main" }
+
 [profile.release]
 codegen-units = 1
 lto = true

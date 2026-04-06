@@ -474,7 +474,7 @@ impl UserProfile {
 }
 
 /// Represents either a room or user ID for returning grouped search results.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(ToSchema, Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[allow(clippy::exhaustive_enums)]
 pub enum OwnedRoomIdOrUserId {
     /// Represents a room ID.

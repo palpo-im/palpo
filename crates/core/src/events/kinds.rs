@@ -1,7 +1,7 @@
 #![allow(clippy::exhaustive_structs)]
 
 use as_variant::as_variant;
-use salvo::oapi::ToSchema;
+use salvo::oapi::{ComposeSchema, ToSchema};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -251,7 +251,7 @@ pub struct RedactedSyncMessageLikeEvent<C: RedactedMessageLikeEventContent> {
 /// the event's `EventId`.
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
-#[salvo(schema(bound = "C: ToSchema + 'static, C::Redacted: ToSchema + 'static"))]
+#[salvo(schema(bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"))]
 pub enum MessageLikeEvent<C: MessageLikeEventContent + RedactContent>
 where
     C::Redacted: RedactedMessageLikeEventContent,
@@ -270,7 +270,7 @@ where
 /// the event's `EventId`.
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
-#[salvo(schema(bound = "C: ToSchema + 'static, C::Redacted: ToSchema + 'static"))]
+#[salvo(schema(bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"))]
 pub enum SyncMessageLikeEvent<C: MessageLikeEventContent + RedactContent>
 where
     C::Redacted: RedactedMessageLikeEventContent,
@@ -310,6 +310,7 @@ pub struct OriginalStateEvent<C: StaticStateEventContent> {
     ///
     /// This is often an empty string, but some events send a `UserId` to show
     /// which user the event affects.
+    #[salvo(schema(value_type = String))]
     pub state_key: C::StateKey,
 
     /// Additional key-value pairs not signed by the homeserver.
@@ -342,6 +343,7 @@ pub struct OriginalSyncStateEvent<C: StaticStateEventContent> {
     ///
     /// This is often an empty string, but some events send a `UserId` to show
     /// which user the event affects.
+    #[salvo(schema(value_type = String))]
     pub state_key: C::StateKey,
 
     /// Additional key-value pairs not signed by the homeserver.
@@ -364,6 +366,7 @@ pub struct StrippedStateEvent<C: PossiblyRedactedStateEventContent> {
     ///
     /// This is often an empty string, but some events send a `UserId` to show
     /// which user the event affects.
+    #[salvo(schema(value_type = String))]
     pub state_key: C::StateKey,
 
     /// Timestamp on the originating homeserver when this event was sent.
@@ -375,6 +378,7 @@ pub struct StrippedStateEvent<C: PossiblyRedactedStateEventContent> {
 
     /// Additional key-value pairs not signed by the homeserver.
     #[cfg(feature = "unstable-msc4319")]
+    #[salvo(schema(value_type = Object))]
     pub unsigned: Option<RawJson<crate::events::StateUnsigned<C>>>,
 }
 
@@ -391,6 +395,7 @@ pub struct InitialStateEvent<C: StaticStateEventContent> {
     /// which user the event affects.
     ///
     /// Defaults to the empty string.
+    #[salvo(schema(value_type = String))]
     pub state_key: C::StateKey,
 }
 
@@ -488,6 +493,7 @@ pub struct RedactedStateEvent<C: RedactedStateEventContent> {
     ///
     /// This is often an empty string, but some events send a `UserId` to show
     /// which user the event affects.
+    #[salvo(schema(value_type = String))]
     pub state_key: C::StateKey,
 
     /// Additional key-value pairs not signed by the homeserver.
@@ -520,6 +526,7 @@ pub struct RedactedSyncStateEvent<C: RedactedStateEventContent> {
     ///
     /// This is often an empty string, but some events send a `UserId` to show
     /// which user the event affects.
+    #[salvo(schema(value_type = String))]
     pub state_key: C::StateKey,
 
     /// Additional key-value pairs not signed by the homeserver.
@@ -535,7 +542,7 @@ pub struct RedactedSyncStateEvent<C: RedactedStateEventContent> {
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
 #[salvo(schema(
-    bound = "C: ToSchema + 'static, C::Redacted: ToSchema + 'static, <<C as RedactContent>::Redacted as RedactedStateEventContent>::StateKey: ToSchema + 'static, <C as StateEventContent>::StateKey: ToSchema + 'static, C::Unsigned: ToSchema + 'static"
+    bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static, <<C as RedactContent>::Redacted as RedactedStateEventContent>::StateKey: ToSchema + ComposeSchema + 'static, <C as StateEventContent>::StateKey: ToSchema + ComposeSchema + 'static, C::Unsigned: ToSchema + ComposeSchema + 'static"
 ))]
 pub enum StateEvent<C: StaticStateEventContent + RedactContent>
 where
@@ -556,7 +563,7 @@ where
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
 #[salvo(schema(
-    bound = "C: ToSchema + 'static, C::Redacted: ToSchema + 'static, <C as StateEventContent>::StateKey: ToSchema + 'static,<<C as RedactContent>::Redacted as RedactedStateEventContent>::StateKey: ToSchema + 'static, C::Unsigned: ToSchema + 'static"
+    bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static, <C as StateEventContent>::StateKey: ToSchema + ComposeSchema + 'static, <<C as RedactContent>::Redacted as RedactedStateEventContent>::StateKey: ToSchema + ComposeSchema + 'static, C::Unsigned: ToSchema + ComposeSchema + 'static"
 ))]
 pub enum SyncStateEvent<C: StaticStateEventContent + RedactContent>
 where
@@ -635,7 +642,7 @@ pub struct DecryptedMegolmV1Event<C: MessageLikeEventContent> {
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
 #[salvo(schema(
-    bound = "C: ToSchema + 'static, C::PossiblyRedacted: ToSchema + 'static, C::Redacted: ToSchema + 'static"
+    bound = "C: ToSchema + ComposeSchema + 'static, C::PossiblyRedacted: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"
 ))]
 pub enum StateEventContentChange<C: StaticStateEventContent + RedactContent> {
     /// Original, unredacted content of the event.

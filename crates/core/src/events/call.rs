@@ -49,7 +49,7 @@ impl SessionDescription {
     }
 }
 /// Metadata about a VoIP stream.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
 pub struct StreamMetadata {
     /// The purpose of the stream.
     pub purpose: StreamPurpose,
@@ -80,7 +80,7 @@ impl StreamMetadata {
 
 /// The purpose of a VoIP stream.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
-#[derive(Clone, StringEnum)]
+#[derive(ToSchema, Clone, StringEnum)]
 #[palpo_enum(rename_all(prefix = "m.", rule = "lowercase"))]
 #[non_exhaustive]
 pub enum StreamPurpose {

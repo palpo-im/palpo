@@ -30,7 +30,7 @@ impl VerifyKey {
 }
 
 /// A key the server used to use, but stopped using.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
 pub struct OldVerifyKey {
     /// Timestamp when this key expired.
     pub expired_ts: UnixMillis,

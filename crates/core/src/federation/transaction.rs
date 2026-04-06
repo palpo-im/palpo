@@ -179,7 +179,7 @@ impl ReceiptMap {
 }
 
 /// Metadata about the event that was last read and when.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
 pub struct ReceiptData {
     /// Metadata for the read receipt.
     pub data: Receipt,

@@ -74,7 +74,7 @@ impl ThreadSubscriptionsChangesReqArgs {
 }
 
 /// A thread has been subscribed to at some point.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
 pub struct ThreadSubscription {
     /// Whether the subscription was made automatically by a client, not by manual user choice.
     pub automatic: bool,
@@ -95,7 +95,7 @@ impl ThreadSubscription {
 }
 
 /// A thread has been unsubscribed to at some point.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
 pub struct ThreadUnsubscription {
     /// The bump stamp of the thread subscription, to be used to compare with other changes
     /// related to the same thread.

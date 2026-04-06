@@ -60,7 +60,7 @@ impl AccountImagePackEventContent {
 }
 
 /// An image object in a image pack.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
 pub struct PackImage {
     /// The MXC URI to the media file.
     pub url: OwnedMxcUri,

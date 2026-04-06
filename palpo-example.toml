@@ -428,10 +428,6 @@
 #
 # ip_range_denylist =
 
-# This item is undocumented. Please contribute documentation for it.
-#
-# space_path =
-
 # Whether to query the servers listed in trusted_servers first or query
 # the origin server first. For best security, querying the origin server
 # first is advised to minimize the exposure to a compromised trusted
@@ -535,6 +531,10 @@
 # setting a non-zero value.
 #
 # sender_workers = 0
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# delegated_auth =
 
 # [tls]
 
@@ -814,12 +814,12 @@
 # matching these patterns can communicate. Supports wildcards: `*.example.com`.
 # When `None`, all servers are allowed (subject to `denied_servers`).
 #
-# allowed_servers = false
+# allowed_servers =
 
 # Denylist of servers blocked from federation. Takes precedence over
 # `allowed_servers`. Supports wildcards: `*.evil.com`.
 #
-# denied_servers = false
+# denied_servers = []
 
 # [client]
 
@@ -1346,3 +1346,36 @@
 # example: "https://auth.example.com/"
 #
 # mas_issuer =
+
+# [delegated_auth]
+
+# Enable MSC3861 delegated OIDC authentication.
+# When enabled, Palpo delegates token validation to an external
+# authorization server (like Pasion) via token introspection.
+#
+# enable = false
+
+# The issuer URL of the authorization server (e.g. "http://localhost:8080/").
+# Used in well-known responses and auth_metadata.
+#
+# issuer =
+
+# The token introspection endpoint URL (RFC 7662).
+# Defaults to "{issuer}/oauth2/introspect" if not set.
+#
+# introspection_endpoint =
+
+# The OAuth2 client_id that Palpo uses when redirecting users to the
+# authorization server for SSO login.
+#
+# client_id =
+
+# Optional URL for account management UI.
+# Included in the well-known client response under m.authentication.
+#
+# account_management_url =
+
+# Cache TTL for introspection results in seconds.
+# Set to 0 to disable caching.
+#
+# introspection_cache_ttl = 300

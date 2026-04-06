@@ -670,6 +670,11 @@ impl IdDst {
                     <String>::to_schema(components)
                 }
             }
+            impl #impl_generics salvo::oapi::ComposeSchema for #owned_type {
+                fn compose(components: &mut salvo::oapi::Components, _generics: Vec<salvo::oapi::RefOr<salvo::oapi::Schema>>) -> salvo::oapi::RefOr<salvo::oapi::Schema>{
+                    <String as salvo::oapi::ToSchema>::to_schema(components)
+                }
+            }
 
             impl #impl_generics diesel::deserialize::FromSql<diesel::sql_types::Text, diesel::pg::Pg> for #owned_type {
                 fn from_sql(bytes: diesel::pg::PgValue<'_>) -> diesel::deserialize::Result<Self> {
