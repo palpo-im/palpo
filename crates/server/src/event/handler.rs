@@ -806,6 +806,12 @@ pub async fn auth_check(
                         }
                     },
                     None => {
+                        // Fallback: state_at_incoming_event resolution may be incomplete
+                        // (e.g., for events whose prev_events point to an early room frame).
+                        // Try looking up the state event directly from the room's current state.
+                        if let Ok(state_pdu) = crate::room::get_state(&incoming_pdu.room_id, &k, &s, None) {
+                            return Ok(state_pdu.pdu);
+                        }
                         warn!(
                             "missing state key id {state_key_id} for state type: {k}, state_key: {s}, room: {}", incoming_pdu.room_id
                         );

@@ -126,10 +126,15 @@ pub fn load_pdus(
                 query = query.filter(events::ty.eq_any(types));
             }
         }
+        // Note: don't filter by is_outlier here. Events that arrived via federation
+        // may still be marked as outliers if some processing didn't complete (e.g.,
+        // auth chain resolution), but they should still be visible in sync/messages
+        // if they made it into the room. Filter by is_rejected instead.
         let events: Vec<(OwnedEventId, Seqnum)> = if dir == Direction::Forward {
             query
                 .filter(events::sn.gt(start_sn))
-                .filter(events::is_outlier.eq(false))
+                .filter(events::is_rejected.eq(false))
+                .filter(events::soft_failed.eq(false))
                 .order(events::stream_ordering.desc())
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
@@ -140,7 +145,8 @@ pub fn load_pdus(
         } else {
             query
                 .filter(events::sn.lt(start_sn))
-                .filter(events::is_outlier.eq(false))
+                .filter(events::is_rejected.eq(false))
+                .filter(events::soft_failed.eq(false))
                 .order(events::sn.desc())
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
