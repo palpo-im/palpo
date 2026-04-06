@@ -3,7 +3,7 @@ use salvo::prelude::*;
 use crate::core::client::key::UploadSigningKeysReqBody;
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
 use crate::core::serde::CanonicalJsonValue;
-use crate::{AuthArgs, DepotExt, EmptyResult, MatrixError, SESSION_ID_LENGTH, empty_ok, utils};
+use crate::{AuthArgs, DepotExt, EmptyResult, MatrixError, SESSION_ID_LENGTH, config, data, empty_ok, utils};
 
 /// #POST /_matrix/client/r0/keys/device_signing/upload
 /// Uploads end-to-end key information for the sender user.
@@ -27,7 +27,13 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     };
     let body = serde_json::from_slice::<UploadSigningKeysReqBody>(payload);
     let none_auth = body.as_ref().map(|b| b.auth.is_none()).unwrap_or(true);
-    let uia_required = if none_auth {
+    // When delegated auth (OIDC) is enabled, UIA is not used — the OIDC
+    // token already proves the user's identity.  Pasion calls
+    // `allow_cross_signing_reset` to set a time-limited bypass before
+    // Element uploads new keys, so we also honour that flag.
+    let uia_required = if config::get().enabled_delegated_auth().is_some() {
+        false
+    } else if none_auth {
         let exist_master_key = crate::user::key::get_master_key(sender_id)?;
         let exist_self_signing_key = crate::user::key::get_self_signing_key(sender_id)?;
         let exist_user_signing_key = crate::user::key::get_user_signing_key(sender_id)?;
@@ -36,6 +42,12 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             && exist_user_signing_key.is_none()
         {
             false
+        } else if let Some(expires_ts) =
+            data::user::key::get_cross_signing_replacement_allowed(sender_id)?
+        {
+            let now_ms = crate::core::UnixMillis::now().get() as i64;
+            // Bypass still valid — skip UIA
+            now_ms >= expires_ts
         } else {
             exist_master_key.as_ref()
                 != body.as_ref().map(|b| b.master_key.as_ref()).unwrap_or(None)
