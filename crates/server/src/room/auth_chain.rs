@@ -14,6 +14,8 @@ use crate::room::timeline;
 use crate::{AppResult, MatrixError};
 
 type Bucket<'a> = BTreeSet<(Seqnum, &'a EventId)>;
+// Mutex is used instead of RwLock because LruCache mutates internal state on reads (access ordering).
+// Poisoning is handled via unwrap_or_else to avoid cascading panics.
 static AUTH_CHAIN_CACHE: LazyLock<Mutex<LruCache<Vec<i64>, Arc<Vec<Seqnum>>>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(100_000)));
 
