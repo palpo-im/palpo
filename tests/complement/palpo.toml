@@ -41,6 +41,9 @@ trusted_servers = []
 
 appservice_registration_dir = "/complement/appservice"
 
+# Disable rate limiting for Complement tests
+rate_limit_max_requests = 0
+
 ip_range_denylist = []
 
 [db]

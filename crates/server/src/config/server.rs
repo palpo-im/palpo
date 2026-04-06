@@ -286,6 +286,21 @@ pub struct ServerConfig {
     /// example: "/etc/palpo/.reg_token"
     pub registration_token_file: Option<PathBuf>,
 
+    /// Maximum number of requests per IP within the rate limit window for
+    /// sensitive endpoints (login, register, password change).
+    ///
+    /// Set to 0 to disable rate limiting entirely.
+    ///
+    /// default: 30
+    #[serde(default = "default_rate_limit_max_requests")]
+    pub rate_limit_max_requests: u32,
+
+    /// Rate limit window duration in seconds.
+    ///
+    /// default: 60
+    #[serde(default = "default_rate_limit_window_secs")]
+    pub rate_limit_window_secs: u64,
+
     /// Always calls /forget on behalf of the user if leaving a room. This is a
     /// part of MSC4267 "Automatically forgetting rooms on leave"
     #[serde(default)]
@@ -1296,4 +1311,12 @@ fn default_notification_push_path() -> String {
 
 fn default_pusher_idle_timeout() -> u64 {
     15_000
+}
+
+fn default_rate_limit_max_requests() -> u32 {
+    30
+}
+
+fn default_rate_limit_window_secs() -> u64 {
+    60
 }
