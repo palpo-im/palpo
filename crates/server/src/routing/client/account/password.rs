@@ -11,7 +11,7 @@ use crate::{AuthArgs, EmptyResult, SESSION_ID_LENGTH, empty_ok, hoops, utils};
 
 pub fn authed_router() -> Router {
     Router::with_path("password")
-        .hoop(hoops::limit_rate)
+        .hoop(hoops::limit_rate_password)
         .post(change_password)
 }
 
