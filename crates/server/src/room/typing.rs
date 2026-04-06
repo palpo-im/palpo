@@ -51,12 +51,19 @@ pub async fn add_typing(
 }
 
 /// Removes a user from typing before the timeout is reached.
+/// Instead of deleting the row, we set timeout_at=0 and bump occur_sn
+/// so that sync picks up the "typing stopped" change before cleanup.
 pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) -> AppResult<()> {
-    diesel::delete(
+    let event_sn = data::next_sn()?;
+    diesel::update(
         room_typings::table
             .filter(room_typings::room_id.eq(room_id))
             .filter(room_typings::user_id.eq(user_id)),
     )
+    .set((
+        room_typings::timeout_at.eq(0i64),
+        room_typings::occur_sn.eq(event_sn),
+    ))
     .execute(&mut connect()?)?;
 
     // Notify same-instance watchers immediately
@@ -95,8 +102,9 @@ fn maintain_typings(room_id: &RoomId) -> AppResult<()> {
 
 /// Returns the sequence number of the last typing update in this room.
 /// Reads from the database so it works across all instances.
+/// We query max occur_sn BEFORE cleanup so that "stop typing" events
+/// (which set timeout_at=0) are still visible to sync.
 pub async fn last_typing_update(room_id: &RoomId) -> AppResult<i64> {
-    maintain_typings(room_id)?;
     let sn = room_typings::table
         .filter(room_typings::room_id.eq(room_id))
         .select(diesel::dsl::max(room_typings::occur_sn))
