@@ -137,6 +137,7 @@ pub fn get_room_key(
 pub fn get_latest_room_keys_version(user_id: &UserId) -> DataResult<Option<DbRoomKeysVersion>> {
     e2e_room_keys_versions::table
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
+        .filter(e2e_room_keys_versions::is_trashed.eq(false))
         .order(e2e_room_keys_versions::version.desc())
         .first::<DbRoomKeysVersion>(&mut connect()?)
         .optional()
@@ -149,6 +150,7 @@ pub fn get_room_keys_version(
     e2e_room_keys_versions::table
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::version.eq(version))
+        .filter(e2e_room_keys_versions::is_trashed.eq(false))
         .first::<DbRoomKeysVersion>(&mut connect()?)
         .optional()
         .map_err(Into::into)
