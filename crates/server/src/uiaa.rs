@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use subtle::ConstantTimeEq;
 
 use crate::core::client::uiaa::{
     AuthData, AuthError, AuthType, Password, UiaaInfo, UserIdentifier,
@@ -109,7 +110,20 @@ pub fn try_auth(
             crate::user::verify_password(&user, password)?;
         }
         AuthData::RegistrationToken(t) => {
-            if Some(t.token.trim()) == conf.registration_token.as_deref() {
+            let token_valid = conf
+                .registration_token
+                .as_deref()
+                .map(|expected| {
+                    let input = t.token.trim().as_bytes();
+                    let expected = expected.as_bytes();
+                    // Constant-length comparison to prevent timing attacks.
+                    // Only compare if lengths match to avoid leaking length info
+                    // beyond a simple equal/not-equal distinction.
+                    input.len() == expected.len() && input.ct_eq(expected).into()
+                })
+                .unwrap_or(false);
+
+            if token_valid {
                 uiaa_info.completed.push(AuthType::RegistrationToken);
             } else {
                 uiaa_info.auth_error = Some(AuthError::forbidden("Invalid registration token."));

@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
+
 use salvo::http::{ParseError, ResBody};
 use salvo::prelude::*;
 use salvo::size_limiter;
@@ -101,9 +105,43 @@ async fn access_control(
     // headers.insert("Cross-Origin-Opener-Policy", "same-origin".parse().unwrap());
 }
 
+/// Per-IP rate limiter state: maps IP → (window_start, request_count)
+static RATE_LIMIT_MAP: LazyLock<Mutex<HashMap<String, (Instant, u32)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Maximum requests per window per IP for rate-limited endpoints.
+const RATE_LIMIT_MAX_REQUESTS: u32 = 30;
+/// Rate limit window duration in seconds.
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
 #[handler]
-pub async fn limit_rate() -> AppResult<()> {
-    Ok(())
+pub async fn limit_rate(req: &mut Request) -> AppResult<()> {
+    let ip = match req.remote_addr() {
+        salvo::conn::SocketAddr::IPv4(a) => a.ip().to_string(),
+        salvo::conn::SocketAddr::IPv6(a) => a.ip().to_string(),
+        _ => String::new(),
+    };
+
+    if ip.is_empty() {
+        return Ok(());
+    }
+
+    let mut map = RATE_LIMIT_MAP.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let entry = map.entry(ip).or_insert((now, 0));
+
+    if now.duration_since(entry.0).as_secs() >= RATE_LIMIT_WINDOW_SECS {
+        // Reset window
+        *entry = (now, 1);
+        Ok(())
+    } else {
+        entry.1 += 1;
+        if entry.1 > RATE_LIMIT_MAX_REQUESTS {
+            Err(MatrixError::limit_exceeded("Too many requests. Please try again later.", None).into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 // utf8 will cause complement testing fail.

@@ -12,18 +12,8 @@ pub struct JwtClaims {
 }
 
 pub fn validate_jwt_token(config: &JwtConfig, token: &str) -> AppResult<JwtClaims> {
-    if cfg!(debug_assertions) && !config.validate_signature {
-        warn!("JWT signature validation is disabled!");
-        let verifier = init_jwt_verifier(config)?;
-        let mut validator = init_jwt_validator(config)?;
-        #[allow(deprecated)]
-        validator.insecure_disable_signature_validation();
-
-        return jsonwebtoken::decode::<JwtClaims>(token, &verifier, &validator)
-            .map(|decoded| (decoded.header, decoded.claims))
-            .inspect(|(head, claim)| debug!(?head, ?claim, "JWT token decoded (insecure)"))
-            .map_err(|e| MatrixError::not_found(format!("invalid JWT token: {e}")).into())
-            .map(|(_, claims)| claims);
+    if !config.validate_signature {
+        warn!("JWT signature validation is disabled! This is insecure and should not be used in production.");
     }
 
     let verifier = init_jwt_verifier(config)?;
@@ -103,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_jwt_token_rejects_expired_token_when_signature_check_disabled() {
+    fn validate_jwt_token_rejects_expired_token() {
         let exp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("current time should be after unix epoch")
@@ -124,7 +114,6 @@ mod tests {
         config.secret = "test-secret".to_owned();
         config.format = "HMAC".to_owned();
         config.algorithm = "HS256".to_owned();
-        config.validate_signature = false;
         config.validate_exp = true;
         config.require_exp = true;
 
@@ -132,7 +121,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "expired token must be rejected even when signature validation is disabled"
+            "expired token must be rejected"
         );
     }
 }
