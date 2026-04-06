@@ -45,7 +45,7 @@ impl IgnoredUserListEventContent {
 /// Details about an ignored user.
 ///
 /// This is currently empty.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct IgnoredUser {}
 
 impl IgnoredUser {

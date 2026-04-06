@@ -282,7 +282,7 @@ impl UploadSignaturesResBody {
 }
 
 /// A map of key IDs to signed key objects.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct SignedKeys(BTreeMap<Box<str>, Box<RawJsonValue>>);
 

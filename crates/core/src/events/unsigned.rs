@@ -31,6 +31,7 @@ pub struct MessageLikeUnsigned<C: MessageLikeEventContent> {
     ///
     /// [Bundled aggregations]: https://spec.matrix.org/latest/client-server-api/#aggregations-of-child-events
     #[serde(rename = "m.relations", default)]
+    #[salvo(schema(value_type = Object))]
     pub relations: BundledMessageLikeRelations<OriginalSyncMessageLikeEvent<C>>,
 }
 

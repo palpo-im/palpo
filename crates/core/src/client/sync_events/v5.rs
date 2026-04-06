@@ -170,7 +170,7 @@ impl SyncEventsResBody {
     }
 }
 /// Type of operation for sliding window list updates.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op")]
 pub enum SyncListOp {
     /// Full replacement of rooms in the given range.
@@ -204,7 +204,7 @@ pub enum SyncListOp {
 }
 
 /// A sliding sync response updated list (see [`super::Response::lists`]).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SyncList {
     /// The total number of rooms found for this list.
     pub count: usize,
@@ -215,7 +215,7 @@ pub struct SyncList {
 }
 
 /// A sliding sync response updated room (see [`super::Response::rooms`]).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SyncRoom {
     /// The name as calculated by the server.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -394,7 +394,7 @@ pub struct IncludeOldRooms {
 
 /// Sliding sync request room subscription (see
 /// [`super::Request::room_subscriptions`]).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RoomSubscription {
     /// Required state for each returned room. An array of event type and
     /// state key tuples.

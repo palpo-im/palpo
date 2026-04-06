@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use salvo::oapi::ToSchema;
+use salvo::oapi::{ComposeSchema, ToSchema};
 use serde::Deserialize;
 
 use crate::events::relation::{CustomRelation, InReplyTo, RelationType, Replacement, Thread};
@@ -8,6 +8,7 @@ use crate::serde::JsonObject;
 
 /// Message event relationship.
 #[derive(ToSchema, Deserialize, Clone, Debug)]
+#[salvo(schema(bound = "C: ToSchema + ComposeSchema + 'static"))]
 #[allow(clippy::manual_non_exhaustive)]
 pub enum Relation<C> {
     /// An `m.in_reply_to` relation indicating that the event is a reply to
