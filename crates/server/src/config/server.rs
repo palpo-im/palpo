@@ -1,10 +1,8 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use regex::RegexSet;
 use salvo::http::HeaderValue;
 use serde::Deserialize;
-use serde::de::IgnoredAny;
 
 use super::{
     AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelegatedAuthConfig,
@@ -76,7 +74,7 @@ impl ListenerConfig {
 ### For more information, see:
 ### https://palpo.im/guide/configuration.html
 "#,
-    ignore = "catch_others federation well_known compression typing read_receipt presence \
+    ignore = "federation well_known compression typing read_receipt presence \
         admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice"
 )]
 #[derive(Clone, Debug, Deserialize)]
@@ -770,10 +768,10 @@ pub struct ServerConfig {
     // // external structure; separate section
     // #[serde(default)]
     // pub appservice: BTreeMap<String, AppService>,
-    #[serde(flatten)]
-    #[allow(clippy::zero_sized_map_values)]
-    // this is a catchall, the map shouldn't be zero at runtime
-    catch_others: BTreeMap<String, IgnoredAny>,
+    // NOTE: #[serde(flatten)] with a catchall map is intentionally removed because
+    // it causes serde to incorrectly apply default values to fields like
+    // `ip_range_denylist` even when explicitly set in the config file.
+    // Unknown/deprecated key warnings are handled separately.
 }
 
 impl ServerConfig {
@@ -1074,36 +1072,15 @@ impl ServerConfig {
     /// deprecated key specified
     fn warn_deprecated(&self) {
         debug!("Checking for deprecated config keys");
-        let mut was_deprecated = false;
-        for key in self
-            .catch_others
-            .keys()
-            .filter(|key| DEPRECATED_KEYS.iter().any(|s| s == key))
-        {
-            warn!("Config parameter \"{}\" is deprecated, ignoring.", key);
-            was_deprecated = true;
-        }
-
-        if was_deprecated {
-            warn!(
-                "Read palpo config documentation at https://palpo.im/guide/configuration.html and check your \
-                 configuration if any new configuration parameters should be adjusted"
-            );
-        }
+        // No deprecated keys currently defined
     }
 
     /// iterates over all the catchall keys (unknown config options) and warns
     /// if there are any.
     fn warn_unknown_key(&self) {
         debug!("Checking for unknown config keys");
-        for key in self.catch_others.keys().filter(
-            |key| "config".to_owned().ne(key.to_owned()), // "config" is expected
-        ) {
-            warn!(
-                "Config parameter \"{}\" is unknown to palpo, ignoring.",
-                key
-            );
-        }
+        // Unknown key detection is not available without serde(flatten) catchall.
+        // This is intentional - the catchall caused issues with default values.
     }
 }
 

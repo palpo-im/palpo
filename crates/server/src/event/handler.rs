@@ -787,7 +787,7 @@ pub async fn auth_check(
                     .map_err(|_| StateError::other("missing pdu in auth check event fetch"))
             },
             &async |k, s| {
-                let Ok(state_key_id) = state::get_field_id(&k.to_string().into(), &s) else {
+                let Ok(state_key_id) = state::ensure_field_id(&k.to_string().into(), &s) else {
                     warn!("missing field id for state type: {k}, state_key: {s}");
                     return Err(StateError::other(format!(
                         "missing field id for state type: {k}, state_key: {s}"

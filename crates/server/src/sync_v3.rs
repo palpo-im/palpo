@@ -1085,7 +1085,9 @@ pub(crate) fn load_timeline(
                 .first()
                 .map(|(sn, _)| BatchToken::new_live(*sn + 1));
         }
-    } else {
+    } else if since_tk.is_some() {
+        // Only apply gap filtering for incremental syncs (when since_tk is present).
+        // For full/initial syncs, we return the most recent events without gap filtering.
         let mut pdu_sns = pdu_sns.clone();
         if let Some(since_tk) = since_tk {
             // This can happen if there are no new events since since_tk
