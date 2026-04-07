@@ -272,7 +272,17 @@ pub(super) async fn join_room_by_id(
             .filter_map(|sender| UserId::parse(sender).ok())
             .map(|user| user.server_name().to_owned()),
     );
-    servers.push(room_id.server_name().map_err(AppError::public)?.to_owned());
+    // Room v12+ uses hash-based room IDs without a server name suffix.
+    // For those rooms, we can't extract a server name from the ID itself —
+    // fall back to looking up servers we know about for this room (e.g., from
+    // a prior /sync, invite, or space hierarchy).
+    if let Ok(server) = room_id.server_name() {
+        servers.push(server.to_owned());
+    } else {
+        servers.extend(crate::room::lookup_servers(&room_id).unwrap_or_default());
+    }
+    servers.sort_unstable();
+    servers.dedup();
 
     crate::membership::join_room(
         &authed.user,

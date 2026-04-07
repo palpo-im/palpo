@@ -72,7 +72,14 @@ pub fn load_pdus(
     let mut start_sn = if dir == Direction::Forward {
         0
     } else {
-        data::curr_sn()? + 1
+        // Use the max sn observed in the events table for this room as a safer
+        // upper bound than data::curr_sn() (which can be stale relative to writes
+        // from other sessions when sequence caching is enabled).
+        let max_in_room: Option<Seqnum> = events::table
+            .filter(events::room_id.eq(room_id))
+            .select(diesel::dsl::max(events::sn))
+            .first::<Option<Seqnum>>(&mut connect()?)?;
+        max_in_room.map(|sn| sn + 1).unwrap_or_else(|| data::curr_sn().unwrap_or(0) + 1)
     };
 
     while list.len() < limit {
@@ -169,20 +176,30 @@ pub fn load_pdus(
             break;
         };
         for (event_id, event_sn) in events {
-            if let Ok(mut pdu) = super::get_pdu(&event_id) {
-                if let Some(user_id) = user_id {
-                    if !pdu.user_can_see(user_id)? {
+            match super::get_pdu(&event_id) {
+                Ok(mut pdu) => {
+                    if let Some(user_id) = user_id
+                        && !pdu.user_can_see(user_id).unwrap_or(false)
+                    {
                         continue;
                     }
-                    if pdu.sender != user_id {
-                        pdu.remove_transaction_id()?;
+                    if let Some(user_id) = user_id {
+                        if pdu.sender != user_id {
+                            pdu.remove_transaction_id()?;
+                        }
+                        let _ = pdu.add_unsigned_membership(user_id);
                     }
-                    pdu.add_unsigned_membership(user_id)?;
+                    let _ = pdu.add_age();
+                    list.insert(event_sn, pdu);
+                    if list.len() >= limit {
+                        break;
+                    }
                 }
-                pdu.add_age()?;
-                list.insert(event_sn, pdu);
-                if list.len() >= limit {
-                    break;
+                Err(e) => {
+                    warn!(
+                        "load_pdus: failed to get_pdu for event {} sn={} in room {}: {}",
+                        event_id, event_sn, room_id, e
+                    );
                 }
             }
         }
