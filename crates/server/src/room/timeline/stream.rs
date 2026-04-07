@@ -133,15 +133,17 @@ pub fn load_pdus(
                 query = query.filter(events::ty.eq_any(types));
             }
         }
-        // Note: don't filter by is_outlier here. Events that arrived via federation
-        // may still be marked as outliers if some processing didn't complete (e.g.,
-        // auth chain resolution), but they should still be visible in sync/messages
-        // if they made it into the room. Filter by is_rejected instead.
+        // Don't filter by is_outlier or soft_failed here:
+        //  - Federation events that arrive with missing prev_events end up
+        //    marked as outlier and/or soft_failed even though they should still
+        //    be visible to clients (per Matrix spec, soft-failed events appear
+        //    in the timeline; they just don't contribute to room state).
+        //  - We *do* filter is_rejected because rejected events should not be
+        //    visible at all.
         let events: Vec<(OwnedEventId, Seqnum)> = if dir == Direction::Forward {
             query
                 .filter(events::sn.gt(start_sn))
                 .filter(events::is_rejected.eq(false))
-                .filter(events::soft_failed.eq(false))
                 .order(events::stream_ordering.desc())
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
@@ -153,7 +155,6 @@ pub fn load_pdus(
             query
                 .filter(events::sn.lt(start_sn))
                 .filter(events::is_rejected.eq(false))
-                .filter(events::soft_failed.eq(false))
                 .order(events::sn.desc())
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
