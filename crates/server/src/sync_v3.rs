@@ -1086,8 +1086,12 @@ pub(crate) fn load_timeline(
                 .map(|(sn, _)| BatchToken::new_live(*sn + 1));
         }
     } else if since_tk.is_some() {
-        // Only apply gap filtering for incremental syncs (when since_tk is present).
-        // For full/initial syncs, we return the most recent events without gap filtering.
+        // Incremental sync (forward direction). If there are timeline gaps in
+        // the range covered by this batch, we want to return events AFTER the
+        // last gap (the freshest batch) and mark the response as "limited" so
+        // the client knows older events between since_tk and the first event
+        // we returned are missing. This matches Synapse's behaviour and what
+        // tests like TestSyncTimelineGap expect.
         let mut pdu_sns = pdu_sns.clone();
         if let Some(since_tk) = since_tk {
             // This can happen if there are no new events since since_tk
@@ -1095,45 +1099,21 @@ pub(crate) fn load_timeline(
         }
         let min_sn = pdu_sns.iter().min().cloned().unwrap_or_default();
         let max_sn = pdu_sns.iter().max().cloned().unwrap_or_default();
-        if let Ok(mut gap_sns) = data::room::get_timeline_gaps(room_id, min_sn, max_sn)
+        if let Ok(gap_sns) = data::room::get_timeline_gaps(room_id, min_sn, max_sn)
             && !gap_sns.is_empty()
         {
-            gap_sns.reverse();
-            let mut filtered_pdus = vec![];
-            if let Some(gap_sn) = gap_sns.pop() {
-                filtered_pdus = timeline_pdus
+            // Pick the LARGEST gap_sn (the most recent gap). Events with sn
+            // strictly greater than that form the freshest, contiguous batch.
+            if let Some(&largest_gap_sn) = gap_sns.iter().max() {
+                let after_gap: Vec<_> = timeline_pdus
                     .iter()
-                    .filter(|(sn, _)| *sn < &gap_sn)
-                    .collect();
-                if !filtered_pdus.is_empty() {
-                    limited = false;
-                } else {
-                    filtered_pdus = timeline_pdus
-                        .iter()
-                        .filter(|(sn, _)| *sn <= &gap_sn)
-                        .collect();
-                    if !filtered_pdus.is_empty() {
-                        limited = true;
-                    }
-                }
-            }
-            if filtered_pdus.is_empty() {
-                while let Some(gap_sn) = gap_sns.pop() {
-                    filtered_pdus = timeline_pdus
-                        .iter()
-                        .filter(|(sn, _)| *sn <= &gap_sn)
-                        .collect();
-                    if !filtered_pdus.is_empty() {
-                        limited = true;
-                        break;
-                    }
-                }
-            }
-            if !filtered_pdus.is_empty() {
-                timeline_pdus = filtered_pdus
-                    .into_iter()
+                    .filter(|(sn, _)| **sn > largest_gap_sn)
                     .map(|(sn, pdu)| (*sn, pdu.clone()))
                     .collect();
+                if !after_gap.is_empty() {
+                    timeline_pdus = after_gap.into_iter().collect();
+                    limited = true;
+                }
             }
 
             next_batch = timeline_pdus

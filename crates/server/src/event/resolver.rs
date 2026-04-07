@@ -155,20 +155,46 @@ pub(super) async fn resolve_state_at_incoming(
 ) -> AppResult<Option<IndexMap<i64, OwnedEventId>>> {
     debug!("calculating state at event using state resolve");
     let mut extremity_state_hashes = HashMap::new();
+    let mut had_prev_events = false;
+    let mut had_unresolvable_prev = false;
 
     for prev_event_id in &incoming_pdu.prev_events {
+        had_prev_events = true;
         let Ok(prev_event) = timeline::get_pdu(prev_event_id) else {
-            return Ok(None);
+            // Unknown prev event (not in our DB at all): treat as unresolvable
+            // and continue. We'll fall back to current room state below.
+            had_unresolvable_prev = true;
+            continue;
         };
 
         if prev_event.rejected() {
+            // Skip rejected prev events: they don't contribute to room state.
+            had_unresolvable_prev = true;
             continue;
         }
 
         if let Ok(frame_id) = state::get_pdu_frame_id(prev_event_id) {
             extremity_state_hashes.insert(frame_id, prev_event);
         } else {
-            return Ok(None);
+            // Outlier (not yet promoted to a timeline event) — treat as if
+            // it doesn't contribute to state but remember that we saw one.
+            had_unresolvable_prev = true;
+        }
+    }
+
+    // If we had prev_events but couldn't resolve any of them to a frame, fall
+    // back to the room's current frame state. This avoids triggering federation
+    // /state requests for events whose prev events are rejected/outlier/unknown.
+    // Examples: (a) a sentinel event after rejected events
+    // (TestInboundFederationRejectsEventsWithRejectedAuthEvents); (b) federation
+    // events injected with intentional gaps in the prev_event chain
+    // (TestSyncTimelineGap); (c) any follow-up federation event whose immediate
+    // predecessor failed to fully process locally. Current room state is a
+    // sensible best-effort approximation.
+    if had_prev_events && extremity_state_hashes.is_empty() && had_unresolvable_prev {
+        if let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None) {
+            let state = state::get_full_state_ids(frame_id)?;
+            return Ok(Some(state));
         }
     }
 
