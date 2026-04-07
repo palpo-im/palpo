@@ -874,20 +874,32 @@ pub fn convert_to_outgoing_federation_event(
 
     // Determine room version to decide whether to strip event_id.
     // V1/V2 require event_id in federation format; V3+ derive it from content hash.
-    // On lookup failure, keep event_id — safe for all versions (V3+ receivers ignore it),
-    // but stripping it on V1/V2 would produce malformed events.
-    match pdu_json
+    // For v12 events the JSON may not contain room_id (the create event in v12
+    // intentionally has no room_id and other events are looked up via the
+    // event_id stored elsewhere), so fall back to looking up room_id from the
+    // events table by event_id when the JSON doesn't have one.
+    let room_version = pdu_json
         .get("room_id")
         .and_then(|v| v.as_str())
         .and_then(|r| <&RoomId>::try_from(r).ok())
         .and_then(|r| crate::room::get_version(r).ok())
-    {
+        .or_else(|| {
+            // Fall back: look up room_id by the event's id from the DB.
+            let event_id_str = pdu_json.get("event_id").and_then(|v| v.as_str())?;
+            let event_id = <&crate::core::identifiers::EventId>::try_from(event_id_str).ok()?;
+            let db_event = crate::data::room::DbEvent::get_by_id(event_id).ok()?;
+            crate::room::get_version(&db_event.room_id).ok()
+        });
+
+    match room_version {
         Some(room_version) => {
             crate::federation::maybe_strip_event_id(&mut pdu_json, &room_version);
         }
         None => {
             warn!(
                 room_id = ?pdu_json.get("room_id"),
+                event_id = ?pdu_json.get("event_id"),
+                event_type = ?pdu_json.get("type"),
                 "room version lookup failed, keeping event_id to avoid V1/V2 breakage"
             );
         }

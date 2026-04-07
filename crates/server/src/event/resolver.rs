@@ -156,20 +156,25 @@ pub(super) async fn resolve_state_at_incoming(
     debug!("calculating state at event using state resolve");
     let mut extremity_state_hashes = HashMap::new();
     let mut had_prev_events = false;
-    let mut had_unresolvable_prev = false;
+    // Track only "in-DB but unresolvable" prev events: rejected (no room-state
+    // contribution) or outliers without a frame_id. We DO NOT count truly
+    // unknown prev events here — those should still trigger the regular
+    // missing-events fetch path.
+    let mut had_in_db_unresolvable = false;
 
     for prev_event_id in &incoming_pdu.prev_events {
         had_prev_events = true;
         let Ok(prev_event) = timeline::get_pdu(prev_event_id) else {
-            // Unknown prev event (not in our DB at all): treat as unresolvable
-            // and continue. We'll fall back to current room state below.
-            had_unresolvable_prev = true;
-            continue;
+            // Truly unknown prev event — don't fall back to current state. The
+            // caller (e.g. process_incoming) needs to keep the event soft-failed
+            // so the missing-events fetch path runs. Returning None here
+            // signals "can't resolve locally".
+            return Ok(None);
         };
 
         if prev_event.rejected() {
             // Skip rejected prev events: they don't contribute to room state.
-            had_unresolvable_prev = true;
+            had_in_db_unresolvable = true;
             continue;
         }
 
@@ -178,20 +183,19 @@ pub(super) async fn resolve_state_at_incoming(
         } else {
             // Outlier (not yet promoted to a timeline event) — treat as if
             // it doesn't contribute to state but remember that we saw one.
-            had_unresolvable_prev = true;
+            had_in_db_unresolvable = true;
         }
     }
 
-    // If we had prev_events but couldn't resolve any of them to a frame, fall
+    // If we had prev_events but every one of them is rejected or an
+    // unresolvable outlier (and crucially: nothing was truly missing), fall
     // back to the room's current frame state. This avoids triggering federation
-    // /state requests for events whose prev events are rejected/outlier/unknown.
-    // Examples: (a) a sentinel event after rejected events
-    // (TestInboundFederationRejectsEventsWithRejectedAuthEvents); (b) federation
-    // events injected with intentional gaps in the prev_event chain
-    // (TestSyncTimelineGap); (c) any follow-up federation event whose immediate
-    // predecessor failed to fully process locally. Current room state is a
-    // sensible best-effort approximation.
-    if had_prev_events && extremity_state_hashes.is_empty() && had_unresolvable_prev {
+    // /state requests for events like the sentinel in
+    // TestInboundFederationRejectsEventsWithRejectedAuthEvents whose prev events
+    // are in our DB but were rejected (and so don't contribute to state). For
+    // events with TRULY missing prev events, we already returned None above so
+    // the caller can run the missing-events fetch path.
+    if had_prev_events && extremity_state_hashes.is_empty() && had_in_db_unresolvable {
         if let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None) {
             let state = state::get_full_state_ids(frame_id)?;
             return Ok(Some(state));
