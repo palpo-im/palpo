@@ -259,7 +259,11 @@ pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
 
 async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
     let client = client();
-    if let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated"))
+    // Only check IP denylist if one is actually configured. If the user has
+    // explicitly set an empty denylist (or omitted it intentionally), respect that.
+    let denylist_configured = !config::get().ip_range_denylist.is_empty();
+    if denylist_configured
+        && let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated"))
         && !config::valid_cidr_range(&ip)
     {
         return Err(
@@ -279,7 +283,8 @@ async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
             ?url,
             "URL preview response remote address: {:?}", remote_addr
         );
-        if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string())
+        if denylist_configured
+            && let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string())
             && !config::valid_cidr_range(&ip)
         {
             return Err(

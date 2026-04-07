@@ -286,9 +286,17 @@ pub async fn should_join_on_remote_servers(
     if !join_rule.is_restricted() {
         return Ok((false, servers.to_vec()));
     }
+    // For restricted rooms: if any LOCAL user on this server can authorize the join,
+    // we can do the join locally. Otherwise we need to delegate to remote servers
+    // that have a user who can authorize.
     let users =
         membership::get_users_can_issue_invite(room_id, sender_id, &join_rule.restriction_rooms())
             .await?;
+    let local_server = &config::get().server_name;
+    let has_local_authorizer = users.iter().any(|u| u.server_name() == local_server);
+    if has_local_authorizer {
+        return Ok((false, vec![]));
+    }
     let mut allowed_servers = crate::get_servers_from_users(&users);
     if let Ok(room_server) = room_id.server_name() {
         let room_server = room_server.to_owned();
