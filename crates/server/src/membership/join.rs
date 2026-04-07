@@ -565,7 +565,7 @@ async fn make_join_request(
         .brief("no server available to assist in joining")
         .into());
 
-    for remote_server in servers {
+    'outer: for remote_server in servers {
         if remote_server == &config::get().server_name {
             continue;
         }
@@ -597,7 +597,10 @@ async fn make_join_request(
             }
 
             if last_join_error.is_ok() {
-                break;
+                // Stop trying further servers once we have a successful make_join
+                // response. Otherwise the loop would continue to the next server
+                // and overwrite the success with a later failure.
+                break 'outer;
             }
 
             if let Err(ref error) = last_join_error
