@@ -155,8 +155,11 @@ pub(super) async fn resolve_state_at_incoming(
 ) -> AppResult<Option<IndexMap<i64, OwnedEventId>>> {
     debug!("calculating state at event using state resolve");
     let mut extremity_state_hashes = HashMap::new();
+    let mut had_prev_events = false;
+    let mut all_prev_events_rejected = true;
 
     for prev_event_id in &incoming_pdu.prev_events {
+        had_prev_events = true;
         let Ok(prev_event) = timeline::get_pdu(prev_event_id) else {
             return Ok(None);
         };
@@ -164,11 +167,27 @@ pub(super) async fn resolve_state_at_incoming(
         if prev_event.rejected() {
             continue;
         }
+        all_prev_events_rejected = false;
 
         if let Ok(frame_id) = state::get_pdu_frame_id(prev_event_id) {
             extremity_state_hashes.insert(frame_id, prev_event);
         } else {
             return Ok(None);
+        }
+    }
+
+    // If we had prev_events but every single one was rejected, the new event
+    // logically follows the room state from BEFORE the rejected events were
+    // attempted. Use the room's current frame as a best-effort fallback so
+    // that an otherwise-valid event (e.g., a sentinel after rejected events)
+    // can still be added to the timeline. The proper Matrix-spec answer is
+    // to walk back through the rejected events' prev_events, but in practice
+    // current room state is a sensible approximation when those rejections
+    // didn't actually contribute to room state.
+    if had_prev_events && all_prev_events_rejected && extremity_state_hashes.is_empty() {
+        if let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None) {
+            let state = state::get_full_state_ids(frame_id)?;
+            return Ok(Some(state));
         }
     }
 
