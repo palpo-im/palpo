@@ -1,3 +1,4 @@
+mod appservice;
 mod event;
 mod event_report;
 mod federation;
@@ -53,6 +54,7 @@ pub fn router() -> Router {
                 .hoop(crate::hoops::auth_by_access_token)
                 .hoop(require_admin)
                 .get(home)
+                .push(appservice::router())
                 .push(event::router())
                 .push(event_report::router())
                 .push(federation::router())

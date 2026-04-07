@@ -15,6 +15,7 @@ diesel::table! {
         protocols -> Nullable<Json>,
         receive_ephemeral -> Bool,
         device_management -> Bool,
+        disabled -> Bool,
     }
 }
 
