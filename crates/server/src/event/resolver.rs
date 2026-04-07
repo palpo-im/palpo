@@ -156,35 +156,42 @@ pub(super) async fn resolve_state_at_incoming(
     debug!("calculating state at event using state resolve");
     let mut extremity_state_hashes = HashMap::new();
     let mut had_prev_events = false;
-    let mut all_prev_events_rejected = true;
+    let mut had_unresolvable_prev = false;
 
     for prev_event_id in &incoming_pdu.prev_events {
         had_prev_events = true;
         let Ok(prev_event) = timeline::get_pdu(prev_event_id) else {
-            return Ok(None);
+            // Unknown prev event (not in our DB at all): treat as unresolvable
+            // and continue. We'll fall back to current room state below.
+            had_unresolvable_prev = true;
+            continue;
         };
 
         if prev_event.rejected() {
+            // Skip rejected prev events: they don't contribute to room state.
+            had_unresolvable_prev = true;
             continue;
         }
-        all_prev_events_rejected = false;
 
         if let Ok(frame_id) = state::get_pdu_frame_id(prev_event_id) {
             extremity_state_hashes.insert(frame_id, prev_event);
         } else {
-            return Ok(None);
+            // Outlier (not yet promoted to a timeline event) — treat as if
+            // it doesn't contribute to state but remember that we saw one.
+            had_unresolvable_prev = true;
         }
     }
 
-    // If we had prev_events but every single one was rejected, the new event
-    // logically follows the room state from BEFORE the rejected events were
-    // attempted. Use the room's current frame as a best-effort fallback so
-    // that an otherwise-valid event (e.g., a sentinel after rejected events)
-    // can still be added to the timeline. The proper Matrix-spec answer is
-    // to walk back through the rejected events' prev_events, but in practice
-    // current room state is a sensible approximation when those rejections
-    // didn't actually contribute to room state.
-    if had_prev_events && all_prev_events_rejected && extremity_state_hashes.is_empty() {
+    // If we had prev_events but couldn't resolve any of them to a frame, fall
+    // back to the room's current frame state. This avoids triggering federation
+    // /state requests for events whose prev events are rejected/outlier/unknown.
+    // Examples: (a) a sentinel event after rejected events
+    // (TestInboundFederationRejectsEventsWithRejectedAuthEvents); (b) federation
+    // events injected with intentional gaps in the prev_event chain
+    // (TestSyncTimelineGap); (c) any follow-up federation event whose immediate
+    // predecessor failed to fully process locally. Current room state is a
+    // sensible best-effort approximation.
+    if had_prev_events && extremity_state_hashes.is_empty() && had_unresolvable_prev {
         if let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None) {
             let state = state::get_full_state_ids(frame_id)?;
             return Ok(Some(state));
