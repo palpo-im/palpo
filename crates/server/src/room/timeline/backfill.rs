@@ -39,6 +39,20 @@ pub async fn backfill_if_required(
     }
     depths.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
+    // If we returned fewer events than the limit and there are backward extremities,
+    // trigger backfill from those extremities. This handles the case where the user's
+    // previous history (before re-joining) needs to be fetched.
+    if pdus.len() < limit {
+        if let Ok(extremities) = event_backward_extremities::table
+            .filter(event_backward_extremities::room_id.eq(room_id))
+            .select(event_backward_extremities::event_id)
+            .load::<OwnedEventId>(&mut connect()?)
+            && !extremities.is_empty()
+        {
+            return backfill_from_extremities(room_id, &extremities, limit).await;
+        }
+    }
+
     let (prev_event, prev_depth) = if let Some(depth) = depths.first() {
         depth
     } else {
@@ -154,6 +168,75 @@ pub async fn backfill_if_required(
     }
 
     info!("no servers could backfill");
+    Ok(vec![])
+}
+
+/// Backfill events from the given backward extremities. Used when the messages
+/// endpoint returns fewer events than the limit and we need to fetch history
+/// from federation (e.g., after re-joining a room).
+#[tracing::instrument(skip_all)]
+pub async fn backfill_from_extremities(
+    room_id: &RoomId,
+    extremities: &[OwnedEventId],
+    limit: usize,
+) -> AppResult<Vec<SnPduEvent>> {
+    let admin_servers = room::admin_servers(room_id, false)?;
+    let room_version = room::get_version(room_id)?;
+
+    for backfill_server in &admin_servers {
+        info!("asking {backfill_server} for backfill from extremities");
+        let request = backfill_request(
+            &backfill_server.origin().await,
+            BackfillReqArgs {
+                room_id: room_id.to_owned(),
+                v: extremities.to_vec(),
+                limit: (limit * 2).max(50),
+            },
+        )?
+        .into_inner();
+        match crate::sending::send_federation_request(backfill_server, request, None)
+            .await?
+            .json::<BackfillResBody>()
+            .await
+        {
+            Ok(response) => {
+                let mut events = Vec::new();
+                let pdus = response
+                    .pdus
+                    .into_iter()
+                    .filter_map(|pdu| {
+                        let val =
+                            serde_json::from_str::<BTreeMap<String, JsonValue>>(pdu.get()).ok()?;
+                        let depth = val.get("depth")?.as_i64()?;
+                        Some((pdu, depth))
+                    })
+                    .sorted_by(|a, b| a.1.cmp(&b.1))
+                    .map(|(pdu, _)| pdu)
+                    .collect::<Vec<_>>();
+                let mut saved_pdu_contents = Vec::new();
+                for pdu in pdus {
+                    match backfill_pdu(backfill_server, room_id, &room_version, pdu).await {
+                        Ok(p) => saved_pdu_contents.push(p),
+                        Err(e) => warn!("failed to add backfilled pdu: {e}"),
+                    }
+                }
+                for (pdu, content) in saved_pdu_contents {
+                    let event_id = pdu.event_id.clone();
+                    if let Err(e) =
+                        process_to_timeline_pdu(pdu, content, Some(backfill_server)).await
+                    {
+                        error!("failed to process backfill pdu to timeline {}", e);
+                    } else if let Ok(pdu) = super::get_pdu(&event_id) {
+                        events.push(pdu);
+                    }
+                }
+                return Ok(events);
+            }
+            Err(e) => {
+                warn!("{backfill_server} could not provide backfill from extremities: {e}");
+            }
+        }
+    }
     Ok(vec![])
 }
 

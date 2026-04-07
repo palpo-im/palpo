@@ -286,13 +286,23 @@ impl NewDbEvent {
         value: &CanonicalJsonObject,
         is_backfill: bool,
     ) -> DataResult<Self> {
-        Self::from_json_value(id, sn, serde_json::to_value(value)?, is_backfill)
+        Self::from_json_value(id, sn, serde_json::to_value(value)?, is_backfill, None)
+    }
+    pub fn from_canonical_json_with_room_id(
+        id: &EventId,
+        sn: Seqnum,
+        value: &CanonicalJsonObject,
+        is_backfill: bool,
+        room_id: &RoomId,
+    ) -> DataResult<Self> {
+        Self::from_json_value(id, sn, serde_json::to_value(value)?, is_backfill, Some(room_id))
     }
     pub fn from_json_value(
         id: &EventId,
         sn: Seqnum,
         mut value: JsonValue,
         is_backfill: bool,
+        room_id: Option<&RoomId>,
     ) -> DataResult<Self> {
         let depth = value.get("depth").cloned().unwrap_or(0.into());
         let ty = value
@@ -310,6 +320,14 @@ impl NewDbEvent {
             "stream_ordering".into(),
             if is_backfill { (-sn).into() } else { sn.into() },
         );
+        // For V12 rooms, the create event does not contain a room_id field in its
+        // content (the room_id is derived from the event_id). Inject it here so
+        // deserialization into NewDbEvent succeeds.
+        if !obj.contains_key("room_id")
+            && let Some(rid) = room_id
+        {
+            obj.insert("room_id".into(), rid.as_str().into());
+        }
         Ok(serde_json::from_value(value)
             .map_err(|_e| MatrixError::bad_json("invalid json for event"))?)
     }
