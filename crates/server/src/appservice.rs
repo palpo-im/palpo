@@ -174,6 +174,13 @@ pub struct DbRegistration {
     /// Defaults to `false`
     #[serde(default, rename = "io.element.msc4190")]
     pub device_management: bool,
+
+    /// Whether this appservice is administratively disabled.
+    ///
+    /// Disabled appservices are loaded but not returned by `all()`, so they
+    /// neither receive events nor authenticate requests.
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 // Custom Debug implementation to prevent leaking as_token and hs_token
@@ -190,6 +197,7 @@ impl fmt::Debug for DbRegistration {
             .field("protocols", &self.protocols)
             .field("receive_ephemeral", &self.receive_ephemeral)
             .field("device_management", &self.device_management)
+            .field("disabled", &self.disabled)
             .finish()
     }
 }
@@ -220,6 +228,7 @@ impl From<Registration> for DbRegistration {
                 .map(|protocols| serde_json::to_value(protocols).unwrap_or_default()),
             receive_ephemeral,
             device_management,
+            disabled: false,
         }
     }
 }
@@ -238,6 +247,7 @@ impl TryFrom<DbRegistration> for Registration {
             protocols,
             receive_ephemeral,
             device_management,
+            disabled: _,
         } = value;
         let protocols = if let Some(protocols) = protocols {
             serde_json::from_value(protocols)?
@@ -276,6 +286,23 @@ pub fn register_appservice(registration: Registration) -> AppResult<String> {
 pub fn unregister_appservice(id: &str) -> AppResult<()> {
     diesel::delete(appservice_registrations::table.find(id)).execute(&mut connect()?)?;
     Ok(())
+}
+
+/// Set the `disabled` flag on an appservice. Returns true if a row was updated.
+pub fn set_appservice_disabled(id: &str, disabled: bool) -> AppResult<bool> {
+    let affected = diesel::update(appservice_registrations::table.find(id))
+        .set(appservice_registrations::disabled.eq(disabled))
+        .execute(&mut connect()?)?;
+    Ok(affected > 0)
+}
+
+/// List all registrations in the database, including disabled ones.
+pub fn list_all_registrations() -> AppResult<Vec<(DbRegistration, bool)>> {
+    let regs = appservice_registrations::table.load::<DbRegistration>(&mut connect()?)?;
+    Ok(regs.into_iter().map(|r| {
+        let disabled = r.disabled;
+        (r, disabled)
+    }).collect())
 }
 
 pub fn get_registration(id: &str) -> AppResult<Option<Registration>> {
@@ -327,7 +354,9 @@ pub async fn is_exclusive_room_id(room_id: &RoomId) -> AppResult<bool> {
 }
 
 pub fn all() -> AppResult<BTreeMap<String, RegistrationInfo>> {
-    let registrations = appservice_registrations::table.load::<DbRegistration>(&mut connect()?)?;
+    let registrations = appservice_registrations::table
+        .filter(appservice_registrations::disabled.eq(false))
+        .load::<DbRegistration>(&mut connect()?)?;
     Ok(registrations
         .into_iter()
         .filter_map(|db_registration| {
