@@ -445,6 +445,13 @@ pub async fn process_to_outlier_pdu(
     }
 
     if incoming_pdu.rejection_reason.is_none() {
+        // Remember whether soft_failed was already set due to missing prev/auth
+        // events. We must NOT clear it just because the auth check happened to
+        // succeed (e.g., via the resolve_state_at_incoming current-state
+        // fallback): clearing it would cause process_incoming() to skip the
+        // /get_missing_events fetch and we'd never pull in the missing parts
+        // of the DAG.
+        let was_soft_failed = soft_failed;
         if let Err(e) = auth_check(&incoming_pdu, &version_rules, None).await {
             match e {
                 AppError::State(StateError::Forbidden(brief)) => {
@@ -454,7 +461,7 @@ pub async fn process_to_outlier_pdu(
                     soft_failed = true;
                 }
             }
-        } else {
+        } else if !was_soft_failed {
             soft_failed = false;
         }
     }
