@@ -289,19 +289,40 @@ pub async fn should_join_on_remote_servers(
     // For restricted rooms: if any LOCAL user on this server can authorize the join,
     // we can do the join locally. Otherwise we need to delegate to remote servers
     // that have a user who can authorize.
-    let users =
+    let local_users =
         membership::get_users_can_issue_invite(room_id, sender_id, &join_rule.restriction_rooms())
             .await?;
     let local_server = &config::get().server_name;
-    let has_local_authorizer = users.iter().any(|u| u.server_name() == local_server);
+    let has_local_authorizer = local_users.iter().any(|u| u.server_name() == local_server);
     if has_local_authorizer {
         return Ok((false, vec![]));
     }
-    let mut allowed_servers = crate::get_servers_from_users(&users);
+    // No local authorizer — find remote servers that have users who could authorize.
+    // Look at ALL joined users (not just local ones) to find candidate servers.
+    let mut allowed_servers: Vec<OwnedServerName> = Vec::new();
+    if let Ok(joined) = room::joined_users(room_id, None) {
+        for u in joined {
+            let server = u.server_name();
+            if server == local_server {
+                continue;
+            }
+            if !allowed_servers.iter().any(|s| s.as_str() == server.as_str()) {
+                allowed_servers.push(server.to_owned());
+            }
+        }
+    }
     if let Ok(room_server) = room_id.server_name() {
         let room_server = room_server.to_owned();
         if !allowed_servers.contains(&room_server) {
             allowed_servers.push(room_server);
+        }
+    }
+    // Also include any servers passed in by the caller (e.g., from `via` query).
+    for s in servers {
+        if s.as_str() != local_server.as_str()
+            && !allowed_servers.iter().any(|x| x.as_str() == s.as_str())
+        {
+            allowed_servers.push(s.clone());
         }
     }
     Ok((true, allowed_servers))
