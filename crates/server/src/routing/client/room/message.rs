@@ -94,7 +94,8 @@ pub(super) async fn get_messages(
         from_tk.event_sn(),
     )?;
 
-    let limit = args.limit.min(100);
+    // Match Synapse's `MAX_LIMIT` for `/messages?limit=`.
+    let limit = args.limit.min(1000);
     let next_token;
     let mut resp = MessagesResBody::default();
     let mut lazy_loaded = HashSet::new();
@@ -145,6 +146,11 @@ pub(super) async fn get_messages(
                     Some(&args.filter),
                     limit,
                 )?;
+            // Backfill if the local page is short on history. Backfilled events
+            // may have higher depth than what we already loaded (e.g. on a fresh
+            // join, locally we only have low-depth state events while the
+            // backfilled timeline messages live above them), so re-run the page
+            // load whenever we filled anything.
             let filled_events =
                 timeline::backfill_if_required(&args.room_id, &from_tk, &events, limit).await?;
             if !filled_events.is_empty() {
