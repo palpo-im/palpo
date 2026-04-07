@@ -16,158 +16,95 @@ use crate::event::handler::process_to_timeline_pdu;
 use crate::event::{BatchToken, handler, parse_fetched_pdu};
 use crate::{AppError, AppResult, GetUrlOrigin, SnPduEvent, room};
 
+/// Decide whether `/messages` needs to backfill more history from federation
+/// before responding, and if so, do it.
+///
+/// Strategy: figure out the "frontier" — the point we need to fetch history older
+/// than. Prefer the oldest event in the current page (so we walk strictly older
+/// than what we already have). If the page is empty, fall back to the room's
+/// recorded backward extremities. We only backfill when there is actual evidence
+/// of missing history (a known prev_event that isn't in the local DB), so rooms
+/// that have been fully fetched don't ping federation on every paginate.
 #[tracing::instrument(skip_all)]
 pub async fn backfill_if_required(
     room_id: &RoomId,
-    from_tk: &BatchToken,
+    _from_tk: &BatchToken,
     pdus: &IndexMap<Seqnum, SnPduEvent>,
     limit: usize,
 ) -> AppResult<Vec<SnPduEvent>> {
-    let mut depths = pdus
-        .values()
-        .map(|p| (p.event_id.clone(), p.depth as i64))
-        .collect::<Vec<_>>();
-    if let Some(topological_ordering) = from_tk.topological_ordering() {
-        if let Ok(event_id) = events::table
-            .filter(events::room_id.eq(room_id))
-            .filter(events::topological_ordering.eq(topological_ordering))
+    // Walk the current page from lowest depth upward and pick the first event
+    // that still has prev_events missing locally. This is a concrete
+    // missing-history signal — back-filling from that event reaches into the
+    // gap immediately rather than re-asking from a stale extremity that has
+    // already been satisfied. We can't just take `min_by_key(depth)` because
+    // the page often contains state events at depth 1-6 whose prev_events are
+    // either empty (room create) or already present, while the actual gap
+    // sits above them at the timeline messages we just paginated past.
+    let mut sorted: Vec<&SnPduEvent> = pdus.values().collect();
+    sorted.sort_by_key(|p| p.depth);
+    for pdu in &sorted {
+        if pdu.prev_events.is_empty() {
+            continue;
+        }
+        let existing: Vec<OwnedEventId> = events::table
+            .filter(events::id.eq_any(&pdu.prev_events))
             .select(events::id)
-            .first::<OwnedEventId>(&mut connect()?)
-        {
-            depths.push((event_id, topological_ordering.abs()));
+            .load(&mut connect()?)?;
+        if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
+            return backfill_from_extremities(
+                room_id,
+                &[pdu.event_id.clone()],
+                limit,
+            )
+            .await;
         }
     }
-    depths.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
-    // If we returned fewer events than the limit and there are backward extremities,
-    // trigger backfill from those extremities. This handles the case where the user's
-    // previous history (before re-joining) needs to be fetched.
+    // Otherwise, if we returned fewer events than the limit and there are
+    // recorded backward extremities, fall back to backfilling from those.
+    // This handles the "user just joined, only state events present" case.
+    //
+    // We must filter the extremities first: `update_backward_extremities` only
+    // ever removes the inserted event itself, so siblings that are already
+    // fully satisfied (all prev_events present) can linger in the table and
+    // mislead the remote's depth-first walk. If we hand those stale entries
+    // to `/backfill`, the remote pops the highest-depth seed first and walks
+    // back from there, easily exhausting its `limit` on events we already
+    // have — never reaching the real frontier. So we only keep entries whose
+    // event either isn't in our DB at all (a synthetic marker) or still has
+    // missing prev_events.
     if pdus.len() < limit {
-        if let Ok(extremities) = event_backward_extremities::table
+        let extremity_ids: Vec<OwnedEventId> = event_backward_extremities::table
             .filter(event_backward_extremities::room_id.eq(room_id))
             .select(event_backward_extremities::event_id)
-            .load::<OwnedEventId>(&mut connect()?)
-            && !extremities.is_empty()
-        {
-            return backfill_from_extremities(room_id, &extremities, limit).await;
+            .distinct()
+            .load(&mut connect()?)?;
+
+        let mut fill_from: Vec<OwnedEventId> = Vec::new();
+        for ext_id in extremity_ids {
+            let Ok(pdu) = super::get_pdu(&ext_id) else {
+                // Event isn't locally known — it's a synthetic frontier marker
+                // for a parent we couldn't fetch yet. Use it as-is.
+                fill_from.push(ext_id);
+                continue;
+            };
+            if pdu.prev_events.is_empty() {
+                continue;
+            }
+            let existing: Vec<OwnedEventId> = events::table
+                .filter(events::id.eq_any(&pdu.prev_events))
+                .select(events::id)
+                .load(&mut connect()?)?;
+            if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
+                fill_from.push(ext_id);
+            }
+        }
+
+        if !fill_from.is_empty() {
+            return backfill_from_extremities(room_id, &fill_from, limit).await;
         }
     }
 
-    let (prev_event, prev_depth) = if let Some(depth) = depths.first() {
-        depth
-    } else {
-        return Ok(vec![]);
-    };
-
-    let mut prev_depth = *prev_depth;
-    let mut prev_event = prev_event;
-    let last_depth = depths.last().map(|&(_, d)| d).unwrap_or_default() as i64;
-    if prev_depth == last_depth {
-        return Ok(vec![]);
-    }
-
-    let depths = events::table
-        .filter(events::depth.lt(prev_depth))
-        .filter(events::depth.ge(last_depth))
-        .order(events::depth.desc())
-        .select((events::id, events::depth))
-        .load::<(OwnedEventId, i64)>(&mut connect()?)?;
-
-    let mut found_big_gap = false;
-    let mut number_of_gaps = 0;
-    let mut fill_from = None;
-    for &(ref event_id, depth) in depths.iter() {
-        let delta = prev_depth - depth;
-        if delta > 1 {
-            number_of_gaps += 1;
-            if fill_from.is_none() {
-                fill_from = Some(prev_event);
-            }
-        }
-        if delta >= 2 {
-            found_big_gap = true;
-            if fill_from.is_none() {
-                fill_from = Some(prev_event);
-            }
-            break;
-        }
-        prev_depth = depth;
-        prev_event = event_id;
-    }
-
-    if number_of_gaps < 3 && !found_big_gap {
-        return Ok(vec![]);
-    };
-    let Some(fill_from) = fill_from else {
-        return Ok(vec![]);
-    };
-
-    let admin_servers = room::admin_servers(room_id, false)?;
-
-    let room_version = room::get_version(room_id)?;
-    for backfill_server in &admin_servers {
-        info!("asking {backfill_server} for backfill");
-        let request = backfill_request(
-            &backfill_server.origin().await,
-            BackfillReqArgs {
-                room_id: room_id.to_owned(),
-                v: vec![fill_from.to_owned()],
-                limit: (limit * 2).max(50), /* Avoid not enough filled and will get messages with
-                                             * gap. */
-            },
-        )?
-        .into_inner();
-        match crate::sending::send_federation_request(backfill_server, request, None)
-            .await?
-            .json::<BackfillResBody>()
-            .await
-        {
-            Ok(response) => {
-                let mut events = Vec::new();
-                let pdus = response
-                    .pdus
-                    .into_iter()
-                    .filter_map(|pdu| {
-                        let val =
-                            serde_json::from_str::<BTreeMap<String, JsonValue>>(pdu.get()).ok()?;
-                        let depth = val.get("depth")?.as_i64()?;
-                        Some((pdu, depth))
-                    })
-                    .sorted_by(|a, b| a.1.cmp(&b.1))
-                    .map(|(pdu, _)| pdu)
-                    .collect::<Vec<_>>();
-                let mut saved_pdu_contents = Vec::new();
-                for pdu in pdus {
-                    match backfill_pdu(backfill_server, room_id, &room_version, pdu).await {
-                        Ok(p) => {
-                            saved_pdu_contents.push(p);
-                        }
-                        Err(e) => {
-                            warn!("failed to add backfilled pdu: {e}");
-                        }
-                    }
-                }
-                for (pdu, content) in saved_pdu_contents {
-                    let event_id = pdu.event_id.clone();
-                    if let Err(e) =
-                        process_to_timeline_pdu(pdu, content, Some(backfill_server)).await
-                    {
-                        error!("failed to process backfill pdu to timeline {}", e);
-                    } else {
-                        let pdu = super::get_pdu(&event_id)?;
-                        events.push(pdu);
-                        debug!("succeed to process backfill pdu to timeline {}", event_id);
-                    }
-                }
-                return Ok(events);
-            }
-            Err(e) => {
-                warn!("{backfill_server} could not provide backfill: {e}");
-            }
-        }
-    }
-
-    info!("no servers could backfill");
     Ok(vec![])
 }
 
@@ -190,7 +127,10 @@ pub async fn backfill_from_extremities(
             BackfillReqArgs {
                 room_id: room_id.to_owned(),
                 v: extremities.to_vec(),
-                limit: (limit * 2).max(50),
+                // Synapse caps `/backfill` at 100 events per call, so asking
+                // for more is wasted; ask for the max so we make as much
+                // progress per round-trip as possible.
+                limit: limit.max(100),
             },
         )?
         .into_inner();
