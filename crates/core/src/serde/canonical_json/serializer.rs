@@ -57,7 +57,7 @@ impl serde::Serializer for Serializer {
     }
 
     fn serialize_i64(self, value: i64) -> Result<Self::Ok> {
-        if value < CANONICALJSON_MIN_INT || value > CANONICALJSON_MAX_INT {
+        if !(CANONICALJSON_MIN_INT..=CANONICALJSON_MAX_INT).contains(&value) {
             return Err(CanonicalJsonError::IntegerOutOfRange);
         }
         Ok(CanonicalJsonValue::Integer(value))

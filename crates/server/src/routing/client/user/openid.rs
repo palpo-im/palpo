@@ -28,7 +28,7 @@ pub(super) async fn request_token(
 
     // Verify the user is requesting a token for themselves
     let user_id = user_id.into_inner();
-    if authed.user_id() != &user_id {
+    if authed.user_id() != user_id {
         return Err(
             MatrixError::forbidden("Cannot request OpenID token for another user.", None).into(),
         );

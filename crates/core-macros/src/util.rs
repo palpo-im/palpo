@@ -230,6 +230,7 @@ pub(crate) trait StructFieldExt {
     /// If this field has `#[serde(default = "expr")]`, return the expression path.
     ///
     /// Returns `None` if the field has `#[serde(default)]` (without expression) or no default.
+    #[allow(dead_code)]
     fn serde_default_expr(&self) -> Option<syn::Path>;
 }
 
@@ -252,17 +253,15 @@ impl StructFieldExt for Field {
 
     fn serde_default_expr(&self) -> Option<syn::Path> {
         self.serde_meta_items().find_map(|meta| {
-            if let syn::Meta::NameValue(nv) = meta {
-                if nv.path.is_ident("default") {
-                    if let syn::Expr::Lit(syn::ExprLit {
+            if let syn::Meta::NameValue(nv) = meta
+                && nv.path.is_ident("default")
+                    && let syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(lit_str),
                         ..
                     }) = &nv.value
                     {
                         return lit_str.parse::<syn::Path>().ok();
                     }
-                }
-            }
             None
         })
     }

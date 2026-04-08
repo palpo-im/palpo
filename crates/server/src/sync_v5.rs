@@ -134,7 +134,7 @@ pub fn cleanup_expired_connections() {
         .filter_map(|(user_id, device_id, conn_id)| {
             Some((
                 OwnedUserId::try_from(user_id).ok()?,
-                OwnedDeviceId::try_from(device_id.as_str()).ok()?,
+                OwnedDeviceId::from(device_id.as_str()),
                 (!conn_id.is_empty()).then_some(conn_id),
             ))
         })
@@ -236,14 +236,13 @@ const CLEANUP_FREQUENCY_MS: i64 = 60 * 60 * 1000;
 fn maybe_cleanup_connections() {
     let now = UnixMillis::now().get() as i64;
     let last = LAST_CLEANUP.load(AtomicOrdering::Relaxed);
-    if now - last > CLEANUP_FREQUENCY_MS {
-        if LAST_CLEANUP
+    if now - last > CLEANUP_FREQUENCY_MS
+        && LAST_CLEANUP
             .compare_exchange(last, now, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed)
             .is_ok()
         {
             cleanup_expired_connections();
         }
-    }
 }
 
 #[tracing::instrument(skip_all)]
@@ -363,11 +362,10 @@ async fn process_lists(
         };
 
         // Apply not_room_types filter
-        if let Some(filter) = list.filters.as_ref().map(|f| &f.not_room_types) {
-            if !filter.is_empty() {
+        if let Some(filter) = list.filters.as_ref().map(|f| &f.not_room_types)
+            && !filter.is_empty() {
                 active_rooms = filter_rooms(&active_rooms, filter, true);
             }
-        }
 
         // Apply room_types filter
         if let Some(filter) = list.filters.as_ref().and_then(|f| {
@@ -703,8 +701,8 @@ async fn process_rooms(
                             &StateEventType::RoomMember,
                             sender.as_str(),
                             None,
-                        ) {
-                            if !is_required_state_send(
+                        )
+                            && !is_required_state_send(
                                 sender_id.to_owned(),
                                 device_id.to_owned(),
                                 req_body.conn_id.clone(),
@@ -718,13 +716,12 @@ async fn process_rooms(
                                 );
                                 required_state_events.push(pdu.to_sync_state_event());
                             }
-                        }
                     }
                 }
                 // * state key: return all state events of this type
                 (ref event_type, "*") => {
-                    if let Ok(frame_id) = room::get_frame_id(room_id, None) {
-                        if let Ok(full_state) = state::get_full_state(frame_id) {
+                    if let Ok(frame_id) = room::get_frame_id(room_id, None)
+                        && let Ok(full_state) = state::get_full_state(frame_id) {
                             for ((ty, _sk), pdu) in &full_state {
                                 if ty == event_type
                                     && !is_required_state_send(
@@ -744,13 +741,11 @@ async fn process_rooms(
                                 }
                             }
                         }
-                    }
                 }
                 // $ME: substitute with the requester's user_id
                 (ref event_type, "$ME") => {
                     if let Ok(pdu) = room::get_state(room_id, event_type, sender_id.as_str(), None)
-                    {
-                        if !is_required_state_send(
+                        && !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
@@ -764,12 +759,11 @@ async fn process_rooms(
                             );
                             required_state_events.push(pdu.to_sync_state_event());
                         }
-                    }
                 }
                 // Specific state key
                 (ref event_type, state_key) => {
-                    if let Ok(pdu) = room::get_state(room_id, event_type, state_key, None) {
-                        if !is_required_state_send(
+                    if let Ok(pdu) = room::get_state(room_id, event_type, state_key, None)
+                        && !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
@@ -783,7 +777,6 @@ async fn process_rooms(
                             );
                             required_state_events.push(pdu.to_sync_state_event());
                         }
-                    }
                 }
             }
         }
@@ -1128,11 +1121,10 @@ where
     let mut typing = Typing::new();
     for room_id in rooms {
         // Filter by rooms config if specified
-        if let Some(room_filter) = typing_rooms {
-            if !room_filter.is_empty() && !room_filter.contains(&room_id.to_owned()) {
+        if let Some(room_filter) = typing_rooms
+            && !room_filter.is_empty() && !room_filter.contains(&room_id.to_owned()) {
                 continue;
             }
-        }
 
         let typing_event = room::typing::all_typings(room_id).await?;
         if !typing_event.content.user_ids.is_empty() {

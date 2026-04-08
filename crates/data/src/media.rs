@@ -346,13 +346,11 @@ pub fn get_user_media_statistics(
     let (rows, total) = if let Some(term) = search_term {
         let like_pattern = format!("%{}%", term);
 
-        let count_sql = format!(
-            "SELECT COUNT(*) AS count FROM (\
+        let count_sql = "SELECT COUNT(*) AS count FROM (\
                 SELECT created_by FROM media_metadatas \
                 WHERE created_by IS NOT NULL AND created_by LIKE $1 \
                 GROUP BY created_by\
-            ) sub"
-        );
+            ) sub".to_string();
         let total: i64 = diesel::sql_query(&count_sql)
             .bind::<diesel::sql_types::Text, _>(&like_pattern)
             .get_result::<CountResult>(&mut conn)?

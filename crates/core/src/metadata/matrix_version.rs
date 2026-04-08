@@ -276,8 +276,8 @@ impl MatrixVersion {
     pub const fn from_lit(lit: &'static str) -> Self {
         use konst::{result, string};
 
-        let major: u8;
-        let minor: u8;
+        
+        
 
         let mut split = string::split(lit, ".");
 
@@ -287,7 +287,7 @@ impl MatrixVersion {
             None => panic!("could not find major version"),
         };
 
-        major = match u8::from_str_radix(major_str, 10) {
+        let major: u8 = match u8::from_str_radix(major_str, 10) {
             Ok(v) => v,
             Err(_) => panic!("major version is not a valid number"),
         };
@@ -298,7 +298,7 @@ impl MatrixVersion {
             None => panic!("could not find dot to denote second number"),
         };
 
-        minor = match u8::from_str_radix(minor_str, 10) {
+        let minor: u8 = match u8::from_str_radix(minor_str, 10) {
             Ok(v) => v,
             Err(_) => panic!("minor version is not a valid number"),
         };

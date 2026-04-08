@@ -195,12 +195,11 @@ pub(super) async fn resolve_state_at_incoming(
     // are in our DB but were rejected (and so don't contribute to state). For
     // events with TRULY missing prev events, we already returned None above so
     // the caller can run the missing-events fetch path.
-    if had_prev_events && extremity_state_hashes.is_empty() && had_in_db_unresolvable {
-        if let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None) {
+    if had_prev_events && extremity_state_hashes.is_empty() && had_in_db_unresolvable
+        && let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None) {
             let state = state::get_full_state_ids(frame_id)?;
             return Ok(Some(state));
         }
-    }
 
     let mut fork_states = Vec::with_capacity(extremity_state_hashes.len());
     let mut auth_chain_sets = Vec::with_capacity(extremity_state_hashes.len());

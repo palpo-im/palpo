@@ -4,6 +4,7 @@
 //!
 //! Get discovery information about the domain.
 
+#[cfg(feature = "unstable-msc4143")]
 use std::borrow::Cow;
 
 use salvo::prelude::*;
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "unstable-msc4143")]
 use serde_json::Value as JsonValue;
 
+#[cfg(feature = "unstable-msc4143")]
 use crate::serde::JsonObject;
 
 // const METADATA: Metadata = metadata! {

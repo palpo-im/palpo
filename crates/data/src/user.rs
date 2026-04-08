@@ -636,7 +636,7 @@ pub fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i64)> {
                 query.order(users::shadow_banned.desc())
             }
         }
-        Some("creation_ts") | _ => {
+        _ => {
             if dir_asc {
                 query.order(users::created_at.asc())
             } else {

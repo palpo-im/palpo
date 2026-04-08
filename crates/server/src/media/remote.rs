@@ -138,8 +138,8 @@ async fn fetch_thumbnail_authenticated(
     let file = response.bytes().await?.to_vec();
 
     // Save the thumbnail locally for caching
-    if !file.is_empty() {
-        if let Err(e) = crate::media::save_thumbnail(
+    if !file.is_empty()
+        && let Err(e) = crate::media::save_thumbnail(
             mxc,
             user,
             content_type.as_deref(),
@@ -151,7 +151,6 @@ async fn fetch_thumbnail_authenticated(
         {
             warn!("Failed to save fetched thumbnail locally: {e}");
         }
-    }
 
     Ok(FileMeta {
         content: Some(file),
@@ -237,8 +236,8 @@ async fn fetch_thumbnail_unauthenticated(
     let file = response.bytes().await?.to_vec();
 
     // Save the thumbnail locally for caching
-    if !file.is_empty() {
-        if let Err(e) = crate::media::save_thumbnail(
+    if !file.is_empty()
+        && let Err(e) = crate::media::save_thumbnail(
             mxc,
             user,
             content_type.as_deref(),
@@ -250,7 +249,6 @@ async fn fetch_thumbnail_unauthenticated(
         {
             warn!("Failed to save fetched thumbnail locally: {e}");
         }
-    }
 
     Ok(FileMeta {
         content: Some(file),

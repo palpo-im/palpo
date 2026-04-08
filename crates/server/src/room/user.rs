@@ -437,17 +437,10 @@ pub fn copy_push_rules_from_room_to_room(
             continue;
         }
 
+        // Other `AnyPushRuleRef` variants (Override, Content, PostContent, Sender,
+        // Underride) are intentionally not copied yet.
+        #[allow(clippy::single_match)]
         match push_rule {
-            // AnyPushRuleRef::Override(rule) => {
-            // },
-            // AnyPushRuleRef::Content(rule) => {
-            // },
-            // AnyPushRuleRef::PostContent(rule) => {
-            // },
-            // AnyPushRuleRef::Sender(rule) => {
-            // },
-            // AnyPushRuleRef::Underride(rule) => {
-            // },
             AnyPushRuleRef::Room(rule) => {
                 let new_rule = NewPushRule::Room(NewSimplePushRule::new(
                     new_room_id.to_owned(),

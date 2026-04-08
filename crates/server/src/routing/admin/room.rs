@@ -261,10 +261,10 @@ pub fn list_rooms(
             r.room_id.to_lowercase().contains(&term_lower)
                 || r.name
                     .as_ref()
-                    .map_or(false, |n| n.to_lowercase().contains(&term_lower))
+                    .is_some_and(|n| n.to_lowercase().contains(&term_lower))
                 || r.canonical_alias
                     .as_ref()
-                    .map_or(false, |a| a.to_lowercase().contains(&term_lower))
+                    .is_some_and(|a| a.to_lowercase().contains(&term_lower))
         });
     }
 

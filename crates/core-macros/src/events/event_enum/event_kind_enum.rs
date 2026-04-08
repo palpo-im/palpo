@@ -570,7 +570,7 @@ impl EventEnumVariation<'_> {
                 let palpo_core = self.palpo_core;
 
                 // Field types that don't implement `Copy` must be accessedd via a reference.
-                let (field_type, is_ref) = field.ty(&palpo_core);
+                let (field_type, is_ref) = field.ty(palpo_core);
                 let ampersand = is_ref.then(|| quote! { & });
 
                 // If this content might be redacted, the field is available through an accessor on

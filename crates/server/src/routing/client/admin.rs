@@ -26,7 +26,7 @@ async fn whois(
 
     // Check if the user is an admin or requesting their own info
     let is_admin = data::user::is_admin(authed.user_id()).unwrap_or(false);
-    if !is_admin && authed.user_id() != &target_user_id {
+    if !is_admin && authed.user_id() != target_user_id {
         return Err(MatrixError::forbidden(
             "Only admins can query other users' information.",
             None,

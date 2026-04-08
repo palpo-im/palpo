@@ -377,18 +377,15 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
 
     // When using delegated auth, also revoke the access token at the OIDC
     // provider so that the browser session is properly invalidated.
-    if let Some(da) = config::get().enabled_delegated_auth() {
-        if let Some(token) = req
+    if let Some(da) = config::get().enabled_delegated_auth()
+        && let Some(token) = req
             .headers()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-        {
-            if let Err(e) = revoke_delegated_token(da, token).await {
+            && let Err(e) = revoke_delegated_token(da, token).await {
                 tracing::warn!("Failed to revoke delegated auth token: {e}");
             }
-        }
-    }
 
     data::user::device::remove_device(authed.user_id(), authed.device_id())?;
     empty_ok()

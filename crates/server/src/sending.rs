@@ -920,11 +920,10 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
         reqwest_client_builder = reqwest_client_builder.danger_accept_invalid_certs(true);
     }
 
-    if let Some(ref proxy_config) = config.proxy {
-        if let Some(proxy) = proxy_config.to_proxy()? {
+    if let Some(ref proxy_config) = config.proxy
+        && let Some(proxy) = proxy_config.to_proxy()? {
             reqwest_client_builder = reqwest_client_builder.proxy(proxy);
         }
-    }
 
     Ok(reqwest_client_builder)
 }
