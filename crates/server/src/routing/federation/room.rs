@@ -243,7 +243,7 @@ async fn send_knock(
             error = %e,
             room_id = %args.room_id, "could not accept as timeline event {}", event_id
         );
-        MatrixError::invalid_param(format!("could not accept as timeline event"))
+        MatrixError::invalid_param("could not accept as timeline event".to_string())
     })?;
 
     data::room::add_joined_server(&args.room_id, &origin)?;

@@ -149,14 +149,13 @@ pub fn create_registration_token(
     };
 
     // Validate uses_allowed
-    if let Some(uses) = body.uses_allowed {
-        if uses < 0 {
+    if let Some(uses) = body.uses_allowed
+        && uses < 0 {
             return Err(MatrixError::invalid_param(
                 "uses_allowed must be a non-negative integer or null",
             )
             .into());
         }
-    }
 
     // Validate expiry_time
     if let Some(expiry) = body.expiry_time {
@@ -209,14 +208,13 @@ pub fn update_registration_token(
     let body = body.into_inner();
 
     // Validate uses_allowed if provided
-    if let Some(Some(uses)) = body.uses_allowed {
-        if uses < 0 {
+    if let Some(Some(uses)) = body.uses_allowed
+        && uses < 0 {
             return Err(MatrixError::invalid_param(
                 "uses_allowed must be a non-negative integer or null",
             )
             .into());
         }
-    }
 
     // Validate expiry_time if provided
     if let Some(Some(expiry)) = body.expiry_time {

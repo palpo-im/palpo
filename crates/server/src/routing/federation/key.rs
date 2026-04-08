@@ -44,11 +44,10 @@ async fn fetch_signing_keys(
     minimum_valid_until_ts: UnixMillis,
 ) -> Option<ServerSigningKeys> {
     // Try local cache first
-    if let Ok(cached) = crate::server_key::signing_keys_for(server) {
-        if cached.valid_until_ts >= minimum_valid_until_ts {
+    if let Ok(cached) = crate::server_key::signing_keys_for(server)
+        && cached.valid_until_ts >= minimum_valid_until_ts {
             return Some(cached);
         }
-    }
 
     // Cache miss or expired — fetch from origin server
     match crate::server_key::server_request(server).await {

@@ -574,7 +574,7 @@ pub async fn oidc_auth(req: &mut Request, res: &mut Response) -> AppResult<()> {
     );
 
     // Step 9: Redirect user to OIDC provider for authentication
-    res.render(Redirect::found(auth_url.to_string()));
+    res.render(Redirect::found(&auth_url));
     Ok(())
 }
 

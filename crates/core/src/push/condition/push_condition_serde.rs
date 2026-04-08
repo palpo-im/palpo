@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize, Serializer, de};
 
-use super::{PushCondition, RoomMemberCountIs, RoomVersionFeature, ScalarJsonValue};
+use super::{PushCondition, RoomMemberCountIs, ScalarJsonValue};
+#[cfg(feature = "unstable-msc3931")]
+use super::RoomVersionFeature;
 use crate::serde::{RawJsonValue, from_raw_json_value};
 
 impl Serialize for PushCondition {

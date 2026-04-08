@@ -237,18 +237,16 @@ pub fn is_token_valid(token: &str) -> DataResult<bool> {
     let now = UnixMillis::now().get() as i64;
 
     // Check expiry
-    if let Some(expires_at) = db_token.expires_at {
-        if now >= expires_at {
+    if let Some(expires_at) = db_token.expires_at
+        && now >= expires_at {
             return Ok(false);
         }
-    }
 
     // Check uses
-    if let Some(uses_allowed) = db_token.uses_allowed {
-        if db_token.completed + db_token.pending >= uses_allowed {
+    if let Some(uses_allowed) = db_token.uses_allowed
+        && db_token.completed + db_token.pending >= uses_allowed {
             return Ok(false);
         }
-    }
 
     Ok(true)
 }

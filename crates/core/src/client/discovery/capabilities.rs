@@ -5,6 +5,11 @@
 //!
 //! [spec]: https://spec.matrix.org/latest/client-server-api/#capabilities-negotiation
 
+// The `SetDisplayNameCapability` and `SetAvatarUrlCapability` types are deprecated since
+// Matrix 1.16 in favor of `ProfileFieldsCapability`, but we still keep them around for
+// backwards compatibility with older clients.
+#![allow(deprecated)]
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -47,7 +52,6 @@ impl CapabilitiesResBody {
 
 /// Contains information about all the capabilities that the server supports.
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
-#[allow(deprecated)]
 pub struct Capabilities {
     /// Capability to indicate if the user can change their password.
     #[serde(rename = "m.change_password", default)]
@@ -115,9 +119,7 @@ impl Capabilities {
         match capability {
             "m.change_password" => Some(Cow::Owned(serialize(&self.change_password))),
             "m.room_versions" => Some(Cow::Owned(serialize(&self.room_versions))),
-            #[allow(deprecated)]
             "m.set_displayname" => Some(Cow::Owned(serialize(&self.set_display_name))),
-            #[allow(deprecated)]
             "m.set_avatar_url" => Some(Cow::Owned(serialize(&self.set_avatar_url))),
             "m.3pid_changes" => Some(Cow::Owned(serialize(&self.thirdparty_id_changes))),
             "m.forget_forced_upon_leave" => {
@@ -136,9 +138,7 @@ impl Capabilities {
         match capability {
             "m.change_password" => self.change_password = from_json_value(value)?,
             "m.room_versions" => self.room_versions = from_json_value(value)?,
-            #[allow(deprecated)]
             "m.set_displayname" => self.set_display_name = from_json_value(value)?,
-            #[allow(deprecated)]
             "m.set_avatar_url" => self.set_avatar_url = from_json_value(value)?,
             "m.3pid_changes" => self.thirdparty_id_changes = from_json_value(value)?,
             "m.forget_forced_upon_leave" => {
@@ -245,7 +245,6 @@ pub struct SetDisplayNameCapability {
     pub enabled: bool,
 }
 
-#[allow(deprecated)]
 impl SetDisplayNameCapability {
     /// Creates a new `SetDisplayNameCapability` with the given enabled flag.
     pub fn new(enabled: bool) -> Self {
@@ -258,7 +257,6 @@ impl SetDisplayNameCapability {
     }
 }
 
-#[allow(deprecated)]
 impl Default for SetDisplayNameCapability {
     fn default() -> Self {
         Self { enabled: true }
@@ -273,7 +271,6 @@ pub struct SetAvatarUrlCapability {
     pub enabled: bool,
 }
 
-#[allow(deprecated)]
 impl SetAvatarUrlCapability {
     /// Creates a new `SetAvatarUrlCapability` with the given enabled flag.
     pub fn new(enabled: bool) -> Self {
@@ -286,7 +283,6 @@ impl SetAvatarUrlCapability {
     }
 }
 
-#[allow(deprecated)]
 impl Default for SetAvatarUrlCapability {
     fn default() -> Self {
         Self { enabled: true }

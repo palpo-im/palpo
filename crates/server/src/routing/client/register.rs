@@ -97,7 +97,7 @@ async fn register(
     if body.login_type == Some(LoginType::ApplicationService) {
         let token = aa.require_access_token()?;
         let matched = crate::appservices()
-            .into_iter()
+            .iter()
             .find(|appservice| appservice.as_token == token)
             .cloned();
         let Some(matched) = matched else {

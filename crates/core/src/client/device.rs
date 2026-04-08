@@ -159,9 +159,9 @@ pub struct DevicesResBody {
 
 // /// `PUT /_matrix/client/*/devices/{deviceId}`
 // ///
-/// Update metadata for a device, or create a new device.
-///
-/// Only application services can use this endpoint to create new devices.
+// /// Update metadata for a device, or create a new device.
+// ///
+// /// Only application services can use this endpoint to create new devices.
 // /// `/v3/` ([spec])
 // ///
 // /// [spec]: https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3devicesdeviceid

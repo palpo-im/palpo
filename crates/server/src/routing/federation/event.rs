@@ -148,7 +148,7 @@ fn missing_events(
                 }
             };
 
-            if &*event_room_id_owned != &*room_id {
+            if *event_room_id_owned != *room_id {
                 warn!(
                     "evil event detected: Event {} found while searching in room {}",
                     event_id, &room_id

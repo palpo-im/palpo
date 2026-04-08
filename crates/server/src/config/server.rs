@@ -838,11 +838,10 @@ impl ServerConfig {
             url.to_string()
         } else {
             // If under proxy, you should set well-known client manually.
-            if let Some(listenser) = self.listeners.first() {
-                if listenser.enabled_tls().is_none() {
+            if let Some(listenser) = self.listeners.first()
+                && listenser.enabled_tls().is_none() {
                     return format!("http://{}", self.server_name);
-                }
-            };
+                };
             format!("https://{}", self.server_name)
         }
     }

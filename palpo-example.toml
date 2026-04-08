@@ -436,16 +436,17 @@
 #
 # Currently this does not account for proxies in use like Synapse does.
 #
-# To disable, set this to be an empty vector (`[]`).
+# To disable, set this to be an empty vector (`[]`) or omit the field.
+# If omitted, no IP range filtering is performed (use a firewall instead).
 #
-# Defaults to:
+# A safer recommended set is:
 # ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
 # "192.168.0.0/16", "100.64.0.0/10", "192.0.0.0/24", "169.254.0.0/16",
 # "192.88.99.0/24", "198.18.0.0/15", "192.0.2.0/24", "198.51.100.0/24",
 # "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
 # "2001:db8::/32", "ff00::/8", "fec0::/10"]
 #
-# ip_range_denylist =
+# ip_range_denylist = []
 
 # Whether to query the servers listed in trusted_servers first or query
 # the origin server first. For best security, querying the origin server

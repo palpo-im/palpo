@@ -272,7 +272,7 @@ pub async fn append_pdu(
         leaves.insert(pdu.event_id.clone());
     }
     state::set_forward_extremities(&pdu.room_id, leaves.iter().map(Borrow::borrow), state_lock)?;
-    state::update_backward_extremities(&pdu)?;
+    state::update_backward_extremities(pdu)?;
 
     #[derive(Deserialize, Clone, Debug)]
     struct ExtractEventId {

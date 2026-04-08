@@ -42,8 +42,8 @@ async fn get_protocol(aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<P
     // Look through registered appservices to find one that handles this protocol.
     let appservices = crate::appservices();
     for appservice in appservices {
-        if let Some(protocols) = &appservice.protocols {
-            if protocols.iter().any(|p| p == &protocol_name) {
+        if let Some(protocols) = &appservice.protocols
+            && protocols.iter().any(|p| p == &protocol_name) {
                 return json_ok(ProtocolResBody {
                     protocol: Protocol {
                         user_fields: vec![],
@@ -54,7 +54,6 @@ async fn get_protocol(aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<P
                     },
                 });
             }
-        }
     }
 
     Err(MatrixError::not_found("Protocol not found").into())

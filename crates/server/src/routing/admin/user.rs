@@ -101,8 +101,7 @@ pub fn create_device(
         return Err(MatrixError::missing_param("Missing device_id").into());
     };
 
-    let device_id = <OwnedDeviceId>::try_from(device_id_str.as_str())
-        .map_err(|_| MatrixError::invalid_param("Invalid device_id"))?;
+    let device_id = OwnedDeviceId::from(device_id_str.as_str());
 
     if data::user::device::is_device_exists(&user_id, &device_id)? {
         return empty_ok();

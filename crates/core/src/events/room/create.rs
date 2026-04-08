@@ -59,6 +59,7 @@ pub struct RoomCreateEventContent {
 impl RoomCreateEventContent {
     /// Creates a new `RoomCreateEventContent` with the given creator, as
     /// required for room versions 1 through 10.
+    #[allow(deprecated)]
     pub fn new_v1(creator: OwnedUserId) -> Self {
         Self {
             creator: Some(creator),
@@ -73,6 +74,7 @@ impl RoomCreateEventContent {
     /// creator, as introduced in room version 11.
     ///
     /// The room version is set to [`RoomVersionId::V11`].
+    #[allow(deprecated)]
     pub fn new_v11() -> Self {
         Self {
             creator: None,
@@ -87,6 +89,7 @@ impl RoomCreateEventContent {
     /// creator, as introduced in room version 11.
     ///
     /// The room version is set to [`RoomVersionId::V12`].
+    #[allow(deprecated)]
     pub fn new_v12() -> Self {
         Self {
             creator: None,
