@@ -3,7 +3,7 @@ use std::io;
 use std::string::FromUtf8Error;
 
 use async_trait::async_trait;
-use salvo::http::{StatusCode, StatusError};
+use salvo::http::{Method, StatusCode, StatusError};
 use salvo::oapi::{self, EndpointOutRegister, ToSchema};
 use salvo::prelude::{Depot, Request, Response, Writer};
 use thiserror::Error;
@@ -115,6 +115,33 @@ impl AppError {
     }
 }
 
+fn expose_diesel_not_found(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::DELETE)
+}
+
+fn internal_db_error() -> MatrixError {
+    let mut error = MatrixError::unknown("unknown db error");
+    error.status_code = Some(StatusCode::INTERNAL_SERVER_ERROR);
+    error
+}
+
+fn matrix_error_from_diesel(method: &Method, error: &diesel::result::Error) -> MatrixError {
+    match error {
+        diesel::result::Error::NotFound if expose_diesel_not_found(method) => {
+            tracing::warn!(%method, "diesel not found");
+            MatrixError::not_found("resource not found")
+        }
+        diesel::result::Error::NotFound => {
+            tracing::error!(%method, "unexpected diesel not found");
+            internal_db_error()
+        }
+        _ => {
+            tracing::error!(%method, error = ?error, "diesel db error");
+            internal_db_error()
+        }
+    }
+}
+
 #[async_trait]
 impl Writer for AppError {
     async fn write(mut self, req: &mut Request, depot: &mut Depot, res: &mut Response) {
@@ -170,14 +197,7 @@ impl Writer for AppError {
                 res.write_body(body).ok();
                 return;
             }
-            Self::Diesel(e) => {
-                tracing::error!(error = ?e, "diesel db error");
-                if let diesel::result::Error::NotFound = e {
-                    MatrixError::not_found("resource not found")
-                } else {
-                    MatrixError::unknown("unknown db error")
-                }
-            }
+            Self::Diesel(e) => matrix_error_from_diesel(req.method(), &e),
             Self::HttpStatus(e) => match e.code {
                 StatusCode::NOT_FOUND => MatrixError::not_found(e.brief),
                 StatusCode::FORBIDDEN => MatrixError::forbidden(e.brief, None),
@@ -217,5 +237,58 @@ impl EndpointOutRegister for AppError {
             oapi::Response::new("Bad request")
                 .add_content("application/json", StatusError::to_schema(components)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use diesel::result::{DatabaseErrorKind, Error as DieselError};
+    use salvo::http::Method;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn get_not_found_stays_404() {
+        let mut req = Request::new();
+        *req.method_mut() = Method::GET;
+        let mut depot = Depot::new();
+        let mut res = Response::new();
+
+        AppError::Diesel(DieselError::NotFound)
+            .write(&mut req, &mut depot, &mut res)
+            .await;
+
+        assert_eq!(res.status_code, Some(StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn post_not_found_is_not_404() {
+        let mut req = Request::new();
+        *req.method_mut() = Method::POST;
+        let mut depot = Depot::new();
+        let mut res = Response::new();
+
+        AppError::Diesel(DieselError::NotFound)
+            .write(&mut req, &mut depot, &mut res)
+            .await;
+
+        assert_eq!(res.status_code, Some(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[tokio::test]
+    async fn database_errors_return_500() {
+        let mut req = Request::new();
+        *req.method_mut() = Method::GET;
+        let mut depot = Depot::new();
+        let mut res = Response::new();
+
+        AppError::Diesel(DieselError::DatabaseError(
+            DatabaseErrorKind::Unknown,
+            Box::new(String::from("boom")),
+        ))
+        .write(&mut req, &mut depot, &mut res)
+        .await;
+
+        assert_eq!(res.status_code, Some(StatusCode::INTERNAL_SERVER_ERROR));
     }
 }
