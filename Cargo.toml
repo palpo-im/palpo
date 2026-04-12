@@ -118,7 +118,7 @@ tempfile = "3.27.0"
 termimad = { version = "0.34.1", default-features = false }
 textnonce = "1.0.0"
 thiserror = "2.0.18"
-tokio = { version = "1.51.0", features = ["macros", "parking_lot", "process"] }
+tokio = { version = "1.51.1", features = ["macros", "parking_lot", "process"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 toml = { version = "1.1.2", default-features = false }
