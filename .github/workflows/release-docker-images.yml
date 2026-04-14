@@ -25,9 +25,9 @@ jobs:
           - platform: linux/amd64
             runs_on: ubuntu-latest
             suffix: linux-amd64
-          # - platform: linux/arm64
-          #   runs_on: ubuntu-latest-arm
-          #   suffix: linux-arm64
+          - platform: linux/arm64
+            runs_on: ubuntu-24.04-arm
+            suffix: linux-arm64
     steps:
       - name: Set up Docker Buildx
         id: buildx
