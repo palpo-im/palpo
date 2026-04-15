@@ -1006,7 +1006,14 @@ impl PduBuilder {
         event_auth::auth_check(auth_rules, &pdu, &fetch_event, &fetch_state).await?;
 
         // Hash and sign
-        let mut pdu_json = to_canonical_object(&pdu).expect("event is valid, we just created it");
+        // NOTE: `pdu.content` originates from the client request (via `PduBuilder`),
+        // so it may legitimately fail canonical-JSON serialization — e.g. if the
+        // client submitted a float, which the Matrix canonical-JSON spec forbids.
+        // Return a 400 `M_BAD_JSON` rather than panicking the server thread.
+        let mut pdu_json = to_canonical_object(&pdu).map_err(|e| {
+            tracing::warn!(error = ?e, "event content is not valid canonical JSON");
+            MatrixError::bad_json(format!("event content is not valid canonical JSON: {e}"))
+        })?;
 
         pdu_json.remove("event_id");
 
