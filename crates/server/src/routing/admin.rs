@@ -70,7 +70,7 @@ pub fn router() -> Router {
                 .push(user_lookup::router()),
         )
     }
-    for v in ["_palpo/admin", "_synapse/admin"] {
+    for v in ["_palpo/mas", "_synapse/mas"] {
         // MAS modern endpoints - separate auth via shared secret
         admin = admin.push(
             Router::with_path(v)
