@@ -256,6 +256,9 @@ pub async fn append_pdu(
             .entry("unsigned".to_owned())
             .or_insert_with(|| CanonicalJsonValue::Object(Default::default()))
         {
+            // Third arm (`canonicalize_prev_content`) emits a WARN and yields
+            // None when stored prev state has non-canonical JSON; in that case
+            // we skip the whole prev_* trio rather than panic.
             if let Ok(state_frame_id) = state::get_pdu_frame_id(&pdu.event_id)
                 && let Ok(prev_state) = state::get_state(
                     state_frame_id - 1,
