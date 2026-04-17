@@ -784,15 +784,12 @@ mod tests {
     }
 
     #[test]
-    fn test_to_canonical_object_rejects_float() {
+    fn to_canonical_object_rejects_float() {
         let input = serde_json::json!({ "x": 1.5 });
-        let result = to_canonical_object(input);
-        match result {
-            Err(CanonicalJsonError::InvalidType(ty)) => {
-                assert_eq!(ty, "float", "error payload should be \"float\"");
-            }
-            Err(other) => panic!("expected InvalidType(\"float\"), got {other:?}"),
-            Ok(v) => panic!("expected Err, got Ok({v:?})"),
-        }
+        assert_matches!(
+            to_canonical_object(input),
+            Err(CanonicalJsonError::InvalidType(ty))
+        );
+        assert_eq!(ty, "float", "error payload should be \"float\"");
     }
 }
