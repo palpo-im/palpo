@@ -517,7 +517,10 @@ mod tests {
     };
 
     use super::value::CanonicalJsonValue;
-    use super::{redact_in_place, to_canonical_value, try_from_json_map};
+    use super::{
+        CanonicalJsonError, redact_in_place, to_canonical_object, to_canonical_value,
+        try_from_json_map,
+    };
     use crate::room_version_rules::RedactionRules;
 
     #[test]
@@ -778,5 +781,18 @@ mod tests {
                 "type": "m.room.create",
             })
         );
+    }
+
+    #[test]
+    fn test_to_canonical_object_rejects_float() {
+        let input = serde_json::json!({ "x": 1.5 });
+        let result = to_canonical_object(input);
+        match result {
+            Err(CanonicalJsonError::InvalidType(ty)) => {
+                assert_eq!(ty, "float", "error payload should be \"float\"");
+            }
+            Err(other) => panic!("expected InvalidType(\"float\"), got {other:?}"),
+            Ok(v) => panic!("expected Err, got Ok({v:?})"),
+        }
     }
 }
