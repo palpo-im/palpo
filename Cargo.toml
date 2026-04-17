@@ -131,6 +131,7 @@ tracing = { version = "0.1.44", features = [
 tracing-core = { version = "0.1.36" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing-test = "0.2.6"
 url = { version = "2.5.8", default-features = false, features = ["serde"] }
 uuid = { version = "1.23.1", features = ["v4"] }
 ulid = "1.2.1"
