@@ -53,7 +53,21 @@ pub fn create_user(user_id: impl Into<OwnedUserId>, password: Option<&str>) -> A
         .do_update()
         .set(&new_user)
         .get_result::<DbUser>(&mut connect()?)?;
+    // Default to pretty display_name
     let display_name = user_id.localpart().to_owned();
+    // // If enabled append lightning bolt to display name (default true)
+    // if config::enable_lightning_bolt() {
+    //     display_name.push_str(" ⚡️");
+    // }
+    diesel::insert_into(user_profiles::table)
+        .values(data::user::NewDbProfile {
+            user_id: user_id.clone(),
+            room_id: None,
+            display_name: Some(display_name.clone()),
+            avatar_url: None,
+            blurhash: None,
+        })
+        .execute(&mut connect()?)?;
     if let Some(password) = password {
         crate::user::set_password(&user.id, password)?;
     }
