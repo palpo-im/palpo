@@ -262,26 +262,25 @@ pub async fn append_pdu(
                     &pdu.event_ty.to_string().into(),
                     state_key,
                 )
-            {
-                if let Some(prev_content_obj) = canonicalize_prev_content(
+                && let Some(prev_content_obj) = canonicalize_prev_content(
                     &prev_state.content,
                     &pdu.event_id,
                     &pdu.room_id,
                     &prev_state.event_id,
-                ) {
-                    unsigned.insert(
-                        "prev_content".to_owned(),
-                        CanonicalJsonValue::Object(prev_content_obj),
-                    );
-                    unsigned.insert(
-                        "prev_sender".to_owned(),
-                        CanonicalJsonValue::String(prev_state.sender.to_string()),
-                    );
-                    unsigned.insert(
-                        "replaces_state".to_owned(),
-                        CanonicalJsonValue::String(prev_state.event_id.to_string()),
-                    );
-                }
+                )
+            {
+                unsigned.insert(
+                    "prev_content".to_owned(),
+                    CanonicalJsonValue::Object(prev_content_obj),
+                );
+                unsigned.insert(
+                    "prev_sender".to_owned(),
+                    CanonicalJsonValue::String(prev_state.sender.to_string()),
+                );
+                unsigned.insert(
+                    "replaces_state".to_owned(),
+                    CanonicalJsonValue::String(prev_state.event_id.to_string()),
+                );
             }
         } else {
             error!("invalid unsigned type in pdu");
