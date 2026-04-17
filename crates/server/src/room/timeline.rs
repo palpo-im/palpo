@@ -219,7 +219,7 @@ fn canonicalize_prev_content(
     room_id: &RoomId,
     prev_event_id: &EventId,
 ) -> Option<CanonicalJsonObject> {
-    match to_canonical_object(content.to_owned()) {
+    match to_canonical_object(content) {
         Ok(obj) => Some(obj),
         Err(e) => {
             tracing::warn!(
@@ -263,21 +263,25 @@ pub async fn append_pdu(
                     state_key,
                 )
             {
-                unsigned.insert(
-                    "prev_content".to_owned(),
-                    CanonicalJsonValue::Object(
-                        to_canonical_object(prev_state.content.clone())
-                            .expect("event is valid, we just created it"),
-                    ),
-                );
-                unsigned.insert(
-                    "prev_sender".to_owned(),
-                    CanonicalJsonValue::String(prev_state.sender.to_string()),
-                );
-                unsigned.insert(
-                    "replaces_state".to_owned(),
-                    CanonicalJsonValue::String(prev_state.event_id.to_string()),
-                );
+                if let Some(prev_content_obj) = canonicalize_prev_content(
+                    &prev_state.content,
+                    &pdu.event_id,
+                    &pdu.room_id,
+                    &prev_state.event_id,
+                ) {
+                    unsigned.insert(
+                        "prev_content".to_owned(),
+                        CanonicalJsonValue::Object(prev_content_obj),
+                    );
+                    unsigned.insert(
+                        "prev_sender".to_owned(),
+                        CanonicalJsonValue::String(prev_state.sender.to_string()),
+                    );
+                    unsigned.insert(
+                        "replaces_state".to_owned(),
+                        CanonicalJsonValue::String(prev_state.event_id.to_string()),
+                    );
+                }
             }
         } else {
             error!("invalid unsigned type in pdu");
