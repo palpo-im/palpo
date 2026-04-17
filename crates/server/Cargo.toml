@@ -200,7 +200,7 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 
 [dev-dependencies]
-tracing-test = "0.2"
+tracing-test = { workspace = true }
 
 [lints]
 workspace = true
