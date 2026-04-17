@@ -4,6 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use hickory_resolver::proto::rr::rdata::SRV;
 use salvo::http::headers::{CacheControl, Header};
 
 use crate::core::identifiers::*;
@@ -372,13 +373,16 @@ async fn query_given_srv_record(record: &str) -> Option<(FedDest, Instant)> {
         .srv_lookup(record)
         .await
         .map(|srv| {
-            srv.iter().next().map(|result| {
+            srv.answers()
+                .iter()
+                .find_map(|record| record.try_borrow::<SRV>())
+                .map(|result| {
                 (
                     FedDest::Named(
-                        result.target().to_string().trim_end_matches('.').to_owned(),
-                        format!(":{}", result.port()),
+                        result.data().target.to_string().trim_end_matches('.').to_owned(),
+                        format!(":{}", result.data().port),
                     ),
-                    srv.as_lookup().valid_until(),
+                    srv.valid_until(),
                 )
             })
         })

@@ -8,7 +8,7 @@ use std::time::Instant;
 use diesel::prelude::*;
 use hickory_resolver::Resolver as HickoryResolver;
 use hickory_resolver::config::*;
-use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use salvo::oapi::ToSchema;
 use serde::Serialize;
 use tokio::sync::{Semaphore, broadcast};
@@ -100,14 +100,15 @@ pub fn seqnum_reach(sn: Seqnum) -> SeqnumQueueFuture {
     SEQNUM_QUEUE.reach(sn)
 }
 
-pub fn dns_resolver() -> &'static HickoryResolver<TokioConnectionProvider> {
-    static DNS_RESOLVER: OnceLock<HickoryResolver<TokioConnectionProvider>> = OnceLock::new();
+pub fn dns_resolver() -> &'static HickoryResolver<TokioRuntimeProvider> {
+    static DNS_RESOLVER: OnceLock<HickoryResolver<TokioRuntimeProvider>> = OnceLock::new();
     DNS_RESOLVER.get_or_init(|| {
         HickoryResolver::builder_with_config(
             ResolverConfig::default(),
-            TokioConnectionProvider::default(),
+            TokioRuntimeProvider::default(),
         )
         .build()
+        .expect("failed to build DNS resolver")
     })
 }
 
