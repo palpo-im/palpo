@@ -13,7 +13,7 @@ use crate::core::identifiers::*;
 use crate::core::push::Ruleset;
 use crate::core::serde::JsonValue;
 use crate::data::schema::*;
-use crate::data::user::{NewDbPresence, NewDbProfile};
+use crate::data::user::NewDbPresence;
 use crate::data::{connect, diesel_exists};
 use crate::exts::*;
 use crate::{
@@ -160,22 +160,6 @@ async fn register(
 
     // Create user
     let db_user = crate::user::create_user(user_id.clone(), password)?;
-
-    // Default to pretty display_name
-    let display_name = user_id.localpart().to_owned();
-    // // If enabled append lightning bolt to display name (default true)
-    // if config::enable_lightning_bolt() {
-    //     display_name.push_str(" ⚡️");
-    // }
-    diesel::insert_into(user_profiles::table)
-        .values(NewDbProfile {
-            user_id: user_id.clone(),
-            room_id: None,
-            display_name: Some(display_name.clone()),
-            avatar_url: None,
-            blurhash: None,
-        })
-        .execute(&mut connect()?)?;
 
     // Presence update
     crate::data::user::set_presence(
