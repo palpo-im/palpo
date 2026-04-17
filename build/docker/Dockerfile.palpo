@@ -5,15 +5,18 @@ WORKDIR /work
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev libpq-dev cmake postgresql postgresql-contrib
 
-COPY Cargo.toml Cargo.toml
+COPY Cargo.toml Cargo.lock .
 COPY crates crates
-RUN cargo build --release
+RUN --mount=type=cache,target=/work/target/ \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/ \
+    cargo build --release && mv ./target/release/palpo .
 
 FROM debian:bookworm
 
 WORKDIR /var/palpo
 
-COPY --from=builder /work/target/release/palpo /var/palpo/palpo
+COPY --from=builder /work/palpo /var/palpo/palpo
 # COPY crates/server/palpo-example.toml /var/palpo/palpo.toml
 
 RUN apt-get update && apt-get install -y debian-keyring \
