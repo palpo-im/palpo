@@ -51,12 +51,8 @@ pub async fn backfill_if_required(
             .select(events::id)
             .load(&mut connect()?)?;
         if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
-            return backfill_from_extremities(
-                room_id,
-                std::slice::from_ref(&pdu.event_id),
-                limit,
-            )
-            .await;
+            return backfill_from_extremities(room_id, std::slice::from_ref(&pdu.event_id), limit)
+                .await;
         }
     }
 

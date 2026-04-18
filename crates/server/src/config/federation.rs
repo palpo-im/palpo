@@ -1,10 +1,9 @@
 use serde::Deserialize;
 
+use super::WildCardedDomain;
 use crate::core::ServerName;
 use crate::core::serde::default_true;
 use crate::macros::config_example;
-
-use super::WildCardedDomain;
 
 #[config_example(filename = "palpo-example.toml", section = "federation")]
 #[derive(Clone, Debug, Deserialize)]

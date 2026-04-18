@@ -299,10 +299,13 @@ pub fn set_appservice_disabled(id: &str, disabled: bool) -> AppResult<bool> {
 /// List all registrations in the database, including disabled ones.
 pub fn list_all_registrations() -> AppResult<Vec<(DbRegistration, bool)>> {
     let regs = appservice_registrations::table.load::<DbRegistration>(&mut connect()?)?;
-    Ok(regs.into_iter().map(|r| {
-        let disabled = r.disabled;
-        (r, disabled)
-    }).collect())
+    Ok(regs
+        .into_iter()
+        .map(|r| {
+            let disabled = r.disabled;
+            (r, disabled)
+        })
+        .collect())
 }
 
 pub fn get_registration(id: &str) -> AppResult<Option<Registration>> {

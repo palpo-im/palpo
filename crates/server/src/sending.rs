@@ -565,7 +565,10 @@ pub async fn send_federation_request(
     request: reqwest::Request,
     timeout_secs: Option<u64>,
 ) -> AppResult<reqwest::Response> {
-    if !crate::config::get().federation.is_server_allowed(destination) {
+    if !crate::config::get()
+        .federation
+        .is_server_allowed(destination)
+    {
         return Err(AppError::public(format!(
             "Federation with server {destination} is not allowed by policy"
         )));
@@ -921,9 +924,10 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
     }
 
     if let Some(ref proxy_config) = config.proxy
-        && let Some(proxy) = proxy_config.to_proxy()? {
-            reqwest_client_builder = reqwest_client_builder.proxy(proxy);
-        }
+        && let Some(proxy) = proxy_config.to_proxy()?
+    {
+        reqwest_client_builder = reqwest_client_builder.proxy(proxy);
+    }
 
     Ok(reqwest_client_builder)
 }

@@ -306,7 +306,10 @@ pub async fn should_join_on_remote_servers(
             if server == local_server {
                 continue;
             }
-            if !allowed_servers.iter().any(|s| s.as_str() == server.as_str()) {
+            if !allowed_servers
+                .iter()
+                .any(|s| s.as_str() == server.as_str())
+            {
                 allowed_servers.push(server.to_owned());
             }
         }

@@ -491,10 +491,7 @@ pub async fn delete_room(
 
     if body.purge {
         // Purge all non-state events by using a far-future timestamp
-        let _ = crate::data::room::timeline::purge_room_history(
-            &room_id,
-            i64::MAX,
-        );
+        let _ = crate::data::room::timeline::purge_room_history(&room_id, i64::MAX);
     }
 
     json_ok(DeleteRoomResponse {

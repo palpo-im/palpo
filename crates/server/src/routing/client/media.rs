@@ -350,9 +350,7 @@ pub async fn get_thumbnail(
         args.height,
     ) {
         Ok(Some(DbThumbnail {
-            id,
-            content_type,
-            ..
+            id, content_type, ..
         })) => {
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
             // Try presigned URL redirect for S3 storage
@@ -361,7 +359,9 @@ pub async fn get_thumbnail(
                 return Ok(());
             }
             let data = storage::read(&key).await?;
-            let ct = content_type.as_deref().unwrap_or("application/octet-stream");
+            let ct = content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream");
             res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
             res.add_header(CONTENT_TYPE, ct, true)?;
             res.body = ResBody::Once(data.into());
@@ -392,7 +392,9 @@ pub async fn get_thumbnail(
             return Ok(());
         }
         let data = storage::read(&key).await?;
-        let ct = content_type.as_deref().unwrap_or("application/octet-stream");
+        let ct = content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
         res.add_header(CONTENT_TYPE, ct, true)?;
         res.body = ResBody::Once(data.into());
         Ok(())

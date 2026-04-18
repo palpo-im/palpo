@@ -276,9 +276,6 @@ impl MatrixVersion {
     pub const fn from_lit(lit: &'static str) -> Self {
         use konst::{result, string};
 
-        
-        
-
         let mut split = string::split(lit, ".");
 
         // Get major version

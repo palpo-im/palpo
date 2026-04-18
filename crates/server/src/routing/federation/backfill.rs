@@ -51,13 +51,13 @@ async fn get_backfill(
         prev_ids.retain(|p| !events.contains_key(p));
         if !events.contains_key(&event_id)
             && let Ok((pdu, data)) = timeline::get_pdu_and_data(&event_id)
-                && state::server_can_see_event(origin, &args.room_id, &pdu.event_id)?
-            {
-                events.insert(
-                    event_id.clone(),
-                    crate::sending::convert_to_outgoing_federation_event(data),
-                );
-            }
+            && state::server_can_see_event(origin, &args.room_id, &pdu.event_id)?
+        {
+            events.insert(
+                event_id.clone(),
+                crate::sending::convert_to_outgoing_federation_event(data),
+            );
+        }
         let prevs = events::table
             .filter(events::id.eq_any(&prev_ids))
             .select((events::id, events::depth))

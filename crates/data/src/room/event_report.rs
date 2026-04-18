@@ -12,6 +12,7 @@ use crate::{DataResult, connect};
 pub struct DbEventReport {
     pub id: i64,
     pub received_ts: i64,
+    pub status: String,
     pub room_id: OwnedRoomId,
     pub event_id: OwnedEventId,
     pub user_id: OwnedUserId,
@@ -24,6 +25,7 @@ pub struct DbEventReport {
 #[diesel(table_name = event_reports)]
 pub struct NewDbEventReport {
     pub received_ts: i64,
+    pub status: String,
     pub room_id: OwnedRoomId,
     pub event_id: OwnedEventId,
     pub user_id: OwnedUserId,
@@ -43,6 +45,7 @@ impl NewDbEventReport {
     ) -> Self {
         Self {
             received_ts: UnixMillis::now().get() as i64,
+            status: "new".to_owned(),
             room_id,
             event_id,
             user_id,
@@ -58,6 +61,7 @@ impl NewDbEventReport {
 pub struct EventReportInfo {
     pub id: i64,
     pub received_ts: i64,
+    pub status: String,
     pub room_id: OwnedRoomId,
     pub event_id: OwnedEventId,
     pub user_id: OwnedUserId,
@@ -70,6 +74,7 @@ impl From<DbEventReport> for EventReportInfo {
         Self {
             id: db.id,
             received_ts: db.received_ts,
+            status: db.status,
             room_id: db.room_id,
             event_id: db.event_id,
             user_id: db.user_id,
@@ -145,6 +150,18 @@ pub fn get_event_report(report_id: i64) -> DataResult<Option<DbEventReport>> {
     event_reports::table
         .find(report_id)
         .first::<DbEventReport>(&mut connect()?)
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Update an event report status by ID
+pub fn update_event_report_status(
+    report_id: i64,
+    status: &str,
+) -> DataResult<Option<DbEventReport>> {
+    diesel::update(event_reports::table.find(report_id))
+        .set(event_reports::status.eq(status))
+        .get_result::<DbEventReport>(&mut connect()?)
         .optional()
         .map_err(Into::into)
 }

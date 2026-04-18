@@ -121,7 +121,6 @@ pub fn media_storage_key(server_name: &ServerName, media_id: &str) -> String {
     storage::media_key(effective_server_name(server_name), media_id)
 }
 
-
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> AppResult<()> {
     data::media::delete_media(server_name, media_id)?;
     let key = media_storage_key(server_name, media_id);
@@ -192,7 +191,11 @@ pub async fn save_thumbnail(
 }
 
 /// Build the storage key for a thumbnail file.
-pub fn thumbnail_storage_key(server_name: &ServerName, media_id: &str, thumbnail_id: i64) -> String {
+pub fn thumbnail_storage_key(
+    server_name: &ServerName,
+    media_id: &str,
+    thumbnail_id: i64,
+) -> String {
     storage::thumbnail_key(effective_server_name(server_name), media_id, thumbnail_id)
 }
 
@@ -206,4 +209,3 @@ pub async fn save_thumbnail_file(
     storage::write(&key, file).await?;
     Ok(key)
 }
-

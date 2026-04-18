@@ -1,7 +1,8 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use opendal::{Operator, layers::LoggingLayer};
+use opendal::Operator;
+use opendal::layers::LoggingLayer;
 
 use crate::AppResult;
 use crate::config::StorageConfig;
@@ -47,10 +48,7 @@ pub fn operator() -> &'static Operator {
 
 /// Whether redirect mode is enabled (S3 with presigned URLs).
 pub fn is_redirect_enabled() -> bool {
-    REDIRECT_CONFIG
-        .get()
-        .map(|c| c.is_some())
-        .unwrap_or(false)
+    REDIRECT_CONFIG.get().map(|c| c.is_some()).unwrap_or(false)
 }
 
 /// Generate a presigned URL for reading the given key.
@@ -59,9 +57,7 @@ pub async fn presign_read(key: &str) -> AppResult<Option<String>> {
     let Some(Some(config)) = REDIRECT_CONFIG.get() else {
         return Ok(None);
     };
-    let presigned = operator()
-        .presign_read(key, config.presign_expiry)
-        .await?;
+    let presigned = operator().presign_read(key, config.presign_expiry).await?;
     Ok(Some(presigned.uri().to_string()))
 }
 

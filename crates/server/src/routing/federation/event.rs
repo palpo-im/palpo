@@ -83,10 +83,8 @@ fn auth_chain(
         None => DbEvent::get_by_id(&args.event_id)?.room_id,
     };
 
-    let auth_chain_ids = crate::room::auth_chain::get_auth_chain_ids(
-        &room_id_owned,
-        [&*args.event_id].into_iter(),
-    )?;
+    let auth_chain_ids =
+        crate::room::auth_chain::get_auth_chain_ids(&room_id_owned, [&*args.event_id].into_iter())?;
 
     json_ok(EventAuthResBody {
         auth_chain: auth_chain_ids
@@ -138,15 +136,16 @@ fn missing_events(
             // For v12 rooms, the event JSON does not contain `room_id` (it is
             // derived from the create event id). Look it up from the events
             // table instead and only use the JSON room_id if present.
-            let event_room_id_owned: OwnedRoomId = match pdu.get("room_id").and_then(|val| val.as_str()) {
-                Some(s) => s.try_into().map_err(|_| {
-                    AppError::internal("invalid room id field in event in database")
-                })?,
-                None => {
-                    let db_event = DbEvent::get_by_id(&event_id)?;
-                    db_event.room_id
-                }
-            };
+            let event_room_id_owned: OwnedRoomId =
+                match pdu.get("room_id").and_then(|val| val.as_str()) {
+                    Some(s) => s.try_into().map_err(|_| {
+                        AppError::internal("invalid room id field in event in database")
+                    })?,
+                    None => {
+                        let db_event = DbEvent::get_by_id(&event_id)?;
+                        db_event.room_id
+                    }
+                };
 
             if *event_room_id_owned != *room_id {
                 warn!(

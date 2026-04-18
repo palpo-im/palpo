@@ -1,5 +1,6 @@
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde_json::json;
 
 use crate::core::UnixMillis;
 use crate::core::client::room::ReportContentReqBody;
@@ -63,6 +64,7 @@ pub async fn report(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
+    let body = body.into_inner();
 
     let pdu = match timeline::get_pdu(&args.event_id) {
         Ok(pdu) => pdu,
@@ -79,6 +81,20 @@ pub async fn report(
         )
         .into());
     };
+
+    let report_reason = body.reason.clone();
+    let report_score = body.score;
+    crate::data::room::create_event_report(crate::data::room::NewDbEventReport::new(
+        pdu.room_id.clone(),
+        pdu.event_id.clone(),
+        authed.user_id().to_owned(),
+        report_reason.clone(),
+        Some(json!({
+            "reason": report_reason,
+            "score": report_score,
+        })),
+        report_score,
+    ))?;
 
     let _ = crate::admin::send_message(RoomMessageEventContent::text_html(
         format!(

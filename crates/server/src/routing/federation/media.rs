@@ -75,7 +75,9 @@ pub async fn get_thumbnail(
     res: &mut Response,
 ) -> AppResult<()> {
     let server_name = &config::get().server_name;
-    if let Some(DbThumbnail { id, content_type, .. }) = crate::data::media::get_thumbnail_by_dimension(
+    if let Some(DbThumbnail {
+        id, content_type, ..
+    }) = crate::data::media::get_thumbnail_by_dimension(
         server_name,
         &args.media_id,
         args.width,
@@ -113,7 +115,9 @@ pub async fn get_thumbnail(
     let (width, height, crop) =
         crate::media::thumbnail_properties(args.width, args.height).unwrap_or((0, 0, false)); // 0, 0 because that's the original file
 
-    if let Some(DbThumbnail { id, content_type, .. }) =
+    if let Some(DbThumbnail {
+        id, content_type, ..
+    }) =
         crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)?
     {
         // Using saved thumbnail
@@ -232,10 +236,8 @@ pub async fn get_thumbnail(
                 .execute(&mut connect()?)?;
 
             // Save to storage backend
-            let thumb_key = media_storage_key(
-                server_name,
-                &format!("{}.{width}x{height}", &args.media_id),
-            );
+            let thumb_key =
+                media_storage_key(server_name, &format!("{}.{width}x{height}", &args.media_id));
             storage::write(&thumb_key, &thumbnail_bytes).await?;
 
             let content_disposition = make_content_disposition(

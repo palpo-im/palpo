@@ -251,7 +251,9 @@ pub struct RedactedSyncMessageLikeEvent<C: RedactedMessageLikeEventContent> {
 /// the event's `EventId`.
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
-#[salvo(schema(bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"))]
+#[salvo(schema(
+    bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"
+))]
 pub enum MessageLikeEvent<C: MessageLikeEventContent + RedactContent>
 where
     C::Redacted: RedactedMessageLikeEventContent,
@@ -270,7 +272,9 @@ where
 /// the event's `EventId`.
 #[allow(clippy::exhaustive_enums)]
 #[derive(ToSchema, Clone, Debug)]
-#[salvo(schema(bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"))]
+#[salvo(schema(
+    bound = "C: ToSchema + ComposeSchema + 'static, C::Redacted: ToSchema + ComposeSchema + 'static"
+))]
 pub enum SyncMessageLikeEvent<C: MessageLikeEventContent + RedactContent>
 where
     C::Redacted: RedactedMessageLikeEventContent,
