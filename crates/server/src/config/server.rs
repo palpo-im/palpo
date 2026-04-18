@@ -90,6 +90,11 @@ pub struct ServerConfig {
     #[serde(default = "default_server_name")]
     pub server_name: OwnedServerName,
 
+    /// Optional homepage content source for `GET /`.
+    ///
+    /// If this is a local path, palpo serves that file directly.
+    /// If this starts with `https://`, palpo fetches the remote HTML at request time.
+    /// When the remote fetch fails, palpo logs a warning and falls back to the built-in default page.
     pub home_page: Option<String>,
 
     // display: hidden
