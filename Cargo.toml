@@ -26,7 +26,7 @@ palpo-identifiers-validation = { version = "0.2.1", path = "crates/identifiers-v
 palpo-server-macros = { version = "0.2.1", path = "crates/server-macros" }
 
 rust-argon2 = "3.0.0"
-ctor = "0.9.1"
+ctor = "0.10.0"
 anyhow = "1.0.102"
 assert_matches2 = "0.1.2"
 async-trait = "0.1.89"
@@ -39,7 +39,7 @@ byteorder = "1.5.0"
 cargo_toml = "0.22.3"
 chksum = "0.4.0"
 chrono = { version = "0.4.44", features = ["serde"] }
-clap = { version = "4.6.0", default-features = false }
+clap = { version = "4.6.1", default-features = false }
 config = "0.15.22"
 cookie = "0.18.1"
 core_affinity = "0.8.3"
@@ -60,7 +60,7 @@ futures-util = { version = "0.3.32", features = ["io"] }
 form_urlencoded = "1"
 globwalk = "0.9.1"
 ipaddress = "0.1.3"
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.0"
 hyper-util = "0.1.20"
 hmac = "0.13.0"
 http-auth = { version = "0.1.10", default-features = false }
@@ -97,7 +97,7 @@ rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
 reqwest = { version = "0.13.2", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.91.1", features = ["rustls"]}
+salvo = { version = "0.92.0", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
@@ -118,7 +118,7 @@ tempfile = "3.27.0"
 termimad = { version = "0.34.1", default-features = false }
 textnonce = "1.0.0"
 thiserror = "2.0.18"
-tokio = { version = "1.51.1", features = ["macros", "parking_lot", "process"] }
+tokio = { version = "1.52.1", features = ["macros", "parking_lot", "process"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 toml = { version = "1.1.2", default-features = false }
@@ -131,8 +131,9 @@ tracing = { version = "0.1.44", features = [
 tracing-core = { version = "0.1.36" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing-test = "0.2.6"
 url = { version = "2.5.8", default-features = false, features = ["serde"] }
-uuid = { version = "1.23.0", features = ["v4"] }
+uuid = { version = "1.23.1", features = ["v4"] }
 ulid = "1.2.1"
 web-time = "1.1.0"
 webpage = { version = "2.0.1", default-features = false }

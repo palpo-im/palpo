@@ -209,6 +209,31 @@ pub fn replace_pdu(event_id: &EventId, pdu_json: &CanonicalJsonObject) -> AppRes
     Ok(())
 }
 
+/// Canonicalize a stored state event's content for use as
+/// `unsigned.prev_content`. Returns `None` (and emits a structured
+/// `WARN`) when the stored content is not valid Matrix canonical
+/// JSON (most commonly because it contains a float). Never panics.
+fn canonicalize_prev_content(
+    content: &serde_json::value::RawValue,
+    event_id: &EventId,
+    room_id: &RoomId,
+    prev_event_id: &EventId,
+) -> Option<CanonicalJsonObject> {
+    match to_canonical_object(content) {
+        Ok(obj) => Some(obj),
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                event_id = %event_id,
+                room_id = %room_id,
+                prev_event_id = %prev_event_id,
+                "skipping unsigned.prev_content: stored state content is not canonical JSON",
+            );
+            None
+        }
+    }
+}
+
 /// Creates a new persisted data unit and adds it to a room.
 ///
 /// By this point the incoming event should be fully authenticated, no auth happens
@@ -231,19 +256,25 @@ pub async fn append_pdu(
             .entry("unsigned".to_owned())
             .or_insert_with(|| CanonicalJsonValue::Object(Default::default()))
         {
+            // Third arm (`canonicalize_prev_content`) emits a WARN and yields
+            // None when stored prev state has non-canonical JSON; in that case
+            // we skip the whole prev_* trio rather than panic.
             if let Ok(state_frame_id) = state::get_pdu_frame_id(&pdu.event_id)
                 && let Ok(prev_state) = state::get_state(
                     state_frame_id - 1,
                     &pdu.event_ty.to_string().into(),
                     state_key,
                 )
+                && let Some(prev_content_obj) = canonicalize_prev_content(
+                    &prev_state.content,
+                    &pdu.event_id,
+                    &pdu.room_id,
+                    &prev_state.event_id,
+                )
             {
                 unsigned.insert(
                     "prev_content".to_owned(),
-                    CanonicalJsonValue::Object(
-                        to_canonical_object(prev_state.content.clone())
-                            .expect("event is valid, we just created it"),
-                    ),
+                    CanonicalJsonValue::Object(prev_content_obj),
                 );
                 unsigned.insert(
                     "prev_sender".to_owned(),
@@ -785,4 +816,86 @@ pub fn is_event_next_to_forward_gap(event: &PduEvent) -> AppResult<bool> {
         .filter(event_forward_extremities::room_id.eq(event.room_id()))
         .filter(event_forward_extremities::event_id.eq_any(event_ids));
     Ok(diesel_exists!(query, &mut connect()?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::value::RawValue;
+    use tracing_test::traced_test;
+
+    use crate::core::identifiers::{EventId, OwnedEventId, OwnedRoomId, RoomId};
+    use crate::core::serde::to_canonical_object;
+
+    use super::canonicalize_prev_content;
+
+    fn ids() -> (OwnedEventId, OwnedRoomId, OwnedEventId) {
+        (
+            EventId::parse("$current:example.org").unwrap().to_owned(),
+            RoomId::parse("!room:example.org").unwrap().to_owned(),
+            EventId::parse("$prev:example.org").unwrap().to_owned(),
+        )
+    }
+
+    fn raw(s: &str) -> Box<RawValue> {
+        RawValue::from_string(s.to_owned()).unwrap()
+    }
+
+    #[test]
+    fn canonicalize_prev_content_some_for_canonical_input() {
+        let (event_id, room_id, prev_event_id) = ids();
+        let content = raw(r#"{"membership":"join"}"#);
+
+        let got = canonicalize_prev_content(&content, &event_id, &room_id, &prev_event_id);
+
+        let expected = to_canonical_object(serde_json::json!({"membership":"join"})).unwrap();
+        assert_eq!(got, Some(expected));
+    }
+
+    #[test]
+    fn canonicalize_prev_content_none_for_float_input() {
+        let (event_id, room_id, prev_event_id) = ids();
+        let content = raw(r#"{"temp_c":21.5}"#);
+
+        let got = canonicalize_prev_content(&content, &event_id, &room_id, &prev_event_id);
+
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    #[traced_test]
+    fn canonicalize_prev_content_warns_on_float_input() {
+        let (event_id, room_id, prev_event_id) = ids();
+        let content = raw(r#"{"wind_kph":3.4}"#);
+
+        let got = canonicalize_prev_content(&content, &event_id, &room_id, &prev_event_id);
+
+        assert_eq!(got, None);
+        assert!(logs_contain("skipping unsigned.prev_content"));
+        assert!(logs_contain("$current:example.org"));
+        assert!(logs_contain("!room:example.org"));
+        assert!(logs_contain("$prev:example.org"));
+    }
+
+    #[test]
+    #[traced_test]
+    fn canonicalize_prev_content_single_warn_for_multiple_floats() {
+        let (event_id, room_id, prev_event_id) = ids();
+        let content = raw(r#"{"temp_c":21.5,"feels_like_c":18.2,"wind_kph":3.4}"#);
+
+        let got = canonicalize_prev_content(&content, &event_id, &room_id, &prev_event_id);
+
+        assert_eq!(got, None);
+
+        logs_assert(|logs| {
+            let hits = logs
+                .iter()
+                .filter(|line| line.contains("skipping unsigned.prev_content"))
+                .count();
+            if hits == 1 {
+                Ok(())
+            } else {
+                Err(format!("expected exactly 1 WARN emission, got {hits}"))
+            }
+        });
+    }
 }

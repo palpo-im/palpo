@@ -199,5 +199,8 @@ webpage = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
 
+[dev-dependencies]
+tracing-test = { workspace = true }
+
 [lints]
 workspace = true
