@@ -366,7 +366,10 @@ pub async fn join_room(
                 AppError::public("invalid pdu in send_join response.")
             })?;
 
-            NewDbEvent::from_canonical_json_with_room_id(&event_id, event_sn, &value, false, room_id)?.save()?;
+            NewDbEvent::from_canonical_json_with_room_id(
+                &event_id, event_sn, &value, false, room_id,
+            )?
+            .save()?;
             DbEventData {
                 event_id: pdu.event_id.to_owned(),
                 event_sn,
@@ -401,7 +404,10 @@ pub async fn join_room(
 
         if !timeline::has_pdu(&event_id) {
             let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id)?;
-            NewDbEvent::from_canonical_json_with_room_id(&event_id, event_sn, &value, false, room_id)?.save()?;
+            NewDbEvent::from_canonical_json_with_room_id(
+                &event_id, event_sn, &value, false, room_id,
+            )?
+            .save()?;
             DbEventData {
                 event_id: event_id.to_owned(),
                 event_sn,
@@ -648,8 +654,8 @@ mod tests {
     use salvo::http::StatusCode;
 
     use super::should_retry_make_join_after_error;
-    use crate::core::MatrixError;
     use crate::AppError;
+    use crate::core::MatrixError;
 
     #[test]
     fn retries_only_transient_invite_visibility_errors_for_invited_users() {

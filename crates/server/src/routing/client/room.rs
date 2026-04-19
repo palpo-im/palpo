@@ -128,6 +128,7 @@ pub fn authed_router() -> Router {
                     .push(
                         Router::with_path("send/{event_type}/{txn_id}").put(message::send_message),
                     )
+                    .push(Router::with_path("report/{event_id}").post(state::report))
                     .push(Router::with_path("redact/{event_id}/{txn_id}").put(event::send_redact))
                     .push(
                         Router::with_path("tags").get(tag::list_tags).push(

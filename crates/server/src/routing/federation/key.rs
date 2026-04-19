@@ -10,8 +10,8 @@ use crate::core::federation::directory::{
     RemoteServerKeysResBody, ServerKeysResBody,
 };
 use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
-use crate::core::signatures::Ed25519KeyPair;
 use crate::core::serde::{Base64, CanonicalJsonObject};
+use crate::core::signatures::Ed25519KeyPair;
 use crate::core::{OwnedServerName, OwnedServerSigningKeyId, ServerName, UnixMillis};
 use crate::{AppResult, AuthArgs, JsonResult, config, json_ok};
 
@@ -19,14 +19,12 @@ pub fn router() -> Router {
     Router::with_path("key").oapi_tag("federation").push(
         Router::with_path("v2")
             .push(
-                Router::with_path("query")
-                    .post(query_keys_batch)
-                    .push(
-                        Router::with_path("{server_name}")
+                Router::with_path("query").post(query_keys_batch).push(
+                    Router::with_path("{server_name}")
                             .get(query_keys_from_server)
                             // Deprecated: /_matrix/key/v2/query/{serverName}/{keyId}
                             .push(Router::with_path("{key_id}").get(query_keys_from_server)),
-                    ),
+                ),
             )
             .push(
                 Router::with_path("server")
@@ -45,9 +43,10 @@ async fn fetch_signing_keys(
 ) -> Option<ServerSigningKeys> {
     // Try local cache first
     if let Ok(cached) = crate::server_key::signing_keys_for(server)
-        && cached.valid_until_ts >= minimum_valid_until_ts {
-            return Some(cached);
-        }
+        && cached.valid_until_ts >= minimum_valid_until_ts
+    {
+        return Some(cached);
+    }
 
     // Cache miss or expired — fetch from origin server
     match crate::server_key::server_request(server).await {
@@ -211,7 +210,9 @@ mod tests {
 
         let signed = sign_server_keys_for_notary(&notary, &notary_keypair, server_keys).unwrap();
         let notary_key_id: OwnedServerSigningKeyId =
-            format!("ed25519:{}", notary_keypair.version()).try_into().unwrap();
+            format!("ed25519:{}", notary_keypair.version())
+                .try_into()
+                .unwrap();
 
         assert!(signed.signatures.contains_key(&origin));
         assert!(signed.signatures.contains_key(&notary));

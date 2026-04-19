@@ -43,17 +43,18 @@ async fn get_protocol(aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<P
     let appservices = crate::appservices();
     for appservice in appservices {
         if let Some(protocols) = &appservice.protocols
-            && protocols.iter().any(|p| p == &protocol_name) {
-                return json_ok(ProtocolResBody {
-                    protocol: Protocol {
-                        user_fields: vec![],
-                        location_fields: vec![],
-                        icon: String::new(),
-                        field_types: Default::default(),
-                        instances: vec![],
-                    },
-                });
-            }
+            && protocols.iter().any(|p| p == &protocol_name)
+        {
+            return json_ok(ProtocolResBody {
+                protocol: Protocol {
+                    user_fields: vec![],
+                    location_fields: vec![],
+                    icon: String::new(),
+                    field_types: Default::default(),
+                    instances: vec![],
+                },
+            });
+        }
     }
 
     Err(MatrixError::not_found("Protocol not found").into())

@@ -255,13 +255,13 @@ impl StructFieldExt for Field {
         self.serde_meta_items().find_map(|meta| {
             if let syn::Meta::NameValue(nv) = meta
                 && nv.path.is_ident("default")
-                    && let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit_str),
-                        ..
-                    }) = &nv.value
-                    {
-                        return lit_str.parse::<syn::Path>().ok();
-                    }
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(lit_str),
+                    ..
+                }) = &nv.value
+            {
+                return lit_str.parse::<syn::Path>().ok();
+            }
             None
         })
     }

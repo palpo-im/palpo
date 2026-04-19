@@ -324,10 +324,9 @@ mod tests {
         let old_notary = OwnedServerName::try_from("old-notary.example").unwrap();
         let new_notary = OwnedServerName::try_from("new-notary.example").unwrap();
         let mut existing = ServerSigningKeys::new(server_name.clone(), UnixMillis(100));
-        existing.verify_keys.insert(
-            old_key_id.clone(),
-            VerifyKey::from_bytes(vec![1, 2, 3]),
-        );
+        existing
+            .verify_keys
+            .insert(old_key_id.clone(), VerifyKey::from_bytes(vec![1, 2, 3]));
         existing.signatures = signatures("old-notary.example", "ed25519:old", "old-signature");
 
         let mut new_keys = ServerSigningKeys::new(server_name.clone(), UnixMillis(200));
@@ -363,7 +362,11 @@ mod tests {
         let merged = merge_signing_keys_for_storage(Some(existing), new_keys);
 
         let notary_sigs = &merged.signatures[&OwnedServerName::try_from(notary).unwrap()];
-        assert_eq!(notary_sigs.len(), 2, "both key IDs from the same server must be retained");
+        assert_eq!(
+            notary_sigs.len(),
+            2,
+            "both key IDs from the same server must be retained"
+        );
         let key1: OwnedServerSigningKeyId = "ed25519:key1".try_into().unwrap();
         let key2: OwnedServerSigningKeyId = "ed25519:key2".try_into().unwrap();
         assert_eq!(notary_sigs[&key1], "sig-a");

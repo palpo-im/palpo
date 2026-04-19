@@ -383,9 +383,10 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            && let Err(e) = revoke_delegated_token(da, token).await {
-                tracing::warn!("Failed to revoke delegated auth token: {e}");
-            }
+        && let Err(e) = revoke_delegated_token(da, token).await
+    {
+        tracing::warn!("Failed to revoke delegated auth token: {e}");
+    }
 
     data::user::device::remove_device(authed.user_id(), authed.device_id())?;
     empty_ok()
@@ -412,18 +413,12 @@ async fn revoke_delegated_token(
     let response = client
         .post(&revocation_url)
         .bearer_auth(mas_secret)
-        .form(&[
-            ("token", access_token),
-            ("token_type_hint", "access_token"),
-        ])
+        .form(&[("token", access_token), ("token_type_hint", "access_token")])
         .send()
         .await?;
 
     if !response.status().is_success() {
-        tracing::warn!(
-            "Token revocation returned status: {}",
-            response.status()
-        );
+        tracing::warn!("Token revocation returned status: {}", response.status());
     }
 
     Ok(())

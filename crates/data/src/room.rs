@@ -295,7 +295,13 @@ impl NewDbEvent {
         is_backfill: bool,
         room_id: &RoomId,
     ) -> DataResult<Self> {
-        Self::from_json_value(id, sn, serde_json::to_value(value)?, is_backfill, Some(room_id))
+        Self::from_json_value(
+            id,
+            sn,
+            serde_json::to_value(value)?,
+            is_backfill,
+            Some(room_id),
+        )
     }
     pub fn from_json_value(
         id: &EventId,

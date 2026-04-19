@@ -163,11 +163,12 @@ fn well_known_client() -> JsonResult<ClientResBody> {
             });
         }
     } else if let Some(oidc) = conf.oidc.as_ref()
-        && let Some(issuer) = &oidc.mas_issuer {
-            body.authentication = Some(AuthenticationInfo {
-                issuer: issuer.clone(),
-            });
-        }
+        && let Some(issuer) = &oidc.mas_issuer
+    {
+        body.authentication = Some(AuthenticationInfo {
+            issuer: issuer.clone(),
+        });
+    }
 
     json_ok(body)
 }

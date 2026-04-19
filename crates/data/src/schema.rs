@@ -377,6 +377,7 @@ diesel::table! {
     event_reports (id) {
         id -> Int8,
         received_ts -> Int8,
+        status -> Text,
         room_id -> Text,
         event_id -> Text,
         user_id -> Text,

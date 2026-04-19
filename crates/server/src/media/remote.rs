@@ -148,9 +148,9 @@ async fn fetch_thumbnail_authenticated(
             &file,
         )
         .await
-        {
-            warn!("Failed to save fetched thumbnail locally: {e}");
-        }
+    {
+        warn!("Failed to save fetched thumbnail locally: {e}");
+    }
 
     Ok(FileMeta {
         content: Some(file),
@@ -246,9 +246,9 @@ async fn fetch_thumbnail_unauthenticated(
             &file,
         )
         .await
-        {
-            warn!("Failed to save fetched thumbnail locally: {e}");
-        }
+    {
+        warn!("Failed to save fetched thumbnail locally: {e}");
+    }
 
     Ok(FileMeta {
         content: Some(file),

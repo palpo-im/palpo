@@ -43,12 +43,13 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
     if ttl > 0 {
         let key = token_cache_key(token);
         if let Ok(mut cache) = CACHE.lock()
-            && let Some(entry) = cache.get(&key) {
-                if entry.cached_at.elapsed() < Duration::from_secs(ttl) {
-                    return Ok(entry.result.clone());
-                }
-                cache.remove(&key);
+            && let Some(entry) = cache.get(&key)
+        {
+            if entry.cached_at.elapsed() < Duration::from_secs(ttl) {
+                return Ok(entry.result.clone());
             }
+            cache.remove(&key);
+        }
     }
 
     // Call introspection endpoint
@@ -105,13 +106,15 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
 pub fn device_id_from_scope(scope: &str) -> Option<String> {
     for part in scope.split_whitespace() {
         if let Some(id) = part.strip_prefix("urn:matrix:client:device:")
-            && !id.is_empty() {
-                return Some(id.to_owned());
-            }
+            && !id.is_empty()
+        {
+            return Some(id.to_owned());
+        }
         if let Some(id) = part.strip_prefix("urn:matrix:org.matrix.msc2967.client:device:")
-            && !id.is_empty() {
-                return Some(id.to_owned());
-            }
+            && !id.is_empty()
+        {
+            return Some(id.to_owned());
+        }
     }
     None
 }

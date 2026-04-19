@@ -6,9 +6,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use tokio::time::{Instant, timeout_at};
 
-use super::{
-    add_signing_keys, batch_notary_request, key_exists, server_request, verify_keys_for,
-};
+use super::{add_signing_keys, batch_notary_request, key_exists, server_request, verify_keys_for};
 use crate::config;
 use crate::core::federation::discovery::ServerSigningKeys;
 use crate::core::serde::{CanonicalJsonObject, RawJson, RawJsonValue};
@@ -238,16 +236,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::missing_local_key_ids;
+    use crate::core::OwnedServerSigningKeyId;
     use crate::core::federation::discovery::VerifyKey;
     use crate::core::serde::Base64;
-    use crate::core::OwnedServerSigningKeyId;
 
     #[test]
     fn acquire_locals_treats_our_configured_signing_key_as_available() {
-        let local_key_id: OwnedServerSigningKeyId =
-            "ed25519:local"
-                .try_into()
-                .expect("configured key id should be valid");
+        let local_key_id: OwnedServerSigningKeyId = "ed25519:local"
+            .try_into()
+            .expect("configured key id should be valid");
         let available_keys = BTreeMap::from([(
             local_key_id.clone(),
             VerifyKey {
@@ -255,10 +252,8 @@ mod tests {
             },
         )]);
 
-        let missing = missing_local_key_ids(
-            &available_keys,
-            std::iter::once(local_key_id.as_ref()),
-        );
+        let missing =
+            missing_local_key_ids(&available_keys, std::iter::once(local_key_id.as_ref()));
 
         assert!(
             missing.is_empty(),

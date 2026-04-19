@@ -79,7 +79,9 @@ pub fn load_pdus(
             .filter(events::room_id.eq(room_id))
             .select(diesel::dsl::max(events::sn))
             .first::<Option<Seqnum>>(&mut connect()?)?;
-        max_in_room.map(|sn| sn + 1).unwrap_or_else(|| data::curr_sn().unwrap_or(0) + 1)
+        max_in_room
+            .map(|sn| sn + 1)
+            .unwrap_or_else(|| data::curr_sn().unwrap_or(0) + 1)
     };
 
     while list.len() < limit {
@@ -134,12 +136,10 @@ pub fn load_pdus(
             }
         }
         // Don't filter by is_outlier or soft_failed here:
-        //  - Federation events that arrive with missing prev_events end up
-        //    marked as outlier and/or soft_failed even though they should still
-        //    be visible to clients (per Matrix spec, soft-failed events appear
-        //    in the timeline; they just don't contribute to room state).
-        //  - We *do* filter is_rejected because rejected events should not be
-        //    visible at all.
+        //  - Federation events that arrive with missing prev_events end up marked as outlier and/or
+        //    soft_failed even though they should still be visible to clients (per Matrix spec,
+        //    soft-failed events appear in the timeline; they just don't contribute to room state).
+        //  - We *do* filter is_rejected because rejected events should not be visible at all.
         let events: Vec<(OwnedEventId, Seqnum)> = if dir == Direction::Forward {
             query
                 .filter(events::sn.gt(start_sn))

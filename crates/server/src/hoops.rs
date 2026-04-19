@@ -137,7 +137,10 @@ impl RateLimiter {
             entry.0 -= 1.0;
             Ok(())
         } else {
-            Err(MatrixError::limit_exceeded("Too many requests. Please try again later.", None).into())
+            Err(
+                MatrixError::limit_exceeded("Too many requests. Please try again later.", None)
+                    .into(),
+            )
         }
     }
 }

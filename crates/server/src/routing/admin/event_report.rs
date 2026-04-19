@@ -2,6 +2,7 @@
 //!
 //! - GET /_synapse/admin/v1/event_reports
 //! - GET /_synapse/admin/v1/event_reports/{report_id}
+//! - PUT /_synapse/admin/v1/event_reports/{report_id}
 //! - DELETE /_synapse/admin/v1/event_reports/{report_id}
 
 use salvo::oapi::extract::*;
@@ -17,6 +18,7 @@ pub fn router() -> Router {
         .push(
             Router::with_path("v1/event_reports/{report_id}")
                 .get(get_event_report)
+                .put(update_event_report_status)
                 .delete(delete_event_report),
         )
 }
@@ -25,6 +27,7 @@ pub fn router() -> Router {
 pub struct EventReport {
     pub id: i64,
     pub received_ts: i64,
+    pub status: String,
     pub room_id: String,
     pub event_id: String,
     pub user_id: String,
@@ -38,6 +41,7 @@ impl From<data::room::EventReportInfo> for EventReport {
         Self {
             id: info.id,
             received_ts: info.received_ts,
+            status: info.status,
             room_id: info.room_id.to_string(),
             event_id: info.event_id.to_string(),
             user_id: info.user_id.to_string(),
@@ -59,6 +63,7 @@ pub struct EventReportsResponse {
 pub struct EventReportDetailResponse {
     pub id: i64,
     pub received_ts: i64,
+    pub status: String,
     pub room_id: String,
     pub event_id: String,
     pub user_id: String,
@@ -74,6 +79,7 @@ impl From<data::room::DbEventReport> for EventReportDetailResponse {
         Self {
             id: db.id,
             received_ts: db.received_ts,
+            status: db.status,
             room_id: db.room_id.to_string(),
             event_id: db.event_id.to_string(),
             user_id: db.user_id.to_string(),
@@ -96,6 +102,20 @@ pub struct ListEventReportsQuery {
     pub user_id: Option<String>,
     #[serde(default)]
     pub room_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateEventReportReqBody {
+    pub status: String,
+}
+
+fn normalize_event_report_status(status: &str) -> Option<&'static str> {
+    match status.trim() {
+        "new" | "New" => Some("new"),
+        "in_review" | "In Review" | "in review" => Some("in_review"),
+        "resolved" | "Resolved" => Some("resolved"),
+        _ => None,
+    }
 }
 
 /// GET /_synapse/admin/v1/event_reports
@@ -164,6 +184,26 @@ pub fn get_event_report(report_id: PathParam<i64>) -> JsonResult<EventReportDeta
     let report_id = report_id.into_inner();
 
     let report = data::room::get_event_report(report_id)?
+        .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
+
+    json_ok(report.into())
+}
+
+/// PUT /_synapse/admin/v1/event_reports/{report_id}
+///
+/// Update the moderation status of an event report
+#[endpoint(operation_id = "update_event_report_status")]
+pub fn update_event_report_status(
+    report_id: PathParam<i64>,
+    body: JsonBody<UpdateEventReportReqBody>,
+) -> JsonResult<EventReportDetailResponse> {
+    let report_id = report_id.into_inner();
+    let body = body.into_inner();
+    let status = normalize_event_report_status(&body.status).ok_or_else(|| {
+        MatrixError::invalid_param("status must be one of: new, in_review, resolved")
+    })?;
+
+    let report = data::room::update_event_report_status(report_id, status)?
         .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
 
     json_ok(report.into())

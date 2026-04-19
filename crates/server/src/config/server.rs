@@ -94,7 +94,8 @@ pub struct ServerConfig {
     ///
     /// If this is a local path, palpo serves that file directly.
     /// If this starts with `https://`, palpo fetches the remote HTML at request time.
-    /// When the remote fetch fails, palpo logs a warning and falls back to the built-in default page.
+    /// When the remote fetch fails, palpo logs a warning and falls back to the built-in default
+    /// page.
     pub home_page: Option<String>,
 
     // display: hidden
@@ -582,7 +583,6 @@ pub struct ServerConfig {
     #[serde(default)]
     pub ip_range_denylist: Vec<String>,
 
-
     // pub auto_acme: Option<AcmeConfig>,
     /// Whether to query the servers listed in trusted_servers first or query
     /// the origin server first. For best security, querying the origin server
@@ -770,7 +770,6 @@ pub struct ServerConfig {
 
     // external structure; separate section
     pub delegated_auth: Option<DelegatedAuthConfig>,
-
     // // external structure; separate section
     // #[serde(default)]
     // pub appservice: BTreeMap<String, AppService>,
@@ -844,9 +843,10 @@ impl ServerConfig {
         } else {
             // If under proxy, you should set well-known client manually.
             if let Some(listenser) = self.listeners.first()
-                && listenser.enabled_tls().is_none() {
-                    return format!("http://{}", self.server_name);
-                };
+                && listenser.enabled_tls().is_none()
+            {
+                return format!("http://{}", self.server_name);
+            };
             format!("https://{}", self.server_name)
         }
     }
@@ -1153,7 +1153,6 @@ fn default_pdu_cache_capacity() -> u32 {
 fn default_trusted_server_batch_size() -> usize {
     256
 }
-
 
 fn default_startup_netburst_keep() -> i64 {
     50

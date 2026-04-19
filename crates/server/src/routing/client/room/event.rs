@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use palpo_core::Direction;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde_json::json;
 use serde_json::value::to_raw_value;
 use state::DbRoomStateField;
 
@@ -71,6 +72,7 @@ pub(super) async fn report(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let pdu = timeline::get_pdu(&args.event_id)?;
+    let body = body.into_inner();
 
     if let Some(true) = body.score.map(|s| !(-100..=0).contains(&s)) {
         return Err(MatrixError::invalid_param("invalid score, must be within 0 to -100").into());
@@ -82,6 +84,20 @@ pub(super) async fn report(
         )
         .into());
     };
+
+    let report_reason = body.reason.clone();
+    let report_score = body.score;
+    crate::data::room::create_event_report(crate::data::room::NewDbEventReport::new(
+        pdu.room_id.clone(),
+        pdu.event_id.clone(),
+        authed.user_id().to_owned(),
+        report_reason.clone(),
+        Some(json!({
+            "reason": report_reason,
+            "score": report_score,
+        })),
+        report_score,
+    ))?;
 
     let _ = crate::admin::send_message(RoomMessageEventContent::text_html(
         format!(

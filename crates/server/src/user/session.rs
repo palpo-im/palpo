@@ -13,7 +13,9 @@ pub struct JwtClaims {
 
 pub fn validate_jwt_token(config: &JwtConfig, token: &str) -> AppResult<JwtClaims> {
     if !config.validate_signature {
-        warn!("JWT signature validation is disabled! This is insecure and should not be used in production.");
+        warn!(
+            "JWT signature validation is disabled! This is insecure and should not be used in production."
+        );
     }
 
     let verifier = init_jwt_verifier(config)?;
@@ -119,9 +121,6 @@ mod tests {
 
         let result = validate_jwt_token(&config, &token);
 
-        assert!(
-            result.is_err(),
-            "expired token must be rejected"
-        );
+        assert!(result.is_err(), "expired token must be rejected");
     }
 }
