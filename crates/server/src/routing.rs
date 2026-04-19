@@ -16,6 +16,9 @@ use crate::core::client::discovery::support::{Contact, SupportResBody};
 use crate::core::federation::directory::ServerResBody;
 use crate::{AppResult, JsonResult, config, hoops, json_ok, sending};
 
+const DEFAULT_HOME_PAGE_CONTENT_TYPE: &str = "text/html; charset=utf-8";
+const DEFAULT_HOME_PAGE_BODY: &str = "Palpo works";
+
 pub mod prelude {
     pub use salvo::prelude::*;
 
@@ -77,12 +80,7 @@ async fn home(req: &mut Request, res: &mut Response) {
         }
     }
 
-    res.status_code(StatusCode::OK);
-    res.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    let _ = res.write_body("Hello Palpo");
+    render_default_home_page(res);
 }
 
 enum HomePageSource<'a> {
@@ -92,12 +90,25 @@ enum HomePageSource<'a> {
 
 impl<'a> HomePageSource<'a> {
     fn from_config(value: &'a str) -> Self {
-        if value.starts_with("https://") {
+        if is_remote_home_page_url(value) {
             Self::Remote(value)
         } else {
             Self::Local(value)
         }
     }
+}
+
+fn is_remote_home_page_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn render_default_home_page(res: &mut Response) {
+    res.status_code(StatusCode::OK);
+    res.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(DEFAULT_HOME_PAGE_CONTENT_TYPE),
+    );
+    let _ = res.write_body(DEFAULT_HOME_PAGE_BODY);
 }
 
 async fn fetch_remote_home_page(url: &str) -> Option<(Bytes, String)> {
@@ -224,12 +235,20 @@ fn well_known_support() -> JsonResult<SupportResBody> {
 
 #[cfg(test)]
 mod tests {
-    use super::HomePageSource;
+    use super::{DEFAULT_HOME_PAGE_BODY, HomePageSource};
 
     #[test]
     fn home_page_classifies_https_urls_as_remote() {
         assert!(matches!(
             HomePageSource::from_config("https://example.com/index.html"),
+            HomePageSource::Remote(_)
+        ));
+    }
+
+    #[test]
+    fn home_page_classifies_http_urls_as_remote() {
+        assert!(matches!(
+            HomePageSource::from_config("http://example.com/index.html"),
             HomePageSource::Remote(_)
         ));
     }
@@ -244,6 +263,11 @@ mod tests {
             HomePageSource::from_config("/data/workspace/index.html"),
             HomePageSource::Local(_)
         ));
+    }
+
+    #[test]
+    fn default_home_page_matches_expected_text() {
+        assert_eq!(DEFAULT_HOME_PAGE_BODY, "Palpo works");
     }
 }
 
