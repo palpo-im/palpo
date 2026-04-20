@@ -35,7 +35,7 @@ ENV LOG_FORMAT=json
 EXPOSE 8008 8448
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8008/_matrix/client/versions || exit 1
+    CMD curl -f http://localhost:8008/healthz || exit 1
 
 USER palpo
 

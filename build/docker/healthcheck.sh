@@ -6,6 +6,8 @@ if [ -z "${PALPO_LISTEN_ADDR}" ]; then
 fi
 
 # The actual health check.
-# We try to first get a response on HTTP and when that fails on HTTPS and when that fails, we exit with code 1.
-# TODO: Change this to a single wget call. Do we have a config value that we can check for that?
-wget --no-verbose --tries=1 --spider "https://${PALPO_LISTEN_ADDR}/_matrix/client/versions" || exit 1
+# Try HTTP first because most container probes hit the plain app listener,
+# then fall back to HTTPS for deployments that terminate TLS in-process.
+wget --no-verbose --tries=1 --spider "http://${PALPO_LISTEN_ADDR}/healthz" \
+  || wget --no-verbose --tries=1 --spider "https://${PALPO_LISTEN_ADDR}/healthz" \
+  || exit 1

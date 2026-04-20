@@ -18,6 +18,8 @@ use crate::{AppResult, JsonResult, config, hoops, json_ok, sending};
 
 const DEFAULT_HOME_PAGE_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 const DEFAULT_HOME_PAGE_BODY: &str = "Palpo works";
+const HEALTH_CHECK_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
+const HEALTH_CHECK_BODY: &str = "ok";
 
 pub mod prelude {
     pub use salvo::prelude::*;
@@ -53,6 +55,8 @@ pub fn root() -> Router {
                 .push(Router::with_path("support").get(well_known_support))
                 .push(Router::with_path("server").get(well_known_server)),
         )
+        .push(Router::with_path("health").get(health))
+        .push(Router::with_path("healthz").get(health))
         .push(Router::with_path("{*path}").get(StaticDir::new("./static")))
 }
 
@@ -109,6 +113,16 @@ fn render_default_home_page(res: &mut Response) {
         HeaderValue::from_static(DEFAULT_HOME_PAGE_CONTENT_TYPE),
     );
     let _ = res.write_body(DEFAULT_HOME_PAGE_BODY);
+}
+
+#[handler]
+async fn health(res: &mut Response) {
+    res.status_code(StatusCode::OK);
+    res.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(HEALTH_CHECK_CONTENT_TYPE),
+    );
+    let _ = res.write_body(HEALTH_CHECK_BODY);
 }
 
 async fn fetch_remote_home_page(url: &str) -> Option<(Bytes, String)> {
