@@ -174,6 +174,8 @@ pub async fn join_room(
     }
     join_event_stub.insert(
         "content".to_owned(),
+        // `extra_data` is client-controlled JSON; floats are invalid in
+        // canonical JSON, so map the error instead of panicking.
         to_canonical_value(RoomMemberEventContent {
             membership: MembershipState::Join,
             display_name: data::user::display_name(sender_id)?,
@@ -185,7 +187,10 @@ pub async fn join_room(
             join_authorized_via_users_server,
             extra_data: extra_data.clone(),
         })
-        .expect("event is valid, we just created it"),
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "join content is not valid canonical JSON");
+            MatrixError::bad_json(format!("join content is not valid canonical JSON: {e}"))
+        })?,
     );
 
     // We keep the "event_id" in the pdu only in v1 or v2 rooms
@@ -653,9 +658,7 @@ fn should_retry_make_join_after_error(
 mod tests {
     use salvo::http::StatusCode;
 
-    use super::should_retry_make_join_after_error;
-    use crate::AppError;
-    use crate::core::MatrixError;
+    use super::*;
 
     #[test]
     fn retries_only_transient_invite_visibility_errors_for_invited_users() {
@@ -691,5 +694,28 @@ mod tests {
             true,
             0
         ));
+    }
+
+    #[test]
+    fn join_content_rejects_float_in_extra_data() {
+        let mut extra = BTreeMap::new();
+        extra.insert("num".to_owned(), serde_json::json!(1.5));
+
+        let content = RoomMemberEventContent {
+            membership: MembershipState::Join,
+            display_name: None,
+            avatar_url: None,
+            is_direct: None,
+            third_party_invite: None,
+            blurhash: None,
+            reason: None,
+            join_authorized_via_users_server: None,
+            extra_data: extra,
+        };
+
+        assert!(
+            to_canonical_value(content).is_err(),
+            "canonical JSON must reject floats; join_room's map_err relies on this"
+        );
     }
 }
