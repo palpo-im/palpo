@@ -10,7 +10,7 @@ COPY crates crates
 RUN --mount=type=cache,target=/work/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
-    cargo build --release && mv ./target/release/palpo .
+    cargo build --release && mv ./target/release/palpo . && cargo clean
 
 FROM debian:bookworm
 
