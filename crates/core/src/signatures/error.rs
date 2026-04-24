@@ -167,16 +167,6 @@ pub enum VerificationError {
     #[error("could not find public keys for entity {0:?}")]
     NoPublicKeysForEntity(String),
 
-    /// For when a public key cannot be found for a `target`.
-    #[error("could not find public key for {entity:?}")]
-    PublicKeyNotFound {
-        /// The entity for which the key is missing.
-        entity: String,
-
-        /// The identifier of the key that is missing.
-        key_id: String,
-    },
-
     /// No signature with a supported algorithm was found for the given entity.
     #[error("could not find supported signature for entity {0:?}")]
     NoSupportedSignatureForEntity(String),
@@ -184,18 +174,6 @@ pub enum VerificationError {
     /// The signature verification failed.
     #[error("could not verify signature: {0}")]
     Signature(#[source] ed25519_dalek::SignatureError),
-}
-
-impl VerificationError {
-    pub(crate) fn public_key_not_found(
-        entity: impl Into<String>,
-        key_id: impl Into<String>,
-    ) -> Self {
-        Self::PublicKeyNotFound {
-            entity: entity.into(),
-            key_id: key_id.into(),
-        }
-    }
 }
 
 /// Errors relating to parsing of all sorts.
