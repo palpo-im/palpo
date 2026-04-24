@@ -1,4 +1,7 @@
 //! Types for the `m.room.aliases` event.
+//!
+//! This event was removed from the current Matrix spec, but palpo keeps typed support for legacy
+//! room versions that still need `m.room.aliases` auth and redaction compatibility.
 
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
