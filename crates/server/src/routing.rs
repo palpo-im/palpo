@@ -12,8 +12,10 @@ use salvo::serve_static::StaticDir;
 
 use crate::core::MatrixError;
 use crate::core::client::discovery::client::{AuthenticationInfo, ClientResBody, HomeServerInfo};
+use crate::core::client::discovery::policy_server::PolicyServerResBody;
 use crate::core::client::discovery::support::{Contact, SupportResBody};
 use crate::core::federation::directory::ServerResBody;
+use crate::core::serde::Base64;
 use crate::{AppResult, JsonResult, config, hoops, json_ok, sending};
 
 const DEFAULT_HOME_PAGE_CONTENT_TYPE: &str = "text/html; charset=utf-8";
@@ -52,6 +54,7 @@ pub fn root() -> Router {
         .push(
             Router::with_path(".well-known/matrix")
                 .push(Router::with_path("client").get(well_known_client))
+                .push(Router::with_path("policy_server").get(well_known_policy_server))
                 .push(Router::with_path("support").get(well_known_support))
                 .push(Router::with_path("server").get(well_known_server)),
         )
@@ -245,6 +248,13 @@ fn well_known_support() -> JsonResult<SupportResBody> {
         contacts,
         support_page,
     })
+}
+
+#[endpoint]
+fn well_known_policy_server() -> JsonResult<PolicyServerResBody> {
+    json_ok(PolicyServerResBody::new(Base64::new(
+        config::keypair().public_key().to_vec(),
+    )))
 }
 
 #[cfg(test)]
