@@ -15,6 +15,7 @@ pub mod metadata;
 mod percent_encode;
 pub mod power_levels;
 pub mod presence;
+pub mod profile;
 pub mod push;
 pub mod room;
 pub mod room_version_rules;

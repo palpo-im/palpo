@@ -3,15 +3,15 @@
 /// `GET /_matrix/federation/*/query/directory`
 ///
 /// Get mapped room ID and resident homeservers for a given room alias.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map};
 
 use reqwest::Url;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use crate::profile::{ProfileFieldName, ProfileFieldValue};
 use crate::sending::{SendRequest, SendResult};
-use crate::user::ProfileField;
 use crate::{OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId};
 // /// `/v1/` ([spec])
 // ///
@@ -95,7 +95,96 @@ pub struct ProfileReqArgs {
     /// Profile field to query.
     #[salvo(parameter(parameter_in = Query))]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub field: Option<ProfileField>,
+    pub field: Option<ProfileFieldName>,
+}
+
+/// Response type for the `get_profile_information` endpoint.
+#[derive(ToSchema, Serialize, Deserialize, Default, Debug, Clone)]
+pub struct ProfileResBody {
+    /// The profile fields in the response.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    data: BTreeMap<String, JsonValue>,
+}
+
+impl ProfileResBody {
+    /// Creates an empty `Response`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the value of the given profile field.
+    pub fn get(&self, field: &str) -> Option<&JsonValue> {
+        self.data.get(field)
+    }
+
+    /// Returns an iterator over the profile fields.
+    pub fn iter(&self) -> btree_map::Iter<'_, String, JsonValue> {
+        self.data.iter()
+    }
+
+    /// Sets a profile field to the given value.
+    pub fn set(&mut self, field: impl Into<String>, value: JsonValue) {
+        self.data.insert(field.into(), value);
+    }
+}
+
+impl FromIterator<(String, JsonValue)> for ProfileResBody {
+    fn from_iter<T: IntoIterator<Item = (String, JsonValue)>>(iter: T) -> Self {
+        Self {
+            data: iter.into_iter().collect(),
+        }
+    }
+}
+
+impl FromIterator<(ProfileFieldName, JsonValue)> for ProfileResBody {
+    fn from_iter<T: IntoIterator<Item = (ProfileFieldName, JsonValue)>>(iter: T) -> Self {
+        let mut res = Self::new();
+        res.extend(iter);
+        res
+    }
+}
+
+impl FromIterator<ProfileFieldValue> for ProfileResBody {
+    fn from_iter<T: IntoIterator<Item = ProfileFieldValue>>(iter: T) -> Self {
+        let mut res = Self::new();
+        res.extend(iter);
+        res
+    }
+}
+
+impl Extend<(String, JsonValue)> for ProfileResBody {
+    fn extend<T: IntoIterator<Item = (String, JsonValue)>>(&mut self, iter: T) {
+        self.data.extend(iter);
+    }
+}
+
+impl Extend<(ProfileFieldName, JsonValue)> for ProfileResBody {
+    fn extend<T: IntoIterator<Item = (ProfileFieldName, JsonValue)>>(&mut self, iter: T) {
+        self.data.extend(
+            iter.into_iter()
+                .map(|(field, value)| (field.as_str().to_owned(), value)),
+        );
+    }
+}
+
+impl Extend<ProfileFieldValue> for ProfileResBody {
+    fn extend<T: IntoIterator<Item = ProfileFieldValue>>(&mut self, iter: T) {
+        self.data.extend(iter.into_iter().map(|value| {
+            let field = value.field_name().as_str().to_owned();
+            let value = value.value().into_owned();
+            (field, value)
+        }));
+    }
+}
+
+impl IntoIterator for ProfileResBody {
+    type Item = (String, JsonValue);
+    type IntoIter = btree_map::IntoIter<String, JsonValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.into_iter()
+    }
 }
 
 // /// `GET /_matrix/federation/*/query/{queryType}`

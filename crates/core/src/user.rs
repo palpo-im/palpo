@@ -2,30 +2,8 @@ use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
 use crate::events::GlobalAccountDataEventType;
-use crate::serde::StringEnum;
-use crate::{OwnedMxcUri, OwnedRoomId, OwnedUserId, PrivOwnedStr};
-
-/// Profile fields to specify in query.
-///
-/// This type can hold an arbitrary string. To build this with a custom value,
-/// convert it from a string with `::from()` / `.into()`. To check for values
-/// that are not available as a documented variant here, use its string
-/// representation, obtained through [`.as_str()`](Self::as_str()).
-#[derive(ToSchema, Clone, StringEnum)]
-#[non_exhaustive]
-pub enum ProfileField {
-    /// Display name of the user.
-    #[palpo_enum(rename = "displayname")]
-    DisplayName,
-
-    /// Avatar URL for the user's avatar.
-    #[palpo_enum(rename = "avatar_url")]
-    AvatarUrl,
-
-    #[doc(hidden)]
-    #[salvo(schema(value_type = String))]
-    _Custom(PrivOwnedStr),
-}
+pub use crate::profile::ProfileFieldName as ProfileField;
+use crate::{OwnedMxcUri, OwnedRoomId, OwnedUserId};
 
 #[derive(ToParameters, Deserialize, Debug)]
 pub struct UserRoomReqArgs {
