@@ -58,3 +58,28 @@ jobs:
       - name: Cargo test
         timeout-minutes: 40
         run: cargo test --all --all-features --no-fail-fast -- --nocapture
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Install dependencies
+        run: "sudo apt update && sudo apt install -y --no-install-recommends libclang-dev libpq-dev cmake postgresql postgresql-contrib"
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Intentionally omitted (see git history for the full snippets):
+  #
+  #   - cargo fmt --check: rustfmt.toml uses unstable features and the
+  #     committed tree fails `cargo +nightly fmt --check`. Running it here
+  #     would paint every PR red without blocking, so it's off until a
+  #     one-shot `cargo +nightly fmt` pass cleans the tree.
+  #
+  #   - cargo machete: reports ~45 "unused" deps in palpo-data alone,
+  #     nearly all false positives from the hub-crate pattern. Would need
+  #     a large [package.metadata.cargo-machete] ignore list per crate
+  #     before it's signal rather than noise.
