@@ -9,7 +9,9 @@ use crate::core::identifiers::*;
 use crate::core::push::push_gateway::{
     Device, Notification, NotificationCounts, NotificationPriority, SendEventNotificationReqBody,
 };
-use crate::core::push::{Action, PushFormat, Pusher, PusherKind, Ruleset, Tweak};
+use crate::core::push::{
+    Action, HighlightTweakValue, PushFormat, Pusher, PusherKind, Ruleset, Tweak,
+};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::pusher::NewDbPusher;
@@ -214,9 +216,12 @@ async fn send_notice(
             notification.counts = NotificationCounts::new(unread, 0);
 
             if event.event_ty == TimelineEventType::RoomEncrypted
-                || tweaks
-                    .iter()
-                    .any(|t| matches!(t, Tweak::Highlight(true) | Tweak::Sound(_)))
+                || tweaks.iter().any(|t| {
+                    matches!(
+                        t,
+                        Tweak::Highlight(HighlightTweakValue::Yes) | Tweak::Sound(_)
+                    )
+                })
             {
                 notification.prio = NotificationPriority::High
             }
