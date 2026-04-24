@@ -363,7 +363,7 @@ async fn load_joined_room(
     let since_frame_id =
         crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn())).ok();
 
-    let timeline = load_timeline(
+    let mut timeline = load_timeline(
         sender_id,
         room_id,
         since_tk,
@@ -371,10 +371,41 @@ async fn load_joined_room(
         Some(&filter.room.timeline),
     )?;
 
+    let join_sn = crate::room::user::join_sn(sender_id, room_id).unwrap_or_default();
+    let joined_since_incremental = since_tk
+        .map(|since_tk| join_sn >= since_tk.event_sn())
+        .unwrap_or(false);
+    let should_fill_join_history = joined_since_incremental
+        || (since_tk.is_none() && timeline_contains_own_join(&timeline, sender_id));
+    if should_fill_join_history {
+        let limit = filter.room.timeline.limit.unwrap_or(10);
+        match crate::room::timeline::backfill_if_required(
+            room_id,
+            &BatchToken::new_live(join_sn),
+            &timeline.events,
+            limit,
+        )
+        .await
+        {
+            Ok(filled_events) if !filled_events.is_empty() => {
+                timeline = load_timeline_around_join(
+                    sender_id,
+                    room_id,
+                    BatchToken::new_live(join_sn),
+                    Some(&filter.room.timeline),
+                )?;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(room_id = %room_id, error = ?e, "failed to backfill newly joined room timeline");
+            }
+        }
+    }
+
     let since_tk = if let Some(since_tk) = since_tk {
         since_tk
     } else {
-        BatchToken::new_live(crate::room::user::join_sn(sender_id, room_id).unwrap_or_default())
+        BatchToken::new_live(join_sn)
     };
 
     let send_notification_counts = !timeline.events.is_empty()
@@ -454,8 +485,7 @@ async fn load_joined_room(
                 ))
             };
 
-            let joined_since_last_sync =
-                room::user::join_sn(sender_id, room_id)? >= since_tk.event_sn();
+            let joined_since_last_sync = join_sn >= since_tk.event_sn();
             if since_tk.event_sn() == 0 || joined_since_last_sync {
                 // Probably since = 0, we will do an initial sync
                 let (joined_member_count, invited_member_count, heroes) = calculate_counts()?;
@@ -983,6 +1013,52 @@ pub struct TimelineData {
     pub prev_batch: Option<BatchToken>,
     pub next_batch: Option<BatchToken>,
 }
+
+fn timeline_contains_own_join(timeline: &TimelineData, user_id: &UserId) -> bool {
+    timeline.events.values().any(|pdu| {
+        pdu.event_ty == TimelineEventType::RoomMember
+            && pdu.state_key.as_deref() == Some(user_id.as_str())
+            && pdu
+                .get_content::<RoomMemberEventContent>()
+                .is_ok_and(|content| content.membership == MembershipState::Join)
+    })
+}
+
+fn load_timeline_around_join(
+    user_id: &UserId,
+    room_id: &RoomId,
+    join_tk: BatchToken,
+    filter: Option<&RoomEventFilter>,
+) -> AppResult<TimelineData> {
+    let limit = filter.and_then(|f| f.limit).unwrap_or(10);
+    let mut timeline_pdus = timeline::topolo::load_pdus_backward(
+        Some(user_id),
+        room_id,
+        Some(join_tk),
+        None,
+        filter,
+        limit + 1,
+    )?;
+
+    let mut limited = false;
+    if timeline_pdus.len() > limit {
+        timeline_pdus.pop();
+        limited = true;
+    }
+    timeline_pdus = timeline_pdus.into_iter().rev().collect();
+
+    let prev_batch = timeline_pdus
+        .first()
+        .map(|(_, pdu)| pdu.prev_historic_token());
+
+    Ok(TimelineData {
+        events: timeline_pdus,
+        limited,
+        prev_batch,
+        next_batch: None,
+    })
+}
+
 #[tracing::instrument]
 pub(crate) fn load_timeline(
     user_id: &UserId,
