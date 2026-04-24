@@ -985,11 +985,11 @@ fn collect_e2ee(
 
                             let content: RoomMemberEventContent = pdu.get_content()?;
                             match content.membership {
-                                MembershipState::Join => {
-                                    // A new user joined an encrypted room
-                                    if !share_encrypted_room(sender_id, &user_id, Some(room_id))? {
-                                        device_list_changes.insert(user_id.to_owned());
-                                    }
+                                // A new user joined an encrypted room
+                                MembershipState::Join
+                                    if !share_encrypted_room(sender_id, &user_id, Some(room_id))? =>
+                                {
+                                    device_list_changes.insert(user_id.to_owned());
                                 }
                                 MembershipState::Leave => {
                                     // Write down users that have left encrypted rooms we

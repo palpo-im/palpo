@@ -228,7 +228,7 @@ async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKe
 }
 
 fn keys_count(batch: &Batch) -> usize {
-    batch.iter().flat_map(|(_, key_ids)| key_ids.iter()).count()
+    batch.values().flat_map(|key_ids| key_ids.iter()).count()
 }
 
 #[cfg(test)]

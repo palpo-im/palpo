@@ -693,22 +693,21 @@ async fn load_joined_room(
                             .membership;
 
                         match new_membership {
-                            MembershipState::Join => {
-                                // A new user joined an encrypted room
-                                // if !share_encrypted_room(sender_id, &user_id, &room_id)? {
+                            // A new user joined an encrypted room
+                            // if !share_encrypted_room(sender_id, &user_id, &room_id)? {
+                            MembershipState::Join
                                 if since_tk.event_sn() <= state_event.event_sn
                                     && !room::user::shared_rooms(vec![
                                         sender_id.to_owned(),
                                         user_id.to_owned(),
                                     ])?
-                                    .is_empty()
-                                {
-                                    // if user_id.is_local() {
-                                    // check for test TestDeviceListsUpdateOverFederation
-                                    // device_list_updates.insert(user_id.clone());
-                                    // }
-                                    joined_users.insert(user_id);
-                                }
+                                    .is_empty() =>
+                            {
+                                // if user_id.is_local() {
+                                // check for test TestDeviceListsUpdateOverFederation
+                                // device_list_updates.insert(user_id.clone());
+                                // }
+                                joined_users.insert(user_id);
                             }
                             MembershipState::Leave => {
                                 // Write down users that have left encrypted rooms we are in

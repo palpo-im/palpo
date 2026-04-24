@@ -55,14 +55,12 @@ fn allowed_to_send_state_event(
             .into());
         }
         // Forbid m.room.encryption if encryption is disabled
-        StateEventType::RoomEncryption => {
-            if !conf.allow_encryption {
-                return Err(MatrixError::forbidden(
-                    "Encryption is disabled on this homeserver.",
-                    None,
-                )
-                .into());
-            }
+        StateEventType::RoomEncryption if !conf.allow_encryption => {
+            return Err(MatrixError::forbidden(
+                "Encryption is disabled on this homeserver.",
+                None,
+            )
+            .into());
         }
         // admin room is a sensitive room, it should not ever be made public
         StateEventType::RoomJoinRules => {

@@ -112,12 +112,14 @@ mod tests {
         )
         .expect("JWT token should be encoded");
 
-        let mut config = JwtConfig::default();
-        config.secret = "test-secret".to_owned();
-        config.format = "HMAC".to_owned();
-        config.algorithm = "HS256".to_owned();
-        config.validate_exp = true;
-        config.require_exp = true;
+        let config = JwtConfig {
+            secret: "test-secret".to_owned(),
+            format: "HMAC".to_owned(),
+            algorithm: "HS256".to_owned(),
+            validate_exp: true,
+            require_exp: true,
+            ..Default::default()
+        };
 
         let result = validate_jwt_token(&config, &token);
 

@@ -199,10 +199,10 @@ pub fn validate_canonical_json(json: &CanonicalJsonObject) -> Result<(), Canonic
                     }
                 }
             }
-            CanonicalJsonValue::Integer(value) => {
-                if *value < CANONICALJSON_MIN_INT || *value > CANONICALJSON_MAX_INT {
-                    return Err(CanonicalJsonError::IntegerOutOfRange);
-                }
+            CanonicalJsonValue::Integer(value)
+                if *value < CANONICALJSON_MIN_INT || *value > CANONICALJSON_MAX_INT =>
+            {
+                return Err(CanonicalJsonError::IntegerOutOfRange);
             }
             _ => {}
         }

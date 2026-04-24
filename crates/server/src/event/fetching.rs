@@ -192,7 +192,7 @@ pub(super) async fn fetch_and_process_missing_state_by_ids(
 
     let mut desired_events = pdu_ids;
     desired_events.push(event_id.to_owned());
-    desired_events.extend(auth_chain_ids.into_iter());
+    desired_events.extend(auth_chain_ids);
 
     let desired_count = desired_events.len();
     let mut failed_missing_events = Vec::new();

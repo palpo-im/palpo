@@ -137,7 +137,7 @@ fn get_local_public_rooms(
         // We need to collect all, so we can sort by member count
         .collect();
 
-    all_rooms.sort_by(|l, r| r.num_joined_members.cmp(&l.num_joined_members));
+    all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
 
     let total_room_count_estimate = (all_rooms.len() as u32).into();
 
