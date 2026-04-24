@@ -379,6 +379,25 @@ pub enum ErrorKind {
     /// The desired user ID is already taken.
     UserInUse,
 
+    /// `M_USER_LIMIT_EXCEEDED`
+    ///
+    /// The request cannot be completed because the user has exceeded (or the request would cause
+    /// them to exceed) a limit associated with their account. For example, a user may have reached
+    /// their allocated storage quota, reached a maximum number of allowed rooms, devices, or other
+    /// account-scoped resources, or exceeded usage limits for specific features.
+    UserLimitExceeded {
+        /// A URI that the client can present to the user to provide more context on the encountered
+        /// limit and, if applicable, guidance on how to increase the limit.
+        ///
+        /// The homeserver MAY return different values depending on the type of limit reached.
+        info_uri: String,
+
+        /// Whether the specific limit encountered can be increased.
+        ///
+        /// Defaults to `false`.
+        can_upgrade: bool,
+    },
+
     /// `M_USER_LOCKED`
     ///
     /// The account has been [locked] and cannot be used at this time.
@@ -477,6 +496,7 @@ impl ErrorKind {
             ErrorKind::UrlNotSet => ErrorCode::UrlNotSet,
             ErrorKind::UserDeactivated => ErrorCode::UserDeactivated,
             ErrorKind::UserInUse => ErrorCode::UserInUse,
+            ErrorKind::UserLimitExceeded { .. } => ErrorCode::UserLimitExceeded,
             ErrorKind::UserLocked => ErrorCode::UserLocked,
             ErrorKind::UserSuspended => ErrorCode::UserSuspended,
             ErrorKind::WeakPassword => ErrorCode::WeakPassword,
