@@ -1,0 +1,53 @@
+name: Supply chain audit
+
+# Runs cargo-deny to check dependencies for known advisories, license
+# policy violations, banned crates and untrusted sources. The advisory
+# database is refreshed on every run, so the nightly schedule catches
+# new CVEs even on quiet days without code changes.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/audit.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/audit.yml'
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          # All four are blocking. The advisory ignore list in deny.toml
+          # absorbs known-accepted findings, so a red run on this job is
+          # always a real, new event that needs attention — either a fresh
+          # CVE, a license-policy drift, a banned/duplicate crate, or a
+          # new git source that hasn't been vetted.
+          - advisories
+          - bans licenses sources
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+          arg: --all-features

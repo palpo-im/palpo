@@ -1,0 +1,138 @@
+# cargo-deny configuration — supply-chain, license and advisory policy.
+# Schema reference: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+#
+# Run locally with:
+#   cargo install --locked cargo-deny
+#   cargo deny check
+
+[graph]
+# Check all targets the workspace actually builds for. Leave empty to check
+# every target (slower, but catches platform-specific advisories).
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories — RustSec vulnerability / unmaintained / yanked crate policy.
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+# yanked crates are denied by default in v2; unmaintained/vulnerabilities error
+# by default. Add IDs here to temporarily silence a known-acceptable finding.
+# Each entry should come with a comment explaining *why* and, ideally, a
+# tracking issue or removal date.
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = """
+Marvin Attack timing sidechannel in the `rsa` crate. Pulled in transitively
+via `jsonwebtoken` for RSA-signed JWT verification (OIDC flows).
+
+No fixed release of `rsa` exists; a constant-time rewrite is tracked upstream
+at https://github.com/RustCrypto/RSA/issues/19. Acknowledged risk: a remote
+attacker able to observe precise response-time measurements against the JWT
+verification path could, in theory, mount Marvin against our RSA key. In
+practice the signal is very small behind async/network jitter, but this is
+still a live issue — revisit when `rsa` ships a patched release or we move
+JWT verification off `jsonwebtoken`/`rsa`.
+""" },
+    { id = "RUSTSEC-2026-0111", reason = """
+Diesel SQLite backend UTF-8 corruption. Not reachable: palpo-data enables
+only the `postgres` backend (see crates/data/Cargo.toml), so the affected
+SQLite code path is not compiled into any palpo binary. Revisit if a SQLite
+backend is ever introduced.
+""" },
+    { id = "RUSTSEC-2024-0436", reason = """
+`paste` is unmaintained (author archived the repo). The crate is a tiny
+proc-macro with no known soundness issues; it's pulled in transitively by
+several dependencies. No remote attack surface. Revisit if an exploitable
+advisory is ever published or if we can push upstreams onto `pastey`.
+""" },
+    { id = "RUSTSEC-2026-0105", reason = """
+`core2` unmaintained (all versions yanked). Transitive via image → rav1e →
+ravif → bitstream-io → core2, used only for thumbnailing. Not fixable from
+palpo; waiting on `bitstream-io` to drop or replace core2. No known
+soundness issue, just a maintenance flag.
+""" },
+]
+
+# ---------------------------------------------------------------------------
+# Licenses — what license families we accept from dependencies.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "OpenSSL",
+    # Pulled in transitively by deps we already use:
+    "NCSA",                # libfuzzer-sys (via image → rav1e → ravif)
+    "Unlicense",           # rustyline-async — public-domain-equivalent, OSI-approved
+    "CDLA-Permissive-2.0", # webpki-roots / webpki-root-certs
+]
+# Per-crate exceptions for licenses not in the global allow list.
+exceptions = [
+    # { allow = ["OpenSSL"], crate = "ring" },
+]
+# Crates with non-SPDX or ambiguous licensing may need an explicit clarification.
+# [[licenses.clarify]]
+# crate = "ring"
+# expression = "ISC AND MIT AND OpenSSL"
+# license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[licenses.private]
+# Don't lint palpo's own crates — they're Apache-2.0 per workspace metadata.
+ignore = true
+
+# ---------------------------------------------------------------------------
+# Bans — duplicate versions, wildcard deps, disallowed crates.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# Crates that must not appear in the graph. Example uses:
+#   - force migration off of an abandoned crate
+#   - block a crate you've decided to never pull in (openssl, etc.)
+deny = [
+    # { crate = "openssl", reason = "project uses rustls; openssl is a policy mistake" },
+]
+# Crates where duplicate versions are tolerated (warn-only noise reducers).
+skip = []
+# Whole subtrees where duplicates are tolerated (common for windows-sys,
+# hashbrown, etc. pulled in by transitive deps).
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources — where dependencies are allowed to come from.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git dependencies must come from a vetted org. The salvo-rs patch in the
+# workspace Cargo.toml is the only current git source; add more here if a
+# new one is introduced.
+allow-git = [
+    # cargo-deny normalizes URLs by stripping the trailing ".git", so the
+    # form without the suffix matches both the Cargo.toml patch URL and
+    # what shows up in Cargo.lock.
+    "https://github.com/salvo-rs/salvo",
+]
+
+[sources.allow-org]
+# Alternative form — allow every repo under an org. Prefer allow-git above
+# when the set is small enough to enumerate.
+# github = ["salvo-rs"]
