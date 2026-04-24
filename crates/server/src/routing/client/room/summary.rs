@@ -206,7 +206,7 @@ where
     match sender_id {
         Some(sender_id) => {
             let user_can_see_events = state::user_can_see_events(sender_id, room_id)?;
-            let is_guest = data::user::is_deactivated(sender_id).unwrap_or(false);
+            let is_guest = data::user::is_guest(sender_id).unwrap_or(false);
             let user_in_allowed_restricted_room = allowed_room_ids
                 .any(|room| room::user::is_joined(sender_id, room).unwrap_or(false));
 

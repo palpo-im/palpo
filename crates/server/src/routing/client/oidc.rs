@@ -1109,8 +1109,12 @@ async fn create_or_get_user(
     let exist_user = users::table
         .filter(users::id.eq(&parsed_user_id))
         .first::<DbUser>(&mut connect()?);
-    if let Ok(exist_user) = exist_user {
+    if let Ok(mut exist_user) = exist_user {
         tracing::debug!("Found existing user account: {}", user_id);
+        if exist_user.is_guest {
+            data::user::set_guest(&exist_user.id, false)?;
+            exist_user.is_guest = false;
+        }
 
         // Note: We intentionally do NOT update the profile for existing users
         // to preserve any changes the user made in Matrix (like custom display names).

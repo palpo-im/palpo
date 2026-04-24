@@ -46,5 +46,8 @@ pub fn set_password(user_id: &UserId, password: &str) -> AppResult<()> {
             created_at: UnixMillis::now(),
         })
         .execute(&mut connect()?)?;
+    diesel::update(users::table.find(user_id))
+        .set(users::is_guest.eq(false))
+        .execute(&mut connect()?)?;
     Ok(())
 }

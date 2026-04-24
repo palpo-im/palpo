@@ -159,10 +159,14 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         .map_err(|_| MatrixError::unknown_token("Invalid username in token", true))?;
 
     // User should already be provisioned by the auth service via MAS admin endpoints
-    let user = users::table
+    let mut user = users::table
         .find(&user_id)
         .first::<DbUser>(&mut connect()?)
         .map_err(|_| MatrixError::unknown_token("User not found (not yet provisioned?)", true))?;
+    if user.is_guest {
+        crate::data::user::set_guest(&user_id, false)?;
+        user.is_guest = false;
+    }
 
     // Extract device_id from introspection response, scope, or query param
     let device_id_str = result
