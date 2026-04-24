@@ -92,7 +92,7 @@ pub fn try_auth(
             ..
         }) => {
             let username = match identifier {
-                UserIdentifier::UserIdOrLocalpart(username) => username,
+                UserIdentifier::Matrix(identifier) => &identifier.user,
                 _ => {
                     return Err(MatrixError::unauthorized("identifier type not recognized.").into());
                 }
