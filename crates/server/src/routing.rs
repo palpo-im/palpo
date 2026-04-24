@@ -3,6 +3,7 @@ mod appservice;
 mod client;
 mod federation;
 mod media;
+mod policy;
 
 use bytes::Bytes;
 use salvo::http::StatusCode;
@@ -46,6 +47,7 @@ pub fn root() -> Router {
                 .push(media::router())
                 .push(federation::router())
                 .push(federation::key::router())
+                .push(policy::router())
                 .push(appservice::router()),
         )
         .push(admin::router())
