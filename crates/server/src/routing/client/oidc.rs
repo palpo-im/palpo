@@ -128,6 +128,7 @@ use crate::{AppResult, JsonResult, data, json_ok};
 /// - CSRF protection via state parameter
 /// - PKCE code verifier for enhanced security
 /// - Provider selection for multi-provider setups
+/// - Optional client redirect URL for the Matrix-standard SSO completion flow
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcSession {
     /// CSRF protection state parameter
@@ -138,6 +139,18 @@ pub struct OidcSession {
     pub provider: String,
     /// Session creation timestamp
     pub created_at: u64,
+    /// Client redirect URL for the Matrix-standard SSO completion flow.
+    ///
+    /// Set when the OAuth flow was initiated from
+    /// `/_matrix/client/*/login/sso/redirect[/{idpId}]` with a whitelist-
+    /// validated `redirectUrl`. On successful callback, instead of
+    /// returning a JSON response, we 302 to this URL with a `loginToken`
+    /// query param that the client then redeems via `POST /login`
+    /// (`m.login.token`).
+    ///
+    /// When `None`, the callback returns the legacy JSON response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_redirect_url: Option<String>,
 }
 
 /// OIDC provider discovery information
@@ -509,6 +522,19 @@ pub async fn oidc_auth(req: &mut Request, res: &mut Response) -> AppResult<()> {
         (None, None)
     };
 
+    // Step 4b: Pick up an optional client redirectUrl for the Matrix-standard
+    // SSO completion flow. When this is set, the callback handler redirects
+    // the browser back to this URL with a `loginToken` appended, instead of
+    // returning the legacy JSON response. The URL is allowlist-validated
+    // here (defense in depth — session.rs's redirect/provider_url handlers
+    // validate it first at the edge).
+    let client_redirect_url = req
+        .query::<String>("redirectUrl")
+        .or_else(|| req.query::<String>("redirect_url"));
+    if let Some(ref url) = client_redirect_url {
+        crate::routing::client::session::validate_sso_redirect_url(url)?;
+    }
+
     // Step 5: Create OIDC session for tracking
     let session = OidcSession {
         state: state.clone(),
@@ -518,6 +544,7 @@ pub async fn oidc_auth(req: &mut Request, res: &mut Response) -> AppResult<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs(),
+        client_redirect_url,
     };
 
     // Step 6: Store session in secure cookie
@@ -624,7 +651,7 @@ pub async fn oidc_auth(req: &mut Request, res: &mut Response) -> AppResult<()> {
 /// - Provider communication failures → 502 Bad Gateway
 /// - User creation failures → 500 Internal Server Error
 #[endpoint]
-pub async fn oidc_callback(req: &mut Request) -> JsonResult<OidcLoginResponse> {
+pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<()> {
     // Step 1: Handle OAuth error responses first
     if let Some(error) = req.query::<String>("error") {
         let error_description = req
@@ -736,13 +763,38 @@ pub async fn oidc_callback(req: &mut Request) -> JsonResult<OidcLoginResponse> {
         session.provider
     );
 
-    // Step 14: Return Matrix authentication credentials
-    json_ok(OidcLoginResponse {
+    // Step 14: Dispatch on flow type.
+    if let Some(client_url) = session.client_redirect_url.as_deref() {
+        // Matrix-standard SSO completion: issue a short-lived login token and
+        // 302 the browser back to the client URL with ?loginToken=... appended.
+        // The client (e.g. Element) then exchanges the token via
+        // `POST /login` with `m.login.token`.
+        //
+        // Defense-in-depth allowlist check before we emit a token anywhere.
+        crate::routing::client::session::validate_sso_redirect_url(client_url)?;
+
+        let login_token = generate_random_string(32);
+        let parsed_user_id = crate::core::identifiers::UserId::parse(&matrix_user_id)
+            .map_err(|_| MatrixError::unknown("Failed to parse Matrix user ID for login token"))?;
+        crate::user::create_login_token(&parsed_user_id, &login_token)?;
+
+        let mut url = Url::parse(client_url).map_err(|e| {
+            MatrixError::invalid_param(format!("Invalid client redirectUrl: {}", e))
+        })?;
+        url.query_pairs_mut().append_pair("loginToken", &login_token);
+
+        res.render(Redirect::found(url.as_str()));
+        return Ok(());
+    }
+
+    // Legacy JSON response for custom/programmatic clients (unchanged).
+    res.render(Json(OidcLoginResponse {
         user_id: matrix_user_id,
         access_token,
         device_id,
         home_server: config.server_name.to_string(),
-    })
+    }));
+    Ok(())
 }
 
 /// `POST /_matrix/client/*/oidc/login`

@@ -120,6 +120,33 @@ pub struct OidcConfig {
     ///
     /// example: "https://auth.example.com/"
     pub mas_issuer: Option<String>,
+
+    /// Allowed URL prefixes for the `redirectUrl` query parameter on the
+    /// Matrix-standard `/_matrix/client/*/login/sso/redirect[/{idpId}]`
+    /// endpoint.
+    ///
+    /// When a Matrix client initiates SSO via that endpoint, it supplies a
+    /// `redirectUrl` the homeserver should send the browser back to after
+    /// successful authentication — with a short-lived `loginToken` appended.
+    /// Anything the browser can reach becomes a login-token-capture vector
+    /// if we don't validate this value.
+    ///
+    /// The supplied redirectUrl is accepted only if it starts with one of
+    /// the prefixes in this list (byte-level prefix match — the trailing
+    /// slash matters, e.g. `https://app.element.io/` rejects
+    /// `https://app.element.io.attacker.com/`).
+    ///
+    /// An empty list (the default) disables the Matrix-standard SSO flow
+    /// entirely: `/login/sso/redirect` responds 403 and the `m.login.sso`
+    /// login type is advertised but cannot be completed. Clients can still
+    /// start OAuth via the custom `/_matrix/client/oidc/auth` endpoint
+    /// which does not emit a token to a third-party URL.
+    ///
+    /// example: ["https://app.element.io/", "https://element.io/"]
+    ///
+    /// default: [] (fail-closed)
+    #[serde(default)]
+    pub sso_client_whitelist: Vec<String>,
 }
 
 #[derive(Clone, Deserialize)]

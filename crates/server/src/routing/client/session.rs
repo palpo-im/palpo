@@ -29,7 +29,7 @@ pub fn public_router() -> Router {
             .push(
                 Router::with_path("sso/redirect")
                     .get(redirect)
-                    .push(Router::with_path("idpId").get(provider_url)),
+                    .push(Router::with_path("{idpId}").get(provider_url)),
             ),
     )
 }
@@ -53,10 +53,31 @@ pub fn authed_router() -> Router {
 /// when logging in.
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
-    let flows = if config::get().enabled_delegated_auth().is_some() {
+    let conf = config::get();
+    let flows = if conf.enabled_delegated_auth().is_some() {
+        // MSC3861 delegated auth — SSO is the only flow.
         vec![LoginType::Sso(
             crate::core::client::session::SsoLoginType::new(),
         )]
+    } else if let Some(oidc_cfg) = conf.enabled_oidc() {
+        // [oidc] providers configured — advertise m.login.sso with the
+        // provider list, keeping password + appservice as secondary flows
+        // so existing token-gated registration paths still work.
+        let identity_providers: Vec<IdentityProvider> = oidc_cfg
+            .providers
+            .iter()
+            .map(|(id, pc)| {
+                IdentityProvider::new(
+                    id.clone(),
+                    pc.display_name.clone().unwrap_or_else(|| id.clone()),
+                )
+            })
+            .collect();
+        vec![
+            LoginType::Sso(SsoLoginType { identity_providers }),
+            LoginType::password(),
+            LoginType::appservice(),
+        ]
     } else {
         vec![LoginType::password(), LoginType::appservice()]
     };
@@ -491,6 +512,41 @@ fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
         .ok_or_else(|| MatrixError::bad_json("Missing redirectUrl parameter"))
 }
 
+/// Reject any `redirectUrl` not starting with a configured whitelist prefix.
+/// Defense against login-token theft via attacker-crafted redirectUrl.
+///
+/// Applies only to the `[oidc]` path. The `[delegated_auth]` path does not
+/// emit tokens to the supplied URL (the IdP issuer handles the return), so
+/// this validator is a no-op there and relies on the IdP's own validation
+/// of client redirect URIs.
+///
+/// Made `pub(crate)` so the oidc.rs handler can also defense-in-depth check
+/// the cookie contents it reads on callback.
+pub(crate) fn validate_sso_redirect_url(url: &str) -> Result<(), MatrixError> {
+    let conf = config::get();
+    let Some(oidc_cfg) = conf.enabled_oidc() else {
+        // Non-OIDC path (delegated_auth or unconfigured): skip.
+        return Ok(());
+    };
+    if oidc_cfg.sso_client_whitelist.is_empty() {
+        return Err(MatrixError::forbidden(
+            "SSO redirect rejected: no oidc.sso_client_whitelist configured",
+            None,
+        ));
+    }
+    if !oidc_cfg
+        .sso_client_whitelist
+        .iter()
+        .any(|prefix| url.starts_with(prefix))
+    {
+        return Err(MatrixError::forbidden(
+            "SSO redirect rejected: redirectUrl not in oidc.sso_client_whitelist",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Build the authorization URL for the delegated auth issuer.
 fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
     let conf = config::get();
@@ -519,10 +575,32 @@ fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
     Ok(format!("{authorize_url}?{params}"))
 }
 
+/// Decide which backend to redirect to based on which OIDC path is enabled.
+/// `[oidc]` (multi-provider OAuth) takes precedence over `[delegated_auth]`
+/// (MSC3861). For `[oidc]`, we bounce through our own `/oidc/auth` so it can
+/// set the CSRF/PKCE cookie and stash the client's redirectUrl. For
+/// `[delegated_auth]`, we build the IdP authorize URL directly.
+fn build_auth_redirect_url(
+    idp_id: Option<String>,
+    client_redirect_url: &str,
+) -> Result<String, MatrixError> {
+    let conf = config::get();
+    if conf.enabled_oidc().is_some() {
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(id) = idp_id {
+            serializer.append_pair("provider", &id);
+        }
+        serializer.append_pair("redirectUrl", client_redirect_url);
+        return Ok(format!("/_matrix/client/oidc/auth?{}", serializer.finish()));
+    }
+    build_sso_redirect_url(client_redirect_url)
+}
+
 #[endpoint]
 async fn redirect(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
     let redirect_url = get_redirect_url(req)?;
-    let auth_url = build_sso_redirect_url(&redirect_url)?;
+    validate_sso_redirect_url(&redirect_url)?;
+    let auth_url = build_auth_redirect_url(None, &redirect_url)?;
     res.render(salvo::prelude::Redirect::found(auth_url));
     Ok(())
 }
@@ -530,7 +608,9 @@ async fn redirect(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppRe
 #[endpoint]
 async fn provider_url(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
     let redirect_url = get_redirect_url(req)?;
-    let auth_url = build_sso_redirect_url(&redirect_url)?;
+    validate_sso_redirect_url(&redirect_url)?;
+    let idp_id = req.param::<String>("idpId");
+    let auth_url = build_auth_redirect_url(idp_id, &redirect_url)?;
     res.render(salvo::prelude::Redirect::found(auth_url));
     Ok(())
 }
