@@ -40,6 +40,12 @@ pub type StateMap<T> = HashMap<(StateEventType, String), T>;
 pub type StateMapItem<T> = (TypeStateKey, T);
 pub type TypeStateKey = (StateEventType, String);
 
+/// A mapping of event IDs to some value `T` for state resolution internals.
+pub type EventIdMap<T> = HashMap<OwnedEventId, T>;
+
+/// A set of event IDs for state resolution internals.
+pub type EventIdSet = HashSet<OwnedEventId>;
+
 /// Apply the [state resolution] algorithm introduced in room version 2 to resolve the state of a
 /// room.
 ///
@@ -75,11 +81,9 @@ pub async fn resolve<'a, MapsIter, Pdu, Fetch, Fut>(
     auth_rules: &AuthorizationRules,
     state_res_rules: StateResolutionV2Rules,
     state_maps: impl IntoIterator<IntoIter = MapsIter>,
-    auth_chains: Vec<HashSet<OwnedEventId>>,
+    auth_chains: Vec<EventIdSet>,
     fetch_event: &Fetch,
-    fetch_conflicted_state_subgraph: impl Fn(
-        &StateMap<Vec<OwnedEventId>>,
-    ) -> Option<HashSet<OwnedEventId>>,
+    fetch_conflicted_state_subgraph: impl Fn(&StateMap<Vec<OwnedEventId>>) -> Option<EventIdSet>,
 ) -> Result<StateMap<OwnedEventId>, StateError>
 where
     Fetch: Fn(OwnedEventId) -> Fut + Sync,
@@ -118,12 +122,12 @@ where
 
         conflicted_state_subgraph
     } else {
-        HashSet::new()
+        EventIdSet::new()
     };
 
     // The full conflicted set is the union of the conflicted state set and the auth difference,
     // and since v12, the conflicted state subgraph.
-    let full_conflicted_set: HashSet<OwnedEventId> = stream::iter(
+    let full_conflicted_set: EventIdSet = stream::iter(
         auth_difference(auth_chains)
             .chain(conflicted_state_set.into_values().flatten())
             .chain(conflicted_state_subgraph),
@@ -336,7 +340,7 @@ where
 #[instrument(skip_all)]
 async fn sort_power_events<Pdu, Fetch, Fut>(
     conflicted_power_events: Vec<OwnedEventId>,
-    full_conflicted_set: &HashSet<OwnedEventId>,
+    full_conflicted_set: &EventIdSet,
     rules: &AuthorizationRules,
     fetch_event: &Fetch,
 ) -> Result<Vec<OwnedEventId>, StateError>
@@ -349,7 +353,7 @@ where
 
     // A representation of the DAG, a map of event ID to its list of auth events that are in the
     // full conflicted set.
-    let mut graph = HashMap::new();
+    let mut graph = EventIdMap::new();
 
     // Fill the graph.
     for event_id in conflicted_power_events {
@@ -362,7 +366,7 @@ where
     }
 
     // The map of event ID to the power level of the sender of the event.
-    let mut event_to_power_level = HashMap::new();
+    let mut event_to_power_level = EventIdMap::new();
     // We need to know the creator in case of missing power levels. Given that it's the same for all
     // the events in the room, we will just load it for the first event and reuse it.
     let creators_lock = OnceLock::new();
@@ -431,7 +435,7 @@ where
 /// Returns the ordered list of event IDs from earliest to latest.
 #[instrument(skip_all)]
 pub async fn reverse_topological_power_sort<F, Fut>(
-    graph: &HashMap<OwnedEventId, HashSet<OwnedEventId>>,
+    graph: &EventIdMap<EventIdSet>,
     event_details_fn: F,
 ) -> StateResult<Vec<OwnedEventId>>
 where
@@ -475,7 +479,7 @@ where
     let mut outgoing_edges_map = graph.clone();
 
     // Map of event to the list of events that reference it in its auth events.
-    let mut incoming_edges_map: HashMap<_, HashSet<_>> = HashMap::new();
+    let mut incoming_edges_map: EventIdMap<HashSet<&OwnedEventId>> = EventIdMap::new();
 
     // Vec of events that have an outdegree of zero (no outgoing edges), i.e. the oldest events.
     let mut zero_outdegrees = Vec::new();
@@ -861,9 +865,9 @@ where
         .rev()
         .enumerate()
         .map(|(idx, event_id)| ((*event_id).clone(), idx))
-        .collect::<HashMap<_, _>>();
+        .collect::<EventIdMap<_>>();
 
-    let mut order_map = HashMap::new();
+    let mut order_map = EventIdMap::new();
     for event_id in events.iter() {
         if let Ok(event) = fetch_event(event_id.to_owned()).await
             && let Ok(position) = mainline_position(&event, &mainline_map, &fetch_event).await
@@ -933,7 +937,7 @@ where
 /// chain of the event was not found.
 async fn mainline_position<Pdu, Fetch, Fut>(
     event: &Pdu,
-    mainline_map: &HashMap<OwnedEventId, usize>,
+    mainline_map: &EventIdMap<usize>,
     fetch_event: &Fetch,
 ) -> StateResult<usize>
 where
@@ -973,9 +977,9 @@ where
 /// Add the event with the given event ID and all the events in its auth chain that are in the full
 /// conflicted set to the graph.
 async fn add_event_and_auth_chain_to_graph<Pdu, Fetch, Fut>(
-    graph: &mut HashMap<OwnedEventId, HashSet<OwnedEventId>>,
+    graph: &mut EventIdMap<EventIdSet>,
     event_id: OwnedEventId,
-    full_conflicted_set: &HashSet<OwnedEventId>,
+    full_conflicted_set: &EventIdSet,
     fetch_event: &Fetch,
 ) where
     Fetch: Fn(OwnedEventId) -> Fut + Sync,
