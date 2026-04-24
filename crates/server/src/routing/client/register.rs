@@ -152,14 +152,12 @@ async fn register(
         }
     }
 
-    let password = if is_guest {
-        None
-    } else {
-        body.password.as_deref()
-    };
-
     // Create user
-    let db_user = crate::user::create_user(user_id.clone(), password)?;
+    let db_user = if is_guest {
+        crate::user::create_guest_user(user_id.clone())?
+    } else {
+        crate::user::create_user(user_id.clone(), body.password.as_deref())?
+    };
 
     // Presence update
     crate::data::user::set_presence(

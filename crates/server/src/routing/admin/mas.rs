@@ -151,6 +151,8 @@ pub async fn provision_user(
     if !exists {
         user::create_user(user_id.clone(), None)?;
         res.status_code(salvo::http::StatusCode::CREATED);
+    } else {
+        data::user::set_guest(&user_id, false)?;
     }
     if let Some(displayname) = &body.set_displayname {
         data::user::set_display_name(&user_id, displayname)?;

@@ -35,12 +35,24 @@ pub fn is_username_available(username: &str) -> AppResult<bool> {
 }
 
 pub fn create_user(user_id: impl Into<OwnedUserId>, password: Option<&str>) -> AppResult<DbUser> {
+    create_user_inner(user_id, password, false)
+}
+
+pub fn create_guest_user(user_id: impl Into<OwnedUserId>) -> AppResult<DbUser> {
+    create_user_inner(user_id, None, true)
+}
+
+fn create_user_inner(
+    user_id: impl Into<OwnedUserId>,
+    password: Option<&str>,
+    is_guest: bool,
+) -> AppResult<DbUser> {
     let user_id = user_id.into();
     let new_user = NewDbUser {
         id: user_id.clone(),
         ty: None,
         is_admin: false,
-        is_guest: password.is_none(),
+        is_guest,
         is_local: user_id.is_local(),
         localpart: user_id.localpart().to_owned(),
         server_name: user_id.server_name().to_owned(),

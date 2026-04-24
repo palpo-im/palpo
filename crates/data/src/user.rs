@@ -305,6 +305,21 @@ pub fn is_deactivated(user_id: &UserId) -> DataResult<bool> {
     Ok(deactivated_at.is_some())
 }
 
+pub fn is_guest(user_id: &UserId) -> DataResult<bool> {
+    users::table
+        .filter(users::id.eq(user_id))
+        .select(users::is_guest)
+        .first::<bool>(&mut connect()?)
+        .map_err(Into::into)
+}
+
+pub fn set_guest(user_id: &UserId, is_guest: bool) -> DataResult<()> {
+    diesel::update(users::table.find(user_id))
+        .set(users::is_guest.eq(is_guest))
+        .execute(&mut connect()?)?;
+    Ok(())
+}
+
 pub fn all_device_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> {
     user_devices::table
         .filter(user_devices::user_id.eq(user_id))
