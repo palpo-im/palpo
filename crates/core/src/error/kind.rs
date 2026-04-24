@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use super::{ErrorCode, RetryAfter};
-use crate::{PrivOwnedStr, RoomVersionId};
+use crate::{OwnedUserId, PrivOwnedStr, RoomVersionId};
 
 /// An enum for the error kind.
 ///
@@ -232,6 +232,16 @@ pub enum ErrorKind {
     /// [room alias]: https://spec.matrix.org/latest/client-server-api/#room-aliases
     RoomInUse,
 
+    /// `UK.TIMEDOUT.MSC4406.SENDER_IGNORED`
+    ///
+    /// The sender of the requested event is ignored by the requesting user. ([MSC])
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4406
+    SenderIgnored {
+        /// The user who sent the ignored event.
+        sender: Option<OwnedUserId>,
+    },
+
     /// `M_SERVER_NOT_TRUSTED`
     ///
     /// The client's request used a third-party server, e.g. identity server,
@@ -455,6 +465,7 @@ impl ErrorKind {
             ErrorKind::NotYetUploaded => ErrorCode::NotYetUploaded,
             ErrorKind::ResourceLimitExceeded { .. } => ErrorCode::ResourceLimitExceeded,
             ErrorKind::RoomInUse => ErrorCode::RoomInUse,
+            ErrorKind::SenderIgnored { .. } => ErrorCode::SenderIgnored,
             ErrorKind::ServerNotTrusted => ErrorCode::ServerNotTrusted,
             ErrorKind::ThreepidAuthFailed => ErrorCode::ThreepidAuthFailed,
             ErrorKind::ThreepidDenied => ErrorCode::ThreepidDenied,
