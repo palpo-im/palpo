@@ -25,7 +25,7 @@ pub enum DeviceKeyAlgorithm {
 }
 
 /// The signing key algorithms defined in the Matrix spec.
-#[derive(Clone, Hash, StringEnum)]
+#[derive(ToSchema, Clone, Hash, StringEnum)]
 #[non_exhaustive]
 #[palpo_enum(rename_all = "snake_case")]
 pub enum SigningKeyAlgorithm {
