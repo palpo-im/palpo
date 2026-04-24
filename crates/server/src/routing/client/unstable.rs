@@ -66,11 +66,12 @@ async fn auth_issuer(res: &mut Response) -> JsonResult<serde_json::Value> {
 }
 
 /// `GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata`
+/// `GET /_matrix/client/v1/auth_metadata`
 ///
 /// Returns the OAuth 2.0 authorization server metadata (MSC2965/MSC3861).
 /// Fetches the metadata from the issuer's `/.well-known/openid-configuration` endpoint.
 #[endpoint]
-async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::Value> {
+pub(super) async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::Value> {
     res.headers_mut().insert(
         "Cache-Control",
         "public, max-age=600, s-maxage=3600, stale-while-revalidate=600"

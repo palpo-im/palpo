@@ -111,6 +111,7 @@ pub fn router() -> Router {
     }
     client
         .push(Router::with_path("versions").get(supported_versions))
+        .push(Router::with_path("v1/auth_metadata").get(unstable::auth_metadata))
         .push(
             Router::with_path("oidc")
                 .push(Router::with_path("status").get(oidc::oidc_status))
