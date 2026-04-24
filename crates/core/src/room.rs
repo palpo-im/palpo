@@ -25,6 +25,14 @@ pub enum RoomType {
     #[palpo_enum(rename = "m.space")]
     Space,
 
+    /// Defines the room as a call.
+    ///
+    /// This uses the unstable prefix in
+    /// [MSC3417](https://github.com/matrix-org/matrix-spec-proposals/pull/3417).
+    #[cfg(feature = "unstable-msc3417")]
+    #[palpo_enum(rename = "org.matrix.msc3417.call")]
+    Call,
+
     /// Defines the room as a custom type.
     #[doc(hidden)]
     #[salvo(schema(value_type = String))]
@@ -298,6 +306,38 @@ impl AllowRule {
     /// as its predicate.
     pub fn room_membership(room_id: OwnedRoomId) -> Self {
         Self::RoomMembership(RoomMembership::new(room_id))
+    }
+
+    /// Returns the string name of this `AllowRule`.
+    pub fn rule_type(&self) -> &str {
+        match self {
+            AllowRule::RoomMembership(_) => "m.room_membership",
+            AllowRule::_Custom(custom) => &custom.rule_type,
+        }
+    }
+
+    /// Returns the associated data of this `AllowRule`.
+    ///
+    /// Prefer to use the public variants of `AllowRule` where possible; this method is meant to
+    /// be used for custom allow rules only.
+    pub fn data(&self) -> Cow<'_, JsonObject> {
+        fn serialize<T: Serialize>(obj: &T) -> JsonObject {
+            match serde_json::to_value(obj).expect("allow rule serialization should succeed") {
+                JsonValue::Object(obj) => obj,
+                _ => panic!("all allow rules should serialize to objects"),
+            }
+        }
+
+        match self {
+            AllowRule::RoomMembership(membership) => Cow::Owned(serialize(membership)),
+            AllowRule::_Custom(custom) => Cow::Owned(
+                custom
+                    .extra
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
+        }
     }
 }
 

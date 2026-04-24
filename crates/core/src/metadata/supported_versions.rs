@@ -148,12 +148,19 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "org.matrix.simplified_msc3575")]
     Msc4186,
 
+    /// `uk.timedout.msc4323` ([MSC])
+    ///
+    /// Suspend and lock endpoints.
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4323
+    #[palpo_enum(rename = "uk.timedout.msc4323")]
+    Msc4323,
+
     /// `org.matrix.msc4380_invite_permission_config` ([MSC])
     ///
     /// Invite Blocking.
     ///
     /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4380
-    #[cfg(feature = "unstable-msc4380")]
     #[palpo_enum(rename = "org.matrix.msc4380")]
     Msc4380,
 

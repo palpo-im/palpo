@@ -24,6 +24,7 @@ pub mod member;
 pub mod message;
 pub mod name;
 pub mod pinned_events;
+pub mod policy;
 pub mod power_levels;
 pub mod redaction;
 pub mod server_acl;
@@ -116,6 +117,17 @@ pub struct ImageInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub blurhash: Option<String>,
+
+    /// If this flag is `true`, the original image SHOULD be assumed to be animated. If this flag
+    /// is `false`, the original image SHOULD be assumed to NOT be animated.
+    ///
+    /// If a sending client is unable to determine whether an image is animated, it SHOULD leave
+    /// the flag unset.
+    ///
+    /// Receiving clients MAY use this flag to optimize whether to download the original image
+    /// rather than a thumbnail if it is animated, but they SHOULD NOT trust this flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_animated: Option<bool>,
 }
 
 impl ImageInfo {

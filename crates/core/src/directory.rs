@@ -143,6 +143,12 @@ pub enum RoomTypeFilter {
     /// A space.
     Space,
 
+    /// A call room as specified in [MSC3417].
+    ///
+    /// [MSC3417]: <https://github.com/matrix-org/matrix-spec-proposals/pull/3417>
+    #[cfg(feature = "unstable-msc3417")]
+    Call,
+
     /// A custom room type.
     #[doc(hidden)]
     #[salvo(schema(value_type = String))]
@@ -157,6 +163,8 @@ impl RoomTypeFilter {
         match self {
             RoomTypeFilter::Default => None,
             RoomTypeFilter::Space => Some("m.space"),
+            #[cfg(feature = "unstable-msc3417")]
+            RoomTypeFilter::Call => Some("org.matrix.msc3417.call"),
             RoomTypeFilter::_Custom(s) => Some(&s.0),
         }
     }
@@ -171,6 +179,8 @@ where
             None => Self::Default,
             Some(s) => match s.as_ref() {
                 "m.space" => Self::Space,
+                #[cfg(feature = "unstable-msc3417")]
+                "org.matrix.msc3417.call" => Self::Call,
                 _ => Self::_Custom(PrivOwnedStr(s.into())),
             },
         }
@@ -183,6 +193,8 @@ impl From<Option<RoomType>> for RoomTypeFilter {
             None => Self::Default,
             Some(s) => match s {
                 RoomType::Space => Self::Space,
+                #[cfg(feature = "unstable-msc3417")]
+                RoomType::Call => Self::Call,
                 _ => Self::from(Some(s.as_str())),
             },
         }
