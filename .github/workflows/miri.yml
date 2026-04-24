@@ -1,0 +1,70 @@
+name: Miri
+
+# Runs Miri (MIR interpreter) to catch undefined behaviour — out-of-bounds
+# access, invalid aliasing, uninitialised reads, data races in unsafe code —
+# that safe-Rust tests and ASan can miss.
+#
+# Scope is deliberately narrow: only crates whose test suites don't touch
+# syscalls, the filesystem, or the network. Miri aborts on anything it can't
+# model, so the server/data crates (tokio, diesel, reqwest) aren't viable.
+# Add a crate to the matrix once its tests are Miri-clean.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'crates/identifiers-validation/**'
+      - '.github/workflows/miri.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/identifiers-validation/**'
+      - '.github/workflows/miri.yml'
+  schedule:
+    - cron: '37 4 * * 1'  # Monday 04:37 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: miri-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin the nightly so CI is reproducible; bump deliberately alongside a
+  # local `rustup update nightly && cargo +nightly miri setup` run.
+  RUST_NIGHTLY: nightly-2026-04-23
+  # Miri's default is pedantic; -Zmiri-strict-provenance flags provenance
+  # bugs that the newer aliasing model would also catch. Add more flags
+  # (e.g. -Zmiri-tree-borrows) as desired.
+  MIRIFLAGS: -Zmiri-strict-provenance
+
+jobs:
+  miri:
+    name: cargo miri (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: palpo-identifiers-validation
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install nightly with miri
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY }}
+          components: miri, rust-src
+      - name: Cache Miri sysroot and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/miri
+            target/miri
+          key: miri-${{ runner.os }}-${{ env.RUST_NIGHTLY }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            miri-${{ runner.os }}-${{ env.RUST_NIGHTLY }}-
+      - name: Miri setup
+        run: cargo +${{ env.RUST_NIGHTLY }} miri setup
+      - name: Miri test
+        run: cargo +${{ env.RUST_NIGHTLY }} miri test -p ${{ matrix.crate }}
