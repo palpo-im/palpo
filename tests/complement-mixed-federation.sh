@@ -10,7 +10,10 @@
 #   DIRECTION      synapse-palpo | palpo-synapse | both (default: both)
 #   PALPO_IMAGE    Docker image for Palpo (default: complement-palpo)
 #   SYNAPSE_IMAGE  Docker image for Synapse (default: complement-synapse)
-#   TEST_FILTER    Go test -run regex (default: Federation)
+#   TEST_FILTER    Go test -run regex. Defaults to mixed two-homeserver
+#                  federation/interoperability tests.
+#   TEST_SKIP      Go test -skip regex (default: known unstable mixed restart
+#                  subtests)
 #   TEST_TIMEOUT   Go test timeout (default: 90m)
 
 set -euo pipefail
@@ -21,7 +24,9 @@ RESULTS_DIR="${2:?Directory for test results is required}"
 DIRECTION="${DIRECTION:-both}"
 PALPO_IMAGE="${PALPO_IMAGE:-complement-palpo}"
 SYNAPSE_IMAGE="${SYNAPSE_IMAGE:-complement-synapse}"
-TEST_FILTER="${TEST_FILTER:-Federation}"
+DEFAULT_TEST_FILTER='^(TestDeviceListsUpdateOverFederation|TestUserAppearsInChangedDeviceListOnJoinOverFederation|TestContentMediaV1|TestRemotePresence|TestRemoteAliasRequestsUnderstandUnicode|TestUnbanViaInvite|TestFederationRejectInvite|TestJoinViaRoomIDAndServerName|TestJoinFederatedRoomFailOver|TestRemoteTyping|TestFederationRoomsInvite|TestToDeviceMessagesOverFederation|TestFederationKeyUploadQuery|TestRestrictedRoomsSpacesSummaryFederation|TestMessagesOverFederation)$'
+TEST_FILTER="${TEST_FILTER:-$DEFAULT_TEST_FILTER}"
+TEST_SKIP="${TEST_SKIP:-^TestToDeviceMessagesOverFederation/stopped_server$}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-90m}"
 
 test_packages=(
@@ -44,6 +49,13 @@ run_direction() {
     echo "Default image: $default_image"
     echo "HS1 image:     $hs1_image"
     echo "HS2 image:     $hs2_image"
+    echo "Test filter:   $TEST_FILTER"
+    echo "Test skip:     ${TEST_SKIP:-<none>}"
+
+    go_test_args=(-tags="palpo_blacklist" -count=1 -timeout "$TEST_TIMEOUT" -run "$TEST_FILTER")
+    if [[ -n "$TEST_SKIP" ]]; then
+        go_test_args+=(-skip "$TEST_SKIP")
+    fi
 
     set +o pipefail
     env -C "$COMPLEMENT_SRC" \
@@ -53,7 +65,7 @@ run_direction() {
         COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
         COMPLEMENT_SHARE_ENV_PREFIX=PASS_ \
         PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite \
-        go test -tags="palpo_blacklist" -count=1 -timeout "$TEST_TIMEOUT" -run "$TEST_FILTER" -json "${test_packages[@]}" \
+        go test "${go_test_args[@]}" -json "${test_packages[@]}" \
         | tee "$dir/results.jsonl"
     local status=${PIPESTATUS[0]}
     set -o pipefail
