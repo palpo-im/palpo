@@ -4,9 +4,9 @@ use palpo_core::federation::query::ProfileReqArgs;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
-use crate::core::federation::query::{EduTypesResBody, RoomInfoResBody};
+use crate::core::federation::query::{EduTypesResBody, ProfileResBody, RoomInfoResBody};
 use crate::core::identifiers::*;
-use crate::core::user::{ProfileField, ProfileResBody};
+use crate::core::profile::ProfileFieldValue;
 use crate::{
     AuthArgs, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, config, data, empty_ok,
     json_ok,
@@ -40,33 +40,45 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
         return Err(MatrixError::invalid_param("User does not belong to this server.").into());
     }
 
-    let mut display_name = None;
-    let mut avatar_url = None;
-    let mut blurhash = None;
+    let mut response = ProfileResBody::new();
 
     let profile = data::user::get_profile(&args.user_id, None)?
         .ok_or(MatrixError::not_found("Profile not found."))?;
 
-    match &args.field {
-        Some(ProfileField::DisplayName) => display_name = profile.display_name.clone(),
-        Some(ProfileField::AvatarUrl) => {
-            avatar_url = profile.avatar_url.clone();
-            blurhash = profile.blurhash.clone();
+    match args.field.as_ref().map(|field| field.as_str()) {
+        Some("displayname") => {
+            if let Some(display_name) = profile.display_name {
+                response.extend([ProfileFieldValue::DisplayName(display_name)]);
+            }
         }
-        // TODO: what to do with custom
+        Some("avatar_url") => {
+            if let Some(avatar_url) = profile.avatar_url {
+                response.extend([ProfileFieldValue::AvatarUrl(avatar_url)]);
+            }
+            if let Some(blurhash) = profile.blurhash {
+                response.set("xyz.amorgan.blurhash", blurhash.into());
+            }
+        }
+        Some("xyz.amorgan.blurhash") => {
+            if let Some(blurhash) = profile.blurhash {
+                response.set("xyz.amorgan.blurhash", blurhash.into());
+            }
+        }
         Some(_) => {}
         None => {
-            display_name = profile.display_name.clone();
-            avatar_url = profile.avatar_url.clone();
-            blurhash = profile.blurhash.clone();
+            if let Some(display_name) = profile.display_name {
+                response.extend([ProfileFieldValue::DisplayName(display_name)]);
+            }
+            if let Some(avatar_url) = profile.avatar_url {
+                response.extend([ProfileFieldValue::AvatarUrl(avatar_url)]);
+            }
+            if let Some(blurhash) = profile.blurhash {
+                response.set("xyz.amorgan.blurhash", blurhash.into());
+            }
         }
     }
 
-    json_ok(ProfileResBody {
-        blurhash,
-        display_name,
-        avatar_url,
-    })
+    json_ok(response)
 }
 
 /// #GET /_matrix/federation/v1/query/directory
