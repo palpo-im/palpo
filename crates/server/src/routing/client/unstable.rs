@@ -1,6 +1,7 @@
 use salvo::prelude::*;
 
 use crate::core::MatrixError;
+use crate::core::client::discovery::rendezvous::DiscoverRendezvousResBody;
 use crate::{JsonResult, config, hoops, json_ok};
 
 pub(super) fn router() -> Router {
@@ -12,6 +13,7 @@ pub(super) fn router() -> Router {
         .push(
             Router::with_path("org.matrix.msc2965/auth_metadata").get(auth_metadata),
         )
+        .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
         // Authed routes
         .push(
             Router::new()
@@ -42,6 +44,14 @@ pub(super) fn router() -> Router {
                         .put(super::admin::suspend_user),
                 ),
         )
+}
+
+/// `GET /_matrix/client/unstable/io.element.msc4388/rendezvous`
+///
+/// Discover whether rendezvous sessions can be created on this server.
+#[endpoint]
+async fn discover_rendezvous() -> JsonResult<DiscoverRendezvousResBody> {
+    json_ok(DiscoverRendezvousResBody::new(false))
 }
 
 /// `GET /_matrix/client/unstable/org.matrix.msc2965/auth_issuer`
