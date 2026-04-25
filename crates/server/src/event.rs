@@ -7,6 +7,8 @@ pub use batch_token::*;
 pub use pdu::*;
 mod outlier;
 pub mod search;
+use std::collections::BTreeSet;
+
 use diesel::prelude::*;
 pub use outlier::*;
 
@@ -311,23 +313,41 @@ pub fn ignored_filter(item: PdusIterItem, user_id: &UserId) -> bool {
     !is_ignored_pdu(pdu, user_id)
 }
 
-pub fn is_ignored_pdu(pdu: &SnPduEvent, _user_id: &UserId) -> bool {
+#[inline]
+pub fn ignored_filter_with_ignored_users(
+    item: PdusIterItem,
+    ignored_users: &BTreeSet<OwnedUserId>,
+) -> bool {
+    let (_, pdu) = item;
+    !is_ignored_pdu_by_ignored_users(pdu, ignored_users)
+}
+
+pub fn is_ignored_pdu(pdu: &SnPduEvent, user_id: &UserId) -> bool {
+    let ignored_users = crate::user::ignored_users(user_id);
+    is_ignored_pdu_by_ignored_users(pdu, &ignored_users)
+}
+
+pub fn is_ignored_pdu_by_ignored_users(
+    pdu: &SnPduEvent,
+    ignored_users: &BTreeSet<OwnedUserId>,
+) -> bool {
     // exclude Synapse's dummy events from bloating up response bodies. clients
     // don't need to see this.
     if pdu.event_ty.to_string() == "org.matrix.dummy_event" {
         return true;
     }
 
-    // TODO: fixme
-    // let ignored_type = IGNORED_MESSAGE_TYPES.binary_search(&pdu.kind).is_ok();
+    is_ignored_sender_pdu_by_ignored_users(pdu, ignored_users)
+}
 
-    // let ignored_server = crate::config::get()
-    //     .forbidden_remote_server_names
-    //     .contains(pdu.sender().server_name());
+pub fn is_ignored_sender_pdu(pdu: &SnPduEvent, user_id: &UserId) -> bool {
+    let ignored_users = crate::user::ignored_users(user_id);
+    is_ignored_sender_pdu_by_ignored_users(pdu, &ignored_users)
+}
 
-    // if ignored_type && (crate::user::user_is_ignored(&pdu.sender, user_id).await) {
-    //     return true;
-    // }
-
-    false
+pub fn is_ignored_sender_pdu_by_ignored_users(
+    pdu: &SnPduEvent,
+    ignored_users: &BTreeSet<OwnedUserId>,
+) -> bool {
+    pdu.state_key.is_none() && ignored_users.contains(&pdu.sender)
 }

@@ -69,6 +69,8 @@ pub fn load_pdus(
     dir: Direction,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
+    let ignored_users = user_id.map(crate::user::ignored_users);
+    let mut offset = 0;
     let mut start_sn = if dir == Direction::Forward {
         0
     } else {
@@ -145,6 +147,7 @@ pub fn load_pdus(
                 .filter(events::sn.gt(start_sn))
                 .filter(events::is_rejected.eq(false))
                 .order(events::stream_ordering.desc())
+                .offset(offset)
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
                 .load::<(OwnedEventId, Seqnum)>(&mut connect()?)?
@@ -165,22 +168,26 @@ pub fn load_pdus(
         if events.is_empty() {
             break;
         }
-        start_sn = if dir == Direction::Forward {
-            if let Some(sn) = events.iter().map(|(_, sn)| sn).max() {
+        let count = events.len();
+        if dir == Direction::Forward {
+            offset += count as i64;
+        } else {
+            start_sn = if let Some(sn) = events.iter().map(|(_, sn)| sn).min() {
                 *sn
             } else {
                 break;
-            }
-        } else if let Some(sn) = events.iter().map(|(_, sn)| sn).min() {
-            *sn
-        } else {
-            break;
-        };
+            };
+        }
         for (event_id, event_sn) in events {
             match super::get_pdu(&event_id) {
                 Ok(mut pdu) => {
                     if let Some(user_id) = user_id
                         && !pdu.user_can_see(user_id).unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    if let Some(ignored_users) = &ignored_users
+                        && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
                     {
                         continue;
                     }
@@ -203,6 +210,9 @@ pub fn load_pdus(
                     );
                 }
             }
+        }
+        if dir == Direction::Forward && count < limit {
+            break;
         }
     }
     Ok(list)

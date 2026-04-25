@@ -20,7 +20,7 @@ use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::event::{BatchToken, ignored_filter};
+use crate::event::{BatchToken, ignored_filter_with_ignored_users};
 use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
@@ -264,6 +264,7 @@ pub async fn sync_events(
     }
 
     let all_joined_rooms = data::user::joined_rooms(sender_id)?;
+    let ignored_users = crate::user::ignored_users(sender_id);
 
     let all_invited_rooms = data::user::invited_rooms(sender_id, 0)?;
     let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(|r| r.0.as_ref()).collect();
@@ -330,6 +331,7 @@ pub async fn sync_events(
         sync_info,
         &all_invited_rooms,
         &dm_rooms,
+        &ignored_users,
         &todo_rooms,
         known_rooms,
         &mut res_body,
@@ -535,6 +537,7 @@ async fn process_rooms(
     }: SyncInfo<'_>,
     all_invited_rooms: &[&RoomId],
     dm_rooms: &HashSet<OwnedRoomId>,
+    ignored_users: &BTreeSet<OwnedUserId>,
     todo_rooms: &TodoRooms,
     known_rooms: &KnownRooms,
     response: &mut SyncEventsResBody,
@@ -619,7 +622,7 @@ async fn process_rooms(
             let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)?
                 .into_iter()
                 .filter_map(|(read_user, content)| {
-                    if !crate::user::user_is_ignored(&read_user, sender_id) {
+                    if !ignored_users.contains(&read_user) {
                         Some(content)
                     } else {
                         None
@@ -665,7 +668,7 @@ async fn process_rooms(
         let room_events: Vec<_> = timeline
             .events
             .iter()
-            .filter(|item| ignored_filter(*item, sender_id))
+            .filter(|item| ignored_filter_with_ignored_users(*item, &ignored_users))
             .map(|(_, pdu)| pdu.to_sync_room_event())
             .collect();
 

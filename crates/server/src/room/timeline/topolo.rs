@@ -60,6 +60,7 @@ pub fn load_pdus(
     dir: Direction,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
+    let ignored_users = user_id.map(crate::user::ignored_users);
     let mut offset = 0;
     while list.len() < limit {
         let mut query = events::table
@@ -209,6 +210,11 @@ pub fn load_pdus(
             if let Ok(mut pdu) = super::get_pdu(&event_id) {
                 if let Some(user_id) = user_id {
                     if !pdu.user_can_see(user_id)? {
+                        continue;
+                    }
+                    if let Some(ignored_users) = &ignored_users
+                        && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
+                    {
                         continue;
                     }
                     if pdu.sender != user_id {

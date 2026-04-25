@@ -54,6 +54,16 @@ pub(super) fn get_room_event(
     if !state::user_can_see_event(authed.user_id(), &args.event_id)? {
         return Err(MatrixError::not_found("event not found").into());
     }
+    if crate::event::is_ignored_sender_pdu(&event, authed.user_id()) {
+        return Err(MatrixError::sender_ignored(
+            "the sender of the requested event is ignored",
+            Some(event.sender.clone()),
+        )
+        .into());
+    }
+    if crate::event::is_ignored_pdu(&event, authed.user_id()) {
+        return Err(MatrixError::not_found("event not found").into());
+    }
 
     let mut event = event.clone();
     event.add_age()?;
@@ -163,6 +173,13 @@ pub(super) fn get_context(
         return Err(
             MatrixError::forbidden("you don't have permission to view this event", None).into(),
         );
+    }
+    if crate::event::is_ignored_sender_pdu(&base_event, sender_id) {
+        return Err(MatrixError::sender_ignored(
+            "the sender of the requested event is ignored",
+            Some(base_event.sender.clone()),
+        )
+        .into());
     }
 
     if !crate::room::lazy_loading::lazy_load_was_sent_before(
