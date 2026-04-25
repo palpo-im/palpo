@@ -4,7 +4,7 @@ use palpo_core::federation::query::ProfileReqArgs;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
-use crate::core::federation::query::RoomInfoResBody;
+use crate::core::federation::query::{EduTypesResBody, RoomInfoResBody};
 use crate::core::identifiers::*;
 use crate::core::user::{ProfileField, ProfileResBody};
 use crate::{
@@ -17,6 +17,19 @@ pub fn router() -> Router {
         .push(Router::with_path("profile").get(get_profile))
         .push(Router::with_path("directory").get(get_directory))
         .push(Router::with_path("{query_type}").get(query_by_type))
+}
+
+/// #GET /_matrix/federation/unstable/io.fsky.vel/edutypes
+/// Determine what types of EDUs this server wishes to receive.
+#[endpoint]
+pub async fn get_edu_types() -> JsonResult<EduTypesResBody> {
+    let conf = config::get();
+
+    json_ok(EduTypesResBody {
+        presence: conf.presence.allow_incoming,
+        receipt: conf.read_receipt.allow_incoming,
+        typing: conf.typing.allow_incoming,
+    })
 }
 
 /// #GET /_matrix/federation/v1/query/profile
