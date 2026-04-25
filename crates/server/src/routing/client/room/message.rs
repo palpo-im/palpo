@@ -9,12 +9,25 @@ use crate::core::client::message::{
     SendMessageResBody,
 };
 use crate::core::events::{StateEventType, TimelineEventType};
+use crate::core::serde::{RawJsonValue, to_canonical_value};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
 use crate::room::timeline::{self, topolo};
 use crate::routing::prelude::*;
 use crate::{PduBuilder, room};
+
+fn parse_event_content(payload: &[u8]) -> AppResult<Box<RawJsonValue>> {
+    let content: JsonValue =
+        serde_json::from_slice(payload).map_err(|_| MatrixError::bad_json("invalid json body"))?;
+    if !content.is_object() {
+        return Err(MatrixError::bad_json("json body is not object").into());
+    }
+    to_canonical_value(&content).map_err(|e| {
+        MatrixError::bad_json(format!("event content is not valid canonical JSON: {e}"))
+    })?;
+    Ok(to_raw_value(&content).expect("validated JSON content can be serialized as raw JSON"))
+}
 
 /// #GET /_matrix/client/r0/rooms/{room_id}/messages
 /// Allows paginating through room history.
@@ -235,9 +248,7 @@ pub(super) async fn send_message(
     }
 
     let payload = req.payload().await?;
-    // Ensure it's valid JSON.
-    let _content: JsonValue =
-        serde_json::from_slice(payload).map_err(|_| MatrixError::bad_json("invalid json body"))?;
+    let content = parse_event_content(payload)?;
 
     let state_lock = room::lock_state(&args.room_id).await;
     // Check if this is a new transaction id
@@ -259,8 +270,7 @@ pub(super) async fn send_message(
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: args.event_type.to_string().into(),
-            content: serde_json::from_slice(payload)
-                .map_err(|_| MatrixError::bad_json("invalid json body"))?,
+            content,
             unsigned,
             timestamp: if authed.appservice().is_some() {
                 args.timestamp
@@ -314,18 +324,12 @@ pub(super) async fn post_message(
     }
 
     let payload = req.payload().await?;
-    // Ensure it's valid JSON.
-    let content: JsonValue =
-        serde_json::from_slice(payload).map_err(|_| MatrixError::bad_json("invalid json body"))?;
-    if !content.is_object() {
-        return Err(MatrixError::bad_json("json body is not object").into());
-    }
+    let content = parse_event_content(payload)?;
 
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: args.event_type.to_string().into(),
-            content: serde_json::from_slice(payload)
-                .map_err(|_| MatrixError::bad_json("invalid json body"))?,
+            content,
             unsigned: BTreeMap::new(),
             ..Default::default()
         },
