@@ -8,7 +8,7 @@ use crate::data::schema::*;
 use crate::data::user::NewDbPassword;
 use crate::{AppResult, MatrixError};
 
-pub fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
+pub fn ensure_account_usable(user: &DbUser) -> AppResult<()> {
     if user.deactivated_at.is_some() {
         return Err(MatrixError::user_deactivated("the user has been deactivated").into());
     }
@@ -18,6 +18,12 @@ pub fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
     if user.suspended_at.is_some() {
         return Err(MatrixError::user_suspended("the user has been suspended").into());
     }
+    Ok(())
+}
+
+pub fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
+    ensure_account_usable(user)?;
+
     let hash = crate::user::get_password_hash(&user.id)
         .map_err(|_| MatrixError::unauthorized("wrong username or password."))?;
     if hash.is_empty() {

@@ -209,7 +209,7 @@ impl Scribe for MatrixError {
                     Unauthorized | UnknownToken { .. } | MissingToken => StatusCode::UNAUTHORIZED,
                     NotFound | Unrecognized => StatusCode::NOT_FOUND,
                     LimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
-                    UserDeactivated => StatusCode::FORBIDDEN,
+                    UserDeactivated | UserLocked | UserSuspended => StatusCode::FORBIDDEN,
                     TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
                     CannotOverwriteMedia => StatusCode::CONFLICT,
                     NotYetUploaded => StatusCode::GATEWAY_TIMEOUT,
