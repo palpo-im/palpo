@@ -56,7 +56,10 @@ impl From<JsonMap<String, JsonValue>> for ErrorBody {
     }
 }
 
-/// A Matrix Error
+/// A Matrix error shared by palpo's client, federation, and server-facing API models.
+///
+/// palpo keeps the API error model in this common module instead of exposing a
+/// client-specific `Error` re-export.
 #[derive(Debug, Clone)]
 #[allow(clippy::exhaustive_structs)]
 pub struct MatrixError {
