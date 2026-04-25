@@ -53,9 +53,14 @@ pub fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
         .filter(user_profiles::user_id.eq(user_id))
         .filter(user_profiles::room_id.is_null())
         .select(user_profiles::fields)
-        .first::<JsonValue>(&mut connect()?)?;
+        .first::<JsonValue>(&mut connect()?)
+        .optional()?;
 
-    Ok(fields.as_object().cloned().unwrap_or_default())
+    Ok(fields
+        .as_ref()
+        .and_then(JsonValue::as_object)
+        .cloned()
+        .unwrap_or_default())
 }
 
 pub fn profile_field(user_id: &UserId, field: &str) -> DataResult<Option<JsonValue>> {
