@@ -12,7 +12,7 @@ use crate::core::events::room::member::MembershipState;
 use crate::core::events::{GlobalAccountDataEventType, StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceState;
-use crate::core::push::{Action, Ruleset, Tweak};
+use crate::core::push::{Action, HighlightTweakValue, Ruleset, Tweak};
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, to_canonical_object};
 use crate::core::state::Event;
 use crate::data::room::{DbEvent, DbEventData, NewDbEventEdge};
@@ -387,7 +387,7 @@ pub async fn append_pdu(
             {
                 match action {
                     Action::Notify => notify = true,
-                    Action::SetTweak(Tweak::Highlight(true)) => {
+                    Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes)) => {
                         highlight = true;
                     }
                     _ => {}
