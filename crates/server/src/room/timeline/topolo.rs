@@ -211,6 +211,9 @@ pub fn load_pdus(
                     if !pdu.user_can_see(user_id)? {
                         continue;
                     }
+                    if crate::event::is_ignored_pdu(&pdu, user_id) {
+                        continue;
+                    }
                     if pdu.sender != user_id {
                         pdu.remove_transaction_id()?;
                     }

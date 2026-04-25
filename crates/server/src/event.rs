@@ -311,23 +311,16 @@ pub fn ignored_filter(item: PdusIterItem, user_id: &UserId) -> bool {
     !is_ignored_pdu(pdu, user_id)
 }
 
-pub fn is_ignored_pdu(pdu: &SnPduEvent, _user_id: &UserId) -> bool {
+pub fn is_ignored_pdu(pdu: &SnPduEvent, user_id: &UserId) -> bool {
     // exclude Synapse's dummy events from bloating up response bodies. clients
     // don't need to see this.
     if pdu.event_ty.to_string() == "org.matrix.dummy_event" {
         return true;
     }
 
-    // TODO: fixme
-    // let ignored_type = IGNORED_MESSAGE_TYPES.binary_search(&pdu.kind).is_ok();
+    is_ignored_sender_pdu(pdu, user_id)
+}
 
-    // let ignored_server = crate::config::get()
-    //     .forbidden_remote_server_names
-    //     .contains(pdu.sender().server_name());
-
-    // if ignored_type && (crate::user::user_is_ignored(&pdu.sender, user_id).await) {
-    //     return true;
-    // }
-
-    false
+pub fn is_ignored_sender_pdu(pdu: &SnPduEvent, user_id: &UserId) -> bool {
+    pdu.state_key.is_none() && crate::user::user_is_ignored(&pdu.sender, user_id)
 }

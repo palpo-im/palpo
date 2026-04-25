@@ -184,6 +184,11 @@ pub fn load_pdus(
                     {
                         continue;
                     }
+                    if let Some(user_id) = user_id
+                        && crate::event::is_ignored_pdu(&pdu, user_id)
+                    {
+                        continue;
+                    }
                     if let Some(user_id) = user_id {
                         if pdu.sender != user_id {
                             pdu.remove_transaction_id()?;
