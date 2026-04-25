@@ -41,13 +41,38 @@ pub trait AuthScheme: Sized {
 }
 
 /// No authentication is performed.
-///
-/// This type accepts a [`SendAccessToken`] as input to be able to send it regardless of whether it
-/// is required.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoAuthentication;
 
 impl AuthScheme for NoAuthentication {
+    type Input<'a> = ();
+    type AddAuthenticationError = std::convert::Infallible;
+    type Output = ();
+    type ExtractAuthenticationError = std::convert::Infallible;
+
+    fn add_authentication<T: AsRef<[u8]>>(
+        _request: &mut http::Request<T>,
+        _input: (),
+    ) -> Result<(), Self::AddAuthenticationError> {
+        Ok(())
+    }
+
+    /// Since this endpoint doesn't expect any authentication, this is a noop.
+    fn extract_authentication<T: AsRef<[u8]>>(
+        _request: &http::Request<T>,
+    ) -> Result<(), Self::ExtractAuthenticationError> {
+        Ok(())
+    }
+}
+
+/// No authentication is performed on an API that usually relies on access tokens.
+///
+/// Contrary to [`NoAuthentication`], this type accepts a [`SendAccessToken`] as input to be able to
+/// send it regardless of whether it is required.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoAccessToken;
+
+impl AuthScheme for NoAccessToken {
     type Input<'a> = SendAccessToken<'a>;
     type AddAuthenticationError = header::InvalidHeaderValue;
     type Output = ();
@@ -341,4 +366,52 @@ pub enum ExtractTokenError {
     /// Failed to deserialize the query string.
     #[error("failed to deserialize query string: {0}")]
     FromQuery(#[from] serde_html_form::de::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use http::header;
+
+    use super::{AuthScheme, NoAccessToken, NoAuthentication, SendAccessToken};
+
+    const TOKEN: &str = "token";
+
+    fn http_request() -> http::Request<Vec<u8>> {
+        http::Request::builder().uri("/").body(Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn no_authentication_ignores_headers() {
+        let mut request = http_request();
+
+        NoAuthentication::add_authentication(&mut request, ()).unwrap();
+
+        assert!(request.headers().get(header::AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn no_access_token_only_sends_for_always() {
+        let mut request = http_request();
+
+        NoAccessToken::add_authentication(&mut request, SendAccessToken::IfRequired(TOKEN))
+            .unwrap();
+        assert!(request.headers().get(header::AUTHORIZATION).is_none());
+
+        NoAccessToken::add_authentication(&mut request, SendAccessToken::Always(TOKEN)).unwrap();
+        assert_eq!(
+            request.headers().get(header::AUTHORIZATION).unwrap(),
+            "Bearer token"
+        );
+    }
+
+    #[test]
+    fn no_access_token_extracts_no_authentication() {
+        let request = http::Request::builder()
+            .uri("/?access_token=token")
+            .header(header::AUTHORIZATION, "NotBearer token")
+            .body(Vec::new())
+            .unwrap();
+
+        NoAccessToken::extract_authentication(&request).unwrap();
+    }
 }
