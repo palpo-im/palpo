@@ -92,6 +92,15 @@ pub struct Capabilities {
     )]
     pub forget_forced_upon_leave: ForgetForcedUponLeaveCapability,
 
+    /// Capability to indicate if the user can perform account moderation actions via server
+    /// administration endpoints.
+    #[serde(
+        rename = "m.account_moderation",
+        default,
+        skip_serializing_if = "AccountModerationCapability::is_default"
+    )]
+    pub account_moderation: AccountModerationCapability,
+
     /// Any other custom capabilities that the server supports outside of the
     /// specification, labeled using the Java package naming convention and
     /// stored as arbitrary JSON values.
@@ -125,6 +134,7 @@ impl Capabilities {
             "m.forget_forced_upon_leave" => {
                 Some(Cow::Owned(serialize(&self.forget_forced_upon_leave)))
             }
+            "m.account_moderation" => Some(Cow::Owned(serialize(&self.account_moderation))),
             _ => self.custom_capabilities.get(capability).map(Cow::Borrowed),
         }
     }
@@ -143,6 +153,9 @@ impl Capabilities {
             "m.3pid_changes" => self.thirdparty_id_changes = from_json_value(value)?,
             "m.forget_forced_upon_leave" => {
                 self.forget_forced_upon_leave = from_json_value(value)?;
+            }
+            "m.account_moderation" => {
+                self.account_moderation = from_json_value(value)?;
             }
             _ => {
                 self.custom_capabilities
@@ -387,6 +400,30 @@ pub struct ForgetForcedUponLeaveCapability {
     /// This behavior applies irrespective of whether the user has left the room on their own
     /// or has been kicked or banned from the room by another user.
     pub enabled: bool,
+}
+
+/// Information about the `m.account_moderation` capability.
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AccountModerationCapability {
+    /// Whether the user can suspend accounts via `PUT /admin/suspend/{userId}`.
+    #[serde(default, skip_serializing_if = "crate::serde::is_default")]
+    pub suspend: bool,
+
+    /// Whether the user can lock accounts via `PUT /admin/lock/{userId}`.
+    #[serde(default, skip_serializing_if = "crate::serde::is_default")]
+    pub lock: bool,
+}
+
+impl AccountModerationCapability {
+    /// Creates a new `AccountModerationCapability` with the given suspend and lock capabilities.
+    pub fn new(suspend: bool, lock: bool) -> Self {
+        Self { suspend, lock }
+    }
+
+    /// Returns whether all fields have their default value.
+    pub fn is_default(&self) -> bool {
+        !self.suspend && !self.lock
+    }
 }
 
 impl ForgetForcedUponLeaveCapability {
