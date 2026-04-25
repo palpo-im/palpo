@@ -13,6 +13,8 @@ pub mod event_auth;
 pub mod events;
 pub mod room_version;
 
+// Upstream ruma-state-res test reorgs rely on a standalone test factory and snapshot harness.
+// Palpo's flattened async state resolver does not currently use that compatible infrastructure.
 // #[cfg(test)]
 // mod tests;
 
