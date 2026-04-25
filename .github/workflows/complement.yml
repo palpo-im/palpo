@@ -127,3 +127,93 @@ jobs:
             exit 1
           fi
           echo "✅ Pass rate ${PASS_RATE}% meets the 90% threshold"
+
+  mixed-federation:
+    name: Mixed federation
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Clone Complement
+        run: git clone --depth 1 https://github.com/matrix-org/complement.git /tmp/complement
+
+      - name: Clone Synapse
+        run: git clone --depth 1 https://github.com/element-hq/synapse.git /tmp/synapse
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build complement-palpo image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: tests/complement/Dockerfile.github
+          tags: complement-palpo
+          load: true
+          cache-from: type=gha,scope=complement
+          cache-to: type=gha,mode=max,scope=complement
+
+      - name: Build complement-synapse image
+        run: |
+          docker build -t matrixdotorg/synapse:latest -f /tmp/synapse/docker/Dockerfile /tmp/synapse
+          docker build -t matrixdotorg/synapse-workers:latest -f /tmp/synapse/docker/Dockerfile-workers /tmp/synapse
+          docker build -t complement-synapse -f /tmp/synapse/docker/complement/Dockerfile /tmp/synapse/docker/complement
+
+      - name: Run mixed federation tests
+        id: mixed-federation-tests
+        run: |
+          bash tests/complement-mixed-federation.sh /tmp/complement /tmp/mixed-federation-results
+        continue-on-error: true
+
+      - name: Upload mixed federation test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mixed-federation-results
+          path: |
+            /tmp/mixed-federation-results/**/__test_all.result.jsonl
+            /tmp/mixed-federation-results/**/results.jsonl
+            /tmp/mixed-federation-results/**/results.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Evaluate mixed federation test results
+        if: always()
+        run: |
+          RESULTS_DIR="/tmp/mixed-federation-results"
+          if [ ! -d "$RESULTS_DIR" ]; then
+            echo "::error::Mixed federation results directory not found"
+            exit 1
+          fi
+
+          exit_code=0
+          for RESULTS in "$RESULTS_DIR"/*/__test_all.result.jsonl; do
+            if [ ! -f "$RESULTS" ]; then
+              echo "::error::Test results file not found: $RESULTS"
+              exit_code=1
+              continue
+            fi
+            name="$(basename "$(dirname "$RESULTS")")"
+            FAIL_COUNT=$(grep -c '"fail"' "$RESULTS" || true)
+            PASS_COUNT=$(grep -c '"pass"' "$RESULTS" || true)
+            TOTAL=$((FAIL_COUNT + PASS_COUNT))
+            echo "$name: Pass: $PASS_COUNT, Fail: $FAIL_COUNT, Total: $TOTAL"
+            if [ "$TOTAL" -eq 0 ]; then
+              echo "::error::$name produced no test results"
+              exit_code=1
+              continue
+            fi
+            if [ "$FAIL_COUNT" -gt 0 ]; then
+              echo "::error::$name has failing mixed federation tests"
+              exit_code=1
+            fi
+          done
+          exit "$exit_code"
