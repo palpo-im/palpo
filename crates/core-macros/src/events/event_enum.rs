@@ -173,6 +173,11 @@ impl EventEnumKind {
         format_ident!("{self}Type")
     }
 
+    /// Get the name of the `Custom*Content` type for this kind.
+    fn to_custom_content_ident(self) -> syn::Ident {
+        format_ident!("Custom{self}Content")
+    }
+
     /// Get the name of the `{variation}{kind}Content` trait for this kind and the given variation.
     fn to_content_kind_trait(self, variation: EventContentTraitVariation) -> syn::Ident {
         format_ident!("{variation}{self}Content")

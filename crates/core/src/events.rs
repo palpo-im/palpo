@@ -267,6 +267,23 @@ pub struct Mentions {
     pub room: bool,
 }
 
+#[cfg(test)]
+mod tests {
+    use serde_json::value::to_raw_value;
+
+    use super::{AnyMessageLikeEventContent, EventContentFromType, MessageLikeEventContent};
+
+    #[test]
+    fn custom_message_like_event_content_keeps_event_type() {
+        let raw = to_raw_value(&serde_json::json!({ "body": "custom" })).unwrap();
+
+        let content = AnyMessageLikeEventContent::from_parts("com.example.custom", &raw).unwrap();
+
+        assert!(matches!(content, AnyMessageLikeEventContent::_Custom(_)));
+        assert_eq!(content.event_type().to_string(), "com.example.custom");
+    }
+}
+
 impl Mentions {
     /// Create a `Mentions` with the default values.
     pub fn new() -> Self {
