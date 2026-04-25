@@ -8,7 +8,7 @@ pub mod presence;
 // mod ldap;
 // pub use ldap::*;
 pub mod session;
-use std::mem;
+use std::{collections::BTreeSet, mem};
 
 use diesel::prelude::*;
 pub use presence::*;
@@ -126,17 +126,24 @@ pub fn clean_signatures<F: Fn(&UserId) -> bool>(
 /// Returns true/false based on whether the recipient/receiving user has
 /// blocked the sender
 pub fn user_is_ignored(sender_id: &UserId, recipient_id: &UserId) -> bool {
+    ignored_users(recipient_id)
+        .iter()
+        .any(|blocked_user| blocked_user == sender_id)
+}
+
+pub fn ignored_users(recipient_id: &UserId) -> BTreeSet<OwnedUserId> {
+    let ignored_user_ids = data::user::ignored_users(recipient_id).unwrap_or_default();
+    if !ignored_user_ids.is_empty() {
+        return ignored_user_ids.into_iter().collect();
+    }
+
     if let Ok(Some(ignored)) = data::user::get_global_data::<IgnoredUserListEvent>(
         recipient_id,
         &GlobalAccountDataEventType::IgnoredUserList.to_string(),
     ) {
-        ignored
-            .content
-            .ignored_users
-            .keys()
-            .any(|blocked_user| blocked_user == sender_id)
+        ignored.content.ignored_users.keys().cloned().collect()
     } else {
-        false
+        BTreeSet::new()
     }
 }
 

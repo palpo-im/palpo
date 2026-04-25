@@ -137,6 +137,15 @@ pub fn joined_rooms(user_id: &UserId) -> DataResult<Vec<OwnedRoomId>> {
         })
         .collect::<Vec<_>>())
 }
+
+pub fn ignored_users(user_id: &UserId) -> DataResult<Vec<OwnedUserId>> {
+    user_ignores::table
+        .filter(user_ignores::user_id.eq(user_id))
+        .select(user_ignores::ignored_id)
+        .load::<OwnedUserId>(&mut connect()?)
+        .map_err(Into::into)
+}
+
 /// Returns an iterator over all rooms a user was invited to.
 pub fn invited_rooms(
     user_id: &UserId,

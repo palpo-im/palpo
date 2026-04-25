@@ -7,6 +7,8 @@ pub use batch_token::*;
 pub use pdu::*;
 mod outlier;
 pub mod search;
+use std::collections::BTreeSet;
+
 use diesel::prelude::*;
 pub use outlier::*;
 
@@ -311,16 +313,41 @@ pub fn ignored_filter(item: PdusIterItem, user_id: &UserId) -> bool {
     !is_ignored_pdu(pdu, user_id)
 }
 
+#[inline]
+pub fn ignored_filter_with_ignored_users(
+    item: PdusIterItem,
+    ignored_users: &BTreeSet<OwnedUserId>,
+) -> bool {
+    let (_, pdu) = item;
+    !is_ignored_pdu_by_ignored_users(pdu, ignored_users)
+}
+
 pub fn is_ignored_pdu(pdu: &SnPduEvent, user_id: &UserId) -> bool {
+    let ignored_users = crate::user::ignored_users(user_id);
+    is_ignored_pdu_by_ignored_users(pdu, &ignored_users)
+}
+
+pub fn is_ignored_pdu_by_ignored_users(
+    pdu: &SnPduEvent,
+    ignored_users: &BTreeSet<OwnedUserId>,
+) -> bool {
     // exclude Synapse's dummy events from bloating up response bodies. clients
     // don't need to see this.
     if pdu.event_ty.to_string() == "org.matrix.dummy_event" {
         return true;
     }
 
-    is_ignored_sender_pdu(pdu, user_id)
+    is_ignored_sender_pdu_by_ignored_users(pdu, ignored_users)
 }
 
 pub fn is_ignored_sender_pdu(pdu: &SnPduEvent, user_id: &UserId) -> bool {
-    pdu.state_key.is_none() && crate::user::user_is_ignored(&pdu.sender, user_id)
+    let ignored_users = crate::user::ignored_users(user_id);
+    is_ignored_sender_pdu_by_ignored_users(pdu, &ignored_users)
+}
+
+pub fn is_ignored_sender_pdu_by_ignored_users(
+    pdu: &SnPduEvent,
+    ignored_users: &BTreeSet<OwnedUserId>,
+) -> bool {
+    pdu.state_key.is_none() && ignored_users.contains(&pdu.sender)
 }
