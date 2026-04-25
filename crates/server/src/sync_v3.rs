@@ -115,7 +115,7 @@ pub async fn sync_events(
                 continue;
             }
         };
-        if !joined_room.is_empty() {
+        if since_tk.is_none() || !joined_room.is_empty() {
             joined_rooms.insert(room_id.to_owned(), joined_room);
         }
     }

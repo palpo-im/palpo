@@ -281,7 +281,7 @@ pub struct JoinedRoom {
 
     /// The ephemeral events in the room that aren't recorded in the timeline or
     /// state of the room.
-    #[serde(default, skip_serializing_if = "Ephemeral::is_empty")]
+    #[serde(default)]
     pub ephemeral: Ephemeral,
 
     /// The number of unread events since the latest read receipt.
@@ -479,7 +479,7 @@ impl RoomAccountData {
 #[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Ephemeral {
     /// A list of events.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub events: Vec<RawJson<AnySyncEphemeralRoomEvent>>,
 }
 
