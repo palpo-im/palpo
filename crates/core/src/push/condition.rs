@@ -8,16 +8,16 @@ use std::sync::Arc;
 use regex::bytes::Regex;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::value::Value as JsonValue;
 use wildmatch::WildMatch;
 
 use crate::macros::StringEnum;
 use crate::power_levels::NotificationPowerLevels;
 use crate::room_version_rules::RoomPowerLevelsRules;
+use crate::serde::JsonObject;
 use crate::{EventId, OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId};
+use as_variant::as_variant;
 
 mod flattened_json;
-mod push_condition_serde;
 mod room_member_count_is;
 
 pub use self::flattened_json::{FlattenedJson, FlattenedJsonValue, ScalarJsonValue};
@@ -64,21 +64,12 @@ impl RoomVersionFeature {
 }
 
 /// A condition that must apply for an associated push rule's action to be taken.
-#[derive(ToSchema, Clone, Debug)]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PushCondition {
     /// A glob pattern match on a field of the event.
-    EventMatch {
-        /// The [dot-separated path] of the property of the event to match.
-        ///
-        /// [dot-separated path]: https://spec.matrix.org/latest/appendices/#dot-separated-property-paths
-        key: String,
-
-        /// The glob-style pattern to match against.
-        ///
-        /// Patterns with no special glob characters should be treated as having
-        /// asterisks prepended and appended when testing the condition.
-        pattern: String,
-    },
+    EventMatch(EventMatchConditionData),
 
     /// Matches unencrypted messages where `content.body` contains the owner's
     /// display name in that room.
@@ -86,68 +77,310 @@ pub enum PushCondition {
     ContainsDisplayName,
 
     /// Matches the current number of members in the room.
-    RoomMemberCount {
-        /// The condition on the current number of members in the room.
-        is: RoomMemberCountIs,
-    },
+    RoomMemberCount(RoomMemberCountConditionData),
 
     /// Takes into account the current power levels in the room, ensuring the
     /// sender of the event has high enough power to trigger the
     /// notification.
-    SenderNotificationPermission {
-        /// The field in the power level event the user needs a minimum power
-        /// level for.
-        ///
-        /// Fields must be specified under the `notifications` property in the
-        /// power level event's `content`.
-        key: String,
-    },
+    SenderNotificationPermission(SenderNotificationPermissionConditionData),
 
     /// Apply the rule only to rooms that support a given feature.
     #[cfg(feature = "unstable-msc3931")]
-    RoomVersionSupports {
-        /// The feature the room must support for the push rule to apply.
-        feature: RoomVersionFeature,
-    },
+    #[serde(rename = "org.matrix.msc3931.room_version_supports")]
+    RoomVersionSupports(RoomVersionSupportsConditionData),
 
     /// Exact value match on a property of the event.
-    EventPropertyIs {
-        /// The [dot-separated path] of the property of the event to match.
-        ///
-        /// [dot-separated path]: https://spec.matrix.org/latest/appendices/#dot-separated-property-paths
-        key: String,
-
-        /// The value to match against.
-        #[salvo(schema(value_type = Object, additional_properties = true))]
-        value: ScalarJsonValue,
-    },
+    EventPropertyIs(EventPropertyIsConditionData),
 
     /// Exact value match on a value in an array property of the event.
-    EventPropertyContains {
-        /// The [dot-separated path] of the property of the event to match.
-        ///
-        /// [dot-separated path]: https://spec.matrix.org/latest/appendices/#dot-separated-property-paths
-        key: String,
-
-        /// The value to match against.
-        #[salvo(schema(value_type = Object, additional_properties = true))]
-        value: ScalarJsonValue,
-    },
+    EventPropertyContains(EventPropertyContainsConditionData),
 
     /// Matches a thread event based on the user's thread subscription status, as defined by
     /// [MSC4306].
     ///
     /// [MSC4306]: https://github.com/matrix-org/matrix-spec-proposals/pull/4306
     #[cfg(feature = "unstable-msc4306")]
-    ThreadSubscription {
-        /// Whether the user must be subscribed (`true`) or unsubscribed (`false`) to the thread
-        /// for the condition to match.
-        subscribed: bool,
-    },
+    #[serde(rename = "io.element.msc4306.thread_subscription")]
+    ThreadSubscription(ThreadSubscriptionConditionData),
 
     #[doc(hidden)]
+    #[serde(untagged)]
     #[salvo(schema(skip))]
     _Custom(_CustomPushCondition),
+}
+
+impl PushCondition {
+    /// The value of the `kind` field for this condition.
+    pub fn kind(&self) -> &str {
+        match self {
+            Self::EventMatch(_) => "event_match",
+            #[allow(deprecated)]
+            Self::ContainsDisplayName => "contains_display_name",
+            Self::RoomMemberCount(_) => "room_member_count",
+            Self::SenderNotificationPermission(_) => "sender_notification_permission",
+            #[cfg(feature = "unstable-msc3931")]
+            Self::RoomVersionSupports(_) => "org.matrix.msc3931.room_version_supports",
+            Self::EventPropertyIs(_) => "event_property_is",
+            Self::EventPropertyContains(_) => "event_property_contains",
+            #[cfg(feature = "unstable-msc4306")]
+            Self::ThreadSubscription(_) => "io.element.msc4306.thread_subscription",
+            Self::_Custom(condition) => &condition.kind,
+        }
+    }
+
+    /// The data, if this is a custom condition.
+    pub fn custom_data(&self) -> Option<&JsonObject> {
+        as_variant!(self, Self::_Custom).map(|condition| &condition.data)
+    }
+}
+
+impl From<EventMatchConditionData> for PushCondition {
+    fn from(value: EventMatchConditionData) -> Self {
+        Self::EventMatch(value)
+    }
+}
+
+impl From<RoomMemberCountConditionData> for PushCondition {
+    fn from(value: RoomMemberCountConditionData) -> Self {
+        Self::RoomMemberCount(value)
+    }
+}
+
+impl From<SenderNotificationPermissionConditionData> for PushCondition {
+    fn from(value: SenderNotificationPermissionConditionData) -> Self {
+        Self::SenderNotificationPermission(value)
+    }
+}
+
+#[cfg(feature = "unstable-msc3931")]
+impl From<RoomVersionSupportsConditionData> for PushCondition {
+    fn from(value: RoomVersionSupportsConditionData) -> Self {
+        Self::RoomVersionSupports(value)
+    }
+}
+
+impl From<EventPropertyIsConditionData> for PushCondition {
+    fn from(value: EventPropertyIsConditionData) -> Self {
+        Self::EventPropertyIs(value)
+    }
+}
+
+impl From<EventPropertyContainsConditionData> for PushCondition {
+    fn from(value: EventPropertyContainsConditionData) -> Self {
+        Self::EventPropertyContains(value)
+    }
+}
+
+#[cfg(feature = "unstable-msc4306")]
+impl From<ThreadSubscriptionConditionData> for PushCondition {
+    fn from(value: ThreadSubscriptionConditionData) -> Self {
+        Self::ThreadSubscription(value)
+    }
+}
+
+/// Data for the `event_match` [`PushCondition`].
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct EventMatchConditionData {
+    /// The [dot-separated path] of the property of the event to match.
+    ///
+    /// [dot-separated path]: https://spec.matrix.org/latest/appendices/#dot-separated-property-paths
+    pub key: String,
+
+    /// The glob-style pattern to match against.
+    ///
+    /// Patterns with no special glob characters should be treated as having
+    /// asterisks prepended and appended when testing the condition.
+    pub pattern: String,
+}
+
+impl EventMatchConditionData {
+    /// Construct a new `EventMatchConditionData` with the given path and pattern.
+    pub fn new(key: String, pattern: String) -> Self {
+        Self { key, pattern }
+    }
+
+    fn applies(&self, event: &FlattenedJson, context: &PushConditionRoomCtx) -> bool {
+        check_event_match(event, &self.key, &self.pattern, context)
+    }
+}
+
+/// Data for the `room_member_count` [`PushCondition`].
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RoomMemberCountConditionData {
+    /// The condition on the current number of members in the room.
+    pub is: RoomMemberCountIs,
+}
+
+impl RoomMemberCountConditionData {
+    /// Construct a new `RoomMemberCountConditionData` with the given condition.
+    pub fn new(is: RoomMemberCountIs) -> Self {
+        Self { is }
+    }
+
+    fn applies(&self, context: &PushConditionRoomCtx) -> bool {
+        self.is.contains(&context.member_count)
+    }
+}
+
+/// Data for the `sender_notification_permission` [`PushCondition`].
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SenderNotificationPermissionConditionData {
+    /// The field in the power level event the user needs a minimum power level for.
+    ///
+    /// Fields must be specified under the `notifications` property in the power level event's
+    /// `content`.
+    pub key: String,
+}
+
+impl SenderNotificationPermissionConditionData {
+    /// Construct a new `SenderNotificationPermissionConditionData` with the given field.
+    pub fn new(key: String) -> Self {
+        Self { key }
+    }
+
+    fn applies(&self, event: &FlattenedJson, context: &PushConditionRoomCtx) -> bool {
+        let Some(power_levels) = &context.power_levels else {
+            return false;
+        };
+
+        let Some(sender_id) = event
+            .get_str("sender")
+            .and_then(|v| <&UserId>::try_from(v).ok())
+        else {
+            return false;
+        };
+
+        let sender_level = power_levels
+            .users
+            .get(sender_id)
+            .unwrap_or(&power_levels.users_default);
+
+        match power_levels.notifications.get(&self.key) {
+            Some(level) => sender_level >= level,
+            None => false,
+        }
+    }
+}
+
+/// Data for the `room_version_supports` [`PushCondition`].
+#[cfg(feature = "unstable-msc3931")]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RoomVersionSupportsConditionData {
+    /// The feature the room must support for the push rule to apply.
+    pub feature: RoomVersionFeature,
+}
+
+#[cfg(feature = "unstable-msc3931")]
+impl RoomVersionSupportsConditionData {
+    /// Construct a new `RoomVersionSupportsConditionData` with the given feature.
+    pub fn new(feature: RoomVersionFeature) -> Self {
+        Self { feature }
+    }
+
+    fn applies(&self, context: &PushConditionRoomCtx) -> bool {
+        match &self.feature {
+            RoomVersionFeature::ExtensibleEvents => context
+                .supported_features
+                .contains(&RoomVersionFeature::ExtensibleEvents),
+            RoomVersionFeature::_Custom(_) => false,
+        }
+    }
+}
+
+/// Data for the `event_property_is` [`PushCondition`].
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct EventPropertyIsConditionData {
+    /// The [dot-separated path] of the property of the event to match.
+    ///
+    /// [dot-separated path]: https://spec.matrix.org/latest/appendices/#dot-separated-property-paths
+    pub key: String,
+
+    /// The value to match against.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub value: ScalarJsonValue,
+}
+
+impl EventPropertyIsConditionData {
+    /// Construct a new `EventPropertyIsConditionData` with the given path and value.
+    pub fn new(key: String, value: ScalarJsonValue) -> Self {
+        Self { key, value }
+    }
+
+    fn applies(&self, event: &FlattenedJson) -> bool {
+        event
+            .get(&self.key)
+            .is_some_and(|value| value == &self.value)
+    }
+}
+
+/// Data for the `event_property_contains` [`PushCondition`].
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct EventPropertyContainsConditionData {
+    /// The [dot-separated path] of the property of the event to match.
+    ///
+    /// [dot-separated path]: https://spec.matrix.org/latest/appendices/#dot-separated-property-paths
+    pub key: String,
+
+    /// The value to match against.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub value: ScalarJsonValue,
+}
+
+impl EventPropertyContainsConditionData {
+    /// Construct a new `EventPropertyContainsConditionData` with the given path and value.
+    pub fn new(key: String, value: ScalarJsonValue) -> Self {
+        Self { key, value }
+    }
+
+    fn applies(&self, event: &FlattenedJson) -> bool {
+        event
+            .get(&self.key)
+            .and_then(FlattenedJsonValue::as_array)
+            .is_some_and(|array| array.contains(&self.value))
+    }
+}
+
+/// Data for the `io.element.msc4306.thread_subscription` [`PushCondition`].
+#[cfg(feature = "unstable-msc4306")]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ThreadSubscriptionConditionData {
+    /// Whether the user must be subscribed (`true`) or unsubscribed (`false`) to the thread
+    /// for the condition to match.
+    pub subscribed: bool,
+}
+
+#[cfg(feature = "unstable-msc4306")]
+impl ThreadSubscriptionConditionData {
+    /// Construct a new `ThreadSubscriptionConditionData` with the given subscription state.
+    pub fn new(subscribed: bool) -> Self {
+        Self { subscribed }
+    }
+
+    async fn applies(&self, event: &FlattenedJson, context: &PushConditionRoomCtx) -> bool {
+        let Some(has_thread_subscription_fn) = &context.has_thread_subscription_fn else {
+            return false;
+        };
+
+        if event.get_str("content.m\\.relates_to.rel_type") != Some("m.thread") {
+            return false;
+        }
+
+        let Some(Ok(thread_root)) = event
+            .get_str("content.m\\.relates_to.event_id")
+            .map(<&EventId>::try_from)
+        else {
+            return false;
+        };
+
+        self.subscribed == has_thread_subscription_fn(thread_root).await
+    }
 }
 
 pub(super) fn check_event_match(
@@ -184,7 +417,7 @@ impl PushCondition {
         }
 
         match self {
-            Self::EventMatch { key, pattern } => check_event_match(event, key, pattern, context),
+            Self::EventMatch(condition) => condition.applies(event, context),
             #[allow(deprecated)]
             Self::ContainsDisplayName => {
                 let value = match event.get_str("content.body") {
@@ -194,70 +427,15 @@ impl PushCondition {
 
                 value.matches_pattern(&context.user_display_name, true)
             }
-            Self::RoomMemberCount { is } => is.contains(&context.member_count),
-            Self::SenderNotificationPermission { key } => {
-                let Some(power_levels) = &context.power_levels else {
-                    return false;
-                };
-
-                let sender_id = match event.get_str("sender") {
-                    Some(v) => match <&UserId>::try_from(v) {
-                        Ok(u) => u,
-                        Err(_) => return false,
-                    },
-                    None => return false,
-                };
-
-                let sender_level = power_levels
-                    .users
-                    .get(sender_id)
-                    .unwrap_or(&power_levels.users_default);
-
-                match power_levels.notifications.get(key) {
-                    Some(l) => sender_level >= l,
-                    None => false,
-                }
-            }
+            Self::RoomMemberCount(condition) => condition.applies(context),
+            Self::SenderNotificationPermission(condition) => condition.applies(event, context),
 
             #[cfg(feature = "unstable-msc3931")]
-            Self::RoomVersionSupports { feature } => match feature {
-                RoomVersionFeature::ExtensibleEvents => context
-                    .supported_features
-                    .contains(&RoomVersionFeature::ExtensibleEvents),
-                RoomVersionFeature::_Custom(_) => false,
-            },
-            Self::EventPropertyIs { key, value } => event.get(key).is_some_and(|v| v == value),
-            Self::EventPropertyContains { key, value } => event
-                .get(key)
-                .and_then(FlattenedJsonValue::as_array)
-                .is_some_and(|a| a.contains(value)),
+            Self::RoomVersionSupports(condition) => condition.applies(context),
+            Self::EventPropertyIs(condition) => condition.applies(event),
+            Self::EventPropertyContains(condition) => condition.applies(event),
             #[cfg(feature = "unstable-msc4306")]
-            Self::ThreadSubscription {
-                subscribed: must_be_subscribed,
-            } => {
-                let Some(has_thread_subscription_fn) = &context.has_thread_subscription_fn else {
-                    // If we don't have a function to check thread subscriptions, we can't
-                    // determine if the condition applies.
-                    return false;
-                };
-
-                // The event must have a relation of type `m.thread`.
-                if event.get_str("content.m\\.relates_to.rel_type") != Some("m.thread") {
-                    return false;
-                }
-
-                // Retrieve the thread root event ID.
-                let Some(Ok(thread_root)) = event
-                    .get_str("content.m\\.relates_to.event_id")
-                    .map(<&EventId>::try_from)
-                else {
-                    return false;
-                };
-
-                let is_subscribed = has_thread_subscription_fn(thread_root).await;
-
-                *must_be_subscribed == is_subscribed
-            }
+            Self::ThreadSubscription(condition) => condition.applies(event, context).await,
             Self::_Custom(_) => false,
         }
     }
@@ -273,7 +451,7 @@ pub struct _CustomPushCondition {
 
     /// The additional fields that the condition contains.
     #[serde(flatten)]
-    data: BTreeMap<String, JsonValue>,
+    data: JsonObject,
 }
 
 /// The context of the room associated to an event to be able to test all push
@@ -404,6 +582,51 @@ impl PushConditionPowerLevelsCtx {
             notifications,
             rules,
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use serde_json::{
+        Value as JsonValue, from_value as from_json_value, json, to_value as to_json_value,
+    };
+
+    use super::{EventMatchConditionData, PushCondition};
+
+    #[test]
+    fn known_push_condition_roundtrips() {
+        let condition = PushCondition::EventMatch(EventMatchConditionData::new(
+            "type".into(),
+            "m.room.message".into(),
+        ));
+        let json = json!({
+            "kind": "event_match",
+            "key": "type",
+            "pattern": "m.room.message",
+        });
+
+        assert_eq!(to_json_value(&condition).unwrap(), json);
+        assert_eq!(
+            from_json_value::<PushCondition>(json).unwrap().kind(),
+            "event_match"
+        );
+    }
+
+    #[test]
+    fn custom_push_condition_roundtrips() {
+        let json = json!({
+            "kind": "dev.palpo.custom",
+            "field": "value",
+        });
+
+        let condition = from_json_value::<PushCondition>(json.clone()).unwrap();
+
+        assert_eq!(condition.kind(), "dev.palpo.custom");
+        assert_eq!(
+            condition.custom_data().and_then(|data| data.get("field")),
+            Some(&JsonValue::String("value".to_owned()))
+        );
+        assert_eq!(to_json_value(condition).unwrap(), json);
     }
 }
 
