@@ -1,7 +1,10 @@
+use std::collections::BTreeMap;
+
 use diesel::prelude::*;
 use palpo_core::UnixMillis;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{from_value as from_json_value, value::to_raw_value};
 
 use crate::core::client::profile::*;
@@ -12,6 +15,7 @@ use crate::core::federation::query::{
 };
 use crate::core::identifiers::*;
 use crate::core::profile::ProfileFieldName;
+use crate::core::serde::{JsonObject, JsonValue};
 use crate::core::user::ProfileResBody;
 use crate::data::schema::*;
 use crate::data::user::{DbProfile, NewDbPresence};
@@ -28,17 +32,49 @@ pub fn public_router() -> Router {
         .get(get_profile)
         .push(Router::with_path("avatar_url").get(get_avatar_url))
         .push(Router::with_path("displayname").get(get_display_name))
+        .push(Router::with_path("{field}").get(get_profile_field))
 }
 pub fn authed_router() -> Router {
     Router::with_path("profile/{user_id}")
         .hoop(hoops::limit_rate)
         .push(Router::with_path("avatar_url").put(set_avatar_url))
         .push(Router::with_path("displayname").put(set_display_name))
+        .push(
+            Router::with_path("{field}")
+                .put(set_profile_field)
+                .delete(delete_profile_field),
+        )
+}
+
+#[derive(ToSchema, Serialize, Deserialize, Debug, Default)]
+struct ProfileFieldBody {
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    fields: JsonObject,
+}
+
+impl ProfileFieldBody {
+    fn single(field: impl Into<String>, value: JsonValue) -> Self {
+        let mut fields = JsonObject::new();
+        fields.insert(field.into(), value);
+        Self { fields }
+    }
 }
 
 fn profile_from_federation_response(
     profile: FederationProfileResBody,
 ) -> serde_json::Result<ProfileResBody> {
+    let fields = profile
+        .iter()
+        .filter(|(field, _)| {
+            !matches!(
+                field.as_str(),
+                "avatar_url" | "displayname" | "xyz.amorgan.blurhash"
+            )
+        })
+        .map(|(field, value)| (field.clone(), value.clone()))
+        .collect();
+
     Ok(ProfileResBody {
         avatar_url: profile
             .get("avatar_url")
@@ -53,7 +89,46 @@ fn profile_from_federation_response(
         blurhash: profile
             .get("xyz.amorgan.blurhash")
             .and_then(|value| value.as_str().map(ToOwned::to_owned)),
+        fields,
     })
+}
+
+fn custom_profile_fields(fields: JsonValue) -> BTreeMap<String, JsonValue> {
+    fields
+        .as_object()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|(field, value)| (field.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn ensure_custom_profile_field(field: &str) -> Result<(), MatrixError> {
+    if matches!(field, "avatar_url" | "displayname" | "xyz.amorgan.blurhash") {
+        return Err(MatrixError::invalid_param(
+            "Use the dedicated profile endpoint for this field.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_profile_update_allowed(
+    authed: &crate::AuthedInfo,
+    user_id: &UserId,
+) -> Result<(), MatrixError> {
+    let is_allowed = authed.user_id() == user_id
+        || authed
+            .appservice()
+            .is_some_and(|appservice| appservice.is_user_match(user_id));
+
+    if !is_allowed {
+        return Err(MatrixError::forbidden("forbidden", None));
+    }
+
+    Ok(())
 }
 
 /// #GET /_matrix/client/r0/profile/{user_id}
@@ -87,6 +162,7 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
         blurhash,
         avatar_url,
         display_name,
+        fields,
         ..
     }) = user_profiles::table
         .filter(user_profiles::user_id.eq(&user_id))
@@ -97,6 +173,7 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
             avatar_url: None,
             blurhash: None,
             display_name: Some(user_id.localpart().to_owned()),
+            fields: BTreeMap::new(),
         });
     };
 
@@ -104,7 +181,50 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
         avatar_url,
         blurhash,
         display_name,
+        fields: custom_profile_fields(fields),
     })
+}
+
+/// #GET /_matrix/client/v3/profile/{user_id}/{field}
+/// Returns one custom profile field.
+#[endpoint]
+async fn get_profile_field(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    field: PathParam<String>,
+) -> JsonResult<ProfileFieldBody> {
+    let user_id = user_id.into_inner();
+    let field = field.into_inner();
+    ensure_custom_profile_field(&field)?;
+
+    if user_id.is_remote() {
+        let server_name = user_id.server_name().to_owned();
+        let request = profile_request(
+            &server_name.origin().await,
+            ProfileReqArgs {
+                user_id,
+                field: Some(field.as_str().into()),
+            },
+        )?
+        .into_inner();
+
+        let profile = crate::sending::send_federation_request(&server_name, request, None)
+            .await?
+            .json::<FederationProfileResBody>()
+            .await?;
+
+        let value = profile
+            .get(&field)
+            .cloned()
+            .ok_or_else(|| MatrixError::not_found("Profile field not found."))?;
+
+        return json_ok(ProfileFieldBody::single(field, value));
+    }
+
+    let value = data::user::profile_field(&user_id, &field)?
+        .ok_or_else(|| MatrixError::not_found("Profile field not found."))?;
+
+    json_ok(ProfileFieldBody::single(field, value))
 }
 
 /// #GET /_matrix/client/r0/profile/{user_id}/avatar_url
@@ -166,14 +286,7 @@ async fn set_avatar_url(
 
     // Allow if the user is updating their own profile, or if an appservice is updating
     // a user within its namespace
-    let is_allowed = authed.user_id() == user_id
-        || authed
-            .appservice()
-            .is_some_and(|appservice| appservice.is_user_match(&user_id));
-
-    if !is_allowed {
-        return Err(MatrixError::forbidden("forbidden", None).into());
-    }
+    ensure_profile_update_allowed(authed, &user_id)?;
 
     let SetAvatarUrlReqBody {
         avatar_url,
@@ -305,14 +418,7 @@ async fn set_display_name(
 
     // Allow if the user is updating their own profile, or if an appservice is updating
     // a user within its namespace
-    let is_allowed = authed.user_id() == user_id
-        || authed
-            .appservice()
-            .is_some_and(|appservice| appservice.is_user_match(&user_id));
-
-    if !is_allowed {
-        return Err(MatrixError::forbidden("forbidden", None).into());
-    }
+    ensure_profile_update_allowed(authed, &user_id)?;
     let SetDisplayNameReqBody { display_name } = body.into_inner();
 
     if let Some(display_name) = display_name.as_deref() {
@@ -371,6 +477,55 @@ async fn set_display_name(
             true,
         )?;
     }
+
+    empty_ok()
+}
+
+/// #PUT /_matrix/client/v3/profile/{user_id}/{field}
+/// Updates one custom profile field.
+#[endpoint]
+async fn set_profile_field(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    field: PathParam<String>,
+    body: JsonBody<ProfileFieldBody>,
+    depot: &mut Depot,
+) -> EmptyResult {
+    let user_id = user_id.into_inner();
+    let field = field.into_inner();
+    ensure_custom_profile_field(&field)?;
+
+    let authed = depot.authed_info()?;
+    ensure_profile_update_allowed(authed, &user_id)?;
+
+    let mut body = body.into_inner();
+    let value = body
+        .fields
+        .remove(&field)
+        .ok_or_else(|| MatrixError::bad_json("Profile field body does not match path field."))?;
+
+    data::user::set_profile_field(&user_id, &field, value)?;
+
+    empty_ok()
+}
+
+/// #DELETE /_matrix/client/v3/profile/{user_id}/{field}
+/// Deletes one custom profile field.
+#[endpoint]
+async fn delete_profile_field(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    field: PathParam<String>,
+    depot: &mut Depot,
+) -> EmptyResult {
+    let user_id = user_id.into_inner();
+    let field = field.into_inner();
+    ensure_custom_profile_field(&field)?;
+
+    let authed = depot.authed_info()?;
+    ensure_profile_update_allowed(authed, &user_id)?;
+
+    data::user::delete_profile_field(&user_id, &field)?;
 
     empty_ok()
 }

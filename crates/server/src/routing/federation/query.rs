@@ -52,6 +52,7 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
 
     let profile = data::user::get_profile(&args.user_id, None)?
         .ok_or(MatrixError::not_found("Profile not found."))?;
+    let custom_fields = profile.fields.as_object().cloned().unwrap_or_default();
 
     match args.field.as_ref().map(|field| field.as_str()) {
         Some("displayname") => {
@@ -72,7 +73,11 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
                 response.set("xyz.amorgan.blurhash", blurhash.into());
             }
         }
-        Some(_) => {}
+        Some(field) => {
+            if let Some(value) = custom_fields.get(field) {
+                response.set(field, value.clone());
+            }
+        }
         None => {
             if let Some(display_name) = profile.display_name {
                 response.extend([ProfileFieldValue::DisplayName(display_name)]);
@@ -83,6 +88,7 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
             if let Some(blurhash) = profile.blurhash {
                 response.set("xyz.amorgan.blurhash", blurhash.into());
             }
+            response.extend(custom_fields);
         }
     }
 
