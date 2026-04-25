@@ -19,6 +19,7 @@ pub mod knock;
 pub mod media;
 pub mod membership;
 pub mod openid;
+pub mod policy;
 pub mod query;
 pub mod room;
 pub mod space;
