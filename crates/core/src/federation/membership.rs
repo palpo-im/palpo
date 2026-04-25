@@ -127,6 +127,9 @@ pub struct SendJoinResBodyV2(
 #[derive(ToSchema, Serialize, Debug)]
 pub struct SendJoinResBodyV1(
     /// Full state of the room.
+    ///
+    /// Kept for inbound compatibility with old federation `/v1/send_join` callers. New outgoing
+    /// joins use `/v2/send_join`.
     pub RoomStateV1,
 );
 
