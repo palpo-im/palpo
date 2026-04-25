@@ -2,20 +2,28 @@
 //!
 //! This module also contains types shared by events in its child namespaces.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, btree_map},
+    fmt,
+    ops::Deref,
+};
 
+use as_variant::as_variant;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize, de};
 
-use crate::OwnedMxcUri;
-use crate::serde::Base64;
-use crate::serde::base64::UrlSafe;
+use crate::serde::{
+    Base64, JsonObject, StringEnum,
+    base64::{Standard, UrlSafe},
+};
+use crate::{OwnedMxcUri, PrivOwnedStr};
 
 pub mod aliases;
 pub mod avatar;
 pub mod canonical_alias;
 pub mod create;
 pub mod encrypted;
+mod encrypted_file_serde;
 pub mod encryption;
 pub mod guest_access;
 pub mod history_visibility;
@@ -165,60 +173,329 @@ impl ThumbnailInfo {
 }
 
 /// A file sent to a room with end-to-end encryption enabled.
-///
-/// To create an instance of this type.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 pub struct EncryptedFile {
     /// The URL to the file.
     pub url: OwnedMxcUri,
 
-    /// A [JSON Web Key](https://tools.ietf.org/html/rfc7517#appendix-A.3) object.
-    pub key: JsonWebKey,
+    /// Information about the encryption of the file.
+    #[serde(flatten)]
+    pub info: EncryptedFileInfo,
 
-    /// The 128-bit unique counter block used by AES-CTR, encoded as unpadded
-    /// base64.
-    pub iv: Base64,
-
-    /// A map from an algorithm name to a hash of the ciphertext, encoded as
-    /// unpadded base64.
+    /// A map from an algorithm name to a hash of the ciphertext.
     ///
-    /// Clients should support the SHA-256 hash, which uses the key sha256.
-    pub hashes: BTreeMap<String, Base64>,
-
-    /// Version of the encrypted attachments protocol.
-    ///
-    /// Must be `v2`.
-    pub v: String,
+    /// Clients should support the SHA-256 hash.
+    pub hashes: EncryptedFileHashes,
 }
 
-/// A [JSON Web Key](https://tools.ietf.org/html/rfc7517#appendix-A.3) object.
+impl EncryptedFile {
+    /// Construct a new `EncryptedFile` with the given URL, encryption info and hashes.
+    pub fn new(url: OwnedMxcUri, info: EncryptedFileInfo, hashes: EncryptedFileHashes) -> Self {
+        Self { url, info, hashes }
+    }
+}
+
+/// Information about the encryption of a file.
+#[derive(ToSchema, Debug, Clone, Serialize)]
+#[serde(tag = "v", rename_all = "lowercase")]
+pub enum EncryptedFileInfo {
+    /// Information about a file encrypted using version 2 of the attachment encryption protocol.
+    V2(V2EncryptedFileInfo),
+
+    #[doc(hidden)]
+    #[serde(untagged)]
+    _Custom(CustomEncryptedFileInfo),
+}
+
+impl EncryptedFileInfo {
+    /// Get the version of the attachment encryption protocol.
+    ///
+    /// This matches the `v` field in the serialized data.
+    pub fn version(&self) -> &str {
+        match self {
+            Self::V2(_) => "v2",
+            Self::_Custom(info) => &info.v,
+        }
+    }
+
+    /// Get the data of the attachment encryption protocol, if it doesn't match one of the known
+    /// variants.
+    pub fn custom_data(&self) -> Option<&JsonObject> {
+        as_variant!(self, Self::_Custom(info) => &info.data)
+    }
+}
+
+impl<'de> Deserialize<'de> for EncryptedFileInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut data = JsonObject::deserialize(deserializer)?;
+        let version = data
+            .get("v")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| de::Error::missing_field("v"))?
+            .to_owned();
+
+        match version.as_str() {
+            "v2" => serde_json::from_value(serde_json::Value::Object(data))
+                .map(Self::V2)
+                .map_err(de::Error::custom),
+            _ => {
+                data.remove("v");
+                Ok(Self::_Custom(CustomEncryptedFileInfo { v: version, data }))
+            }
+        }
+    }
+}
+
+impl From<V2EncryptedFileInfo> for EncryptedFileInfo {
+    fn from(value: V2EncryptedFileInfo) -> Self {
+        Self::V2(value)
+    }
+}
+
+/// A file encrypted with the AES-CTR algorithm with a 256-bit key.
+#[derive(ToSchema, Clone)]
+pub struct V2EncryptedFileInfo {
+    /// The 256-bit key used to encrypt or decrypt the file.
+    pub k: Base64<UrlSafe, [u8; 32]>,
+
+    /// The 128-bit unique counter block used by AES-CTR.
+    pub iv: Base64<Standard, [u8; 16]>,
+}
+
+impl V2EncryptedFileInfo {
+    /// Construct a new `V2EncryptedFileInfo` with the given encoded key and initialization vector.
+    pub fn new(k: Base64<UrlSafe, [u8; 32]>, iv: Base64<Standard, [u8; 16]>) -> Self {
+        Self { k, iv }
+    }
+
+    /// Construct a new `V2EncryptedFileInfo` by base64-encoding the given key and initialization
+    /// vector bytes.
+    pub fn encode(k: [u8; 32], iv: [u8; 16]) -> Self {
+        Self::new(Base64::new(k), Base64::new(iv))
+    }
+}
+
+impl fmt::Debug for V2EncryptedFileInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("V2EncryptedFileInfo")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Information about a file encrypted using a custom version of the attachment encryption protocol.
+#[doc(hidden)]
+#[derive(ToSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct CustomEncryptedFileInfo {
+    /// The version of the protocol.
+    v: String,
+
+    /// Extra data about the encryption.
+    #[serde(flatten)]
+    data: JsonObject,
+}
+
+/// A map of [`EncryptedFileHashAlgorithm`] to the associated [`EncryptedFileHash`].
 ///
-/// To create an instance of this type.
-#[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
-pub struct JsonWebKey {
-    /// Key type.
-    ///
-    /// Must be `oct`.
-    pub kty: String,
+/// This type is used to ensure that a supported [`EncryptedFileHash`] always matches the
+/// appropriate [`EncryptedFileHashAlgorithm`].
+#[derive(Clone, Debug, Default)]
+pub struct EncryptedFileHashes(BTreeMap<EncryptedFileHashAlgorithm, EncryptedFileHash>);
 
-    /// Key operations.
-    ///
-    /// Must at least contain `encrypt` and `decrypt`.
-    pub key_ops: Vec<String>,
+impl EncryptedFileHashes {
+    /// Construct an empty `EncryptedFileHashes`.
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    /// Algorithm.
-    ///
-    /// Must be `A256CTR`.
-    pub alg: String,
+    /// Construct an `EncryptedFileHashes` that includes the given SHA-256 hash.
+    pub fn with_sha256(hash: [u8; 32]) -> Self {
+        std::iter::once(EncryptedFileHash::Sha256(Base64::new(hash))).collect()
+    }
 
-    /// The key, encoded as url-safe unpadded base64.
-    pub k: Base64<UrlSafe>,
-
-    /// Extractable.
+    /// Insert the given [`EncryptedFileHash`].
     ///
-    /// Must be `true`. This is a
-    /// [W3C extension](https://w3c.github.io/webcrypto/#iana-section-jwk).
-    pub ext: bool,
+    /// If a hash with the same [`EncryptedFileHashAlgorithm`] was already present, it is returned.
+    pub fn insert(&mut self, hash: EncryptedFileHash) -> Option<EncryptedFileHash> {
+        self.0.insert(hash.algorithm(), hash)
+    }
+}
+
+impl Deref for EncryptedFileHashes {
+    type Target = BTreeMap<EncryptedFileHashAlgorithm, EncryptedFileHash>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromIterator<EncryptedFileHash> for EncryptedFileHashes {
+    fn from_iter<T: IntoIterator<Item = EncryptedFileHash>>(iter: T) -> Self {
+        Self(
+            iter.into_iter()
+                .map(|hash| (hash.algorithm(), hash))
+                .collect(),
+        )
+    }
+}
+
+impl Extend<EncryptedFileHash> for EncryptedFileHashes {
+    fn extend<T: IntoIterator<Item = EncryptedFileHash>>(&mut self, iter: T) {
+        self.0
+            .extend(iter.into_iter().map(|hash| (hash.algorithm(), hash)));
+    }
+}
+
+impl IntoIterator for EncryptedFileHashes {
+    type Item = EncryptedFileHash;
+    type IntoIter = btree_map::IntoValues<EncryptedFileHashAlgorithm, EncryptedFileHash>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_values()
+    }
+}
+
+impl ToSchema for EncryptedFileHashes {
+    fn to_schema(
+        components: &mut salvo::oapi::Components,
+    ) -> salvo::oapi::RefOr<salvo::oapi::Schema> {
+        <BTreeMap<String, Base64>>::to_schema(components)
+    }
+}
+
+/// An algorithm used to generate the hash of an [`EncryptedFile`].
+#[derive(ToSchema, Clone, StringEnum)]
+#[palpo_enum(rename_all = "lowercase")]
+pub enum EncryptedFileHashAlgorithm {
+    /// The SHA-256 algorithm.
+    Sha256,
+
+    #[doc(hidden)]
+    _Custom(PrivOwnedStr),
+}
+
+/// The hash of an encrypted file's ciphertext.
+#[derive(ToSchema, Clone, Debug)]
+pub enum EncryptedFileHash {
+    /// A hash computed with the SHA-256 algorithm.
+    Sha256(Base64<Standard, [u8; 32]>),
+
+    #[doc(hidden)]
+    _Custom(CustomEncryptedFileHash),
+}
+
+impl EncryptedFileHash {
+    /// The algorithm that was used to generate this hash.
+    pub fn algorithm(&self) -> EncryptedFileHashAlgorithm {
+        match self {
+            Self::Sha256(_) => EncryptedFileHashAlgorithm::Sha256,
+            Self::_Custom(custom) => custom.algorithm.as_str().into(),
+        }
+    }
+
+    /// Get a reference to the decoded bytes of the hash.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Sha256(hash) => hash.as_bytes(),
+            Self::_Custom(custom) => custom.hash.as_bytes(),
+        }
+    }
+
+    /// Get the decoded bytes of the hash.
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Sha256(hash) => hash.into_inner().into(),
+            Self::_Custom(custom) => custom.hash.into_inner(),
+        }
+    }
+}
+
+/// A hash computed with a custom algorithm.
+#[doc(hidden)]
+#[derive(ToSchema, Clone, Debug)]
+pub struct CustomEncryptedFileHash {
+    /// The algorithm that was used to generate the hash.
+    algorithm: String,
+
+    /// The hash.
+    hash: Base64,
+}
+
+#[cfg(test)]
+mod encrypted_file_tests {
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+
+    use super::{
+        EncryptedFile, EncryptedFileHash, EncryptedFileHashAlgorithm, EncryptedFileInfo,
+        V2EncryptedFileInfo,
+    };
+
+    fn encrypted_file_json() -> serde_json::Value {
+        json!({
+            "url": "mxc://notareal.hs/abcdef",
+            "key": {
+                "kty": "oct",
+                "key_ops": ["encrypt", "decrypt"],
+                "alg": "A256CTR",
+                "k": "TLlG_OpX807zzQuuwv4QZGJ21_u7weemFGYJFszMn9A",
+                "ext": true
+            },
+            "iv": "S22dq3NAX8wAAAAAAAAAAA",
+            "hashes": {
+                "sha256": "aWOHudBnDkJ9IwaR1Nd8XKoI7DOrqDTwt6xDPfVGN6Q"
+            },
+            "v": "v2",
+        })
+    }
+
+    #[test]
+    fn encrypted_file_round_trips_strict_types() {
+        let file: EncryptedFile = from_json_value(encrypted_file_json()).unwrap();
+
+        assert_eq!(file.info.version(), "v2");
+        let EncryptedFileInfo::V2(V2EncryptedFileInfo { k, iv }) = &file.info else {
+            panic!("expected v2 encrypted file info");
+        };
+        assert_eq!(k.as_inner().len(), 32);
+        assert_eq!(iv.as_inner().len(), 16);
+
+        let hash = file
+            .hashes
+            .get(&EncryptedFileHashAlgorithm::Sha256)
+            .expect("sha256 hash should be present");
+        let EncryptedFileHash::Sha256(hash) = hash else {
+            panic!("expected sha256 encrypted file hash");
+        };
+        assert_eq!(hash.as_inner().len(), 32);
+
+        let serialized = to_json_value(&file).unwrap();
+        assert_eq!(serialized["v"], "v2");
+        assert_eq!(serialized["key"]["kty"], "oct");
+        assert_eq!(serialized["key"]["alg"], "A256CTR");
+        assert_eq!(serialized["key"]["ext"], true);
+        assert_eq!(
+            serialized["hashes"]["sha256"],
+            "aWOHudBnDkJ9IwaR1Nd8XKoI7DOrqDTwt6xDPfVGN6Q"
+        );
+    }
+
+    #[test]
+    fn encrypted_file_rejects_wrong_key_length() {
+        let mut json = encrypted_file_json();
+        json["key"]["k"] = "AA".into();
+
+        from_json_value::<EncryptedFile>(json).unwrap_err();
+    }
+
+    #[test]
+    fn encrypted_file_rejects_wrong_hash_length() {
+        let mut json = encrypted_file_json();
+        json["hashes"]["sha256"] = "AA".into();
+
+        from_json_value::<EncryptedFile>(json).unwrap_err();
+    }
 }
 
 // #[cfg(test)]
