@@ -222,6 +222,7 @@ fn well_known_support() -> JsonResult<SupportResBody> {
     let email_address = conf.well_known.support_email.clone();
 
     let matrix_id = conf.well_known.support_mxid.clone();
+    let pgp_key = conf.well_known.support_pgp_key.clone();
 
     // if a role is specified, an email address or matrix id is required
     if role.is_some() && (email_address.is_none() && matrix_id.is_none()) {
@@ -236,6 +237,7 @@ fn well_known_support() -> JsonResult<SupportResBody> {
             role,
             email_address,
             matrix_id,
+            pgp_key,
         };
 
         contacts.push(contact);
