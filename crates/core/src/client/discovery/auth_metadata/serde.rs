@@ -30,7 +30,6 @@ impl<'de> Deserialize<'de> for AuthorizationServerMetadata {
             account_management_uri,
             #[cfg(feature = "unstable-msc4191")]
             account_management_actions_supported,
-            #[cfg(feature = "unstable-msc4108")]
             device_authorization_endpoint,
             prompt_values_supported,
         } = helper;
@@ -109,7 +108,6 @@ impl<'de> Deserialize<'de> for AuthorizationServerMetadata {
             account_management_uri,
             #[cfg(feature = "unstable-msc4191")]
             account_management_actions_supported,
-            #[cfg(feature = "unstable-msc4108")]
             device_authorization_endpoint,
             prompt_values_supported,
         })
@@ -132,7 +130,6 @@ struct AuthorizationServerMetadataDeHelper {
     #[cfg(feature = "unstable-msc4191")]
     #[serde(default)]
     account_management_actions_supported: BTreeSet<AccountManagementAction>,
-    #[cfg(feature = "unstable-msc4108")]
     device_authorization_endpoint: Option<Url>,
     #[serde(default)]
     prompt_values_supported: Vec<Prompt>,
@@ -269,7 +266,30 @@ mod tests {
             );
         }
 
-        #[cfg(feature = "unstable-msc4108")]
+        assert_eq!(
+            metadata
+                .device_authorization_endpoint
+                .as_ref()
+                .map(Url::as_str),
+            Some("https://server.local/device")
+        );
+    }
+
+    #[test]
+    fn metadata_device_authorization_grant_type() {
+        let mut metadata_object = authorization_server_metadata_object();
+        get_mut_array(&mut metadata_object, "grant_types_supported")
+            .push("urn:ietf:params:oauth:grant-type:device_code".into());
+
+        let metadata =
+            from_json_value::<AuthorizationServerMetadata>(metadata_object.into()).unwrap();
+
+        assert_eq!(metadata.grant_types_supported.len(), 3);
+        assert!(
+            metadata
+                .grant_types_supported
+                .contains(&GrantType::DeviceCode)
+        );
         assert_eq!(
             metadata
                 .device_authorization_endpoint
@@ -359,7 +379,6 @@ mod tests {
             assert_eq!(metadata.account_management_actions_supported.len(), 0);
         }
 
-        #[cfg(feature = "unstable-msc4108")]
         assert_eq!(metadata.device_authorization_endpoint, None);
     }
 
@@ -498,7 +517,6 @@ mod tests {
             );
         }
 
-        #[cfg(feature = "unstable-msc4108")]
         assert_eq!(
             metadata
                 .device_authorization_endpoint

@@ -141,7 +141,6 @@ pub struct AuthorizationServerMetadata {
     /// URL of the authorization server's device authorization endpoint ([RFC 8628]).
     ///
     /// [RFC 8628]: https://datatracker.ietf.org/doc/html/rfc8628
-    #[cfg(feature = "unstable-msc4108")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_authorization_endpoint: Option<Url>,
 
@@ -205,7 +204,6 @@ impl AuthorizationServerMetadata {
             self.account_management_uri
                 .as_ref()
                 .map(|string| ("account_management_uri", string)),
-            #[cfg(feature = "unstable-msc4108")]
             self.device_authorization_endpoint
                 .as_ref()
                 .map(|string| ("device_authorization_endpoint", string)),
@@ -274,7 +272,6 @@ pub enum GrantType {
     /// The device code grant type ([RFC 8628]).
     ///
     /// [RFC 8628]: https://datatracker.ietf.org/doc/html/rfc8628
-    #[cfg(feature = "unstable-msc4108")]
     #[palpo_enum(rename = "urn:ietf:params:oauth:grant-type:device_code")]
     DeviceCode,
 
@@ -459,13 +456,10 @@ mod tests {
             metadata.insecure_validate_urls().unwrap();
         }
 
-        #[cfg(feature = "unstable-msc4108")]
-        {
-            let mut metadata = original_metadata.clone();
-            metadata.device_authorization_endpoint =
-                Some(Url::parse("http://server.local/device").unwrap());
-            metadata.validate_urls().unwrap_err();
-            metadata.insecure_validate_urls().unwrap();
-        }
+        let mut metadata = original_metadata;
+        metadata.device_authorization_endpoint =
+            Some(Url::parse("http://server.local/device").unwrap());
+        metadata.validate_urls().unwrap_err();
+        metadata.insecure_validate_urls().unwrap();
     }
 }

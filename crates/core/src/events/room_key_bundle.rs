@@ -33,12 +33,10 @@ impl ToDeviceRoomKeyBundleEventContent {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use serde_json::json;
 
     use super::ToDeviceRoomKeyBundleEventContent;
-    use crate::events::room::{EncryptedFile, JsonWebKey};
+    use crate::events::room::{EncryptedFile, EncryptedFileHash, V2EncryptedFileInfo};
     use crate::serde::Base64;
     use crate::{owned_mxc_uri, owned_room_id};
 
@@ -46,22 +44,18 @@ mod tests {
     fn serialization() {
         let content = ToDeviceRoomKeyBundleEventContent {
             room_id: owned_room_id!("!testroomid:example.org"),
-            file: EncryptedFile {
-                url: owned_mxc_uri!("mxc://example.org/FHyPlCeYUSFFxlgbQYZmoEoe"),
-                key: JsonWebKey {
-                    kty: "A256CTR".to_owned(),
-                    key_ops: vec!["encrypt".to_owned(), "decrypt".to_owned()],
-                    alg: "A256CTR".to_owned(),
-                    k: Base64::parse("aWF6-32KGYaC3A_FEUCk1Bt0JA37zP0wrStgmdCaW-0").unwrap(),
-                    ext: true,
-                },
-                iv: Base64::parse("w+sE15fzSc0AAAAAAAAAAA").unwrap(),
-                hashes: BTreeMap::from([(
-                    "sha256".to_owned(),
+            file: EncryptedFile::new(
+                owned_mxc_uri!("mxc://example.org/FHyPlCeYUSFFxlgbQYZmoEoe"),
+                V2EncryptedFileInfo::new(
+                    Base64::parse("aWF6-32KGYaC3A_FEUCk1Bt0JA37zP0wrStgmdCaW-0").unwrap(),
+                    Base64::parse("w+sE15fzSc0AAAAAAAAAAA").unwrap(),
+                )
+                .into(),
+                std::iter::once(EncryptedFileHash::Sha256(
                     Base64::parse("fdSLu/YkRx3Wyh3KQabP3rd6+SFiKg5lsJZQHtkSAYA").unwrap(),
-                )]),
-                v: "v2".to_owned(),
-            },
+                ))
+                .collect(),
+            ),
         };
 
         let serialized = serde_json::to_value(content).unwrap();
@@ -77,8 +71,8 @@ mod tests {
                         "alg": "A256CTR",
                         "ext": true,
                         "k": "aWF6-32KGYaC3A_FEUCk1Bt0JA37zP0wrStgmdCaW-0",
-                        "key_ops": ["encrypt","decrypt"],
-                        "kty": "A256CTR"
+                        "key_ops": ["decrypt","encrypt"],
+                        "kty": "oct"
                     },
                     "iv": "w+sE15fzSc0AAAAAAAAAAA",
                     "hashes": {
