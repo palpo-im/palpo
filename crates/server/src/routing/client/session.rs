@@ -94,8 +94,8 @@ async fn login(
             identifier,
             password,
         }) => {
-            let username = if let UserIdentifier::UserIdOrLocalpart(user_id) = identifier {
-                user_id.to_lowercase()
+            let username = if let UserIdentifier::Matrix(user_id) = identifier {
+                user_id.user.to_lowercase()
             } else {
                 warn!("Bad login type: {:?}", &body.login_info);
                 return Err(MatrixError::forbidden("Bad login type.", None).into());
@@ -231,8 +231,8 @@ async fn login(
             user_id
         }
         LoginInfo::Appservice(Appservice { identifier }) => {
-            let username = if let UserIdentifier::UserIdOrLocalpart(user_id) = identifier {
-                user_id.to_lowercase()
+            let username = if let UserIdentifier::Matrix(user_id) = identifier {
+                user_id.user.to_lowercase()
             } else {
                 return Err(MatrixError::forbidden("Bad login type.", None).into());
             };

@@ -39,12 +39,19 @@ pub use ruleset::Ruleset;
 use salvo::oapi::ToSchema;
 pub use simple_push_rule::*;
 
-pub use self::action::{Action, Tweak};
+pub use self::action::{Action, CustomActionData, HighlightTweakValue, SoundTweakValue, Tweak};
 #[cfg(feature = "unstable-msc3932")]
 pub use self::condition::RoomVersionFeature;
+#[cfg(feature = "unstable-msc3931")]
+pub use self::condition::RoomVersionSupportsConditionData;
+#[cfg(feature = "unstable-msc4306")]
+pub use self::condition::ThreadSubscriptionConditionData;
 pub use self::condition::{
-    _CustomPushCondition, ComparisonOperator, FlattenedJson, FlattenedJsonValue, PushCondition,
-    PushConditionPowerLevelsCtx, PushConditionRoomCtx, RoomMemberCountIs, ScalarJsonValue,
+    _CustomPushCondition, ComparisonOperator, EventMatchConditionData,
+    EventPropertyContainsConditionData, EventPropertyIsConditionData, FlattenedJson,
+    FlattenedJsonValue, PushCondition, PushConditionPowerLevelsCtx, PushConditionRoomCtx,
+    RoomMemberCountConditionData, RoomMemberCountIs, ScalarJsonValue,
+    SenderNotificationPermissionConditionData,
 };
 pub use self::iter::{AnyPushRule, AnyPushRuleRef, RulesetIntoIter, RulesetIter};
 pub use self::predefined::{
