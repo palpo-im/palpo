@@ -23,6 +23,8 @@ use crate::{
 };
 
 pub fn router_v1() -> Router {
+    // Keep the v1 send_join / send_leave routes for older remote servers. New outgoing membership
+    // requests are built with the v2 helpers in palpo-core.
     Router::new()
         .push(Router::with_path("make_join/{room_id}/{user_id}").get(make_join))
         .push(Router::with_path("invite/{room_id}/{event_id}").put(invite_user))

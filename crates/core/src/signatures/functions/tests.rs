@@ -4,8 +4,8 @@ use assert_matches2::assert_matches;
 use serde_json::json;
 
 use super::{
-    canonical_json, servers_to_check_signatures, sign_json, verify_canonical_json_bytes,
-    verify_event,
+    servers_to_check_signatures, sign_json, to_canonical_json_string_for_signing,
+    verify_canonical_json_bytes, verify_event,
 };
 use crate::room_version_rules::{RoomVersionRules, SignaturesRules};
 use crate::serde::{Base64, CanonicalJsonValue};
@@ -43,7 +43,7 @@ fn add_invalid_key_to_map(public_key_map: &mut PublicKeyMap, name: &str, pair: &
 }
 
 #[test]
-fn canonical_json_complex() {
+fn canonical_json_for_signing_complex() {
     let data = json!({
         "auth": {
             "success": true,
@@ -70,7 +70,10 @@ fn canonical_json_complex() {
         unreachable!();
     };
 
-    assert_eq!(canonical_json(&object).unwrap(), canonical);
+    assert_eq!(
+        to_canonical_json_string_for_signing(&object).unwrap(),
+        canonical
+    );
 }
 
 #[test]
@@ -367,7 +370,7 @@ fn verify_event_check_signatures_for_sender_is_allowed_with_unknown_algorithms_i
 }
 
 #[test]
-fn verify_event_fails_with_missing_key_when_event_is_signed_multiple_times_by_same_entity() {
+fn verify_event_succeeds_when_missing_key_and_event_is_signed_multiple_times_by_same_entity() {
     let key_pair_sender = generate_key_pair("1");
     let secondary_key_pair_sender = generate_key_pair("2");
     let mut signed_event = serde_json::from_str(
@@ -401,17 +404,53 @@ fn verify_event_fails_with_missing_key_when_event_is_signed_multiple_times_by_sa
     let mut public_key_map = BTreeMap::new();
     add_key_to_map(&mut public_key_map, "domain-sender", &key_pair_sender);
 
-    let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
+    let verification = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6).unwrap();
 
+    assert_eq!(verification, Verified::Signatures);
+}
+
+#[test]
+fn verify_event_fails_when_missing_key_and_event_is_signed_once_by_entity() {
+    let key_pair_sender = generate_key_pair("1");
+    let secondary_key_pair_sender = generate_key_pair("2");
+    let mut signed_event = serde_json::from_str(
+        r#"{
+                "auth_events": [],
+                "content": {},
+                "depth": 3,
+                "hashes": {
+                    "sha256": "5jM4wQpv6lnBo7CLIghJuHdW+s2CMBJPUOGOC89ncos"
+                },
+                "origin": "domain",
+                "origin_server_ts": 1000000,
+                "prev_events": [],
+                "room_id": "!x:domain",
+                "sender": "@name:domain-sender",
+                "type": "X",
+                "unsigned": {
+                    "age_ts": 1000000
+                }
+            }"#,
+    )
+    .unwrap();
+    sign_json(
+        "domain-sender",
+        &secondary_key_pair_sender,
+        &mut signed_event,
+    )
+    .unwrap();
+
+    let mut public_key_map = BTreeMap::new();
+    add_key_to_map(&mut public_key_map, "domain-sender", &key_pair_sender);
+
+    let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
     assert_matches!(
         verification_result,
-        Err(Error::Verification(VerificationError::PublicKeyNotFound {
-            entity,
-            key_id
-        }))
+        Err(Error::Verification(
+            VerificationError::NoSupportedSignatureForEntity(entity)
+        ))
     );
     assert_eq!(entity, "domain-sender");
-    assert_eq!(key_id, "ed25519:2");
 }
 
 #[test]
@@ -499,6 +538,48 @@ fn verify_event_with_single_key_with_unknown_algorithm_should_not_accept_event()
         ))
     );
     assert_eq!(entity, "domain-sender");
+}
+
+#[test]
+fn verify_event_reports_invalid_base64_signature_path() {
+    let key_pair_sender = generate_key_pair("1");
+    let signed_event = serde_json::from_str(
+        r#"{
+                "auth_events": [],
+                "content": {},
+                "depth": 3,
+                "hashes": {
+                    "sha256": "5jM4wQpv6lnBo7CLIghJuHdW+s2CMBJPUOGOC89ncos"
+                },
+                "origin": "domain",
+                "origin_server_ts": 1000000,
+                "prev_events": [],
+                "room_id": "!x:domain",
+                "sender": "@name:domain-sender",
+                "type": "X",
+                "unsigned": {
+                    "age_ts": 1000000
+                },
+                "signatures": {
+                    "domain-sender": {
+                        "ed25519:1": "not base64!"
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let mut public_key_map = BTreeMap::new();
+    add_key_to_map(&mut public_key_map, "domain-sender", &key_pair_sender);
+
+    let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
+    assert_matches!(
+        verification_result,
+        Err(Error::Verification(
+            VerificationError::InvalidBase64Signature { path, .. }
+        ))
+    );
+    assert_eq!(path, "signatures.domain-sender.ed25519:1");
 }
 
 #[test]
@@ -643,7 +724,7 @@ fn verify_canonical_json_bytes_success() {
         "bat": "baz",
     }))
     .unwrap();
-    let canonical_json = canonical_json(&json).unwrap();
+    let canonical_json = to_canonical_json_string_for_signing(&json).unwrap();
 
     let key_pair = generate_key_pair("1");
     let signature = key_pair.sign(canonical_json.as_bytes());
@@ -664,7 +745,7 @@ fn verify_canonical_json_bytes_unsupported_algorithm() {
         "bat": "baz",
     }))
     .unwrap();
-    let canonical_json = canonical_json(&json).unwrap();
+    let canonical_json = to_canonical_json_string_for_signing(&json).unwrap();
 
     let key_pair = generate_key_pair("1");
     let signature = key_pair.sign(canonical_json.as_bytes());
@@ -689,7 +770,7 @@ fn verify_canonical_json_bytes_wrong_key() {
         "bat": "baz",
     }))
     .unwrap();
-    let canonical_json = canonical_json(&json).unwrap();
+    let canonical_json = to_canonical_json_string_for_signing(&json).unwrap();
 
     let valid_key_pair = generate_key_pair("1");
     let signature = valid_key_pair.sign(canonical_json.as_bytes());

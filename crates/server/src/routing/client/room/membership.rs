@@ -4,7 +4,7 @@ use diesel::prelude::*;
 use palpo_core::Seqnum;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
-use serde_json::value::to_raw_value;
+use serde_json::{from_value as from_json_value, value::to_raw_value};
 
 use crate::core::client::membership::{
     BanUserReqBody, InvitationRecipient, InviteUserReqBody, JoinRoomReqBody, JoinRoomResBody,
@@ -14,10 +14,11 @@ use crate::core::client::membership::{
 use crate::core::client::room::{KnockReqArgs, KnockReqBody};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{StateEventType, TimelineEventType};
-use crate::core::federation::query::{ProfileReqArgs, profile_request};
+use crate::core::federation::query::{
+    ProfileReqArgs, ProfileResBody as FederationProfileResBody, profile_request,
+};
 use crate::core::identifiers::*;
 use crate::core::state::Event;
-use crate::core::user::ProfileResBody;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::DbProfile;
@@ -505,15 +506,22 @@ pub(super) async fn ban_user(
             },
         )?
         .into_inner();
-        let ProfileResBody {
-            avatar_url,
-            display_name,
-            blurhash,
-        } = send_federation_request(body.user_id.server_name(), profile_request, None)
+        let profile = send_federation_request(body.user_id.server_name(), profile_request, None)
             .await?
-            .json()
+            .json::<FederationProfileResBody>()
             .await
             .unwrap_or_default();
+        let avatar_url = profile
+            .get("avatar_url")
+            .cloned()
+            .and_then(|value| from_json_value(value).ok());
+        let display_name = profile
+            .get("displayname")
+            .cloned()
+            .and_then(|value| from_json_value(value).ok());
+        let blurhash = profile
+            .get("xyz.amorgan.blurhash")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned));
 
         RoomMemberEventContent {
             membership: MembershipState::Ban,

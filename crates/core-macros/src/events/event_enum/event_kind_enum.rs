@@ -43,6 +43,9 @@ pub(super) struct EventEnum<'a> {
 
     /// The name of the `*EventType` enum for this kind.
     event_type_enum: syn::Ident,
+
+    /// The name of the `Custom*Content` struct for this kind.
+    custom_content_struct: syn::Ident,
 }
 
 impl<'a> EventEnum<'a> {
@@ -71,6 +74,7 @@ impl<'a> EventEnum<'a> {
         let content_enum = format_ident!("Any{kind}Content");
         let full_content_enum = format_ident!("Any{kind}ContentChange");
         let event_type_enum = kind.to_event_type_enum();
+        let custom_content_struct = kind.to_custom_content_ident();
 
         Self {
             data,
@@ -83,6 +87,7 @@ impl<'a> EventEnum<'a> {
             content_enum,
             full_content_enum,
             event_type_enum,
+            custom_content_struct,
         }
     }
 }
@@ -258,13 +263,13 @@ impl EventEnumVariation<'_> {
         let variant_docs = &self.variant_docs;
         let event_types = &self.event_types;
 
-        let kind = self.kind;
-        let custom_content_ty = format_ident!("Custom{kind}Content");
+        let custom_content_struct = &self.custom_content_struct;
 
         let deserialize_impl = self.expand_deserialize_impl();
         let field_accessor_impl = self.expand_accessor_methods()?;
         let from_impl = self.expand_from_impl(ident, event_types);
-        let json_castable_impl = expand_json_castable_impl(ident, kind, self.variation, palpo_core);
+        let json_castable_impl =
+            expand_json_castable_impl(ident, self.kind, self.variation, palpo_core);
 
         Ok(quote! {
             #( #attrs )*
@@ -280,7 +285,7 @@ impl EventEnumVariation<'_> {
                 #[doc(hidden)]
                 _Custom(
                     #palpo_core::events::#event_struct<
-                        #palpo_core::events::_custom::#custom_content_ty
+                        #palpo_core::events::_custom::#custom_content_struct
                     >,
                 ),
             }
@@ -426,10 +431,6 @@ impl EventEnumVariation<'_> {
         let variants = &self.variants;
         let variant_attrs = &self.variant_attrs;
 
-        let original_event_content_kind_trait = self
-            .kind
-            .to_content_kind_trait(EventContentTraitVariation::Original);
-
         if self.maybe_redacted() {
             let mut accessors = quote! {
                 /// Returns the content for this event if it is not redacted, or `None` if it is.
@@ -442,17 +443,7 @@ impl EventEnumVariation<'_> {
                             }
                         )*
                         Self::_Custom(event) => event.as_original().map(|ev| {
-                            #content_enum::_Custom {
-                                event_type: crate::PrivOwnedStr(
-                                    ::std::convert::From::from(
-                                        ::std::string::ToString::to_string(
-                                            &#palpo_core::events::#original_event_content_kind_trait::event_type(
-                                                &ev.content,
-                                            ),
-                                        ),
-                                    ),
-                                ),
-                            }
+                            #content_enum::_Custom(ev.content.clone())
                         }),
                     }
                 }
@@ -473,9 +464,6 @@ impl EventEnumVariation<'_> {
 
             if self.kind == EventEnumKind::State {
                 let full_content_enum = &self.full_content_enum;
-                let redacted_event_content_kind_trait_name = self
-                    .kind
-                    .to_content_kind_trait(EventContentTraitVariation::Redacted);
 
                 accessors.extend(quote! {
                     /// Returns the content of this state event.
@@ -499,28 +487,10 @@ impl EventEnumVariation<'_> {
                             )*
                             Self::_Custom(event) => match event {
                                 #palpo_core::events::#event_struct::Original(ev) => {
-                                    #full_content_enum::_Custom {
-                                        event_type: crate::PrivOwnedStr(
-                                            ::std::string::ToString::to_string(
-                                                &#palpo_core::events::#original_event_content_kind_trait::event_type(
-                                                    &ev.content,
-                                                ),
-                                            ).into_boxed_str(),
-                                        ),
-                                        redacted: false,
-                                    }
+                                    #full_content_enum::_Custom(ev.content.clone())
                                 }
                                 #palpo_core::events::#event_struct::Redacted(ev) => {
-                                    #full_content_enum::_Custom {
-                                        event_type: crate::PrivOwnedStr(
-                                            ::std::string::ToString::to_string(
-                                                &#palpo_core::events::#redacted_event_content_kind_trait_name::event_type(
-                                                    &ev.content,
-                                                ),
-                                            ).into_boxed_str(),
-                                        ),
-                                        redacted: true,
-                                    }
+                                    #full_content_enum::_Custom(ev.content.clone())
                                 }
                             },
                         }
@@ -541,15 +511,7 @@ impl EventEnumVariation<'_> {
                             #( #variant_attrs )*
                             Self::#variants(event) => #content_enum::#variants(event.content.clone()),
                         )*
-                        Self::_Custom(event) => #content_enum::_Custom {
-                            event_type: crate::PrivOwnedStr(
-                                ::std::convert::From::from(
-                                    ::std::string::ToString::to_string(
-                                        &#palpo_core::events::#original_event_content_kind_trait::event_type(&event.content)
-                                    )
-                                ),
-                            ),
-                        },
+                        Self::_Custom(event) => #content_enum::_Custom(event.content.clone()),
                     }
                 }
             }

@@ -20,10 +20,10 @@ use crate::serde::canonical_json::{JsonType, redact};
 use crate::serde::{Base64, CanonicalJsonObject, CanonicalJsonValue};
 use crate::signatures::keys::{KeyPair, PublicKeyMap};
 use crate::signatures::verification::{Verified, Verifier, verifier_from_algorithm};
-use crate::signatures::{Error, JsonError, ParseError, VerificationError};
+use crate::signatures::{Error, JsonError, VerificationError};
 use crate::{
-    AnyKeyName, OwnedEventId, OwnedServerName, OwnedServerSigningKeyId, SigningKeyAlgorithm,
-    SigningKeyId, UserId,
+    AnyKeyName, IdParseError, OwnedEventId, OwnedServerName, OwnedServerSigningKeyId,
+    SigningKeyAlgorithm, SigningKeyId, UserId,
 };
 
 /// The [maximum size allowed] for a PDU.
@@ -148,7 +148,7 @@ where
     Ok(())
 }
 
-/// Converts an event into the [canonical] string form.
+/// Converts an event into the [canonical] string form used for signing.
 ///
 /// [canonical]: https://spec.matrix.org/latest/appendices/#canonical-json
 ///
@@ -165,12 +165,25 @@ where
 /// }"#;
 ///
 /// let object = serde_json::from_str(input).unwrap();
-/// let canonical = palpo_core::signatures::canonical_json(&object).unwrap();
+/// let canonical =
+///     palpo_core::signatures::to_canonical_json_string_for_signing(&object).unwrap();
 ///
 /// assert_eq!(canonical, r#"{"日":1,"本":2}"#);
 /// ```
+pub fn to_canonical_json_string_for_signing(
+    object: &CanonicalJsonObject,
+) -> Result<String, JsonError> {
+    to_canonical_json_string_with_fields_to_remove(object, CANONICAL_JSON_FIELDS_TO_REMOVE)
+}
+
+/// Converts an event into the [canonical] string form used for signing.
+///
+/// Deprecated name retained for compatibility. Prefer
+/// [`to_canonical_json_string_for_signing`] so the signing-specific field
+/// removal is clear at call sites.
+#[deprecated = "Use to_canonical_json_string_for_signing instead"]
 pub fn canonical_json(object: &CanonicalJsonObject) -> Result<String, Error> {
-    canonical_json_with_fields_to_remove(object, CANONICAL_JSON_FIELDS_TO_REMOVE)
+    to_canonical_json_string_for_signing(object).map_err(Into::into)
 }
 
 /// Uses a set of public keys to verify a signed JSON object.
@@ -236,7 +249,7 @@ pub fn verify_json(
         None => return Err(JsonError::field_missing_from_object("signatures")),
     };
 
-    let canonical_json = canonical_json(object)?;
+    let canonical_json = to_canonical_json_string_for_signing(object)?;
 
     for entity_id in signature_map.keys() {
         verify_canonical_json_for_entity(
@@ -260,7 +273,7 @@ pub fn verify_json(
 /// * `public_key_map`: A map from entity identifiers to a map from key identifiers to public keys.
 /// * `signature_map`: The map of signatures from the signed JSON object.
 /// * `canonical_json`: The signed canonical JSON bytes. Can be obtained by calling
-///   [`canonical_json()`].
+///   [`to_canonical_json_string_for_signing()`].
 ///
 /// # Errors
 ///
@@ -290,6 +303,11 @@ fn verify_canonical_json_for_entity(
 
     let mut checked = false;
     for (key_id, signature) in signature_set {
+        // If the key is not in the map of public keys, ignore.
+        let Some(public_key) = public_keys.get(key_id) else {
+            continue;
+        };
+
         // If we cannot parse the key ID, ignore.
         let Ok(parsed_key_id) = <&SigningKeyId<AnyKeyName>>::try_from(key_id.as_str()) else {
             continue;
@@ -300,20 +318,16 @@ fn verify_canonical_json_for_entity(
             continue;
         };
 
-        let Some(public_key) = public_keys.get(key_id) else {
-            return Err(VerificationError::PublicKeyNotFound {
-                entity: entity_id.to_owned(),
-                key_id: key_id.clone(),
-            }
-            .into());
-        };
-
         let CanonicalJsonValue::String(signature) = signature else {
             return Err(JsonError::not_of_type("signature", JsonType::String));
         };
 
-        let signature = Base64::<Standard>::parse(signature)
-            .map_err(|e| ParseError::base64("signature", signature, e))?;
+        let signature = Base64::<Standard>::parse(signature).map_err(|source| {
+            VerificationError::InvalidBase64Signature {
+                path: format!("signatures.{entity_id}.{key_id}"),
+                source,
+            }
+        })?;
 
         verify_canonical_json_with(
             &verifier,
@@ -343,7 +357,7 @@ fn verify_canonical_json_for_entity(
 /// * `public_key`: The raw bytes of the public key used to sign the JSON.
 /// * `signature`: The raw bytes of the signature.
 /// * `canonical_json`: The signed canonical JSON bytes. Can be obtained by calling
-///   [`canonical_json()`].
+///   [`to_canonical_json_string_for_signing()`].
 ///
 /// # Errors
 ///
@@ -368,7 +382,7 @@ pub fn verify_canonical_json_bytes(
 /// * `public_key`: The raw bytes of the public key used to sign the JSON.
 /// * `signature`: The raw bytes of the signature.
 /// * `canonical_json`: The signed canonical JSON bytes. Can be obtained by calling
-///   [`canonical_json()`].
+///   [`to_canonical_json_string_for_signing()`].
 ///
 /// # Errors
 ///
@@ -398,7 +412,8 @@ where
 ///
 /// Returns an error if the event is too large.
 pub fn content_hash(object: &CanonicalJsonObject) -> Result<Base64<Standard, [u8; 32]>, Error> {
-    let json = canonical_json_with_fields_to_remove(object, CONTENT_HASH_FIELDS_TO_REMOVE)?;
+    let json =
+        to_canonical_json_string_with_fields_to_remove(object, CONTENT_HASH_FIELDS_TO_REMOVE)?;
     if json.len() > MAX_PDU_BYTES {
         return Err(Error::PduSize);
     }
@@ -437,8 +452,10 @@ pub fn reference_hash(
 ) -> Result<String, Error> {
     let redacted_value = redact(object.clone(), &rules.redaction, None)?;
 
-    let json =
-        canonical_json_with_fields_to_remove(&redacted_value, REFERENCE_HASH_FIELDS_TO_REMOVE)?;
+    let json = to_canonical_json_string_with_fields_to_remove(
+        &redacted_value,
+        REFERENCE_HASH_FIELDS_TO_REMOVE,
+    )?;
     if json.len() > MAX_PDU_BYTES {
         return Err(Error::PduSize);
     }
@@ -696,7 +713,7 @@ pub fn verify_event(
     };
 
     let servers_to_check = servers_to_check_signatures(object, &rules.signatures)?;
-    let canonical_json = canonical_json(&redacted)?;
+    let canonical_json = to_canonical_json_string_for_signing(&redacted)?;
 
     for entity_id in servers_to_check {
         verify_canonical_json_for_entity(
@@ -721,17 +738,17 @@ pub fn verify_event(
 /// Internal implementation detail of the canonical JSON algorithm.
 ///
 /// Allows customization of the fields that will be removed before serializing.
-fn canonical_json_with_fields_to_remove(
+fn to_canonical_json_string_with_fields_to_remove(
     object: &CanonicalJsonObject,
     fields: &[&str],
-) -> Result<String, Error> {
+) -> Result<String, JsonError> {
     let mut owned_object = object.clone();
 
     for field in fields {
         owned_object.remove(*field);
     }
 
-    to_json_string(&owned_object).map_err(|e| Error::Json(e.into()))
+    to_json_string(&owned_object).map_err(JsonError::Serde)
 }
 
 /// Extracts the server names and key ids to check signatures for given event.
@@ -782,8 +799,12 @@ fn servers_to_check_signatures(
     if !is_invite_via_third_party_id(object)? {
         match object.get("sender") {
             Some(CanonicalJsonValue::String(raw_sender)) => {
-                let user_id = <&UserId>::try_from(raw_sender.as_str())
-                    .map_err(|e| Error::from(ParseError::UserId(e)))?;
+                let user_id = <&UserId>::try_from(raw_sender.as_str()).map_err(|source| {
+                    VerificationError::ParseIdentifier {
+                        identifier_type: "user ID",
+                        source,
+                    }
+                })?;
 
                 servers_to_check.insert(user_id.server_name().to_owned());
             }
@@ -795,14 +816,20 @@ fn servers_to_check_signatures(
     if rules.check_event_id_server {
         match object.get("event_id") {
             Some(CanonicalJsonValue::String(raw_event_id)) => {
-                let event_id: OwnedEventId = raw_event_id
-                    .parse()
-                    .map_err(|e| Error::from(ParseError::EventId(e)))?;
+                let event_id: OwnedEventId =
+                    raw_event_id
+                        .parse()
+                        .map_err(|source| VerificationError::ParseIdentifier {
+                            identifier_type: "event ID",
+                            source,
+                        })?;
 
-                let server_name = event_id
-                    .server_name()
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| ParseError::server_name_from_event_id(event_id))?;
+                let server_name = event_id.server_name().map(ToOwned::to_owned).ok_or(
+                    VerificationError::ParseIdentifier {
+                        identifier_type: "event ID",
+                        source: IdParseError::InvalidServerName,
+                    },
+                )?;
                 servers_to_check.insert(server_name);
             }
             Some(_) => return Err(JsonError::not_of_type("event_id", JsonType::String)),

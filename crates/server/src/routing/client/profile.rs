@@ -2,14 +2,17 @@ use diesel::prelude::*;
 use palpo_core::UnixMillis;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
-use serde_json::value::to_raw_value;
+use serde_json::{from_value as from_json_value, value::to_raw_value};
 
 use crate::core::client::profile::*;
 use crate::core::events::room::member::RoomMemberEventContent;
 use crate::core::events::{StateEventType, TimelineEventType};
-use crate::core::federation::query::{ProfileReqArgs, profile_request};
+use crate::core::federation::query::{
+    ProfileReqArgs, ProfileResBody as FederationProfileResBody, profile_request,
+};
 use crate::core::identifiers::*;
-use crate::core::user::{ProfileField, ProfileResBody};
+use crate::core::profile::ProfileFieldName;
+use crate::core::user::ProfileResBody;
 use crate::data::schema::*;
 use crate::data::user::{DbProfile, NewDbPresence};
 use crate::data::{connect, diesel_exists};
@@ -31,6 +34,26 @@ pub fn authed_router() -> Router {
         .hoop(hoops::limit_rate)
         .push(Router::with_path("avatar_url").put(set_avatar_url))
         .push(Router::with_path("displayname").put(set_display_name))
+}
+
+fn profile_from_federation_response(
+    profile: FederationProfileResBody,
+) -> serde_json::Result<ProfileResBody> {
+    Ok(ProfileResBody {
+        avatar_url: profile
+            .get("avatar_url")
+            .cloned()
+            .map(from_json_value)
+            .transpose()?,
+        display_name: profile
+            .get("displayname")
+            .cloned()
+            .map(from_json_value)
+            .transpose()?,
+        blurhash: profile
+            .get("xyz.amorgan.blurhash")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned)),
+    })
 }
 
 /// #GET /_matrix/client/r0/profile/{user_id}
@@ -56,9 +79,9 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
 
         let profile = crate::sending::send_federation_request(&server_name, request, Some(5))
             .await?
-            .json::<ProfileResBody>()
+            .json::<FederationProfileResBody>()
             .await?;
-        return json_ok(profile);
+        return json_ok(profile_from_federation_response(profile)?);
     }
     let Ok(DbProfile {
         blurhash,
@@ -100,7 +123,7 @@ async fn get_avatar_url(
             &server_name.origin().await,
             ProfileReqArgs {
                 user_id,
-                field: Some(ProfileField::AvatarUrl),
+                field: Some(ProfileFieldName::AvatarUrl),
             },
         )?
         .into_inner();
@@ -250,7 +273,7 @@ async fn get_display_name(
             &server_name.origin().await,
             ProfileReqArgs {
                 user_id,
-                field: Some(ProfileField::DisplayName),
+                field: Some(ProfileFieldName::DisplayName),
             },
         )?
         .into_inner();

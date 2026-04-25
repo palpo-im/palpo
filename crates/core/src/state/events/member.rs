@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::events::room::member::MembershipState;
 use crate::identifiers::*;
 use crate::serde::{CanonicalJsonObject, RawJsonValue, from_raw_json_value};
-use crate::signatures::canonical_json;
+use crate::signatures::to_canonical_json_string_for_signing;
 use crate::state::{Event, StateResult};
 
 /// A helper type for an [`Event`] of type `m.room.member`.
@@ -179,7 +179,7 @@ impl ThirdPartyInvite {
 
     /// The `signed` object as canonical JSON string to verify the signatures.
     pub(crate) fn signed_canonical_json(&self) -> Result<String, String> {
-        canonical_json(&self.signed).map_err(|error| {
+        to_canonical_json_string_for_signing(&self.signed).map_err(|error| {
             format!("invalid `third_party_invite.signed` field in `m.room.member` event: {error}")
         })
     }

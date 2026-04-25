@@ -18,7 +18,7 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, from_value as from_json_value, to_value as to_json_value};
 
-use crate::client::profile::ProfileFieldName;
+use crate::profile::ProfileFieldName;
 use crate::serde::StringEnum;
 use crate::{PrivOwnedStr, RoomVersionId};
 
