@@ -82,6 +82,14 @@ impl DbUser {
     pub fn is_deactivated(&self) -> bool {
         self.deactivated_at.is_some()
     }
+
+    pub fn is_locked(&self) -> bool {
+        self.locked_at.is_some()
+    }
+
+    pub fn is_suspended(&self) -> bool {
+        self.suspended_at.is_some()
+    }
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
@@ -303,6 +311,26 @@ pub fn is_deactivated(user_id: &UserId) -> DataResult<bool> {
         .optional()?
         .flatten();
     Ok(deactivated_at.is_some())
+}
+
+pub fn is_locked(user_id: &UserId) -> DataResult<bool> {
+    let locked_at = users::table
+        .filter(users::id.eq(user_id))
+        .select(users::locked_at)
+        .first::<Option<UnixMillis>>(&mut connect()?)
+        .optional()?
+        .flatten();
+    Ok(locked_at.is_some())
+}
+
+pub fn is_suspended(user_id: &UserId) -> DataResult<bool> {
+    let suspended_at = users::table
+        .filter(users::id.eq(user_id))
+        .select(users::suspended_at)
+        .first::<Option<UnixMillis>>(&mut connect()?)
+        .optional()?
+        .flatten();
+    Ok(suspended_at.is_some())
 }
 
 pub fn is_guest(user_id: &UserId) -> DataResult<bool> {
