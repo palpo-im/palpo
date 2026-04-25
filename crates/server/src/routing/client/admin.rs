@@ -1,14 +1,30 @@
 use std::collections::BTreeMap;
 
-use salvo::oapi::extract::PathParam;
+use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
+use crate::config;
+use crate::core::client::admin::{
+    IsUserLockedResBody, IsUserSuspendedResBody, LockUserReqBody, LockUserResBody,
+    SuspendUserReqBody, SuspendUserResBody,
+};
 use crate::core::client::server::{ConnectionInfo, DeviceInfo, SessionInfo, UserInfoResBody};
 use crate::core::identifiers::*;
-use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, data, json_ok};
+use crate::{AppResult, AuthArgs, DepotExt, JsonResult, MatrixError, data, json_ok};
 
 pub fn authed_router() -> Router {
-    Router::with_path("admin/whois/{user_id}").get(whois)
+    Router::new()
+        .push(Router::with_path("admin/whois/{user_id}").get(whois))
+        .push(
+            Router::with_path("admin/lock/{user_id}")
+                .get(is_user_locked)
+                .put(lock_user),
+        )
+        .push(
+            Router::with_path("admin/suspend/{user_id}")
+                .get(is_user_suspended)
+                .put(suspend_user),
+        )
 }
 
 /// Get information about a particular user.
@@ -66,4 +82,79 @@ async fn whois(
         user_id: Some(target_user_id),
         devices,
     })
+}
+
+fn require_admin(depot: &mut Depot) -> AppResult<OwnedUserId> {
+    let authed = depot.authed_info()?;
+    if !authed.is_admin() {
+        return Err(MatrixError::forbidden("Requires server admin privileges", None).into());
+    }
+
+    Ok(authed.user_id().to_owned())
+}
+
+fn get_local_user(user_id: &UserId) -> AppResult<data::user::DbUser> {
+    if user_id.server_name() != config::server_name() {
+        return Err(MatrixError::not_found("User not found").into());
+    }
+
+    data::user::get_user(user_id).map_err(|_| MatrixError::not_found("User not found").into())
+}
+
+#[endpoint]
+pub(super) async fn is_user_locked(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    depot: &mut Depot,
+) -> JsonResult<IsUserLockedResBody> {
+    require_admin(depot)?;
+    let target_user_id = user_id.into_inner();
+    let user = get_local_user(&target_user_id)?;
+
+    json_ok(IsUserLockedResBody::new(user.is_locked()))
+}
+
+#[endpoint]
+pub(super) async fn lock_user(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    body: JsonBody<LockUserReqBody>,
+    depot: &mut Depot,
+) -> JsonResult<LockUserResBody> {
+    let admin_user_id = require_admin(depot)?;
+    let target_user_id = user_id.into_inner();
+    get_local_user(&target_user_id)?;
+
+    data::user::set_locked(&target_user_id, body.locked, Some(&admin_user_id))?;
+
+    json_ok(LockUserResBody::new(body.locked))
+}
+
+#[endpoint]
+pub(super) async fn is_user_suspended(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    depot: &mut Depot,
+) -> JsonResult<IsUserSuspendedResBody> {
+    require_admin(depot)?;
+    let target_user_id = user_id.into_inner();
+    let user = get_local_user(&target_user_id)?;
+
+    json_ok(IsUserSuspendedResBody::new(user.is_suspended()))
+}
+
+#[endpoint]
+pub(super) async fn suspend_user(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    body: JsonBody<SuspendUserReqBody>,
+    depot: &mut Depot,
+) -> JsonResult<SuspendUserResBody> {
+    require_admin(depot)?;
+    let target_user_id = user_id.into_inner();
+    get_local_user(&target_user_id)?;
+
+    data::user::set_suspended(&target_user_id, body.suspended)?;
+
+    json_ok(SuspendUserResBody::new(body.suspended))
 }

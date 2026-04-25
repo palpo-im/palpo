@@ -32,8 +32,9 @@ use salvo::prelude::*;
 
 use crate::config;
 use crate::core::client::discovery::capabilities::{
-    Capabilities, CapabilitiesResBody, ChangePasswordCapability, ProfileFieldsCapability,
-    RoomVersionStability, RoomVersionsCapability, ThirdPartyIdChangesCapability,
+    AccountModerationCapability, Capabilities, CapabilitiesResBody, ChangePasswordCapability,
+    ProfileFieldsCapability, RoomVersionStability, RoomVersionsCapability,
+    ThirdPartyIdChangesCapability,
 };
 use crate::core::client::discovery::versions::VersionsResBody;
 use crate::core::client::search::{ResultCategories, SearchReqArgs, SearchReqBody, SearchResBody};
@@ -147,9 +148,11 @@ fn search(
 /// #GET /_matrix/client/r0/capabilities
 /// Get information on the supported feature set and other relevent capabilities of this server.
 #[endpoint]
-fn get_capabilities(_aa: AuthArgs) -> JsonResult<CapabilitiesResBody> {
+fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<CapabilitiesResBody> {
     let mut available = BTreeMap::new();
     let conf = crate::config::get();
+    let authed = depot.authed_info()?;
+    let account_moderation = AccountModerationCapability::new(authed.is_admin(), authed.is_admin());
     for room_version in &*config::UNSTABLE_ROOM_VERSIONS {
         available.insert(room_version.clone(), RoomVersionStability::Unstable);
     }
@@ -166,6 +169,7 @@ fn get_capabilities(_aa: AuthArgs) -> JsonResult<CapabilitiesResBody> {
             change_password: ChangePasswordCapability { enabled: true },
             thirdparty_id_changes: ThirdPartyIdChangesCapability { enabled: true },
             profile_fields: Some(ProfileFieldsCapability::new(true)),
+            account_moderation,
             ..Default::default()
         },
     })
@@ -214,6 +218,7 @@ fn supported_versions() -> JsonResult<VersionsResBody> {
             ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
             ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
             ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
+            ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
         ]),
     })
 }
