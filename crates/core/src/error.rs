@@ -19,7 +19,7 @@ mod kind_serde;
 pub use kind::*;
 use kind_serde::{ErrorCode, RetryAfter};
 
-use crate::{MatrixVersion, RoomVersionId};
+use crate::{MatrixVersion, OwnedUserId, RoomVersionId};
 
 macro_rules! simple_kind_fns {
     ($($fname:ident, $kind:ident;)+) => {
@@ -123,6 +123,10 @@ impl MatrixError {
         user_locked, UserLocked;
         user_suspended, UserSuspended;
         weak_password, WeakPassword;
+    }
+
+    pub fn sender_ignored(body: impl Into<ErrorBody>, sender: Option<OwnedUserId>) -> Self {
+        Self::new(ErrorKind::SenderIgnored { sender }, body)
     }
 
     pub fn bad_status(status: Option<http::StatusCode>, body: impl Into<ErrorBody>) -> Self {

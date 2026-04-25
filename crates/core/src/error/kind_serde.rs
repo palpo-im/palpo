@@ -9,10 +9,10 @@ use serde::ser::{self, Serialize, SerializeMap, Serializer};
 use serde_json::from_value as from_json_value;
 
 use super::ErrorKind;
-use crate::PrivOwnedStr;
 use crate::client::http_header::{http_date_to_system_time, system_time_to_http_date};
 use crate::error::{HeaderDeserializationError, HeaderSerializationError};
 use crate::macros::StringEnum;
+use crate::{OwnedUserId, PrivOwnedStr};
 
 enum Field<'de> {
     ErrorCode,
@@ -23,6 +23,9 @@ enum Field<'de> {
     Status,
     Body,
     CurrentVersion,
+    Sender,
+    InfoUri,
+    CanUpgrade,
     Other(Cow<'de, str>),
 }
 
@@ -37,6 +40,9 @@ impl<'de> Field<'de> {
             "status" => Self::Status,
             "body" => Self::Body,
             "current_version" => Self::CurrentVersion,
+            "sender" => Self::Sender,
+            "info_uri" => Self::InfoUri,
+            "can_upgrade" => Self::CanUpgrade,
             _ => Self::Other(s),
         }
     }
@@ -103,6 +109,9 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
         let mut status = None;
         let mut body = None;
         let mut current_version = None;
+        let mut sender = None;
+        let mut info_uri = None;
+        let mut can_upgrade = None;
         let mut extra = BTreeMap::new();
 
         macro_rules! set_field {
@@ -128,6 +137,9 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             (@variant_containing status) => { ErrorCode::BadStatus };
             (@variant_containing body) => { ErrorCode::BadStatus };
             (@variant_containing current_version) => { ErrorCode::WrongRoomKeysVersion };
+            (@variant_containing sender) => { ErrorCode::SenderIgnored };
+            (@variant_containing info_uri) => { ErrorCode::UserLimitExceeded };
+            (@variant_containing can_upgrade) => { ErrorCode::UserLimitExceeded };
             (@inner $field:ident) => {
                 {
                     if $field.is_some() {
@@ -148,6 +160,9 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
                 Field::Status => set_field!(status),
                 Field::Body => set_field!(body),
                 Field::CurrentVersion => set_field!(current_version),
+                Field::Sender => set_field!(sender),
+                Field::InfoUri => set_field!(info_uri),
+                Field::CanUpgrade => set_field!(can_upgrade),
                 Field::Other(other) => match extra.entry(other.into_owned()) {
                     Entry::Vacant(v) => {
                         v.insert(map.next_value()?);
@@ -224,6 +239,13 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
                 .map_err(de::Error::custom)?,
             },
             ErrorCode::RoomInUse => ErrorKind::RoomInUse,
+            ErrorCode::SenderIgnored => ErrorKind::SenderIgnored {
+                sender: sender
+                    .map(from_json_value::<Option<OwnedUserId>>)
+                    .transpose()
+                    .map_err(de::Error::custom)?
+                    .flatten(),
+            },
             ErrorCode::ServerNotTrusted => ErrorKind::ServerNotTrusted,
             ErrorCode::ThreepidAuthFailed => ErrorKind::ThreepidAuthFailed,
             ErrorCode::ThreepidDenied => ErrorKind::ThreepidDenied,
@@ -252,6 +274,17 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::UrlNotSet => ErrorKind::UrlNotSet,
             ErrorCode::UserDeactivated => ErrorKind::UserDeactivated,
             ErrorCode::UserInUse => ErrorKind::UserInUse,
+            ErrorCode::UserLimitExceeded => ErrorKind::UserLimitExceeded {
+                info_uri: from_json_value(
+                    info_uri.ok_or_else(|| de::Error::missing_field("info_uri"))?,
+                )
+                .map_err(de::Error::custom)?,
+                can_upgrade: can_upgrade
+                    .map(from_json_value)
+                    .transpose()
+                    .map_err(de::Error::custom)?
+                    .unwrap_or_default(),
+            },
             ErrorCode::UserLocked => ErrorKind::UserLocked,
             ErrorCode::UserSuspended => ErrorKind::UserSuspended,
             ErrorCode::WeakPassword => ErrorKind::WeakPassword,
@@ -479,6 +512,14 @@ pub enum ErrorCode {
     /// [room alias]: https://spec.matrix.org/latest/client-server-api/#room-aliases
     RoomInUse,
 
+    /// `UK.TIMEDOUT.MSC4406.SENDER_IGNORED`
+    ///
+    /// The sender of the requested event is ignored by the requesting user. ([MSC])
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4406
+    #[palpo_enum(rename = "UK.TIMEDOUT.MSC4406.SENDER_IGNORED")]
+    SenderIgnored,
+
     /// `M_SERVER_NOT_TRUSTED`
     ///
     /// The client's request used a third-party server, e.g. identity server,
@@ -614,6 +655,14 @@ pub enum ErrorCode {
     /// The desired user ID is already taken.
     UserInUse,
 
+    /// `M_USER_LIMIT_EXCEEDED`
+    ///
+    /// The request cannot be completed because the user has exceeded (or the request would cause
+    /// them to exceed) a limit associated with their account. For example, a user may have reached
+    /// their allocated storage quota, reached a maximum number of allowed rooms, devices, or other
+    /// account-scoped resources, or exceeded usage limits for specific features.
+    UserLimitExceeded,
+
     /// `M_USER_LOCKED`
     ///
     /// The account has been [locked] and cannot be used at this time.
@@ -682,6 +731,21 @@ impl Serialize for ErrorKind {
             Self::ResourceLimitExceeded { admin_contact } => {
                 st.serialize_entry("admin_contact", admin_contact)?;
             }
+            Self::SenderIgnored { sender } => {
+                if let Some(sender) = sender {
+                    st.serialize_entry("sender", sender)?;
+                }
+            }
+            Self::UserLimitExceeded {
+                info_uri,
+                can_upgrade,
+            } => {
+                st.serialize_entry("info_uri", info_uri)?;
+
+                if *can_upgrade {
+                    st.serialize_entry("can_upgrade", can_upgrade)?;
+                }
+            }
             Self::_Custom { extra, .. } => {
                 for (k, v) in extra {
                     st.serialize_entry(k, v)?;
@@ -736,10 +800,10 @@ impl TryFrom<&RetryAfter> for http::HeaderValue {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{from_value as from_json_value, json};
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::ErrorKind;
-    use crate::room_version_id;
+    use crate::{owned_user_id, room_version_id};
 
     // #[test]
     // fn deserialize_forbidden() {
@@ -771,6 +835,65 @@ mod tests {
             ErrorKind::IncompatibleRoomVersion {
                 room_version: room_version_id!("7")
             }
+        );
+    }
+
+    #[test]
+    fn sender_ignored_serde() {
+        let kind = ErrorKind::SenderIgnored {
+            sender: Some(owned_user_id!("@ignored:example.org")),
+        };
+
+        assert_eq!(
+            to_json_value(&kind).unwrap(),
+            json!({
+                "errcode": "UK.TIMEDOUT.MSC4406.SENDER_IGNORED",
+                "sender": "@ignored:example.org"
+            })
+        );
+
+        assert_eq!(
+            from_json_value::<ErrorKind>(json!({
+                "errcode": "UK.TIMEDOUT.MSC4406.SENDER_IGNORED",
+                "sender": "@ignored:example.org"
+            }))
+            .unwrap(),
+            kind
+        );
+
+        assert_eq!(
+            to_json_value(ErrorKind::SenderIgnored { sender: None }).unwrap(),
+            json!({ "errcode": "UK.TIMEDOUT.MSC4406.SENDER_IGNORED" })
+        );
+    }
+
+    #[test]
+    fn user_limit_exceeded_serde() {
+        let deserialized: ErrorKind = from_json_value(json!({
+            "errcode": "M_USER_LIMIT_EXCEEDED",
+            "info_uri": "https://example.org/limits",
+            "can_upgrade": true,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            deserialized,
+            ErrorKind::UserLimitExceeded {
+                info_uri: "https://example.org/limits".to_owned(),
+                can_upgrade: true,
+            }
+        );
+
+        assert_eq!(
+            to_json_value(ErrorKind::UserLimitExceeded {
+                info_uri: "https://example.org/limits".to_owned(),
+                can_upgrade: false,
+            })
+            .unwrap(),
+            json!({
+                "errcode": "M_USER_LIMIT_EXCEEDED",
+                "info_uri": "https://example.org/limits",
+            })
         );
     }
 }

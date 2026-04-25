@@ -74,6 +74,18 @@ pub struct Contact {
     /// At least one of `matrix_id` or `email_address` is required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matrix_id: Option<OwnedUserId>,
+
+    /// An optional URI leading to a PGP key that may be used to encrypt messages sent to the
+    /// contact.
+    ///
+    /// This field uses the unstable prefix defined in [MSC4439].
+    ///
+    /// [MSC4439]: https://github.com/matrix-org/matrix-spec-proposals/pull/4439
+    #[serde(
+        rename = "dev.zirco.msc4439.pgp_key",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pgp_key: Option<String>,
 }
 
 impl Contact {
@@ -83,6 +95,7 @@ impl Contact {
             role,
             email_address: Some(email_address),
             matrix_id: None,
+            pgp_key: None,
         }
     }
 
@@ -92,6 +105,7 @@ impl Contact {
             role,
             email_address: None,
             matrix_id: Some(matrix_id),
+            pgp_key: None,
         }
     }
 }
@@ -120,4 +134,32 @@ pub enum ContactRole {
 
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, to_value as to_json_value};
+
+    use super::{Contact, ContactRole, SupportResBody};
+
+    #[test]
+    fn support_contact_serializes_pgp_key() {
+        let contact = Contact {
+            role: ContactRole::Security,
+            email_address: Some("security@example.com".to_owned()),
+            matrix_id: None,
+            pgp_key: Some("https://example.com/security.asc".to_owned()),
+        };
+
+        assert_eq!(
+            to_json_value(SupportResBody::with_contacts(vec![contact])).unwrap(),
+            json!({
+                "contacts": [{
+                    "role": "m.role.security",
+                    "email_address": "security@example.com",
+                    "dev.zirco.msc4439.pgp_key": "https://example.com/security.asc"
+                }]
+            })
+        );
+    }
 }
