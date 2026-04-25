@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::serde::Base64DecodeError;
 use crate::serde::canonical_json::{JsonType, RedactionError};
-use crate::{EventId, OwnedEventId, RoomVersionId};
+use crate::{EventId, IdParseError, OwnedEventId, RoomVersionId};
 
 /// `palpo-signature`'s error type, wraps a number of other error types.
 #[derive(Debug, Error)]
@@ -155,6 +155,32 @@ impl JsonError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum VerificationError {
+    /// The JSON to check is invalid.
+    #[error("invalid JSON: {0}")]
+    Json(#[from] JsonError),
+
+    /// Parsing a base64-encoded signature failed.
+    #[error("could not parse base64-encoded signature at `{path}`: {source}")]
+    InvalidBase64Signature {
+        /// The full path to the signature.
+        path: String,
+
+        /// The originating error.
+        #[source]
+        source: Base64DecodeError,
+    },
+
+    /// Parsing a Matrix identifier failed.
+    #[error("could not parse {identifier_type}: {source}")]
+    ParseIdentifier {
+        /// The type of identifier that was parsed.
+        identifier_type: &'static str,
+
+        /// The error when parsing the identifier.
+        #[source]
+        source: IdParseError,
+    },
+
     /// The signature uses an unsupported algorithm.
     #[error("signature uses an unsupported algorithm")]
     UnsupportedAlgorithm,
