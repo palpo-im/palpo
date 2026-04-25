@@ -439,34 +439,28 @@ pub async fn reverse_topological_power_sort<F, Fut>(
     event_details_fn: F,
 ) -> StateResult<Vec<OwnedEventId>>
 where
-    F: Fn(OwnedEventId) -> Fut,
+    F: Fn(&EventId) -> Fut,
     Fut: Future<Output = StateResult<(UserPowerLevel, UnixMillis)>>,
 {
     #[derive(PartialEq, Eq)]
-    struct TieBreaker<'a, Id> {
+    struct TieBreaker {
         power_level: UserPowerLevel,
         origin_server_ts: UnixMillis,
-        event_id: &'a Id,
+        event_id: OwnedEventId,
     }
 
-    impl<Id> Ord for TieBreaker<'_, Id>
-    where
-        Id: Ord,
-    {
+    impl Ord for TieBreaker {
         fn cmp(&self, other: &Self) -> Ordering {
             // NOTE: the power level comparison is "backwards" intentionally.
             other
                 .power_level
                 .cmp(&self.power_level)
                 .then(self.origin_server_ts.cmp(&other.origin_server_ts))
-                .then(self.event_id.cmp(other.event_id))
+                .then(self.event_id.cmp(&other.event_id))
         }
     }
 
-    impl<Id> PartialOrd for TieBreaker<'_, Id>
-    where
-        Id: Ord,
-    {
+    impl PartialOrd for TieBreaker {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             Some(self.cmp(other))
         }
@@ -476,61 +470,72 @@ where
     // an incoming edge to its auth events.
 
     // Map of event to the list of events in its auth events.
-    let mut outgoing_edges_map = graph.clone();
+    let mut outgoing_edges_map: EventIdMap<HashSet<&EventId>> = EventIdMap::new();
 
     // Map of event to the list of events that reference it in its auth events.
-    let mut incoming_edges_map: EventIdMap<HashSet<&OwnedEventId>> = EventIdMap::new();
+    let mut incoming_edges_map: HashMap<&EventId, HashSet<&EventId>> = HashMap::new();
 
-    // Vec of events that have an outdegree of zero (no outgoing edges), i.e. the oldest events.
-    let mut zero_outdegrees = Vec::new();
+    // Events that have an outdegree of zero (no outgoing edges), i.e. the oldest events.
+    let mut heap = BinaryHeap::new();
 
-    // Populate the list of events with an outdegree of zero, and the map of incoming edges.
+    // Populate the list of events with an outdegree of zero, and the maps of incoming and outgoing
+    // edges with the graph.
     for (event_id, outgoing_edges) in graph {
+        let event_id_ref: &EventId = event_id.borrow();
+
         if outgoing_edges.is_empty() {
-            let (power_level, origin_server_ts) = event_details_fn(event_id.to_owned()).await?;
+            let (power_level, origin_server_ts) = event_details_fn(event_id_ref).await?;
 
             // `Reverse` because `BinaryHeap` sorts largest -> smallest and we need
             // smallest -> largest.
-            zero_outdegrees.push(Reverse(TieBreaker {
+            heap.push(Reverse(TieBreaker {
                 power_level,
                 origin_server_ts,
-                event_id,
+                event_id: event_id.clone(),
             }));
-        }
+        } else {
+            for auth_event_id in outgoing_edges {
+                let auth_event_id: &EventId = auth_event_id.borrow();
 
-        incoming_edges_map.entry(event_id.to_owned()).or_default();
+                incoming_edges_map
+                    .entry(auth_event_id)
+                    .or_default()
+                    .insert(event_id_ref);
+            }
 
-        for auth_event_id in outgoing_edges {
-            incoming_edges_map
-                .entry(auth_event_id.to_owned())
-                .or_default()
-                .insert(event_id);
+            outgoing_edges_map.insert(
+                event_id.clone(),
+                outgoing_edges.iter().map(Borrow::borrow).collect(),
+            );
         }
     }
 
-    // Use a BinaryHeap to keep the events with an outdegree of zero sorted.
-    let mut heap = BinaryHeap::from(zero_outdegrees);
     let mut sorted = vec![];
 
     // Apply Kahn's algorithm.
     // https://en.wikipedia.org/wiki/Topological_sorting#Kahn's_algorithm
-    while let Some(Reverse(item)) = heap.pop() {
-        let event_id: &EventId = item.event_id.borrow();
+    while let Some(Reverse(TieBreaker { event_id, .. })) = heap.pop() {
+        let event_id_ref: &EventId = event_id.borrow();
 
-        for &parent_id in incoming_edges_map
-            .get(event_id)
-            .expect("event ID in heap should also be in incoming edges map")
-        {
-            let outgoing_edges = outgoing_edges_map
-                .get_mut(parent_id)
-                .expect("outgoing edges map should have a key for all event IDs");
+        for &parent_id in incoming_edges_map.get(event_id_ref).into_iter().flatten() {
+            let parent_has_zero_outdegrees = {
+                let outgoing_edges = outgoing_edges_map.get_mut(parent_id).expect(
+                    "outgoing edges map should have a key for all event IDs with outgoing edges",
+                );
 
-            outgoing_edges.remove(event_id);
+                outgoing_edges.remove(event_id_ref);
+                outgoing_edges.is_empty()
+            };
 
             // Push on the heap once all the outgoing edges have been removed.
-            if outgoing_edges.is_empty() {
-                let (power_level, origin_server_ts) =
-                    event_details_fn(parent_id.to_owned()).await?;
+            if parent_has_zero_outdegrees {
+                // Because the parent has no more outgoing edges, remove its entry to reuse the
+                // owned event ID as the heap item and final sorted output.
+                let (parent_id, _) = outgoing_edges_map
+                    .remove_entry(parent_id)
+                    .expect("outgoing edges map should have a key for all event IDs");
+
+                let (power_level, origin_server_ts) = event_details_fn(parent_id.borrow()).await?;
                 heap.push(Reverse(TieBreaker {
                     power_level,
                     origin_server_ts,
@@ -539,7 +544,7 @@ where
             }
         }
 
-        sorted.push(event_id.to_owned());
+        sorted.push(event_id);
     }
 
     Ok(sorted)
