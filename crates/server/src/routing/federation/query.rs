@@ -36,6 +36,14 @@ pub async fn get_edu_types() -> JsonResult<EduTypesResBody> {
 /// Gets information on a profile.
 #[endpoint]
 async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileResBody> {
+    if !config::get().federation.allow_inbound_profile_lookup {
+        return Err(MatrixError::forbidden(
+            "Profile lookup over federation is disabled on this homeserver",
+            None,
+        )
+        .into());
+    }
+
     if args.user_id.server_name().is_remote() {
         return Err(MatrixError::invalid_param("User does not belong to this server.").into());
     }
@@ -44,6 +52,7 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
 
     let profile = data::user::get_profile(&args.user_id, None)?
         .ok_or(MatrixError::not_found("Profile not found."))?;
+    let custom_fields = profile.fields.as_object().cloned().unwrap_or_default();
 
     match args.field.as_ref().map(|field| field.as_str()) {
         Some("displayname") => {
@@ -64,7 +73,11 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
                 response.set("xyz.amorgan.blurhash", blurhash.into());
             }
         }
-        Some(_) => {}
+        Some(field) => {
+            if let Some(value) = custom_fields.get(field) {
+                response.set(field, value.clone());
+            }
+        }
         None => {
             if let Some(display_name) = profile.display_name {
                 response.extend([ProfileFieldValue::DisplayName(display_name)]);
@@ -75,6 +88,7 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
             if let Some(blurhash) = profile.blurhash {
                 response.set("xyz.amorgan.blurhash", blurhash.into());
             }
+            response.extend(custom_fields);
         }
     }
 

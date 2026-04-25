@@ -942,6 +942,7 @@ diesel::table! {
         display_name -> Nullable<Text>,
         avatar_url -> Nullable<Text>,
         blurhash -> Nullable<Text>,
+        fields -> Jsonb,
     }
 }
 

@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
+
 use salvo::oapi::{ToParameters, ToSchema};
 use serde::{Deserialize, Serialize};
 
 use crate::events::GlobalAccountDataEventType;
 pub use crate::profile::ProfileFieldName as ProfileField;
+use crate::serde::JsonValue;
 use crate::{OwnedMxcUri, OwnedRoomId, OwnedUserId};
 
 #[derive(ToParameters, Deserialize, Debug)]
@@ -103,6 +106,11 @@ pub struct ProfileResBody {
         skip_serializing_if = "Option::is_none"
     )]
     pub blurhash: Option<String>,
+
+    /// Additional custom profile fields.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub fields: BTreeMap<String, JsonValue>,
 }
 impl ProfileResBody {
     /// Creates a new `Response` with the given avatar URL and display name.
@@ -111,6 +119,7 @@ impl ProfileResBody {
             avatar_url,
             display_name,
             blurhash: None,
+            fields: BTreeMap::new(),
         }
     }
 }
