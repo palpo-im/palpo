@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use super::{ErrorCode, RetryAfter};
-use crate::{PrivOwnedStr, RoomVersionId};
+use crate::{OwnedUserId, PrivOwnedStr, RoomVersionId};
 
 /// An enum for the error kind.
 ///
@@ -232,6 +232,16 @@ pub enum ErrorKind {
     /// [room alias]: https://spec.matrix.org/latest/client-server-api/#room-aliases
     RoomInUse,
 
+    /// `UK.TIMEDOUT.MSC4406.SENDER_IGNORED`
+    ///
+    /// The sender of the requested event is ignored by the requesting user. ([MSC])
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4406
+    SenderIgnored {
+        /// The user who sent the ignored event.
+        sender: Option<OwnedUserId>,
+    },
+
     /// `M_SERVER_NOT_TRUSTED`
     ///
     /// The client's request used a third-party server, e.g. identity server,
@@ -379,6 +389,25 @@ pub enum ErrorKind {
     /// The desired user ID is already taken.
     UserInUse,
 
+    /// `M_USER_LIMIT_EXCEEDED`
+    ///
+    /// The request cannot be completed because the user has exceeded (or the request would cause
+    /// them to exceed) a limit associated with their account. For example, a user may have reached
+    /// their allocated storage quota, reached a maximum number of allowed rooms, devices, or other
+    /// account-scoped resources, or exceeded usage limits for specific features.
+    UserLimitExceeded {
+        /// A URI that the client can present to the user to provide more context on the encountered
+        /// limit and, if applicable, guidance on how to increase the limit.
+        ///
+        /// The homeserver MAY return different values depending on the type of limit reached.
+        info_uri: String,
+
+        /// Whether the specific limit encountered can be increased.
+        ///
+        /// Defaults to `false`.
+        can_upgrade: bool,
+    },
+
     /// `M_USER_LOCKED`
     ///
     /// The account has been [locked] and cannot be used at this time.
@@ -455,6 +484,7 @@ impl ErrorKind {
             ErrorKind::NotYetUploaded => ErrorCode::NotYetUploaded,
             ErrorKind::ResourceLimitExceeded { .. } => ErrorCode::ResourceLimitExceeded,
             ErrorKind::RoomInUse => ErrorCode::RoomInUse,
+            ErrorKind::SenderIgnored { .. } => ErrorCode::SenderIgnored,
             ErrorKind::ServerNotTrusted => ErrorCode::ServerNotTrusted,
             ErrorKind::ThreepidAuthFailed => ErrorCode::ThreepidAuthFailed,
             ErrorKind::ThreepidDenied => ErrorCode::ThreepidDenied,
@@ -477,6 +507,7 @@ impl ErrorKind {
             ErrorKind::UrlNotSet => ErrorCode::UrlNotSet,
             ErrorKind::UserDeactivated => ErrorCode::UserDeactivated,
             ErrorKind::UserInUse => ErrorCode::UserInUse,
+            ErrorKind::UserLimitExceeded { .. } => ErrorCode::UserLimitExceeded,
             ErrorKind::UserLocked => ErrorCode::UserLocked,
             ErrorKind::UserSuspended => ErrorCode::UserSuspended,
             ErrorKind::WeakPassword => ErrorCode::WeakPassword,

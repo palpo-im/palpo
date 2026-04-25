@@ -91,3 +91,129 @@ impl ConnectionInfo {
         Self::default()
     }
 }
+
+/// Request body for the `lock_user` endpoint.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct LockUserReqBody {
+    /// Whether to lock the target account.
+    pub locked: bool,
+}
+
+impl LockUserReqBody {
+    /// Creates a new `LockUserReqBody` with the given locked status.
+    pub fn new(locked: bool) -> Self {
+        Self { locked }
+    }
+}
+
+/// Response body for the `lock_user` endpoint.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct LockUserResBody {
+    /// Whether the target account is locked.
+    pub locked: bool,
+}
+
+impl LockUserResBody {
+    /// Creates a new `LockUserResBody` with the given locked status.
+    pub fn new(locked: bool) -> Self {
+        Self { locked }
+    }
+}
+
+/// Response body for the `is_user_locked` endpoint.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct IsUserLockedResBody {
+    /// Whether the target account is locked.
+    pub locked: bool,
+}
+
+impl IsUserLockedResBody {
+    /// Creates a new `IsUserLockedResBody` with the given locked status.
+    pub fn new(locked: bool) -> Self {
+        Self { locked }
+    }
+}
+
+/// Request body for the `suspend_user` endpoint.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct SuspendUserReqBody {
+    /// Whether to suspend the target account.
+    pub suspended: bool,
+}
+
+impl SuspendUserReqBody {
+    /// Creates a new `SuspendUserReqBody` with the given suspended status.
+    pub fn new(suspended: bool) -> Self {
+        Self { suspended }
+    }
+}
+
+/// Response body for the `suspend_user` endpoint.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct SuspendUserResBody {
+    /// Whether the target account is suspended.
+    pub suspended: bool,
+}
+
+impl SuspendUserResBody {
+    /// Creates a new `SuspendUserResBody` with the given suspended status.
+    pub fn new(suspended: bool) -> Self {
+        Self { suspended }
+    }
+}
+
+/// Response body for the `is_user_suspended` endpoint.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct IsUserSuspendedResBody {
+    /// Whether the target account is suspended.
+    pub suspended: bool,
+}
+
+impl IsUserSuspendedResBody {
+    /// Creates a new `IsUserSuspendedResBody` with the given suspended status.
+    pub fn new(suspended: bool) -> Self {
+        Self { suspended }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, to_value as to_json_value};
+
+    use super::{
+        IsUserLockedResBody, IsUserSuspendedResBody, LockUserReqBody, LockUserResBody,
+        SuspendUserReqBody, SuspendUserResBody,
+    };
+
+    #[test]
+    fn lock_user_bodies_serialize() {
+        assert_eq!(
+            to_json_value(LockUserReqBody::new(true)).unwrap(),
+            json!({ "locked": true })
+        );
+        assert_eq!(
+            to_json_value(LockUserResBody::new(false)).unwrap(),
+            json!({ "locked": false })
+        );
+        assert_eq!(
+            to_json_value(IsUserLockedResBody::new(true)).unwrap(),
+            json!({ "locked": true })
+        );
+    }
+
+    #[test]
+    fn suspend_user_bodies_serialize() {
+        assert_eq!(
+            to_json_value(SuspendUserReqBody::new(true)).unwrap(),
+            json!({ "suspended": true })
+        );
+        assert_eq!(
+            to_json_value(SuspendUserResBody::new(false)).unwrap(),
+            json!({ "suspended": false })
+        );
+        assert_eq!(
+            to_json_value(IsUserSuspendedResBody::new(true)).unwrap(),
+            json!({ "suspended": true })
+        );
+    }
+}

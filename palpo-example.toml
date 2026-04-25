@@ -1267,6 +1267,14 @@
 #
 # support_mxid =
 
+# URI to a PGP key for the support contact.
+#
+# This is exposed as `dev.zirco.msc4439.pgp_key` in `/.well-known/matrix/support`.
+#
+# Example: "https://example.com/security.asc"
+#
+# support_pgp_key =
+
 # [oidc]
 
 # Enable OIDC/OAuth authentication
