@@ -11,7 +11,7 @@ pub mod unstable {
     #[cfg(feature = "client")]
     use crate::api::error::FromHttpResponseError;
     use crate::{
-        api::{auth_scheme::NoAuthentication, error::HeaderDeserializationError},
+        api::{auth_scheme::NoAccessToken, error::HeaderDeserializationError},
         metadata,
     };
     use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ pub mod unstable {
     metadata! {
         method: POST,
         rate_limited: true,
-        authentication: NoAuthentication,
+        authentication: NoAccessToken,
         history: {
             unstable("org.matrix.msc4108") => "/_matrix/client/unstable/org.matrix.msc4108/rendezvous",
         }
