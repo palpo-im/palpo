@@ -59,6 +59,13 @@ pub fn router() -> Router {
         .push(Router::with_path("versions").get(get_versions))
 }
 
+pub fn public_router() -> Router {
+    Router::with_path("federation")
+        .hoop(check_federation_enabled)
+        .oapi_tag("federation")
+        .push(Router::with_path("unstable/io.fsky.vel/edutypes").get(query::get_edu_types))
+}
+
 #[handler]
 async fn check_federation_enabled() -> AppResult<()> {
     let conf = config::get();
