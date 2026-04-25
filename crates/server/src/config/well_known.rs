@@ -83,4 +83,11 @@ pub struct WellKnownConfig {
     ///
     /// Example: "@admin:example.com"
     pub support_mxid: Option<OwnedUserId>,
+
+    /// URI to a PGP key for the support contact.
+    ///
+    /// This is exposed as `dev.zirco.msc4439.pgp_key` in `/.well-known/matrix/support`.
+    ///
+    /// Example: "https://example.com/security.asc"
+    pub support_pgp_key: Option<String>,
 }
