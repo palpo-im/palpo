@@ -36,6 +36,14 @@ pub async fn get_edu_types() -> JsonResult<EduTypesResBody> {
 /// Gets information on a profile.
 #[endpoint]
 async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileResBody> {
+    if !config::get().federation.allow_inbound_profile_lookup {
+        return Err(MatrixError::forbidden(
+            "Profile lookup over federation is disabled on this homeserver",
+            None,
+        )
+        .into());
+    }
+
     if args.user_id.server_name().is_remote() {
         return Err(MatrixError::invalid_param("User does not belong to this server.").into());
     }
