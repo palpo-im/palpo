@@ -1,8 +1,9 @@
 use diesel::prelude::*;
+use diesel::sql_types::{Jsonb, Text};
 
-use crate::core::OwnedMxcUri;
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonObject, JsonValue};
+use crate::core::{MatrixError, OwnedMxcUri};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
@@ -61,32 +62,37 @@ pub fn profile_field(user_id: &UserId, field: &str) -> DataResult<Option<JsonVal
     Ok(profile_fields(user_id)?.remove(field))
 }
 
-pub fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> DataResult<()> {
-    let mut fields = profile_fields(user_id)?;
-    fields.insert(field.to_owned(), value);
-
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::fields.eq(JsonValue::Object(fields)))
-    .execute(&mut connect()?)?;
+fn ensure_profile_updated(updated: usize) -> DataResult<()> {
+    if updated == 0 {
+        return Err(MatrixError::not_found("Profile not found.").into());
+    }
 
     Ok(())
 }
 
-pub fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<()> {
-    let mut fields = profile_fields(user_id)?;
-    fields.remove(field);
-
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id))
-            .filter(user_profiles::room_id.is_null()),
+pub fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> DataResult<()> {
+    let updated = diesel::sql_query(
+        "UPDATE user_profiles \
+         SET fields = fields || jsonb_build_object($2, $3::jsonb) \
+         WHERE user_id = $1 AND room_id IS NULL",
     )
-    .set(user_profiles::fields.eq(JsonValue::Object(fields)))
+    .bind::<Text, _>(user_id.as_str())
+    .bind::<Text, _>(field)
+    .bind::<Jsonb, _>(value)
     .execute(&mut connect()?)?;
 
-    Ok(())
+    ensure_profile_updated(updated)
+}
+
+pub fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<()> {
+    let updated = diesel::sql_query(
+        "UPDATE user_profiles \
+         SET fields = fields - $2 \
+         WHERE user_id = $1 AND room_id IS NULL",
+    )
+    .bind::<Text, _>(user_id.as_str())
+    .bind::<Text, _>(field)
+    .execute(&mut connect()?)?;
+
+    ensure_profile_updated(updated)
 }
