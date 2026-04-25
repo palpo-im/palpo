@@ -73,6 +73,7 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
             .find(&access_token.user_id)
             .first::<DbUser>(&mut connect()?)
             .map_err(|_| MatrixError::unknown_token("User not found", true))?;
+        ensure_user_account_usable(&user)?;
         let user_device = user_devices::table
             .filter(user_devices::device_id.eq(&access_token.device_id))
             .filter(user_devices::user_id.eq(&user.id))
@@ -128,6 +129,7 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
                     (user, user_device)
                 };
 
+                ensure_user_account_usable(&user)?;
                 depot.inject(AuthedInfo {
                     user,
                     user_device,
@@ -167,6 +169,7 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         crate::data::user::set_guest(&user_id, false)?;
         user.is_guest = false;
     }
+    ensure_user_account_usable(&user)?;
 
     // Extract device_id from introspection response, scope, or query param
     let device_id_str = result
@@ -202,6 +205,22 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         access_token_id: None,
         appservice: None,
     });
+    Ok(())
+}
+
+fn ensure_user_account_usable(user: &DbUser) -> AppResult<()> {
+    if user.is_deactivated() {
+        return Err(MatrixError::user_deactivated("the user has been deactivated").into());
+    }
+
+    if user.is_locked() {
+        return Err(MatrixError::user_locked("the user has been locked").into());
+    }
+
+    if user.is_suspended() {
+        return Err(MatrixError::user_suspended("the user has been suspended").into());
+    }
+
     Ok(())
 }
 
