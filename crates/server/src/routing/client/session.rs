@@ -8,6 +8,7 @@ use salvo::prelude::*;
 use crate::core::UnixMillis;
 use crate::core::client::session::*;
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo, UserIdentifier};
+use crate::core::error::ErrorKind;
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
 use crate::data::connect;
@@ -169,8 +170,18 @@ async fn login(
             let Ok(user) = data::user::get_user(&user_id) else {
                 return Err(MatrixError::forbidden("User not found.", None).into());
             };
-            if let Err(_e) = user::verify_password(&user, password) {
+            if let Err(e) = user::verify_password(&user, password) {
                 res.status_code(StatusCode::FORBIDDEN); //for complement testing: TestLogin/parallel/POST_/login_wrong_password_is_rejected
+                if let AppError::Matrix(matrix) = e {
+                    if matches!(
+                        matrix.kind,
+                        ErrorKind::UserDeactivated
+                            | ErrorKind::UserLocked
+                            | ErrorKind::UserSuspended
+                    ) {
+                        return Err(matrix.into());
+                    }
+                }
                 return Err(MatrixError::forbidden("Wrong username or password.", None).into());
             }
             // }
@@ -244,6 +255,10 @@ async fn login(
             return Err(MatrixError::unknown("Unsupported login type.").into());
         }
     };
+
+    let user = data::user::get_user(&user_id)
+        .map_err(|_| MatrixError::forbidden("User not found.", None))?;
+    user::ensure_account_usable(&user)?;
 
     // Generate new device id if the user didn't specify one
     let device_id = body
