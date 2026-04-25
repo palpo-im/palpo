@@ -104,6 +104,15 @@ pub struct DeleteThreepidResBody {
     pub id_server_unbind_result: ThirdPartyIdRemovalStatus,
 }
 
+impl DeleteThreepidResBody {
+    /// Creates a new `DeleteThreepidResBody` with the given unbind result.
+    pub fn new(id_server_unbind_result: ThirdPartyIdRemovalStatus) -> Self {
+        Self {
+            id_server_unbind_result,
+        }
+    }
+}
+
 // /// `POST /_matrix/client/*/account/3pid/email/requestToken`
 // ///
 // /// Request a 3PID management token with a 3rd party email.
@@ -210,4 +219,23 @@ pub struct TokenViaMsisdnResBody {
         deserialize_with = "crate::serde::empty_string_as_none"
     )]
     pub submit_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, to_value as to_json_value};
+
+    use super::DeleteThreepidResBody;
+    use crate::client::account::ThirdPartyIdRemovalStatus;
+
+    #[test]
+    fn delete_threepid_response_new() {
+        assert_eq!(
+            to_json_value(DeleteThreepidResBody::new(
+                ThirdPartyIdRemovalStatus::Success
+            ))
+            .unwrap(),
+            json!({ "id_server_unbind_result": "success" })
+        );
+    }
 }
