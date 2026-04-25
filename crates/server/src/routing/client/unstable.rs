@@ -1,6 +1,7 @@
 use salvo::prelude::*;
 
 use crate::core::MatrixError;
+use crate::core::client::discovery::rendezvous::DiscoverRendezvousResBody;
 use crate::{JsonResult, config, hoops, json_ok};
 
 pub(super) fn router() -> Router {
@@ -12,6 +13,7 @@ pub(super) fn router() -> Router {
         .push(
             Router::with_path("org.matrix.msc2965/auth_metadata").get(auth_metadata),
         )
+        .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
         // Authed routes
         .push(
             Router::new()
@@ -42,6 +44,14 @@ pub(super) fn router() -> Router {
                         .put(super::admin::suspend_user),
                 ),
         )
+}
+
+/// `GET /_matrix/client/unstable/io.element.msc4388/rendezvous`
+///
+/// Discover whether rendezvous sessions can be created on this server.
+#[endpoint]
+async fn discover_rendezvous() -> JsonResult<DiscoverRendezvousResBody> {
+    json_ok(DiscoverRendezvousResBody::new(false))
 }
 
 /// `GET /_matrix/client/unstable/org.matrix.msc2965/auth_issuer`
@@ -76,11 +86,12 @@ async fn auth_issuer(res: &mut Response) -> JsonResult<serde_json::Value> {
 }
 
 /// `GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata`
+/// `GET /_matrix/client/v1/auth_metadata`
 ///
 /// Returns the OAuth 2.0 authorization server metadata (MSC2965/MSC3861).
 /// Fetches the metadata from the issuer's `/.well-known/openid-configuration` endpoint.
 #[endpoint]
-async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::Value> {
+pub(super) async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::Value> {
     res.headers_mut().insert(
         "Cache-Control",
         "public, max-age=600, s-maxage=3600, stale-while-revalidate=600"
