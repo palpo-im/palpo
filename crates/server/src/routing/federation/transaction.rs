@@ -170,9 +170,9 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
 }
 
 async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
-    // if !crate::config::get().allow_incoming_read_receipts() {
-    // 	return;
-    // }
+    if !crate::config::get().read_receipt.allow_incoming {
+        return;
+    }
 
     for (room_id, room_updates) in receipt {
         if handler::acl_check(origin, &room_id).is_err() {
@@ -221,9 +221,9 @@ async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
 }
 
 async fn process_edu_typing(origin: &ServerName, typing: TypingContent) {
-    // if !crate::config::get().allow_incoming_typing {
-    //     return;
-    // }
+    if !crate::config::get().typing.allow_incoming {
+        return;
+    }
 
     if typing.user_id.server_name() != origin {
         warn!(
