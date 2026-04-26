@@ -105,7 +105,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 subtle = "2.6"
 serde_html_form = "0.4.0"
 serde_json = { version = "1.0.149" }
-serde-saphyr = { version = "0.0.23" }
+serde-saphyr = { version = "0.0.25" }
 serde_regex = { version = "1.1.0" }
 smallvec = { version = "1.15.1" }
 sha2 = "0.11.0"
