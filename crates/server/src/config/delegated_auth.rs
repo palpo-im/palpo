@@ -44,6 +44,22 @@ pub struct DelegatedAuthConfig {
     /// Included in the well-known client response under m.authentication.
     pub account_management_url: Option<String>,
 
+    /// Expected `aud` (audience) value in the introspection response.
+    /// REQUIRED when `enable = true`. Per RFC 7662 §2.2, the relying
+    /// party MUST validate that the token was issued for this resource
+    /// server. Without this, a token issued by the same authorization
+    /// server for a *different* application (a separate Matrix
+    /// homeserver, a web app, anything else registered as a client at
+    /// the same MAS) will introspect as `active: true` and Palpo would
+    /// otherwise accept it.
+    ///
+    /// Set this to the resource indicator (RFC 8707) Palpo registers
+    /// at the upstream authorization server — typically the homeserver's
+    /// canonical URL or the registered `client_id`. The introspection
+    /// `aud` claim must include this exact string (string or array form
+    /// both supported).
+    pub expected_aud: Option<String>,
+
     /// Cache TTL for introspection results in seconds.
     /// Set to 0 to disable caching.
     ///

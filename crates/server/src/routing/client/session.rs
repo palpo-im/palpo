@@ -396,8 +396,12 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
         return empty_ok();
     };
 
-    // When using delegated auth, also revoke the access token at the OIDC
-    // provider so that the browser session is properly invalidated.
+    // When using delegated auth, revoke the access token at the OIDC provider
+    // BEFORE removing the local device. If upstream revocation fails, we
+    // surface that to the caller and leave the local device intact so the
+    // client can retry — otherwise the client believes it logged out while
+    // the upstream OAuth2 session is still live and the token still valid
+    // for any other resource server that trusts MAS-issued tokens.
     if let Some(da) = config::get().enabled_delegated_auth()
         && let Some(token) = req
             .headers()
@@ -406,7 +410,11 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
             .and_then(|v| v.strip_prefix("Bearer "))
         && let Err(e) = revoke_delegated_token(da, token).await
     {
-        tracing::warn!("Failed to revoke delegated auth token: {e}");
+        tracing::error!("Failed to revoke delegated auth token: {e}");
+        return Err(MatrixError::unknown(format!(
+            "Upstream token revocation failed; please retry: {e}"
+        ))
+        .into());
     }
 
     data::user::device::remove_device(authed.user_id(), authed.device_id())?;
@@ -457,7 +465,8 @@ async fn revoke_delegated_token(
     let response = request.form(&form_params).send().await?;
 
     if !response.status().is_success() {
-        tracing::warn!("Token revocation returned status: {}", response.status());
+        let status = response.status();
+        return Err(format!("token revocation returned status {status}").into());
     }
 
     Ok(())
@@ -488,8 +497,13 @@ async fn logout_all(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> Empt
     };
 
     // Best-effort revocation of the current device's OAuth2 token at the
-    // upstream provider. Mirrors `logout`'s behavior; see the doc comment
-    // for why other devices' tokens aren't reachable from here.
+    // upstream provider. Unlike `logout`, we proceed with the full local
+    // cleanup even on failure — the user explicitly asked to log out
+    // everywhere, so we honour that locally regardless of upstream state.
+    // Failure is still raised to the caller after local cleanup so the
+    // client can show a "MAS session may still be live, visit account UI"
+    // message rather than a misleading green checkmark.
+    let mut revocation_error: Option<String> = None;
     if let Some(da) = config::get().enabled_delegated_auth()
         && let Some(token) = req
             .headers()
@@ -498,10 +512,20 @@ async fn logout_all(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> Empt
             .and_then(|v| v.strip_prefix("Bearer "))
         && let Err(e) = revoke_delegated_token(da, token).await
     {
-        tracing::warn!("Failed to revoke delegated auth token in logout_all: {e}");
+        tracing::error!("Failed to revoke delegated auth token in logout_all: {e}");
+        revocation_error = Some(e.to_string());
     }
 
     data::user::remove_all_devices(authed.user_id())?;
+
+    if let Some(e) = revocation_error {
+        return Err(MatrixError::unknown(format!(
+            "Local sessions cleared but upstream token revocation failed; \
+             visit your account-management UI to verify the upstream session \
+             is also signed out: {e}"
+        ))
+        .into());
+    }
 
     empty_ok()
 }
@@ -552,8 +576,17 @@ fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
         .ok_or_else(|| MatrixError::bad_json("Missing redirectUrl parameter"))
 }
 
-/// Reject any `redirectUrl` not starting with a configured whitelist prefix.
+/// Reject any `redirectUrl` not matching a configured whitelist entry.
 /// Defense against login-token theft via attacker-crafted redirectUrl.
+///
+/// Match semantics: the input and each whitelist entry are parsed as URLs;
+/// **origins must match exactly** (scheme + host + port) and the input path
+/// must equal or be below the entry's path. Both sides must be `https://`.
+/// Whitespace-only and unparsable whitelist entries are skipped (logged).
+/// Raw byte-prefix matching is intentionally not used — it accepts hostile
+/// inputs like `https://app.example.io.evil.com/` against an entry of
+/// `https://app.example.io` (no trailing slash) and is wildcarded by an
+/// empty-string entry.
 ///
 /// Applies only to the `[oidc]` path. The `[delegated_auth]` path does not
 /// emit tokens to the supplied URL (the IdP issuer handles the return), so
@@ -562,29 +595,162 @@ fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
 ///
 /// Made `pub(crate)` so the oidc.rs handler can also defense-in-depth check
 /// the cookie contents it reads on callback.
-pub(crate) fn validate_sso_redirect_url(url: &str) -> Result<(), MatrixError> {
+pub(crate) fn validate_sso_redirect_url(input: &str) -> Result<(), MatrixError> {
     let conf = config::get();
     let Some(oidc_cfg) = conf.enabled_oidc() else {
         // Non-OIDC path (delegated_auth or unconfigured): skip.
         return Ok(());
     };
-    if oidc_cfg.sso_client_whitelist.is_empty() {
+    match_sso_redirect_url(input, &oidc_cfg.sso_client_whitelist)
+}
+
+/// Pure helper for `validate_sso_redirect_url`. Extracted so the whitelist
+/// matching logic can be unit-tested without touching the global config.
+fn match_sso_redirect_url(input: &str, whitelist: &[String]) -> Result<(), MatrixError> {
+    if whitelist.is_empty() {
         return Err(MatrixError::forbidden(
             "SSO redirect rejected: no oidc.sso_client_whitelist configured",
             None,
         ));
     }
-    if !oidc_cfg
-        .sso_client_whitelist
-        .iter()
-        .any(|prefix| url.starts_with(prefix))
-    {
+
+    let target = url::Url::parse(input)
+        .map_err(|_| MatrixError::forbidden("redirectUrl is not a valid URL", None))?;
+    if target.scheme() != "https" {
         return Err(MatrixError::forbidden(
-            "SSO redirect rejected: redirectUrl not in oidc.sso_client_whitelist",
+            "redirectUrl must use https scheme",
             None,
         ));
     }
-    Ok(())
+    if target.host_str().is_none() {
+        return Err(MatrixError::forbidden(
+            "redirectUrl is missing a host",
+            None,
+        ));
+    }
+
+    for entry in whitelist {
+        if entry.trim().is_empty() {
+            tracing::warn!("Skipping empty sso_client_whitelist entry");
+            continue;
+        }
+        let allowed = match url::Url::parse(entry) {
+            Ok(u) => u,
+            Err(_) => {
+                tracing::warn!("Skipping malformed sso_client_whitelist entry: {entry:?}");
+                continue;
+            }
+        };
+        if allowed.scheme() != "https" {
+            tracing::warn!("Skipping non-https sso_client_whitelist entry: {entry:?}");
+            continue;
+        }
+        if target.origin() != allowed.origin() {
+            continue;
+        }
+        let allowed_path = allowed.path();
+        let target_path = target.path();
+        // Equal, or target_path begins with allowed_path followed by a '/' boundary.
+        // This prevents `/admin` from allowing `/administrator`.
+        if target_path == allowed_path
+            || target_path.starts_with(allowed_path)
+                && (allowed_path.ends_with('/')
+                    || target_path[allowed_path.len()..].starts_with('/'))
+        {
+            return Ok(());
+        }
+    }
+    Err(MatrixError::forbidden(
+        "SSO redirect rejected: redirectUrl not in oidc.sso_client_whitelist",
+        None,
+    ))
+}
+
+#[cfg(test)]
+mod sso_whitelist_tests {
+    use super::match_sso_redirect_url;
+
+    fn wl(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn allows_exact_origin_match() {
+        let w = wl(&["https://app.element.io/"]);
+        assert!(match_sso_redirect_url("https://app.element.io/", &w).is_ok());
+        assert!(match_sso_redirect_url("https://app.element.io/path", &w).is_ok());
+        assert!(match_sso_redirect_url("https://app.element.io/?x=1", &w).is_ok());
+    }
+
+    #[test]
+    fn rejects_sibling_host_with_missing_trailing_slash() {
+        // The pre-fix prefix-match accepted this for entry "https://app.element.io".
+        let w = wl(&["https://app.element.io"]);
+        assert!(match_sso_redirect_url("https://app.element.io.evil.com/", &w).is_err());
+    }
+
+    #[test]
+    fn rejects_userinfo_smuggling() {
+        let w = wl(&["https://app.element.io/"]);
+        assert!(match_sso_redirect_url("https://app.element.io@evil.com/", &w).is_err());
+    }
+
+    #[test]
+    fn rejects_different_port() {
+        let w = wl(&["https://app.element.io/"]);
+        assert!(match_sso_redirect_url("https://app.element.io:8443/", &w).is_err());
+    }
+
+    #[test]
+    fn rejects_http_scheme_input() {
+        let w = wl(&["https://app.element.io/"]);
+        assert!(match_sso_redirect_url("http://app.element.io/", &w).is_err());
+    }
+
+    #[test]
+    fn rejects_javascript_scheme_input() {
+        let w = wl(&["https://app.element.io/"]);
+        assert!(match_sso_redirect_url("javascript:alert(1)", &w).is_err());
+    }
+
+    #[test]
+    fn empty_string_entry_is_not_a_wildcard() {
+        // The pre-fix prefix-match made [""] match every URL.
+        let w = wl(&["", "https://app.element.io/"]);
+        assert!(match_sso_redirect_url("https://app.element.io/", &w).is_ok());
+        assert!(match_sso_redirect_url("https://evil.com/", &w).is_err());
+    }
+
+    #[test]
+    fn skips_non_https_entry() {
+        let w = wl(&["http://app.element.io/", "https://app.element.io/"]);
+        assert!(match_sso_redirect_url("https://app.element.io/", &w).is_ok());
+        // The http entry must not be promoted to allow http inputs.
+        assert!(match_sso_redirect_url("http://app.element.io/", &w).is_err());
+    }
+
+    #[test]
+    fn empty_whitelist_rejects_all() {
+        let w = wl(&[]);
+        assert!(match_sso_redirect_url("https://app.element.io/", &w).is_err());
+    }
+
+    #[test]
+    fn path_prefix_respects_segment_boundary() {
+        let w = wl(&["https://app.element.io/admin"]);
+        assert!(match_sso_redirect_url("https://app.element.io/admin", &w).is_ok());
+        assert!(match_sso_redirect_url("https://app.element.io/admin/x", &w).is_ok());
+        // Pre-fix would have allowed this; new check rejects.
+        assert!(match_sso_redirect_url("https://app.element.io/administrator", &w).is_err());
+    }
+
+    #[test]
+    fn host_match_is_case_insensitive_via_url_normalization() {
+        // url::Url lowercases hosts on parse, so case differences in input
+        // and entry are handled identically.
+        let w = wl(&["https://APP.Element.IO/"]);
+        assert!(match_sso_redirect_url("https://app.element.io/", &w).is_ok());
+    }
 }
 
 /// Build the authorization URL for the delegated auth issuer.

@@ -15,6 +15,10 @@ pub struct IntrospectionResult {
     pub username: Option<String>,
     pub sub: Option<String>,
     pub device_id: Option<String>,
+    /// RFC 7519 `aud` — string or array of strings. Validated by the
+    /// caller against `delegated_auth.expected_aud` to prevent
+    /// cross-resource-server token reuse.
+    pub aud: Option<serde_json::Value>,
 }
 
 struct CachedEntry {

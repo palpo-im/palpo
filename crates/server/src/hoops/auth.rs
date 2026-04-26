@@ -149,12 +149,42 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         return Err(MatrixError::unknown_token("Token is not active", true).into());
     }
 
+    let conf = config::get();
+
+    // RFC 7662 §2.2: validate the `aud` claim to prevent cross-resource-server
+    // token reuse. Without this, a token issued by the same MAS for a different
+    // application (another homeserver, a web app, etc.) would be accepted.
+    let da = conf
+        .enabled_delegated_auth()
+        .ok_or_else(|| MatrixError::unknown_token("Delegated auth not enabled", true))?;
+    let expected_aud = da.expected_aud.as_deref().ok_or_else(|| {
+        tracing::error!(
+            "delegated_auth.expected_aud not configured — refusing to validate tokens \
+             without audience binding (set delegated_auth.expected_aud to the resource \
+             indicator Palpo is registered as at the upstream)"
+        );
+        MatrixError::unknown_token(
+            "Delegated auth misconfigured: expected_aud not set",
+            true,
+        )
+    })?;
+    let aud_value = result.aud.as_ref().ok_or_else(|| {
+        MatrixError::unknown_token("Missing aud in introspection response", true)
+    })?;
+    let aud_matches = match aud_value {
+        serde_json::Value::String(s) => s == expected_aud,
+        serde_json::Value::Array(arr) => arr.iter().any(|v| v.as_str() == Some(expected_aud)),
+        _ => false,
+    };
+    if !aud_matches {
+        return Err(MatrixError::unknown_token("Token audience mismatch", true).into());
+    }
+
     let username = result
         .username
         .as_deref()
         .ok_or_else(|| MatrixError::unknown_token("No username in introspection response", true))?;
 
-    let conf = config::get();
     let user_id = UserId::parse_with_server_name(username, &conf.server_name)
         .map_err(|_| MatrixError::unknown_token("Invalid username in token", true))?;
 
