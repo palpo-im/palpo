@@ -44,7 +44,7 @@ config = "0.15.22"
 cookie = "0.18.1"
 core_affinity = "0.8.3"
 cyborgtime = "2.1.1"
-data-encoding = "2.10.0"
+data-encoding = "2.11.0"
 date_header = "1.0.5"
 diesel = { version = "2.3.7" }
 # diesel-async = { version = "0.6.1" }
