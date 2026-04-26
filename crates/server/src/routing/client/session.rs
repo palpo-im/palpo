@@ -414,6 +414,12 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
 }
 
 /// Call the OIDC provider's revocation endpoint to end the OAuth2 session.
+///
+/// Authenticates per RFC 6749 §2.3.1: prefers HTTP Basic with
+/// `client_id:client_secret` when both are configured (RFC 7009 §2.1's
+/// expected method for confidential clients). Falls back to bearer with
+/// `admin.mas_secret` for back-compat with deployments that register Palpo
+/// as a public client and rely on the homeserver-admin shared bearer.
 async fn revoke_delegated_token(
     da: &config::DelegatedAuthConfig,
     access_token: &str,
@@ -422,21 +428,33 @@ async fn revoke_delegated_token(
         .issuer
         .as_deref()
         .ok_or("delegated auth issuer not configured")?;
-    let mas_secret = config::get()
-        .admin
-        .mas_secret
-        .as_deref()
-        .ok_or("admin.mas_secret not configured")?;
 
     let revocation_url = format!("{}/oauth2/revoke", issuer.trim_end_matches('/'));
 
     let client = crate::sending::default_client();
-    let response = client
-        .post(&revocation_url)
-        .bearer_auth(mas_secret)
-        .form(&[("token", access_token), ("token_type_hint", "access_token")])
-        .send()
-        .await?;
+    let mut request = client.post(&revocation_url);
+    let mut form_params: Vec<(&str, &str)> = vec![
+        ("token", access_token),
+        ("token_type_hint", "access_token"),
+    ];
+    match (da.client_id.as_deref(), da.client_secret.as_deref()) {
+        (Some(id), Some(secret)) => {
+            request = request.basic_auth(id, Some(secret));
+        }
+        (Some(id), None) => {
+            form_params.push(("client_id", id));
+        }
+        _ => {
+            let mas_secret = config::get()
+                .admin
+                .mas_secret
+                .as_deref()
+                .ok_or("admin.mas_secret not configured")?;
+            request = request.bearer_auth(mas_secret);
+        }
+    }
+
+    let response = request.form(&form_params).send().await?;
 
     if !response.status().is_success() {
         tracing::warn!("Token revocation returned status: {}", response.status());
@@ -452,14 +470,36 @@ async fn revoke_delegated_token(
 /// - Deletes all device metadata (device id, device display name, last seen ip, last seen ts)
 /// - Forgets all to-device events
 /// - Triggers device list updates
+/// - With delegated auth: revokes the current OAuth2 token at the auth
+///   provider. Tokens belonging to OTHER devices cannot be revoked from
+///   here — under MSC3861, Palpo doesn't store the upstream tokens; only
+///   the device that initiated this request carries one. Users who want a
+///   true "sign out everywhere" should use MAS's account UI session list,
+///   which has the full upstream session inventory. Tracked as a TODO
+///   upstream: needs MAS admin API for kill-sessions-by-user.
 ///
 /// Note: This is equivalent to calling [`GET /_matrix/client/r0/logout`](fn.logout_route.html)
-/// from each device of this user.
+/// from each device of this user — except for the upstream-revocation gap
+/// noted above.
 #[endpoint]
-async fn logout_all(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
+async fn logout_all(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyResult {
     let Ok(authed) = depot.authed_info() else {
         return empty_ok();
     };
+
+    // Best-effort revocation of the current device's OAuth2 token at the
+    // upstream provider. Mirrors `logout`'s behavior; see the doc comment
+    // for why other devices' tokens aren't reachable from here.
+    if let Some(da) = config::get().enabled_delegated_auth()
+        && let Some(token) = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        && let Err(e) = revoke_delegated_token(da, token).await
+    {
+        tracing::warn!("Failed to revoke delegated auth token in logout_all: {e}");
+    }
 
     data::user::remove_all_devices(authed.user_id())?;
 

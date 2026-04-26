@@ -56,17 +56,39 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
     let introspection_url = conf
         .introspection_endpoint()
         .ok_or_else(|| MatrixError::unknown("Delegated auth not configured"))?;
-    let mas_secret = conf
-        .admin
-        .mas_secret
-        .as_ref()
-        .ok_or_else(|| MatrixError::unknown("admin.mas_secret not configured"))?;
+    let da = conf
+        .enabled_delegated_auth()
+        .ok_or_else(|| MatrixError::unknown("Delegated auth not enabled"))?;
 
     let client = sending::default_client();
-    let response = client
-        .post(&introspection_url)
-        .bearer_auth(mas_secret)
-        .form(&[("token", token)])
+    // Three-tier client authentication for the introspection endpoint:
+    //  1. (client_id + client_secret) — RFC 7662 §2.1 / RFC 6749 §2.3.1
+    //     `client_secret_basic`. The right thing for a confidential client.
+    //  2. (client_id only) — RFC 7009 §2.1 public client: send client_id
+    //     in the form body, no Authorization header.
+    //  3. (neither) — legacy fallback to `Authorization: Bearer
+    //     <admin.mas_secret>`. Only safe when the upstream accepts the
+    //     homeserver-admin shared bearer at this endpoint.
+    let mut request = client.post(&introspection_url);
+    let mut form_params: Vec<(&str, &str)> = vec![("token", token)];
+    match (da.client_id.as_deref(), da.client_secret.as_deref()) {
+        (Some(id), Some(secret)) => {
+            request = request.basic_auth(id, Some(secret));
+        }
+        (Some(id), None) => {
+            form_params.push(("client_id", id));
+        }
+        _ => {
+            let mas_secret = conf
+                .admin
+                .mas_secret
+                .as_ref()
+                .ok_or_else(|| MatrixError::unknown("admin.mas_secret not configured"))?;
+            request = request.bearer_auth(mas_secret);
+        }
+    }
+    let response = request
+        .form(&form_params)
         .send()
         .await
         .map_err(|e| {

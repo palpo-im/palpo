@@ -29,6 +29,17 @@ pub struct DelegatedAuthConfig {
     /// authorization server for SSO login.
     pub client_id: Option<String>,
 
+    /// The OAuth2 client_secret Palpo uses when authenticating to the
+    /// authorization server's introspection (RFC 7662) and revocation
+    /// (RFC 7009) endpoints. When set, Palpo uses HTTP Basic auth with
+    /// `client_id:client_secret`. When unset, Palpo falls back to its
+    /// legacy `Authorization: Bearer <admin.mas_secret>` behavior — only
+    /// safe when the upstream registers Palpo as a public client and
+    /// also accepts the homeserver-admin shared bearer.
+    ///
+    /// Default: None (legacy bearer fallback).
+    pub client_secret: Option<String>,
+
     /// Optional URL for account management UI.
     /// Included in the well-known client response under m.authentication.
     pub account_management_url: Option<String>,
