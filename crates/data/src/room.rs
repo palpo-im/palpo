@@ -385,12 +385,11 @@ pub fn is_disabled(room_id: &RoomId) -> DataResult<bool> {
 }
 
 pub fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<()> {
-    let next_sn = crate::next_sn()?;
     diesel::insert_into(room_joined_servers::table)
         .values((
             room_joined_servers::room_id.eq(room_id),
             room_joined_servers::server_id.eq(server_name),
-            room_joined_servers::occur_sn.eq(next_sn),
+            room_joined_servers::occur_sn.eq(crate::next_sn_sql()),
         ))
         .on_conflict_do_nothing()
         .execute(&mut connect()?)?;

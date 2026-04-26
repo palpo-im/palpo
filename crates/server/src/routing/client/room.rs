@@ -236,7 +236,7 @@ fn set_read_markers(
     }
 
     if let Some(event_id) = &body.private_read_receipt {
-        let (event_sn, _event_guard) = crate::event::ensure_event_sn(&room_id, event_id)?;
+        let event_sn = crate::event::get_event_sn(event_id)?;
         data::room::receipt::set_private_read(&room_id, sender_id, event_id, event_sn)?;
         push_action::remove_actions_until(sender_id, &room_id, event_sn, None)?;
         push_action::refresh_notify_summary(sender_id, &room_id)?;

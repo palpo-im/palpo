@@ -66,23 +66,34 @@ pub fn set_data(
         }
     }
 
-    let new_data = NewDbUserData {
-        user_id: user_id.to_owned(),
-        room_id: room_id.clone(),
-        data_type: event_type.to_owned(),
-        json_data,
-        occur_sn: Some(crate::next_sn()?),
-        created_at: UnixMillis::now(),
-    };
+    let user_id = user_id.to_owned();
+    let data_type = event_type.to_owned();
+    let created_at = UnixMillis::now();
+    let insert_data = (
+        user_datas::user_id.eq(user_id.clone()),
+        user_datas::room_id.eq(room_id.clone()),
+        user_datas::data_type.eq(data_type.clone()),
+        user_datas::json_data.eq(json_data.clone()),
+        user_datas::occur_sn.eq(crate::next_sn_sql()),
+        user_datas::created_at.eq(created_at),
+    );
+    let update_data = (
+        user_datas::user_id.eq(user_id),
+        user_datas::room_id.eq(room_id),
+        user_datas::data_type.eq(data_type),
+        user_datas::json_data.eq(json_data),
+        user_datas::occur_sn.eq(crate::next_sn_sql()),
+        user_datas::created_at.eq(created_at),
+    );
     diesel::insert_into(user_datas::table)
-        .values(&new_data)
+        .values(insert_data)
         .on_conflict((
             user_datas::user_id,
             user_datas::room_id,
             user_datas::data_type,
         ))
         .do_update()
-        .set(&new_data)
+        .set(update_data)
         .get_result::<DbUserData>(&mut connect()?)
         .map_err(Into::into)
 }

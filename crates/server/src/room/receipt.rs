@@ -9,9 +9,8 @@ use crate::core::events::receipt::{
 };
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
-use crate::data::room::DbReceipt;
 use crate::data::schema::*;
-use crate::data::{connect, next_sn};
+use crate::data::{self, connect};
 use crate::{AppResult, sending};
 
 /// Replaces the previous read receipt.
@@ -34,19 +33,18 @@ pub fn update_read(
                     _ => None,
                 };
                 let receipt_at = receipt.ts.unwrap_or_else(UnixMillis::now);
-                let receipt = DbReceipt {
-                    sn: next_sn()?,
-                    ty: receipt_ty.to_string(),
-                    room_id: room_id.to_owned(),
-                    user_id: user_id.to_owned(),
-                    event_id: event_id.clone(),
-                    event_sn,
-                    thread_id,
-                    json_data: serde_json::to_value(receipt)?,
-                    receipt_at,
-                };
                 if let Err(e) = diesel::insert_into(event_receipts::table)
-                    .values(&receipt)
+                    .values((
+                        event_receipts::sn.eq(data::next_sn_sql()),
+                        event_receipts::ty.eq(receipt_ty.to_string()),
+                        event_receipts::room_id.eq(room_id.to_owned()),
+                        event_receipts::user_id.eq(user_id.to_owned()),
+                        event_receipts::event_id.eq(event_id.clone()),
+                        event_receipts::event_sn.eq(event_sn),
+                        event_receipts::thread_id.eq(thread_id),
+                        event_receipts::json_data.eq(serde_json::to_value(receipt)?),
+                        event_receipts::receipt_at.eq(receipt_at),
+                    ))
                     .execute(&mut conn)
                 {
                     error!("failed to insert receipt: {}", e);

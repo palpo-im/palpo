@@ -14,7 +14,7 @@ use crate::core::federation::key::{
 use crate::core::federation::transaction::{Edu, SigningKeyUpdateContent};
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
-use crate::core::{DeviceKeyAlgorithm, UnixMillis, client, federation};
+use crate::core::{DeviceKeyAlgorithm, Seqnum, UnixMillis, client, federation};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::{
@@ -23,6 +23,10 @@ use crate::data::user::{
 use crate::exts::*;
 use crate::user::clean_signatures;
 use crate::{AppError, AppResult, BAD_QUERY_RATE_LIMITER, MatrixError, config, data, sending};
+
+fn allocate_sn(conn: &mut data::PgPooledConnection) -> Result<Seqnum, diesel::result::Error> {
+    diesel::select(data::next_sn_sql()).get_result::<Seqnum>(conn)
+}
 
 pub async fn query_keys<F: Fn(&UserId) -> bool>(
     sender_id: Option<&UserId>,
@@ -498,46 +502,50 @@ pub fn mark_signing_key_update(user_id: &UserId) -> AppResult<()> {
     let changed_at = UnixMillis::now();
 
     let joined_rooms = data::user::joined_rooms(user_id)?;
-    for room_id in &joined_rooms {
-        // // Don't send key updates to unencrypted rooms
-        // if state::get_state(&room_id, &StateEventType::RoomEncryption, "")?.is_none() {
-        //     continue;
-        // }
+    let mut conn = connect()?;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        for room_id in &joined_rooms {
+            // // Don't send key updates to unencrypted rooms
+            // if state::get_state(&room_id, &StateEventType::RoomEncryption, "")?.is_none() {
+            //     continue;
+            // }
+
+            let change = NewDbKeyChange {
+                user_id: user_id.to_owned(),
+                room_id: Some(room_id.to_owned()),
+                changed_at,
+                occur_sn: allocate_sn(conn)?,
+            };
+
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(user_id))
+                    .filter(e2e_key_changes::room_id.eq(room_id)),
+            )
+            .execute(conn)?;
+            diesel::insert_into(e2e_key_changes::table)
+                .values(&change)
+                .execute(conn)?;
+        }
 
         let change = NewDbKeyChange {
             user_id: user_id.to_owned(),
-            room_id: Some(room_id.to_owned()),
+            room_id: None,
             changed_at,
-            occur_sn: data::next_sn()?,
+            occur_sn: allocate_sn(conn)?,
         };
 
         diesel::delete(
             e2e_key_changes::table
                 .filter(e2e_key_changes::user_id.eq(user_id))
-                .filter(e2e_key_changes::room_id.eq(room_id)),
+                .filter(e2e_key_changes::room_id.is_null()),
         )
-        .execute(&mut connect()?)?;
+        .execute(conn)?;
         diesel::insert_into(e2e_key_changes::table)
             .values(&change)
-            .execute(&mut connect()?)?;
-    }
-
-    let change = NewDbKeyChange {
-        user_id: user_id.to_owned(),
-        room_id: None,
-        changed_at,
-        occur_sn: data::next_sn()?,
-    };
-
-    diesel::delete(
-        e2e_key_changes::table
-            .filter(e2e_key_changes::user_id.eq(user_id))
-            .filter(e2e_key_changes::room_id.is_null()),
-    )
-    .execute(&mut connect()?)?;
-    diesel::insert_into(e2e_key_changes::table)
-        .values(&change)
-        .execute(&mut connect()?)?;
+            .execute(conn)?;
+        Ok(())
+    })?;
 
     if user_id.is_local() {
         let remote_servers = room_joined_servers::table
@@ -558,17 +566,37 @@ pub fn mark_signing_key_update(user_id: &UserId) -> AppResult<()> {
 pub fn mark_device_key_update(user_id: &UserId, _device_id: &DeviceId) -> AppResult<()> {
     let changed_at = UnixMillis::now();
     let joined_rooms = data::user::joined_rooms(user_id)?;
-    let occur_sn = data::next_sn()?;
-    for room_id in &joined_rooms {
-        // comment for testing
-        // // Don't send key updates to unencrypted rooms
-        // if state::get_state(&room_id, &StateEventType::RoomEncryption, "")?.is_none() {
-        //     continue;
-        // }
+    let mut conn = connect()?;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        let occur_sn = allocate_sn(conn)?;
+        for room_id in &joined_rooms {
+            // comment for testing
+            // // Don't send key updates to unencrypted rooms
+            // if state::get_state(&room_id, &StateEventType::RoomEncryption, "")?.is_none() {
+            //     continue;
+            // }
+
+            let change = NewDbKeyChange {
+                user_id: user_id.to_owned(),
+                room_id: Some(room_id.to_owned()),
+                changed_at,
+                occur_sn,
+            };
+
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(user_id))
+                    .filter(e2e_key_changes::room_id.eq(room_id)),
+            )
+            .execute(conn)?;
+            diesel::insert_into(e2e_key_changes::table)
+                .values(&change)
+                .execute(conn)?;
+        }
 
         let change = NewDbKeyChange {
             user_id: user_id.to_owned(),
-            room_id: Some(room_id.to_owned()),
+            room_id: None,
             changed_at,
             occur_sn,
         };
@@ -576,30 +604,14 @@ pub fn mark_device_key_update(user_id: &UserId, _device_id: &DeviceId) -> AppRes
         diesel::delete(
             e2e_key_changes::table
                 .filter(e2e_key_changes::user_id.eq(user_id))
-                .filter(e2e_key_changes::room_id.eq(room_id)),
+                .filter(e2e_key_changes::room_id.is_null()),
         )
-        .execute(&mut connect()?)?;
+        .execute(conn)?;
         diesel::insert_into(e2e_key_changes::table)
             .values(&change)
-            .execute(&mut connect()?)?;
-    }
-
-    let change = NewDbKeyChange {
-        user_id: user_id.to_owned(),
-        room_id: None,
-        changed_at,
-        occur_sn,
-    };
-
-    diesel::delete(
-        e2e_key_changes::table
-            .filter(e2e_key_changes::user_id.eq(user_id))
-            .filter(e2e_key_changes::room_id.is_null()),
-    )
-    .execute(&mut connect()?)?;
-    diesel::insert_into(e2e_key_changes::table)
-        .values(&change)
-        .execute(&mut connect()?)?;
+            .execute(conn)?;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -610,25 +622,29 @@ pub fn mark_device_key_update_with_joined_rooms(
     joined_rooms: &[OwnedRoomId],
 ) -> AppResult<()> {
     let changed_at = UnixMillis::now();
-    let occur_sn = data::next_sn()?;
-    for room_id in joined_rooms {
-        let change = NewDbKeyChange {
-            user_id: user_id.to_owned(),
-            room_id: Some(room_id.to_owned()),
-            changed_at,
-            occur_sn,
-        };
+    let mut conn = connect()?;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        let occur_sn = allocate_sn(conn)?;
+        for room_id in joined_rooms {
+            let change = NewDbKeyChange {
+                user_id: user_id.to_owned(),
+                room_id: Some(room_id.to_owned()),
+                changed_at,
+                occur_sn,
+            };
 
-        diesel::delete(
-            e2e_key_changes::table
-                .filter(e2e_key_changes::user_id.eq(user_id))
-                .filter(e2e_key_changes::room_id.eq(room_id)),
-        )
-        .execute(&mut connect()?)?;
-        diesel::insert_into(e2e_key_changes::table)
-            .values(&change)
-            .execute(&mut connect()?)?;
-    }
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(user_id))
+                    .filter(e2e_key_changes::room_id.eq(room_id)),
+            )
+            .execute(conn)?;
+            diesel::insert_into(e2e_key_changes::table)
+                .values(&change)
+                .execute(conn)?;
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 

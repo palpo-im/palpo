@@ -25,19 +25,18 @@ pub async fn add_typing(
     timeout: u64,
     broadcast: bool,
 ) -> AppResult<()> {
-    let event_sn = data::next_sn()?;
     diesel::insert_into(room_typings::table)
         .values((
             room_typings::room_id.eq(room_id),
             room_typings::user_id.eq(user_id),
             room_typings::timeout_at.eq(timeout as i64),
-            room_typings::occur_sn.eq(event_sn),
+            room_typings::occur_sn.eq(data::next_sn_sql()),
         ))
         .on_conflict((room_typings::room_id, room_typings::user_id))
         .do_update()
         .set((
             room_typings::timeout_at.eq(timeout as i64),
-            room_typings::occur_sn.eq(event_sn),
+            room_typings::occur_sn.eq(data::next_sn_sql()),
         ))
         .execute(&mut connect()?)?;
 
@@ -54,7 +53,6 @@ pub async fn add_typing(
 /// Instead of deleting the row, we set timeout_at=0 and bump occur_sn
 /// so that sync picks up the "typing stopped" change before cleanup.
 pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) -> AppResult<()> {
-    let event_sn = data::next_sn()?;
     diesel::update(
         room_typings::table
             .filter(room_typings::room_id.eq(room_id))
@@ -62,7 +60,7 @@ pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) 
     )
     .set((
         room_typings::timeout_at.eq(0i64),
-        room_typings::occur_sn.eq(event_sn),
+        room_typings::occur_sn.eq(data::next_sn_sql()),
     ))
     .execute(&mut connect()?)?;
 

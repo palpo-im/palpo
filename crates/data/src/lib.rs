@@ -98,12 +98,31 @@ fn maybe_append_url_param(url: &mut Url, key: &str, value: &str) {
 }
 
 pub fn next_sn() -> DataResult<Seqnum> {
-    diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+    diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT next_stream_sn()")
         .get_result::<Seqnum>(&mut connect()?)
         .map_err(Into::into)
 }
+
+pub fn next_sn_sql() -> diesel::expression::SqlLiteral<diesel::sql_types::BigInt> {
+    diesel::dsl::sql::<diesel::sql_types::BigInt>("next_stream_sn()")
+}
+
 pub fn curr_sn() -> DataResult<Seqnum> {
-    diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value from occur_sn_seq")
-        .get_result::<Seqnum>(&mut connect()?)
-        .map_err(Into::into)
+    diesel::dsl::sql::<diesel::sql_types::BigInt>(
+        r#"
+        SELECT LEAST(
+            current_sn,
+            COALESCE((
+                SELECT MIN(event_points.event_sn) - 1
+                FROM event_points
+                LEFT JOIN events ON events.id = event_points.event_id
+                WHERE events.id IS NULL
+            ), current_sn)
+        )
+        FROM stream_positions
+        WHERE id = 1
+        "#,
+    )
+    .get_result::<Seqnum>(&mut connect()?)
+    .map_err(Into::into)
 }

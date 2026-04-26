@@ -9,7 +9,7 @@ use crate::core::serde::{JsonValue, RawJson};
 use crate::core::{Seqnum, UnixMillis};
 use crate::room::DbReceipt;
 use crate::schema::*;
-use crate::{DataResult, connect, next_sn};
+use crate::{DataResult, connect};
 
 /// Returns an iterator over the most recent read_receipts in a room that happened after the event
 /// with id `since`.
@@ -76,17 +76,17 @@ pub fn set_private_read(
     event_sn: Seqnum,
 ) -> DataResult<()> {
     diesel::insert_into(event_receipts::table)
-        .values(&DbReceipt {
-            sn: next_sn()?,
-            ty: ReceiptType::ReadPrivate.to_string(),
-            room_id: room_id.to_owned(),
-            user_id: user_id.to_owned(),
-            event_id: event_id.to_owned(),
-            event_sn,
-            thread_id: None,
-            json_data: JsonValue::default(),
-            receipt_at: UnixMillis::now(),
-        })
+        .values((
+            event_receipts::sn.eq(crate::next_sn_sql()),
+            event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()),
+            event_receipts::room_id.eq(room_id.to_owned()),
+            event_receipts::user_id.eq(user_id.to_owned()),
+            event_receipts::event_id.eq(event_id.to_owned()),
+            event_receipts::event_sn.eq(event_sn),
+            event_receipts::thread_id.eq(None::<OwnedEventId>),
+            event_receipts::json_data.eq(JsonValue::default()),
+            event_receipts::receipt_at.eq(UnixMillis::now()),
+        ))
         .execute(&mut connect()?)?;
     Ok(())
 }
