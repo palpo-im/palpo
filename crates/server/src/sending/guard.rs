@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::pending;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -68,6 +69,8 @@ async fn process() -> AppResult<()> {
     }
 
     loop {
+        let retry_delay = next_retry_delay(&current_transaction_status);
+
         tokio::select! {
             Some(response) = futures.next() => {
                 match response {
@@ -121,8 +124,79 @@ async fn process() -> AppResult<()> {
                     futures.push(super::send_events(outgoing_kind, events));
                 }
             }
+            _ = async {
+                if let Some(delay) = retry_delay {
+                    tokio::time::sleep(delay).await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {
+                let retry_ready = current_transaction_status
+                    .iter()
+                    .filter_map(|(outgoing_kind, status)| match status {
+                        TransactionStatus::Failed(tries, time)
+                            if time.elapsed() >= retry_backoff(*tries) =>
+                        {
+                            Some((outgoing_kind.clone(), *tries))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                for (outgoing_kind, tries) in retry_ready {
+                    let active_events = match super::active_requests_for(&outgoing_kind) {
+                        Ok(events) => events,
+                        Err(e) => {
+                            error!(
+                                ?outgoing_kind,
+                                error = ?e,
+                                "failed to load active requests for retry"
+                            );
+                            current_transaction_status.insert(
+                                outgoing_kind,
+                                TransactionStatus::Failed(tries, Instant::now()),
+                            );
+                            continue;
+                        }
+                    };
+
+                    if active_events.is_empty() {
+                        current_transaction_status.remove(&outgoing_kind);
+                        continue;
+                    }
+
+                    current_transaction_status
+                        .insert(outgoing_kind.clone(), TransactionStatus::Retrying(tries));
+                    futures.push(super::send_events(
+                        outgoing_kind,
+                        active_events.into_iter().map(|(_, event)| event).collect(),
+                    ));
+                }
+            }
         }
     }
+}
+
+fn retry_backoff(tries: u32) -> Duration {
+    let mut duration = Duration::from_secs(30) * tries * tries;
+    if duration > Duration::from_secs(60 * 60 * 24) {
+        duration = Duration::from_secs(60 * 60 * 24);
+    }
+    duration
+}
+
+fn next_retry_delay(
+    current_transaction_status: &HashMap<OutgoingKind, TransactionStatus>,
+) -> Option<Duration> {
+    current_transaction_status
+        .values()
+        .filter_map(|status| match status {
+            TransactionStatus::Failed(tries, time) => {
+                Some(retry_backoff(*tries).saturating_sub(time.elapsed()))
+            }
+            _ => None,
+        })
+        .min()
 }
 
 #[tracing::instrument(skip_all)]
@@ -143,10 +217,7 @@ fn select_events(
             }
             TransactionStatus::Failed(tries, time) => {
                 // Fail if a request has failed recently (exponential backoff)
-                let mut min_elapsed_duration = Duration::from_secs(30) * (*tries) * (*tries);
-                if min_elapsed_duration > Duration::from_secs(60 * 60 * 24) {
-                    min_elapsed_duration = Duration::from_secs(60 * 60 * 24);
-                }
+                let min_elapsed_duration = retry_backoff(*tries);
 
                 if time.elapsed() < min_elapsed_duration {
                     allow = false;
@@ -459,4 +530,38 @@ pub fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
     }
 
     Ok((events, max_edu_sn))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_backoff_grows_quadratically_and_caps_at_one_day() {
+        assert_eq!(retry_backoff(1), Duration::from_secs(30));
+        assert_eq!(retry_backoff(2), Duration::from_secs(120));
+        assert_eq!(retry_backoff(100), Duration::from_secs(60 * 60 * 24));
+    }
+
+    #[test]
+    fn next_retry_delay_returns_zero_for_due_failed_transaction() {
+        let mut statuses = HashMap::new();
+        statuses.insert(
+            OutgoingKind::Normal(OwnedServerName::try_from("remote.example").unwrap()),
+            TransactionStatus::Failed(1, Instant::now() - Duration::from_secs(31)),
+        );
+
+        assert_eq!(next_retry_delay(&statuses), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn next_retry_delay_ignores_non_failed_transactions() {
+        let mut statuses = HashMap::new();
+        statuses.insert(
+            OutgoingKind::Normal(OwnedServerName::try_from("remote.example").unwrap()),
+            TransactionStatus::Running,
+        );
+
+        assert_eq!(next_retry_delay(&statuses), None);
+    }
 }
