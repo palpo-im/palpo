@@ -151,4 +151,125 @@ mod tests {
             &BTreeMap::from([("all_rooms".to_owned(), 2)])
         ));
     }
+
+    /// Walks through the full handler-level decision sequence for the bug from
+    /// the field report:
+    ///
+    ///   1. Step 1 – fresh sync: response carries `count + ops`.
+    ///   2. The handler caches `previous_list_counts = { all_rooms: count }`.
+    ///   3. Step 2 – idle re-poll (`since_sn > curr_sn`): server takes the fast-path. After the
+    ///      fix, the response body is shaped like `{ pos, lists: { all_rooms: { count } } }` (no
+    ///      ops).
+    ///   4. The handler must: a. treat the body as long-poll-empty; b. NOT regard it as a
+    ///      list-count change (otherwise long-polling would be skipped); c. write the same `count`
+    ///      back into the cache so subsequent requests stay consistent.
+    ///   5. The serialized JSON must include `count` so a client like matrix-rust-sdk can drive
+    ///      `SlidingSyncList::is_fully_loaded`.
+    ///
+    /// Before the fix, step 3 returned `{ pos }` with no `lists` field, the
+    /// SDK saw `count = None`, and it tight-polled the server.
+    #[test]
+    fn idle_repoll_preserves_count_and_long_poll_semantics() {
+        // Step 1 – fresh sync response.
+        let mut step1 = SyncEventsResBody::new("200".to_owned());
+        step1.lists.insert(
+            "all_rooms".to_owned(),
+            SyncList {
+                count: 2,
+                ops: Vec::new(),
+            },
+        );
+
+        // Cache update that the handler performs after step 1.
+        let cached_counts: BTreeMap<String, usize> = step1
+            .lists
+            .iter()
+            .map(|(id, l)| (id.clone(), l.count))
+            .collect();
+        assert_eq!(cached_counts.get("all_rooms"), Some(&2));
+
+        // Step 2 – fast-path response after the fix (count-only list, no ops,
+        // no rooms, no extension data).
+        let mut step2 = SyncEventsResBody::new("200".to_owned());
+        step2.lists.insert(
+            "all_rooms".to_owned(),
+            SyncList {
+                count: 2,
+                ops: Vec::new(),
+            },
+        );
+
+        // (a) handler treats this as "no incremental updates"
+        assert!(step2.is_empty_for_long_poll());
+        // (b) but recognises it carries no list-count change either, so the
+        //     long-poll guard fires (the request should hang on the watcher
+        //     instead of returning immediately).
+        assert!(!has_list_count_changes(&step2, &cached_counts));
+
+        // (c) cache write after step 2 is idempotent.
+        let cached_counts_after: BTreeMap<String, usize> = step2
+            .lists
+            .iter()
+            .map(|(id, l)| (id.clone(), l.count))
+            .collect();
+        assert_eq!(cached_counts_after, cached_counts);
+
+        // (d) wire shape: `lists.all_rooms.count` is present, ops omitted.
+        let json = serde_json::to_value(&step2).unwrap();
+        assert_eq!(json["lists"]["all_rooms"]["count"], 2);
+        assert!(json["lists"]["all_rooms"].get("ops").is_none());
+        // The pre-fix bug repro: the response would have been `{ "pos": "200" }`
+        // with no `lists` key at all.
+        assert!(
+            json.get("lists")
+                .is_some_and(|v| !v.as_object().unwrap().is_empty())
+        );
+    }
+
+    /// When the user joins (or leaves) a room between two idle re-polls, the
+    /// server-side `count` must reflect the new size and the handler must NOT
+    /// long-poll the request — the count change itself is a meaningful update.
+    /// Mirrors the bug doc's `incremental_sync_count_reflects_real_total_after_join`.
+    #[test]
+    fn count_change_after_room_join_breaks_out_of_long_poll() {
+        let cached_counts = BTreeMap::from([("all_rooms".to_owned(), 2)]);
+
+        // Idle re-poll AFTER the user joined a third room: fast-path emits
+        // count=3 with no ops (ops would arrive on the next non-fast-path
+        // sync, when the client re-issues with a fresh pos).
+        let mut response = SyncEventsResBody::new("201".to_owned());
+        response.lists.insert(
+            "all_rooms".to_owned(),
+            SyncList {
+                count: 3,
+                ops: Vec::new(),
+            },
+        );
+
+        // Long-poll guard: the body is technically empty for long-poll
+        // purposes (no rooms, no extensions), BUT the count change must
+        // promote the response to "meaningful" so we return immediately.
+        assert!(response.is_empty_for_long_poll());
+        assert!(has_list_count_changes(&response, &cached_counts));
+    }
+
+    /// A list that the client just introduced (no entry in the previous
+    /// counts cache) is also a count change and must be returned to the
+    /// client immediately, not hidden behind the long-poll guard.
+    #[test]
+    fn newly_introduced_list_is_treated_as_count_change() {
+        // The cache has counts for an unrelated list only.
+        let cached_counts = BTreeMap::from([("dms".to_owned(), 0)]);
+
+        let mut response = SyncEventsResBody::new("200".to_owned());
+        response.lists.insert(
+            "all_rooms".to_owned(),
+            SyncList {
+                count: 2,
+                ops: Vec::new(),
+            },
+        );
+
+        assert!(has_list_count_changes(&response, &cached_counts));
+    }
 }

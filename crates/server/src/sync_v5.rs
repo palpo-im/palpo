@@ -25,6 +25,61 @@ use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
 
+/// Apply a sliding-sync list's filter pipeline to the candidate room sets.
+///
+/// Returns the rooms (in input order) that survive the `is_invite`,
+/// `room_types`, `not_room_types`, `is_dm`, and `is_encrypted` filters from
+/// the request. Used by both `process_lists` (which sorts and slices the
+/// result for ops) and the `since_sn > curr_sn` fast path (which only needs
+/// the count).
+fn compute_active_rooms<'a>(
+    list: &sync_events::v5::ReqList,
+    all_invited_rooms: &[&'a RoomId],
+    all_joined_rooms: &[&'a RoomId],
+    all_rooms: &[&'a RoomId],
+    dm_rooms: &HashSet<OwnedRoomId>,
+) -> Vec<&'a RoomId> {
+    let mut active_rooms: Vec<&'a RoomId> = match list.filters.as_ref().and_then(|f| f.is_invite) {
+        Some(true) => all_invited_rooms.to_vec(),
+        Some(false) => all_joined_rooms.to_vec(),
+        None => all_rooms.to_vec(),
+    };
+
+    // Apply not_room_types filter
+    if let Some(filter) = list.filters.as_ref().map(|f| &f.not_room_types)
+        && !filter.is_empty()
+    {
+        active_rooms = filter_rooms(&active_rooms, filter, true);
+    }
+
+    // Apply room_types filter
+    if let Some(filter) = list.filters.as_ref().and_then(|f| {
+        if f.room_types.is_empty() {
+            None
+        } else {
+            Some(&f.room_types)
+        }
+    }) {
+        active_rooms = filter_rooms(&active_rooms, filter, false);
+    }
+
+    // Apply is_dm filter
+    match list.filters.as_ref().and_then(|f| f.is_dm) {
+        Some(true) => active_rooms.retain(|r| dm_rooms.contains(*r)),
+        Some(false) => active_rooms.retain(|r| !dm_rooms.contains(*r)),
+        None => {}
+    }
+
+    // Apply is_encrypted filter
+    match list.filters.as_ref().and_then(|f| f.is_encrypted) {
+        Some(true) => active_rooms.retain(|r| room::is_encrypted(r)),
+        Some(false) => active_rooms.retain(|r| !room::is_encrypted(r)),
+        None => {}
+    }
+
+    active_rooms
+}
+
 /// Sort rooms by last activity (most recent first) using event sequence numbers.
 fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
     if rooms.is_empty() {
@@ -259,9 +314,6 @@ pub async fn sync_events(
     let curr_sn = data::curr_sn()?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
-    if since_sn > curr_sn {
-        return Ok(SyncEventsResBody::new(next_batch.to_string()));
-    }
 
     let all_joined_rooms = data::user::joined_rooms(sender_id)?;
 
@@ -278,8 +330,8 @@ pub async fn sync_events(
         .chain(all_knocked_rooms.iter().map(AsRef::as_ref))
         .collect();
 
-    let all_joined_rooms = all_joined_rooms.iter().map(AsRef::as_ref).collect();
-    let all_invited_rooms = all_invited_rooms.iter().map(AsRef::as_ref).collect();
+    let all_joined_rooms: Vec<&RoomId> = all_joined_rooms.iter().map(AsRef::as_ref).collect();
+    let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(AsRef::as_ref).collect();
 
     // Load DM room set from m.direct account data
     let dm_rooms: HashSet<OwnedRoomId> = data::user::get_data::<DirectEventContent>(
@@ -289,6 +341,35 @@ pub async fn sync_events(
     )
     .map(|direct| direct.0.values().flatten().cloned().collect())
     .unwrap_or_default();
+
+    // Fast path: client's pos is ahead of curr_sn (the typical idle case where
+    // a client immediately re-polls with the pos we just handed it). There are
+    // no new events to deliver, but we still emit each requested list's count
+    // so sliding-sync clients (matrix-rust-sdk in particular) can compute
+    // `fully_loaded` and stop tight-polling. Omitting `count` here makes the
+    // SDK skip `update_request_generator_state`, which keeps `fully_loaded`
+    // permanently false in `Running` mode and produces a `pos=N&timeout=0`
+    // request flood.
+    if since_sn > curr_sn {
+        let mut res = SyncEventsResBody::new(next_batch.to_string());
+        for (list_id, list) in &req_body.lists {
+            let active_rooms = compute_active_rooms(
+                list,
+                &all_invited_rooms,
+                &all_joined_rooms,
+                &all_rooms,
+                &dm_rooms,
+            );
+            res.lists.insert(
+                list_id.clone(),
+                sync_events::v5::SyncList {
+                    count: active_rooms.len(),
+                    ops: Vec::new(),
+                },
+            );
+        }
+        return Ok(res);
+    }
 
     let mut todo_rooms: TodoRooms = BTreeMap::new();
 
@@ -355,43 +436,13 @@ async fn process_lists(
     res_body: &mut SyncEventsResBody,
 ) -> AppResult<()> {
     for (list_id, list) in &req_body.lists {
-        let mut active_rooms: Vec<&RoomId> = match list.filters.as_ref().and_then(|f| f.is_invite) {
-            Some(true) => all_invited_rooms.to_vec(),
-            Some(false) => all_joined_rooms.to_vec(),
-            None => all_rooms.to_vec(),
-        };
-
-        // Apply not_room_types filter
-        if let Some(filter) = list.filters.as_ref().map(|f| &f.not_room_types)
-            && !filter.is_empty()
-        {
-            active_rooms = filter_rooms(&active_rooms, filter, true);
-        }
-
-        // Apply room_types filter
-        if let Some(filter) = list.filters.as_ref().and_then(|f| {
-            if f.room_types.is_empty() {
-                None
-            } else {
-                Some(&f.room_types)
-            }
-        }) {
-            active_rooms = filter_rooms(&active_rooms, filter, false);
-        }
-
-        // Apply is_dm filter
-        match list.filters.as_ref().and_then(|f| f.is_dm) {
-            Some(true) => active_rooms.retain(|r| dm_rooms.contains(*r)),
-            Some(false) => active_rooms.retain(|r| !dm_rooms.contains(*r)),
-            None => {}
-        }
-
-        // Apply is_encrypted filter
-        match list.filters.as_ref().and_then(|f| f.is_encrypted) {
-            Some(true) => active_rooms.retain(|r| room::is_encrypted(r)),
-            Some(false) => active_rooms.retain(|r| !room::is_encrypted(r)),
-            None => {}
-        }
+        let active_rooms = compute_active_rooms(
+            list,
+            all_invited_rooms,
+            all_joined_rooms,
+            all_rooms,
+            dm_rooms,
+        );
 
         // Sort rooms by last activity (most recent first)
         let mut sorted_rooms = active_rooms;
@@ -1356,4 +1407,137 @@ pub fn is_required_state_send(
     let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
     let cached = entry.lock().unwrap();
     cached.required_state.contains(&event_sn)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::compute_active_rooms;
+    use crate::core::client::sync_events::v5::{ReqList, ReqListFilters};
+    use crate::core::identifiers::{OwnedRoomId, RoomId};
+
+    fn rid(s: &str) -> OwnedRoomId {
+        RoomId::parse(s).unwrap().to_owned()
+    }
+
+    fn list_with(filters: ReqListFilters) -> ReqList {
+        ReqList {
+            filters: Some(filters),
+            ..Default::default()
+        }
+    }
+
+    /// Default filter pipeline (no filters set) returns all rooms — this is
+    /// what the typical `lists.all_rooms` config hits, and it's the count
+    /// path exercised by the bug repro.
+    #[test]
+    fn no_filters_returns_all_rooms() {
+        let r1 = rid("!one:example.org");
+        let r2 = rid("!two:example.org");
+        let r3 = rid("!three:example.org");
+        let joined = vec![r1.as_ref(), r2.as_ref()];
+        let invited = vec![r3.as_ref()];
+        let all: Vec<&RoomId> = joined
+            .iter()
+            .copied()
+            .chain(invited.iter().copied())
+            .collect();
+        let dms = HashSet::new();
+
+        let active = compute_active_rooms(&ReqList::default(), &invited, &joined, &all, &dms);
+
+        assert_eq!(active.len(), 3);
+    }
+
+    /// `is_invite=true` selects only the invited subset — this is how an EX
+    /// client renders the invite shelf, and `count` here drives whether the
+    /// client knows there's an invite badge to show.
+    #[test]
+    fn is_invite_true_returns_invited_only() {
+        let joined1 = rid("!j1:example.org");
+        let joined2 = rid("!j2:example.org");
+        let invited1 = rid("!i1:example.org");
+        let joined = vec![joined1.as_ref(), joined2.as_ref()];
+        let invited = vec![invited1.as_ref()];
+        let all: Vec<&RoomId> = joined
+            .iter()
+            .copied()
+            .chain(invited.iter().copied())
+            .collect();
+        let dms = HashSet::new();
+
+        let list = list_with(ReqListFilters {
+            is_invite: Some(true),
+            ..Default::default()
+        });
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+
+        assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn is_invite_false_returns_joined_only() {
+        let joined1 = rid("!j1:example.org");
+        let joined2 = rid("!j2:example.org");
+        let invited1 = rid("!i1:example.org");
+        let joined = vec![joined1.as_ref(), joined2.as_ref()];
+        let invited = vec![invited1.as_ref()];
+        let all: Vec<&RoomId> = joined
+            .iter()
+            .copied()
+            .chain(invited.iter().copied())
+            .collect();
+        let dms = HashSet::new();
+
+        let list = list_with(ReqListFilters {
+            is_invite: Some(false),
+            ..Default::default()
+        });
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+
+        assert_eq!(active.len(), 2);
+    }
+
+    /// `is_dm=true` retains only rooms that are tagged in `m.direct`.
+    /// This filter doesn't touch the database, so we can exercise it in-process.
+    #[test]
+    fn is_dm_true_keeps_dm_rooms_only() {
+        let r_dm = rid("!dm:example.org");
+        let r_other = rid("!other:example.org");
+        let joined: Vec<&RoomId> = vec![r_dm.as_ref(), r_other.as_ref()];
+        let invited: Vec<&RoomId> = Vec::new();
+        let all: Vec<&RoomId> = joined.clone();
+        let mut dms = HashSet::new();
+        dms.insert(r_dm.clone());
+
+        let list = list_with(ReqListFilters {
+            is_dm: Some(true),
+            ..Default::default()
+        });
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0], &*r_dm);
+    }
+
+    #[test]
+    fn is_dm_false_excludes_dm_rooms() {
+        let r_dm = rid("!dm:example.org");
+        let r_other = rid("!other:example.org");
+        let joined: Vec<&RoomId> = vec![r_dm.as_ref(), r_other.as_ref()];
+        let invited: Vec<&RoomId> = Vec::new();
+        let all: Vec<&RoomId> = joined.clone();
+        let mut dms = HashSet::new();
+        dms.insert(r_dm.clone());
+
+        let list = list_with(ReqListFilters {
+            is_dm: Some(false),
+            ..Default::default()
+        });
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0], &*r_other);
+    }
 }
