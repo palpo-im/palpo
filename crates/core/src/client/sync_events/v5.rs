@@ -957,6 +957,52 @@ mod tests {
     }
 
     #[test]
+    fn count_only_list_serializes_count_field() {
+        // Regression guard: an incremental sliding-sync response that has no list
+        // ops must still emit `count`. matrix-rust-sdk's
+        // `SlidingSyncList::update` only calls
+        // `update_request_generator_state(maximum_number_of_rooms)` when the
+        // server-supplied `count` is `Some`. If we serialize a `SyncList` as
+        // bare `{}` the SDK keeps `fully_loaded=false` forever and tight-polls
+        // the server.
+        let list = super::SyncList {
+            count: 2,
+            ops: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&list).unwrap();
+
+        assert_eq!(json["count"], 2);
+        assert!(
+            json.get("ops").is_none(),
+            "ops should be omitted when empty (skip_serializing_if), \
+             but count must remain present, got: {json}"
+        );
+    }
+
+    #[test]
+    fn count_only_response_is_long_poll_empty() {
+        // After the fix the `since_sn > curr_sn` fast path emits a body shaped
+        // like `{ pos, lists: { all_rooms: { count: N } } }`. The handler's
+        // long-poll guard must still treat that body as "no incremental
+        // updates" — otherwise palpo#72's empty-body short-circuit would
+        // regress and idle clients would no longer long-poll.
+        let mut response = SyncEventsResBody::new("200".to_owned());
+        response.lists.insert(
+            "all_rooms".to_owned(),
+            super::SyncList {
+                count: 2,
+                ops: Vec::new(),
+            },
+        );
+
+        assert!(
+            response.is_empty_for_long_poll(),
+            "count-only list should be considered long-poll empty"
+        );
+    }
+
+    #[test]
     fn typing_is_empty_when_all_rooms_have_no_typing_users() {
         let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
         let typing = Typing {
