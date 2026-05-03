@@ -85,7 +85,7 @@ mime-infer = "4.0.1"
 path-slash = "0.2.1"
 percent-encoding = "2"
 phf = { version = "0.13.1", features = ["macros"] }
-pkcs8 = "0.10.2"
+pkcs8 = "0.11.0"
 proc-macro-crate = "3.5.0"
 proc-macro2 = "1.0.106"
 pulldown-cmark = { version = "0.13.3", default-features = false }
