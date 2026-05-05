@@ -1,5 +1,6 @@
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use subtle::ConstantTimeEq;
 
 use crate::core::appservice::third_party::*;
 use crate::core::third_party::Protocol;
@@ -23,7 +24,11 @@ pub fn router() -> Router {
 fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
     let token = aa.require_access_token()?;
     let appservices = crate::appservices();
-    if appservices.iter().any(|a| a.hs_token == token) {
+    // Constant-time comparison; mirrors `routing/appservice.rs::verify_hs_token`.
+    if appservices
+        .iter()
+        .any(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
+    {
         Ok(())
     } else {
         Err(MatrixError::forbidden("Invalid hs_token", None).into())
