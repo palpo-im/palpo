@@ -5,6 +5,7 @@ use std::time::Duration;
 use diesel::prelude::*;
 use regex::RegexSet;
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 
 use crate::core::appservice::{Namespace, Registration};
 use crate::core::identifiers::*;
@@ -320,9 +321,17 @@ pub fn get_registration(id: &str) -> AppResult<Option<Registration>> {
     }
 }
 pub async fn find_from_token(token: &str) -> AppResult<Option<RegistrationInfo>> {
+    // Constant-time comparison so we don't leak `as_token` bytes via
+    // response timing. The same pattern is used in `hoops/auth.rs`.
     Ok(all()?
         .values()
-        .find(|info| info.registration.as_token == token)
+        .find(|info| {
+            info.registration
+                .as_token
+                .as_bytes()
+                .ct_eq(token.as_bytes())
+                .into()
+        })
         .cloned())
 }
 

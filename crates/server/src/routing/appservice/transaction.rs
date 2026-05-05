@@ -1,5 +1,6 @@
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use subtle::ConstantTimeEq;
 
 use crate::core::appservice::event::PushEventsReqBody;
 use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok};
@@ -24,11 +25,14 @@ async fn send_event(
     let token = aa.require_access_token()?;
 
     // Validate the hs_token: the calling homeserver must authenticate with the
-    // hs_token that matches one of our registered appservices.
+    // hs_token that matches one of our registered appservices. Use a
+    // constant-time comparison to avoid leaking the token byte-by-byte
+    // through response timing (mirrors the pattern in
+    // `routing/appservice.rs::verify_hs_token`).
     let appservices = crate::appservices();
     let appservice = appservices
         .iter()
-        .find(|a| a.hs_token == token)
+        .find(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
         .ok_or_else(|| MatrixError::forbidden("Invalid hs_token", None))?;
 
     let txn_id = txn_id.into_inner();

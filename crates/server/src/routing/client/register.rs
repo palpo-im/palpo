@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use palpo_core::presence::PresenceState;
 use salvo::oapi::extract::{JsonBody, QueryParam};
 use salvo::prelude::*;
+use subtle::ConstantTimeEq;
 
 use crate::core::UnixMillis;
 use crate::core::client::account::{LoginType, RegistrationKind};
@@ -96,9 +97,17 @@ async fn register(
     let mut appservice = None;
     if body.login_type == Some(LoginType::ApplicationService) {
         let token = aa.require_access_token()?;
+        // Constant-time comparison so we don't leak `as_token` bytes via
+        // response timing. The same pattern is used in `hoops/auth.rs`.
         let matched = crate::appservices()
             .iter()
-            .find(|appservice| appservice.as_token == token)
+            .find(|appservice| {
+                appservice
+                    .as_token
+                    .as_bytes()
+                    .ct_eq(token.as_bytes())
+                    .into()
+            })
             .cloned();
         let Some(matched) = matched else {
             return Err(MatrixError::missing_token("missing appservice token").into());
