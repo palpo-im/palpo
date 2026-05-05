@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use std::time::Duration;
 
 use ipaddress::IPAddress;
@@ -10,7 +10,9 @@ use url::Url;
 use crate::core::identifiers::*;
 use crate::core::{MatrixError, UnixMillis};
 use crate::data::media::{DbUrlPreview, NewDbMetadata, NewDbUrlPreview};
-use crate::{AppResult, config, data, storage, utils};
+use crate::sending::resolver;
+use crate::utils::url_guard;
+use crate::{AppResult, TlsNameMap, config, data, storage, utils};
 
 static URL_PREVIEW_MUTEX: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(Default::default);
@@ -25,9 +27,19 @@ async fn get_url_preview_mutex(url: &str) -> Arc<Mutex<()>> {
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
+        // Reject redirects so that a public origin cannot 30x to an internal
+        // address; install a CIDR-filtering DNS resolver so that hostnames
+        // resolving to denylisted IPs (including DNS-rebinding attempts) are
+        // refused at connect time. IP-literal hosts skip DNS resolution
+        // and are rejected by `url_guard::ensure_safe_outbound_url`.
+        let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
         reqwest::ClientBuilder::new()
             .timeout(Duration::from_secs(20))
             .user_agent("Palpo")
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
+                tls_name_override,
+            )))
             .build()
             .expect("Failed to create reqwest client")
     })
@@ -259,17 +271,10 @@ pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
 
 async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
     let client = client();
-    // Only check IP denylist if one is actually configured. If the user has
-    // explicitly set an empty denylist (or omitted it intentionally), respect that.
+    // Reject IP-literal hosts that fall inside the denylist — those bypass
+    // DNS resolution and so are not caught by the resolver below.
+    url_guard::ensure_safe_outbound_url(url)?;
     let denylist_configured = !config::get().ip_range_denylist.is_empty();
-    if denylist_configured
-        && let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated"))
-        && !config::valid_cidr_range(&ip)
-    {
-        return Err(
-            MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
-        );
-    }
 
     let response = client.get(url.clone()).send().await?;
     debug!(
@@ -312,6 +317,10 @@ async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
 }
 async fn download_image(url: &Url) -> AppResult<UrlPreviewData> {
     use image::ImageReader;
+
+    // The URL here can come from an attacker-controlled OpenGraph `og:image`
+    // tag, so re-apply the boundary check rather than trusting the caller.
+    url_guard::ensure_safe_outbound_url(url)?;
 
     let conf = crate::config::get();
     let image = client().get(url.to_owned()).send().await?;
@@ -364,6 +373,8 @@ async fn download_image(url: &Url) -> AppResult<UrlPreviewData> {
 
 async fn download_html(url: &Url) -> AppResult<UrlPreviewData> {
     use webpage::HTML;
+
+    url_guard::ensure_safe_outbound_url(url)?;
 
     let conf = crate::config::get();
     let client = client();

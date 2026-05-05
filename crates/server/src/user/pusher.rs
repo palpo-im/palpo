@@ -16,7 +16,8 @@ use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::pusher::NewDbPusher;
 use crate::event::PduEvent;
-use crate::{AppError, AppResult, AuthedInfo, data, room};
+use crate::utils::url_guard;
+use crate::{AppError, AppResult, AuthedInfo, data, room, sending};
 
 pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
     match pusher {
@@ -226,10 +227,18 @@ async fn send_notice(
                 notification.prio = NotificationPriority::High
             }
 
+            // Refuse user-supplied URLs that point at internal addresses or
+            // use schemes other than http(s). This is the boundary check;
+            // DNS-name hosts that resolve to denylisted IPs are also caught
+            // at connect time by `push_gateway_client`'s safe DNS resolver.
+            let url = Url::parse(&http.url)?;
+            url_guard::ensure_safe_outbound_url(&url)?;
+            let push_client = sending::push_gateway_client();
+
             if event_id_only {
-                crate::sending::post(Url::parse(&http.url)?)
+                crate::sending::post(url)
                     .stuff(SendEventNotificationReqBody::new(notification))?
-                    .send::<()>()
+                    .send_by_client::<()>(push_client)
                     .await?;
             } else {
                 notification.sender = Some(event.sender.clone());
@@ -243,9 +252,9 @@ async fn send_notice(
                     data::user::display_name(&event.sender).ok().flatten();
                 notification.room_name = room::get_name(&event.room_id).ok();
 
-                crate::sending::post(Url::parse(&http.url)?)
+                crate::sending::post(url)
                     .stuff(SendEventNotificationReqBody::new(notification))?
-                    .send::<()>()
+                    .send_by_client::<()>(push_client)
                     .await?;
             }
 
