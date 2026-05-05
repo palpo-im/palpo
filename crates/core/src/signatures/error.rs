@@ -23,7 +23,7 @@ pub enum Error {
 
     /// Wrapper for [`pkcs8::Error`].
     #[error("der parse error: {0}")]
-    DerParse(ed25519_dalek::pkcs8::Error),
+    DerParse(pkcs8::Error),
 
     /// Wrapper for OS randomness failures.
     #[error("randomness error: {0}")]
@@ -242,9 +242,9 @@ pub enum ParseError {
     #[error("algorithm OID does not match ed25519, expected {expected}, found {found}")]
     Oid {
         /// The expected OID.
-        expected: ed25519_dalek::pkcs8::ObjectIdentifier,
+        expected: pkcs8::ObjectIdentifier,
         /// The OID that was found instead.
-        found: ed25519_dalek::pkcs8::ObjectIdentifier,
+        found: pkcs8::ObjectIdentifier,
     },
 
     /// For when [`ed25519_dalek`] cannot parse a secret/private key.
