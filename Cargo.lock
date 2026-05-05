@@ -1646,6 +1646,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtor"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28bbca46d741260734f34c4399a572923cc477a4401ae7ffff13d9f7ca4bb675"
+dependencies = [
+ "linktime-proc-macro",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3744,6 +3753,7 @@ dependencies = [
  "diesel",
  "diesel_migrations",
  "dotenvy",
+ "dtor",
  "either",
  "fast32",
  "figment",
