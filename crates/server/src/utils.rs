@@ -17,6 +17,7 @@ pub mod stream;
 pub mod string;
 pub use stream::*;
 pub mod content_disposition;
+pub mod url_guard;
 mod mutex_map;
 pub use mutex_map::{MutexMap, MutexMapGuard};
 mod sequm_queue;

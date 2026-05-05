@@ -133,12 +133,7 @@ pub fn federation_client() -> ClientWithMiddleware {
         .get_or_init(|| {
             let conf = crate::config::get();
             // Client is cheap to clone (Arc wrapper) and avoids lifetime issues
-            let _tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
-
-            // let jwt_decoding_key = conf
-            //     .jwt_secret
-            //     .as_ref()
-            //     .map(|secret| jsonwebtoken::DecodingKey::from_secret(secret.as_bytes()));
+            let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
 
             let retry_policy = ExponentialBackoff::builder()
                 .retry_bounds(
@@ -149,13 +144,41 @@ pub fn federation_client() -> ClientWithMiddleware {
 
             let client = reqwest_client_builder(conf)
                 .expect("build reqwest client failed")
-                // .dns_resolver(Arc::new(Resolver::new(tls_name_override.clone())))
+                .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
+                    tls_name_override,
+                )))
                 .timeout(Duration::from_secs(2 * 60))
                 .build()
                 .expect("build reqwest client failed");
             ClientBuilder::new(client)
                 .with(RetryTransientMiddleware::new_with_policy(retry_policy))
                 .build()
+        })
+        .clone()
+}
+
+/// Returns a client for outbound HTTP requests targeted by user-supplied
+/// URLs (push gateways). The client refuses to connect to addresses inside
+/// `config::cidr_range_denylist`, defending against SSRF where an
+/// authenticated user configures an internal URL as a push target.
+///
+/// Redirects are limited to two hops; redirect targets are also subject to
+/// the same DNS-level CIDR filtering.
+pub fn push_gateway_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let conf = crate::config::get();
+            let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
+            reqwest_client_builder(conf)
+                .expect("failed to build push gateway client")
+                .timeout(Duration::from_secs(60))
+                .redirect(reqwest::redirect::Policy::limited(2))
+                .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
+                    tls_name_override,
+                )))
+                .build()
+                .expect("failed to build push gateway client")
         })
         .clone()
 }

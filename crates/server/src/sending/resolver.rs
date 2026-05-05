@@ -6,6 +6,7 @@ use std::{future, iter};
 
 use futures_util::FutureExt;
 use hyper_util::client::legacy::connect::dns::{GaiResolver, Name as HyperName};
+use ipaddress::IPAddress;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use tower_service::Service as TowerService;
 
@@ -21,6 +22,7 @@ pub const RANDOM_USER_ID_LENGTH: usize = 10;
 pub struct Resolver {
     inner: GaiResolver,
     overrides: Arc<RwLock<TlsNameMap>>,
+    enforce_cidr_denylist: bool,
 }
 
 impl Resolver {
@@ -28,13 +30,45 @@ impl Resolver {
         Resolver {
             inner: GaiResolver::new(),
             overrides,
+            enforce_cidr_denylist: false,
+        }
+    }
+
+    /// Build a resolver that filters out any addresses that fall inside the
+    /// configured `ip_range_denylist`. This protects outbound HTTP from SSRF
+    /// to internal/loopback/link-local addresses, including DNS-rebinding
+    /// attempts where a public hostname resolves to a private IP.
+    ///
+    /// Note: IP-literal hosts skip DNS resolution entirely, so callers must
+    /// pre-validate IP-literal URLs (see `crate::utils::url_guard`).
+    pub fn new_with_cidr_denylist(overrides: Arc<RwLock<TlsNameMap>>) -> Self {
+        Resolver {
+            inner: GaiResolver::new(),
+            overrides,
+            enforce_cidr_denylist: true,
         }
     }
 }
 
+fn filter_denied_addrs(addrs: Addrs) -> Addrs {
+    if crate::config::get().ip_range_denylist.is_empty() {
+        return addrs;
+    }
+    let allowed: Vec<SocketAddr> = addrs
+        .filter(|addr| {
+            IPAddress::parse(addr.ip().to_string())
+                .map(|ip| crate::config::valid_cidr_range(&ip))
+                .unwrap_or(true)
+        })
+        .collect();
+    Box::new(allowed.into_iter())
+}
+
 impl Resolve for Resolver {
     fn resolve(&self, name: Name) -> Resolving {
-        self.overrides
+        let enforce = self.enforce_cidr_denylist;
+        let resolving: Resolving = self
+            .overrides
             .read()
             .unwrap()
             .get(name.as_str())
@@ -61,6 +95,15 @@ impl Resolve for Resolver {
                             .map_err(|err| -> Box<dyn StdError + Send + Sync> { Box::new(err) })
                     }),
                 )
-            })
+            });
+
+        if !enforce {
+            return resolving;
+        }
+
+        Box::pin(async move {
+            let addrs = resolving.await?;
+            Ok(filter_denied_addrs(addrs))
+        })
     }
 }
