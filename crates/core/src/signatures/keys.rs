@@ -3,14 +3,21 @@
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-use ed25519_dalek::pkcs8::ALGORITHM_OID;
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, SecretKey, Signer, SigningKey};
-use pkcs8::der::zeroize::Zeroizing;
-use pkcs8::{DecodePrivateKey, EncodePrivateKey, ObjectIdentifier, PrivateKeyInfo};
+use pkcs8::der::asn1::{BitStringRef, OctetStringRef};
+use pkcs8::der::zeroize::{Zeroize as _, Zeroizing};
+use pkcs8::spki::AlgorithmIdentifierRef;
+use pkcs8::{ObjectIdentifier, PrivateKeyInfoRef, SecretDocument};
 
 use crate::serde::Base64;
 use crate::signatures::{Error, ParseError, Signature};
 use crate::{SigningKeyAlgorithm, SigningKeyId};
+
+const ED25519_ALGORITHM_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
+const ED25519_ALGORITHM_ID: AlgorithmIdentifierRef<'static> = AlgorithmIdentifierRef {
+    oid: ED25519_ALGORITHM_OID,
+    parameters: None,
+};
 
 #[cfg(feature = "ring-compat")]
 mod compat;
@@ -68,9 +75,9 @@ impl Ed25519KeyPair {
         pubkey: Option<&[u8]>,
         version: String,
     ) -> Result<Self, Error> {
-        if oid != ALGORITHM_OID {
+        if oid != ED25519_ALGORITHM_OID {
             return Err(ParseError::Oid {
-                expected: ALGORITHM_OID,
+                expected: ED25519_ALGORITHM_OID,
                 found: oid,
             }
             .into());
@@ -115,22 +122,23 @@ impl Ed25519KeyPair {
     /// doesn't match the one generated from the private key. This is a
     /// fallback and extra validation against corruption or
     pub fn from_der(document: &[u8], version: String) -> Result<Self, Error> {
-        let signing_key = SigningKey::from_pkcs8_der(document).map_err(Error::DerParse)?;
+        let private_key = PrivateKeyInfoRef::try_from(document).map_err(Error::DerParse)?;
+        Self::from_pkcs8_oak(private_key, version)
+    }
 
-        Ok(Self {
-            signing_key,
+    /// Constructs a key pair from [`pkcs8::PrivateKeyInfo`].
+    pub fn from_pkcs8_oak(oak: PrivateKeyInfoRef<'_>, version: String) -> Result<Self, Error> {
+        Self::new(
+            oak.algorithm.oid,
+            oak.private_key.as_bytes(),
+            oak.public_key.map(|key| key.raw_bytes()),
             version,
-        })
+        )
     }
 
     /// Constructs a key pair from [`pkcs8::PrivateKeyInfo`].
-    pub fn from_pkcs8_oak(oak: PrivateKeyInfo<'_>, version: String) -> Result<Self, Error> {
-        Self::new(oak.algorithm.oid, oak.private_key, oak.public_key, version)
-    }
-
-    /// Constructs a key pair from [`pkcs8::PrivateKeyInfo`].
-    pub fn from_pkcs8_pki(oak: PrivateKeyInfo<'_>, version: String) -> Result<Self, Error> {
-        Self::new(oak.algorithm.oid, oak.private_key, None, version)
+    pub fn from_pkcs8_pki(oak: PrivateKeyInfoRef<'_>, version: String) -> Result<Self, Error> {
+        Self::new(oak.algorithm.oid, oak.private_key.as_bytes(), None, version)
     }
 
     /// PKCS#8's "private key" is not yet actually the entire key,
@@ -162,10 +170,29 @@ impl Ed25519KeyPair {
         let mut rng = rand::rngs::SysRng;
         rng.try_fill_bytes(&mut secret_key).map_err(Error::Random)?;
         let signing_key = SigningKey::from_bytes(&secret_key);
-        Ok(signing_key
-            .to_pkcs8_der()
-            .map_err(Error::DerParse)?
-            .to_bytes())
+
+        let mut private_key_bytes = [0u8; 2 + 32];
+        private_key_bytes[0] = 0x04;
+        private_key_bytes[1] = 0x20;
+        private_key_bytes[2..].copy_from_slice(&secret_key);
+
+        let public_key = signing_key.verifying_key().to_bytes();
+        let private_key = OctetStringRef::new(&private_key_bytes)
+            .map_err(pkcs8::Error::from)
+            .map_err(Error::DerParse)?;
+        let public_key = BitStringRef::from_bytes(&public_key)
+            .map_err(pkcs8::Error::from)
+            .map_err(Error::DerParse)?;
+        let private_key_info = PrivateKeyInfoRef {
+            algorithm: ED25519_ALGORITHM_ID,
+            private_key: &private_key,
+            public_key: Some(public_key),
+        };
+        let encoded = SecretDocument::try_from(&private_key_info).map_err(Error::DerParse)?;
+
+        private_key_bytes.zeroize();
+        secret_key.zeroize();
+        Ok(encoded.to_bytes())
     }
 
     /// Returns the version string for this keypair.
