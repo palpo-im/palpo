@@ -95,7 +95,7 @@ reqwest-middleware = "0.5.1"
 reqwest-retry = "0.9.1"
 rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
-reqwest = { version = "0.13.2", features = ["json", "form"] }
+reqwest = { version = "0.13.3", features = ["json", "form"] }
 ring = "0.17.14"
 salvo = { version = "0.92.0", features = ["rustls"]}
 sanitize-filename = "0.6.0"
