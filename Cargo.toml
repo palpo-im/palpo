@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Chrislearn Young <chris@acroidea.com>"]
 edition = "2024"
 rust-version = "1.93"
@@ -19,11 +19,11 @@ keywords = ["http", "async", "web", "framework", "server"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-palpo-core = { version = "0.2.1", path = "crates/core" }
-palpo-core-macros = { version = "0.2.1", path = "crates/core-macros" }
-palpo-data = { version = "0.2.1", path = "crates/data" }
-palpo-identifiers-validation = { version = "0.2.1", path = "crates/identifiers-validation" }
-palpo-server-macros = { version = "0.2.1", path = "crates/server-macros" }
+palpo-core = { version = "0.3.0", path = "crates/core" }
+palpo-core-macros = { version = "0.3.0", path = "crates/core-macros" }
+palpo-data = { version = "0.3.0", path = "crates/data" }
+palpo-identifiers-validation = { version = "0.3.0", path = "crates/identifiers-validation" }
+palpo-server-macros = { version = "0.3.0", path = "crates/server-macros" }
 
 rust-argon2 = "3.0.0"
 ctor = "1.0.3"
