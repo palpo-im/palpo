@@ -26,14 +26,14 @@ palpo-identifiers-validation = { version = "0.2.1", path = "crates/identifiers-v
 palpo-server-macros = { version = "0.2.1", path = "crates/server-macros" }
 
 rust-argon2 = "3.0.0"
-ctor = "0.13.1"
-dtor = "1.0.0"
+ctor = "1.0.3"
+dtor = "1.0.1"
 anyhow = "1.0.102"
 assert_matches2 = "0.1.2"
 async-trait = "0.1.89"
 as_variant = "1.3.0"
 base64 = "0.22"
-bcrypt = "0.19.0"
+bcrypt = "0.19.1"
 blurhash = "0.2"
 bytes = "1.11.1"
 byteorder = "1.5.0"
@@ -98,7 +98,7 @@ rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
 reqwest = { version = "0.13.3", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.92.0", features = ["rustls"]}
+salvo = { version = "0.93.0", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
@@ -106,7 +106,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 subtle = "2.6"
 serde_html_form = "0.4.0"
 serde_json = { version = "1.0.149" }
-serde-saphyr = { version = "0.0.25" }
+serde-saphyr = { version = "0.0.26" }
 serde_regex = { version = "1.1.0" }
 smallvec = { version = "1.15.1" }
 sha2 = "0.11.0"
@@ -119,7 +119,7 @@ tempfile = "3.27.0"
 termimad = { version = "0.34.1", default-features = false }
 textnonce = "1.0.0"
 thiserror = "2.0.18"
-tokio = { version = "1.52.1", features = ["macros", "parking_lot", "process"] }
+tokio = { version = "1.52.2", features = ["macros", "parking_lot", "process"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 toml = { version = "1.1.2", default-features = false }
