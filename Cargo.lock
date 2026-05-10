@@ -1551,9 +1551,9 @@ dependencies = [
 
 [[package]]
 name = "dtor"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fe957e71344a16bb6e91d24be862d96e6a4b733b7c9d27f369d6f8ecdf93ace"
+checksum = "df64ec34e01d9a0ad0677077efba521b91be7363445bd7a2ac001b60180545c3"
 dependencies = [
  "linktime-proc-macro",
 ]
