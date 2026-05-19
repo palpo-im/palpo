@@ -872,13 +872,45 @@ impl ServerConfig {
             tracing::warn!("Note: palpo was built without optimisations (i.e. debug build)");
         }
 
-        // if self
-        //     .allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure
-        // {
-        //     tracing::warn!(
-        //         "\n\nWARNING: \n\nTLS CERTIFICATE VALIDATION IS DISABLED, THIS IS HIGHLY INSECURE
-        // AND SHOULD NOT BE USED IN PRODUCTION.\n\n"     );
-        // }
+        // NOTE: `check()` runs *before* `logging::init()` in main, so a
+        // `tracing::error!` here would be dropped on the floor. Use
+        // `eprintln!` so the banners are always written to stderr regardless
+        // of whether a tracing subscriber has been installed yet.
+
+        if self.allow_invalid_tls_certificates {
+            eprintln!(
+                "\n!!! TLS CERTIFICATE VALIDATION IS DISABLED !!!\n\
+                 allow_invalid_tls_certificates=true exposes every outbound HTTPS request \
+                 (federation, key fetches, URL previews) to silent MITM. \
+                 This must not be used in production.\n"
+            );
+            if cfg!(not(debug_assertions))
+                && std::env::var("PALPO_ALLOW_INSECURE_TLS").as_deref() != Ok("1")
+            {
+                return Err(AppError::internal(
+                    "allow_invalid_tls_certificates=true is refused in release builds. \
+                     Set PALPO_ALLOW_INSECURE_TLS=1 to override (debug/testing only).",
+                ));
+            }
+        }
+
+        if let Some(jwt) = self.enabled_jwt()
+            && !jwt.validate_signature
+        {
+            eprintln!(
+                "\n!!! JWT SIGNATURE VALIDATION IS DISABLED !!!\n\
+                 jwt.validate_signature=false accepts any token as a valid login. \
+                 This must not be used in production.\n"
+            );
+            if cfg!(not(debug_assertions))
+                && std::env::var("PALPO_ALLOW_UNSIGNED_JWT").as_deref() != Ok("1")
+            {
+                return Err(AppError::internal(
+                    "jwt.validate_signature=false is refused in release builds. \
+                     Set PALPO_ALLOW_UNSIGNED_JWT=1 to override (debug/testing only).",
+                ));
+            }
+        }
 
         self.warn_deprecated();
         self.warn_unknown_key();

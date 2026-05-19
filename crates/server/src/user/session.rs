@@ -12,11 +12,8 @@ pub struct JwtClaims {
 }
 
 pub fn validate_jwt_token(config: &JwtConfig, token: &str) -> AppResult<JwtClaims> {
-    if !config.validate_signature {
-        warn!(
-            "JWT signature validation is disabled! This is insecure and should not be used in production."
-        );
-    }
+    // The "JWT signature validation disabled" banner is emitted once on startup
+    // by ServerConfig::check(); we don't re-warn per request here.
 
     let verifier = init_jwt_verifier(config)?;
     let validator = init_jwt_validator(config)?;

@@ -943,6 +943,10 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
         .timeout(Duration::from_secs(60 * 3));
 
     if config.allow_invalid_tls_certificates {
+        tracing::warn!(
+            "building HTTP client with TLS validation disabled \
+             (allow_invalid_tls_certificates=true); outbound requests are MITM-able"
+        );
         reqwest_client_builder = reqwest_client_builder.danger_accept_invalid_certs(true);
     }
 
