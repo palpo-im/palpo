@@ -312,6 +312,7 @@ pub async fn get_thumbnail(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
+    crate::media::validate_thumbnail_dimensions(args.width, args.height)?;
     if args.server_name.is_remote() && args.allow_remote {
         let origin = args.server_name.origin().await;
         let mut url = Url::parse(&format!(

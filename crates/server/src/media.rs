@@ -143,6 +143,29 @@ pub fn thumbnail_properties(width: u32, height: u32) -> Option<(u32, u32, bool)>
     }
 }
 
+/// Upper bound on `width` / `height` accepted from a thumbnail request.
+///
+/// `ThumbnailReqArgs::{width,height}` are `u32`, which means a remote can
+/// ask for `4_294_967_295 x 4_294_967_295` and the server will at least
+/// do a database lookup with those values before falling back. Clamp the
+/// request at the boundary so neither the DB nor the image decoder has
+/// to defend against absurd inputs.
+pub const MAX_THUMBNAIL_DIMENSION: u32 = 2048;
+
+/// Reject thumbnail requests whose declared width or height is implausibly
+/// large. Returns `Err(M_INVALID_PARAM)` if either dimension exceeds
+/// [`MAX_THUMBNAIL_DIMENSION`].
+pub fn validate_thumbnail_dimensions(width: u32, height: u32) -> AppResult<()> {
+    if width > MAX_THUMBNAIL_DIMENSION || height > MAX_THUMBNAIL_DIMENSION {
+        return Err(crate::MatrixError::invalid_param(format!(
+            "thumbnail dimensions must be <= {MAX_THUMBNAIL_DIMENSION} \
+             (requested {width}x{height})"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 pub fn get_all_mxcs() -> AppResult<Vec<OwnedMxcUri>> {
     let mxcs = media_metadatas::table
         .select((media_metadatas::origin_server, media_metadatas::media_id))
