@@ -41,6 +41,29 @@ Learn more at [matrix.org](https://matrix.org)
 
 ---
 
+## 🆚 Palpo vs. Tuwunel
+
+A common question is how Palpo compares to [Tuwunel](https://github.com/matrix-construct/tuwunel), another Rust Matrix homeserver. Both are valid choices — they just optimize for different things.
+
+### Architectural differences
+
+- **Database**: Palpo uses **PostgreSQL** as its primary backend, giving you ACID guarantees, mature replication/backup tooling, and standard SQL for inspection. Tuwunel (like Conduit/Conduwuit before it) is built around an embedded RocksDB key-value store. Palpo's choice favors operational familiarity for teams already running Postgres, easier integration with existing monitoring/backup pipelines, and the ability to scale storage independently from the application process.
+- **Web framework**: Palpo is built on **[Salvo](https://github.com/salvo-rs/salvo)**, a modern async Rust web framework with a clean middleware/router model that maps closely to the Matrix Client-Server API.
+- **Codebase lineage**: Palpo started from ideas in Conduit and has been heavily reworked. We are not a fork of Tuwunel and do not carry its codebase — though we gratefully acknowledge architectural insights from that line of work (see [Acknowledgments](#-acknowledgments)).
+- **License**: Palpo is **Apache-2.0** licensed, which some downstream users and distributors find easier to consume than copyleft licenses.
+
+### Honest caveats
+
+- **Complement coverage looks good.** At the time of writing, our latest run is **672 pass / 0 fail / 14 skip** (see [tests/results/test_all.result.jsonl](tests/results/test_all.result.jsonl)). On the Matrix spec compliance axis, Palpo is in solid shape.
+- **What we don't have yet is real-world operational data.** Palpo has not gone through large-scale production deployments. We don't have battle-tested numbers on long-running federation behavior, performance under sustained load, large room state, or 24/7 stability over weeks and months. Tuwunel is significantly more mature on this dimension, and if you need a homeserver to put into production *today*, that's an honest reason to pick it over Palpo for now.
+- We are actively working on closing this gap. Help testing Palpo in non-critical deployments and reporting back what you see would be hugely valuable.
+
+### Short version
+
+**Palpo passes the Matrix spec tests and offers a Postgres-backed, Salvo-based Rust stack; Tuwunel has the production mileage today.** Pick whichever matches your priorities.
+
+---
+
 ## 🚀 Quick Start
 
 ### Try Our Demo Server
