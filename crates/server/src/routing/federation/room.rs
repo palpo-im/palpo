@@ -49,10 +49,16 @@ async fn get_state(
 
     let pdus = state::get_full_state_ids(state_hash)?
         .into_values()
-        .map(|id| {
-            sending::convert_to_outgoing_federation_event(
-                timeline::get_pdu_json(&id).unwrap().unwrap(),
-            )
+        .filter_map(|id| match timeline::get_pdu_json(&id) {
+            Ok(Some(json)) => Some(sending::convert_to_outgoing_federation_event(json)),
+            Ok(None) => {
+                error!("Could not find event json for state event {id} in db");
+                None
+            }
+            Err(e) => {
+                error!("Failed to load state event {id} from db: {e}");
+                None
+            }
         })
         .collect();
 
