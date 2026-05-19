@@ -872,9 +872,14 @@ impl ServerConfig {
             tracing::warn!("Note: palpo was built without optimisations (i.e. debug build)");
         }
 
+        // NOTE: `check()` runs *before* `logging::init()` in main, so a
+        // `tracing::error!` here would be dropped on the floor. Use
+        // `eprintln!` so the banners are always written to stderr regardless
+        // of whether a tracing subscriber has been installed yet.
+
         if self.allow_invalid_tls_certificates {
-            tracing::error!(
-                "\n\n!!! TLS CERTIFICATE VALIDATION IS DISABLED !!!\n\
+            eprintln!(
+                "\n!!! TLS CERTIFICATE VALIDATION IS DISABLED !!!\n\
                  allow_invalid_tls_certificates=true exposes every outbound HTTPS request \
                  (federation, key fetches, URL previews) to silent MITM. \
                  This must not be used in production.\n"
@@ -892,8 +897,8 @@ impl ServerConfig {
         if let Some(jwt) = self.enabled_jwt()
             && !jwt.validate_signature
         {
-            tracing::error!(
-                "\n\n!!! JWT SIGNATURE VALIDATION IS DISABLED !!!\n\
+            eprintln!(
+                "\n!!! JWT SIGNATURE VALIDATION IS DISABLED !!!\n\
                  jwt.validate_signature=false accepts any token as a valid login. \
                  This must not be used in production.\n"
             );
