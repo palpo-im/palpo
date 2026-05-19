@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel::result::Error as DieselError;
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -60,43 +61,52 @@ pub fn purge_room_history(room_id: &RoomId, before_ts: i64) -> DataResult<i64> {
 
     let event_ids: Vec<&str> = to_purge.iter().map(|(id, _)| id.as_str()).collect();
 
-    // Delete from related tables (no foreign key constraints, order doesn't matter)
-    for chunk in event_ids.chunks(500) {
-        diesel::delete(event_datas::table.filter(event_datas::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(event_edges::table.filter(event_edges::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(
-            event_forward_extremities::table
-                .filter(event_forward_extremities::event_id.eq_any(chunk)),
-        )
-        .execute(&mut conn)?;
-        diesel::delete(
-            event_backward_extremities::table
-                .filter(event_backward_extremities::event_id.eq_any(chunk)),
-        )
-        .execute(&mut conn)?;
-        diesel::delete(event_relations::table.filter(event_relations::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(event_receipts::table.filter(event_receipts::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(event_searches::table.filter(event_searches::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(
-            event_push_actions::table.filter(event_push_actions::event_id.eq_any(chunk)),
-        )
-        .execute(&mut conn)?;
-        diesel::delete(event_points::table.filter(event_points::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(event_missings::table.filter(event_missings::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(threads::table.filter(threads::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        diesel::delete(timeline_gaps::table.filter(timeline_gaps::event_id.eq_any(chunk)))
-            .execute(&mut conn)?;
-        // Delete the events themselves
-        diesel::delete(events::table.filter(events::id.eq_any(chunk))).execute(&mut conn)?;
-    }
+    // Run all cascading deletes inside a single transaction so we cannot leave
+    // dangling rows in event_datas/event_edges/etc. if one of the statements
+    // fails mid-purge (transient db error, statement timeout, ...). Without
+    // the transaction, a half-finished purge would leak event-relations
+    // pointing at events that no longer exist, which then resurface as
+    // hard-to-debug consistency errors on subsequent timeline reads.
+    conn.transaction::<_, DieselError, _>(|conn| {
+        // Delete from related tables (no foreign key constraints, order doesn't matter)
+        for chunk in event_ids.chunks(500) {
+            diesel::delete(event_datas::table.filter(event_datas::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(event_edges::table.filter(event_edges::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(
+                event_forward_extremities::table
+                    .filter(event_forward_extremities::event_id.eq_any(chunk)),
+            )
+            .execute(conn)?;
+            diesel::delete(
+                event_backward_extremities::table
+                    .filter(event_backward_extremities::event_id.eq_any(chunk)),
+            )
+            .execute(conn)?;
+            diesel::delete(event_relations::table.filter(event_relations::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(event_receipts::table.filter(event_receipts::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(event_searches::table.filter(event_searches::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(
+                event_push_actions::table.filter(event_push_actions::event_id.eq_any(chunk)),
+            )
+            .execute(conn)?;
+            diesel::delete(event_points::table.filter(event_points::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(event_missings::table.filter(event_missings::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(threads::table.filter(threads::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            diesel::delete(timeline_gaps::table.filter(timeline_gaps::event_id.eq_any(chunk)))
+                .execute(conn)?;
+            // Delete the events themselves
+            diesel::delete(events::table.filter(events::id.eq_any(chunk))).execute(conn)?;
+        }
+        Ok(())
+    })?;
 
     Ok(to_purge.len() as i64)
 }
