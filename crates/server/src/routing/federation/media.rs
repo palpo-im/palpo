@@ -19,6 +19,7 @@ use crate::{AppResult, AuthArgs, MatrixError, config, hoops, storage};
 pub fn router() -> Router {
     Router::with_path("media")
         .hoop(hoops::limit_rate)
+        .hoop(hoops::media_security_headers)
         .push(Router::with_path("download/{media_id}").get(get_content))
         .push(Router::with_path("thumbnail/{media_id}").get(get_thumbnail))
 }

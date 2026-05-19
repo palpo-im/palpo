@@ -4,7 +4,9 @@ use super::client::media::*;
 use crate::hoops;
 
 pub fn router() -> Router {
-    let mut media = Router::with_path("media").oapi_tag("media");
+    let mut media = Router::with_path("media")
+        .oapi_tag("media")
+        .hoop(hoops::media_security_headers);
     for v in ["v3", "v1", "r0"] {
         media = media
             .push(

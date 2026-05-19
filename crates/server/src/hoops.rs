@@ -105,6 +105,41 @@ async fn access_control(
     // headers.insert("Cross-Origin-Opener-Policy", "same-origin".parse().unwrap());
 }
 
+/// Hardening hoop for media endpoints. Sets headers that prevent a browser
+/// from interpreting an uploaded blob as something more dangerous than its
+/// declared `Content-Type`:
+///
+/// * `X-Content-Type-Options: nosniff` — disable MIME sniffing, so e.g. an
+///   HTML payload uploaded with `image/jpeg` is not executed as HTML.
+/// * A tight `Content-Security-Policy` that forbids scripts, inline content,
+///   plugins and framing of the response. This matches Synapse's media CSP
+///   and protects against XSS via uploaded SVG/HTML when a third-party page
+///   embeds a media URL.
+/// * `X-Frame-Options: DENY` for legacy browsers that ignore CSP.
+///
+/// The middleware runs after the inner handler so it overrides any earlier
+/// (less strict) values that might have been set.
+#[handler]
+pub async fn media_security_headers(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+    ctrl: &mut FlowCtrl,
+) {
+    ctrl.call_next(req, depot, res).await;
+    let headers = res.headers_mut();
+    headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
+    headers.insert(
+        "Content-Security-Policy",
+        "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; \
+         style-src 'unsafe-inline'; object-src 'self';"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("X-Frame-Options", "DENY".parse().unwrap());
+    headers.insert("Referrer-Policy", "no-referrer".parse().unwrap());
+}
+
 /// Token-bucket rate limiter: maps IP → (available_tokens, last_check_time)
 struct RateLimiter {
     buckets: Mutex<HashMap<String, (f64, Instant)>>,

@@ -26,6 +26,7 @@ use crate::{
 pub fn self_auth_router() -> Router {
     Router::with_path("media")
         .oapi_tag("client")
+        .hoop(hoops::media_security_headers)
         .push(
             Router::with_path("download/{server_name}/{media_id}")
                 .hoop(hoops::auth_by_access_token_or_signatures)
