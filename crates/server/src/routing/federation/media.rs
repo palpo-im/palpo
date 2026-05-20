@@ -74,6 +74,7 @@ pub async fn get_thumbnail(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
+    crate::media::validate_thumbnail_dimensions(args.width, args.height)?;
     let server_name = &config::get().server_name;
     if let Some(DbThumbnail {
         id, content_type, ..
