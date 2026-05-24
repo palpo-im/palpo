@@ -92,7 +92,7 @@ proc-macro2 = "1.0.106"
 pulldown-cmark = { version = "0.13.3", default-features = false }
 quote = "1.0.45"
 rand = "0.10"
-reqwest-middleware = "0.5.1"
+reqwest-middleware = "0.5.2"
 reqwest-retry = "0.9.1"
 rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
