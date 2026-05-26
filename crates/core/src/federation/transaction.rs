@@ -19,7 +19,7 @@ use crate::events::typing::TypingContent;
 use crate::identifiers::*;
 use crate::presence::PresenceContent;
 use crate::sending::{SendRequest, SendResult};
-use crate::serde::{JsonValue, RawJsonValue, from_raw_json_value};
+use crate::serde::{RawJsonValue, from_raw_json_value};
 use crate::{OwnedServerName, UnixMillis};
 
 // const METADATA: Metadata = metadata! {
@@ -132,15 +132,9 @@ pub enum Edu {
     SigningKeyUpdate(SigningKeyUpdateContent),
 
     #[doc(hidden)]
+    #[serde(untagged)]
     #[salvo(schema(value_type = Object))]
-    _Custom(JsonValue),
-}
-
-#[derive(Debug, Deserialize)]
-struct EduDeHelper {
-    /// The message type field
-    edu_type: String,
-    content: Box<RawJsonValue>,
+    _Custom(CustomEdu),
 }
 
 impl<'de> Deserialize<'de> for Edu {
@@ -148,6 +142,12 @@ impl<'de> Deserialize<'de> for Edu {
     where
         D: de::Deserializer<'de>,
     {
+        #[derive(Debug, Deserialize)]
+        struct EduDeHelper {
+            edu_type: String,
+            content: Box<RawJsonValue>,
+        }
+
         let json = Box::<RawJsonValue>::deserialize(deserializer)?;
         let EduDeHelper { edu_type, content } = from_raw_json_value(&json)?;
 
@@ -158,9 +158,20 @@ impl<'de> Deserialize<'de> for Edu {
             "m.device_list_update" => Self::DeviceListUpdate(from_raw_json_value(&content)?),
             "m.direct_to_device" => Self::DirectToDevice(from_raw_json_value(&content)?),
             "m.signing_key_update" => Self::SigningKeyUpdate(from_raw_json_value(&content)?),
-            _ => Self::_Custom(from_raw_json_value(&content)?),
+            _ => Self::_Custom(CustomEdu { edu_type, content }),
         })
     }
+}
+
+/// An unsupported EDU type.
+#[doc(hidden)]
+#[derive(Clone, Debug, Serialize)]
+pub struct CustomEdu {
+    /// The type of EDU.
+    edu_type: String,
+
+    /// The content of the EDU.
+    content: Box<RawJsonValue>,
 }
 
 /// Mapping between user and `ReceiptData`.

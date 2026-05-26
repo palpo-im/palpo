@@ -2,6 +2,7 @@ use std::borrow::Borrow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::Hash;
+use std::num::NonZero;
 use std::sync::OnceLock;
 
 use futures_util::{StreamExt, stream};
@@ -867,12 +868,21 @@ where
         // tasks can make progress
     }
 
+    // The reverse iterator inverts the spec convention: position 1 is the
+    // deepest mainline event and N is the current power-levels event, where
+    // the spec uses 0 for the most recent and ∞ for no ancestor. With
+    // `Option<NonZero<usize>>`, ascending sort by `(position,
+    // origin_server_ts, event_id)` matches the spec mainline ordering, with
+    // no-ancestor events (`None`) first.
     let mainline_map = mainline
         .iter()
         .rev()
         .enumerate()
-        .map(|(idx, event_id)| ((*event_id).clone(), idx))
-        .collect::<EventIdMap<_>>();
+        .map(|(idx, event_id)| {
+            let position = NonZero::new(idx + 1).expect("idx + 1 is non-zero");
+            ((*event_id).clone(), position)
+        })
+        .collect::<EventIdMap<NonZero<usize>>>();
 
     let mut order_map = EventIdMap::new();
     for event_id in events.iter() {
@@ -902,7 +912,7 @@ where
         order_map
             .get(event_id)
             .cloned()
-            .unwrap_or_else(|| (0, None, event_id.to_owned()))
+            .unwrap_or_else(|| (None, None, event_id.to_owned()))
     });
 
     Ok(sorted_event_ids)
@@ -942,11 +952,16 @@ where
 ///
 /// Returns the mainline position of the event, or an `Err(_)` if one of the events in the auth
 /// chain of the event was not found.
+///
+/// `None` is returned for the spec's `i = ∞` case (no power-levels ancestor in the auth chain).
+/// The position is the reverse of the spec encoding: `1` is the deepest mainline event and `N`
+/// the current power-levels event. Ascending sort by `(position, origin_server_ts, event_id)`
+/// then matches the spec mainline ordering.
 async fn mainline_position<Pdu, Fetch, Fut>(
     event: &Pdu,
-    mainline_map: &EventIdMap<usize>,
+    mainline_map: &EventIdMap<NonZero<usize>>,
     fetch_event: &Fetch,
-) -> StateResult<usize>
+) -> StateResult<Option<NonZero<usize>>>
 where
     Fetch: Fn(OwnedEventId) -> Fut + Sync,
     Fut: Future<Output = StateResult<Pdu>> + Send,
@@ -960,7 +975,7 @@ where
 
         // If the current event is in the mainline map, return its position.
         if let Some(position) = mainline_map.get(event_id.borrow()) {
-            return Ok(*position);
+            return Ok(Some(*position));
         }
 
         current_event = None;
@@ -977,8 +992,8 @@ where
         }
     }
 
-    // Did not find a power level event so we default to zero.
-    Ok(0)
+    // No power-levels ancestor in the auth chain.
+    Ok(None)
 }
 
 /// Add the event with the given event ID and all the events in its auth chain that are in the full

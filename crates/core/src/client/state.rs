@@ -197,6 +197,7 @@ impl StateEventsResBody {
 pub struct SendStateEventReqBody(
     /// The event content to send.
     #[salvo(schema(value_type = Object, additional_properties = true))]
+    #[serde(deserialize_with = "crate::serde::deserialize_raw_object")]
     pub RawJson<AnyStateEventContent>,
 );
 
