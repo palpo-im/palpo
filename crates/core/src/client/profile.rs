@@ -9,9 +9,39 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::OwnedMxcUri;
+#[cfg(feature = "unstable-msc4466")]
+use crate::PrivOwnedStr;
+#[cfg(feature = "unstable-msc4466")]
+use crate::macros::StringEnum;
 
 mod profile_field_serde;
 pub use crate::profile::{ProfileFieldName, ProfileFieldValue};
+
+/// Controls which rooms the server should send an updated `m.room.member` event in
+/// when changing `displayname` or `avatar_url` in a user's profile. Defined by [MSC4466][1].
+///
+/// [1]: https://github.com/matrix-org/matrix-spec-proposals/pull/4466
+#[cfg(feature = "unstable-msc4466")]
+#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
+#[derive(ToSchema, Clone, Default, StringEnum)]
+#[palpo_enum(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PropagateTo {
+    /// The server must send a `m.room.member` event in all of the user's joined rooms.
+    #[default]
+    All,
+
+    /// The server must only send a `m.room.member` event in rooms where the profile field
+    /// being updated does _not_ differ from its value in the user's global profile data.
+    Unchanged,
+
+    /// The server must not send a `m.room.member` event to any rooms.
+    None,
+
+    #[doc(hidden)]
+    #[salvo(schema(value_type = String))]
+    _Custom(PrivOwnedStr),
+}
 
 // const METADATA: Metadata = metadata! {
 //     method: GET,
@@ -135,6 +165,20 @@ pub struct SetAvatarUrlReqBody {
     pub blurhash: Option<String>,
 }
 
+/// Query parameters for the `set_avatar_url` endpoint.
+#[cfg(feature = "unstable-msc4466")]
+#[derive(ToParameters, Deserialize, Debug, Default)]
+pub struct SetAvatarUrlReqArgs {
+    /// The propagation mode to use for this profile update.
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        rename = "computer.gingershaped.msc4466.propagate_to",
+        skip_serializing_if = "crate::serde::is_default"
+    )]
+    pub propagate_to: PropagateTo,
+}
+
 // /// `PUT /_matrix/client/*/profile/{user_id}/display_name`
 // ///
 // /// Set the display name of the user.
@@ -162,6 +206,20 @@ pub struct SetDisplayNameReqBody {
         alias = "displayname"
     )]
     pub display_name: Option<String>,
+}
+
+/// Query parameters for the `set_display_name` endpoint.
+#[cfg(feature = "unstable-msc4466")]
+#[derive(ToParameters, Deserialize, Debug, Default)]
+pub struct SetDisplayNameReqArgs {
+    /// The propagation mode to use for this profile update.
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        rename = "computer.gingershaped.msc4466.propagate_to",
+        skip_serializing_if = "crate::serde::is_default"
+    )]
+    pub propagate_to: PropagateTo,
 }
 
 /// Trait implemented by types representing a field in a user's profile having a statically-known
