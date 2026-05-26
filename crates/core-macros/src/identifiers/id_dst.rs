@@ -150,6 +150,13 @@ impl IdDst {
             }
 
             #[automatically_derived]
+            impl #impl_generics ::std::borrow::Borrow<::std::primitive::str> for #borrowed_type {
+                fn borrow(&self) -> &::std::primitive::str {
+                    self.as_str()
+                }
+            }
+
+            #[automatically_derived]
             impl #impl_generics ::std::convert::AsRef<::std::primitive::str> for #box_type {
                 fn as_ref(&self) -> &str {
                     self.as_str()
@@ -532,6 +539,13 @@ impl IdDst {
             #[automatically_derived]
             impl #impl_generics ::std::convert::AsRef<::std::primitive::str> for #owned_type {
                 fn as_ref(&self) -> &::std::primitive::str {
+                    self.inner.as_str()
+                }
+            }
+
+            #[automatically_derived]
+            impl #impl_generics ::std::borrow::Borrow<::std::primitive::str> for #owned_type {
+                fn borrow(&self) -> &::std::primitive::str {
                     self.inner.as_str()
                 }
             }
