@@ -650,7 +650,7 @@ mod serde_tests {
 
         assert_eq!(condition.kind(), "dev.palpo.custom");
         assert_eq!(
-            condition.custom_data().and_then(|data| data.get("field")),
+            condition.data().get("field"),
             Some(&JsonValue::String("value".to_owned()))
         );
         assert_eq!(to_json_value(condition).unwrap(), json);
