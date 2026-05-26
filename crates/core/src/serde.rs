@@ -182,6 +182,26 @@ where
     deserializer.deserialize_seq(SkipInvalid(PhantomData))
 }
 
+/// Deserialize a `RawJson<T>` and reject any value whose top-level JSON shape is not an object.
+///
+/// Use as `#[serde(deserialize_with = "crate::serde::deserialize_raw_object")]` wherever the
+/// Matrix spec mandates an object (e.g., `RawJson<EventContent>` on the body of
+/// `/_matrix/client/.../send` endpoints).
+pub fn deserialize_raw_object<'de, T, D>(deserializer: D) -> Result<RawJson<T>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = <RawJson<T> as Deserialize>::deserialize(deserializer)?;
+    if !raw.inner().get().trim_start().starts_with('{') {
+        return Err(de::Error::invalid_type(
+            de::Unexpected::Other("non-object value"),
+            &"a JSON object",
+        ));
+    }
+
+    Ok(raw)
+}
+
 pub use crate::macros::{
     AsRefStr, DebugAsRefStr, DeserializeFromCowStr, DisplayAsRefStr, EqAsRefStr, FromString,
     OrdAsRefStr, SerializeAsRefStr, StringEnum,

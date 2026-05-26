@@ -118,6 +118,8 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
         third_party_invite: None,
         reason: None,
         join_authorized_via_users_server,
+        #[cfg(feature = "unstable-msc4293")]
+        redact_events: false,
         extra_data: Default::default(),
     })
     .expect("member event is valid value");

@@ -558,14 +558,14 @@ where
 {
     let join_rule = fetch_state.join_rule().await?;
 
-    // TODO: Not same with ruma for testing?
     // v7-v9, if the join_rule is anything other than knock, reject.
     // Since v10, if the join_rule is anything other than knock or knock_restricted,
     // reject.
-    if (!auth_rules.knock_restricted_join_rule && join_rule != JoinRuleKind::Knock)
+    let supports_knock = matches!(join_rule, JoinRuleKind::Knock)
         || (auth_rules.knock_restricted_join_rule
-            && !matches!(join_rule, JoinRuleKind::KnockRestricted))
-    {
+            && matches!(join_rule, JoinRuleKind::KnockRestricted));
+
+    if !supports_knock {
         return Err(StateError::forbidden(
             "join rule is not set to knock or knock_restricted, knocking is not allowed",
         ));

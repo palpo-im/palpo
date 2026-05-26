@@ -86,6 +86,19 @@ pub struct BanUserReqBody {
     /// The reason for banning the user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+
+    /// A flag indicating whether all the user's events should be immediately redacted.
+    ///
+    /// This uses the unstable prefix defined in [MSC4293].
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4293.redact_events",
+        skip_serializing_if = "crate::serde::is_default"
+    )]
+    pub redact_events: bool,
 }
 
 // /// `POST /_matrix/client/*/rooms/{room_id}/unban`
@@ -185,6 +198,19 @@ pub struct KickUserReqBody {
     /// The reason for kicking the user.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+
+    /// A flag indicating whether all the user's events should be immediately redacted.
+    ///
+    /// This uses the unstable prefix defined in [MSC4293].
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4293.redact_events",
+        skip_serializing_if = "crate::serde::is_default"
+    )]
+    pub redact_events: bool,
 }
 
 // /// `POST /_matrix/client/*/rooms/{room_id}/invite`

@@ -97,6 +97,8 @@ pub async fn join_room(
             )
             .await
             .ok(),
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
             extra_data: extra_data.clone(),
         };
         match timeline::build_and_append_pdu(
@@ -185,6 +187,8 @@ pub async fn join_room(
             blurhash: data::user::blurhash(sender_id)?,
             reason,
             join_authorized_via_users_server,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
             extra_data: extra_data.clone(),
         })
         .map_err(|e| {
@@ -710,6 +714,8 @@ mod tests {
             blurhash: None,
             reason: None,
             join_authorized_via_users_server: None,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
             extra_data: extra,
         };
 

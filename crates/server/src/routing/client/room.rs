@@ -451,6 +451,8 @@ async fn upgrade(
                 blurhash: crate::data::user::blurhash(sender_id).ok().flatten(),
                 reason: None,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             })
             .expect("event is valid, we just created it"),
@@ -698,6 +700,8 @@ pub(super) async fn create_room(
                 blurhash: crate::data::user::blurhash(sender_id).ok().flatten(),
                 reason: None,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             })
             .expect("event is valid, we just created it"),

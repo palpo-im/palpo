@@ -110,6 +110,19 @@ pub struct RoomMemberEventContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub join_authorized_via_users_server: Option<OwnedUserId>,
 
+    /// Flag indicating all of this user's events should be redacted.
+    ///
+    /// This uses the unstable prefix defined in [MSC4293].
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4293.redact_events",
+        skip_serializing_if = "crate::serde::is_default"
+    )]
+    pub redact_events: bool,
+
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub extra_data: BTreeMap<String, JsonValue>,
@@ -153,6 +166,10 @@ impl<'de> Deserialize<'de> for RoomMemberEventContent {
             #[serde(skip_serializing_if = "Option::is_none")]
             join_authorized_via_users_server: Option<String>,
 
+            #[cfg(feature = "unstable-msc4293")]
+            #[serde(default, rename = "org.matrix.msc4293.redact_events")]
+            redact_events: bool,
+
             #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
             extra_data: BTreeMap<String, JsonValue>,
         }
@@ -166,6 +183,8 @@ impl<'de> Deserialize<'de> for RoomMemberEventContent {
             blurhash,
             reason,
             join_authorized_via_users_server,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events,
             extra_data,
         } = RoomMemberEventData::deserialize(deserializer)?;
 
@@ -180,6 +199,8 @@ impl<'de> Deserialize<'de> for RoomMemberEventContent {
             blurhash,
             reason,
             join_authorized_via_users_server,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events,
             extra_data,
         })
     }
@@ -197,6 +218,8 @@ impl RoomMemberEventContent {
             blurhash: None,
             reason: None,
             join_authorized_via_users_server: None,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
             extra_data: Default::default(),
         }
     }
@@ -297,6 +320,19 @@ pub struct PossiblyRedactedRoomMemberEventContent {
     #[serde(rename = "join_authorised_via_users_server")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub join_authorized_via_users_server: Option<OwnedUserId>,
+
+    /// Flag indicating all of this user's events should be redacted.
+    ///
+    /// This uses the unstable prefix defined in [MSC4293].
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4293.redact_events",
+        skip_serializing_if = "crate::serde::is_default"
+    )]
+    pub redact_events: bool,
 }
 
 impl PossiblyRedactedRoomMemberEventContent {
@@ -311,6 +347,8 @@ impl PossiblyRedactedRoomMemberEventContent {
             blurhash: None,
             reason: None,
             join_authorized_via_users_server: None,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
         }
     }
 
@@ -359,6 +397,8 @@ impl From<RoomMemberEventContent> for PossiblyRedactedRoomMemberEventContent {
             blurhash: c.blurhash,
             reason: c.reason,
             join_authorized_via_users_server: c.join_authorized_via_users_server,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: c.redact_events,
         }
     }
 }
@@ -379,6 +419,8 @@ impl From<RedactedRoomMemberEventContent> for PossiblyRedactedRoomMemberEventCon
             blurhash: None,
             reason: None,
             join_authorized_via_users_server: c.join_authorized_via_users_server,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
         }
     }
 }
@@ -487,6 +529,28 @@ impl RoomMemberEvent {
             Self::Redacted(ev) => &ev.content.membership,
         }
     }
+
+    /// Determines whether the user's events should be redacted based on their membership.
+    ///
+    /// Using [MSC4293], if `redact_events` is `true`, the sender is different from the state
+    /// key, and the membership is `ban` or `leave` (kick), `true` is returned. Otherwise, the
+    /// flag should be ignored, and `false` is returned.
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    pub fn should_redact_events(&self) -> bool {
+        match self {
+            Self::Original(ev) => {
+                ev.content.redact_events
+                    && ev.state_key != ev.sender
+                    && matches!(
+                        ev.content.membership,
+                        MembershipState::Ban | MembershipState::Leave
+                    )
+            }
+            Self::Redacted(_) => false,
+        }
+    }
 }
 
 impl SyncRoomMemberEvent {
@@ -496,6 +560,28 @@ impl SyncRoomMemberEvent {
         match self {
             Self::Original(ev) => &ev.content.membership,
             Self::Redacted(ev) => &ev.content.membership,
+        }
+    }
+
+    /// Determines whether the user's events should be redacted based on their membership.
+    ///
+    /// Using [MSC4293], if `redact_events` is `true`, the sender is different from the state
+    /// key, and the membership is `ban` or `leave` (kick), `true` is returned. Otherwise, the
+    /// flag should be ignored, and `false` is returned.
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    pub fn should_redact_events(&self) -> bool {
+        match self {
+            Self::Original(ev) => {
+                ev.content.redact_events
+                    && ev.state_key != ev.sender
+                    && matches!(
+                        ev.content.membership,
+                        MembershipState::Ban | MembershipState::Leave
+                    )
+            }
+            Self::Redacted(_) => false,
         }
     }
 }
@@ -652,6 +738,23 @@ impl OriginalRoomMemberEvent {
             &self.sender,
             &self.state_key,
         )
+    }
+
+    /// Determines whether the user's events should be redacted based on their membership.
+    ///
+    /// Using [MSC4293], if `redact_events` is `true`, the sender is different from the state
+    /// key, and the membership is `ban` or `leave` (kick), `true` is returned. Otherwise, the
+    /// flag should be ignored, and `false` is returned.
+    ///
+    /// [MSC4293]: https://github.com/matrix-org/matrix-spec-proposals/pull/4293
+    #[cfg(feature = "unstable-msc4293")]
+    pub fn should_redact_events(&self) -> bool {
+        self.content.redact_events
+            && self.state_key != self.sender
+            && matches!(
+                self.content.membership,
+                MembershipState::Ban | MembershipState::Leave
+            )
     }
 }
 
