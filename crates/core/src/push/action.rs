@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use as_variant::as_variant;
 use salvo::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
@@ -69,9 +71,20 @@ impl Action {
         as_variant!(self, Action::SetTweak(Tweak::Sound(sound)) => sound)
     }
 
-    /// Access the data if this is a custom action.
-    pub fn custom_data(&self) -> Option<&CustomActionData> {
-        as_variant!(self, Self::_Custom).map(|action| &action.0)
+    /// Access the data of this action.
+    pub fn data(&self) -> Cow<'_, CustomActionData> {
+        fn serialize<T: Serialize>(obj: T) -> JsonObject {
+            match serde_json::to_value(obj).expect("action serialization to succeed") {
+                JsonValue::Object(obj) => obj,
+                _ => panic!("action variant must serialize to object"),
+            }
+        }
+
+        match self {
+            Self::Notify => Cow::Owned(CustomActionData::String("notify".to_owned())),
+            Self::SetTweak(t) => Cow::Owned(CustomActionData::Object(serialize(t))),
+            Self::_Custom(c) => Cow::Borrowed(&c.0),
+        }
     }
 }
 
@@ -99,7 +112,7 @@ impl Serialize for Action {
 
 /// A custom action.
 #[doc(hidden)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(transparent)]
 pub struct CustomAction(CustomActionData);
 
@@ -171,9 +184,25 @@ impl Tweak {
         }
     }
 
-    /// Access the value, if this is a custom tweak.
-    pub fn custom_value(&self) -> Option<&RawJsonValue> {
-        as_variant!(self, Self::_Custom).and_then(|tweak| tweak.value.as_deref())
+    /// Access the value of this tweak.
+    ///
+    /// Prefer to use the public variants of `Tweak` where possible; this method is meant to
+    /// be used for custom tweaks only.
+    pub fn value(&self) -> Option<Cow<'_, RawJsonValue>> {
+        fn serialize<T: Serialize>(val: &T) -> Box<RawJsonValue> {
+            RawJsonValue::from_string(
+                serde_json::to_string(val).expect("tweak serialization to succeed"),
+            )
+            .expect("serialized tweak should be valid JSON")
+        }
+
+        match self {
+            Tweak::Sound(s) => Some(Cow::Owned(serialize(s))),
+            Tweak::Highlight(h) => {
+                Some(Cow::Owned(serialize(&matches!(h, HighlightTweakValue::Yes))))
+            }
+            Tweak::_Custom(c) => c.value.as_deref().map(Cow::Borrowed),
+        }
     }
 }
 
@@ -182,7 +211,13 @@ impl<'de> Deserialize<'de> for Tweak {
     where
         D: Deserializer<'de>,
     {
-        let CustomTweak { set_tweak, value } = CustomTweak::deserialize(deserializer)?;
+        #[derive(Deserialize)]
+        struct TweakDeHelper {
+            set_tweak: String,
+            value: Option<Box<RawJsonValue>>,
+        }
+
+        let TweakDeHelper { set_tweak, value } = TweakDeHelper::deserialize(deserializer)?;
         Self::new(set_tweak, value).map_err(de::Error::custom)
     }
 }
@@ -266,7 +301,7 @@ impl From<bool> for HighlightTweakValue {
 
 /// A custom tweak.
 #[doc(hidden)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CustomTweak {
     /// The kind of the custom tweak.
     set_tweak: String,

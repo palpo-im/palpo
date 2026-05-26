@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use as_variant::as_variant;
 use salvo::prelude::*;
-use serde::de::Error as _;
 use serde::{Deserialize, Serialize, de};
 use serde_json::Value as JsonValue;
 use serde_json::value::RawValue as RawJsonValue;
@@ -242,13 +241,10 @@ impl<'de> Deserialize<'de> for JoinRule {
         #[derive(Deserialize)]
         struct ExtractType<'a> {
             #[serde(borrow)]
-            join_rule: Option<Cow<'a, str>>,
+            join_rule: Cow<'a, str>,
         }
 
-        let join_rule = serde_json::from_str::<ExtractType<'_>>(json.get())
-            .map_err(serde::de::Error::custom)?
-            .join_rule
-            .ok_or_else(|| D::Error::missing_field("join_rule"))?;
+        let ExtractType { join_rule } = from_raw_json_value(&json)?;
 
         match join_rule.as_ref() {
             "invite" => Ok(Self::Invite),
@@ -257,14 +253,24 @@ impl<'de> Deserialize<'de> for JoinRule {
             "restricted" => from_raw_json_value(&json).map(Self::Restricted),
             "knock_restricted" => from_raw_json_value(&json).map(Self::KnockRestricted),
             "public" => Ok(Self::Public),
-            _ => from_raw_json_value(&json).map(Self::_Custom),
+            _ => {
+                let mut data = from_raw_json_value::<JsonObject, _>(&json)?;
+                let join_rule = as_variant!(
+                    data.remove("join_rule")
+                        .expect("join_rule field already extracted"),
+                    JsonValue::String
+                )
+                .expect("join_rule was already deserialized as a string");
+
+                Ok(Self::_Custom(CustomJoinRule { join_rule, data }))
+            }
         }
     }
 }
 
 /// The payload for an unsupported join rule.
 #[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CustomJoinRule {
     /// The kind of join rule.
     join_rule: String,
@@ -359,7 +365,7 @@ impl RoomMembership {
 }
 
 #[doc(hidden)]
-#[derive(ToSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CustomAllowRule {
     #[serde(rename = "type")]
     rule_type: String,
@@ -379,18 +385,24 @@ impl<'de> Deserialize<'de> for AllowRule {
         #[derive(Deserialize)]
         struct ExtractType<'a> {
             #[serde(borrow, rename = "type")]
-            rule_type: Option<Cow<'a, str>>,
+            rule_type: Cow<'a, str>,
         }
 
         // Get the value of `type` if present.
-        let rule_type = serde_json::from_str::<ExtractType<'_>>(json.get())
-            .map_err(serde::de::Error::custom)?
-            .rule_type;
+        let ExtractType { rule_type } = from_raw_json_value(&json)?;
 
-        match rule_type.as_deref() {
-            Some("m.room_membership") => from_raw_json_value(&json).map(Self::RoomMembership),
-            Some(_) => from_raw_json_value(&json).map(Self::_Custom),
-            None => Err(D::Error::missing_field("type")),
+        match rule_type.as_ref() {
+            "m.room_membership" => from_raw_json_value(&json).map(Self::RoomMembership),
+            _ => {
+                let mut extra = from_raw_json_value::<BTreeMap<String, JsonValue>, _>(&json)?;
+                let rule_type = as_variant!(
+                    extra.remove("type").expect("type field already extracted"),
+                    JsonValue::String
+                )
+                .expect("type was already deserialized as a string");
+
+                Ok(Self::_Custom(Box::new(CustomAllowRule { rule_type, extra })))
+            }
         }
     }
 }

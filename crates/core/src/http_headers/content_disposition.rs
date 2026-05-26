@@ -387,7 +387,7 @@ pub enum ContentDispositionType {
 
     #[doc(hidden)]
     #[salvo(schema(value_type = String))]
-    _Custom(TokenString),
+    _Custom(crate::PrivOwnedStr),
 }
 
 impl ContentDispositionType {
@@ -404,7 +404,7 @@ impl From<TokenString> for ContentDispositionType {
         } else if value.eq_ignore_ascii_case("attachment") {
             Self::Attachment
         } else {
-            Self::_Custom(value)
+            Self::_Custom(crate::PrivOwnedStr(value.0))
         }
     }
 }
@@ -418,7 +418,7 @@ impl<'a> TryFrom<&'a [u8]> for ContentDispositionType {
         } else if value.eq_ignore_ascii_case(b"attachment") {
             Ok(Self::Attachment)
         } else {
-            TokenString::try_from(value).map(Self::_Custom)
+            TokenString::try_from(value).map(Into::into)
         }
     }
 }

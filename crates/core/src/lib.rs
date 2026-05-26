@@ -61,8 +61,8 @@ pub type MatrixResult<T> = Result<T, MatrixError>;
 // this crate:: Used for string enums because their `_Custom` variant can't be
 // truly private (only `#[doc(hidden)]`).
 #[doc(hidden)]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Deserialize, Ord, Hash)]
-pub struct PrivOwnedStr(Box<str>);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Deserialize, Serialize, Ord, Hash)]
+pub struct PrivOwnedStr(pub(crate) Box<str>);
 
 impl fmt::Debug for PrivOwnedStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

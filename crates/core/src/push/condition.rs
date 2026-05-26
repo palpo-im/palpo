@@ -15,8 +15,8 @@ use crate::power_levels::NotificationPowerLevels;
 use crate::room_version_rules::RoomPowerLevelsRules;
 use crate::serde::JsonObject;
 use crate::{EventId, OwnedRoomId, OwnedUserId, PrivOwnedStr, RoomVersionId, UserId};
-use as_variant::as_variant;
 
+mod condition_serde;
 mod flattened_json;
 mod room_member_count_is;
 
@@ -64,7 +64,7 @@ impl RoomVersionFeature {
 }
 
 /// A condition that must apply for an associated push rule's action to be taken.
-#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PushCondition {
@@ -128,9 +128,36 @@ impl PushCondition {
         }
     }
 
-    /// The data, if this is a custom condition.
-    pub fn custom_data(&self) -> Option<&JsonObject> {
-        as_variant!(self, Self::_Custom).map(|condition| &condition.data)
+    /// The data of this `PushCondition`.
+    ///
+    /// The returned JSON object won't contain the `kind` field, use [`.kind()`](Self::kind) to
+    /// access it.
+    ///
+    /// Prefer to use the public variants of `PushCondition` where possible; this method is meant
+    /// to be used for custom conditions only.
+    pub fn data(&self) -> std::borrow::Cow<'_, JsonObject> {
+        use std::borrow::Cow;
+        fn serialize<T: Serialize>(obj: T) -> JsonObject {
+            match serde_json::to_value(obj).expect("push condition serialization to succeed") {
+                serde_json::Value::Object(obj) => obj,
+                _ => panic!("all push condition variants must serialize to objects"),
+            }
+        }
+
+        match self {
+            Self::EventMatch(c) => Cow::Owned(serialize(c)),
+            #[allow(deprecated)]
+            Self::ContainsDisplayName => Cow::Owned(JsonObject::new()),
+            Self::RoomMemberCount(c) => Cow::Owned(serialize(c)),
+            Self::SenderNotificationPermission(c) => Cow::Owned(serialize(c)),
+            #[cfg(feature = "unstable-msc3931")]
+            Self::RoomVersionSupports(c) => Cow::Owned(serialize(c)),
+            Self::EventPropertyIs(c) => Cow::Owned(serialize(c)),
+            Self::EventPropertyContains(c) => Cow::Owned(serialize(c)),
+            #[cfg(feature = "unstable-msc4306")]
+            Self::ThreadSubscription(c) => Cow::Owned(serialize(c)),
+            Self::_Custom(c) => Cow::Borrowed(&c.data),
+        }
     }
 }
 
@@ -443,15 +470,15 @@ impl PushCondition {
 
 /// An unknown push condition.
 #[doc(hidden)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[allow(clippy::exhaustive_structs)]
 pub struct _CustomPushCondition {
     /// The kind of the condition.
-    kind: String,
+    pub(super) kind: String,
 
     /// The additional fields that the condition contains.
     #[serde(flatten)]
-    data: JsonObject,
+    pub(super) data: JsonObject,
 }
 
 /// The context of the room associated to an event to be able to test all push
