@@ -38,6 +38,8 @@ pub async fn invite_user(
                 blurhash: None,
                 reason,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             };
 
@@ -157,6 +159,8 @@ pub async fn invite_user(
                 blurhash: data::user::blurhash(invitee_id)?,
                 reason,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             })
             .expect("event is valid, we just created it"),

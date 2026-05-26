@@ -211,6 +211,8 @@ async fn create_notice_room(
                 blurhash: None,
                 reason: None,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             })?,
             state_key: Some(server_user.to_string()),
@@ -317,6 +319,8 @@ async fn create_notice_room(
                 blurhash: None,
                 reason: None,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             })?,
             state_key: Some(target_user.to_string()),
@@ -342,6 +346,8 @@ async fn create_notice_room(
                 blurhash: None,
                 reason: None,
                 join_authorized_via_users_server: None,
+                #[cfg(feature = "unstable-msc4293")]
+                redact_events: false,
                 extra_data: Default::default(),
             })?,
             state_key: Some(target_user.to_string()),

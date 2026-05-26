@@ -532,6 +532,8 @@ pub(super) async fn ban_user(
             blurhash,
             reason: body.reason.clone(),
             join_authorized_via_users_server: None,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
             extra_data: Default::default(),
         }
     } else {
@@ -551,6 +553,8 @@ pub(super) async fn ban_user(
             blurhash,
             reason: body.reason.clone(),
             join_authorized_via_users_server: None,
+            #[cfg(feature = "unstable-msc4293")]
+            redact_events: false,
             extra_data: Default::default(),
         }
     };
