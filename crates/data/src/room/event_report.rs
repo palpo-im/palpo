@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -95,16 +96,19 @@ pub struct EventReportFilter {
 }
 
 /// Create a new event report
-pub fn create_event_report(report: NewDbEventReport) -> DataResult<i64> {
+pub async fn create_event_report(report: NewDbEventReport) -> DataResult<i64> {
     let result = diesel::insert_into(event_reports::table)
         .values(&report)
         .returning(event_reports::id)
-        .get_result::<i64>(&mut connect()?)?;
+        .get_result::<i64>(&mut connect().await?)
+        .await?;
     Ok(result)
 }
 
 /// List event reports with pagination and filtering
-pub fn list_event_reports(filter: &EventReportFilter) -> DataResult<(Vec<EventReportInfo>, i64)> {
+pub async fn list_event_reports(
+    filter: &EventReportFilter,
+) -> DataResult<(Vec<EventReportInfo>, i64)> {
     let mut count_query = event_reports::table.into_boxed();
     let mut query = event_reports::table.into_boxed();
 
@@ -121,7 +125,10 @@ pub fn list_event_reports(filter: &EventReportFilter) -> DataResult<(Vec<EventRe
     }
 
     // Get total count
-    let total = count_query.count().get_result::<i64>(&mut connect()?)?;
+    let total = count_query
+        .count()
+        .get_result::<i64>(&mut connect().await?)
+        .await?;
 
     // Apply ordering - default is backwards (newest first)
     let direction_forward = filter.direction.as_ref().map(|d| d == "f").unwrap_or(false);
@@ -140,43 +147,48 @@ pub fn list_event_reports(filter: &EventReportFilter) -> DataResult<(Vec<EventRe
     let limit = filter.limit.unwrap_or(100).min(1000);
     query = query.limit(limit);
 
-    let reports = query.load::<DbEventReport>(&mut connect()?)?;
+    let reports = query.load::<DbEventReport>(&mut connect().await?).await?;
 
     Ok((reports.into_iter().map(Into::into).collect(), total))
 }
 
 /// Get a single event report by ID
-pub fn get_event_report(report_id: i64) -> DataResult<Option<DbEventReport>> {
+pub async fn get_event_report(report_id: i64) -> DataResult<Option<DbEventReport>> {
     event_reports::table
         .find(report_id)
-        .first::<DbEventReport>(&mut connect()?)
+        .first::<DbEventReport>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
 /// Update an event report status by ID
-pub fn update_event_report_status(
+pub async fn update_event_report_status(
     report_id: i64,
     status: &str,
 ) -> DataResult<Option<DbEventReport>> {
     diesel::update(event_reports::table.find(report_id))
         .set(event_reports::status.eq(status))
-        .get_result::<DbEventReport>(&mut connect()?)
+        .get_result::<DbEventReport>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
 /// Delete an event report by ID
 /// Returns true if deleted, false if not found
-pub fn delete_event_report(report_id: i64) -> DataResult<bool> {
-    let result = diesel::delete(event_reports::table.find(report_id)).execute(&mut connect()?)?;
+pub async fn delete_event_report(report_id: i64) -> DataResult<bool> {
+    let result = diesel::delete(event_reports::table.find(report_id))
+        .execute(&mut connect().await?)
+        .await?;
     Ok(result > 0)
 }
 
 /// Get event reports count for statistics
-pub fn count_event_reports() -> DataResult<i64> {
+pub async fn count_event_reports() -> DataResult<i64> {
     event_reports::table
         .count()
-        .get_result::<i64>(&mut connect()?)
+        .get_result::<i64>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }

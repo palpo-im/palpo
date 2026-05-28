@@ -128,7 +128,7 @@ pub fn router() -> Router {
 ///
 /// - Only works if the user is currently joined to the room (TODO: Respect history visibility)
 #[endpoint]
-fn search(
+async fn search(
     _aa: AuthArgs,
     args: SearchReqArgs,
     body: JsonBody<SearchReqBody>,
@@ -141,7 +141,8 @@ fn search(
         authed.user_id(),
         search_criteria,
         args.next_batch.as_deref(),
-    )?;
+    )
+    .await?;
     json_ok(SearchResBody::new(ResultCategories { room_events }))
 }
 

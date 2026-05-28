@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::AppResult;
 use crate::core::events::StateEventType;
@@ -13,21 +14,23 @@ pub struct DbRoomStateField {
     pub state_key: String,
 }
 
-pub fn get_field(field_id: i64) -> AppResult<DbRoomStateField> {
+pub async fn get_field(field_id: i64) -> AppResult<DbRoomStateField> {
     room_state_fields::table
         .find(field_id)
-        .first::<DbRoomStateField>(&mut connect()?)
+        .first::<DbRoomStateField>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn get_field_id(event_ty: &StateEventType, state_key: &str) -> AppResult<i64> {
+pub async fn get_field_id(event_ty: &StateEventType, state_key: &str) -> AppResult<i64> {
     room_state_fields::table
         .filter(room_state_fields::event_ty.eq(event_ty))
         .filter(room_state_fields::state_key.eq(state_key))
         .select(room_state_fields::id)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn ensure_field_id(event_ty: &StateEventType, state_key: &str) -> AppResult<i64> {
+pub async fn ensure_field_id(event_ty: &StateEventType, state_key: &str) -> AppResult<i64> {
     let id = diesel::insert_into(room_state_fields::table)
         .values((
             room_state_fields::event_ty.eq(event_ty),
@@ -35,7 +38,8 @@ pub fn ensure_field_id(event_ty: &StateEventType, state_key: &str) -> AppResult<
         ))
         .on_conflict_do_nothing()
         .returning(room_state_fields::id)
-        .get_result::<i64>(&mut connect()?)
+        .get_result::<i64>(&mut connect().await?)
+        .await
         .optional()?;
     if let Some(id) = id {
         Ok(id)
@@ -44,11 +48,15 @@ pub fn ensure_field_id(event_ty: &StateEventType, state_key: &str) -> AppResult<
             .filter(room_state_fields::event_ty.eq(event_ty))
             .filter(room_state_fields::state_key.eq(state_key))
             .select(room_state_fields::id)
-            .first::<i64>(&mut connect()?)
+            .first::<i64>(&mut connect().await?)
+            .await
             .map_err(Into::into)
     }
 }
-pub fn ensure_field(event_ty: &StateEventType, state_key: &str) -> AppResult<DbRoomStateField> {
+pub async fn ensure_field(
+    event_ty: &StateEventType,
+    state_key: &str,
+) -> AppResult<DbRoomStateField> {
     let id = diesel::insert_into(room_state_fields::table)
         .values((
             room_state_fields::event_ty.eq(event_ty),
@@ -56,18 +64,21 @@ pub fn ensure_field(event_ty: &StateEventType, state_key: &str) -> AppResult<DbR
         ))
         .on_conflict_do_nothing()
         .returning(room_state_fields::id)
-        .get_result::<i64>(&mut connect()?)
+        .get_result::<i64>(&mut connect().await?)
+        .await
         .optional()?;
     if let Some(id) = id {
         room_state_fields::table
             .find(id)
-            .first::<DbRoomStateField>(&mut connect()?)
+            .first::<DbRoomStateField>(&mut connect().await?)
+            .await
             .map_err(Into::into)
     } else {
         room_state_fields::table
             .filter(room_state_fields::event_ty.eq(event_ty))
             .filter(room_state_fields::state_key.eq(state_key))
-            .first::<DbRoomStateField>(&mut connect()?)
+            .first::<DbRoomStateField>(&mut connect().await?)
+            .await
             .map_err(Into::into)
     }
 }

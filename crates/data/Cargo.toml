@@ -36,13 +36,14 @@ config = { workspace = true }
 cookie = { workspace = true }
 cyborgtime = { workspace = true }
 data-encoding = { workspace = true }
+deadpool = { workspace = true, features = ["managed", "rt_tokio_1"] }
 diesel = { workspace = true, features = [
     "postgres",
     "serde_json",
     "chrono",
     "numeric",
-    "r2d2",
 ] }
+diesel-async = { workspace = true, features = ["postgres", "deadpool"] }
 diesel_migrations = { workspace = true }
 dotenvy = { workspace = true }
 fast32 = { workspace = true }
@@ -80,7 +81,6 @@ salvo = { workspace = true, features = [
     "size-limiter",
 ] }
 sanitize-filename = { workspace = true }
-scheduled-thread-pool = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }

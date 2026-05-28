@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -25,7 +26,7 @@ pub struct NewDbUserExternalId {
 }
 
 /// Get user_id by external auth provider and external_id
-pub fn get_user_by_external_id(
+pub async fn get_user_by_external_id(
     auth_provider: &str,
     external_id: &str,
 ) -> DataResult<Option<OwnedUserId>> {
@@ -33,21 +34,23 @@ pub fn get_user_by_external_id(
         .filter(user_external_ids::auth_provider.eq(auth_provider))
         .filter(user_external_ids::external_id.eq(external_id))
         .select(user_external_ids::user_id)
-        .first::<OwnedUserId>(&mut connect()?)
+        .first::<OwnedUserId>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
 /// Get all external IDs for a user
-pub fn get_external_ids_by_user(user_id: &UserId) -> DataResult<Vec<DbUserExternalId>> {
+pub async fn get_external_ids_by_user(user_id: &UserId) -> DataResult<Vec<DbUserExternalId>> {
     user_external_ids::table
         .filter(user_external_ids::user_id.eq(user_id))
-        .load::<DbUserExternalId>(&mut connect()?)
+        .load::<DbUserExternalId>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
 /// Record a new external ID for a user
-pub fn record_external_id(
+pub async fn record_external_id(
     auth_provider: &str,
     external_id: &str,
     user_id: &UserId,
@@ -59,20 +62,20 @@ pub fn record_external_id(
             user_id: user_id.to_owned(),
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?).await?;
     Ok(())
 }
 
 /// Replace all external IDs for a user
-pub fn replace_external_ids(
+pub async fn replace_external_ids(
     user_id: &UserId,
     new_external_ids: &[(String, String)], // (auth_provider, external_id)
 ) -> DataResult<()> {
-    let mut conn = connect()?;
+    let mut conn = connect().await?;
 
     // Delete existing external IDs for this user
     diesel::delete(user_external_ids::table.filter(user_external_ids::user_id.eq(user_id)))
-        .execute(&mut conn)?;
+        .execute(&mut conn).await?;
 
     // Insert new external IDs
     let now = UnixMillis::now();
@@ -84,19 +87,19 @@ pub fn replace_external_ids(
                 user_id: user_id.to_owned(),
                 created_at: now,
             })
-            .execute(&mut conn)?;
+            .execute(&mut conn).await?;
     }
 
     Ok(())
 }
 
 /// Delete a specific external ID
-pub fn delete_external_id(auth_provider: &str, external_id: &str) -> DataResult<()> {
+pub async fn delete_external_id(auth_provider: &str, external_id: &str) -> DataResult<()> {
     diesel::delete(
         user_external_ids::table
             .filter(user_external_ids::auth_provider.eq(auth_provider))
             .filter(user_external_ids::external_id.eq(external_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?).await?;
     Ok(())
 }

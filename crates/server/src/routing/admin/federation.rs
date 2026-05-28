@@ -62,7 +62,7 @@ pub struct DestinationRoom {
 ///
 /// List all federation destinations
 #[endpoint]
-pub fn list_destinations(
+pub async fn list_destinations(
     from: QueryParam<i64, false>,
     limit: QueryParam<i64, false>,
     _destination: QueryParam<String, false>,
@@ -72,7 +72,7 @@ pub fn list_destinations(
     let offset = from.into_inner().unwrap_or(0);
     let limit = limit.into_inner().unwrap_or(100);
 
-    let servers = data::sending::get_all_destinations()?;
+    let servers = data::sending::get_all_destinations().await?;
     let total = servers.len() as i64;
 
     let destinations: Vec<DestinationInfo> = servers
@@ -105,11 +105,11 @@ pub fn list_destinations(
 ///
 /// Get details of a specific destination
 #[endpoint]
-pub fn get_destination(destination: PathParam<OwnedServerName>) -> JsonResult<DestinationInfo> {
+pub async fn get_destination(destination: PathParam<OwnedServerName>) -> JsonResult<DestinationInfo> {
     let destination = destination.into_inner();
 
     // Check if destination is known
-    if !data::sending::is_destination_known(&destination)? {
+    if !data::sending::is_destination_known(&destination).await? {
         return Err(MatrixError::not_found("Unknown destination").into());
     }
 
@@ -126,7 +126,7 @@ pub fn get_destination(destination: PathParam<OwnedServerName>) -> JsonResult<De
 ///
 /// Get rooms shared with a destination
 #[endpoint]
-pub fn destination_rooms(
+pub async fn destination_rooms(
     destination: PathParam<OwnedServerName>,
     from: QueryParam<i64, false>,
     limit: QueryParam<i64, false>,
@@ -136,11 +136,11 @@ pub fn destination_rooms(
     let limit = limit.into_inner().unwrap_or(100);
 
     // Check if destination is known
-    if !data::sending::is_destination_known(&destination)? {
+    if !data::sending::is_destination_known(&destination).await? {
         return Err(MatrixError::not_found("Unknown destination").into());
     }
 
-    let rooms = data::sending::get_destination_rooms(&destination)?;
+    let rooms = data::sending::get_destination_rooms(&destination).await?;
     let total = rooms.len() as i64;
 
     let rooms: Vec<DestinationRoom> = rooms
@@ -170,16 +170,18 @@ pub fn destination_rooms(
 ///
 /// Reset connection to a destination
 #[endpoint]
-pub fn reset_connection(destination: PathParam<OwnedServerName>) -> JsonResult<serde_json::Value> {
+pub async fn reset_connection(
+    destination: PathParam<OwnedServerName>,
+) -> JsonResult<serde_json::Value> {
     let destination = destination.into_inner();
 
     // Check if destination is known
-    if !data::sending::is_destination_known(&destination)? {
+    if !data::sending::is_destination_known(&destination).await? {
         return Err(MatrixError::not_found("Unknown destination").into());
     }
 
     // Reset retry timings
-    data::sending::reset_destination_retry(&destination)?;
+    data::sending::reset_destination_retry(&destination).await?;
 
     json_ok(serde_json::json!({}))
 }

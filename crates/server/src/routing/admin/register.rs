@@ -15,11 +15,11 @@ struct AvailableResBody {
 /// An admin API to check if a given username is available, regardless of whether registration is
 /// enabled.
 #[endpoint]
-fn check_username_available(
+async fn check_username_available(
     _aa: AuthArgs,
     username: QueryParam<String, true>,
 ) -> JsonResult<AvailableResBody> {
-    if !user::is_username_available(&username)? {
+    if !user::is_username_available(&username).await? {
         Err(MatrixError::user_in_use("desired user id is invalid or already taken").into())
     } else {
         json_ok(AvailableResBody { available: true })

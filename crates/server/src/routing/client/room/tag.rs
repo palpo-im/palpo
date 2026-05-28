@@ -24,6 +24,7 @@ pub(super) async fn list_tags(
         Some(&args.room_id),
         &RoomAccountDataEventType::Tag.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     json_ok(TagsResBody {
@@ -49,6 +50,7 @@ pub(super) async fn upsert_tag(
         Some(&args.room_id),
         &RoomAccountDataEventType::Tag.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     user_data_content
@@ -60,7 +62,8 @@ pub(super) async fn upsert_tag(
         Some(args.room_id.clone()),
         &RoomAccountDataEventType::Tag.to_string(),
         serde_json::to_value(user_data_content).expect("to json value always works"),
-    )?;
+    )
+    .await?;
     empty_ok()
 }
 
@@ -81,6 +84,7 @@ pub(super) async fn delete_tag(
         Some(&args.room_id),
         &RoomAccountDataEventType::Tag.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     user_data_content.tags.remove(&args.tag.clone().into());
@@ -90,6 +94,7 @@ pub(super) async fn delete_tag(
         Some(args.room_id.clone()),
         &RoomAccountDataEventType::Tag.to_string(),
         serde_json::to_value(user_data_content).expect("to json value always works"),
-    )?;
+    )
+    .await?;
     empty_ok()
 }

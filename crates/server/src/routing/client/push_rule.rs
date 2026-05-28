@@ -49,6 +49,7 @@ async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     json_ok(RulesResBody {
@@ -59,13 +60,14 @@ async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
 /// #GET /_matrix/client/r0/pushrules/{scope}/{kind}/{rule_id}
 /// Retrieves a single specified push rule for this user.
 #[endpoint]
-fn get_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<RuleResBody> {
+async fn get_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<RuleResBody> {
     let authed = depot.authed_info()?;
 
     let user_data_content = crate::data::user::get_global_data::<PushRulesEventContent>(
         authed.user_id(),
         &GlobalAccountDataEventType::PushRules.to_string(),
-    )?
+    )
+    .await?
     .ok_or(MatrixError::not_found("push rule event not found."))?;
 
     let rule = user_data_content
@@ -143,6 +145,7 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     if let Err(error) =
@@ -177,7 +180,8 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
         serde_json::to_value(user_data_content)?,
-    )?;
+    )
+    .await?;
 
     empty_ok()
 }
@@ -197,7 +201,8 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
     let mut user_data_content = crate::data::user::get_global_data::<PushRulesEventContent>(
         authed.user_id(),
         &GlobalAccountDataEventType::PushRules.to_string(),
-    )?
+    )
+    .await?
     .ok_or(MatrixError::not_found("PushRules event not found."))?;
 
     if let Err(error) = user_data_content
@@ -220,7 +225,8 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
         serde_json::to_value(user_data_content)?,
-    )?;
+    )
+    .await?;
     empty_ok()
 }
 
@@ -235,6 +241,7 @@ async fn list_rules(depot: &mut Depot) -> JsonResult<RulesResBody> {
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     json_ok(RulesResBody {
@@ -262,6 +269,7 @@ async fn get_actions(
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
+    .await
     .unwrap_or_default();
 
     let actions = user_data_content
@@ -276,7 +284,7 @@ async fn get_actions(
 /// #PUT /_matrix/client/r0/pushrules/{scope}/{kind}/{rule_id}/actions
 /// Sets the actions of a single specified push rule for this user.
 #[endpoint]
-fn set_actions(
+async fn set_actions(
     args: ScopeKindRuleReqArgs,
     body: JsonBody<SetRuleActionsReqBody>,
     depot: &mut Depot,
@@ -294,6 +302,7 @@ fn set_actions(
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
+    .await
     .map_err(|_| MatrixError::not_found("push rules event not found"))?;
 
     if user_data_content
@@ -309,7 +318,8 @@ fn set_actions(
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
         serde_json::to_value(user_data_content).expect("to json value always works"),
-    )?;
+    )
+    .await?;
 
     empty_ok()
 }
@@ -317,7 +327,10 @@ fn set_actions(
 /// #GET /_matrix/client/r0/pushrules/{scope}/{kind}/{rule_id}/enabled
 /// Gets the enabled status of a single specified push rule for this user.
 #[endpoint]
-fn get_enabled(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<RuleEnabledResBody> {
+async fn get_enabled(
+    args: ScopeKindRuleReqArgs,
+    depot: &mut Depot,
+) -> JsonResult<RuleEnabledResBody> {
     let authed = depot.authed_info()?;
 
     if args.scope != RuleScope::Global {
@@ -330,7 +343,8 @@ fn get_enabled(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<Rule
         authed.user_id(),
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
-    )?;
+    )
+    .await?;
 
     let enabled = user_data_content
         .global
@@ -344,7 +358,7 @@ fn get_enabled(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<Rule
 /// #PUT /_matrix/client/r0/pushrules/{scope}/{kind}/{rule_id}/enabled
 /// Sets the enabled status of a single specified push rule for this user.
 #[endpoint]
-fn set_enabled(
+async fn set_enabled(
     args: ScopeKindRuleReqArgs,
     body: JsonBody<SetRuleEnabledReqBody>,
     depot: &mut Depot,
@@ -361,7 +375,8 @@ fn set_enabled(
         authed.user_id(),
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
-    )?;
+    )
+    .await?;
 
     if user_data_content
         .global
@@ -376,7 +391,8 @@ fn set_enabled(
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
         serde_json::to_value(user_data_content)?,
-    )?;
+    )
+    .await?;
 
     empty_ok()
 }

@@ -15,7 +15,7 @@ pub async fn invite_user(
     reason: Option<String>,
     is_direct: bool,
 ) -> AppResult<()> {
-    if !room::user::is_joined(inviter_id, room_id)? {
+    if !room::user::is_joined(inviter_id, room_id).await? {
         return Err(MatrixError::forbidden(
             "you must be joined in the room you are trying to invite from",
             None,
@@ -49,18 +49,18 @@ pub async fn invite_user(
                     inviter_id,
                     room_id,
                     crate::room::get_version(room_id)
-                        .as_ref()
+                        .await.as_ref()
                         .unwrap_or(&conf.default_room_version),
                     &state_lock,
                 )
                 .await?;
             drop(state_lock);
 
-            let invite_room_state = state::summary_stripped(&pdu)?;
+            let invite_room_state = state::summary_stripped(&pdu).await?;
 
             (pdu, pdu_json, invite_room_state)
         };
-        let room_version_id = room::get_version(room_id)?;
+        let room_version_id = room::get_version(room_id).await?;
 
         crate::membership::update_membership(
             &pdu.event_id,
@@ -70,7 +70,7 @@ pub async fn invite_user(
             MembershipState::Invite,
             inviter_id,
             Some(invite_room_state.clone()),
-        )?;
+        ).await?;
 
         let invite_request = crate::core::federation::membership::invite_user_request_v2(
             &invitee_id.server_name().origin().await,
@@ -80,9 +80,9 @@ pub async fn invite_user(
             },
             InviteUserReqBodyV2 {
                 room_version: room_version_id.clone(),
-                event: sending::convert_to_outgoing_federation_event(pdu_json.clone()),
+                event: sending::convert_to_outgoing_federation_event(pdu_json.clone()).await,
                 invite_room_state,
-                via: state::servers_route_via(room_id).ok(),
+                via: state::servers_route_via(room_id).await.ok(),
             },
         )?
         .into_inner();
@@ -144,7 +144,7 @@ pub async fn invite_user(
             &event_id,
             &[invitee_id.server_name().to_owned()],
             &[],
-        );
+        ).await;
     }
 
     timeline::build_and_append_pdu(
@@ -152,11 +152,11 @@ pub async fn invite_user(
             event_type: TimelineEventType::RoomMember,
             content: to_raw_json_value(&RoomMemberEventContent {
                 membership: MembershipState::Invite,
-                display_name: data::user::display_name(invitee_id)?,
-                avatar_url: data::user::avatar_url(invitee_id)?,
+                display_name: data::user::display_name(invitee_id).await?,
+                avatar_url: data::user::avatar_url(invitee_id).await?,
                 is_direct: Some(is_direct),
                 third_party_invite: None,
-                blurhash: data::user::blurhash(invitee_id)?,
+                blurhash: data::user::blurhash(invitee_id).await?,
                 reason,
                 join_authorized_via_users_server: None,
                 #[cfg(feature = "unstable-msc4293")]
@@ -169,7 +169,7 @@ pub async fn invite_user(
         },
         inviter_id,
         room_id,
-        &crate::room::get_version(room_id)?,
+        &crate::room::get_version(room_id).await?,
         &room::lock_state(room_id).await,
     )
     .await?;

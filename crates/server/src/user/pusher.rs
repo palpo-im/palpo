@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::push::PusherIds;
 use url::Url;
 
@@ -19,7 +20,7 @@ use crate::event::PduEvent;
 use crate::utils::url_guard;
 use crate::{AppError, AppResult, AuthedInfo, data, room, sending};
 
-pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
+pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
     match pusher {
         PusherAction::Post(data) => {
             let PusherPostData {
@@ -42,7 +43,8 @@ pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
                         .filter(user_pushers::pushkey.eq(&pushkey))
                         .filter(user_pushers::app_id.eq(&app_id)),
                 )
-                .execute(&mut connect()?)?;
+                .execute(&mut connect().await?)
+                .await?;
             }
             diesel::insert_into(user_pushers::table)
                 .values(&NewDbPusher {
@@ -60,7 +62,8 @@ pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
                     enabled: true, // TODO
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect()?)?;
+                .execute(&mut connect().await?)
+                .await?;
         }
         PusherAction::Delete(ids) => {
             diesel::delete(
@@ -69,7 +72,8 @@ pub fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
                     .filter(user_pushers::pushkey.eq(ids.pushkey))
                     .filter(user_pushers::app_id.eq(ids.app_id)),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
     }
     Ok(())
@@ -249,8 +253,8 @@ async fn send_notice(
                         event.state_key.as_deref() == Some(event.sender.as_str());
                 }
                 notification.sender_display_name =
-                    data::user::display_name(&event.sender).ok().flatten();
-                notification.room_name = room::get_name(&event.room_id).ok();
+                    data::user::display_name(&event.sender).await.ok().flatten();
+                notification.room_name = room::get_name(&event.room_id).await.ok();
 
                 crate::sending::post(url)
                     .stuff(SendEventNotificationReqBody::new(notification))?

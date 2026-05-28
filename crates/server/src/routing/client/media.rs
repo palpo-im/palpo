@@ -2,6 +2,7 @@ use std::io::Cursor;
 use std::str::FromStr;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use image::imageops::FilterType;
 use mime::Mime;
 use reqwest::Url;
@@ -51,7 +52,7 @@ pub async fn get_content(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
-    if let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id)? {
+    if let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id).await? {
         let content_type = metadata
             .content_type
             .as_deref()
@@ -103,7 +104,7 @@ pub async fn get_content_with_filename(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
-    let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id)?
+    let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id).await?
     else {
         return Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into());
     };
@@ -198,7 +199,7 @@ pub async fn create_content(
             created_at: UnixMillis::now(),
         };
 
-        crate::data::media::insert_metadata(&metadata)?;
+        crate::data::media::insert_metadata(&metadata).await?;
     } else {
         return Err(MatrixError::cannot_overwrite_media("Media ID already has content").into());
     }
@@ -248,7 +249,7 @@ pub async fn upload_content(
             created_at: UnixMillis::now(),
         };
 
-        crate::data::media::insert_metadata(&metadata)?;
+        crate::data::media::insert_metadata(&metadata).await?;
 
         empty_ok()
     } else {
@@ -349,7 +350,9 @@ pub async fn get_thumbnail(
         &args.media_id,
         args.width,
         args.height,
-    ) {
+    )
+    .await
+    {
         Ok(Some(DbThumbnail {
             id, content_type, ..
         })) => {
@@ -385,7 +388,9 @@ pub async fn get_thumbnail(
         &args.media_id,
         width,
         height,
-    )? {
+    )
+    .await?
+    {
         let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
         // Try presigned URL redirect for S3 storage
         if let Some(url) = storage::presign_read(&key).await? {
@@ -403,7 +408,7 @@ pub async fn get_thumbnail(
         disposition_type: _,
         content_type,
         ..
-    })) = crate::data::media::get_metadata(&args.server_name, &args.media_id)
+    })) = crate::data::media::get_metadata(&args.server_name, &args.media_id).await
     {
         // Generate a thumbnail: read original image from storage
         let image_key = media_storage_key(&args.server_name, &args.media_id);
@@ -477,7 +482,8 @@ pub async fn get_thumbnail(
                 })
                 .on_conflict_do_nothing()
                 .returning(media_thumbnails::id)
-                .get_result::<i64>(&mut connect()?)
+                .get_result::<i64>(&mut connect().await?)
+                .await
                 .optional()?;
             let thumbnail_id = if let Some(thumbnail_id) = thumbnail_id {
                 crate::media::save_thumbnail_file(
@@ -501,7 +507,8 @@ pub async fn get_thumbnail(
                             .to_string()),
                     )
                     .select(media_thumbnails::id)
-                    .first::<i64>(&mut connect()?)?
+                    .first::<i64>(&mut connect().await?)
+                    .await?
             };
 
             // Return the newly generated thumbnail

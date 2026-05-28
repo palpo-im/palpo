@@ -1,10 +1,8 @@
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::OnceLock;
 
-use diesel::prelude::*;
-use diesel::r2d2::{self, State};
+use diesel::{Connection, PgConnection};
+use diesel_async::RunQueryDsl;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
-use scheduled_thread_pool::ScheduledThreadPool;
 use url::Url;
 
 extern crate tracing;
@@ -40,28 +38,25 @@ pub static REPLICA_POOL: OnceLock<Option<DieselPool>> = OnceLock::new();
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 pub fn init(config: &DbConfig) {
-    let builder = r2d2::Pool::builder()
-        .max_size(config.pool_size)
-        .min_idle(config.min_idle)
-        .connection_timeout(Duration::from_millis(config.connection_timeout))
-        .connection_customizer(Box::new(config::ConnectionConfig {
-            statement_timeout: config.statement_timeout,
-        }))
-        .thread_pool(Arc::new(ScheduledThreadPool::new(config.helper_threads)));
-
-    let pool =
-        DieselPool::new(&config.url, config, builder).expect("diesel pool should be created");
+    let pool = DieselPool::new(&config.url, config).expect("diesel pool should be created");
     DIESEL_POOL.set(pool).expect("diesel pool should be set");
-    migrate();
+    migrate(config);
 }
-pub fn migrate() {
-    let conn = &mut connect().expect("db connect should worked");
+
+/// Run pending migrations using a one-off synchronous connection.
+///
+/// `diesel_migrations` only operates on synchronous connections, so this
+/// establishes a dedicated `PgConnection` separate from the async pool. It also
+/// doubles as a fail-fast connectivity check at startup.
+pub fn migrate(config: &DbConfig) {
+    let url = connection_url(config, &config.url);
+    let mut conn = PgConnection::establish(&url).expect("db connect should worked");
     conn.run_pending_migrations(MIGRATIONS)
         .expect("migrate db should worked");
 }
 
-pub fn connect() -> Result<PgPooledConnection, PoolError> {
-    match DIESEL_POOL.get().expect("diesel pool should set").get() {
+pub async fn connect() -> Result<PgPooledConnection, PoolError> {
+    match DIESEL_POOL.get().expect("diesel pool should set").get().await {
         Ok(conn) => Ok(conn),
         Err(e) => {
             tracing::error!("db connect error: {e}");
@@ -69,8 +64,8 @@ pub fn connect() -> Result<PgPooledConnection, PoolError> {
         }
     }
 }
-pub fn state() -> State {
-    DIESEL_POOL.get().expect("diesel pool should set").state()
+pub fn status() -> deadpool::managed::Status {
+    DIESEL_POOL.get().expect("diesel pool should set").status()
 }
 
 pub fn connection_url(config: &DbConfig, url: &str) -> String {
@@ -97,13 +92,15 @@ fn maybe_append_url_param(url: &mut Url, key: &str, value: &str) {
     }
 }
 
-pub fn next_sn() -> DataResult<Seqnum> {
+pub async fn next_sn() -> DataResult<Seqnum> {
     diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
-        .get_result::<Seqnum>(&mut connect()?)
+        .get_result::<Seqnum>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn curr_sn() -> DataResult<Seqnum> {
+pub async fn curr_sn() -> DataResult<Seqnum> {
     diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value from occur_sn_seq")
-        .get_result::<Seqnum>(&mut connect()?)
+        .get_result::<Seqnum>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }

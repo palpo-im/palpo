@@ -159,16 +159,18 @@ async fn initial_sync(
     let sender_id = authed.user_id();
     let room_id = &args.room_id;
 
-    if !room::state::user_can_see_events(sender_id, room_id)? {
+    if !room::state::user_can_see_events(sender_id, room_id).await? {
         return Err(MatrixError::forbidden("No room preview available.", None).into());
     }
 
     let limit = LIMIT_MAX;
     let events =
-        timeline::stream::load_pdus_backward(Some(sender_id), room_id, None, None, None, limit)?;
+        timeline::stream::load_pdus_backward(Some(sender_id), room_id, None, None, None, limit)
+            .await?;
 
-    let frame_id = room::get_frame_id(room_id, None).unwrap_or_default();
+    let frame_id = room::get_frame_id(room_id, None).await.unwrap_or_default();
     let state: Vec<_> = room::state::get_full_state(frame_id)
+        .await
         .unwrap_or_default()
         .into_values()
         .map(|event| event.to_state_event())
@@ -201,8 +203,8 @@ async fn initial_sync(
         } else {
             None
         },
-        visibility: room::directory::visibility(room_id).into(),
-        membership: room::user::membership(sender_id, room_id).ok(),
+        visibility: room::directory::visibility(room_id).await.into(),
+        membership: room::user::membership(sender_id, room_id).await.ok(),
     })
 }
 /// `#POST /_matrix/client/r0/rooms/{room_id}/read_markers`
@@ -211,7 +213,7 @@ async fn initial_sync(
 /// - Updates fully-read account data event to `fully_read`
 /// - If `read_receipt` is set: Update private marker and public read receipt EDU
 #[endpoint]
-fn set_read_markers(
+async fn set_read_markers(
     _aa: AuthArgs,
     room_id: PathParam<OwnedRoomId>,
     body: JsonBody<SetReadMarkerReqBody>,
@@ -231,15 +233,16 @@ fn set_read_markers(
             Some(room_id.clone()),
             &RoomAccountDataEventType::FullyRead.to_string(),
             serde_json::to_value(fully_read_event.content).expect("to json value always works"),
-        )?;
-        push_action::remove_actions_for_room(sender_id, &room_id)?;
+        )
+        .await?;
+        push_action::remove_actions_for_room(sender_id, &room_id).await?;
     }
 
     if let Some(event_id) = &body.private_read_receipt {
-        let (event_sn, _event_guard) = crate::event::ensure_event_sn(&room_id, event_id)?;
-        data::room::receipt::set_private_read(&room_id, sender_id, event_id, event_sn)?;
-        push_action::remove_actions_until(sender_id, &room_id, event_sn, None)?;
-        push_action::refresh_notify_summary(sender_id, &room_id)?;
+        let (event_sn, _event_guard) = crate::event::ensure_event_sn(&room_id, event_id).await?;
+        data::room::receipt::set_private_read(&room_id, sender_id, event_id, event_sn).await?;
+        push_action::remove_actions_until(sender_id, &room_id, event_sn, None).await?;
+        push_action::refresh_notify_summary(sender_id, &room_id).await?;
     }
 
     if let Some(event) = &body.read_receipt {
@@ -266,10 +269,11 @@ fn set_read_markers(
                 room_id: room_id.clone(),
             },
             true,
-        )?;
-        let event_sn = crate::event::get_event_sn(event)?;
-        push_action::remove_actions_until(sender_id, &room_id, event_sn, None)?;
-        push_action::refresh_notify_summary(sender_id, &room_id)?;
+        )
+        .await?;
+        let event_sn = crate::event::get_event_sn(event).await?;
+        push_action::remove_actions_until(sender_id, &room_id, event_sn, None).await?;
+        push_action::refresh_notify_summary(sender_id, &room_id).await?;
     }
     empty_ok()
 }
@@ -287,14 +291,14 @@ async fn get_aliases(
 ) -> JsonResult<AliasesResBody> {
     let authed = depot.authed_info()?;
 
-    if !room::user::is_joined(authed.user_id(), &room_id)? {
+    if !room::user::is_joined(authed.user_id(), &room_id).await? {
         return Err(
             MatrixError::forbidden("you don't have permission to view this room", None).into(),
         );
     }
 
     json_ok(AliasesResBody {
-        aliases: room::local_aliases_for_room(&room_id)?,
+        aliases: room::local_aliases_for_room(&room_id).await?,
     })
 }
 
@@ -337,7 +341,7 @@ async fn upgrade(
     };
 
     let state_lock = room::lock_state(&room_id).await;
-    room::ensure_room(&new_room_id, &body.new_version)?;
+    room::ensure_room(&new_room_id, &body.new_version).await?;
 
     // Use the m.room.tombstone event as the predecessor
     let predecessor = Some(events::room::create::PreviousRoom::new(room_id.clone()));
@@ -348,7 +352,8 @@ async fn upgrade(
         &StateEventType::RoomCreate,
         "",
         None,
-    )?;
+    )
+    .await?;
     if !version_rules.authorization.use_room_create_sender {
         create_event_content.insert(
             "creator".into(),
@@ -403,7 +408,7 @@ async fn upgrade(
         },
         sender_id,
         &new_room_id,
-        &crate::room::get_version(&new_room_id)?,
+        &crate::room::get_version(&new_room_id).await?,
         &state_lock,
     )
     .await?;
@@ -427,7 +432,7 @@ async fn upgrade(
         },
         sender_id,
         &room_id,
-        &crate::room::get_version(&room_id)?,
+        &crate::room::get_version(&room_id).await?,
         &state_lock,
     )
     .await?;
@@ -444,11 +449,11 @@ async fn upgrade(
             event_type: TimelineEventType::RoomMember,
             content: to_raw_value(&RoomMemberEventContent {
                 membership: MembershipState::Join,
-                display_name: crate::data::user::display_name(sender_id).ok().flatten(),
-                avatar_url: crate::data::user::avatar_url(sender_id).ok().flatten(),
+                display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
+                avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
                 is_direct: None,
                 third_party_invite: None,
-                blurhash: crate::data::user::blurhash(sender_id).ok().flatten(),
+                blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
                 reason: None,
                 join_authorized_via_users_server: None,
                 #[cfg(feature = "unstable-msc4293")]
@@ -484,7 +489,7 @@ async fn upgrade(
         if event_ty == StateEventType::RoomPowerLevels {
             continue; // Handled later
         }
-        let event_content = match room::get_state(&room_id, &event_ty, "", None) {
+        let event_content = match room::get_state(&room_id, &event_ty, "", None).await {
             Ok(v) => v.content.clone(),
             _ => continue, // Skipping missing events.
         };
@@ -505,8 +510,8 @@ async fn upgrade(
     }
 
     // Moves any local aliases to the new room
-    for alias in room::local_aliases_for_room(&room_id)? {
-        room::set_alias(&new_room_id, &alias, sender_id)?;
+    for alias in room::local_aliases_for_room(&room_id).await? {
+        room::set_alias(&new_room_id, &alias, sender_id).await?;
     }
 
     // Get the old room power levels
@@ -515,7 +520,8 @@ async fn upgrade(
         &StateEventType::RoomPowerLevels,
         "",
         None,
-    )?;
+    )
+    .await?;
 
     // Setting events_default and invite to the greater of 50 and users_default + 1
     let restricted_level = max(50, power_levels_event_content.users_default + 1);
@@ -536,7 +542,7 @@ async fn upgrade(
         },
         sender_id,
         &room_id,
-        &crate::room::get_version(&room_id)?,
+        &crate::room::get_version(&room_id).await?,
         &state_lock,
     )
     .await?;
@@ -662,7 +668,7 @@ pub(super) async fn create_room(
         let alias = RoomAliasId::parse(format!("#{}:{}", localpart, &conf.server_name))
             .map_err(|_| MatrixError::invalid_param("Invalid alias."))?;
 
-        if room::resolve_local_alias(&alias).is_ok() {
+        if room::resolve_local_alias(&alias).await.is_ok() {
             return Err(MatrixError::room_in_use("room alias already exists").into());
         } else {
             Some(alias)
@@ -693,11 +699,11 @@ pub(super) async fn create_room(
             event_type: TimelineEventType::RoomMember,
             content: to_raw_value(&RoomMemberEventContent {
                 membership: MembershipState::Join,
-                display_name: crate::data::user::display_name(sender_id).ok().flatten(),
-                avatar_url: crate::data::user::avatar_url(sender_id).ok().flatten(),
+                display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
+                avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
                 is_direct: Some(body.is_direct),
                 third_party_invite: None,
-                blurhash: crate::data::user::blurhash(sender_id).ok().flatten(),
+                blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
                 reason: None,
                 join_authorized_via_users_server: None,
                 #[cfg(feature = "unstable-msc4293")]
@@ -724,7 +730,8 @@ pub(super) async fn create_room(
         users.insert(sender_id.to_owned(), 100);
         if preset == RoomPreset::TrustedPrivateChat {
             for invitee_id in &body.invite {
-                if user_is_ignored(sender_id, invitee_id) || user_is_ignored(invitee_id, sender_id)
+                if user_is_ignored(sender_id, invitee_id).await
+                    || user_is_ignored(invitee_id, sender_id).await
                 {
                     continue;
                 }
@@ -921,11 +928,11 @@ pub(super) async fn create_room(
 
     // Homeserver specific stuff
     if let Some(alias) = alias {
-        room::set_alias(&room_id, &alias, sender_id)?;
+        room::set_alias(&room_id, &alias, sender_id).await?;
     }
 
     if body.visibility == Visibility::Public {
-        room::directory::set_public(&room_id, true)?;
+        room::directory::set_public(&room_id, true).await?;
     }
 
     info!("{} created a room", sender_id);
@@ -944,7 +951,7 @@ async fn create_create_event_legacy(
     // };
     let room_id = RoomId::new_v1(&config::get().server_name);
     let state_lock = room::lock_state(&room_id).await;
-    room::ensure_room(&room_id, room_version)?;
+    room::ensure_room(&room_id, room_version).await?;
 
     let content = match &body.creation_content {
         Some(content) => {
@@ -1070,7 +1077,7 @@ async fn create_create_event(
     // 1. The room create event, using a placeholder room_id
     let temp_room_id = OwnedRoomId::try_from("!placehold").expect("invalid room id");
     let state_lock = room::lock_state(&temp_room_id).await;
-    room::ensure_room(&temp_room_id, room_version)?;
+    room::ensure_room(&temp_room_id, room_version).await?;
     let create_event = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: TimelineEventType::RoomCreate,

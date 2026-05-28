@@ -137,11 +137,13 @@ pub(crate) struct RoomInfo {
     pub(crate) name: String,
 }
 
-pub(crate) fn get_room_info(room_id: &RoomId) -> RoomInfo {
+pub(crate) async fn get_room_info(room_id: &RoomId) -> RoomInfo {
     RoomInfo {
         id: room_id.to_owned(),
-        joined_members: crate::room::joined_member_count(room_id).unwrap_or(0),
-        name: crate::room::get_name(room_id).unwrap_or_else(|_| room_id.to_string()),
+        joined_members: crate::room::joined_member_count(room_id).await.unwrap_or(0),
+        name: crate::room::get_name(room_id)
+            .await
+            .unwrap_or_else(|_| room_id.to_string()),
     }
 }
 

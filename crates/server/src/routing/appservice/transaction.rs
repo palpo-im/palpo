@@ -29,7 +29,7 @@ async fn send_event(
     // constant-time comparison to avoid leaking the token byte-by-byte
     // through response timing (mirrors the pattern in
     // `routing/appservice.rs::verify_hs_token`).
-    let appservices = crate::appservices();
+    let appservices = crate::appservices().await;
     let appservice = appservices
         .iter()
         .find(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())

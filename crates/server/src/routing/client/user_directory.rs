@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
@@ -26,7 +27,7 @@ pub fn authed_router() -> Router {
 ///   to public)
 /// and don't share a room with the sender
 #[endpoint]
-fn search(
+async fn search(
     _aa: AuthArgs,
     _args: SearchUsersReqArgs,
     body: JsonBody<SearchUsersReqBody>,
@@ -42,47 +43,64 @@ fn search(
         )
         .filter(user_profiles::user_id.ne(authed.user_id()))
         .select(user_profiles::user_id)
-        .load::<OwnedUserId>(&mut connect()?)?;
+        .load::<OwnedUserId>(&mut connect().await?)
+        .await?;
 
-    let mut users = user_ids.into_iter().filter_map(|user_id| {
+    let mut results = Vec::new();
+    let mut limited = false;
+    for user_id in user_ids {
         let user = SearchedUser {
             user_id: user_id.clone(),
-            display_name: data::user::display_name(&user_id).ok().flatten(),
-            avatar_url: data::user::avatar_url(&user_id).ok().flatten(),
+            display_name: data::user::display_name(&user_id).await.ok().flatten(),
+            avatar_url: data::user::avatar_url(&user_id).await.ok().flatten(),
         };
 
-        let user_is_in_public_rooms =
-            data::user::joined_rooms(&user_id)
-                .ok()?
-                .into_iter()
-                .any(|room_id| {
-                    room::get_state_content::<RoomJoinRulesEventContent>(
-                        &room_id,
-                        &StateEventType::RoomJoinRules,
-                        "",
-                        None,
-                    )
-                    .map(|r| r.join_rule == JoinRule::Public)
-                    .unwrap_or(false)
-                });
+        let matched = 'matched: {
+            let Some(joined_rooms) = data::user::joined_rooms(&user_id).await.ok() else {
+                break 'matched false;
+            };
+            let mut user_is_in_public_rooms = false;
+            for room_id in joined_rooms.into_iter() {
+                if room::get_state_content::<RoomJoinRulesEventContent>(
+                    &room_id,
+                    &StateEventType::RoomJoinRules,
+                    "",
+                    None,
+                )
+                .await
+                .map(|r| r.join_rule == JoinRule::Public)
+                .unwrap_or(false)
+                {
+                    user_is_in_public_rooms = true;
+                    break;
+                }
+            }
 
-        if user_is_in_public_rooms {
-            return Some(user);
+            if user_is_in_public_rooms {
+                break 'matched true;
+            }
+
+            let Some(shared_rooms) =
+                room::user::shared_rooms(vec![authed.user_id().to_owned(), user_id.clone()])
+                    .await
+                    .ok()
+            else {
+                break 'matched false;
+            };
+
+            !shared_rooms.is_empty()
+        };
+
+        if !matched {
+            continue;
         }
 
-        let user_is_in_shared_rooms =
-            !room::user::shared_rooms(vec![authed.user_id().to_owned(), user_id])
-                .ok()?
-                .is_empty();
-
-        if user_is_in_shared_rooms {
-            return Some(user);
+        if results.len() >= body.limit {
+            limited = true;
+            break;
         }
+        results.push(user);
+    }
 
-        None
-    });
-
-    let results = users.by_ref().take(body.limit).collect();
-    let limited = users.next().is_some();
     json_ok(SearchUsersResBody { results, limited })
 }

@@ -72,17 +72,19 @@ async fn upload_keys(
     let authed = depot.authed_info()?;
 
     for (key_id, one_time_key) in &body.one_time_keys {
-        crate::user::add_one_time_key(authed.user_id(), authed.device_id(), key_id, one_time_key)?;
+        crate::user::add_one_time_key(authed.user_id(), authed.device_id(), key_id, one_time_key)
+            .await?;
     }
 
     if let Some(device_keys) = &body.device_keys {
-        crate::user::add_device_keys(authed.user_id(), authed.device_id(), device_keys)?;
+        crate::user::add_device_keys(authed.user_id(), authed.device_id(), device_keys).await?;
     }
 
     // TODO: fallback keys. e2e_keys.py 848
 
     json_ok(UploadKeysResBody {
-        one_time_key_counts: data::user::count_one_time_keys(authed.user_id(), authed.device_id())?,
+        one_time_key_counts: data::user::count_one_time_keys(authed.user_id(), authed.device_id())
+            .await?,
     })
 }
 
@@ -102,18 +104,15 @@ async fn get_key_changes(
     let from_tk: BatchToken = args.from.parse()?;
     let to_tk: BatchToken = args.to.parse()?;
     let mut device_list_updates = HashSet::new();
-    device_list_updates.extend(data::user::keys_changed_users(
-        sender_id,
-        from_tk.event_sn(),
-        Some(to_tk.event_sn()),
-    )?);
+    device_list_updates.extend(
+        data::user::keys_changed_users(sender_id, from_tk.event_sn(), Some(to_tk.event_sn()))
+            .await?,
+    );
 
-    for room_id in data::user::joined_rooms(sender_id)? {
-        device_list_updates.extend(room::keys_changed_users(
-            &room_id,
-            from_tk.event_sn(),
-            Some(to_tk.event_sn()),
-        )?);
+    for room_id in data::user::joined_rooms(sender_id).await? {
+        device_list_updates.extend(
+            room::keys_changed_users(&room_id, from_tk.event_sn(), Some(to_tk.event_sn())).await?,
+        );
     }
     json_ok(KeyChangesResBody {
         changed: device_list_updates.into_iter().collect(),

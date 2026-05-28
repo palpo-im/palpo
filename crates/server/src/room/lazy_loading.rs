@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 
 use crate::AppResult;
@@ -9,7 +10,7 @@ use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 
 #[tracing::instrument]
-pub fn lazy_load_was_sent_before(
+pub async fn lazy_load_was_sent_before(
     user_id: &UserId,
     device_id: &DeviceId,
     room_id: &RoomId,
@@ -20,13 +21,13 @@ pub fn lazy_load_was_sent_before(
         .filter(lazy_load_deliveries::device_id.eq(device_id))
         .filter(lazy_load_deliveries::room_id.eq(room_id))
         .filter(lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id));
-    diesel_exists!(query, &mut connect()?).map_err(Into::into)
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 
 /// Marks lazy load entries as sent by writing directly to the database.
 /// In a clustered environment, this ensures all instances see the same state.
 #[tracing::instrument]
-pub fn lazy_load_mark_sent(
+pub async fn lazy_load_mark_sent(
     user_id: &UserId,
     device_id: &DeviceId,
     room_id: &RoomId,
@@ -34,7 +35,7 @@ pub fn lazy_load_mark_sent(
     _until_sn: Seqnum,
 ) {
     for confirmed_user_id in lazy_load {
-        if let Ok(mut conn) = connect() {
+        if let Ok(mut conn) = connect().await {
             let _ = diesel::insert_into(lazy_load_deliveries::table)
                 .values((
                     lazy_load_deliveries::user_id.eq(user_id),
@@ -43,7 +44,8 @@ pub fn lazy_load_mark_sent(
                     lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id),
                 ))
                 .on_conflict_do_nothing()
-                .execute(&mut conn);
+                .execute(&mut conn)
+                .await;
         }
     }
 }
@@ -62,13 +64,18 @@ pub fn lazy_load_confirm_delivery(
 }
 
 #[tracing::instrument]
-pub fn lazy_load_reset(user_id: &UserId, device_id: &DeviceId, room_id: &RoomId) -> AppResult<()> {
+pub async fn lazy_load_reset(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    room_id: &RoomId,
+) -> AppResult<()> {
     diesel::delete(
         lazy_load_deliveries::table
             .filter(lazy_load_deliveries::user_id.eq(user_id))
             .filter(lazy_load_deliveries::device_id.eq(device_id))
             .filter(lazy_load_deliveries::room_id.eq(room_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }

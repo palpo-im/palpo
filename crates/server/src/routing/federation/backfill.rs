@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use salvo::prelude::*;
 
@@ -30,7 +31,8 @@ async fn get_backfill(
     let seeds = events::table
         .filter(events::id.eq_any(&args.v))
         .select((events::id, events::depth))
-        .load::<(OwnedEventId, i64)>(&mut connect()?)?;
+        .load::<(OwnedEventId, i64)>(&mut connect().await?)
+        .await?;
 
     let mut queue = BTreeMap::new();
     for (seed_id, seed_depth) in seeds {
@@ -47,21 +49,23 @@ async fn get_backfill(
         let mut prev_ids = event_edges::table
             .filter(event_edges::event_id.eq(&event_id))
             .select(event_edges::prev_id)
-            .load::<OwnedEventId>(&mut connect()?)?;
+            .load::<OwnedEventId>(&mut connect().await?)
+            .await?;
         prev_ids.retain(|p| !events.contains_key(p));
         if !events.contains_key(&event_id)
-            && let Ok((pdu, data)) = timeline::get_pdu_and_data(&event_id)
-            && state::server_can_see_event(origin, &args.room_id, &pdu.event_id)?
+            && let Ok((pdu, data)) = timeline::get_pdu_and_data(&event_id).await
+            && state::server_can_see_event(origin, &args.room_id, &pdu.event_id).await?
         {
             events.insert(
                 event_id.clone(),
-                crate::sending::convert_to_outgoing_federation_event(data),
+                crate::sending::convert_to_outgoing_federation_event(data).await,
             );
         }
         let prevs = events::table
             .filter(events::id.eq_any(&prev_ids))
             .select((events::id, events::depth))
-            .load::<(OwnedEventId, i64)>(&mut connect()?)?;
+            .load::<(OwnedEventId, i64)>(&mut connect().await?)
+            .await?;
         for (prev_id, prev_depth) in prevs {
             queue.insert(prev_depth, prev_id);
         }

@@ -18,12 +18,12 @@ pub(super) async fn get_mutual_rooms(
     let authed = depot.authed_info()?;
 
     // Get the authenticated user's joined rooms
-    let our_rooms: HashSet<_> = data::user::joined_rooms(authed.user_id())?
+    let our_rooms: HashSet<_> = data::user::joined_rooms(authed.user_id()).await?
         .into_iter()
         .collect();
 
     // Get the target user's joined rooms
-    let their_rooms = data::user::joined_rooms(&args.user_id)?;
+    let their_rooms = data::user::joined_rooms(&args.user_id).await?;
 
     // Find the intersection (mutual rooms)
     let joined: Vec<_> = their_rooms

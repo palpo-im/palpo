@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -49,7 +50,8 @@ pub async fn backfill_if_required(
         let existing: Vec<OwnedEventId> = events::table
             .filter(events::id.eq_any(&pdu.prev_events))
             .select(events::id)
-            .load(&mut connect()?)?;
+            .load(&mut connect().await?)
+            .await?;
         if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
             return backfill_from_extremities(room_id, std::slice::from_ref(&pdu.event_id), limit)
                 .await;
@@ -74,11 +76,12 @@ pub async fn backfill_if_required(
             .filter(event_backward_extremities::room_id.eq(room_id))
             .select(event_backward_extremities::event_id)
             .distinct()
-            .load(&mut connect()?)?;
+            .load(&mut connect().await?)
+            .await?;
 
         let mut fill_from: Vec<OwnedEventId> = Vec::new();
         for ext_id in extremity_ids {
-            let Ok(pdu) = super::get_pdu(&ext_id) else {
+            let Ok(pdu) = super::get_pdu(&ext_id).await else {
                 // Event isn't locally known — it's a synthetic frontier marker
                 // for a parent we couldn't fetch yet. Use it as-is.
                 fill_from.push(ext_id);
@@ -90,7 +93,8 @@ pub async fn backfill_if_required(
             let existing: Vec<OwnedEventId> = events::table
                 .filter(events::id.eq_any(&pdu.prev_events))
                 .select(events::id)
-                .load(&mut connect()?)?;
+                .load(&mut connect().await?)
+                .await?;
             if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
                 fill_from.push(ext_id);
             }
@@ -113,8 +117,8 @@ pub async fn backfill_from_extremities(
     extremities: &[OwnedEventId],
     limit: usize,
 ) -> AppResult<Vec<SnPduEvent>> {
-    let admin_servers = room::admin_servers(room_id, false)?;
-    let room_version = room::get_version(room_id)?;
+    let admin_servers = room::admin_servers(room_id, false).await?;
+    let room_version = room::get_version(room_id).await?;
 
     for backfill_server in &admin_servers {
         info!("asking {backfill_server} for backfill from extremities");
@@ -162,7 +166,7 @@ pub async fn backfill_from_extremities(
                         process_to_timeline_pdu(pdu, content, Some(backfill_server)).await
                     {
                         error!("failed to process backfill pdu to timeline {}", e);
-                    } else if let Ok(pdu) = super::get_pdu(&event_id) {
+                    } else if let Ok(pdu) = super::get_pdu(&event_id).await {
                         events.push(pdu);
                     }
                 }
@@ -185,9 +189,10 @@ pub async fn backfill_pdu(
 ) -> AppResult<(SnPduEvent, CanonicalJsonObject)> {
     let (event_id, value) = parse_fetched_pdu(room_id, room_version, &pdu)?;
     // Skip the PDU if we already have it as a timeline event
-    if let Ok(pdu) = super::get_pdu(&event_id) {
+    if let Ok(pdu) = super::get_pdu(&event_id).await {
         info!("we already know {event_id}, skipping backfill");
-        let value = super::get_pdu_json(&event_id)?
+        let value = super::get_pdu_json(&event_id)
+            .await?
             .ok_or_else(|| AppError::public("event json not found"))?;
         return Ok((pdu, value));
     }
@@ -197,7 +202,7 @@ pub async fn backfill_pdu(
     else {
         return Err(AppError::internal("failed to process backfilled pdu"));
     };
-    let (pdu, value, _) = outlier_pdu.save_to_database(true)?;
+    let (pdu, value, _) = outlier_pdu.save_to_database(true).await?;
 
     if pdu.event_ty == TimelineEventType::RoomMessage {
         #[derive(Deserialize)]

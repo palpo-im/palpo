@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 use serde::Deserialize;
 
@@ -25,14 +26,14 @@ struct ExtractRelatesToEventId {
 }
 
 #[tracing::instrument]
-pub fn add_relation(
+pub async fn add_relation(
     room_id: &RoomId,
     event_id: &EventId,
     child_id: &EventId,
     rel_type: Option<RelationType>,
 ) -> AppResult<()> {
-    let (event_sn, event_ty) = crate::event::get_event_sn_and_ty(event_id)?;
-    let (child_sn, child_ty) = crate::event::get_event_sn_and_ty(child_id)?;
+    let (event_sn, event_ty) = crate::event::get_event_sn_and_ty(event_id).await?;
+    let (child_sn, child_ty) = crate::event::get_event_sn_and_ty(child_id).await?;
     diesel::insert_into(event_relations::table)
         .values(&NewDbEventRelation {
             room_id: room_id.to_owned(),
@@ -44,11 +45,12 @@ pub fn add_relation(
             child_ty,
             rel_type: rel_type.map(|v| v.to_string()),
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn paginate_relations_with_filter(
+pub async fn paginate_relations_with_filter(
     user_id: &UserId,
     room_id: &RoomId,
     target: &EventId,
@@ -89,7 +91,8 @@ pub fn paginate_relations_with_filter(
         to.map(|t| t.event_sn()),
         dir,
         limit,
-    )?;
+    )
+    .await?;
 
     let next_token = match dir {
         Direction::Forward => events
@@ -113,7 +116,7 @@ pub fn paginate_relations_with_filter(
     })
 }
 
-pub fn get_relations(
+pub async fn get_relations(
     user_id: &UserId,
     room_id: &RoomId,
     event_id: &EventId,
@@ -152,14 +155,15 @@ pub fn get_relations(
     }
     let relations = query
         .limit(limit as i64)
-        .load::<DbEventRelation>(&mut connect()?)?;
+        .load::<DbEventRelation>(&mut connect().await?)
+        .await?;
     let mut pdus = Vec::with_capacity(relations.len());
     for relation in relations {
-        if let Ok(mut pdu) = timeline::get_pdu(&relation.child_id) {
+        if let Ok(mut pdu) = timeline::get_pdu(&relation.child_id).await {
             if pdu.sender != user_id {
                 pdu.remove_transaction_id()?;
             }
-            if pdu.user_can_see(user_id).unwrap_or(false) {
+            if pdu.user_can_see(user_id).await.unwrap_or(false) {
                 pdus.push((relation.child_sn, pdu));
             }
         }
@@ -185,17 +189,19 @@ pub fn get_relations(
 // }
 
 #[tracing::instrument(skip(event_id))]
-pub fn mark_event_soft_failed(event_id: &EventId) -> AppResult<()> {
+pub async fn mark_event_soft_failed(event_id: &EventId) -> AppResult<()> {
     diesel::update(events::table.filter(events::id.eq(event_id)))
         .set(events::soft_failed.eq(true))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn is_event_soft_failed(event_id: &EventId) -> AppResult<bool> {
+pub async fn is_event_soft_failed(event_id: &EventId) -> AppResult<bool> {
     events::table
         .filter(events::id.eq(event_id))
         .select(events::soft_failed)
-        .first(&mut connect()?)
+        .first(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }

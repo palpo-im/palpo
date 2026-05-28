@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use tokio::sync::broadcast;
 
 use crate::core::UnixMillis;
@@ -25,7 +26,7 @@ pub async fn add_typing(
     timeout: u64,
     broadcast: bool,
 ) -> AppResult<()> {
-    let event_sn = data::next_sn()?;
+    let event_sn = data::next_sn().await?;
     diesel::insert_into(room_typings::table)
         .values((
             room_typings::room_id.eq(room_id),
@@ -39,7 +40,8 @@ pub async fn add_typing(
             room_typings::timeout_at.eq(timeout as i64),
             room_typings::occur_sn.eq(event_sn),
         ))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     // Notify same-instance watchers immediately
     let _ = TYPING_UPDATE_SENDER.send(room_id.to_owned());
@@ -54,7 +56,7 @@ pub async fn add_typing(
 /// Instead of deleting the row, we set timeout_at=0 and bump occur_sn
 /// so that sync picks up the "typing stopped" change before cleanup.
 pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) -> AppResult<()> {
-    let event_sn = data::next_sn()?;
+    let event_sn = data::next_sn().await?;
     diesel::update(
         room_typings::table
             .filter(room_typings::room_id.eq(room_id))
@@ -64,7 +66,8 @@ pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) 
         room_typings::timeout_at.eq(0i64),
         room_typings::occur_sn.eq(event_sn),
     ))
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
 
     // Notify same-instance watchers immediately
     let _ = TYPING_UPDATE_SENDER.send(room_id.to_owned());
@@ -89,14 +92,15 @@ pub async fn wait_for_update(room_id: &RoomId) -> AppResult<()> {
 }
 
 /// Removes expired typing entries from the database.
-fn maintain_typings(room_id: &RoomId) -> AppResult<()> {
+async fn maintain_typings(room_id: &RoomId) -> AppResult<()> {
     let current_timestamp = UnixMillis::now().get() as i64;
     diesel::delete(
         room_typings::table
             .filter(room_typings::room_id.eq(room_id))
             .filter(room_typings::timeout_at.lt(current_timestamp)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
@@ -108,7 +112,8 @@ pub async fn last_typing_update(room_id: &RoomId) -> AppResult<i64> {
     let sn = room_typings::table
         .filter(room_typings::room_id.eq(room_id))
         .select(diesel::dsl::max(room_typings::occur_sn))
-        .first::<Option<i64>>(&mut connect()?)
+        .first::<Option<i64>>(&mut connect().await?)
+        .await
         .unwrap_or(None)
         .unwrap_or_default();
     Ok(sn)
@@ -118,11 +123,12 @@ pub async fn last_typing_update(room_id: &RoomId) -> AppResult<i64> {
 pub async fn all_typings(
     room_id: &RoomId,
 ) -> AppResult<SyncEphemeralRoomEvent<TypingEventContent>> {
-    maintain_typings(room_id)?;
+    maintain_typings(room_id).await?;
     let user_ids = room_typings::table
         .filter(room_typings::room_id.eq(room_id))
         .select(room_typings::user_id)
-        .load::<OwnedUserId>(&mut connect()?)?;
+        .load::<OwnedUserId>(&mut connect().await?)
+        .await?;
 
     Ok(SyncEphemeralRoomEvent {
         content: TypingEventContent { user_ids },
@@ -141,7 +147,7 @@ async fn federation_send(room_id: &RoomId, user_id: &UserId, typing: bool) -> Ap
 
     let content = TypingContent::new(room_id.to_owned(), user_id.to_owned(), typing);
     let edu = Edu::Typing(content);
-    sending::send_edu_room(room_id, &edu)?;
+    sending::send_edu_room(room_id, &edu).await?;
 
     Ok(())
 }

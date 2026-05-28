@@ -61,6 +61,7 @@ pub(super) async fn register(ctx: &Context<'_>) -> AppResult<()> {
             )));
         }
         Ok(registration) => match crate::appservice::register_appservice(registration.clone())
+            .await
             .map(|_| registration.id)
         {
             Err(e) => {
@@ -75,7 +76,7 @@ pub(super) async fn register(ctx: &Context<'_>) -> AppResult<()> {
 }
 
 pub(super) async fn unregister(ctx: &Context<'_>, appservice_identifier: String) -> AppResult<()> {
-    match crate::appservice::unregister_appservice(&appservice_identifier) {
+    match crate::appservice::unregister_appservice(&appservice_identifier).await {
         Err(e) => {
             return Err(AppError::public(format!(
                 "Failed to unregister appservice: {e}"
@@ -90,7 +91,7 @@ pub(super) async fn show_appservice_config(
     ctx: &Context<'_>,
     appservice_identifier: String,
 ) -> AppResult<()> {
-    match crate::appservice::get_registration(&appservice_identifier)? {
+    match crate::appservice::get_registration(&appservice_identifier).await? {
         None => return Err(AppError::public("Appservice does not exist.")),
         Some(config) => {
             let config_str = serde_saphyr::to_string(&config)?;
@@ -104,7 +105,7 @@ pub(super) async fn show_appservice_config(
 }
 
 pub(super) async fn list_registered(ctx: &Context<'_>) -> AppResult<()> {
-    let appservices = crate::appservice::all()?;
+    let appservices = crate::appservice::all().await?;
     let list = appservices.keys().collect::<Vec<_>>();
     let len = appservices.len();
     { write!(ctx, "Appservices ({len}): {list:?}") }.await?;

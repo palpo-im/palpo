@@ -75,10 +75,10 @@ fn to_admin_device_response(device: data::user::device::DbUserDevice) -> AdminDe
 }
 
 #[endpoint]
-pub fn list_devices(user_id: PathParam<OwnedUserId>) -> JsonResult<AdminDevicesListResponse> {
+pub async fn list_devices(user_id: PathParam<OwnedUserId>) -> JsonResult<AdminDevicesListResponse> {
     let user_id = user_id.into_inner();
 
-    let devices = data::user::device::get_devices(&user_id)?;
+    let devices = data::user::device::get_devices(&user_id).await?;
     let total = devices.len() as i64;
     let devices = devices.into_iter().map(to_admin_device_response).collect();
 
@@ -86,14 +86,14 @@ pub fn list_devices(user_id: PathParam<OwnedUserId>) -> JsonResult<AdminDevicesL
 }
 
 #[endpoint]
-pub fn create_device(
+pub async fn create_device(
     user_id: PathParam<OwnedUserId>,
     body: JsonBody<CreateDeviceReqBody>,
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
     let body = body.into_inner();
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
@@ -103,30 +103,30 @@ pub fn create_device(
 
     let device_id = OwnedDeviceId::from(device_id_str.as_str());
 
-    if data::user::device::is_device_exists(&user_id, &device_id)? {
+    if data::user::device::is_device_exists(&user_id, &device_id).await? {
         return empty_ok();
     }
 
     let token = utils::random_string(64);
 
-    data::user::device::create_device(&user_id, &device_id, &token, body.display_name, None)?;
+    data::user::device::create_device(&user_id, &device_id, &token, body.display_name, None).await?;
 
     empty_ok()
 }
 
 #[endpoint]
-pub fn get_device(
+pub async fn get_device(
     user_id: PathParam<OwnedUserId>,
     device_id: PathParam<OwnedDeviceId>,
 ) -> JsonResult<AdminDeviceResponse> {
-    let Ok(device) = data::user::device::get_device(&user_id, &device_id) else {
+    let Ok(device) = data::user::device::get_device(&user_id, &device_id).await else {
         return Err(MatrixError::not_found("device is not found.").into());
     };
     json_ok(to_admin_device_response(device))
 }
 
 #[endpoint]
-pub fn put_device(
+pub async fn put_device(
     user_id: PathParam<OwnedUserId>,
     device_id: PathParam<OwnedDeviceId>,
     body: JsonBody<UpdateDeviceReqBody>,
@@ -138,36 +138,36 @@ pub fn put_device(
         last_seen_ip: None,
         last_seen_at: None,
     };
-    let Ok(device) = data::user::device::update_device(&user_id, &device_id, update) else {
+    let Ok(device) = data::user::device::update_device(&user_id, &device_id, update).await else {
         return Err(MatrixError::not_found("device is not found.").into());
     };
     json_ok(to_admin_device_response(device))
 }
 
 #[endpoint]
-pub fn delete_device(
+pub async fn delete_device(
     user_id: PathParam<OwnedUserId>,
     device_id: PathParam<OwnedDeviceId>,
 ) -> EmptyResult {
-    data::user::device::remove_device(&user_id, &device_id)?;
+    data::user::device::remove_device(&user_id, &device_id).await?;
     empty_ok()
 }
 
 #[endpoint]
-pub fn delete_devices(
+pub async fn delete_devices(
     user_id: PathParam<OwnedUserId>,
     body: JsonBody<DeleteDevicesReqBody>,
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
     let body = body.into_inner();
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
     for device_id in body.devices {
         let device_id: OwnedDeviceId = device_id.into();
-        let _ = data::user::device::remove_device(&user_id, &device_id);
+        let _ = data::user::device::remove_device(&user_id, &device_id).await;
     }
 
     empty_ok()

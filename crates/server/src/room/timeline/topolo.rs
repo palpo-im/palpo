@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
@@ -9,7 +10,7 @@ use crate::data::schema::*;
 use crate::event::BatchToken;
 use crate::{AppResult, SnPduEvent, utils};
 
-pub fn load_pdus_forward(
+pub async fn load_pdus_forward(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
@@ -26,8 +27,9 @@ pub fn load_pdus_forward(
         filter,
         Direction::Forward,
     )
+    .await
 }
-pub fn load_pdus_backward(
+pub async fn load_pdus_backward(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
@@ -44,13 +46,14 @@ pub fn load_pdus_backward(
         filter,
         Direction::Backward,
     )
+    .await
 }
 
 /// Returns an iterator over all events and their tokens in a room that happened before the
 /// event with id `until` in reverse-chronological order.
 /// Skips events before user joined the room.
 #[tracing::instrument]
-pub fn load_pdus(
+pub async fn load_pdus(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
@@ -60,7 +63,10 @@ pub fn load_pdus(
     dir: Direction,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
-    let ignored_users = user_id.map(crate::user::ignored_users);
+    let ignored_users = match user_id {
+        Some(user_id) => Some(crate::user::ignored_users(user_id).await),
+        None => None,
+    };
     let mut offset = 0;
     while list.len() < limit {
         let mut query = events::table
@@ -181,7 +187,8 @@ pub fn load_pdus(
                 .offset(offset)
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn, events::stream_ordering))
-                .load::<(OwnedEventId, Seqnum, i64)>(&mut connect()?)?
+                .load::<(OwnedEventId, Seqnum, i64)>(&mut connect().await?)
+                .await?
                 .into_iter()
                 .rev()
                 .collect()
@@ -196,7 +203,8 @@ pub fn load_pdus(
                 .limit(utils::usize_to_i64(limit));
             query
                 .select((events::id, events::sn, events::stream_ordering))
-                .load::<(OwnedEventId, Seqnum, i64)>(&mut connect()?)?
+                .load::<(OwnedEventId, Seqnum, i64)>(&mut connect().await?)
+                .await?
                 .into_iter()
                 .collect()
         };
@@ -207,9 +215,9 @@ pub fn load_pdus(
         offset += count as i64;
 
         for (event_id, event_sn, _) in events {
-            if let Ok(mut pdu) = super::get_pdu(&event_id) {
+            if let Ok(mut pdu) = super::get_pdu(&event_id).await {
                 if let Some(user_id) = user_id {
-                    if !pdu.user_can_see(user_id)? {
+                    if !pdu.user_can_see(user_id).await? {
                         continue;
                     }
                     if let Some(ignored_users) = &ignored_users
@@ -220,7 +228,7 @@ pub fn load_pdus(
                     if pdu.sender != user_id {
                         pdu.remove_transaction_id()?;
                     }
-                    pdu.add_unsigned_membership(user_id)?;
+                    pdu.add_unsigned_membership(user_id).await?;
                 }
                 pdu.add_age()?;
                 list.insert(event_sn, pdu);

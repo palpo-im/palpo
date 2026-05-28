@@ -21,7 +21,7 @@ use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, 
 ///
 /// - If not joined: Only works if current room history visibility is world readable
 #[endpoint]
-pub(super) fn get_state(
+pub(super) async fn get_state(
     _aa: AuthArgs,
     room_id: PathParam<OwnedRoomId>,
     depot: &mut Depot,
@@ -30,8 +30,8 @@ pub(super) fn get_state(
     let sender_id = authed.user_id();
     let room_id = room_id.into_inner();
 
-    let _until_sn = if !state::user_can_see_events(sender_id, &room_id)? {
-        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &room_id) {
+    let _until_sn = if !state::user_can_see_events(sender_id, &room_id).await? {
+        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &room_id).await {
             Some(leave_sn)
         } else {
             return Err(MatrixError::forbidden(
@@ -44,9 +44,10 @@ pub(super) fn get_state(
         None
     };
 
-    let frame_id = room::get_frame_id(&room_id, None).unwrap_or_default();
+    let frame_id = room::get_frame_id(&room_id, None).await.unwrap_or_default();
 
     let room_state = state::get_full_state(frame_id)
+        .await
         .unwrap_or_default()
         .values()
         .map(|pdu| pdu.to_state_event())
@@ -66,7 +67,7 @@ pub async fn report(
     let authed = depot.authed_info()?;
     let body = body.into_inner();
 
-    let pdu = match timeline::get_pdu(&args.event_id) {
+    let pdu = match timeline::get_pdu(&args.event_id).await {
         Ok(pdu) => pdu,
         _ => return Err(MatrixError::invalid_param("Invalid Event ID").into()),
     };
@@ -94,7 +95,8 @@ pub async fn report(
             "score": report_score,
         })),
         report_score,
-    ))?;
+    ))
+    .await?;
 
     let _ = crate::admin::send_message(RoomMessageEventContent::text_html(
         format!(
@@ -134,7 +136,7 @@ pub async fn report(
 ///
 /// - If not joined: Only works if current room history visibility is world readable
 #[endpoint]
-pub(super) fn state_for_key(
+pub(super) async fn state_for_key(
     _aa: AuthArgs,
     args: StateEventsForKeyReqArgs,
     depot: &mut Depot,
@@ -142,8 +144,8 @@ pub(super) fn state_for_key(
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
 
-    let until_sn = if !state::user_can_see_events(sender_id, &args.room_id)? {
-        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &args.room_id) {
+    let until_sn = if !state::user_can_see_events(sender_id, &args.room_id).await? {
+        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &args.room_id).await {
             Some(leave_sn)
         } else {
             return Err(MatrixError::forbidden(
@@ -156,7 +158,7 @@ pub(super) fn state_for_key(
         None
     };
 
-    let event = room::get_state(&args.room_id, &args.event_type, &args.state_key, until_sn)?;
+    let event = room::get_state(&args.room_id, &args.event_type, &args.state_key, until_sn).await?;
     let event_format = args
         .format
         .as_ref()
@@ -183,8 +185,8 @@ pub(super) async fn state_for_empty_key(
 ) -> JsonResult<StateEventsForKeyResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let until_sn = if !state::user_can_see_events(sender_id, &args.room_id)? {
-        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &args.room_id) {
+    let until_sn = if !state::user_can_see_events(sender_id, &args.room_id).await? {
+        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &args.room_id).await {
             Some(leave_sn)
         } else {
             return Err(MatrixError::forbidden(
@@ -197,7 +199,7 @@ pub(super) async fn state_for_empty_key(
         None
     };
 
-    let event = room::get_state(&args.room_id, &args.event_type, "", until_sn)?;
+    let event = room::get_state(&args.room_id, &args.event_type, "", until_sn).await?;
     let event_format = args
         .format
         .as_ref()
@@ -231,7 +233,7 @@ pub(super) async fn send_state_for_key(
     let event_id = crate::state::send_state_event_for_key(
         authed.user_id(),
         &args.room_id,
-        &crate::room::get_version(&args.room_id)?,
+        &crate::room::get_version(&args.room_id).await?,
         &args.event_type,
         body.0,
         args.state_key.to_owned(),
@@ -261,7 +263,7 @@ pub(super) async fn send_state_for_empty_key(
     let event_id = crate::state::send_state_event_for_key(
         authed.user_id(),
         &args.room_id,
-        &crate::room::get_version(&args.room_id)?,
+        &crate::room::get_version(&args.room_id).await?,
         &args.event_type.to_string().into(),
         body.0,
         "".into(),
@@ -284,7 +286,7 @@ pub async fn send_typing(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
 
-    if !room::user::is_joined(authed.user_id(), &args.room_id)? {
+    if !room::user::is_joined(authed.user_id(), &args.room_id).await? {
         return Err(MatrixError::forbidden("You are not in this room.", None).into());
     }
 

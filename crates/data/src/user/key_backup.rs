@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::UnixMillis;
 use crate::core::client::backup::{BackupAlgorithm, KeyBackupData};
@@ -75,7 +76,7 @@ pub struct NewDbRoomKeysVersion {
     pub created_at: UnixMillis,
 }
 
-pub fn create_backup(
+pub async fn create_backup(
     user_id: &UserId,
     algorithm: &RawJson<BackupAlgorithm>,
 ) -> DataResult<DbRoomKeysVersion> {
@@ -89,11 +90,12 @@ pub fn create_backup(
     };
     diesel::insert_into(e2e_room_keys_versions::table)
         .values(&new_keys_version)
-        .get_result(&mut connect()?)
+        .get_result(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
-pub fn update_backup(
+pub async fn update_backup(
     user_id: &UserId,
     version: i64,
     algorithm: &BackupAlgorithm,
@@ -107,20 +109,21 @@ pub fn update_backup(
         e2e_room_keys_versions::algorithm.eq(serde_json::to_value(algorithm)?),
         e2e_room_keys_versions::etag.eq(UnixMillis::now().get() as i64),
     ))
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?).await?;
     Ok(())
 }
 
-pub fn get_latest_room_key(user_id: &UserId) -> DataResult<Option<DbRoomKey>> {
+pub async fn get_latest_room_key(user_id: &UserId) -> DataResult<Option<DbRoomKey>> {
     e2e_room_keys::table
         .filter(e2e_room_keys::user_id.eq(user_id))
         .order(e2e_room_keys::version.desc())
-        .first::<DbRoomKey>(&mut connect()?)
+        .first::<DbRoomKey>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
-pub fn get_room_key(
+pub async fn get_room_key(
     user_id: &UserId,
     room_id: &RoomId,
     version: i64,
@@ -129,21 +132,23 @@ pub fn get_room_key(
         .filter(e2e_room_keys::user_id.eq(user_id))
         .filter(e2e_room_keys::room_id.eq(room_id))
         .filter(e2e_room_keys::version.eq(version))
-        .first::<DbRoomKey>(&mut connect()?)
+        .first::<DbRoomKey>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
-pub fn get_latest_room_keys_version(user_id: &UserId) -> DataResult<Option<DbRoomKeysVersion>> {
+pub async fn get_latest_room_keys_version(user_id: &UserId) -> DataResult<Option<DbRoomKeysVersion>> {
     e2e_room_keys_versions::table
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::is_trashed.eq(false))
         .order(e2e_room_keys_versions::version.desc())
-        .first::<DbRoomKeysVersion>(&mut connect()?)
+        .first::<DbRoomKeysVersion>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
-pub fn get_room_keys_version(
+pub async fn get_room_keys_version(
     user_id: &UserId,
     version: i64,
 ) -> DataResult<Option<DbRoomKeysVersion>> {
@@ -151,12 +156,13 @@ pub fn get_room_keys_version(
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::version.eq(version))
         .filter(e2e_room_keys_versions::is_trashed.eq(false))
-        .first::<DbRoomKeysVersion>(&mut connect()?)
+        .first::<DbRoomKeysVersion>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
-pub fn add_key(
+pub async fn add_key(
     user_id: &UserId,
     version: i64,
     room_id: &RoomId,
@@ -175,7 +181,7 @@ pub fn add_key(
         created_at: UnixMillis::now(),
     };
 
-    let exist_key = get_key_for_session(user_id, version, room_id, session_id)?;
+    let exist_key = get_key_for_session(user_id, version, room_id, session_id).await?;
     let replace = if let Some(exist_key) = exist_key {
         if (new_key.is_verified && !exist_key.is_verified)
             || new_key.first_message_index < exist_key.first_message_index
@@ -200,31 +206,33 @@ pub fn add_key(
             ))
             .do_update()
             .set(&new_key)
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?).await?;
     }
     Ok(())
 }
 
-pub fn count_keys(user_id: &UserId, version: i64) -> DataResult<i64> {
+pub async fn count_keys(user_id: &UserId, version: i64) -> DataResult<i64> {
     e2e_room_keys::table
         .filter(e2e_room_keys::user_id.eq(user_id))
         .filter(e2e_room_keys::version.eq(version))
         .count()
-        .get_result(&mut connect()?)
+        .get_result(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
-pub fn get_etag(user_id: &UserId, version: i64) -> DataResult<String> {
+pub async fn get_etag(user_id: &UserId, version: i64) -> DataResult<String> {
     e2e_room_keys_versions::table
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::version.eq(version))
         .select(e2e_room_keys_versions::etag)
-        .first(&mut connect()?)
+        .first(&mut connect().await?)
+        .await
         .map(|etag: i64| etag.to_string())
         .map_err(Into::into)
 }
 
-pub fn get_key_for_session(
+pub async fn get_key_for_session(
     user_id: &UserId,
     version: i64,
     room_id: &RoomId,
@@ -235,45 +243,46 @@ pub fn get_key_for_session(
         .filter(e2e_room_keys::version.eq(version))
         .filter(e2e_room_keys::room_id.eq(room_id))
         .filter(e2e_room_keys::session_id.eq(session_id))
-        .first::<DbRoomKey>(&mut connect()?)
+        .first::<DbRoomKey>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
-pub fn delete_backup(user_id: &UserId, version: i64) -> DataResult<()> {
-    delete_all_keys(user_id, version)?;
+pub async fn delete_backup(user_id: &UserId, version: i64) -> DataResult<()> {
+    delete_all_keys(user_id, version).await?;
     diesel::update(
         e2e_room_keys_versions::table
             .filter(e2e_room_keys_versions::user_id.eq(user_id))
             .filter(e2e_room_keys_versions::version.eq(version)),
     )
     .set(e2e_room_keys_versions::is_trashed.eq(true))
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?).await?;
     Ok(())
 }
 
-pub fn delete_all_keys(user_id: &UserId, version: i64) -> DataResult<()> {
+pub async fn delete_all_keys(user_id: &UserId, version: i64) -> DataResult<()> {
     diesel::delete(
         e2e_room_keys::table
             .filter(e2e_room_keys::user_id.eq(user_id))
             .filter(e2e_room_keys::version.eq(version)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?).await?;
     Ok(())
 }
 
-pub fn delete_room_keys(user_id: &UserId, version: i64, room_id: &RoomId) -> DataResult<()> {
+pub async fn delete_room_keys(user_id: &UserId, version: i64, room_id: &RoomId) -> DataResult<()> {
     diesel::delete(
         e2e_room_keys::table
             .filter(e2e_room_keys::user_id.eq(user_id))
             .filter(e2e_room_keys::version.eq(version))
             .filter(e2e_room_keys::room_id.eq(room_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?).await?;
     Ok(())
 }
 
-pub fn delete_room_key(
+pub async fn delete_room_key(
     user_id: &UserId,
     version: i64,
     room_id: &RoomId,
@@ -286,6 +295,6 @@ pub fn delete_room_key(
             .filter(e2e_room_keys::room_id.eq(room_id))
             .filter(e2e_room_keys::session_id.eq(session_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?).await?;
     Ok(())
 }

@@ -1,6 +1,7 @@
 //! Endpoints for handling keys for end-to-end encryption
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
@@ -63,7 +64,7 @@ async fn query_keys(
 /// #GET /_matrix/federation/v1/user/devices/{user_id}
 /// Gets information on all devices of the user.
 #[endpoint]
-fn get_devices(
+async fn get_devices(
     _aa: AuthArgs,
     user_id: PathParam<OwnedUserId>,
     depot: &mut Depot,
@@ -74,7 +75,8 @@ fn get_devices(
         .filter(device_streams::user_id.eq(&user_id))
         .select(device_streams::id)
         .order_by(device_streams::id.desc())
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .optional()?
         .unwrap_or_default();
 
@@ -82,10 +84,12 @@ fn get_devices(
     let devices_and_names = user_devices::table
         .filter(user_devices::user_id.eq(&user_id))
         .select((user_devices::device_id, user_devices::display_name))
-        .load::<(OwnedDeviceId, Option<String>)>(&mut connect()?)?;
+        .load::<(OwnedDeviceId, Option<String>)>(&mut connect().await?)
+        .await?;
     for (device_id, display_name) in devices_and_names {
         devices.push(Device {
-            keys: data::user::get_device_keys_and_sigs(&user_id, &device_id)?
+            keys: data::user::get_device_keys_and_sigs(&user_id, &device_id)
+                .await?
                 .ok_or_else(|| AppError::public("server keys not found"))?,
             device_id,
             device_display_name: display_name,
@@ -96,12 +100,14 @@ fn get_devices(
         devices,
         master_key: crate::user::get_allowed_master_key(Some(&user_id), &user_id, &|u| {
             u.server_name() == origin
-        })?,
+        })
+        .await?,
         self_signing_key: crate::user::get_allowed_self_signing_key(
             Some(&user_id),
             &user_id,
             &|u| u.server_name() == origin,
-        )?,
+        )
+        .await?,
         user_id: user_id.to_owned(),
     })
 }

@@ -1,6 +1,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use lru_cache::LruCache;
 
 use super::{CompressedState, StateDiff};
@@ -22,7 +23,7 @@ pub struct FrameInfo {
 
 /// Returns a stack with info on state_hash, full state, added diff and removed diff for the
 /// selected state_hash and each parent layer.
-pub fn load_frame_info(frame_id: i64) -> AppResult<Vec<FrameInfo>> {
+pub async fn load_frame_info(frame_id: i64) -> AppResult<Vec<FrameInfo>> {
     if let Some(r) = STATE_INFO_CACHE.lock().unwrap().get_mut(&frame_id) {
         return Ok(r.clone());
     }
@@ -31,10 +32,10 @@ pub fn load_frame_info(frame_id: i64) -> AppResult<Vec<FrameInfo>> {
         parent_id,
         appended,
         disposed,
-    } = super::load_state_diff(frame_id)?;
+    } = super::load_state_diff(frame_id).await?;
 
     if let Some(parent_id) = parent_id {
-        let mut info = load_frame_info(parent_id)?;
+        let mut info = Box::pin(load_frame_info(parent_id)).await?;
         let mut full_state = (*info.last().expect("at least one frame").full_state).clone();
         full_state.extend(appended.iter().copied());
         let disposed = (*disposed).clone();
@@ -69,7 +70,7 @@ pub fn load_frame_info(frame_id: i64) -> AppResult<Vec<FrameInfo>> {
     }
 }
 
-pub fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> AppResult<i64> {
+pub async fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> AppResult<i64> {
     let frame_id = if let Some(until_sn) = until_sn {
         event_points::table
             .filter(event_points::room_id.eq(room_id))
@@ -77,25 +78,28 @@ pub fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> AppResult<i
             .filter(event_points::frame_id.is_not_null())
             .select(event_points::frame_id)
             .order(event_points::event_sn.desc())
-            .first::<Option<i64>>(&mut connect()?)?
+            .first::<Option<i64>>(&mut connect().await?)
+            .await?
     } else {
         rooms::table
             .find(room_id)
             .select(rooms::state_frame_id)
-            .first::<Option<i64>>(&mut connect()?)?
+            .first::<Option<i64>>(&mut connect().await?)
+            .await?
     };
     frame_id.ok_or(MatrixError::not_found("room frame is not found").into())
 }
 
-pub fn get_pdu_frame_id(event_id: &EventId) -> AppResult<i64> {
+pub async fn get_pdu_frame_id(event_id: &EventId) -> AppResult<i64> {
     let frame_id = event_points::table
         .filter(event_points::event_id.eq(event_id))
         .select(event_points::frame_id)
-        .first::<Option<i64>>(&mut connect()?)?;
+        .first::<Option<i64>>(&mut connect().await?)
+        .await?;
     frame_id.ok_or(MatrixError::not_found("pdu frame is not found").into())
 }
 /// Returns (state_hash, already_existed)
-pub fn ensure_frame(room_id: &RoomId, hash_data: Vec<u8>) -> AppResult<i64> {
+pub async fn ensure_frame(room_id: &RoomId, hash_data: Vec<u8>) -> AppResult<i64> {
     diesel::insert_into(room_state_frames::table)
         .values((
             room_state_frames::room_id.eq(room_id),
@@ -103,15 +107,17 @@ pub fn ensure_frame(room_id: &RoomId, hash_data: Vec<u8>) -> AppResult<i64> {
         ))
         .on_conflict_do_nothing()
         .returning(room_state_frames::id)
-        .get_result(&mut connect()?)
+        .get_result(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
-pub fn get_frame_id(room_id: &RoomId, hash_data: &[u8]) -> AppResult<i64> {
+pub async fn get_frame_id(room_id: &RoomId, hash_data: &[u8]) -> AppResult<i64> {
     room_state_frames::table
         .filter(room_state_frames::room_id.eq(room_id))
         .filter(room_state_frames::hash_data.eq(hash_data))
         .select(room_state_frames::id)
-        .get_result(&mut connect()?)
+        .get_result(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }

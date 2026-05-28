@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::identifiers::*;
 pub use crate::core::sending::*;
@@ -36,12 +37,13 @@ pub struct NewDbOutgoingRequest {
 }
 
 /// Get all known federation destinations
-pub fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
+pub async fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
     let servers: Vec<OwnedServerName> = outgoing_requests::table
         .filter(outgoing_requests::server_id.is_not_null())
         .select(outgoing_requests::server_id)
         .distinct()
-        .load::<Option<OwnedServerName>>(&mut connect()?)?
+        .load::<Option<OwnedServerName>>(&mut connect().await?)
+        .await?
         .into_iter()
         .flatten()
         .collect();
@@ -49,23 +51,24 @@ pub fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
 }
 
 /// Check if a destination is known
-pub fn is_destination_known(server: &ServerName) -> DataResult<bool> {
+pub async fn is_destination_known(server: &ServerName) -> DataResult<bool> {
     let query = outgoing_requests::table.filter(outgoing_requests::server_id.eq(server));
-    Ok(diesel_exists!(query, &mut connect()?)?)
+    Ok(diesel_exists!(query, &mut connect().await?)?)
 }
 
 /// Get rooms shared with a destination
-pub fn get_destination_rooms(server: &ServerName) -> DataResult<Vec<OwnedRoomId>> {
+pub async fn get_destination_rooms(server: &ServerName) -> DataResult<Vec<OwnedRoomId>> {
     use crate::schema::room_joined_servers;
     let rooms: Vec<OwnedRoomId> = room_joined_servers::table
         .filter(room_joined_servers::server_id.eq(server))
         .select(room_joined_servers::room_id)
-        .load(&mut connect()?)?;
+        .load(&mut connect().await?)
+        .await?;
     Ok(rooms)
 }
 
 /// Reset retry timings for a destination
-pub fn reset_destination_retry(server: &ServerName) -> DataResult<()> {
+pub async fn reset_destination_retry(server: &ServerName) -> DataResult<()> {
     diesel::update(
         outgoing_requests::table
             .filter(outgoing_requests::kind.eq("normal"))
@@ -75,6 +78,7 @@ pub fn reset_destination_retry(server: &ServerName) -> DataResult<()> {
         outgoing_requests::retry_count.eq(0),
         outgoing_requests::last_failed_at.eq(None::<i64>),
     ))
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }

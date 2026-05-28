@@ -60,6 +60,7 @@ pub(super) async fn sync_events_v5(
             device_id.to_owned(),
             req_body.conn_id.to_owned(),
         )
+        .await
     }
 
     // Get sticky parameters from cache
@@ -67,13 +68,14 @@ pub(super) async fn sync_events_v5(
         sender_id.to_owned(),
         device_id.to_owned(),
         &mut req_body,
-    );
+    )
+    .await;
 
     let mut res_body =
         crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)
             .await?;
 
-    if since_sn > data::curr_sn()?
+    if since_sn > data::curr_sn().await?
         || (args.pos.is_some()
             && res_body.is_empty_for_long_poll()
             && !has_list_count_changes(&res_body, &previous_list_counts))
@@ -95,7 +97,8 @@ pub(super) async fn sync_events_v5(
             .iter()
             .map(|(list_id, list)| (list_id.clone(), list.count))
             .collect(),
-    );
+    )
+    .await;
 
     trace!(
         rooms=?res_body.rooms.len(),

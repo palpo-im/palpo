@@ -6,6 +6,7 @@ use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use std::time::Instant;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use hickory_resolver::Resolver as HickoryResolver;
 use hickory_resolver::config::*;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
@@ -112,12 +113,12 @@ pub fn dns_resolver() -> &'static HickoryResolver<TokioRuntimeProvider> {
     })
 }
 
-pub fn appservices() -> &'static Vec<Registration> {
+pub async fn appservices() -> &'static Vec<Registration> {
     use figment::Figment;
     use figment::providers::{Format, Toml, Yaml};
-    static APPSERVICES: OnceLock<Vec<Registration>> = OnceLock::new();
+    static APPSERVICES: tokio::sync::OnceCell<Vec<Registration>> = tokio::sync::OnceCell::const_new();
 
-    APPSERVICES.get_or_init(|| {
+    APPSERVICES.get_or_init(|| async {
         let mut appservices = vec![];
         let Some(registration_dir) = crate::config::appservice_registration_dir() else {
             return appservices;
@@ -182,7 +183,7 @@ pub fn appservices() -> &'static Vec<Registration> {
             // Ensure the appservice registration is in the database so that
             // event forwarding (via appservice::all()) can find it.
             let db_registration: DbRegistration = registration.clone().into();
-            let mut conn = connect().expect("db connect failed");
+            let mut conn = connect().await.expect("db connect failed");
             if let Err(e) = diesel::insert_into(appservice_registrations::table)
                 .values(&db_registration)
                 .on_conflict(appservice_registrations::id)
@@ -202,6 +203,7 @@ pub fn appservices() -> &'static Vec<Registration> {
                         .eq(&db_registration.device_management),
                 ))
                 .execute(&mut conn)
+                .await
             {
                 tracing::error!("Failed to save appservice registration to database: {e}");
             }
@@ -213,7 +215,7 @@ pub fn appservices() -> &'static Vec<Registration> {
                 crate::config::get().server_name
             ))
             .unwrap();
-            let mut conn = connect().expect("db connect failed");
+            let mut conn = connect().await.expect("db connect failed");
             if !diesel_exists!(users::table.filter(users::id.eq(&user_id)), &mut conn)
                 .expect("db query failed")
             {
@@ -230,6 +232,7 @@ pub fn appservices() -> &'static Vec<Registration> {
                         created_at: UnixMillis::now(),
                     })
                     .execute(&mut conn)
+                    .await
                     .expect("db query failed");
             }
 
@@ -251,21 +254,24 @@ pub fn appservices() -> &'static Vec<Registration> {
                         created_at: UnixMillis::now(),
                     })
                     .execute(&mut conn)
+                    .await
                     .expect("db query failed");
             }
         }
         appservices
     })
+    .await
 }
 
-pub fn add_signing_key_from_trusted_server(
+pub async fn add_signing_key_from_trusted_server(
     from_server: &ServerName,
     new_keys: ServerSigningKeys,
 ) -> AppResult<SigningKeys> {
     let key_data = server_signing_keys::table
         .filter(server_signing_keys::server_id.eq(from_server))
         .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect()?)
+        .first::<JsonValue>(&mut connect().await?)
+        .await
         .optional()?;
 
     let prev_keys: Option<ServerSigningKeys> = key_data.map(serde_json::from_value).transpose()?;
@@ -294,7 +300,8 @@ pub fn add_signing_key_from_trusted_server(
                 server_signing_keys::key_data.eq(serde_json::to_value(&prev_keys)?),
                 server_signing_keys::updated_at.eq(UnixMillis::now()),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(prev_keys.into())
     } else {
         diesel::insert_into(server_signing_keys::table)
@@ -310,18 +317,20 @@ pub fn add_signing_key_from_trusted_server(
                 server_signing_keys::key_data.eq(serde_json::to_value(&new_keys)?),
                 server_signing_keys::updated_at.eq(UnixMillis::now()),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(new_keys.into())
     }
 }
-pub fn add_signing_key_from_origin(
+pub async fn add_signing_key_from_origin(
     origin: &ServerName,
     new_keys: ServerSigningKeys,
 ) -> AppResult<SigningKeys> {
     let key_data = server_signing_keys::table
         .filter(server_signing_keys::server_id.eq(origin))
         .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect()?)
+        .first::<JsonValue>(&mut connect().await?)
+        .await
         .optional()?;
 
     let prev_keys: Option<ServerSigningKeys> = key_data.map(serde_json::from_value).transpose()?;
@@ -359,7 +368,8 @@ pub fn add_signing_key_from_origin(
                 server_signing_keys::key_data.eq(serde_json::to_value(&prev_keys)?),
                 server_signing_keys::updated_at.eq(UnixMillis::now()),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(prev_keys.into())
     } else {
         diesel::insert_into(server_signing_keys::table)
@@ -375,7 +385,8 @@ pub fn add_signing_key_from_origin(
                 server_signing_keys::key_data.eq(serde_json::to_value(&new_keys)?),
                 server_signing_keys::updated_at.eq(UnixMillis::now()),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(new_keys.into())
     }
 }

@@ -50,7 +50,8 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
 
     let mut response = ProfileResBody::new();
 
-    let profile = data::user::get_profile(&args.user_id, None)?
+    let profile = data::user::get_profile(&args.user_id, None)
+        .await?
         .ok_or(MatrixError::not_found("Profile not found."))?;
     let custom_fields = profile.fields.as_object().cloned().unwrap_or_default();
 
@@ -102,8 +103,8 @@ async fn get_directory(
     _aa: AuthArgs,
     room_alias: QueryParam<OwnedRoomAliasId, true>,
 ) -> JsonResult<RoomInfoResBody> {
-    let room_id = crate::room::resolve_local_alias(&room_alias)?;
-    let mut servers = crate::room::lookup_servers(&room_id)?;
+    let room_id = crate::room::resolve_local_alias(&room_alias).await?;
+    let mut servers = crate::room::lookup_servers(&room_id).await?;
     servers.insert(0, config::get().server_name.to_owned());
     servers.dedup();
     json_ok(RoomInfoResBody { room_id, servers })

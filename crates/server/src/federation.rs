@@ -163,12 +163,12 @@ pub(crate) async fn user_can_perform_restricted_join(
         return Ok(false);
     }
 
-    if room::user::is_joined(user_id, room_id).unwrap_or(false) {
+    if room::user::is_joined(user_id, room_id).await.unwrap_or(false) {
         // joining user is already joined, there is nothing we need to do
         return Ok(false);
     }
 
-    if room::user::is_invited(user_id, room_id).unwrap_or(false) {
+    if room::user::is_invited(user_id, room_id).await.unwrap_or(false) {
         return Ok(true);
     }
 
@@ -176,7 +176,7 @@ pub(crate) async fn user_can_perform_restricted_join(
         Some(rule) => rule.to_owned(),
         None => {
             // If no join rule is provided, we need to fetch it from the room state
-            let Ok(join_rule) = room::get_join_rule(room_id) else {
+            let Ok(join_rule) = room::get_join_rule(room_id).await else {
                 return Ok(false);
             };
             join_rule
@@ -192,20 +192,22 @@ pub(crate) async fn user_can_perform_restricted_join(
         return Ok(false);
     }
 
-    if r.allow
-        .iter()
-        .filter_map(|rule| {
-            if let AllowRule::RoomMembership(membership) = rule {
-                Some(membership)
-            } else {
-                None
-            }
-        })
-        .any(|m| {
-            room::is_server_joined(&config::get().server_name, &m.room_id).unwrap_or(false)
-                && room::user::is_joined(user_id, &m.room_id).unwrap_or(false)
-        })
-    {
+    let mut authorized = false;
+    for m in r.allow.iter().filter_map(|rule| {
+        if let AllowRule::RoomMembership(membership) = rule {
+            Some(membership)
+        } else {
+            None
+        }
+    }) {
+        if room::is_server_joined(&config::get().server_name, &m.room_id).await.unwrap_or(false)
+            && room::user::is_joined(user_id, &m.room_id).await.unwrap_or(false)
+        {
+            authorized = true;
+            break;
+        }
+    }
+    if authorized {
         Ok(true)
     } else {
         Err(MatrixError::unable_to_authorize_join(

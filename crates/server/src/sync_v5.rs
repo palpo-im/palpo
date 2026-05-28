@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::core::client::filter::RoomEventFilter;
@@ -32,7 +34,7 @@ use crate::{AppResult, data, extract_variant};
 /// the request. Used by both `process_lists` (which sorts and slices the
 /// result for ops) and the `since_sn > curr_sn` fast path (which only needs
 /// the count).
-fn compute_active_rooms<'a>(
+async fn compute_active_rooms<'a>(
     list: &sync_events::v5::ReqList,
     all_invited_rooms: &[&'a RoomId],
     all_joined_rooms: &[&'a RoomId],
@@ -49,7 +51,7 @@ fn compute_active_rooms<'a>(
     if let Some(filter) = list.filters.as_ref().map(|f| &f.not_room_types)
         && !filter.is_empty()
     {
-        active_rooms = filter_rooms(&active_rooms, filter, true);
+        active_rooms = filter_rooms(&active_rooms, filter, true).await;
     }
 
     // Apply room_types filter
@@ -60,7 +62,7 @@ fn compute_active_rooms<'a>(
             Some(&f.room_types)
         }
     }) {
-        active_rooms = filter_rooms(&active_rooms, filter, false);
+        active_rooms = filter_rooms(&active_rooms, filter, false).await;
     }
 
     // Apply is_dm filter
@@ -72,8 +74,15 @@ fn compute_active_rooms<'a>(
 
     // Apply is_encrypted filter
     match list.filters.as_ref().and_then(|f| f.is_encrypted) {
-        Some(true) => active_rooms.retain(|r| room::is_encrypted(r)),
-        Some(false) => active_rooms.retain(|r| !room::is_encrypted(r)),
+        Some(want_encrypted) => {
+            let mut retained: Vec<&'a RoomId> = Vec::with_capacity(active_rooms.len());
+            for r in active_rooms {
+                if room::is_encrypted(r).await == want_encrypted {
+                    retained.push(r);
+                }
+            }
+            active_rooms = retained;
+        }
         None => {}
     }
 
@@ -81,7 +90,7 @@ fn compute_active_rooms<'a>(
 }
 
 /// Sort rooms by last activity (most recent first) using event sequence numbers.
-fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
+async fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
     if rooms.is_empty() {
         return Ok(());
     }
@@ -93,7 +102,8 @@ fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
         .distinct_on(event_points::room_id)
         .order_by((event_points::room_id.asc(), event_points::event_sn.desc()))
         .select((event_points::room_id, event_points::event_sn))
-        .load(&mut connect()?)?;
+        .load(&mut connect().await?)
+        .await?;
 
     let last_sn: BTreeMap<&str, i64> = results.iter().map(|(r, sn)| (r.as_str(), *sn)).collect();
 
@@ -106,7 +116,7 @@ fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
     #[serde(default)]
@@ -124,33 +134,34 @@ static CONNECTIONS: LazyLock<
 > = LazyLock::new(Default::default);
 
 /// Load a connection cache from the database if not present in memory.
-fn load_or_create_connection(
+async fn load_or_create_connection(
     user_id: &OwnedUserId,
     device_id: &OwnedDeviceId,
     conn_id: &Option<String>,
 ) -> Arc<Mutex<SlidingSyncCache>> {
-    let mut cache = CONNECTIONS.lock().unwrap();
     let key = (user_id.clone(), device_id.clone(), conn_id.clone());
-    if let Some(entry) = cache.get(&key) {
+    if let Some(entry) = CONNECTIONS.lock().unwrap().get(&key) {
         return Arc::clone(entry);
     }
 
     // Try to load from database
     let conn_id_str = conn_id.as_deref().unwrap_or("");
-    let db_cache = connect()
-        .ok()
-        .and_then(|mut conn| {
-            sliding_sync_connections::table
-                .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
-                .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
-                .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
-                .select(sliding_sync_connections::cache_data)
-                .first::<serde_json::Value>(&mut conn)
-                .ok()
-        })
+    let db_json = match connect().await {
+        Ok(mut conn) => sliding_sync_connections::table
+            .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+            .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+            .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
+            .select(sliding_sync_connections::cache_data)
+            .first::<serde_json::Value>(&mut conn)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
+    let db_cache = db_json
         .and_then(|json| serde_json::from_value::<SlidingSyncCache>(json).ok())
         .unwrap_or_default();
 
+    let mut cache = CONNECTIONS.lock().unwrap();
     let entry = Arc::new(Mutex::new(db_cache));
     cache.insert(key, Arc::clone(&entry));
     entry
@@ -167,24 +178,26 @@ const NUM_ROOMS_THRESHOLD: usize = 100;
 const STALE_SYNC_THRESHOLD_MS: i64 = 60 * 60 * 1000;
 
 /// Delete expired sliding sync connections from both memory and database.
-pub fn cleanup_expired_connections() {
+pub async fn cleanup_expired_connections() {
     let now = UnixMillis::now().get() as i64;
     let cutoff = now - CONNECTION_EXPIRY_MS;
 
-    let expired_keys: HashSet<(OwnedUserId, OwnedDeviceId, Option<String>)> = connect()
-        .ok()
-        .and_then(|mut conn| {
-            sliding_sync_connections::table
-                .filter(sliding_sync_connections::updated_at.lt(cutoff))
-                .select((
-                    sliding_sync_connections::user_id,
-                    sliding_sync_connections::device_id,
-                    sliding_sync_connections::conn_id,
-                ))
-                .load::<(String, String, String)>(&mut conn)
-                .ok()
-        })
-        .unwrap_or_default()
+    let expired_rows: Vec<(String, String, String)> = match connect().await {
+        Ok(mut conn) => sliding_sync_connections::table
+            .filter(sliding_sync_connections::updated_at.lt(cutoff))
+            .select((
+                sliding_sync_connections::user_id,
+                sliding_sync_connections::device_id,
+                sliding_sync_connections::conn_id,
+            ))
+            .load::<(String, String, String)>(&mut conn)
+            .await
+            .ok(),
+        Err(_) => None,
+    }
+    .unwrap_or_default();
+
+    let expired_keys: HashSet<(OwnedUserId, OwnedDeviceId, Option<String>)> = expired_rows
         .into_iter()
         .filter_map(|(user_id, device_id, conn_id)| {
             Some((
@@ -201,11 +214,12 @@ pub fn cleanup_expired_connections() {
         .retain(|key, _entry| !expired_keys.contains(key));
 
     // Clean up database
-    if let Ok(mut conn) = connect() {
+    if let Ok(mut conn) = connect().await {
         let _ = diesel::delete(
             sliding_sync_connections::table.filter(sliding_sync_connections::updated_at.lt(cutoff)),
         )
-        .execute(&mut conn);
+        .execute(&mut conn)
+        .await;
     }
 }
 
@@ -227,28 +241,28 @@ fn check_connection_staleness(
 }
 
 /// Get the last update timestamp for a connection.
-fn get_connection_updated_at(
+async fn get_connection_updated_at(
     user_id: &UserId,
     device_id: &DeviceId,
     conn_id: &Option<String>,
 ) -> i64 {
     let conn_id_str = conn_id.as_deref().unwrap_or("");
-    connect()
-        .ok()
-        .and_then(|mut conn| {
-            sliding_sync_connections::table
-                .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
-                .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
-                .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
-                .select(sliding_sync_connections::updated_at)
-                .first::<i64>(&mut conn)
-                .ok()
-        })
-        .unwrap_or(0)
+    let updated_at = match connect().await {
+        Ok(mut conn) => sliding_sync_connections::table
+            .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+            .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+            .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
+            .select(sliding_sync_connections::updated_at)
+            .first::<i64>(&mut conn)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
+    updated_at.unwrap_or(0)
 }
 
 /// Persist the connection cache to the database for cross-instance access.
-fn persist_connection(
+async fn persist_connection(
     user_id: &OwnedUserId,
     device_id: &OwnedDeviceId,
     conn_id: &Option<String>,
@@ -259,7 +273,7 @@ fn persist_connection(
         return;
     };
     let now = UnixMillis::now();
-    if let Ok(mut conn) = connect() {
+    if let Ok(mut conn) = connect().await {
         let _ = diesel::insert_into(sliding_sync_connections::table)
             .values((
                 sliding_sync_connections::user_id.eq(user_id.as_str()),
@@ -278,7 +292,8 @@ fn persist_connection(
                 sliding_sync_connections::cache_data.eq(&cache_data),
                 sliding_sync_connections::updated_at.eq(now),
             ))
-            .execute(&mut conn);
+            .execute(&mut conn)
+            .await;
     }
 }
 
@@ -288,15 +303,15 @@ static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
 /// Frequency of connection cleanup (1 hour in milliseconds).
 const CLEANUP_FREQUENCY_MS: i64 = 60 * 60 * 1000;
 
-fn maybe_cleanup_connections() {
+async fn maybe_cleanup_connections() {
     let now = UnixMillis::now().get() as i64;
-    let last = LAST_CLEANUP.load(AtomicOrdering::Relaxed);
+    let last = AtomicI64::load(&LAST_CLEANUP, AtomicOrdering::Relaxed);
     if now - last > CLEANUP_FREQUENCY_MS
         && LAST_CLEANUP
             .compare_exchange(last, now, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed)
             .is_ok()
     {
-        cleanup_expired_connections();
+        cleanup_expired_connections().await;
     }
 }
 
@@ -309,19 +324,19 @@ pub async fn sync_events(
     known_rooms: &KnownRooms,
 ) -> AppResult<SyncEventsResBody> {
     // Periodically clean up expired connections
-    maybe_cleanup_connections();
+    maybe_cleanup_connections().await;
 
-    let curr_sn = data::curr_sn()?;
+    let curr_sn = data::curr_sn().await?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
 
-    let all_joined_rooms = data::user::joined_rooms(sender_id)?;
-    let ignored_users = crate::user::ignored_users(sender_id);
+    let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
+    let ignored_users = crate::user::ignored_users(sender_id).await;
 
-    let all_invited_rooms = data::user::invited_rooms(sender_id, 0)?;
+    let all_invited_rooms = data::user::invited_rooms(sender_id, 0).await?;
     let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(|r| r.0.as_ref()).collect();
 
-    let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0)?;
+    let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0).await?;
     let all_knocked_rooms: Vec<&RoomId> = all_knocked_rooms.iter().map(|r| r.0.as_ref()).collect();
 
     let all_rooms: Vec<&RoomId> = all_joined_rooms
@@ -340,6 +355,7 @@ pub async fn sync_events(
         None,
         &GlobalAccountDataEventType::Direct.to_string(),
     )
+    .await
     .map(|direct| direct.0.values().flatten().cloned().collect())
     .unwrap_or_default();
 
@@ -360,7 +376,8 @@ pub async fn sync_events(
                 &all_joined_rooms,
                 &all_rooms,
                 &dm_rooms,
-            );
+            )
+            .await;
             res.lists.insert(
                 list_id.clone(),
                 sync_events::v5::SyncList {
@@ -386,9 +403,9 @@ pub async fn sync_events(
         lists: BTreeMap::new(),
         rooms: BTreeMap::new(),
         extensions: Extensions {
-            account_data: collect_account_data(sync_info)?,
-            e2ee: collect_e2ee(sync_info, &all_joined_rooms)?,
-            to_device: collect_to_device(sync_info, next_batch),
+            account_data: collect_account_data(sync_info).await?,
+            e2ee: collect_e2ee(sync_info, &all_joined_rooms).await?,
+            to_device: collect_to_device(sync_info, next_batch).await,
             receipts: collect_receipts(sync_info),
             typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
         },
@@ -406,7 +423,7 @@ pub async fn sync_events(
     )
     .await?;
 
-    fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms)?;
+    fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms).await?;
 
     res_body.rooms = process_rooms(
         sync_info,
@@ -444,11 +461,12 @@ async fn process_lists(
             all_joined_rooms,
             all_rooms,
             dm_rooms,
-        );
+        )
+        .await;
 
         // Sort rooms by last activity (most recent first)
         let mut sorted_rooms = active_rooms;
-        sort_rooms_by_activity(&mut sorted_rooms)?;
+        sort_rooms_by_activity(&mut sorted_rooms).await?;
         let count = sorted_rooms.len();
 
         let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
@@ -519,12 +537,13 @@ async fn process_lists(
             list_id.clone(),
             new_known_rooms,
             since_sn,
-        );
+        )
+        .await;
     }
     Ok(())
 }
 
-fn fetch_subscriptions(
+async fn fetch_subscriptions(
     SyncInfo {
         sender_id,
         device_id,
@@ -536,7 +555,7 @@ fn fetch_subscriptions(
 ) -> AppResult<()> {
     let mut known_subscription_rooms = BTreeSet::new();
     for (room_id, room) in &req_body.room_subscriptions {
-        if !crate::room::room_exists(room_id)? {
+        if !crate::room::room_exists(room_id).await? {
             continue;
         }
         let todo_room = todo_rooms.entry(room_id.clone()).or_insert(TodoRoom::new(
@@ -575,7 +594,8 @@ fn fetch_subscriptions(
         "subscriptions".to_owned(),
         known_subscription_rooms,
         since_sn,
-    );
+    )
+    .await;
     Ok(())
 }
 
@@ -616,7 +636,7 @@ async fn process_rooms(
 
         let timeline = if all_invited_rooms.contains(&new_room_id) {
             // Invited rooms have empty timeline, only stripped state
-            invite_state = crate::room::user::invite_state(sender_id, room_id).ok();
+            invite_state = crate::room::user::invite_state(sender_id, room_id).await.ok();
             TimelineData {
                 events: Default::default(),
                 limited: false,
@@ -631,7 +651,8 @@ async fn process_rooms(
                 None,
                 Some(BatchToken::LIVE_MAX),
                 Some(&RoomEventFilter::with_limit(*timeline_limit)),
-            )?
+            )
+            .await?
         } else {
             // Incremental sync: use stream ordering to catch late-arriving events
             crate::sync_v3::load_timeline(
@@ -640,12 +661,14 @@ async fn process_rooms(
                 Some(BatchToken::new_live(*room_since_sn)),
                 Some(BatchToken::LIVE_MAX),
                 Some(&RoomEventFilter::with_limit(*timeline_limit)),
-            )?
+            )
+            .await?
         };
 
         if req_body.extensions.account_data.enabled == Some(true) {
             let room_account_data =
-                data::user::data_changes(Some(room_id), sender_id, *room_since_sn, None)?
+                data::user::data_changes(Some(room_id), sender_id, *room_since_sn, None)
+                    .await?
                     .into_iter()
                     .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
                     .collect::<Vec<_>>();
@@ -661,16 +684,18 @@ async fn process_rooms(
         let receipt_size = if receipts_enabled {
             let last_private_read_update =
                 data::room::receipt::last_private_read_update_sn(sender_id, room_id)
+                    .await
                     .unwrap_or_default()
                     > *room_since_sn;
 
             let private_read_event = if last_private_read_update {
-                crate::room::receipt::last_private_read(sender_id, room_id).ok()
+                crate::room::receipt::last_private_read(sender_id, room_id).await.ok()
             } else {
                 None
             };
 
-            let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)?
+            let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)
+                .await?
                 .into_iter()
                 .filter_map(|(read_user, content)| {
                     if !ignored_users.contains(&read_user) {
@@ -708,7 +733,7 @@ async fn process_rooms(
             continue;
         }
 
-        let prev_batch = timeline.events.first().and_then(|(sn, _)| {
+        let prev_batch = IndexMap::first(&timeline.events).and_then(|(sn, _)| {
             if *sn == 0 {
                 None
             } else {
@@ -756,26 +781,29 @@ async fn process_rooms(
                             &StateEventType::RoomMember,
                             sender.as_str(),
                             None,
-                        ) && !is_required_state_send(
+                        ).await && !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
                             pdu.event_sn,
-                        ) {
+                        )
+                        .await
+                        {
                             mark_required_state_sent(
                                 sender_id.to_owned(),
                                 device_id.to_owned(),
                                 req_body.conn_id.clone(),
                                 pdu.event_sn,
-                            );
+                            )
+                            .await;
                             required_state_events.push(pdu.to_sync_state_event());
                         }
                     }
                 }
                 // * state key: return all state events of this type
                 (ref event_type, "*") => {
-                    if let Ok(frame_id) = room::get_frame_id(room_id, None)
-                        && let Ok(full_state) = state::get_full_state(frame_id)
+                    if let Ok(frame_id) = room::get_frame_id(room_id, None).await
+                        && let Ok(full_state) = state::get_full_state(frame_id).await
                     {
                         for ((ty, _sk), pdu) in &full_state {
                             if ty == event_type
@@ -785,13 +813,15 @@ async fn process_rooms(
                                     req_body.conn_id.clone(),
                                     pdu.event_sn,
                                 )
+                                .await
                             {
                                 mark_required_state_sent(
                                     sender_id.to_owned(),
                                     device_id.to_owned(),
                                     req_body.conn_id.clone(),
                                     pdu.event_sn,
-                                );
+                                )
+                                .await;
                                 required_state_events.push(pdu.to_sync_state_event());
                             }
                         }
@@ -799,39 +829,43 @@ async fn process_rooms(
                 }
                 // $ME: substitute with the requester's user_id
                 (ref event_type, "$ME") => {
-                    if let Ok(pdu) = room::get_state(room_id, event_type, sender_id.as_str(), None)
+                    if let Ok(pdu) = room::get_state(room_id, event_type, sender_id.as_str(), None).await
                         && !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
                             pdu.event_sn,
                         )
+                        .await
                     {
                         mark_required_state_sent(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
                             pdu.event_sn,
-                        );
+                        )
+                        .await;
                         required_state_events.push(pdu.to_sync_state_event());
                     }
                 }
                 // Specific state key
                 (ref event_type, state_key) => {
-                    if let Ok(pdu) = room::get_state(room_id, event_type, state_key, None)
+                    if let Ok(pdu) = room::get_state(room_id, event_type, state_key, None).await
                         && !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
                             pdu.event_sn,
                         )
+                        .await
                     {
                         mark_required_state_sent(
                             sender_id.to_owned(),
                             device_id.to_owned(),
                             req_body.conn_id.clone(),
                             pdu.event_sn,
-                        );
+                        )
+                        .await;
                         required_state_events.push(pdu.to_sync_state_event());
                     }
                 }
@@ -841,22 +875,22 @@ async fn process_rooms(
         let required_state = required_state_events;
 
         // Heroes - only compute when requested or when room name isn't set
-        let room_name = room::get_name(room_id).ok();
+        let room_name = room::get_name(room_id).await.ok();
         let (heroes, hero_name, heroes_avatar) = if *include_heroes || room_name.is_none() {
-            let heroes: Vec<_> = room::get_members_limit(room_id, 6)?
+            let mut heroes: Vec<sync_events::v5::SyncRoomHero> = Vec::new();
+            for user_id in room::get_members_limit(room_id, 6).await?
                 .into_iter()
                 .filter(|member| *member != sender_id)
                 .take(5)
-                .filter_map(|user_id| {
-                    room::get_member(room_id, &user_id, None)
-                        .ok()
-                        .map(|member| sync_events::v5::SyncRoomHero {
-                            user_id,
-                            name: member.display_name,
-                            avatar: member.avatar_url,
-                        })
-                })
-                .collect();
+            {
+                if let Ok(member) = room::get_member(room_id, &user_id, None).await {
+                    heroes.push(sync_events::v5::SyncRoomHero {
+                        user_id,
+                        name: member.display_name,
+                        avatar: member.avatar_url,
+                    });
+                }
+            }
 
             let name = match heroes.len().cmp(&(1_usize)) {
                 Ordering::Greater => {
@@ -895,14 +929,14 @@ async fn process_rooms(
             (None, None, None)
         };
 
-        let notify_summary = room::user::notify_summary(sender_id, room_id)?;
+        let notify_summary = room::user::notify_summary(sender_id, room_id).await?;
         rooms.insert(
             room_id.clone(),
             SyncRoom {
                 name: room_name.or(hero_name),
                 avatar: match heroes_avatar {
                     Some(ref heroes_avatar) => Some(heroes_avatar.clone()),
-                    _ => room::get_avatar_url(room_id).ok().flatten(),
+                    _ => room::get_avatar_url(room_id).await.ok().flatten(),
                 },
                 initial: Some(is_initial),
                 is_dm: Some(dm_rooms.contains(room_id)),
@@ -917,13 +951,13 @@ async fn process_rooms(
                 limited: timeline.limited,
                 joined_count: Some(
                     crate::room::joined_member_count(room_id)
-                        .unwrap_or(0)
+                        .await.unwrap_or(0)
                         .try_into()
                         .unwrap_or(0),
                 ),
                 invited_count: Some(
                     crate::room::invited_member_count(room_id)
-                        .unwrap_or(0)
+                        .await.unwrap_or(0)
                         .try_into()
                         .unwrap_or(0),
                 ),
@@ -941,7 +975,7 @@ async fn process_rooms(
     }
     Ok(rooms)
 }
-fn collect_account_data(
+async fn collect_account_data(
     SyncInfo {
         sender_id,
         since_sn,
@@ -958,7 +992,8 @@ fn collect_account_data(
         return Ok(sync_events::v5::AccountData::default());
     }
 
-    account_data.global = data::user::data_changes(None, sender_id, since_sn, None)?
+    account_data.global = data::user::data_changes(None, sender_id, since_sn, None)
+        .await?
         .into_iter()
         .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Global))
         .collect();
@@ -967,7 +1002,8 @@ fn collect_account_data(
         for room in rooms {
             account_data.rooms.insert(
                 room.clone(),
-                data::user::data_changes(Some(room), sender_id, since_sn, None)?
+                data::user::data_changes(Some(room), sender_id, since_sn, None)
+                    .await?
                     .into_iter()
                     .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
                     .collect(),
@@ -978,7 +1014,7 @@ fn collect_account_data(
     Ok(account_data)
 }
 
-fn collect_e2ee(
+async fn collect_e2ee(
     SyncInfo {
         sender_id,
         device_id,
@@ -994,17 +1030,18 @@ fn collect_e2ee(
     let mut device_list_changes = HashSet::new();
     let mut device_list_left = HashSet::new();
     // Look for device list updates of this account
-    device_list_changes.extend(data::user::keys_changed_users(sender_id, since_sn, None)?);
+    device_list_changes
+        .extend(data::user::keys_changed_users(sender_id, since_sn, None).await?);
 
     for room_id in all_joined_rooms {
-        let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None) else {
+        let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None).await else {
             error!("Room {room_id} has no state");
             continue;
         };
-        let since_frame_id = crate::event::get_last_frame_id(room_id, Some(since_sn)).ok();
+        let since_frame_id = crate::event::get_last_frame_id(room_id, Some(since_sn)).await.ok();
 
         let encrypted_room =
-            state::get_state(current_frame_id, &StateEventType::RoomEncryption, "").is_ok();
+            state::get_state(current_frame_id, &StateEventType::RoomEncryption, "").await.is_ok();
 
         if let Some(since_frame_id) = since_frame_id {
             // // Skip if there are only timeline changes
@@ -1013,20 +1050,20 @@ fn collect_e2ee(
             // }
 
             let since_encryption =
-                state::get_state(since_frame_id, &StateEventType::RoomEncryption, "").ok();
+                state::get_state(since_frame_id, &StateEventType::RoomEncryption, "").await.ok();
 
-            let joined_since_last_sync = room::user::join_sn(sender_id, room_id)? >= since_sn;
+            let joined_since_last_sync = room::user::join_sn(sender_id, room_id).await? >= since_sn;
 
             let new_encrypted_room = encrypted_room && since_encryption.is_none();
 
             if encrypted_room {
-                let current_state_ids = state::get_full_state_ids(current_frame_id)?;
+                let current_state_ids = state::get_full_state_ids(current_frame_id).await?;
 
-                let since_state_ids = state::get_full_state_ids(since_frame_id)?;
+                let since_state_ids = state::get_full_state_ids(since_frame_id).await?;
 
                 for (key, id) in current_state_ids {
                     if since_state_ids.get(&key) != Some(&id) {
-                        let Ok(pdu) = timeline::get_pdu(&id) else {
+                        let Ok(pdu) = timeline::get_pdu(&id).await else {
                             error!("pdu in state not found: {id}");
                             continue;
                         };
@@ -1041,7 +1078,9 @@ fn collect_e2ee(
                             match content.membership {
                                 MembershipState::Join => {
                                     // A new user joined an encrypted room
-                                    if !share_encrypted_room(sender_id, &user_id, Some(room_id))? {
+                                    if !share_encrypted_room(sender_id, &user_id, Some(room_id))
+                                        .await?
+                                    {
                                         device_list_changes.insert(user_id.to_owned());
                                     }
                                 }
@@ -1057,33 +1096,31 @@ fn collect_e2ee(
                 }
                 if joined_since_last_sync || new_encrypted_room {
                     // If the user is in a new encrypted room, give them all joined users
-                    device_list_changes.extend(
-                        room::get_members(room_id)?
-                            .into_iter()
-                            // Don't send key updates from the sender to the sender
-                            .filter(|user_id| sender_id != *user_id)
-                            // Only send keys if the sender doesn't share an encrypted room with the target
-                            // already
-                            .filter_map(|user_id| {
-                                if !share_encrypted_room(sender_id, &user_id, Some(room_id))
-                                    .unwrap_or(false)
-                                {
-                                    Some(user_id.to_owned())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<_>>(),
-                    );
+                    let mut new_changes: Vec<OwnedUserId> = Vec::new();
+                    for user_id in room::get_members(room_id).await?
+                        .into_iter()
+                        // Don't send key updates from the sender to the sender
+                        .filter(|user_id| sender_id != *user_id)
+                    {
+                        // Only send keys if the sender doesn't share an encrypted room with the
+                        // target already
+                        if !share_encrypted_room(sender_id, &user_id, Some(room_id))
+                            .await
+                            .unwrap_or(false)
+                        {
+                            new_changes.push(user_id.to_owned());
+                        }
+                    }
+                    device_list_changes.extend(new_changes);
                 }
             }
         }
         // Look for device list updates in this room
-        device_list_changes.extend(crate::room::keys_changed_users(room_id, since_sn, None)?);
+        device_list_changes.extend(crate::room::keys_changed_users(room_id, since_sn, None).await?);
     }
 
     for user_id in left_encrypted_users {
-        let Ok(share_encrypted_room) = share_encrypted_room(sender_id, &user_id, None) else {
+        let Ok(share_encrypted_room) = share_encrypted_room(sender_id, &user_id, None).await else {
             continue;
         };
 
@@ -1099,31 +1136,34 @@ fn collect_e2ee(
             changed: device_list_changes.into_iter().collect(),
             left: device_list_left.into_iter().collect(),
         },
-        device_one_time_keys_count: data::user::count_one_time_keys(sender_id, device_id)?,
-        device_unused_fallback_key_types: Some(get_unused_fallback_key_types(sender_id, device_id)),
+        device_one_time_keys_count: data::user::count_one_time_keys(sender_id, device_id).await?,
+        device_unused_fallback_key_types: Some(
+            get_unused_fallback_key_types(sender_id, device_id).await,
+        ),
     })
 }
 
-fn get_unused_fallback_key_types(
+async fn get_unused_fallback_key_types(
     user_id: &UserId,
     device_id: &DeviceId,
 ) -> Vec<DeviceKeyAlgorithm> {
-    connect()
-        .ok()
-        .and_then(|mut conn| {
-            e2e_fallback_keys::table
-                .filter(e2e_fallback_keys::user_id.eq(user_id.as_str()))
-                .filter(e2e_fallback_keys::device_id.eq(device_id.as_str()))
-                .filter(e2e_fallback_keys::used_at.is_null())
-                .select(e2e_fallback_keys::algorithm)
-                .load::<String>(&mut conn)
-                .ok()
-        })
+    let algos = match connect().await {
+        Ok(mut conn) => e2e_fallback_keys::table
+            .filter(e2e_fallback_keys::user_id.eq(user_id.as_str()))
+            .filter(e2e_fallback_keys::device_id.eq(device_id.as_str()))
+            .filter(e2e_fallback_keys::used_at.is_null())
+            .select(e2e_fallback_keys::algorithm)
+            .load::<String>(&mut conn)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
+    algos
         .map(|algos| algos.into_iter().map(|a| a.into()).collect())
         .unwrap_or_default()
 }
 
-fn collect_to_device(
+async fn collect_to_device(
     SyncInfo {
         sender_id,
         device_id,
@@ -1136,10 +1176,13 @@ fn collect_to_device(
         return None;
     }
 
-    data::user::device::remove_to_device_events(sender_id, device_id, since_sn - 1).ok()?;
+    data::user::device::remove_to_device_events(sender_id, device_id, since_sn - 1)
+        .await
+        .ok()?;
 
     let events =
         data::user::device::get_to_device_events(sender_id, device_id, None, Some(next_batch))
+            .await
             .ok()?;
 
     Some(sync_events::v5::ToDevice {
@@ -1194,7 +1237,7 @@ where
     Ok(typing)
 }
 
-pub fn forget_sync_request_connection(
+pub async fn forget_sync_request_connection(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     conn_id: Option<String>,
@@ -1206,14 +1249,15 @@ pub fn forget_sync_request_connection(
 
     // Also remove from database
     let conn_id_str = conn_id.as_deref().unwrap_or("");
-    if let Ok(mut db_conn) = connect() {
+    if let Ok(mut db_conn) = connect().await {
         let _ = diesel::delete(
             sliding_sync_connections::table
                 .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
                 .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
                 .filter(sliding_sync_connections::conn_id.eq(conn_id_str)),
         )
-        .execute(&mut db_conn);
+        .execute(&mut db_conn)
+        .await;
     }
 }
 /// load params from cache if body doesn't contain it, as long as it's allowed
@@ -1228,7 +1272,7 @@ fn some_or_sticky<T>(target: &mut Option<T>, cached: Option<T>) {
         *target = cached;
     }
 }
-pub fn update_sync_request_with_cache(
+pub async fn update_sync_request_with_cache(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
@@ -1236,8 +1280,10 @@ pub fn update_sync_request_with_cache(
     BTreeMap<String, BTreeMap<OwnedRoomId, i64>>,
     BTreeMap<String, usize>,
 ) {
-    let cached = load_or_create_connection(&user_id, &device_id, &req_body.conn_id);
-    let cached = &mut cached.lock().unwrap();
+    let entry = load_or_create_connection(&user_id, &device_id, &req_body.conn_id).await;
+    let (known, list_counts, cache_snapshot) = {
+        let mut guard = entry.lock().unwrap();
+        let cached = &mut *guard;
 
     for (list_id, list) in &mut req_body.lists {
         if let Some(cached_list) = cached.lists.get(list_id) {
@@ -1334,35 +1380,44 @@ pub fn update_sync_request_with_cache(
     let known = cached.known_rooms.clone();
     let list_counts = cached.list_counts.clone();
     // Persist to DB for cross-instance availability
-    persist_connection(&user_id, &device_id, &req_body.conn_id, cached);
+    let cache_snapshot = cached.clone();
+        (known, list_counts, cache_snapshot)
+    };
+    persist_connection(&user_id, &device_id, &req_body.conn_id, &cache_snapshot).await;
     (known, list_counts)
 }
 
-pub fn update_sync_list_counts(
+pub async fn update_sync_list_counts(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     conn_id: Option<String>,
     list_counts: BTreeMap<String, usize>,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
-    let cached = &mut entry.lock().unwrap();
-    cached.list_counts = list_counts;
-    persist_connection(&user_id, &device_id, &conn_id, cached);
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
+    let cache_snapshot = {
+        let cached = &mut entry.lock().unwrap();
+        cached.list_counts = list_counts;
+        (*cached).clone()
+    };
+    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
 }
 
-pub fn update_sync_subscriptions(
+pub async fn update_sync_subscriptions(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     conn_id: Option<String>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
-    let cached = &mut entry.lock().unwrap();
-    cached.subscriptions = subscriptions;
-    persist_connection(&user_id, &device_id, &conn_id, cached);
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
+    let cache_snapshot = {
+        let cached = &mut entry.lock().unwrap();
+        cached.subscriptions = subscriptions;
+        (*cached).clone()
+    };
+    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
 }
 
-pub fn update_sync_known_rooms(
+pub async fn update_sync_known_rooms(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     conn_id: Option<String>,
@@ -1370,44 +1425,50 @@ pub fn update_sync_known_rooms(
     new_cached_rooms: BTreeSet<OwnedRoomId>,
     since_sn: i64,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
-    let cached = &mut entry.lock().unwrap();
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
+    let cache_snapshot = {
+        let cached = &mut entry.lock().unwrap();
 
-    for (roomid, last_since) in cached
-        .known_rooms
-        .entry(list_id.clone())
-        .or_default()
-        .iter_mut()
-    {
-        if !new_cached_rooms.contains(roomid) {
-            *last_since = 0;
+        for (roomid, last_since) in cached
+            .known_rooms
+            .entry(list_id.clone())
+            .or_default()
+            .iter_mut()
+        {
+            if !new_cached_rooms.contains(roomid) {
+                *last_since = 0;
+            }
         }
-    }
-    let list = cached.known_rooms.entry(list_id).or_default();
-    for room_id in new_cached_rooms {
-        list.insert(room_id, since_sn);
-    }
-    persist_connection(&user_id, &device_id, &conn_id, cached);
+        let list = cached.known_rooms.entry(list_id).or_default();
+        for room_id in new_cached_rooms {
+            list.insert(room_id, since_sn);
+        }
+        (*cached).clone()
+    };
+    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
 }
 
-pub fn mark_required_state_sent(
+pub async fn mark_required_state_sent(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     conn_id: Option<String>,
     event_sn: Seqnum,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
-    let cached = &mut entry.lock().unwrap();
-    cached.required_state.insert(event_sn);
-    persist_connection(&user_id, &device_id, &conn_id, cached);
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
+    let cache_snapshot = {
+        let cached = &mut entry.lock().unwrap();
+        cached.required_state.insert(event_sn);
+        (*cached).clone()
+    };
+    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
 }
-pub fn is_required_state_send(
+pub async fn is_required_state_send(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     conn_id: Option<String>,
     event_sn: Seqnum,
 ) -> bool {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id);
+    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
     let cached = entry.lock().unwrap();
     cached.required_state.contains(&event_sn)
 }
@@ -1434,8 +1495,8 @@ mod tests {
     /// Default filter pipeline (no filters set) returns all rooms — this is
     /// what the typical `lists.all_rooms` config hits, and it's the count
     /// path exercised by the bug repro.
-    #[test]
-    fn no_filters_returns_all_rooms() {
+    #[tokio::test]
+    async fn no_filters_returns_all_rooms() {
         let r1 = rid("!one:example.org");
         let r2 = rid("!two:example.org");
         let r3 = rid("!three:example.org");
@@ -1448,7 +1509,8 @@ mod tests {
             .collect();
         let dms = HashSet::new();
 
-        let active = compute_active_rooms(&ReqList::default(), &invited, &joined, &all, &dms);
+        let active =
+            compute_active_rooms(&ReqList::default(), &invited, &joined, &all, &dms).await;
 
         assert_eq!(active.len(), 3);
     }
@@ -1456,8 +1518,8 @@ mod tests {
     /// `is_invite=true` selects only the invited subset — this is how an EX
     /// client renders the invite shelf, and `count` here drives whether the
     /// client knows there's an invite badge to show.
-    #[test]
-    fn is_invite_true_returns_invited_only() {
+    #[tokio::test]
+    async fn is_invite_true_returns_invited_only() {
         let joined1 = rid("!j1:example.org");
         let joined2 = rid("!j2:example.org");
         let invited1 = rid("!i1:example.org");
@@ -1474,13 +1536,13 @@ mod tests {
             is_invite: Some(true),
             ..Default::default()
         });
-        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms).await;
 
         assert_eq!(active.len(), 1);
     }
 
-    #[test]
-    fn is_invite_false_returns_joined_only() {
+    #[tokio::test]
+    async fn is_invite_false_returns_joined_only() {
         let joined1 = rid("!j1:example.org");
         let joined2 = rid("!j2:example.org");
         let invited1 = rid("!i1:example.org");
@@ -1497,15 +1559,15 @@ mod tests {
             is_invite: Some(false),
             ..Default::default()
         });
-        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms).await;
 
         assert_eq!(active.len(), 2);
     }
 
     /// `is_dm=true` retains only rooms that are tagged in `m.direct`.
     /// This filter doesn't touch the database, so we can exercise it in-process.
-    #[test]
-    fn is_dm_true_keeps_dm_rooms_only() {
+    #[tokio::test]
+    async fn is_dm_true_keeps_dm_rooms_only() {
         let r_dm = rid("!dm:example.org");
         let r_other = rid("!other:example.org");
         let joined: Vec<&RoomId> = vec![r_dm.as_ref(), r_other.as_ref()];
@@ -1518,14 +1580,14 @@ mod tests {
             is_dm: Some(true),
             ..Default::default()
         });
-        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms).await;
 
         assert_eq!(active.len(), 1);
         assert_eq!(active[0], &*r_dm);
     }
 
-    #[test]
-    fn is_dm_false_excludes_dm_rooms() {
+    #[tokio::test]
+    async fn is_dm_false_excludes_dm_rooms() {
         let r_dm = rid("!dm:example.org");
         let r_other = rid("!other:example.org");
         let joined: Vec<&RoomId> = vec![r_dm.as_ref(), r_other.as_ref()];
@@ -1538,7 +1600,7 @@ mod tests {
             is_dm: Some(false),
             ..Default::default()
         });
-        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms);
+        let active = compute_active_rooms(&list, &invited, &joined, &all, &dms).await;
 
         assert_eq!(active.len(), 1);
         assert_eq!(active[0], &*r_other);

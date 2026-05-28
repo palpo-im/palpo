@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::str::FromStr;
 
-use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use image::imageops::FilterType;
 use mime::Mime;
 use palpo_core::http_headers::ContentDispositionType;
@@ -34,7 +34,7 @@ pub async fn get_content(
     res: &mut Response,
 ) -> AppResult<()> {
     let server_name = &config::get().server_name;
-    if let Some(metadata) = crate::data::media::get_metadata(server_name, &args.media_id)? {
+    if let Some(metadata) = crate::data::media::get_metadata(server_name, &args.media_id).await? {
         let content_type = metadata
             .content_type
             .as_deref()
@@ -83,7 +83,9 @@ pub async fn get_thumbnail(
         &args.media_id,
         args.width,
         args.height,
-    )? {
+    )
+    .await?
+    {
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
         // Try presigned URL redirect for S3 storage
         if let Some(url) = storage::presign_read(&key).await? {
@@ -118,8 +120,8 @@ pub async fn get_thumbnail(
 
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) =
-        crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)?
+    }) = crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)
+        .await?
     {
         // Using saved thumbnail
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
@@ -152,7 +154,7 @@ pub async fn get_thumbnail(
         disposition_type: _,
         content_type,
         ..
-    })) = crate::data::media::get_metadata(server_name, &args.media_id)
+    })) = crate::data::media::get_metadata(server_name, &args.media_id).await
     {
         // Generate a thumbnail: read original from storage
         let image_key = media_storage_key(server_name, &args.media_id);
@@ -234,7 +236,8 @@ pub async fn get_thumbnail(
                     resize_method: args.method.clone().unwrap_or_default().to_string(),
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect()?)?;
+                .execute(&mut connect().await?)
+                .await?;
 
             // Save to storage backend
             let thumb_key =

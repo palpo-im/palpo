@@ -79,7 +79,7 @@ async fn process_pdus(
 ) -> AppResult<BTreeMap<OwnedEventId, AppResult<()>>> {
     let mut parsed_pdus = Vec::with_capacity(pdus.len());
     for pdu in pdus {
-        parsed_pdus.push(match parse_incoming_pdu(pdu) {
+        parsed_pdus.push(match parse_incoming_pdu(pdu).await {
             Ok(t) => t,
             Err(e) => {
                 warn!("could not parse pdu: {e}");
@@ -165,6 +165,7 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
             },
             true,
         )
+        .await
         .ok();
     }
 }
@@ -175,7 +176,7 @@ async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
     }
 
     for (room_id, room_updates) in receipt {
-        if handler::acl_check(origin, &room_id).is_err() {
+        if handler::acl_check(origin, &room_id).await.is_err() {
             warn!(
                 %origin, %room_id,
                 "received read receipt edu from ACL'd server"
@@ -193,6 +194,7 @@ async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
             // }
 
             if room::joined_users(&room_id, None)
+                .await
                 .unwrap_or_default()
                 .iter()
                 .any(|member| member.server_name() == user_id.server_name())
@@ -207,7 +209,7 @@ async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
                         room_id: room_id.clone(),
                     };
 
-                    let _ = room::receipt::update_read(&user_id, &room_id, &event, false);
+                    let _ = room::receipt::update_read(&user_id, &room_id, &event, false).await;
                 }
             } else {
                 warn!(
@@ -233,7 +235,10 @@ async fn process_edu_typing(origin: &ServerName, typing: TypingContent) {
         return;
     }
 
-    if handler::acl_check(typing.user_id.server_name(), &typing.room_id).is_err() {
+    if handler::acl_check(typing.user_id.server_name(), &typing.room_id)
+        .await
+        .is_err()
+    {
         warn!(
             %typing.user_id, %typing.room_id, %origin,
             "received typing edu for ACL'd user's server"
@@ -241,7 +246,10 @@ async fn process_edu_typing(origin: &ServerName, typing: TypingContent) {
         return;
     }
 
-    if room::user::is_joined(&typing.user_id, &typing.room_id).unwrap_or(false) {
+    if room::user::is_joined(&typing.user_id, &typing.room_id)
+        .await
+        .unwrap_or(false)
+    {
         if typing.typing {
             let timeout = UnixMillis::now().get().saturating_add(
                 crate::config::get()
@@ -275,7 +283,7 @@ async fn process_edu_device_list_update(origin: &ServerName, content: DeviceList
         return;
     }
 
-    let _ = crate::user::mark_device_key_update(&user_id, &device_id);
+    let _ = crate::user::mark_device_key_update(&user_id, &device_id).await;
 }
 
 async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDeviceContent) {
@@ -295,7 +303,10 @@ async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDevice
     }
 
     // Check if this is a new transaction id
-    if crate::transaction_id::txn_id_exists(&message_id, &sender, None).unwrap_or_default() {
+    if crate::transaction_id::txn_id_exists(&message_id, &sender, None)
+        .await
+        .unwrap_or_default()
+    {
         return;
     }
 
@@ -317,30 +328,33 @@ async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDevice
                         target_device_id,
                         &ev_type,
                         event,
-                    );
+                    )
+                    .await;
                 }
 
                 DeviceIdOrAllDevices::AllDevices => {
                     let (sender, ev_type, event) = (&sender, &ev_type, &event);
-                    data::user::all_device_ids(target_user_id)
+                    for target_device_id in data::user::all_device_ids(target_user_id)
+                        .await
                         .unwrap_or_default()
                         .iter()
-                        .for_each(|target_device_id| {
-                            let _ = data::user::device::add_to_device_event(
-                                sender,
-                                target_user_id,
-                                target_device_id,
-                                ev_type,
-                                event.clone(),
-                            );
-                        });
+                    {
+                        let _ = data::user::device::add_to_device_event(
+                            sender,
+                            target_user_id,
+                            target_device_id,
+                            ev_type,
+                            event.clone(),
+                        )
+                        .await;
+                    }
                 }
             }
         }
     }
 
     // Save transaction id with empty data
-    let _ = crate::transaction_id::add_txn_id(&message_id, &sender, None, None, None);
+    let _ = crate::transaction_id::add_txn_id(&message_id, &sender, None, None, None).await;
 }
 
 async fn process_edu_signing_key_update(origin: &ServerName, content: SigningKeyUpdateContent) {
@@ -365,6 +379,7 @@ async fn process_edu_signing_key_update(origin: &ServerName, content: SigningKey
             &self_signing_key,
             &None,
             true,
-        );
+        )
+        .await;
     }
 }

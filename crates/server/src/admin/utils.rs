@@ -35,13 +35,13 @@ pub(crate) fn parse_local_user_id(user_id: &str) -> AppResult<OwnedUserId> {
 pub(crate) async fn parse_active_local_user_id(user_id: &str) -> AppResult<OwnedUserId> {
     let user_id = parse_local_user_id(user_id)?;
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(AppError::public(
             "user {user_id:?} does not exist on this server.",
         ));
     }
 
-    if data::user::is_deactivated(&user_id)? {
+    if data::user::is_deactivated(&user_id).await? {
         return Err(AppError::public("user {user_id:?} is deactivated."));
     }
 

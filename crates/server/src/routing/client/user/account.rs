@@ -26,6 +26,7 @@ pub(super) async fn get_global_data(
 
     let content =
         data::user::get_data::<JsonValue>(authed.user_id(), None, &args.event_type.to_string())
+            .await
             .map_err(|_| MatrixError::not_found("user data not found"))?;
 
     json_ok(GlobalAccountDataResBody(RawJson::from_value(&content)?))
@@ -53,10 +54,10 @@ pub(super) async fn set_global_data(
             .filter_map(|(id, _)| OwnedUserId::try_from(id).ok())
             .collect();
 
-        data::user::set_ignored_users(authed.user_id(), &ignored_ids)?;
+        data::user::set_ignored_users(authed.user_id(), &ignored_ids).await?;
     }
 
-    data::user::set_data(authed.user_id(), None, &event_type, body)?;
+    data::user::set_data(authed.user_id(), None, &event_type, body).await?;
     empty_ok()
 }
 
@@ -75,6 +76,7 @@ pub(super) async fn get_room_data(
         Some(&*args.room_id),
         &args.event_type.to_string(),
     )
+    .await
     .map_err(|_| MatrixError::not_found("user data not found"))?;
 
     json_ok(RoomAccountDataResBody(RawJson::from_value(&content)?))
@@ -98,6 +100,7 @@ pub(super) async fn set_room_data(
         Some(args.room_id),
         &event_type,
         body.into_inner(),
-    )?;
+    )
+    .await?;
     empty_ok()
 }

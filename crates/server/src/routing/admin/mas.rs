@@ -126,10 +126,11 @@ pub struct SetDisplaynameReqBody {
 #[endpoint]
 pub async fn query_user(localpart: QueryParam<String, true>) -> JsonResult<QueryUserResponse> {
     let user_id = localpart_to_user_id(&localpart.into_inner())?;
-    let db_user =
-        data::user::get_user(&user_id).map_err(|_| MatrixError::not_found("User not found"))?;
-    let display_name = data::user::display_name(&user_id).ok().flatten();
-    let avatar_url = data::user::avatar_url(&user_id).ok().flatten();
+    let db_user = data::user::get_user(&user_id)
+        .await
+        .map_err(|_| MatrixError::not_found("User not found"))?;
+    let display_name = data::user::display_name(&user_id).await.ok().flatten();
+    let avatar_url = data::user::avatar_url(&user_id).await.ok().flatten();
     json_ok(QueryUserResponse {
         user_id: user_id.to_string(),
         display_name,
@@ -147,35 +148,35 @@ pub async fn provision_user(
 ) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
-    let exists = data::user::user_exists(&user_id)?;
+    let exists = data::user::user_exists(&user_id).await?;
     if !exists {
-        user::create_user(user_id.clone(), None)?;
+        user::create_user(user_id.clone(), None).await?;
         res.status_code(salvo::http::StatusCode::CREATED);
     } else {
-        data::user::set_guest(&user_id, false)?;
+        data::user::set_guest(&user_id, false).await?;
     }
     if let Some(displayname) = &body.set_displayname {
-        data::user::set_display_name(&user_id, displayname)?;
+        data::user::set_display_name(&user_id, displayname).await?;
     } else if body.unset_displayname {
-        data::user::remove_display_name(&user_id)?;
+        data::user::remove_display_name(&user_id).await?;
     }
     if let Some(avatar_url) = &body.set_avatar_url {
         let mxc_uri: &MxcUri = avatar_url.as_str().into();
-        data::user::set_avatar_url(&user_id, mxc_uri)?;
+        data::user::set_avatar_url(&user_id, mxc_uri).await?;
     } else if body.unset_avatar_url {
-        data::user::remove_avatar_url(&user_id)?;
+        data::user::remove_avatar_url(&user_id).await?;
     }
     if let Some(emails) = body.set_emails {
         let entries: Vec<(String, String, Option<i64>, Option<i64>)> = emails
             .into_iter()
             .map(|email| ("email".to_string(), email, None, None))
             .collect();
-        data::user::replace_threepids(&user_id, &entries)?;
+        data::user::replace_threepids(&user_id, &entries).await?;
     } else if body.unset_emails {
-        data::user::replace_threepids(&user_id, &[])?;
+        data::user::replace_threepids(&user_id, &[]).await?;
     }
     if body.admin {
-        data::user::set_admin(&user_id, true)?;
+        data::user::set_admin(&user_id, true).await?;
     }
     empty_ok()
 }
@@ -188,7 +189,7 @@ pub async fn is_localpart_available(localpart: QueryParam<String, true>) -> Empt
         return Err(MatrixError::invalid_param("Invalid username").into());
     }
     let user_id = localpart_to_user_id(&localpart)?;
-    if data::user::user_exists(&user_id)? {
+    if data::user::user_exists(&user_id).await? {
         return Err(MatrixError::unknown("User ID already taken.").into());
     }
     empty_ok()
@@ -200,7 +201,7 @@ pub async fn upsert_device(body: JsonBody<UpsertDeviceReqBody>) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
     let device_id: OwnedDeviceId = body.device_id.into();
-    if data::user::device::is_device_exists(&user_id, &device_id)? {
+    if data::user::device::is_device_exists(&user_id, &device_id).await? {
         if let Some(display_name) = body.display_name {
             data::user::device::update_device(
                 &user_id,
@@ -211,11 +212,13 @@ pub async fn upsert_device(body: JsonBody<UpsertDeviceReqBody>) -> EmptyResult {
                     last_seen_ip: None,
                     last_seen_at: None,
                 },
-            )?;
+            )
+            .await?;
         }
     } else {
         let token = utils::random_string(64);
-        data::user::device::create_device(&user_id, &device_id, &token, body.display_name, None)?;
+        data::user::device::create_device(&user_id, &device_id, &token, body.display_name, None)
+            .await?;
     }
     empty_ok()
 }
@@ -237,7 +240,8 @@ pub async fn update_device_display_name(
             last_seen_ip: None,
             last_seen_at: None,
         },
-    )?;
+    )
+    .await?;
     empty_ok()
 }
 
@@ -247,7 +251,7 @@ pub async fn mas_delete_device(body: JsonBody<DeleteDeviceReqBody>) -> EmptyResu
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
     let device_id: OwnedDeviceId = body.device_id.into();
-    data::user::device::remove_device(&user_id, &device_id)?;
+    data::user::device::remove_device(&user_id, &device_id).await?;
     empty_ok()
 }
 
@@ -256,21 +260,21 @@ pub async fn mas_delete_device(body: JsonBody<DeleteDeviceReqBody>) -> EmptyResu
 pub async fn sync_devices(body: JsonBody<SyncDevicesReqBody>) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
-    let current_devices = data::user::device::get_devices(&user_id)?;
+    let current_devices = data::user::device::get_devices(&user_id).await?;
     let current_ids: HashSet<String> = current_devices
         .iter()
         .map(|d| d.device_id.to_string())
         .collect();
     for device in &current_devices {
         if !body.devices.contains(device.device_id.as_str()) {
-            let _ = data::user::device::remove_device(&user_id, &device.device_id);
+            let _ = data::user::device::remove_device(&user_id, &device.device_id).await;
         }
     }
     for device_id_str in &body.devices {
         if !current_ids.contains(device_id_str) {
             let device_id: OwnedDeviceId = device_id_str.as_str().into();
             let token = utils::random_string(64);
-            data::user::device::create_device(&user_id, &device_id, &token, None, None)?;
+            data::user::device::create_device(&user_id, &device_id, &token, None, None).await?;
         }
     }
     empty_ok()
@@ -281,10 +285,10 @@ pub async fn sync_devices(body: JsonBody<SyncDevicesReqBody>) -> EmptyResult {
 pub async fn delete_user(body: JsonBody<DeleteUserReqBody>) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
-    let joined_rooms = data::user::joined_rooms(&user_id)?;
+    let joined_rooms = data::user::joined_rooms(&user_id).await?;
     user::full_user_deactivate(&user_id, &joined_rooms).await?;
     if body.erase {
         user::delete_all_media(&user_id).await?;
@@ -296,10 +300,10 @@ pub async fn delete_user(body: JsonBody<DeleteUserReqBody>) -> EmptyResult {
 #[endpoint]
 pub async fn reactivate_user(body: JsonBody<LocalpartReqBody>) -> EmptyResult {
     let user_id = localpart_to_user_id(&body.into_inner().localpart)?;
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
-    data::user::reactivate(&user_id)?;
+    data::user::reactivate(&user_id).await?;
     empty_ok()
 }
 
@@ -308,7 +312,7 @@ pub async fn reactivate_user(body: JsonBody<LocalpartReqBody>) -> EmptyResult {
 pub async fn set_displayname(body: JsonBody<SetDisplaynameReqBody>) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
-    data::user::set_display_name(&user_id, &body.displayname)?;
+    data::user::set_display_name(&user_id, &body.displayname).await?;
     empty_ok()
 }
 
@@ -316,7 +320,7 @@ pub async fn set_displayname(body: JsonBody<SetDisplaynameReqBody>) -> EmptyResu
 #[endpoint]
 pub async fn unset_displayname(body: JsonBody<LocalpartReqBody>) -> EmptyResult {
     let user_id = localpart_to_user_id(&body.into_inner().localpart)?;
-    data::user::remove_display_name(&user_id)?;
+    data::user::remove_display_name(&user_id).await?;
     empty_ok()
 }
 
@@ -324,14 +328,14 @@ pub async fn unset_displayname(body: JsonBody<LocalpartReqBody>) -> EmptyResult 
 #[endpoint]
 pub async fn allow_cross_signing_reset(body: JsonBody<LocalpartReqBody>) -> EmptyResult {
     let user_id = localpart_to_user_id(&body.into_inner().localpart)?;
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
-    if !data::user::key::has_master_cross_signing_key(&user_id)? {
+    if !data::user::key::has_master_cross_signing_key(&user_id).await? {
         return Err(MatrixError::not_found("User has no master cross-signing key").into());
     }
     let now_ms = crate::core::UnixMillis::now().get() as i64;
     let expires_ts = now_ms + 10 * 60 * 1000;
-    data::user::key::set_cross_signing_replacement_allowed(&user_id, expires_ts)?;
+    data::user::key::set_cross_signing_replacement_allowed(&user_id, expires_ts).await?;
     empty_ok()
 }

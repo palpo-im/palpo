@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -35,22 +36,27 @@ pub struct NewDbMetadata {
     pub created_at: UnixMillis,
 }
 
-pub fn get_metadata(server_name: &ServerName, media_id: &str) -> DataResult<Option<DbMetadata>> {
+pub async fn get_metadata(
+    server_name: &ServerName,
+    media_id: &str,
+) -> DataResult<Option<DbMetadata>> {
     media_metadatas::table
         .filter(media_metadatas::media_id.eq(media_id))
         .filter(media_metadatas::origin_server.eq(server_name))
-        .first::<DbMetadata>(&mut connect()?)
+        .first::<DbMetadata>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
-pub fn delete_media(server_name: &ServerName, media_id: &str) -> DataResult<()> {
+pub async fn delete_media(server_name: &ServerName, media_id: &str) -> DataResult<()> {
     diesel::delete(
         media_metadatas::table
             .filter(media_metadatas::media_id.eq(media_id))
             .filter(media_metadatas::origin_server.eq(server_name)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
@@ -82,7 +88,7 @@ pub struct NewDbThumbnail {
     pub created_at: UnixMillis,
 }
 
-pub fn get_thumbnail_by_dimension(
+pub async fn get_thumbnail_by_dimension(
     origin_server: &ServerName,
     media_id: &str,
     width: u32,
@@ -93,7 +99,8 @@ pub fn get_thumbnail_by_dimension(
         .filter(media_thumbnails::media_id.eq(media_id))
         .filter(media_thumbnails::width.eq(width as i32))
         .filter(media_thumbnails::height.eq(height as i32))
-        .first::<DbThumbnail>(&mut connect()?)
+        .first::<DbThumbnail>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
@@ -129,32 +136,35 @@ pub struct NewDbUrlPreview {
     pub created_at: UnixMillis,
 }
 
-pub fn get_url_preview(url: &str) -> DataResult<DbUrlPreview> {
+pub async fn get_url_preview(url: &str) -> DataResult<DbUrlPreview> {
     media_url_previews::table
         .filter(media_url_previews::url.eq(url))
-        .first::<DbUrlPreview>(&mut connect()?)
+        .first::<DbUrlPreview>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
-pub fn set_url_preview(preview: &NewDbUrlPreview) -> DataResult<()> {
+pub async fn set_url_preview(preview: &NewDbUrlPreview) -> DataResult<()> {
     diesel::insert_into(media_url_previews::table)
         .values(preview)
         .on_conflict(media_url_previews::url)
         .do_update()
         .set(preview)
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn insert_metadata(metadata: &NewDbMetadata) -> DataResult<()> {
+pub async fn insert_metadata(metadata: &NewDbMetadata) -> DataResult<()> {
     diesel::insert_into(media_metadatas::table)
         .values(metadata)
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
 /// List media uploaded by a user with pagination
-pub fn list_media_by_user(
+pub async fn list_media_by_user(
     user_id: &UserId,
     from: i64,
     limit: i64,
@@ -165,7 +175,8 @@ pub fn list_media_by_user(
     let total = media_metadatas::table
         .filter(media_metadatas::created_by.eq(user_id.as_str()))
         .count()
-        .get_result::<i64>(&mut connect()?)?;
+        .get_result::<i64>(&mut connect().await?)
+        .await?;
 
     // Build query with ordering
     let direction_desc = direction.map(|d| d == "b").unwrap_or(true);
@@ -215,14 +226,15 @@ pub fn list_media_by_user(
     let media = query
         .offset(from)
         .limit(limit)
-        .load::<DbMetadata>(&mut connect()?)?;
+        .load::<DbMetadata>(&mut connect().await?)
+        .await?;
 
     Ok((media, total))
 }
 
 /// Delete multiple media items by their IDs
 /// Returns the list of deleted media IDs and total count
-pub fn delete_media_by_ids(
+pub async fn delete_media_by_ids(
     server_name: &ServerName,
     media_ids: &[String],
 ) -> DataResult<(Vec<String>, i64)> {
@@ -234,7 +246,8 @@ pub fn delete_media_by_ids(
                 .filter(media_metadatas::media_id.eq(media_id))
                 .filter(media_metadatas::origin_server.eq(server_name)),
         )
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
         if rows > 0 {
             // Also delete thumbnails
@@ -243,7 +256,8 @@ pub fn delete_media_by_ids(
                     .filter(media_thumbnails::media_id.eq(media_id))
                     .filter(media_thumbnails::origin_server.eq(server_name)),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
             deleted.push(media_id.clone());
         }
     }
@@ -254,7 +268,10 @@ pub fn delete_media_by_ids(
 
 /// Purge old remote media cache (media from other servers)
 /// Returns the count of deleted items
-pub fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64) -> DataResult<i64> {
+pub async fn purge_remote_media_cache(
+    local_server: &ServerName,
+    before_ts: i64,
+) -> DataResult<i64> {
     let before_ts = UnixMillis(before_ts as u64);
 
     // Delete thumbnails first
@@ -263,7 +280,8 @@ pub fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64) -> Da
             .filter(media_thumbnails::origin_server.ne(local_server))
             .filter(media_thumbnails::created_at.lt(before_ts)),
     )
-    .execute(&mut connect()?)? as i64;
+    .execute(&mut connect().await?)
+    .await? as i64;
 
     // Delete metadata
     let deleted_metadata = diesel::delete(
@@ -271,13 +289,14 @@ pub fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64) -> Da
             .filter(media_metadatas::origin_server.ne(local_server))
             .filter(media_metadatas::created_at.lt(before_ts)),
     )
-    .execute(&mut connect()?)? as i64;
+    .execute(&mut connect().await?)
+    .await? as i64;
 
     Ok(deleted_metadata + deleted_thumbnails)
 }
 
 /// Delete old local media before a timestamp and larger than size_gt
-pub fn delete_old_local_media(
+pub async fn delete_old_local_media(
     local_server: &ServerName,
     before_ts: i64,
     size_gt: i64,
@@ -290,7 +309,8 @@ pub fn delete_old_local_media(
         .filter(media_metadatas::created_at.lt(before_ts))
         .filter(media_metadatas::file_size.gt(size_gt))
         .select(media_metadatas::media_id)
-        .load::<String>(&mut connect()?)?;
+        .load::<String>(&mut connect().await?)
+        .await?;
 
     if media_ids.is_empty() {
         return Ok((vec![], 0));
@@ -302,7 +322,8 @@ pub fn delete_old_local_media(
             .filter(media_thumbnails::origin_server.eq(local_server))
             .filter(media_thumbnails::media_id.eq_any(&media_ids)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
 
     // Delete metadata
     diesel::delete(
@@ -310,7 +331,8 @@ pub fn delete_old_local_media(
             .filter(media_metadatas::origin_server.eq(local_server))
             .filter(media_metadatas::media_id.eq_any(&media_ids)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
 
     let total = media_ids.len() as i64;
     Ok((media_ids, total))
@@ -326,14 +348,14 @@ pub struct UserMediaStatsRow {
     pub media_length: i64,
 }
 
-pub fn get_user_media_statistics(
+pub async fn get_user_media_statistics(
     offset: i64,
     limit: i64,
     search_term: Option<&str>,
     order_by: Option<&str>,
     dir: Option<&str>,
 ) -> DataResult<(Vec<UserMediaStatsRow>, i64)> {
-    let mut conn = connect()?;
+    let mut conn = connect().await?;
     let order_col = match order_by {
         Some("media_count") => "media_count",
         _ => "media_length",
@@ -354,7 +376,8 @@ pub fn get_user_media_statistics(
             .to_string();
         let total: i64 = diesel::sql_query(&count_sql)
             .bind::<diesel::sql_types::Text, _>(&like_pattern)
-            .get_result::<CountResult>(&mut conn)?
+            .get_result::<CountResult>(&mut conn)
+            .await?
             .count;
 
         let data_sql = format!(
@@ -370,7 +393,8 @@ pub fn get_user_media_statistics(
         );
         let rows = diesel::sql_query(&data_sql)
             .bind::<diesel::sql_types::Text, _>(&like_pattern)
-            .load::<UserMediaStatsRow>(&mut conn)?;
+            .load::<UserMediaStatsRow>(&mut conn)
+            .await?;
         (rows, total)
     } else {
         let count_sql = "SELECT COUNT(*) AS count FROM (\
@@ -379,7 +403,8 @@ pub fn get_user_media_statistics(
                 GROUP BY created_by\
             ) sub";
         let total: i64 = diesel::sql_query(count_sql)
-            .get_result::<CountResult>(&mut conn)?
+            .get_result::<CountResult>(&mut conn)
+            .await?
             .count;
 
         let data_sql = format!(
@@ -393,7 +418,9 @@ pub fn get_user_media_statistics(
             LIMIT {} OFFSET {}",
             order_col, order_dir, limit, offset
         );
-        let rows = diesel::sql_query(&data_sql).load::<UserMediaStatsRow>(&mut conn)?;
+        let rows = diesel::sql_query(&data_sql)
+            .load::<UserMediaStatsRow>(&mut conn)
+            .await?;
         (rows, total)
     };
 

@@ -26,7 +26,8 @@ pub async fn get_user_by_external_id(
     let provider = provider.into_inner();
     let external_id = external_id.into_inner();
 
-    let user_id = crate::data::user::get_user_by_external_id(&provider, &external_id)?
+    let user_id = crate::data::user::get_user_by_external_id(&provider, &external_id)
+        .await?
         .ok_or_else(|| MatrixError::not_found("User not found"))?;
 
     json_ok(UserIdResponse {
@@ -45,7 +46,8 @@ pub async fn get_user_by_threepid(
     let medium = medium.into_inner();
     let address = address.into_inner();
 
-    let user_id = crate::data::user::get_user_by_threepid(&medium, &address)?
+    let user_id = crate::data::user::get_user_by_threepid(&medium, &address)
+        .await?
         .ok_or_else(|| MatrixError::not_found("User not found"))?;
 
     json_ok(UserIdResponse {

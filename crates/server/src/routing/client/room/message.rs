@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde_json::value::to_raw_value;
 
 use crate::core::Direction;
@@ -45,7 +46,7 @@ pub(super) async fn get_messages(
             .filter(room_users::room_id.eq(&args.room_id))
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::membership.eq("join")),
-        &mut connect()?
+        &mut connect().await?
     )?;
     if !is_joined {
         let forgotten_row = room_users::table
@@ -53,7 +54,8 @@ pub(super) async fn get_messages(
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::membership.eq("leave"))
             .select((room_users::event_sn, room_users::forgotten))
-            .first::<(i64, bool)>(&mut connect()?);
+            .first::<(i64, bool)>(&mut connect().await?)
+            .await;
         let Some((_event_sn, forgotten)) = diesel::OptionalExtension::optional(forgotten_row)?
         else {
             return Err(MatrixError::forbidden("you aren't a member of the room", None).into());
@@ -121,7 +123,8 @@ pub(super) async fn get_messages(
                 until_tk,
                 Some(&args.filter),
                 limit,
-            )?;
+            )
+            .await?;
 
             for (_, event) in &events {
                 // TODO: Remove this when these are resolved:
@@ -158,7 +161,8 @@ pub(super) async fn get_messages(
                     until_tk,
                     Some(&args.filter),
                     limit,
-                )?;
+                )
+                .await?;
             // Backfill if the local page is short on history. Backfilled events
             // may have higher depth than what we already loaded (e.g. on a fresh
             // join, locally we only have low-depth state events while the
@@ -174,7 +178,8 @@ pub(super) async fn get_messages(
                     until_tk,
                     Some(&args.filter),
                     limit,
-                )?;
+                )
+                .await?;
             }
 
             for (_, event) in &events {
@@ -205,7 +210,7 @@ pub(super) async fn get_messages(
             &StateEventType::RoomMember,
             ll_id.as_str(),
             None,
-        ) {
+        ).await {
             resp.state.push(member_event.to_state_event());
         }
     }
@@ -257,7 +262,9 @@ pub(super) async fn send_message(
         authed.user_id(),
         Some(authed.device_id()),
         Some(&args.room_id),
-    )? {
+    )
+    .await?
+    {
         return json_ok(SendMessageResBody::new(event_id));
     }
 
@@ -281,7 +288,7 @@ pub(super) async fn send_message(
         },
         authed.user_id(),
         &args.room_id,
-        &crate::room::get_version(&args.room_id)?,
+        &crate::room::get_version(&args.room_id).await?,
         &state_lock,
     )
     .await?
@@ -294,7 +301,8 @@ pub(super) async fn send_message(
         Some(authed.device_id()),
         Some(&args.room_id),
         Some(&event_id),
-    )?;
+    )
+    .await?;
 
     json_ok(SendMessageResBody::new((*event_id).to_owned()))
 }
@@ -335,7 +343,7 @@ pub(super) async fn post_message(
         },
         authed.user_id(),
         &args.room_id,
-        &crate::room::get_version(&args.room_id)?,
+        &crate::room::get_version(&args.room_id).await?,
         &state_lock,
     )
     .await?

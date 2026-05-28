@@ -230,13 +230,14 @@ pub struct RateLimitResponse {
 // Helper functions
 // ============================================================================
 
-fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
-    let db_user =
-        data::user::get_user(user_id).map_err(|_| MatrixError::not_found("User not found"))?;
+async fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
+    let db_user = data::user::get_user(user_id)
+        .await
+        .map_err(|_| MatrixError::not_found("User not found"))?;
 
-    let display_name = data::user::display_name(user_id).ok().flatten();
-    let avatar_url = data::user::avatar_url(user_id).ok().flatten();
-    let threepids = data::user::get_threepids(user_id).ok().map(|tps| {
+    let display_name = data::user::display_name(user_id).await.ok().flatten();
+    let avatar_url = data::user::avatar_url(user_id).await.ok().flatten();
+    let threepids = data::user::get_threepids(user_id).await.ok().map(|tps| {
         tps.into_iter()
             .map(|tp| ThreepidInfo {
                 medium: tp.medium,
@@ -247,6 +248,7 @@ fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
             .collect()
     });
     let external_ids = data::user::get_external_ids_by_user(user_id)
+        .await
         .ok()
         .map(|eids| {
             eids.into_iter()
@@ -277,38 +279,38 @@ fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
     })
 }
 
-fn build_users_list(filter: &data::user::ListUsersFilter) -> crate::AppResult<UsersListResponse> {
-    let (users, total) = data::user::list_users(filter)?;
+async fn build_users_list(
+    filter: &data::user::ListUsersFilter,
+) -> crate::AppResult<UsersListResponse> {
+    let (users, total) = data::user::list_users(filter).await?;
     let limit = filter.limit.unwrap_or(100) as usize;
     let from = filter.from.unwrap_or(0) as usize;
 
-    let user_infos: Vec<UserInfoV2> = users
-        .into_iter()
-        .map(|db_user| {
-            let uid = &db_user.id;
-            let display_name = data::user::display_name(uid).ok().flatten();
-            let avatar_url = data::user::avatar_url(uid).ok().flatten();
+    let mut user_infos: Vec<UserInfoV2> = Vec::new();
+    for db_user in users.into_iter() {
+        let uid = &db_user.id;
+        let display_name = data::user::display_name(uid).await.ok().flatten();
+        let avatar_url = data::user::avatar_url(uid).await.ok().flatten();
 
-            UserInfoV2 {
-                name: uid.to_string(),
-                displayname: display_name,
-                threepids: None, // Not included in list response for performance
-                avatar_url: avatar_url.map(|u| u.to_string()),
-                is_guest: db_user.is_guest,
-                admin: db_user.is_admin,
-                deactivated: db_user.deactivated_at.is_some(),
-                shadow_banned: db_user.shadow_banned,
-                locked: db_user.locked_at.is_some(),
-                creation_ts: db_user.created_at.get() as i64,
-                appservice_id: db_user.appservice_id,
-                consent_version: db_user.consent_version,
-                consent_ts: db_user.consent_at.map(|t| t.get() as i64),
-                consent_server_notice_sent: db_user.consent_server_notice_sent,
-                user_type: db_user.ty,
-                external_ids: None,
-            }
-        })
-        .collect();
+        user_infos.push(UserInfoV2 {
+            name: uid.to_string(),
+            displayname: display_name,
+            threepids: None, // Not included in list response for performance
+            avatar_url: avatar_url.map(|u| u.to_string()),
+            is_guest: db_user.is_guest,
+            admin: db_user.is_admin,
+            deactivated: db_user.deactivated_at.is_some(),
+            shadow_banned: db_user.shadow_banned,
+            locked: db_user.locked_at.is_some(),
+            creation_ts: db_user.created_at.get() as i64,
+            appservice_id: db_user.appservice_id,
+            consent_version: db_user.consent_version,
+            consent_ts: db_user.consent_at.map(|t| t.get() as i64),
+            consent_server_notice_sent: db_user.consent_server_notice_sent,
+            user_type: db_user.ty,
+            external_ids: None,
+        });
+    }
 
     let next_token = if user_infos.len() >= limit {
         Some((from + user_infos.len()).to_string())
@@ -333,7 +335,7 @@ fn build_users_list(filter: &data::user::ListUsersFilter) -> crate::AppResult<Us
 #[endpoint]
 pub async fn get_user_v2(user_id: PathParam<OwnedUserId>) -> JsonResult<UserInfoV2> {
     let user_id = user_id.into_inner();
-    json_ok(build_user_info(&user_id)?)
+    json_ok(build_user_info(&user_id).await?)
 }
 
 /// PUT /_synapse/admin/v2/users/{user_id}
@@ -349,27 +351,27 @@ pub async fn put_user_v2(
     let body = body.into_inner();
 
     // Check if user exists
-    let user_exists = data::user::user_exists(&user_id).unwrap_or(false);
+    let user_exists = data::user::user_exists(&user_id).await.unwrap_or(false);
 
     if !user_exists {
         // Create new user
-        user::create_user(user_id.clone(), body.password.as_deref())?;
+        user::create_user(user_id.clone(), body.password.as_deref()).await?;
         res.status_code(salvo::http::StatusCode::CREATED);
     } else {
         // Update password if provided
         if let Some(password) = &body.password {
-            crate::user::set_password(&user_id, password)?;
+            crate::user::set_password(&user_id, password).await?;
 
             // Logout devices if requested
             if body.logout_devices.unwrap_or(true) {
-                data::user::remove_all_devices(&user_id)?;
+                data::user::remove_all_devices(&user_id).await?;
             }
         }
     }
 
     // Update display name
     if let Some(display_name) = &body.displayname {
-        data::user::set_display_name(&user_id, display_name)?;
+        data::user::set_display_name(&user_id, display_name).await?;
     }
 
     // Update threepids
@@ -378,37 +380,37 @@ pub async fn put_user_v2(
             .into_iter()
             .map(|tp| (tp.medium, tp.address, tp.added_at, tp.validated_at))
             .collect();
-        data::user::replace_threepids(&user_id, &entries)?;
+        data::user::replace_threepids(&user_id, &entries).await?;
     }
 
     // Update avatar
     if let Some(avatar_url) = &body.avatar_url {
         let mxc_uri: &MxcUri = avatar_url.as_str().into();
-        data::user::set_avatar_url(&user_id, mxc_uri)?;
+        data::user::set_avatar_url(&user_id, mxc_uri).await?;
     }
 
     // Update admin status
     if let Some(admin) = body.admin {
-        data::user::set_admin(&user_id, admin)?;
+        data::user::set_admin(&user_id, admin).await?;
     }
 
     // Update deactivated status
     if let Some(deactivated) = body.deactivated {
         if deactivated {
-            data::user::deactivate(&user_id)?;
+            data::user::deactivate(&user_id).await?;
         } else {
-            data::user::reactivate(&user_id)?;
+            data::user::reactivate(&user_id).await?;
         }
     }
 
     // Update locked status
     if let Some(locked) = body.locked {
-        data::user::set_locked(&user_id, locked, None)?;
+        data::user::set_locked(&user_id, locked, None).await?;
     }
 
     // Update user type
     if let Some(user_type) = body.user_type {
-        data::user::set_user_type(&user_id, Some(user_type.as_str()))?;
+        data::user::set_user_type(&user_id, Some(user_type.as_str())).await?;
     }
 
     // Update external IDs if provided
@@ -417,11 +419,11 @@ pub async fn put_user_v2(
             .into_iter()
             .map(|eid| (eid.auth_provider, eid.external_id))
             .collect();
-        data::user::replace_external_ids(&user_id, &ids)?;
+        data::user::replace_external_ids(&user_id, &ids).await?;
     }
 
     // Return updated user info
-    json_ok(build_user_info(&user_id)?)
+    json_ok(build_user_info(&user_id).await?)
 }
 
 /// GET /_synapse/admin/v2/users
@@ -452,7 +454,7 @@ pub async fn list_users_v2(
         dir: dir.into_inner(),
     };
 
-    json_ok(build_users_list(&filter)?)
+    json_ok(build_users_list(&filter).await?)
 }
 
 /// GET /_synapse/admin/v3/users
@@ -488,7 +490,7 @@ pub async fn list_users_v3(
         dir: dir.into_inner(),
     };
 
-    json_ok(build_users_list(&filter)?)
+    json_ok(build_users_list(&filter).await?)
 }
 
 /// POST /_synapse/admin/v1/users/{user_id}/_allow_cross_signing_replacement_without_uia
@@ -502,19 +504,19 @@ pub async fn allow_cross_signing_replacement(
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
     // Check if user has a master cross-signing key
-    if !data::user::key::has_master_cross_signing_key(&user_id)? {
+    if !data::user::key::has_master_cross_signing_key(&user_id).await? {
         return Err(MatrixError::not_found("User has no master cross-signing key").into());
     }
 
     // Allow replacement for 10 minutes
     let now_ms = crate::core::UnixMillis::now().get() as i64;
     let expires_ts = now_ms + 10 * 60 * 1000;
-    data::user::key::set_cross_signing_replacement_allowed(&user_id, expires_ts)?;
+    data::user::key::set_cross_signing_replacement_allowed(&user_id, expires_ts).await?;
 
     json_ok(CrossSigningResponse {
         updatable_without_uia_before_ms: Some(expires_ts),
@@ -537,12 +539,12 @@ pub async fn deactivate_user(
     let body = body.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
     // Get all joined rooms before deactivation
-    let joined_rooms = data::user::joined_rooms(&user_id)?;
+    let joined_rooms = data::user::joined_rooms(&user_id).await?;
 
     // Perform full deactivation
     user::full_user_deactivate(&user_id, &joined_rooms).await?;
@@ -568,16 +570,16 @@ pub async fn reset_password(
     let body = body.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
     // Hash and set new password
-    crate::user::set_password(&user_id, &body.new_password)?;
+    crate::user::set_password(&user_id, &body.new_password).await?;
 
     // Logout all devices if requested (default true)
     if body.logout_devices.unwrap_or(true) {
-        data::user::remove_all_devices(&user_id)?;
+        data::user::remove_all_devices(&user_id).await?;
     }
 
     empty_ok()
@@ -590,8 +592,9 @@ pub async fn reset_password(
 pub async fn get_admin_status(user_id: PathParam<OwnedUserId>) -> JsonResult<AdminStatusResponse> {
     let user_id = user_id.into_inner();
 
-    let is_admin =
-        data::user::is_admin(&user_id).map_err(|_| MatrixError::not_found("User not found"))?;
+    let is_admin = data::user::is_admin(&user_id)
+        .await
+        .map_err(|_| MatrixError::not_found("User not found"))?;
 
     json_ok(AdminStatusResponse { admin: is_admin })
 }
@@ -608,11 +611,11 @@ pub async fn set_admin_status(
     let body = body.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::set_admin(&user_id, body.admin)?;
+    data::user::set_admin(&user_id, body.admin).await?;
 
     empty_ok()
 }
@@ -625,11 +628,11 @@ pub async fn shadow_ban_user(user_id: PathParam<OwnedUserId>) -> EmptyResult {
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::set_shadow_banned(&user_id, true)?;
+    data::user::set_shadow_banned(&user_id, true).await?;
 
     empty_ok()
 }
@@ -642,11 +645,11 @@ pub async fn unshadow_ban_user(user_id: PathParam<OwnedUserId>) -> EmptyResult {
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::set_shadow_banned(&user_id, false)?;
+    data::user::set_shadow_banned(&user_id, false).await?;
 
     empty_ok()
 }
@@ -663,11 +666,11 @@ pub async fn suspend_user(
     let body = body.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::set_suspended(&user_id, body.suspend)?;
+    data::user::set_suspended(&user_id, body.suspend).await?;
 
     json_ok(SuspendResponse {
         user_id: user_id.to_string(),
@@ -687,12 +690,12 @@ pub async fn whois_user(user_id: PathParam<OwnedUserId>) -> JsonResult<WhoisResp
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
     // Get user's devices and session info
-    let devices = data::user::device::get_devices(&user_id)?;
+    let devices = data::user::device::get_devices(&user_id).await?;
     let mut device_map = std::collections::HashMap::new();
 
     for device in devices {
@@ -730,11 +733,11 @@ pub async fn user_joined_rooms(user_id: PathParam<OwnedUserId>) -> JsonResult<Jo
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    let rooms = data::user::joined_rooms(&user_id)?;
+    let rooms = data::user::joined_rooms(&user_id).await?;
     let total = rooms.len() as i64;
 
     json_ok(JoinedRoomsResponse {
@@ -751,11 +754,11 @@ pub async fn user_pushers(user_id: PathParam<OwnedUserId>) -> JsonResult<Pushers
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    let pushers = data::user::pusher::get_pushers(&user_id)?;
+    let pushers = data::user::pusher::get_pushers(&user_id).await?;
     let total = pushers.len() as i64;
 
     let pusher_list: Vec<serde_json::Value> = pushers
@@ -786,12 +789,12 @@ pub async fn user_account_data(user_id: PathParam<OwnedUserId>) -> JsonResult<Ac
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    let global_data = data::user::get_global_account_data(&user_id)?;
-    let room_data = data::user::get_room_account_data(&user_id)?;
+    let global_data = data::user::get_global_account_data(&user_id).await?;
+    let room_data = data::user::get_room_account_data(&user_id).await?;
 
     json_ok(AccountDataResponse {
         account_data: AccountDataContent {
@@ -809,11 +812,11 @@ pub async fn get_user_ratelimit(user_id: PathParam<OwnedUserId>) -> JsonResult<R
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    let ratelimit = data::user::get_ratelimit(&user_id)?;
+    let ratelimit = data::user::get_ratelimit(&user_id).await?;
 
     json_ok(RateLimitResponse {
         messages_per_second: ratelimit.as_ref().and_then(|r| r.messages_per_second),
@@ -833,11 +836,11 @@ pub async fn set_user_ratelimit(
     let body = body.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::set_ratelimit(&user_id, body.messages_per_second, body.burst_count)?;
+    data::user::set_ratelimit(&user_id, body.messages_per_second, body.burst_count).await?;
 
     json_ok(RateLimitResponse {
         messages_per_second: body.messages_per_second,
@@ -853,11 +856,11 @@ pub async fn delete_user_ratelimit(user_id: PathParam<OwnedUserId>) -> EmptyResu
     let user_id = user_id.into_inner();
 
     // Verify user exists
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::delete_ratelimit(&user_id)?;
+    data::user::delete_ratelimit(&user_id).await?;
 
     empty_ok()
 }

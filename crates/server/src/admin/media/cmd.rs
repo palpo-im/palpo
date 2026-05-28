@@ -21,7 +21,7 @@ pub(super) async fn delete_media(
 
     if let Some(mxc) = mxc {
         trace!("Got MXC URL: {mxc}");
-        data::media::delete_media(mxc.server_name()?, mxc.media_id()?)?;
+        data::media::delete_media(mxc.server_name()?, mxc.media_id()?).await?;
 
         return Err(AppError::public(
             "Deleted the MXC from our database and on our filesystem.",
@@ -34,7 +34,7 @@ pub(super) async fn delete_media(
         let mut mxc_urls = Vec::with_capacity(4);
 
         // parsing the PDU for any MXC URLs begins here
-        match timeline::get_pdu_json(&event_id) {
+        match timeline::get_pdu_json(&event_id).await {
             Ok(Some(event_json)) => {
                 if let Some(content_key) = event_json.get("content") {
                     debug!("Event ID has \"content\".");
@@ -147,7 +147,7 @@ pub(super) async fn delete_media(
                 server_name,
                 media_id,
             } = mxc_url.as_str().try_into()?;
-            match data::media::delete_media(server_name, media_id) {
+            match data::media::delete_media(server_name, media_id).await {
                 Ok(()) => {
                     info!("Successfully deleted {mxc_url} from filesystem and database");
                     mxc_deletion_count = mxc_deletion_count.saturating_add(1);
@@ -204,7 +204,7 @@ pub(super) async fn delete_media_list(ctx: &Context<'_>) -> AppResult<()> {
 
     for mxc in &mxc_list {
         trace!(%failed_parsed_mxcs, %mxc_deletion_count, "Deleting MXC {mxc} in bulk");
-        match data::media::delete_media(mxc.server_name, mxc.media_id) {
+        match data::media::delete_media(mxc.server_name, mxc.media_id).await {
             Ok(()) => {
                 info!("Successfully deleted {mxc} from filesystem and database");
                 mxc_deletion_count = mxc_deletion_count.saturating_add(1);
@@ -277,6 +277,7 @@ pub(super) async fn delete_all_media_from_server(
     }
 
     let Ok(all_mxcs) = crate::media::get_all_mxcs()
+        .await
         .inspect_err(|e| error!("Failed to get MXC URIs from our database: {e}"))
     else {
         return Err(AppError::public("Failed to get MXC URIs from our database"));
@@ -323,7 +324,7 @@ pub(super) async fn get_file_info(ctx: &Context<'_>, mxc: OwnedMxcUri) -> AppRes
         server_name,
         media_id,
     } = mxc.as_str().try_into()?;
-    let metadata = data::media::get_metadata(server_name, media_id)?;
+    let metadata = data::media::get_metadata(server_name, media_id).await?;
 
     ctx.write_str(&format!("```\n{metadata:#?}\n```")).await
 }

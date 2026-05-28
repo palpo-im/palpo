@@ -41,7 +41,7 @@ async fn whois(
     let target_user_id = user_id.into_inner();
 
     // Check if the user is an admin or requesting their own info
-    let is_admin = data::user::is_admin(authed.user_id()).unwrap_or(false);
+    let is_admin = data::user::is_admin(authed.user_id()).await.unwrap_or(false);
     if !is_admin && authed.user_id() != target_user_id {
         return Err(MatrixError::forbidden(
             "Only admins can query other users' information.",
@@ -51,12 +51,12 @@ async fn whois(
     }
 
     // Verify user exists
-    if !data::user::user_exists(&target_user_id)? {
+    if !data::user::user_exists(&target_user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
     // Get user's devices and session info
-    let user_devices = data::user::device::get_devices(&target_user_id)?;
+    let user_devices = data::user::device::get_devices(&target_user_id).await?;
     let mut devices = BTreeMap::new();
 
     for device in user_devices {
@@ -93,12 +93,14 @@ fn require_admin(depot: &mut Depot) -> AppResult<OwnedUserId> {
     Ok(authed.user_id().to_owned())
 }
 
-fn get_local_user(user_id: &UserId) -> AppResult<data::user::DbUser> {
+async fn get_local_user(user_id: &UserId) -> AppResult<data::user::DbUser> {
     if user_id.server_name() != config::server_name() {
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::get_user(user_id).map_err(|_| MatrixError::not_found("User not found").into())
+    data::user::get_user(user_id)
+        .await
+        .map_err(|_| MatrixError::not_found("User not found").into())
 }
 
 #[endpoint]
@@ -109,7 +111,7 @@ pub(super) async fn is_user_locked(
 ) -> JsonResult<IsUserLockedResBody> {
     require_admin(depot)?;
     let target_user_id = user_id.into_inner();
-    let user = get_local_user(&target_user_id)?;
+    let user = get_local_user(&target_user_id).await?;
 
     json_ok(IsUserLockedResBody::new(user.is_locked()))
 }
@@ -123,9 +125,9 @@ pub(super) async fn lock_user(
 ) -> JsonResult<LockUserResBody> {
     let admin_user_id = require_admin(depot)?;
     let target_user_id = user_id.into_inner();
-    get_local_user(&target_user_id)?;
+    get_local_user(&target_user_id).await?;
 
-    data::user::set_locked(&target_user_id, body.locked, Some(&admin_user_id))?;
+    data::user::set_locked(&target_user_id, body.locked, Some(&admin_user_id)).await?;
 
     json_ok(LockUserResBody::new(body.locked))
 }
@@ -138,7 +140,7 @@ pub(super) async fn is_user_suspended(
 ) -> JsonResult<IsUserSuspendedResBody> {
     require_admin(depot)?;
     let target_user_id = user_id.into_inner();
-    let user = get_local_user(&target_user_id)?;
+    let user = get_local_user(&target_user_id).await?;
 
     json_ok(IsUserSuspendedResBody::new(user.is_suspended()))
 }
@@ -152,9 +154,9 @@ pub(super) async fn suspend_user(
 ) -> JsonResult<SuspendUserResBody> {
     require_admin(depot)?;
     let target_user_id = user_id.into_inner();
-    get_local_user(&target_user_id)?;
+    get_local_user(&target_user_id).await?;
 
-    data::user::set_suspended(&target_user_id, body.suspended)?;
+    data::user::set_suspended(&target_user_id, body.suspended).await?;
 
     json_ok(SuspendUserResBody::new(body.suspended))
 }

@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::UnixMillis;
 
 use crate::AppResult;
@@ -8,7 +9,7 @@ use crate::data::room::NewDbEventIdempotent;
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 
-pub fn add_txn_id(
+pub async fn add_txn_id(
     txn_id: &TransactionId,
     user_id: &UserId,
     device_id: Option<&DeviceId>,
@@ -24,11 +25,12 @@ pub fn add_txn_id(
             event_id: event_id.map(|e| e.to_owned()),
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn txn_id_exists(
+pub async fn txn_id_exists(
     txn_id: &TransactionId,
     user_id: &UserId,
     device_id: Option<&DeviceId>,
@@ -39,18 +41,18 @@ pub fn txn_id_exists(
             .filter(event_idempotents::device_id.eq(device_id))
             .filter(event_idempotents::txn_id.eq(txn_id))
             .select(event_idempotents::event_id);
-        diesel_exists!(query, &mut connect()?).map_err(Into::into)
+        diesel_exists!(query, &mut connect().await?).map_err(Into::into)
     } else {
         let query = event_idempotents::table
             .filter(event_idempotents::user_id.eq(user_id))
             .filter(event_idempotents::device_id.is_null())
             .filter(event_idempotents::txn_id.eq(txn_id))
             .select(event_idempotents::event_id);
-        diesel_exists!(query, &mut connect()?).map_err(Into::into)
+        diesel_exists!(query, &mut connect().await?).map_err(Into::into)
     }
 }
 
-pub fn get_event_id(
+pub async fn get_event_id(
     txn_id: &TransactionId,
     user_id: &UserId,
     device_id: Option<&DeviceId>,
@@ -72,7 +74,8 @@ pub fn get_event_id(
     }
     query
         .select(event_idempotents::event_id)
-        .first::<Option<OwnedEventId>>(&mut connect()?)
+        .first::<Option<OwnedEventId>>(&mut connect().await?)
+        .await
         .optional()
         .map(|v| v.flatten())
         .map_err(Into::into)

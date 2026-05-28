@@ -21,12 +21,12 @@ pub fn router() -> Router {
         )
 }
 
-fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
+async fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
     let token = aa.require_access_token()?;
     let appservices = crate::appservices();
     // Constant-time comparison; mirrors `routing/appservice.rs::verify_hs_token`.
     if appservices
-        .iter()
+        .await.iter()
         .any(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
     {
         Ok(())
@@ -40,12 +40,12 @@ fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
 /// Retrieve metadata about a specific third party protocol.
 #[endpoint]
 async fn get_protocol(aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<ProtocolResBody> {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
 
     let protocol_name = protocol.into_inner();
 
     // Look through registered appservices to find one that handles this protocol.
-    let appservices = crate::appservices();
+    let appservices = crate::appservices().await;
     for appservice in appservices {
         if let Some(protocols) = &appservice.protocols
             && protocols.iter().any(|p| p == &protocol_name)
@@ -70,7 +70,7 @@ async fn get_protocol(aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<P
 /// Retrieve third party locations from a Matrix room alias.
 #[endpoint]
 async fn locations(aa: AuthArgs) -> JsonResult<LocationsResBody> {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
     json_ok(LocationsResBody::new(vec![]))
 }
 
@@ -82,7 +82,7 @@ async fn protocol_locations(
     aa: AuthArgs,
     _args: ForProtocolReqArgs,
 ) -> JsonResult<LocationsResBody> {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
     json_ok(LocationsResBody::new(vec![]))
 }
 
@@ -91,7 +91,7 @@ async fn protocol_locations(
 /// Retrieve third party users from a Matrix User ID.
 #[endpoint]
 async fn users(aa: AuthArgs) -> JsonResult<UsersResBody> {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
     json_ok(UsersResBody::new(vec![]))
 }
 
@@ -100,6 +100,6 @@ async fn users(aa: AuthArgs) -> JsonResult<UsersResBody> {
 /// Retrieve Matrix users bridged to the matched third party users.
 #[endpoint]
 async fn protocol_users(aa: AuthArgs, _args: ForProtocolReqArgs) -> JsonResult<UsersResBody> {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
     json_ok(UsersResBody::new(vec![]))
 }

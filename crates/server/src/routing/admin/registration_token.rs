@@ -95,10 +95,10 @@ pub fn router() -> Router {
 /// Optional query parameter:
 /// - valid: Filter by validity (true/false)
 #[endpoint(operation_id = "list_registration_tokens")]
-pub fn list_registration_tokens(
+pub async fn list_registration_tokens(
     query: ListRegistrationTokensQuery,
 ) -> JsonResult<ListRegistrationTokensResponse> {
-    let tokens = data::user::list_registration_tokens(query.valid)?;
+    let tokens = data::user::list_registration_tokens(query.valid).await?;
     let registration_tokens = tokens.into_iter().map(Into::into).collect();
     json_ok(ListRegistrationTokensResponse {
         registration_tokens,
@@ -115,7 +115,7 @@ pub fn list_registration_tokens(
 /// - uses_allowed: Maximum number of uses (null for unlimited)
 /// - expiry_time: Expiry timestamp in milliseconds (null for no expiry)
 #[endpoint(operation_id = "create_registration_token")]
-pub fn create_registration_token(
+pub async fn create_registration_token(
     body: JsonBody<CreateRegistrationTokenReqBody>,
 ) -> AppResult<Json<RegistrationTokenResponse>> {
     let body = body.into_inner();
@@ -168,7 +168,7 @@ pub fn create_registration_token(
 
     // Create the token
     let created =
-        data::user::create_registration_token(&token, body.uses_allowed, body.expiry_time)?;
+        data::user::create_registration_token(&token, body.uses_allowed, body.expiry_time).await?;
     if !created {
         return Err(MatrixError::invalid_param(format!("Token already exists: {}", token)).into());
     }
@@ -186,9 +186,12 @@ pub fn create_registration_token(
 ///
 /// GET /_synapse/admin/v1/registration_tokens/{token}
 #[endpoint(operation_id = "get_registration_token")]
-pub fn get_registration_token(token: PathParam<String>) -> JsonResult<RegistrationTokenResponse> {
+pub async fn get_registration_token(
+    token: PathParam<String>,
+) -> JsonResult<RegistrationTokenResponse> {
     let token = token.into_inner();
-    let token_info = data::user::get_registration_token(&token)?
+    let token_info = data::user::get_registration_token(&token)
+        .await?
         .ok_or_else(|| MatrixError::not_found(format!("No such registration token: {}", token)))?;
     json_ok(token_info.into())
 }
@@ -201,7 +204,7 @@ pub fn get_registration_token(token: PathParam<String>) -> JsonResult<Registrati
 /// - uses_allowed: New maximum number of uses (null for unlimited)
 /// - expiry_time: New expiry timestamp in milliseconds (null for no expiry)
 #[endpoint(operation_id = "update_registration_token")]
-pub fn update_registration_token(
+pub async fn update_registration_token(
     token: PathParam<String>,
     body: JsonBody<UpdateRegistrationTokenReqBody>,
 ) -> JsonResult<RegistrationTokenResponse> {
@@ -228,9 +231,9 @@ pub fn update_registration_token(
 
     // If nothing to update, just get the token info
     let token_info = if body.uses_allowed.is_none() && body.expiry_time.is_none() {
-        data::user::get_registration_token(&token)?
+        data::user::get_registration_token(&token).await?
     } else {
-        data::user::update_registration_token(&token, body.uses_allowed, body.expiry_time)?
+        data::user::update_registration_token(&token, body.uses_allowed, body.expiry_time).await?
     };
 
     let token_info = token_info
@@ -243,9 +246,9 @@ pub fn update_registration_token(
 ///
 /// DELETE /_synapse/admin/v1/registration_tokens/{token}
 #[endpoint(operation_id = "delete_registration_token")]
-pub fn delete_registration_token(token: PathParam<String>) -> EmptyResult {
+pub async fn delete_registration_token(token: PathParam<String>) -> EmptyResult {
     let token = token.into_inner();
-    let deleted = data::user::delete_registration_token(&token)?;
+    let deleted = data::user::delete_registration_token(&token).await?;
     if !deleted {
         return Err(
             MatrixError::not_found(format!("No such registration token: {}", token)).into(),

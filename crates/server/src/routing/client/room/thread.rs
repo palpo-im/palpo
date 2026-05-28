@@ -27,14 +27,17 @@ pub(super) async fn list_threads(
     };
 
     let (events, next_batch) =
-        crate::room::thread::get_threads(&args.room_id, &args.include, limit, from)?;
+        crate::room::thread::get_threads(&args.room_id, &args.include, limit, from).await?;
 
-    let threads = events
-        .into_iter()
-        .filter(|(_, pdu)| {
-            state::user_can_see_event(authed.user_id(), &pdu.event_id).unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
+    let mut threads = Vec::new();
+    for (sn, pdu) in events.into_iter() {
+        if state::user_can_see_event(authed.user_id(), &pdu.event_id)
+            .await
+            .unwrap_or(false)
+        {
+            threads.push((sn, pdu));
+        }
+    }
 
     json_ok(ThreadsResBody {
         chunk: threads

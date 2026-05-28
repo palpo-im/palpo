@@ -28,21 +28,22 @@ async fn list_joined_members(
     room_id: OwnedRoomId,
     local_only: bool,
 ) -> AppResult<()> {
-    let room_name = crate::room::get_name(&room_id).unwrap_or_else(|_| room_id.to_string());
+    let room_name = crate::room::get_name(&room_id)
+        .await
+        .unwrap_or_else(|_| room_id.to_string());
 
-    let member_info: Vec<_> = crate::room::joined_users(&room_id, None)?
-        .into_iter()
-        .filter(|user_id| if local_only { user_id.is_local() } else { true })
-        .map(|user_id| {
-            (
-                data::user::display_name(&user_id)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| user_id.to_string()),
-                user_id,
-            )
-        })
-        .collect();
+    let mut member_info: Vec<_> = Vec::new();
+    for user_id in crate::room::joined_users(&room_id, None).await?.into_iter() {
+        if local_only && !user_id.is_local() {
+            continue;
+        }
+        let displayname = data::user::display_name(&user_id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| user_id.to_string());
+        member_info.push((displayname, user_id));
+    }
 
     let num = member_info.len();
     let body = member_info
@@ -58,7 +59,7 @@ async fn list_joined_members(
 }
 
 async fn view_room_topic(ctx: &Context<'_>, room_id: OwnedRoomId) -> AppResult<()> {
-    let Ok(room_topic) = crate::room::get_topic(&room_id) else {
+    let Ok(room_topic) = crate::room::get_topic(&room_id).await else {
         return Err(AppError::public("Room does not have a room topic set."));
     };
 

@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::client::device::Device;
 use crate::core::events::AnyToDeviceEvent;
@@ -91,7 +92,7 @@ pub struct NewDbDeviceInbox {
     pub created_at: i64,
 }
 
-pub fn create_device(
+pub async fn create_device(
     user_id: &UserId,
     device_id: &DeviceId,
     token: &str,
@@ -109,7 +110,8 @@ pub fn create_device(
             last_seen_at: Some(UnixMillis::now()),
             created_at: UnixMillis::now(),
         })
-        .get_result(&mut connect()?)?;
+        .get_result(&mut connect().await?)
+        .await?;
 
     diesel::insert_into(user_access_tokens::table)
         .values(NewDbAccessToken::new(
@@ -118,15 +120,17 @@ pub fn create_device(
             token.to_owned(),
             None,
         ))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(device)
 }
 
-pub fn get_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<DbUserDevice> {
+pub async fn get_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<DbUserDevice> {
     user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(device_id))
-        .first::<DbUserDevice>(&mut connect()?)
+        .first::<DbUserDevice>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
@@ -157,7 +161,7 @@ impl From<DeviceUpdate> for DbUserDeviceChanges {
     }
 }
 
-pub fn update_device(
+pub async fn update_device(
     user_id: &UserId,
     device_id: &DeviceId,
     update: DeviceUpdate,
@@ -169,35 +173,38 @@ pub fn update_device(
             .filter(user_devices::device_id.eq(device_id)),
     )
     .set(changes)
-    .get_result::<DbUserDevice>(&mut connect()?)
+    .get_result::<DbUserDevice>(&mut connect().await?)
+    .await
     .map_err(Into::into)
 }
 
-pub fn get_devices(user_id: &UserId) -> DataResult<Vec<DbUserDevice>> {
+pub async fn get_devices(user_id: &UserId) -> DataResult<Vec<DbUserDevice>> {
     user_devices::table
         .filter(user_devices::user_id.eq(user_id))
-        .load::<DbUserDevice>(&mut connect()?)
+        .load::<DbUserDevice>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
-pub fn is_device_exists(user_id: &UserId, device_id: &DeviceId) -> DataResult<bool> {
+pub async fn is_device_exists(user_id: &UserId, device_id: &DeviceId) -> DataResult<bool> {
     let query = user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(device_id));
-    diesel_exists!(query, &mut connect()?).map_err(Into::into)
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 
-pub fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     let count = diesel::delete(
         user_devices::table
             .filter(user_devices::user_id.eq(user_id))
             .filter(user_devices::device_id.eq(device_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     if count == 0 {
         if diesel_exists!(
             user_devices::table.filter(user_devices::device_id.eq(device_id)),
-            &mut connect()?
+            &mut connect().await?
         )? {
             return Err(MatrixError::forbidden("Device not owned by user.", None).into());
         } else {
@@ -205,42 +212,47 @@ pub fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
         }
     }
 
-    delete_access_tokens(user_id, device_id)?;
-    delete_refresh_tokens(user_id, device_id)?;
-    super::pusher::delete_device_pushers(user_id, device_id)?;
+    delete_access_tokens(user_id, device_id).await?;
+    delete_refresh_tokens(user_id, device_id).await?;
+    super::pusher::delete_device_pushers(user_id, device_id).await?;
     Ok(())
 }
 
-pub fn set_refresh_token(
+pub async fn set_refresh_token(
     user_id: &UserId,
     device_id: &DeviceId,
     token: &str,
     expires_at: u64,
     ultimate_session_expires_at: u64,
 ) -> DataResult<i64> {
-    let id = connect()?.transaction::<_, DieselError, _>(|conn| {
-        diesel::delete(
-            user_refresh_tokens::table
-                .filter(user_refresh_tokens::user_id.eq(user_id))
-                .filter(user_refresh_tokens::device_id.eq(device_id)),
-        )
-        .execute(conn)?;
-        diesel::insert_into(user_refresh_tokens::table)
-            .values(NewDbRefreshToken::new(
-                user_id.to_owned(),
-                device_id.to_owned(),
-                token.to_owned(),
-                expires_at as i64,
-                ultimate_session_expires_at as i64,
-            ))
-            .returning(user_refresh_tokens::id)
-            .get_result::<i64>(conn)
-    })?;
+    let id = connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            diesel::delete(
+                user_refresh_tokens::table
+                    .filter(user_refresh_tokens::user_id.eq(user_id))
+                    .filter(user_refresh_tokens::device_id.eq(device_id)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::insert_into(user_refresh_tokens::table)
+                .values(NewDbRefreshToken::new(
+                    user_id.to_owned(),
+                    device_id.to_owned(),
+                    token.to_owned(),
+                    expires_at as i64,
+                    ultimate_session_expires_at as i64,
+                ))
+                .returning(user_refresh_tokens::id)
+                .get_result::<i64>(conn)
+                .await
+        })
+        .await?;
 
     Ok(id)
 }
 
-pub fn set_access_token(
+pub async fn set_access_token(
     user_id: &UserId,
     device_id: &DeviceId,
     token: &str,
@@ -256,31 +268,34 @@ pub fn set_access_token(
         .on_conflict((user_access_tokens::user_id, user_access_tokens::device_id))
         .do_update()
         .set(user_access_tokens::token.eq(token))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+pub async fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     diesel::delete(
         user_access_tokens::table
             .filter(user_access_tokens::user_id.eq(user_id))
             .filter(user_access_tokens::device_id.eq(device_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
-pub fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+pub async fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     diesel::delete(
         user_refresh_tokens::table
             .filter(user_refresh_tokens::user_id.eq(user_id))
             .filter(user_refresh_tokens::device_id.eq(device_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
-pub fn get_to_device_events(
+pub async fn get_to_device_events(
     user_id: &UserId,
     device_id: &DeviceId,
     _since_sn: Option<Seqnum>,
@@ -289,7 +304,8 @@ pub fn get_to_device_events(
     device_inboxes::table
         .filter(device_inboxes::user_id.eq(user_id))
         .filter(device_inboxes::device_id.eq(device_id))
-        .load::<DbDeviceInbox>(&mut connect()?)?
+        .load::<DbDeviceInbox>(&mut connect().await?)
+        .await?
         .into_iter()
         .map(|event| {
             serde_json::from_value(event.json_data.clone())
@@ -298,7 +314,7 @@ pub fn get_to_device_events(
         .collect::<DataResult<Vec<_>>>()
 }
 
-pub fn add_to_device_event(
+pub async fn add_to_device_event(
     sender: &UserId,
     target_user_id: &UserId,
     target_device_id: &DeviceId,
@@ -319,12 +335,13 @@ pub fn add_to_device_event(
             json_data,
             created_at: UnixMillis::now().get() as i64,
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     Ok(())
 }
 
-pub fn remove_to_device_events(
+pub async fn remove_to_device_events(
     user_id: &UserId,
     device_id: &DeviceId,
     until_sn: Seqnum,
@@ -335,6 +352,7 @@ pub fn remove_to_device_events(
             .filter(device_inboxes::device_id.eq(device_id))
             .filter(device_inboxes::occur_sn.le(until_sn)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }

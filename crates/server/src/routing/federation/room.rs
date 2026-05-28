@@ -43,41 +43,43 @@ async fn get_state(
     depot: &mut Depot,
 ) -> JsonResult<RoomStateResBody> {
     let origin = depot.origin()?;
-    crate::federation::access_check(origin, &args.room_id, None)?;
+    crate::federation::access_check(origin, &args.room_id, None).await?;
 
-    let state_hash = state::get_pdu_frame_id(&args.event_id)?;
+    let state_hash = state::get_pdu_frame_id(&args.event_id).await?;
 
-    let pdus = state::get_full_state_ids(state_hash)?
-        .into_values()
-        .filter_map(|id| match timeline::get_pdu_json(&id) {
-            Ok(Some(json)) => Some(sending::convert_to_outgoing_federation_event(json)),
+    let mut pdus = Vec::new();
+    for id in state::get_full_state_ids(state_hash).await?.into_values() {
+        match timeline::get_pdu_json(&id).await {
+            Ok(Some(json)) => {
+                pdus.push(sending::convert_to_outgoing_federation_event(json).await);
+            }
             Ok(None) => {
                 error!("Could not find event json for state event {id} in db");
-                None
             }
             Err(e) => {
                 error!("Failed to load state event {id} from db: {e}");
-                None
             }
-        })
-        .collect();
+        }
+    }
 
     let auth_chain_ids =
-        room::auth_chain::get_auth_chain_ids(&args.room_id, [&*args.event_id].into_iter())?;
+        room::auth_chain::get_auth_chain_ids(&args.room_id, [&*args.event_id].into_iter()).await?;
 
-    json_ok(RoomStateResBody {
-        auth_chain: auth_chain_ids
-            .into_iter()
-            .filter_map(|id| match timeline::get_pdu_json(&id).ok()? {
-                Some(json) => Some(crate::sending::convert_to_outgoing_federation_event(json)),
-                None => {
-                    error!("Could not find event json for {id} in db::");
-                    None
-                }
-            })
-            .collect(),
-        pdus,
-    })
+    let mut auth_chain = Vec::new();
+    for id in auth_chain_ids.into_iter() {
+        match timeline::get_pdu_json(&id).await {
+            Ok(Some(json)) => {
+                auth_chain
+                    .push(crate::sending::convert_to_outgoing_federation_event(json).await);
+            }
+            Ok(None) => {
+                error!("Could not find event json for {id} in db::");
+            }
+            Err(_) => {}
+        }
+    }
+
+    json_ok(RoomStateResBody { auth_chain, pdus })
 }
 
 /// #GET /_matrix/federation/v1/publicRooms
@@ -137,9 +139,9 @@ async fn send_knock(
     }
 
     // ACL check origin server
-    handler::acl_check(origin, &args.room_id)?;
+    handler::acl_check(origin, &args.room_id).await?;
 
-    let room_version = crate::room::get_version(&args.room_id)?;
+    let room_version = crate::room::get_version(&args.room_id).await?;
 
     if matches!(room_version, V1 | V2 | V3 | V4 | V5 | V6) {
         return Err(MatrixError::forbidden("room version does not support knocking", None).into());
@@ -194,7 +196,7 @@ async fn send_knock(
     )
     .map_err(|e| MatrixError::invalid_param(format!("event sender is not a valid user id: {e}")))?;
 
-    handler::acl_check(sender.server_name(), &args.room_id)?;
+    handler::acl_check(sender.server_name(), &args.room_id).await?;
 
     // check if origin server is trying to send for another server
     if sender.server_name() != origin {
@@ -252,10 +254,10 @@ async fn send_knock(
         MatrixError::invalid_param("could not accept as timeline event".to_string())
     })?;
 
-    data::room::add_joined_server(&args.room_id, &origin)?;
+    data::room::add_joined_server(&args.room_id, &origin).await?;
 
-    let knock_room_state = state::summary_stripped(&pdu)?;
-    if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]) {
+    let knock_room_state = state::summary_stripped(&pdu).await?;
+    if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]).await {
         error!("failed to notify knock event: {e}");
     }
     json_ok(SendKnockResBody { knock_room_state })
@@ -273,7 +275,7 @@ async fn make_knock(
     use crate::core::RoomVersionId::*;
 
     let origin = depot.origin()?;
-    if !crate::room::room_exists(&args.room_id)? {
+    if !crate::room::room_exists(&args.room_id).await? {
         return Err(MatrixError::not_found("room is unknown to this server").into());
     }
 
@@ -284,9 +286,9 @@ async fn make_knock(
     }
 
     // ACL check origin server
-    handler::acl_check(origin, &args.room_id)?;
+    handler::acl_check(origin, &args.room_id).await?;
 
-    let room_version_id = crate::room::get_version(&args.room_id)?;
+    let room_version_id = crate::room::get_version(&args.room_id).await?;
 
     if matches!(room_version_id, V1 | V2 | V3 | V4 | V5 | V6) {
         return Err(MatrixError::incompatible_room_version(
@@ -304,7 +306,7 @@ async fn make_knock(
     // }
 
     let state_lock = room::lock_state(&args.room_id).await;
-    if let Ok(member) = room::get_member(&args.room_id, &args.user_id, None)
+    if let Ok(member) = room::get_member(&args.room_id, &args.user_id, None).await
         && member.membership == MembershipState::Ban
     {
         warn!(
@@ -335,23 +337,25 @@ async fn make_knock(
 /// #GET /_matrix/federation/v1/state_ids/{room_id}
 /// Retrieves the current state of the room.
 #[endpoint]
-fn get_state_at_event(
+async fn get_state_at_event(
     depot: &mut Depot,
     args: RoomStateAtEventReqArgs,
 ) -> JsonResult<RoomStateIdsResBody> {
     let origin = depot.origin()?;
 
-    crate::federation::access_check(origin, &args.room_id, Some(&args.event_id))?;
+    crate::federation::access_check(origin, &args.room_id, Some(&args.event_id)).await?;
 
-    let frame_id = state::get_pdu_frame_id(&args.event_id)?;
+    let frame_id = state::get_pdu_frame_id(&args.event_id).await?;
 
-    let pdu_ids = state::get_full_state_ids(frame_id)?
+    let pdu_ids = state::get_full_state_ids(frame_id)
+        .await?
         .into_values()
         .map(|id| (*id).to_owned())
         .collect();
 
     let auth_chain_ids =
-        crate::room::auth_chain::get_auth_chain_ids(&args.room_id, [&*args.event_id].into_iter())?;
+        crate::room::auth_chain::get_auth_chain_ids(&args.room_id, [&*args.event_id].into_iter())
+            .await?;
 
     json_ok(RoomStateIdsResBody {
         auth_chain_ids: auth_chain_ids

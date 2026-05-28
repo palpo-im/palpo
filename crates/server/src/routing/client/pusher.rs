@@ -21,7 +21,8 @@ async fn pushers(depot: &mut Depot) -> JsonResult<PushersResBody> {
     let authed = depot.authed_info()?;
 
     json_ok(PushersResBody {
-        pushers: data::user::pusher::get_pushers(authed.user_id())?
+        pushers: data::user::pusher::get_pushers(authed.user_id())
+            .await?
             .into_iter()
             .map(TryInto::<Pusher>::try_into)
             .collect::<Result<Vec<_>, DataError>>()?,
@@ -47,6 +48,6 @@ async fn set_pusher(body: JsonBody<SetPusherReqBody>, depot: &mut Depot) -> Empt
         })?;
         url_guard::ensure_safe_outbound_url(&url)?;
     }
-    crate::user::pusher::set_pusher(authed, action)?;
+    crate::user::pusher::set_pusher(authed, action).await?;
     empty_ok()
 }

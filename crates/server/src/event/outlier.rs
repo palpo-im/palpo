@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
@@ -107,7 +108,7 @@ impl crate::core::state::Event for OutlierPdu {
 }
 
 impl OutlierPdu {
-    pub fn save_to_database(
+    pub async fn save_to_database(
         self,
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
@@ -132,7 +133,7 @@ impl OutlierPdu {
                 None,
             ));
         }
-        let (event_sn, event_guard) = ensure_event_sn(&room_id, &pdu.event_id)?;
+        let (event_sn, event_guard) = ensure_event_sn(&room_id, &pdu.event_id).await?;
         let mut db_event = NewDbEvent::from_canonical_json_with_room_id(
             &pdu.event_id,
             event_sn,
@@ -144,7 +145,7 @@ impl OutlierPdu {
         db_event.soft_failed = soft_failed;
         db_event.is_rejected = pdu.rejection_reason.is_some();
         db_event.rejection_reason = pdu.rejection_reason.clone();
-        db_event.save()?;
+        db_event.save().await?;
         DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
@@ -153,7 +154,8 @@ impl OutlierPdu {
             json_data: serde_json::to_value(&json_data)?,
             format_version: None,
         }
-        .save()?;
+        .save()
+        .await?;
         let pdu = SnPduEvent {
             pdu,
             event_sn,
@@ -161,7 +163,7 @@ impl OutlierPdu {
             soft_failed,
             is_backfill,
         };
-        update_backward_extremities(&pdu)?;
+        update_backward_extremities(&pdu).await?;
         Ok((pdu, json_data, event_guard))
     }
 
@@ -175,7 +177,7 @@ impl OutlierPdu {
                 && self.rejected_prev_events.is_empty()
                 && self.rejected_auth_events.is_empty())
         {
-            return self.save_to_database(is_backfill);
+            return self.save_to_database(is_backfill).await;
         }
 
         // Fetch any missing prev events doing all checks listed here starting at 1. These are
@@ -193,7 +195,7 @@ impl OutlierPdu {
                 if *kind == core::error::ErrorKind::BadJson {
                     self.rejection_reason = Some(format!("bad prev events: {}", e));
                     let _state_lock = crate::room::lock_state(&self.room_id).await;
-                    return self.save_to_database(is_backfill);
+                    return self.save_to_database(is_backfill).await;
                 } else {
                     self.soft_failed = true;
                 }
@@ -205,17 +207,17 @@ impl OutlierPdu {
         self.process_pulled(remote_server, is_backfill).await
     }
 
-    fn any_auth_event_rejected(&self) -> AppResult<bool> {
+    async fn any_auth_event_rejected(&self) -> AppResult<bool> {
         let query = events::table
             .filter(events::id.eq_any(&self.pdu.auth_events))
             .filter(events::is_rejected.eq(true));
-        Ok(diesel_exists!(query, &mut connect()?)?)
+        Ok(diesel_exists!(query, &mut connect().await?)?)
     }
-    fn any_prev_event_rejected(&self) -> AppResult<bool> {
+    async fn any_prev_event_rejected(&self) -> AppResult<bool> {
         let query = events::table
             .filter(events::id.eq_any(&self.pdu.prev_events))
             .filter(events::is_rejected.eq(true));
-        Ok(diesel_exists!(query, &mut connect()?)?)
+        Ok(diesel_exists!(query, &mut connect().await?)?)
     }
 
     pub async fn process_pulled(
@@ -226,14 +228,14 @@ impl OutlierPdu {
         let version_rules = crate::room::get_version_rules(&self.room_version)?;
 
         if !self.soft_failed || self.rejected() {
-            return self.save_to_database(is_backfill);
+            return self.save_to_database(is_backfill).await;
         }
 
-        if self.any_prev_event_rejected()? {
+        if self.any_prev_event_rejected().await? {
             self.rejection_reason = Some("one or more prev events are rejected".to_string());
-            return self.save_to_database(is_backfill);
+            return self.save_to_database(is_backfill).await;
         }
-        if self.any_auth_event_rejected()?
+        if self.any_auth_event_rejected().await?
             && let Err(e) = fetch_and_process_auth_chain(
                 &self.remote_server,
                 &self.room_id,
@@ -247,10 +249,10 @@ impl OutlierPdu {
             } else {
                 self.rejection_reason = Some("one or more auth events are rejected".to_string());
             }
-            return self.save_to_database(is_backfill);
+            return self.save_to_database(is_backfill).await;
         }
         let (_prev_events, missing_prev_event_ids) =
-            timeline::get_may_missing_pdus(&self.room_id, &self.pdu.prev_events)?;
+            timeline::get_may_missing_pdus(&self.room_id, &self.pdu.prev_events).await?;
 
         if !missing_prev_event_ids.is_empty() {
             for event_id in &missing_prev_event_ids {
@@ -332,6 +334,6 @@ impl OutlierPdu {
                 self.soft_failed = false;
             }
         }
-        self.save_to_database(is_backfill)
+        self.save_to_database(is_backfill).await
     }
 }

@@ -150,58 +150,67 @@ pub struct ForwardExtremity {
     pub received_ts: i64,
 }
 
-fn get_detailed_room_info(room_id: &RoomId) -> RoomInfoResponse {
-    let basic_info = admin::get_room_info(room_id);
+async fn get_detailed_room_info(room_id: &RoomId) -> RoomInfoResponse {
+    let basic_info = admin::get_room_info(room_id).await;
 
     let version = room::get_version(room_id)
+        .await
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
     let creator = room::get_create(room_id)
+        .await
         .ok()
         .and_then(|c| c.creator().ok().map(|u| u.to_string()));
 
     let canonical_alias = room::get_canonical_alias(room_id)
+        .await
         .ok()
         .flatten()
         .map(|a| a.to_string());
 
-    let encryption = room::get_encryption(room_id).ok().map(|e| e.to_string());
+    let encryption = room::get_encryption(room_id).await.ok().map(|e| e.to_string());
 
     let join_rules = room::get_join_rule(room_id)
+        .await
         .ok()
         .map(|r| format!("{:?}", r).to_lowercase());
 
     let history_visibility = room::get_history_visibility(room_id)
+        .await
         .ok()
         .map(|h| format!("{:?}", h).to_lowercase());
 
-    let topic = room::get_topic(room_id).ok();
+    let topic = room::get_topic(room_id).await.ok();
 
     let avatar = room::get_avatar_url(room_id)
+        .await
         .ok()
         .flatten()
         .map(|u| u.to_string());
 
     let room_type = room::get_room_type(room_id)
+        .await
         .ok()
         .flatten()
         .map(|t| t.to_string());
 
     let joined_local_members = room::local_users_in_room(room_id)
+        .await
         .map(|u| u.len() as u64)
         .unwrap_or(0);
 
-    let state_events = room::get_current_frame_id(room_id)
-        .ok()
-        .flatten()
-        .and_then(|frame_id| room::state::get_full_state_ids(frame_id).ok())
-        .map(|s| s.len() as u64)
-        .unwrap_or(0);
+    let state_events = match room::get_current_frame_id(room_id).await.ok().flatten() {
+        Some(frame_id) => room::state::get_full_state_ids(frame_id)
+            .await
+            .map(|s| s.len() as u64)
+            .unwrap_or(0),
+        None => 0,
+    };
 
-    let guest_access = room::guest_can_join(room_id);
+    let guest_access = room::guest_can_join(room_id).await;
 
-    let is_public = crate::data::room::is_public(room_id).unwrap_or(false);
+    let is_public = crate::data::room::is_public(room_id).await.unwrap_or(false);
 
     RoomInfoResponse {
         room_id: room_id.to_string(),
@@ -234,7 +243,7 @@ fn get_detailed_room_info(room_id: &RoomId) -> RoomInfoResponse {
 
 /// List all rooms
 #[endpoint]
-pub fn list_rooms(
+pub async fn list_rooms(
     from: QueryParam<i64, false>,
     limit: QueryParam<i64, false>,
     order_by: QueryParam<String, false>,
@@ -247,12 +256,12 @@ pub fn list_rooms(
     let dir = dir.into_inner().unwrap_or_else(|| "f".to_string());
     let order_by_field = order_by.into_inner().unwrap_or_else(|| "name".to_string());
 
-    let all_rooms = crate::room::all_room_ids()?;
+    let all_rooms = crate::room::all_room_ids().await?;
 
-    let mut rooms: Vec<RoomInfoResponse> = all_rooms
-        .iter()
-        .map(|room_id| get_detailed_room_info(room_id))
-        .collect();
+    let mut rooms: Vec<RoomInfoResponse> = Vec::with_capacity(all_rooms.len());
+    for room_id in &all_rooms {
+        rooms.push(get_detailed_room_info(room_id).await);
+    }
 
     // Filter by search term
     if let Some(ref term) = search_term {
@@ -315,14 +324,14 @@ pub fn list_rooms(
 
 /// Get room details
 #[endpoint]
-pub fn get_room(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomInfoResponse> {
+pub async fn get_room(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomInfoResponse> {
     let room_id = room_id.into_inner();
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    json_ok(get_detailed_room_info(&room_id))
+    json_ok(get_detailed_room_info(&room_id).await)
 }
 
 /// Get room hierarchy
@@ -339,14 +348,14 @@ pub async fn get_hierarchy(
 
 /// Get room members
 #[endpoint]
-pub fn get_room_members(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomMembersResponse> {
+pub async fn get_room_members(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomMembersResponse> {
     let room_id = room_id.into_inner();
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    let members = room::get_members(&room_id)?;
+    let members = room::get_members(&room_id).await?;
     let total = members.len() as u64;
     let members: Vec<String> = members.into_iter().map(|u| u.to_string()).collect();
 
@@ -355,17 +364,18 @@ pub fn get_room_members(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomMembe
 
 /// Get room state
 #[endpoint]
-pub fn get_room_state(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomStateResponse> {
+pub async fn get_room_state(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomStateResponse> {
     let room_id = room_id.into_inner();
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    let frame_id = room::get_current_frame_id(&room_id)?
+    let frame_id = room::get_current_frame_id(&room_id)
+        .await?
         .ok_or_else(|| MatrixError::not_found("Room has no state"))?;
 
-    let state_map = room::state::get_full_state(frame_id)?;
+    let state_map = room::state::get_full_state(frame_id).await?;
 
     let state: Vec<JsonValue> = state_map
         .values()
@@ -377,7 +387,7 @@ pub fn get_room_state(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomStateRe
 
 /// Get room messages
 #[endpoint]
-pub fn get_room_messages(
+pub async fn get_room_messages(
     room_id: PathParam<OwnedRoomId>,
     from: QueryParam<String, false>,
     limit: QueryParam<i64, false>,
@@ -388,7 +398,7 @@ pub fn get_room_messages(
     let limit = limit.into_inner().unwrap_or(10).clamp(1, 1000);
     let dir = dir.into_inner().unwrap_or_else(|| "b".to_string()); // Default backward like Synapse
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
@@ -401,17 +411,17 @@ pub fn get_room_messages(
         .and_then(|s| s.parse().ok());
 
     let db_events =
-        crate::data::room::timeline::get_pdus_by_room(&room_id, from_sn, limit, backward)?;
+        crate::data::room::timeline::get_pdus_by_room(&room_id, from_sn, limit, backward).await?;
 
     // Get actual PDU content from event_datas
-    let chunk: Vec<JsonValue> = db_events
-        .iter()
-        .filter_map(|e| {
-            room::timeline::get_pdu(&e.id)
-                .ok()
-                .and_then(|pdu| serde_json::to_value(&pdu.pdu).ok())
-        })
-        .collect();
+    let mut chunk: Vec<JsonValue> = Vec::new();
+    for e in &db_events {
+        if let Ok(pdu) = room::timeline::get_pdu(&e.id).await
+            && let Ok(value) = serde_json::to_value(&pdu.pdu)
+        {
+            chunk.push(value);
+        }
+    }
 
     let start = from_token.unwrap_or_else(|| {
         db_events
@@ -426,9 +436,9 @@ pub fn get_room_messages(
 
 /// Get room block status
 #[endpoint]
-pub fn get_room_block(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomBlockStatus> {
+pub async fn get_room_block(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomBlockStatus> {
     let room_id = room_id.into_inner();
-    let blocked = crate::data::room::is_banned(&room_id).unwrap_or(false);
+    let blocked = crate::data::room::is_banned(&room_id).await.unwrap_or(false);
 
     json_ok(RoomBlockStatus {
         block: blocked,
@@ -438,14 +448,14 @@ pub fn get_room_block(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomBlockSt
 
 /// Set room block status
 #[endpoint]
-pub fn set_room_block(
+pub async fn set_room_block(
     room_id: PathParam<OwnedRoomId>,
     body: JsonBody<RoomBlockStatus>,
 ) -> JsonResult<RoomBlockStatus> {
     let room_id = room_id.into_inner();
     let body = body.into_inner();
 
-    room::ban_room(&room_id, body.block)?;
+    room::ban_room(&room_id, body.block).await?;
 
     json_ok(RoomBlockStatus {
         block: body.block,
@@ -466,32 +476,33 @@ pub async fn delete_room(
     let room_id = room_id.into_inner();
     let body = body.into_inner();
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    let members = room::get_members(&room_id)?;
+    let members = room::get_members(&room_id).await?;
     let kicked_users: Vec<String> = members
         .iter()
         .filter(|m| m.server_name().is_local())
         .map(|m| m.to_string())
         .collect();
 
-    let local_aliases: Vec<String> = room::local_aliases_for_room(&room_id)?
+    let local_aliases: Vec<String> = room::local_aliases_for_room(&room_id)
+        .await?
         .into_iter()
         .map(|a| a.to_string())
         .collect();
 
     if body.block {
-        room::ban_room(&room_id, true)?;
+        room::ban_room(&room_id, true).await?;
     }
 
     // Disable the room (prevents new joins/messages)
-    room::disable_room(&room_id, true)?;
+    room::disable_room(&room_id, true).await?;
 
     if body.purge {
         // Purge all non-state events by using a far-future timestamp
-        let _ = crate::data::room::timeline::purge_room_history(&room_id, i64::MAX);
+        let _ = crate::data::room::timeline::purge_room_history(&room_id, i64::MAX).await;
     }
 
     json_ok(DeleteRoomResponse {
@@ -520,14 +531,14 @@ pub struct PurgeHistoryResponse {
 
 /// Purge room history before a given timestamp or event
 #[endpoint]
-pub fn purge_history(
+pub async fn purge_history(
     room_id: PathParam<OwnedRoomId>,
     body: JsonBody<PurgeHistoryReqBody>,
 ) -> JsonResult<PurgeHistoryResponse> {
     let room_id = room_id.into_inner();
     let body = body.into_inner();
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
@@ -537,6 +548,7 @@ pub fn purge_history(
         let event_id = <&EventId>::try_from(event_id.as_str())
             .map_err(|_| MatrixError::invalid_param("Invalid event_id"))?;
         let sn_pdu = room::timeline::get_pdu(event_id)
+            .await
             .map_err(|_| MatrixError::not_found("Event not found"))?;
         sn_pdu.pdu.origin_server_ts.get() as i64
     } else {
@@ -546,7 +558,8 @@ pub fn purge_history(
         .into());
     };
 
-    let deleted_events = crate::data::room::timeline::purge_room_history(&room_id, before_ts)?;
+    let deleted_events =
+        crate::data::room::timeline::purge_room_history(&room_id, before_ts).await?;
 
     let purge_id = format!("{}_{}", room_id, chrono::Utc::now().timestamp_millis());
 
@@ -558,30 +571,28 @@ pub fn purge_history(
 
 /// Get forward extremities
 #[endpoint]
-pub fn get_forward_extremities(
+pub async fn get_forward_extremities(
     room_id: PathParam<OwnedRoomId>,
 ) -> JsonResult<ForwardExtremitiesResponse> {
     let room_id = room_id.into_inner();
 
-    if !room::room_exists(&room_id)? {
+    if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    let extremities = room::state::get_forward_extremities(&room_id)?;
+    let extremities = room::state::get_forward_extremities(&room_id).await?;
 
-    let results: Vec<ForwardExtremity> = extremities
-        .into_iter()
-        .filter_map(|event_id| {
-            room::timeline::get_pdu(&event_id)
-                .ok()
-                .map(|pdu| ForwardExtremity {
-                    event_id: event_id.to_string(),
-                    state_group: None,
-                    depth: pdu.depth as i64,
-                    received_ts: pdu.origin_server_ts.get() as i64,
-                })
-        })
-        .collect();
+    let mut results: Vec<ForwardExtremity> = Vec::new();
+    for event_id in extremities {
+        if let Ok(pdu) = room::timeline::get_pdu(&event_id).await {
+            results.push(ForwardExtremity {
+                event_id: event_id.to_string(),
+                state_group: None,
+                depth: pdu.depth as i64,
+                received_ts: pdu.origin_server_ts.get() as i64,
+            });
+        }
+    }
 
     json_ok(ForwardExtremitiesResponse {
         count: results.len() as u64,

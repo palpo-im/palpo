@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -37,7 +38,7 @@ use crate::{
 ///
 /// - Only works if the user is currently joined
 #[endpoint]
-pub(super) fn get_members(
+pub(super) async fn get_members(
     _aa: AuthArgs,
     args: MembersReqArgs,
     depot: &mut Depot,
@@ -47,8 +48,8 @@ pub(super) fn get_members(
     let membership = args.membership.as_ref();
     let not_membership = args.not_membership.as_ref();
 
-    let mut until_sn = if !state::user_can_see_events(sender_id, &args.room_id)? {
-        if let Ok(leave_sn) = crate::room::user::leave_sn(sender_id, &args.room_id) {
+    let mut until_sn = if !state::user_can_see_events(sender_id, &args.room_id).await? {
+        if let Ok(leave_sn) = crate::room::user::leave_sn(sender_id, &args.room_id).await {
             Some(leave_sn)
         } else {
             return Err(MatrixError::forbidden(
@@ -74,15 +75,19 @@ pub(super) fn get_members(
                 .filter(event_points::frame_id.is_not_null())
                 .order(event_points::frame_id.desc())
                 .select(event_points::frame_id)
-                .first::<Option<i64>>(&mut connect()?)?
+                .first::<Option<i64>>(&mut connect().await?)
+                .await?
                 .unwrap_or_default()
         } else {
             return Err(MatrixError::bad_state("invalid at parameter").into());
         }
     } else {
-        crate::room::get_frame_id(&args.room_id, until_sn).unwrap_or_default()
+        crate::room::get_frame_id(&args.room_id, until_sn)
+            .await
+            .unwrap_or_default()
     };
-    let states: Vec<_> = state::get_full_state(frame_id)?
+    let states: Vec<_> = state::get_full_state(frame_id)
+        .await?
         .into_iter()
         .filter(|(key, _)| key.0 == StateEventType::RoomMember)
         .filter_map(|(_, pdu)| membership_filter(pdu, membership, not_membership, until_sn))
@@ -153,7 +158,7 @@ fn membership_filter(
 /// - TODO: An appservice just needs a puppet joined
 /// https://spec.matrix.org/latest/client-server-api/#knocking-on-rooms
 #[endpoint]
-pub(super) fn joined_members(
+pub(super) async fn joined_members(
     _aa: AuthArgs,
     room_id: PathParam<OwnedRoomId>,
     depot: &mut Depot,
@@ -172,19 +177,19 @@ pub(super) fn joined_members(
     //     None
     // };
     // the sender user must be in the room
-    if !state::user_can_see_events(sender_id, &room_id)? {
+    if !state::user_can_see_events(sender_id, &room_id).await? {
         return Err(
             MatrixError::forbidden("you don't have permission to view this room", None).into(),
         );
     }
 
     let mut joined = BTreeMap::new();
-    for user_id in crate::room::joined_users(&room_id, None)? {
+    for user_id in crate::room::joined_users(&room_id, None).await? {
         if let Some(DbProfile {
             display_name,
             avatar_url,
             ..
-        }) = data::user::get_profile(&user_id, None)?
+        }) = data::user::get_profile(&user_id, None).await?
         {
             joined.insert(user_id, RoomMember::new(display_name, avatar_url));
         }
@@ -203,7 +208,7 @@ pub(crate) async fn joined_rooms(
     let authed = depot.authed_info()?;
 
     json_ok(JoinedRoomsResBody {
-        joined_rooms: data::user::joined_rooms(authed.user_id())?,
+        joined_rooms: data::user::joined_rooms(authed.user_id()).await?,
     })
 }
 
@@ -224,7 +229,7 @@ pub(super) async fn forget_room(
     let authed = depot.authed_info()?;
     let room_id = room_id.into_inner();
 
-    crate::membership::forget_room(authed.user_id(), &room_id)?;
+    crate::membership::forget_room(authed.user_id(), &room_id).await?;
 
     empty_ok()
 }
@@ -264,7 +269,8 @@ pub(super) async fn join_room_by_id(
 
     let mut servers = Vec::new(); // There is no body.server_name for /roomId/join
     servers.extend(
-        state::get_user_state(authed.user_id(), &room_id)?
+        state::get_user_state(authed.user_id(), &room_id)
+            .await?
             .unwrap_or_default()
             .iter()
             .filter_map(|event| serde_json::from_str(event.inner().get()).ok())
@@ -280,7 +286,7 @@ pub(super) async fn join_room_by_id(
     if let Ok(server) = room_id.server_name() {
         servers.push(server.to_owned());
     } else {
-        servers.extend(crate::room::lookup_servers(&room_id).unwrap_or_default());
+        servers.extend(crate::room::lookup_servers(&room_id).await.unwrap_or_default());
     }
     servers.sort_unstable();
     servers.dedup();
@@ -375,12 +381,14 @@ pub(crate) async fn join_room_by_id_or_alias(
             )
             .await?;
             let mut servers = if via.is_empty() {
-                crate::room::lookup_servers(&room_id)?
+                crate::room::lookup_servers(&room_id).await?
             } else {
                 via.clone()
             };
 
-            let state_servers = state::get_user_state(sender_id, &room_id)?.unwrap_or_default();
+            let state_servers = state::get_user_state(sender_id, &room_id)
+                .await?
+                .unwrap_or_default();
             let state_servers = state_servers
                 .iter()
                 .filter_map(|event| serde_json::from_str(event.inner().get()).ok())
@@ -413,13 +421,14 @@ pub(crate) async fn join_room_by_id_or_alias(
             .await?;
 
             let addl_via_servers = if via.is_empty() {
-                crate::room::lookup_servers(&room_id)?
+                crate::room::lookup_servers(&room_id).await?
             } else {
                 via
             };
 
-            let addl_state_servers =
-                state::get_user_state(sender_id, &room_id)?.unwrap_or_default();
+            let addl_state_servers = state::get_user_state(sender_id, &room_id)
+                .await?
+                .unwrap_or_default();
 
             let mut addl_servers: Vec<_> = addl_state_servers
                 .iter()
@@ -481,7 +490,7 @@ pub(super) async fn ban_user(
         body.user_id.as_ref(),
         None,
     )
-    .ok();
+    .await.ok();
 
     let event = if let Some(room_state) = room_state {
         let event = room_state
@@ -542,7 +551,8 @@ pub(super) async fn ban_user(
             avatar_url,
             blurhash,
             ..
-        } = data::user::get_profile(&body.user_id, None)?
+        } = data::user::get_profile(&body.user_id, None)
+            .await?
             .ok_or(MatrixError::not_found("User profile not found."))?;
         RoomMemberEventContent {
             membership: MembershipState::Ban,
@@ -568,7 +578,7 @@ pub(super) async fn ban_user(
         },
         authed.user_id(),
         &room_id,
-        &crate::room::get_version(&room_id)?,
+        &crate::room::get_version(&room_id).await?,
         &state_lock,
     )
     .await?;
@@ -577,7 +587,9 @@ pub(super) async fn ban_user(
         &pdu.event_id,
         &[body.user_id.server_name().to_owned()],
         &[],
-    ) {
+    )
+    .await
+    {
         error!("failed to notify banned user server: {e}");
     }
 
@@ -602,7 +614,7 @@ pub(super) async fn unban_user(
         &StateEventType::RoomMember,
         body.user_id.as_ref(),
         None,
-    )?;
+    ).await?;
 
     if event.membership != MembershipState::Ban {
         return Err(MatrixError::bad_state(format!(
@@ -623,7 +635,7 @@ pub(super) async fn unban_user(
         },
         authed.user_id(),
         &room_id,
-        &crate::room::get_version(&room_id)?,
+        &crate::room::get_version(&room_id).await?,
         &state_lock,
     )
     .await?;
@@ -633,7 +645,9 @@ pub(super) async fn unban_user(
         &pdu.event_id,
         &[body.user_id.server_name().to_owned()],
         &[],
-    ) {
+    )
+    .await
+    {
         error!("failed to notify banned user server: {e}");
     }
 
@@ -658,7 +672,7 @@ pub(super) async fn kick_user(
         &StateEventType::RoomMember,
         body.user_id.as_str(),
         None,
-    ) else {
+    ).await else {
         return Err(MatrixError::forbidden(
             "users cannot kick users from a room they are not in",
             None,
@@ -699,7 +713,7 @@ pub(super) async fn kick_user(
         ),
         authed.user_id(),
         &room_id,
-        &crate::room::get_version(&room_id)?,
+        &crate::room::get_version(&room_id).await?,
         &state_lock,
     )
     .await?;
@@ -709,7 +723,9 @@ pub(super) async fn kick_user(
         &pdu.event_id,
         &[body.user_id.server_name().to_owned()],
         &[],
-    ) {
+    )
+    .await
+    {
         error!("failed to notify banned user server: {e}");
     }
 
@@ -738,9 +754,10 @@ pub(crate) async fn knock_room(
             .await?;
 
             let mut servers = body.via.clone();
-            servers.extend(crate::room::lookup_servers(&room_id).unwrap_or_default());
+            servers.extend(crate::room::lookup_servers(&room_id).await.unwrap_or_default());
             servers.extend(
                 state::get_user_state(sender_id, &room_id)
+                    .await
                     .unwrap_or_default()
                     .unwrap_or_default()
                     .iter()
@@ -769,9 +786,10 @@ pub(crate) async fn knock_room(
             )
             .await?;
 
-            let addl_via_servers = crate::room::lookup_servers(&room_id)?;
-            let addl_state_servers =
-                state::get_user_state(sender_id, &room_id)?.unwrap_or_default();
+            let addl_via_servers = crate::room::lookup_servers(&room_id).await?;
+            let addl_state_servers = state::get_user_state(sender_id, &room_id)
+                .await?
+                .unwrap_or_default();
 
             let mut addl_servers: Vec<_> = addl_state_servers
                 .iter()

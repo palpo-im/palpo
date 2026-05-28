@@ -22,12 +22,12 @@ pub fn router() -> Router {
     )
 }
 
-fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
+async fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
     let token = aa.require_access_token()?;
     let appservices = crate::appservices();
     // Use constant-time comparison to prevent timing attacks
     if appservices
-        .iter()
+        .await.iter()
         .any(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
     {
         Ok(())
@@ -41,7 +41,7 @@ fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
 /// Ping the application service to check it is alive.
 #[endpoint]
 async fn ping(aa: AuthArgs, body: JsonBody<SendPingReqBody>) -> EmptyResult {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
     let body = body.into_inner();
     debug!(
         "Appservice ping received, transaction_id: {:?}",
@@ -56,14 +56,14 @@ async fn ping(aa: AuthArgs, body: JsonBody<SendPingReqBody>) -> EmptyResult {
 /// Returns 200 if the alias is known, 404 otherwise.
 #[endpoint]
 async fn query_rooms(aa: AuthArgs, room_alias: PathParam<String>) -> EmptyResult {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
 
     let room_alias = room_alias.into_inner();
 
     // Check if any registered appservice has a namespace that matches this alias.
     // Use pre-compiled RegexSet from RegistrationInfo to prevent ReDoS attacks
     // and avoid re-compiling regex patterns on every request.
-    let appservices = appservice::all()?;
+    let appservices = appservice::all().await?;
     for (id, info) in appservices.iter() {
         if info.aliases.is_match(&room_alias) {
             debug!("Appservice '{}' claims room alias {}", id, room_alias);
@@ -80,14 +80,14 @@ async fn query_rooms(aa: AuthArgs, room_alias: PathParam<String>) -> EmptyResult
 /// Returns 200 if the user is known, 404 otherwise.
 #[endpoint]
 async fn query_users(aa: AuthArgs, user_id: PathParam<String>) -> EmptyResult {
-    verify_hs_token(&aa)?;
+    verify_hs_token(&aa).await?;
 
     let user_id = user_id.into_inner();
 
     // Check if any registered appservice has a namespace that matches this user ID.
     // Use pre-compiled RegexSet from RegistrationInfo to prevent ReDoS attacks
     // and avoid re-compiling regex patterns on every request.
-    let appservices = appservice::all()?;
+    let appservices = appservice::all().await?;
     for (id, info) in appservices.iter() {
         if info.users.is_match(&user_id) {
             debug!("Appservice '{}' claims user {}", id, user_id);

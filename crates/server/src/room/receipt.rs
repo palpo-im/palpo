@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::UnixMillis;
 use crate::core::events::receipt::{
@@ -16,17 +17,17 @@ use crate::{AppResult, sending};
 
 /// Replaces the previous read receipt.
 #[tracing::instrument]
-pub fn update_read(
+pub async fn update_read(
     user_id: &UserId,
     room_id: &RoomId,
     event: &ReceiptEvent,
     broadcast: bool,
 ) -> AppResult<()> {
     for (event_id, receipts) in event.content.clone() {
-        let Ok(event_sn) = crate::event::get_event_sn(&event_id) else {
+        let Ok(event_sn) = crate::event::get_event_sn(&event_id).await else {
             continue;
         };
-        let mut conn = connect()?;
+        let mut conn = connect().await?;
         for (receipt_ty, user_receipts) in receipts {
             if let Some(receipt) = user_receipts.get(user_id) {
                 let thread_id = match &receipt.thread {
@@ -35,7 +36,7 @@ pub fn update_read(
                 };
                 let receipt_at = receipt.ts.unwrap_or_else(UnixMillis::now);
                 let receipt = DbReceipt {
-                    sn: next_sn()?,
+                    sn: next_sn().await?,
                     ty: receipt_ty.to_string(),
                     room_id: room_id.to_owned(),
                     user_id: user_id.to_owned(),
@@ -48,6 +49,7 @@ pub fn update_read(
                 if let Err(e) = diesel::insert_into(event_receipts::table)
                     .values(&receipt)
                     .execute(&mut conn)
+                    .await
                 {
                     error!("failed to insert receipt: {}", e);
                 }
@@ -67,20 +69,24 @@ pub fn update_read(
     )]);
     let edu = Edu::Receipt(ReceiptContent::new(receipts));
     if broadcast {
-        sending::send_edu_room(room_id, &edu)?;
+        sending::send_edu_room(room_id, &edu).await?;
     }
     Ok(())
 }
 
 /// Gets the latest private read receipt from the user in the room
-pub fn last_private_read(user_id: &UserId, room_id: &RoomId) -> AppResult<ReceiptEventContent> {
+pub async fn last_private_read(
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> AppResult<ReceiptEventContent> {
     let event_id = event_receipts::table
         .filter(event_receipts::room_id.eq(room_id))
         .filter(event_receipts::user_id.eq(user_id))
         .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
         .order_by(event_receipts::sn.desc())
         .select(event_receipts::event_id)
-        .first::<OwnedEventId>(&mut connect()?)?;
+        .first::<OwnedEventId>(&mut connect().await?)
+        .await?;
 
     // let room_sn = crate::room::get_room_sn(room_id)
     //     .map_err(|e| MatrixError::bad_state(format!("room does not exist in database for

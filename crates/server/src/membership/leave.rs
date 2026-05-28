@@ -18,10 +18,10 @@ use crate::{
 
 // Make a user leave all their joined rooms
 pub async fn leave_all_rooms(user_id: &UserId) -> AppResult<()> {
-    let all_room_ids = data::user::joined_rooms(user_id)?
+    let all_room_ids = data::user::joined_rooms(user_id).await?
         .into_iter()
         .chain(
-            data::user::invited_rooms(user_id, 0)?
+            data::user::invited_rooms(user_id, 0).await?
                 .into_iter()
                 .map(|t| t.0),
         )
@@ -40,7 +40,7 @@ pub async fn leave_room(
     // Ask a remote server if we don't have this room
     let conf = config::get();
 
-    if room::is_server_joined(&conf.server_name, room_id)? {
+    if room::is_server_joined(&conf.server_name, room_id).await? {
         // If only this server in room, leave locally.
         if let Err(e) = leave_room_local(user_id, room_id, reason.clone()).await {
             warn!("failed to leave room {} locally: {}", user_id, e);
@@ -50,7 +50,7 @@ pub async fn leave_room(
     }
     match leave_room_remote(user_id, room_id).await {
         Ok((event_id, event_sn)) => {
-            let last_state = state::get_user_state(user_id, room_id)?;
+            let last_state = state::get_user_state(user_id, room_id).await?;
 
             // We always drop the invite, we can't rely on other servers
             membership::update_membership(
@@ -61,12 +61,12 @@ pub async fn leave_room(
                 MembershipState::Leave,
                 user_id,
                 last_state,
-            )?;
+            ).await?;
             Ok(())
         }
         Err(e) => {
             warn!("failed to leave room {} remotely: {}", user_id, e);
-            if !room::has_any_other_server(room_id, &conf.server_name)? {
+            if !room::has_any_other_server(room_id, &conf.server_name).await? {
                 leave_room_local(user_id, room_id, reason).await?;
                 Ok(())
             } else {
@@ -82,7 +82,7 @@ async fn leave_room_local(
     reason: Option<String>,
 ) -> AppResult<(OwnedEventId, Seqnum)> {
     let member_event =
-        room::get_state(room_id, &StateEventType::RoomMember, user_id.as_str(), None)?;
+        room::get_state(room_id, &StateEventType::RoomMember, user_id.as_str(), None).await?;
     let mut event_content = member_event
         .get_content::<RoomMemberEventContent>()
         .map_err(|_| AppError::public("invalid member event in database"))?;
@@ -101,7 +101,7 @@ async fn leave_room_local(
         },
         user_id,
         room_id,
-        &crate::room::get_version(room_id)?,
+        &crate::room::get_version(room_id).await?,
         &room::lock_state(room_id).await,
     )
     .await?;
@@ -124,7 +124,7 @@ async fn leave_room_remote(
 ) -> AppResult<(OwnedEventId, Seqnum)> {
     let mut make_leave_response_and_server =
         Err(AppError::public("no server available to assist in leaving"));
-    let invite_state = state::get_user_state(user_id, room_id)?
+    let invite_state = state::get_user_state(user_id, room_id).await?
         .ok_or(MatrixError::bad_state("user is not invited"))?;
 
     let servers: HashSet<_> = invite_state
@@ -203,7 +203,7 @@ async fn leave_room_remote(
         CanonicalJsonValue::String(event_id.as_str().to_owned()),
     );
 
-    let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id)?;
+    let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
     NewDbEvent {
         id: event_id.to_owned(),
         sn: event_sn,
@@ -224,7 +224,7 @@ async fn leave_room_remote(
         is_rejected: false,
         rejection_reason: None,
     }
-    .save()?;
+    .save().await?;
 
     DbEventData {
         event_id: event_id.clone(),
@@ -234,7 +234,7 @@ async fn leave_room_remote(
         json_data: serde_json::to_value(&leave_event_stub)?,
         format_version: None,
     }
-    .save()?;
+    .save().await?;
     let parsed_leave_pdu =
         PduEvent::from_canonical_object(room_id, &event_id, leave_event_stub.clone()).map_err(
             |e| {
@@ -267,7 +267,7 @@ async fn leave_room_remote(
         },
         SendLeaveReqBody(crate::sending::convert_to_outgoing_federation_event(
             leave_event.clone(),
-        )),
+        ).await),
     )?
     .into_inner();
     crate::sending::send_federation_request(&remote_server, request, None).await?;

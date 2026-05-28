@@ -24,7 +24,7 @@ pub(super) async fn echo(ctx: &Context<'_>, message: Vec<String>) -> AppResult<(
 }
 
 pub(super) async fn get_auth_chain(ctx: &Context<'_>, event_id: OwnedEventId) -> AppResult<()> {
-    let Ok(Some(event)) = timeline::get_pdu_json(&event_id) else {
+    let Ok(Some(event)) = timeline::get_pdu_json(&event_id).await else {
         return Err(AppError::public("Event not found."));
     };
 
@@ -37,7 +37,9 @@ pub(super) async fn get_auth_chain(ctx: &Context<'_>, event_id: OwnedEventId) ->
         .map_err(|_| Err(AppError::public("Invalid room id field in event in database")))?;
 
     let start = Instant::now();
-    let count = crate::room::auth_chain::get_auth_chain_ids(room_id, once(event_id.as_ref())).len();
+    let count = crate::room::auth_chain::get_auth_chain_ids(room_id, once(event_id.as_ref()))
+        .await
+        .len();
 
     let elapsed = start.elapsed();
     let out = format!("Loaded auth chain with length {count} in {elapsed:?}");
@@ -80,7 +82,7 @@ pub(super) async fn get_pdu(ctx: &Context<'_>, event_id: OwnedEventId) -> AppRes
 
     if pdu_json.is_err() {
         outlier = true;
-        pdu_json = timeline::get_pdu_json(&event_id);
+        pdu_json = timeline::get_pdu_json(&event_id).await;
     }
 
     match pdu_json {
@@ -294,8 +296,8 @@ pub(super) async fn ping(ctx: &Context<'_>, server: OwnedServerName) -> AppResul
 
 pub(super) async fn force_device_list_updates(ctx: &Context<'_>) -> AppResult<()> {
     // Force E2EE device list updates for all users
-    for user_id in crate::data::user::all_user_ids() {
-        if let Err(e) = crate::user::mark_device_key_update(user_id) {
+    for user_id in crate::data::user::all_user_ids().await {
+        if let Err(e) = crate::user::mark_device_key_update(user_id).await {
             warn!("Failed to mark device key update for user {user_id}: {e}");
         }
     }
@@ -391,7 +393,7 @@ pub(super) async fn verify_json(ctx: &Context<'_>, room_version: &RoomVersionId)
 pub(super) async fn verify_pdu(ctx: &Context<'_>, event_id: OwnedEventId, room_version: &RoomVersionId) -> AppResult<()> {
     use crate::core::signatures::Verified;
 
-    let Some(mut event) = timeline::get_pdu_json(&event_id)? else {
+    let Some(mut event) = timeline::get_pdu_json(&event_id).await? else {
         return Err(AppError::public("pdu not found in our database."));
     };
 
@@ -406,7 +408,7 @@ pub(super) async fn verify_pdu(ctx: &Context<'_>, event_id: OwnedEventId, room_v
 }
 
 pub(super) async fn first_pdu_in_room(ctx: &Context<'_>, room_id: OwnedRoomId) -> AppResult<()> {
-    if !crate::room::is_server_joined(config::server_name(), &room_id)? {
+    if !crate::room::is_server_joined(config::server_name(), &room_id).await? {
         return Err(AppError::public(
             "We are not participating in the room / we don't know about the room ID.",
         ));
@@ -422,13 +424,14 @@ pub(super) async fn first_pdu_in_room(ctx: &Context<'_>, room_id: OwnedRoomId) -
 }
 
 pub(super) async fn latest_pdu_in_room(ctx: &Context<'_>, room_id: OwnedRoomId) -> AppResult<()> {
-    if !crate::room::is_server_joined(config::server_name(), &room_id)? {
+    if !crate::room::is_server_joined(config::server_name(), &room_id).await? {
         return Err(AppError::public(
             "We are not participating in the room / we don't know about the room ID.",
         ));
     }
 
-    let latest_pdu = timeline::latest_pdu_in_room(&room_id)?
+    let latest_pdu = timeline::latest_pdu_in_room(&room_id)
+        .await?
         .map_err(|_| AppError::public("Failed to find the latest PDU in database"))?;
 
     let out = format!("{latest_pdu:?}");
@@ -440,7 +443,7 @@ pub(super) async fn force_set_room_state_from_server(
     room_id: OwnedRoomId,
     server_name: OwnedServerName,
 ) -> AppResult<()> {
-    if !crate::room::is_server_joined(config::server_name(), &room_id)? {
+    if !crate::room::is_server_joined(config::server_name(), &room_id).await? {
         return Err(AppError::public(
             "We are not participating in the room / we don't know about the room ID.",
         ));
@@ -450,7 +453,7 @@ pub(super) async fn force_set_room_state_from_server(
         .await
         .map_err(|_| AppError::public("Failed to find the latest PDU in database"))?;
 
-    let room_version = crate::room::get_version(&room_id)?;
+    let room_version = crate::room::get_version(&room_id).await?;
 
     let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
 
@@ -527,17 +530,18 @@ pub(super) async fn force_set_room_state_from_server(
         shortstatehash: short_state_hash,
         added,
         removed,
-    } = crate::room::state::save_state(room_id.clone().as_ref(), new_room_state)?;
+    } = crate::room::state::save_state(room_id.clone().as_ref(), new_room_state).await?;
 
     let state_lock = crate::room::lock_state(&*room_id).await;
 
-    crate::room::state::force_state(room_id.clone().as_ref(), short_state_hash, added, removed)?;
+    crate::room::state::force_state(room_id.clone().as_ref(), short_state_hash, added, removed)
+        .await?;
 
     info!(
         "Updating joined counts for room just in case (e.g. we may have found a difference in \
 		 the room's m.room.member state"
     );
-    crate::room::update_currents(&room_id)?;
+    crate::room::update_currents(&room_id).await?;
     drop(state_lock);
     ctx.write_str("Successfully forced the room state from the requested remote server.")
         .await
@@ -571,7 +575,7 @@ pub(super) async fn get_signing_keys(
 pub(super) async fn get_verify_keys(ctx: &Context<'_>, server_name: Option<OwnedServerName>) -> AppResult<()> {
     let server_name = server_name.unwrap_or_else(|| config::server_name().to_owned());
 
-    let keys = crate::server_key::verify_keys_for(&server_name);
+    let keys = crate::server_key::verify_keys_for(&server_name).await;
 
     let mut out = String::new();
     writeln!(out, "| Key ID | Public Key |")?;

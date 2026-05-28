@@ -1,4 +1,5 @@
 #![allow(dead_code, missing_docs)]
+#![recursion_limit = "512"]
 // #![deny(unused_crate_dependencies)]
 // #[macro_use]
 // extern crate diesel;

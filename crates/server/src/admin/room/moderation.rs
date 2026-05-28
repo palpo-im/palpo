@@ -43,7 +43,7 @@ async fn ban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()> 
 
     let admin_room_alias = config::admin_alias();
 
-    if let Ok(admin_room_id) = crate::room::get_admin_room()
+    if let Ok(admin_room_id) = crate::room::get_admin_room().await
         && (room.to_string().eq(&admin_room_id) || room.to_string().eq(admin_room_alias))
     {
         return Err(AppError::public("Not allowed to ban the admin room."));
@@ -62,7 +62,7 @@ async fn ban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()> 
         };
 
         debug!("Room specified is a room ID, banning room ID");
-        crate::room::ban_room(&room_id, true)?;
+        crate::room::ban_room(&room_id, true).await?;
 
         room_id.to_owned()
     } else if room.is_room_alias_id() {
@@ -82,7 +82,7 @@ async fn ban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()> 
 			 locally, if not using get_alias_helper to fetch room ID remotely"
         );
 
-        let room_id = match crate::room::alias::resolve_local_alias(&room_alias) {
+        let room_id = match crate::room::alias::resolve_local_alias(&room_alias).await {
             Ok(room_id) => room_id,
             _ => {
                 debug!(
@@ -108,7 +108,7 @@ async fn ban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()> 
             }
         };
 
-        crate::room::ban_room(&room_id, true)?;
+        crate::room::ban_room(&room_id, true).await?;
 
         room_id
     } else {
@@ -156,9 +156,9 @@ async fn ban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()> 
     //     .await;
 
     // unpublish from room directory
-    crate::room::directory::set_public(&room_id, false)?;
+    crate::room::directory::set_public(&room_id, false).await?;
 
-    crate::room::disable_room(&room_id, true)?;
+    crate::room::disable_room(&room_id, true).await?;
 
     ctx.write_str(
         "Room banned, removed all our local users, and disabled incoming federation with room.",
@@ -190,7 +190,7 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
     for &room in &rooms_s {
         match <&RoomOrAliasId>::try_from(room) {
             Ok(room_alias_or_id) => {
-                if let Ok(admin_room_id) = crate::room::get_admin_room()
+                if let Ok(admin_room_id) = crate::room::get_admin_room().await
                     && (room.to_owned().eq(&admin_room_id) || room.to_owned().eq(admin_room_alias))
                 {
                     warn!("User specified admin room in bulk ban list, ignoring");
@@ -216,8 +216,8 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
                 if room_alias_or_id.is_room_alias_id() {
                     match RoomAliasId::parse(room_alias_or_id) {
                         Ok(room_alias) => {
-                            let room_id = match crate::room::alias::resolve_local_alias(&room_alias)
-                            {
+                            let room_id =
+                                match crate::room::alias::resolve_local_alias(&room_alias).await {
                                 Ok(room_id) => room_id,
                                 _ => {
                                     debug!(
@@ -270,13 +270,14 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
     }
 
     for room_id in room_ids {
-        crate::room::ban_room(&room_id, true)?;
+        crate::room::ban_room(&room_id, true).await?;
 
         debug!("Banned {room_id} successfully");
         room_ban_count = room_ban_count.saturating_add(1);
 
         debug!("Making all users leave the room {room_id} and forgetting it");
-        let users = crate::room::joined_users(&room_id, None)?
+        let users = crate::room::joined_users(&room_id, None)
+            .await?
             .into_iter()
             .filter(|user| user.is_local())
             .collect::<Vec<_>>();
@@ -291,7 +292,7 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
                 warn!("Failed to leave room: {e}");
             }
 
-            membership::forget_room(user_id, &room_id)?;
+            membership::forget_room(user_id, &room_id).await?;
         }
 
         // TODO: admin
@@ -309,8 +310,8 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
         //     .await;
 
         // unpublish from room directory, ignore errors
-        crate::room::directory::set_public(&room_id, false)?;
-        crate::room::disable_room(&room_id, true)?;
+        crate::room::directory::set_public(&room_id, false).await?;
+        crate::room::disable_room(&room_id, true).await?;
     }
 
     ctx.write_str(&format!(
@@ -334,7 +335,7 @@ async fn unban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()
         };
 
         debug!("Room specified is a room ID, unbanning room ID");
-        crate::room::ban_room(&room_id, false)?;
+        crate::room::ban_room(&room_id, false).await?;
 
         room_id.to_owned()
     } else if room.is_room_alias_id() {
@@ -354,7 +355,7 @@ async fn unban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()
 			 locally, if not using get_alias_helper to fetch room ID remotely"
         );
 
-        let room_id = match crate::room::alias::resolve_local_alias(&room_alias) {
+        let room_id = match crate::room::alias::resolve_local_alias(&room_alias).await {
             Ok(room_id) => room_id,
             _ => {
                 debug!(
@@ -380,7 +381,7 @@ async fn unban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()
             }
         };
 
-        crate::room::ban_room(&room_id, false)?;
+        crate::room::ban_room(&room_id, false).await?;
 
         room_id
     } else {
@@ -391,22 +392,22 @@ async fn unban_room(ctx: &Context<'_>, room: OwnedRoomOrAliasId) -> AppResult<()
         ));
     };
 
-    crate::room::disable_room(&room_id, false)?;
+    crate::room::disable_room(&room_id, false).await?;
     ctx.write_str("Room unbanned and federation re-enabled.")
         .await
 }
 
 async fn list_banned_rooms(ctx: &Context<'_>, no_details: bool) -> AppResult<()> {
-    let room_ids: Vec<OwnedRoomId> = crate::room::list_banned_rooms()?;
+    let room_ids: Vec<OwnedRoomId> = crate::room::list_banned_rooms().await?;
 
     if room_ids.is_empty() {
         return Err(AppError::public("No rooms are banned."));
     }
 
-    let mut rooms = room_ids
-        .iter()
-        .map(|room_id| get_room_info(room_id))
-        .collect::<Vec<_>>();
+    let mut rooms = Vec::new();
+    for room_id in room_ids.iter() {
+        rooms.push(get_room_info(room_id).await);
+    }
 
     rooms.sort_by_key(|r| r.joined_members);
     rooms.reverse();

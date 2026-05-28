@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use super::{DbRoomStateDelta, FrameInfo, room_state_deltas};
 use crate::core::{OwnedEventId, RoomId, Seqnum};
@@ -40,12 +41,13 @@ impl CompressedEvent {
         utils::i64_from_bytes(&self.0[size_of::<i64>()..]).expect("bytes have right length")
     }
     /// Returns state_key_id, event id
-    pub fn split(&self) -> AppResult<(i64, OwnedEventId)> {
+    pub async fn split(&self) -> AppResult<(i64, OwnedEventId)> {
         Ok((
             utils::i64_from_bytes(&self[0..size_of::<i64>()]).expect("bytes have right length"),
             crate::event::get_event_id_by_sn(
                 utils::i64_from_bytes(&self[size_of::<i64>()..]).expect("bytes have right length"),
-            )?,
+            )
+            .await?,
         ))
     }
     pub fn as_bytes(&self) -> &[u8] {
@@ -79,13 +81,14 @@ pub fn compress_event(
     Ok(CompressedEvent::new(field_id, event_sn))
 }
 
-pub fn get_detla(frame_id: i64) -> AppResult<DbRoomStateDelta> {
+pub async fn get_detla(frame_id: i64) -> AppResult<DbRoomStateDelta> {
     room_state_deltas::table
         .find(frame_id)
-        .first::<DbRoomStateDelta>(&mut connect()?)
+        .first::<DbRoomStateDelta>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
+pub async fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
     let DbRoomStateDelta {
         parent_id,
         appended,
@@ -93,7 +96,8 @@ pub fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
         ..
     } = room_state_deltas::table
         .find(frame_id)
-        .first::<DbRoomStateDelta>(&mut connect()?)?;
+        .first::<DbRoomStateDelta>(&mut connect().await?)
+        .await?;
     Ok(StateDiff {
         parent_id,
         appended: Arc::new(
@@ -111,7 +115,7 @@ pub fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
     })
 }
 
-pub fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) -> AppResult<()> {
+pub async fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) -> AppResult<()> {
     let StateDiff {
         parent_id,
         appended,
@@ -134,7 +138,8 @@ pub fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) -> App
                 .collect::<Vec<_>>(),
         })
         .on_conflict_do_nothing()
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 /// Creates a new state_hash that often is just a diff to an already existing
@@ -152,7 +157,7 @@ pub fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) -> App
 /// * `parent_states` - A stack with info on state_hash, full state, added diff and removed diff for
 ///   each parent layer
 #[tracing::instrument(skip(appended, disposed, diff_to_sibling, parent_states))]
-pub fn calc_and_save_state_delta(
+pub async fn calc_and_save_state_delta(
     room_id: &RoomId,
     frame_id: i64,
     appended: Arc<CompressedState>,
@@ -186,14 +191,15 @@ pub fn calc_and_save_state_delta(
             // Else it was removed in the parent and we added it again. We can forget this change
         }
 
-        return calc_and_save_state_delta(
+        return Box::pin(calc_and_save_state_delta(
             room_id,
             frame_id,
             Arc::new(parent_appended),
             Arc::new(parent_disposed),
             diff_sum,
             parent_states,
-        );
+        ))
+        .await;
     }
 
     if parent_states.is_empty() {
@@ -206,7 +212,8 @@ pub fn calc_and_save_state_delta(
                 appended,
                 disposed,
             },
-        );
+        )
+        .await;
     }
 
     // Else we have two options.
@@ -236,14 +243,15 @@ pub fn calc_and_save_state_delta(
             // Else it was removed in the parent and we added it again. We can forget this change
         }
 
-        calc_and_save_state_delta(
+        Box::pin(calc_and_save_state_delta(
             room_id,
             frame_id,
             Arc::new(parent_appended),
             Arc::new(parent_disposed),
             diff_sum,
             parent_states,
-        )
+        ))
+        .await
     } else {
         // Diff small enough, we add diff as layer on top of parent
         save_state_delta(
@@ -255,5 +263,6 @@ pub fn calc_and_save_state_delta(
                 disposed,
             },
         )
+        .await
     }
 }

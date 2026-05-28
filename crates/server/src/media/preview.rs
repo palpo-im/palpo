@@ -255,7 +255,7 @@ pub fn url_preview_allowed(url: &Url) -> bool {
 }
 
 pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
-    if let Ok(preview) = data::media::get_url_preview(url.as_str()) {
+    if let Ok(preview) = data::media::get_url_preview(url.as_str()).await {
         return Ok(preview.into());
     }
 
@@ -263,7 +263,7 @@ pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
     let mutex = get_url_preview_mutex(url.as_str()).await;
     let _request_lock = mutex.lock().await;
 
-    match data::media::get_url_preview(url.as_str()) {
+    match data::media::get_url_preview(url.as_str()).await {
         Ok(preview) => Ok(preview.into()),
         Err(_) => request_url_preview(url).await,
     }
@@ -311,7 +311,7 @@ async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
         img if img.starts_with("image/") => download_image(url).await?,
         _ => return Err(MatrixError::unknown("unsupported content-type").into()),
     };
-    crate::data::media::set_url_preview(&data.clone().into_new_db_url_preview(url.as_str()))?;
+    crate::data::media::set_url_preview(&data.clone().into_new_db_url_preview(url.as_str())).await?;
 
     Ok(data)
 }
@@ -350,7 +350,7 @@ async fn download_image(url: &Url) -> AppResult<UrlPreviewData> {
             created_at: UnixMillis::now(),
         };
 
-        crate::data::media::insert_metadata(&metadata)?;
+        crate::data::media::insert_metadata(&metadata).await?;
     }
 
     let cursor = std::io::Cursor::new(&image);

@@ -155,7 +155,7 @@ impl Executor {
             return Ok(());
         };
 
-        let Ok(pdu) = timeline::get_pdu(&in_reply_to.event_id) else {
+        let Ok(pdu) = timeline::get_pdu(&in_reply_to.event_id).await else {
             error!(
                 event_id = ?in_reply_to.event_id,
                 "Missing admin command in_reply_to event"
@@ -163,7 +163,7 @@ impl Executor {
             return Ok(());
         };
 
-        let response_sender = if crate::room::is_admin_room(&pdu.room_id)? {
+        let response_sender = if crate::room::is_admin_room(&pdu.room_id).await? {
             config::server_user_id()
         } else {
             &pdu.sender
@@ -195,7 +195,7 @@ pub async fn send_text(body: &str) -> AppResult<()> {
 /// convenience).
 pub async fn send_message(message_content: RoomMessageEventContent) -> AppResult<()> {
     let user_id = &config::server_user_id();
-    let room_id = crate::room::get_admin_room()?;
+    let room_id = crate::room::get_admin_room().await?;
     respond_to_room(message_content, &room_id, user_id).await
 }
 
@@ -228,7 +228,7 @@ async fn respond_to_room(
     room_id: &RoomId,
     user_id: &UserId,
 ) -> AppResult<()> {
-    assert!(crate::room::is_admin_room(room_id)?, "sender is not admin");
+    assert!(crate::room::is_admin_room(room_id).await?, "sender is not admin");
 
     let state_lock = crate::room::lock_state(room_id).await;
 
@@ -236,7 +236,7 @@ async fn respond_to_room(
         PduBuilder::timeline(&content),
         user_id,
         room_id,
-        &crate::room::get_version(room_id)?,
+        &crate::room::get_version(room_id).await?,
         &state_lock,
     )
     .await
@@ -263,7 +263,7 @@ async fn handle_response_error(
         PduBuilder::timeline(&content),
         user_id,
         room_id,
-        &crate::room::get_version(room_id)?,
+        &crate::room::get_version(room_id).await?,
         state_lock,
     )
     .await?;

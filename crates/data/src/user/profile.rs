@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 use diesel::sql_types::{Jsonb, Text};
+use diesel_async::RunQueryDsl;
 
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonObject, JsonValue};
@@ -31,29 +32,32 @@ pub struct NewDbProfile {
     pub blurhash: Option<String>,
 }
 
-pub fn get_profile(user_id: &UserId, room_id: Option<&RoomId>) -> DataResult<Option<DbProfile>> {
+pub async fn get_profile(user_id: &UserId, room_id: Option<&RoomId>) -> DataResult<Option<DbProfile>> {
     let profile = if let Some(room_id) = room_id {
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.eq(room_id))
-            .first::<DbProfile>(&mut connect()?)
+            .first::<DbProfile>(&mut connect().await?)
+            .await
             .optional()?
     } else {
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.is_null())
-            .first::<DbProfile>(&mut connect()?)
+            .first::<DbProfile>(&mut connect().await?)
+            .await
             .optional()?
     };
     Ok(profile)
 }
 
-pub fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
+pub async fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
     let fields = user_profiles::table
         .filter(user_profiles::user_id.eq(user_id))
         .filter(user_profiles::room_id.is_null())
         .select(user_profiles::fields)
-        .first::<JsonValue>(&mut connect()?)
+        .first::<JsonValue>(&mut connect().await?)
+        .await
         .optional()?;
 
     Ok(fields
@@ -63,8 +67,8 @@ pub fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
         .unwrap_or_default())
 }
 
-pub fn profile_field(user_id: &UserId, field: &str) -> DataResult<Option<JsonValue>> {
-    Ok(profile_fields(user_id)?.remove(field))
+pub async fn profile_field(user_id: &UserId, field: &str) -> DataResult<Option<JsonValue>> {
+    Ok(profile_fields(user_id).await?.remove(field))
 }
 
 fn ensure_profile_updated(updated: usize) -> DataResult<()> {
@@ -75,7 +79,7 @@ fn ensure_profile_updated(updated: usize) -> DataResult<()> {
     Ok(())
 }
 
-pub fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> DataResult<()> {
+pub async fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> DataResult<()> {
     let updated = diesel::sql_query(
         "UPDATE user_profiles \
          SET fields = fields || jsonb_build_object($2, $3::jsonb) \
@@ -84,12 +88,13 @@ pub fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> Dat
     .bind::<Text, _>(user_id.as_str())
     .bind::<Text, _>(field)
     .bind::<Jsonb, _>(value)
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
 
     ensure_profile_updated(updated)
 }
 
-pub fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<()> {
+pub async fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<()> {
     let updated = diesel::sql_query(
         "UPDATE user_profiles \
          SET fields = fields - $2 \
@@ -97,7 +102,8 @@ pub fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<()> {
     )
     .bind::<Text, _>(user_id.as_str())
     .bind::<Text, _>(field)
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
 
     ensure_profile_updated(updated)
 }
