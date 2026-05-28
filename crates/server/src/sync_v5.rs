@@ -411,7 +411,7 @@ pub async fn sync_events(
         rooms: BTreeMap::new(),
         extensions: Extensions {
             account_data: collect_account_data(sync_info).await?,
-            e2ee: collect_e2ee(sync_info, &all_joined_rooms).await?,
+            e2ee: collect_e2ee(sync_info, &all_joined_rooms, curr_sn).await?,
             to_device: collect_to_device(sync_info, next_batch).await,
             receipts: collect_receipts(sync_info),
             typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
@@ -1029,6 +1029,7 @@ async fn collect_e2ee(
         req_body,
     }: SyncInfo<'_>,
     all_joined_rooms: &Vec<&RoomId>,
+    until_sn: Seqnum,
 ) -> AppResult<sync_events::v5::E2ee> {
     if !req_body.extensions.e2ee.enabled.unwrap_or(false) {
         return Ok(sync_events::v5::E2ee::default());
@@ -1038,7 +1039,7 @@ async fn collect_e2ee(
     let mut device_list_left = HashSet::new();
     // Look for device list updates of this account
     device_list_changes
-        .extend(data::user::keys_changed_users(sender_id, since_sn, None).await?);
+        .extend(data::user::keys_changed_users(sender_id, since_sn, Some(until_sn)).await?);
 
     for room_id in all_joined_rooms {
         let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None).await else {
@@ -1123,7 +1124,8 @@ async fn collect_e2ee(
             }
         }
         // Look for device list updates in this room
-        device_list_changes.extend(crate::room::keys_changed_users(room_id, since_sn, None).await?);
+        device_list_changes
+            .extend(crate::room::keys_changed_users(room_id, since_sn, Some(until_sn)).await?);
     }
 
     for user_id in left_encrypted_users {

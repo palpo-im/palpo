@@ -82,7 +82,7 @@ pub async fn sync_events(
         data::user::keys_changed_users(
             sender_id,
             since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
-            None,
+            Some(curr_sn),
         )
         .await?,
     );
@@ -784,7 +784,7 @@ async fn load_joined_room(
     device_list_updates.extend(room::keys_changed_users(
         room_id,
         since_tk.event_sn(),
-        None,
+        until_tk.map(|t| t.event_sn()),
     ).await?);
 
     let mut limited = timeline.limited || joined_since_last_sync;
