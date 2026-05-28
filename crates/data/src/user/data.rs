@@ -41,54 +41,63 @@ pub async fn set_data(
     event_type: &str,
     json_data: JsonValue,
 ) -> DataResult<DbUserData> {
-    if let Some(room_id) = &room_id {
-        let user_data = user_datas::table
+    // Locate the current row explicitly. Global account data is stored with
+    // `room_id = NULL`, and the `user_datas_udx` unique index treats NULLs as
+    // distinct (Postgres default), so `ON CONFLICT (user_id, room_id,
+    // data_type)` never matches a NULL `room_id` and would insert a duplicate
+    // row on every update. We therefore find the latest existing row and
+    // update it in place (or insert when none exists).
+    let existing = if let Some(room_id) = &room_id {
+        user_datas::table
             .filter(user_datas::user_id.eq(user_id))
             .filter(user_datas::room_id.eq(room_id))
             .filter(user_datas::data_type.eq(event_type))
+            .order_by(user_datas::id.desc())
             .first::<DbUserData>(&mut connect().await?)
             .await
-            .optional()?;
-        if let Some(user_data) = user_data
-            && user_data.json_data == json_data
-        {
-            return Ok(user_data);
-        }
+            .optional()?
     } else {
-        let user_data = user_datas::table
+        user_datas::table
             .filter(user_datas::user_id.eq(user_id))
             .filter(user_datas::room_id.is_null())
             .filter(user_datas::data_type.eq(event_type))
+            .order_by(user_datas::id.desc())
             .first::<DbUserData>(&mut connect().await?)
             .await
-            .optional()?;
-        if let Some(user_data) = user_data
-            && user_data.json_data == json_data
-        {
-            return Ok(user_data);
-        }
+            .optional()?
+    };
+
+    if let Some(existing) = &existing
+        && existing.json_data == json_data
+    {
+        return Ok(existing.clone());
     }
 
-    let new_data = NewDbUserData {
-        user_id: user_id.to_owned(),
-        room_id: room_id.clone(),
-        data_type: event_type.to_owned(),
-        json_data,
-        occur_sn: Some(crate::next_sn().await?),
-        created_at: UnixMillis::now(),
-    };
-    diesel::insert_into(user_datas::table)
-        .values(&new_data)
-        .on_conflict((
-            user_datas::user_id,
-            user_datas::room_id,
-            user_datas::data_type,
-        ))
-        .do_update()
-        .set(&new_data)
-        .get_result::<DbUserData>(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+    if let Some(existing) = existing {
+        diesel::update(user_datas::table.find(existing.id))
+            .set((
+                user_datas::json_data.eq(&json_data),
+                user_datas::occur_sn.eq(crate::next_sn().await?),
+                user_datas::created_at.eq(UnixMillis::now()),
+            ))
+            .get_result::<DbUserData>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    } else {
+        let new_data = NewDbUserData {
+            user_id: user_id.to_owned(),
+            room_id: room_id.clone(),
+            data_type: event_type.to_owned(),
+            json_data,
+            occur_sn: Some(crate::next_sn().await?),
+            created_at: UnixMillis::now(),
+        };
+        diesel::insert_into(user_datas::table)
+            .values(&new_data)
+            .get_result::<DbUserData>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[tracing::instrument]

@@ -332,7 +332,19 @@ pub async fn join_room(
         let (event_id, event_value) = parse_fetched_pdu(room_id, &room_version, state)?;
         parsed_pdus.insert(event_id, event_value);
     }
-    for (event_id, event_value) in parsed_pdus {
+    // Process the trusted send_join auth_chain/state events in topological
+    // (depth) order so that each event's prev_events are already stored by the
+    // time it is handled. Processing them in arbitrary order makes an event
+    // whose ancestors haven't been stored yet look like it has missing
+    // prev_events, which drives the incoming-PDU pipeline to fire
+    // `get_missing_events`/`state_ids`/`state` federation requests back at the
+    // remote. Against servers that only answer make/send_join (e.g. Complement
+    // test servers) those 404 and needlessly congest the outbound send queue,
+    // delaying real traffic such as a redaction we're trying to deliver.
+    let mut ordered_pdus: Vec<_> = parsed_pdus.into_iter().collect();
+    ordered_pdus
+        .sort_by_key(|(_, value)| value.get("depth").and_then(|v| v.as_integer()).unwrap_or(0));
+    for (event_id, event_value) in ordered_pdus {
         if let Err(e) = process_incoming_pdu(
             &remote_server,
             &event_id,

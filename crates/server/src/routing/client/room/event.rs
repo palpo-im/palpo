@@ -441,6 +441,19 @@ pub(super) async fn timestamp_to_event(
         )
         .await?;
 
+        // Per the spec, after finding the event the server "should try to
+        // backfill this event". Fetching the single event above leaves it as an
+        // outlier whenever its prev_events aren't local yet, which keeps it out
+        // of `/messages` pagination (the timeline page stops at the gap). Pull
+        // the surrounding history so the event becomes a connected, non-outlier
+        // timeline event that subsequent backward pagination can return.
+        if let Err(e) =
+            timeline::backfill_from_extremities(&args.room_id, std::slice::from_ref(&event_id), 100)
+                .await
+        {
+            warn!("failed to backfill history around timestamp_to_event result: {e}");
+        }
+
         return json_ok(TimestampToEventResBody {
             event_id,
             origin_server_ts,
