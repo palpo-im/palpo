@@ -50,7 +50,7 @@ pub async fn sync_events(
     } else {
         None
     };
-    let mut next_batch = BatchToken::new_live(curr_sn + 1);
+    let next_batch = BatchToken::new_live(curr_sn + 1);
 
     // Load filter
     let filter = match &args.filter {
@@ -105,14 +105,7 @@ pub async fn sync_events(
         )
         .await
         {
-            Ok((joined_room, nb)) => {
-                if let Some(nb) = nb
-                    && nb.stream_ordering() < next_batch.stream_ordering()
-                {
-                    next_batch = nb;
-                }
-                joined_room
-            }
+            Ok((joined_room, _)) => joined_room,
             Err(e) => {
                 tracing::error!(error = ?e, "load joined room failed");
                 continue;
