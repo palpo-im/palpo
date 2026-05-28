@@ -180,6 +180,7 @@ pub(super) async fn get_messages(
                     limit,
                 )
                 .await?;
+                events = timeline::trim_pdus_until_backfill_gap(events).await?;
             }
 
             for (_, event) in &events {

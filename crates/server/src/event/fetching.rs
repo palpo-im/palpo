@@ -42,7 +42,15 @@ pub async fn fetch_and_process_missing_events(
         .unwrap_or(0);
     let mut fetched_events = IndexMap::with_capacity(10);
 
-    let earliest_events = room::state::get_forward_extremities(room_id).await?;
+    let mut earliest_events = Vec::new();
+    for event_id in room::state::get_forward_extremities(room_id).await? {
+        let Ok(pdu) = timeline::get_pdu(&event_id).await else {
+            continue;
+        };
+        if !pdu.is_outlier && !pdu.soft_failed && !pdu.rejected() {
+            earliest_events.push(event_id);
+        }
+    }
     let mut known_events = HashSet::new();
     let mut missing_events = Vec::with_capacity(incoming_pdu.prev_events.len());
     for prev_id in &incoming_pdu.prev_events {

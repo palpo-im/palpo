@@ -108,6 +108,36 @@ pub async fn backfill_if_required(
     Ok(vec![])
 }
 
+/// Keep a backward `/messages` page contiguous after a federation backfill.
+///
+/// Backfilled events can sit above older local state events. If we return both
+/// sides of that gap in one page, the `end` token points below the gap and the
+/// next pagination misses the newly backfillable events.
+pub async fn trim_pdus_until_backfill_gap(
+    pdus: IndexMap<Seqnum, SnPduEvent>,
+) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    let mut trimmed = IndexMap::with_capacity(pdus.len());
+    for (event_sn, pdu) in pdus {
+        let has_missing_prev = if pdu.prev_events.is_empty() {
+            false
+        } else {
+            let existing: Vec<OwnedEventId> = events::table
+                .filter(events::id.eq_any(&pdu.prev_events))
+                .filter(events::is_outlier.eq(false))
+                .select(events::id)
+                .load(&mut connect().await?)
+                .await?;
+            pdu.prev_events.iter().any(|id| !existing.contains(id))
+        };
+
+        trimmed.insert(event_sn, pdu);
+        if has_missing_prev {
+            break;
+        }
+    }
+    Ok(trimmed)
+}
+
 /// Backfill events from the given backward extremities. Used when the messages
 /// endpoint returns fewer events than the limit and we need to fetch history
 /// from federation (e.g., after re-joining a room).
@@ -115,7 +145,7 @@ pub async fn backfill_if_required(
 pub async fn backfill_from_extremities(
     room_id: &RoomId,
     extremities: &[OwnedEventId],
-    limit: usize,
+    _limit: usize,
 ) -> AppResult<Vec<SnPduEvent>> {
     let admin_servers = room::admin_servers(room_id, false).await?;
     let room_version = room::get_version(room_id).await?;
@@ -127,10 +157,12 @@ pub async fn backfill_from_extremities(
             BackfillReqArgs {
                 room_id: room_id.to_owned(),
                 v: extremities.to_vec(),
-                // Synapse caps `/backfill` at 100 events per call, so asking
-                // for more is wasted; ask for the max so we make as much
-                // progress per round-trip as possible.
-                limit: limit.max(100),
+                // Synapse caps `/backfill` at 100 events per call. Use that
+                // bounded batch size regardless of the client page size: small
+                // `/messages` pages should still fetch enough history to
+                // continue locally, while large pages should not block on more
+                // than one federation batch.
+                limit: 100,
             },
         )?
         .into_inner();

@@ -29,15 +29,21 @@ async fn get_backfill(
     let origin = depot.origin()?;
     debug!("got backfill request from: {}", origin);
 
+    let seed_prev_ids = event_edges::table
+        .filter(event_edges::event_id.eq_any(&args.v))
+        .select(event_edges::prev_id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?;
+
     let seeds = events::table
-        .filter(events::id.eq_any(&args.v))
+        .filter(events::id.eq_any(seed_prev_ids))
         .select((events::id, events::depth))
         .load::<(OwnedEventId, i64)>(&mut connect().await?)
         .await?;
 
     let mut queue = BTreeMap::new();
     for (seed_id, seed_depth) in seeds {
-        queue.insert(seed_depth, seed_id);
+        queue.insert((seed_depth, seed_id.clone()), seed_id);
     }
 
     let limit = args.limit;
@@ -77,7 +83,7 @@ async fn get_backfill(
             .load::<(OwnedEventId, i64)>(&mut connect().await?)
             .await?;
         for (prev_id, prev_depth) in prevs {
-            queue.insert(prev_depth, prev_id);
+            queue.insert((prev_depth, prev_id.clone()), prev_id);
         }
     }
     json_ok(BackfillResBody {
