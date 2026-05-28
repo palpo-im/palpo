@@ -161,10 +161,17 @@ async fn load_or_create_connection(
         .and_then(|json| serde_json::from_value::<SlidingSyncCache>(json).ok())
         .unwrap_or_default();
 
+    // Re-check under the lock: another task may have loaded/created (and possibly
+    // already mutated and persisted) the entry for this key while we were awaiting
+    // the DB load above. Keep the existing entry if so; only insert our freshly
+    // loaded default when the key is still vacant. Without this, the last writer
+    // would clobber a concurrent task's cache, losing sticky list/subscription/
+    // required-state updates on startup or after expiry.
     let mut cache = CONNECTIONS.lock().unwrap();
-    let entry = Arc::new(Mutex::new(db_cache));
-    cache.insert(key, Arc::clone(&entry));
-    entry
+    let entry = cache
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(db_cache)));
+    Arc::clone(entry)
 }
 
 /// Maximum age for sliding sync connections before they are expired (7 days).
