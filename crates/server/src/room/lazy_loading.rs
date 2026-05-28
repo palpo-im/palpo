@@ -34,19 +34,23 @@ pub async fn lazy_load_mark_sent(
     lazy_load: HashSet<OwnedUserId>,
     _until_sn: Seqnum,
 ) {
+    // Check out a single connection and reuse it for every insert. The loop body
+    // performs no nested connection acquisition, so holding one connection here
+    // is safe and avoids one checkout/release round-trip per confirmed user.
+    let Ok(mut conn) = connect().await else {
+        return;
+    };
     for confirmed_user_id in lazy_load {
-        if let Ok(mut conn) = connect().await {
-            let _ = diesel::insert_into(lazy_load_deliveries::table)
-                .values((
-                    lazy_load_deliveries::user_id.eq(user_id),
-                    lazy_load_deliveries::device_id.eq(device_id),
-                    lazy_load_deliveries::room_id.eq(room_id),
-                    lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id),
-                ))
-                .on_conflict_do_nothing()
-                .execute(&mut conn)
-                .await;
-        }
+        let _ = diesel::insert_into(lazy_load_deliveries::table)
+            .values((
+                lazy_load_deliveries::user_id.eq(user_id),
+                lazy_load_deliveries::device_id.eq(device_id),
+                lazy_load_deliveries::room_id.eq(room_id),
+                lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id),
+            ))
+            .on_conflict_do_nothing()
+            .execute(&mut conn)
+            .await;
     }
 }
 

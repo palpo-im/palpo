@@ -181,6 +181,10 @@ pub async fn update_registration_token(
         .execute(&mut conn).await?;
     }
 
+    // Release the connection before the nested read below, which checks out its
+    // own connection. Holding both at once would pin two connections per call.
+    drop(conn);
+
     // Return updated token
     get_registration_token(token).await
 }

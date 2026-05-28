@@ -14,6 +14,12 @@ use crate::data::schema::*;
 use crate::data::{self, connect};
 
 pub async fn watch(user_id: &UserId, device_id: &DeviceId) -> AppResult<()> {
+    // Resolve joined rooms *before* checking out a pooled connection. This call
+    // acquires its own connection internally; doing it while `conn` below is
+    // held would pin two connections per in-flight long-poll and can exhaust
+    // the (small) pool under concurrent syncs.
+    let room_ids = data::user::joined_rooms(user_id).await?;
+
     let mut conn = connect().await?;
 
     let inbox_id = device_inboxes::table
@@ -39,7 +45,6 @@ pub async fn watch(user_id: &UserId, device_id: &DeviceId) -> AppResult<()> {
         .await
         .unwrap_or_default();
 
-    let room_ids = data::user::joined_rooms(user_id).await?;
     let last_event_sn = event_points::table
         .filter(event_points::room_id.eq_any(&room_ids))
         .filter(event_points::frame_id.is_not_null())

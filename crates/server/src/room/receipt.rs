@@ -27,7 +27,6 @@ pub async fn update_read(
         let Ok(event_sn) = crate::event::get_event_sn(&event_id).await else {
             continue;
         };
-        let mut conn = connect().await?;
         for (receipt_ty, user_receipts) in receipts {
             if let Some(receipt) = user_receipts.get(user_id) {
                 let thread_id = match &receipt.thread {
@@ -46,9 +45,13 @@ pub async fn update_read(
                     json_data: serde_json::to_value(receipt)?,
                     receipt_at,
                 };
+                // Acquire the connection inline for the insert only. Holding a
+                // named `conn` across `next_sn()` above (which checks out its
+                // own connection) would pin two connections at once and risk
+                // exhausting the pool on this fairly hot receipt path.
                 if let Err(e) = diesel::insert_into(event_receipts::table)
                     .values(&receipt)
-                    .execute(&mut conn)
+                    .execute(&mut connect().await?)
                     .await
                 {
                     error!("failed to insert receipt: {}", e);
