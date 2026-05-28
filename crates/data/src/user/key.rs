@@ -229,7 +229,7 @@ pub async fn keys_changed_users(
                     .eq_any(&room_ids)
                     .or(e2e_key_changes::user_id.eq(user_id)),
             )
-            .filter(e2e_key_changes::occur_sn.ge(since_sn))
+            .filter(e2e_key_changes::occur_sn.gt(since_sn))
             .filter(e2e_key_changes::occur_sn.le(until_sn))
             .select(e2e_key_changes::user_id)
             .load::<OwnedUserId>(&mut connect().await?)
@@ -242,7 +242,7 @@ pub async fn keys_changed_users(
                     .eq_any(&room_ids)
                     .or(e2e_key_changes::user_id.eq(user_id)),
             )
-            .filter(e2e_key_changes::occur_sn.ge(since_sn))
+            .filter(e2e_key_changes::occur_sn.gt(since_sn))
             .select(e2e_key_changes::user_id)
             .load::<OwnedUserId>(&mut connect().await?)
             .await

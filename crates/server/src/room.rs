@@ -836,7 +836,7 @@ pub async fn keys_changed_users(
     if let Some(until_sn) = until_sn {
         e2e_key_changes::table
             .filter(e2e_key_changes::room_id.eq(room_id))
-            .filter(e2e_key_changes::occur_sn.ge(since_sn))
+            .filter(e2e_key_changes::occur_sn.gt(since_sn))
             .filter(e2e_key_changes::occur_sn.le(until_sn))
             .select(e2e_key_changes::user_id)
             .load::<OwnedUserId>(&mut connect().await?)
@@ -845,7 +845,7 @@ pub async fn keys_changed_users(
     } else {
         e2e_key_changes::table
             .filter(e2e_key_changes::room_id.eq(room_id.as_str()))
-            .filter(e2e_key_changes::occur_sn.ge(since_sn))
+            .filter(e2e_key_changes::occur_sn.gt(since_sn))
             .select(e2e_key_changes::user_id)
             .load::<OwnedUserId>(&mut connect().await?)
             .await
