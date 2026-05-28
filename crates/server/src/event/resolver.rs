@@ -76,29 +76,28 @@ pub async fn resolve_state(
                 .map_err(|_| StateError::other("missing pdu 4"))
         },
         |map| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    let mut subgraph = HashSet::new();
-                    for event_ids in map.values() {
-                        for event_id in event_ids {
-                            if let Ok(pdu) = timeline::get_pdu(event_id).await {
-                                subgraph.extend(pdu.auth_events.iter().cloned());
-                                subgraph.extend(pdu.prev_events.iter().cloned());
-                            }
-                        }
+            // Snapshot the event ids synchronously so the returned future owns its
+            // data (no borrow of `map` across the await, no blocking the runtime).
+            let event_ids: Vec<OwnedEventId> = map.values().flatten().cloned().collect();
+            async move {
+                let mut subgraph = HashSet::new();
+                for event_id in &event_ids {
+                    if let Ok(pdu) = timeline::get_pdu(event_id).await {
+                        subgraph.extend(pdu.auth_events.iter().cloned());
+                        subgraph.extend(pdu.prev_events.iter().cloned());
                     }
-                    let subgraph = events::table
-                        .filter(events::id.eq_any(subgraph))
-                        .filter(events::state_key.is_not_null())
-                        .select(events::id)
-                        .load::<OwnedEventId>(&mut connect().await.unwrap())
-                        .await
-                        .unwrap()
-                        .into_iter()
-                        .collect::<HashSet<_>>();
-                    Some(subgraph)
-                })
-            })
+                }
+                let subgraph = events::table
+                    .filter(events::id.eq_any(subgraph))
+                    .filter(events::state_key.is_not_null())
+                    .select(events::id)
+                    .load::<OwnedEventId>(&mut connect().await.ok()?)
+                    .await
+                    .ok()?
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                Some(subgraph)
+            }
         },
     )
     .await
@@ -274,20 +273,19 @@ pub(super) async fn resolve_state_at_incoming(
                 .map_err(|_| StateError::other("missing pdu 5"))
         },
         |map| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    let mut subgraph = HashSet::new();
-                    for event_ids in map.values() {
-                        for event_id in event_ids {
-                            if let Ok(pdu) = timeline::get_pdu(event_id).await {
-                                subgraph.extend(pdu.auth_events.iter().cloned());
-                                subgraph.extend(pdu.prev_events.iter().cloned());
-                            }
-                        }
+            // Snapshot the event ids synchronously so the returned future owns its
+            // data (no borrow of `map` across the await, no blocking the runtime).
+            let event_ids: Vec<OwnedEventId> = map.values().flatten().cloned().collect();
+            async move {
+                let mut subgraph = HashSet::new();
+                for event_id in &event_ids {
+                    if let Ok(pdu) = timeline::get_pdu(event_id).await {
+                        subgraph.extend(pdu.auth_events.iter().cloned());
+                        subgraph.extend(pdu.prev_events.iter().cloned());
                     }
-                    Some(subgraph)
-                })
-            })
+                }
+                Some(subgraph)
+            }
         },
     )
     .await;
