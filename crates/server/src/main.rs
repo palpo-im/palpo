@@ -137,8 +137,17 @@ pub(crate) struct Args {
     pub(crate) server: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+const TOKIO_WORKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(TOKIO_WORKER_STACK_SIZE)
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Install rustls CryptoProvider for TLS (federation + outbound HTTPS)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
