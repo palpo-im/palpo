@@ -11,6 +11,7 @@ use crate::{DataResult, connect};
 
 pub mod event;
 pub mod event_report;
+pub mod peek;
 pub mod receipt;
 pub mod timeline;
 pub use event_report::*;

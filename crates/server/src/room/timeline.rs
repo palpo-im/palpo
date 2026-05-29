@@ -675,6 +675,37 @@ pub async fn append_pdu(
                 .await?;
         }
     }
+
+    // MSC2444: relay this event to remote servers holding a live peek on the
+    // room. This is the single choke point for timeline events, so it covers
+    // both locally authored events and events received from other member servers
+    // (we are the resident forwarding to peekers). Guarded by world-readability:
+    // if the room is no longer world-readable we must not leak events to
+    // unaffiliated peekers (their peek will also fail to renew and lapse). On a
+    // non-resident server there are no peekers, so this is a cheap no-op.
+    let peeking_servers = crate::federation::peek::active_peeking_servers(&pdu.room_id).await;
+    if !peeking_servers.is_empty() && crate::room::is_world_readable(&pdu.room_id).await {
+        // Re-apply the room's server ACL: a server banned via m.room.server_acl
+        // after its peek started must stop receiving events immediately, not
+        // only when its peek eventually fails to renew.
+        let mut allowed = Vec::with_capacity(peeking_servers.len());
+        for server in peeking_servers {
+            if crate::event::handler::acl_check(&server, &pdu.room_id)
+                .await
+                .is_ok()
+            {
+                allowed.push(server);
+            }
+        }
+        if !allowed.is_empty() {
+            if let Err(e) =
+                crate::sending::send_pdu_servers(allowed.into_iter(), &pdu.event_id).await
+            {
+                error!("failed to forward pdu to peeking servers: {e}");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -808,6 +839,8 @@ pub async fn build_and_append_pdu(
     //     crate::room::update_currents(&room_id)?;
     // }
 
+    // Deliver to participating servers. Peeking servers are handled centrally in
+    // `append_pdu` (which also covers events received from other servers).
     let servers = super::participating_servers(room_id, false).await?;
     crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
 

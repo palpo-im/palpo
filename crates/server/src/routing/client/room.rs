@@ -83,7 +83,9 @@ pub fn authed_router() -> Router {
                             .post(receipt::send_receipt)
                             .put(receipt::send_receipt),
                     )
-                    .push(Router::with_path("timestamp_to_event").get(event::timestamp_to_event)),
+                    .push(Router::with_path("timestamp_to_event").get(event::timestamp_to_event))
+                    .push(Router::with_path("peek").post(peek_room))
+                    .push(Router::with_path("unpeek").post(unpeek_room)),
             ),
         )
         .push(
@@ -162,8 +164,11 @@ async fn initial_sync(
 
     // If the room is not known locally, it may be a remote room the user is
     // trying to preview (e.g. opening `#room:other.server` without joining).
-    // For rooms hosted on another server, attempt a federated peek to render a
-    // preview; otherwise there is nothing to show.
+    // This is a one-shot snapshot only — it never establishes a persistent
+    // federation peek, so a throwaway preview can't leave an ownerless
+    // subscription running forever. A live, owned peek is established only via
+    // the explicit MSC2753 `POST /rooms/{id}/peek` endpoint (which has a
+    // matching unpeek teardown). Local-only unknown rooms have nothing to show.
     if !room::room_exists(room_id).await? {
         if room_id
             .server_name()
@@ -322,6 +327,63 @@ fn parse_peek_pdu(
 ) -> Option<PduEvent> {
     let (event_id, value) = gen_event_id_canonical_json(raw, room_version).ok()?;
     PduEvent::from_canonical_object(room_id, &event_id, value).ok()
+}
+
+/// #POST /_matrix/client/v3/rooms/{room_id}/peek  (MSC2753)
+/// Begin peeking a world-readable room without joining it. For a remote room not
+/// yet known locally this first establishes an MSC2444 federation peek so the
+/// room is mirrored locally and kept live. The room then appears in this user's
+/// sync `peek` section until they unpeek.
+#[endpoint]
+async fn peek_room(
+    _aa: AuthArgs,
+    room_id: PathParam<OwnedRoomId>,
+    depot: &mut Depot,
+) -> JsonResult<JsonValue> {
+    let authed = depot.authed_info()?;
+    let sender_id = authed.user_id();
+    let device_id = authed.device_id();
+    let room_id = room_id.into_inner();
+
+    // For a remote room, ensure a live federation peek (idempotent: it no-ops if
+    // already peeking or already participating). Calling this even when a stale
+    // local copy exists re-subscribes so updates resume.
+    if room_id
+        .server_name()
+        .is_ok_and(|server| *server != config::get().server_name)
+    {
+        crate::federation::peek::ensure_peek(&room_id).await?;
+    }
+
+    // Peeking is only allowed for world-readable rooms.
+    if !room::is_world_readable(&room_id).await {
+        return Err(MatrixError::forbidden("Room is not peekable.", None).into());
+    }
+
+    data::room::peek::add_user_peek(sender_id, device_id, &room_id).await?;
+    json_ok(json!({ "room_id": room_id }))
+}
+
+/// #POST /_matrix/client/v3/rooms/{room_id}/unpeek  (MSC2753)
+/// Stop peeking a room. When the last local user stops peeking a remote room we
+/// also tear down the federation peek subscription.
+#[endpoint]
+async fn unpeek_room(
+    _aa: AuthArgs,
+    room_id: PathParam<OwnedRoomId>,
+    depot: &mut Depot,
+) -> EmptyResult {
+    let authed = depot.authed_info()?;
+    let sender_id = authed.user_id();
+    let device_id = authed.device_id();
+    let room_id = room_id.into_inner();
+
+    data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await?;
+    if data::room::peek::room_peeker_count(&room_id).await? == 0 {
+        // No local user is peeking anymore; drop the federation subscription.
+        let _ = crate::federation::peek::stop_peek(&room_id).await;
+    }
+    empty_ok()
 }
 
 /// `#POST /_matrix/client/r0/rooms/{room_id}/read_markers`

@@ -205,6 +205,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     crate::sending::guard::start();
 
+    // MSC2444: periodically renew our outbound room peeks and drop lapsed inbound
+    // peekers.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            crate::federation::peek::run_maintenance().await;
+        }
+    });
+
     let router = routing::root();
     // let doc = OpenApi::new("palpo api", "0.0.1").merge_router(&router);
     // let router = router

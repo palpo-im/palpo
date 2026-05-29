@@ -545,6 +545,38 @@ diesel::table! {
 }
 
 diesel::table! {
+    room_peeking_servers (id) {
+        id -> Int8,
+        room_id -> Text,
+        server_id -> Text,
+        peek_id -> Text,
+        renew_at -> Int8,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    room_peeks (id) {
+        id -> Int8,
+        room_id -> Text,
+        peek_id -> Text,
+        target_server -> Text,
+        renew_at -> Int8,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    user_peeks (id) {
+        id -> Int8,
+        user_id -> Text,
+        device_id -> Text,
+        room_id -> Text,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
@@ -1151,6 +1183,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     room_aliases,
     room_joined_servers,
     room_lookup_servers,
+    room_peeking_servers,
+    room_peeks,
     room_state_deltas,
     room_state_fields,
     room_state_frames,
@@ -1179,6 +1213,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     user_login_tokens,
     user_openid_tokens,
     user_passwords,
+    user_peeks,
     user_presences,
     user_profiles,
     user_pushers,

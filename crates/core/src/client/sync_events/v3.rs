@@ -187,6 +187,16 @@ pub struct Rooms {
     /// The rooms that the user has knocked on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub knock: BTreeMap<OwnedRoomId, KnockedRoom>,
+
+    /// The rooms that the user is peeking (MSC2753). Peeked rooms use the same
+    /// shape as joined rooms but the user is not a member; they appear here for
+    /// as long as the peek is active.
+    #[serde(
+        default,
+        rename = "org.matrix.msc2753.peek",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub peek: BTreeMap<OwnedRoomId, JoinedRoom>,
 }
 
 impl Rooms {
@@ -201,6 +211,7 @@ impl Rooms {
             && self.join.is_empty()
             && self.invite.is_empty()
             && self.knock.is_empty()
+            && self.peek.is_empty()
     }
 }
 
