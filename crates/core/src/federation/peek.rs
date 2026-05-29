@@ -45,15 +45,16 @@ pub struct PeekResBody {
     /// The version of the room being peeked.
     pub room_version: RoomVersionId,
 
-    /// The auth chain backing the returned room state, recursively.
-    #[salvo(schema(value_type = Vec<Object>))]
-    pub auth_chain: Vec<Box<RawJsonValue>>,
-
-    /// The current resolved state of the room.
+    /// The room's public "description" state, limited to the recommended
+    /// stripped-state event types (create, name, topic, avatar, join rules,
+    /// canonical alias, encryption, history visibility). Membership, power
+    /// levels and arbitrary custom state are deliberately excluded so a peek
+    /// never exposes more than the spec's stripped-state preview surface.
     #[salvo(schema(value_type = Vec<Object>))]
     pub pdus: Vec<Box<RawJsonValue>>,
 
-    /// A page of the most recent timeline events, newest last.
+    /// A page of the most recent timeline events, newest last. Only events that
+    /// were world-readable at the point they were sent are included.
     #[salvo(schema(value_type = Vec<Object>))]
     pub messages: Vec<Box<RawJsonValue>>,
 }

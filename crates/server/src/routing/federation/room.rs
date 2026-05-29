@@ -64,34 +64,21 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
     }
 
     let room_version = room::get_version(room_id).await?;
-    let frame_id = room::get_frame_id(room_id, None).await?;
 
-    // Current resolved room state.
-    let state_ids: Vec<OwnedEventId> = state::get_full_state_ids(frame_id)
-        .await?
-        .into_values()
-        .collect();
-
-    let mut pdus = Vec::with_capacity(state_ids.len());
-    for id in &state_ids {
-        match timeline::get_pdu_json(id).await {
+    // Return only the room's public "description" state (stripped state), never
+    // the full state graph. Membership, power levels and custom state can have
+    // been written while the room was private; the spec's stripped-state set is
+    // exactly the surface meant to be shared with non-members for a preview, so
+    // we expose that and nothing more (also avoids leaking the auth chain).
+    let mut pdus = Vec::with_capacity(PEEK_STATE_TYPES.len());
+    for ty in PEEK_STATE_TYPES {
+        let Ok(pdu) = room::get_state(room_id, ty, "", None).await else {
+            continue;
+        };
+        match timeline::get_pdu_json(&pdu.event_id).await {
             Ok(Some(json)) => pdus.push(sending::convert_to_outgoing_federation_event(json).await),
-            Ok(None) => error!("peek: missing json for state event {id}"),
-            Err(e) => error!("peek: failed to load state event {id}: {e}"),
-        }
-    }
-
-    // Auth chain backing that state.
-    let auth_chain_ids =
-        room::auth_chain::get_auth_chain_ids(room_id, state_ids.iter().map(AsRef::as_ref)).await?;
-    let mut auth_chain = Vec::with_capacity(auth_chain_ids.len());
-    for id in &auth_chain_ids {
-        match timeline::get_pdu_json(id).await {
-            Ok(Some(json)) => {
-                auth_chain.push(sending::convert_to_outgoing_federation_event(json).await)
-            }
-            Ok(None) => error!("peek: missing json for auth event {id}"),
-            Err(_) => {}
+            Ok(None) => {}
+            Err(e) => error!("peek: failed to load state event {}: {e}", pdu.event_id),
         }
     }
 
@@ -132,11 +119,25 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
 
     json_ok(PeekResBody {
         room_version,
-        auth_chain,
         pdus,
         messages,
     })
 }
+
+/// The room "description" state shared in a peek preview — the recommended
+/// stripped-state types plus history visibility. Deliberately excludes
+/// membership, power levels and arbitrary state so a peek cannot leak more than
+/// a non-member is meant to see.
+const PEEK_STATE_TYPES: &[StateEventType] = &[
+    StateEventType::RoomCreate,
+    StateEventType::RoomName,
+    StateEventType::RoomTopic,
+    StateEventType::RoomAvatar,
+    StateEventType::RoomJoinRules,
+    StateEventType::RoomCanonicalAlias,
+    StateEventType::RoomEncryption,
+    StateEventType::RoomHistoryVisibility,
+];
 
 /// #GET /_matrix/federation/v1/state/{room_id}
 /// Retrieves the current state of the room.
