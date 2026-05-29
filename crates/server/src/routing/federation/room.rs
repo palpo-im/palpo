@@ -5,6 +5,9 @@ use serde_json::value::to_raw_value;
 use crate::core::client::directory::{PublicRoomsFilteredReqBody, PublicRoomsReqArgs};
 use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
 use crate::core::events::StateEventType;
+use crate::core::events::room::history_visibility::{
+    HistoryVisibility, RoomHistoryVisibilityEventContent,
+};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::federation::event::{
     RoomStateAtEventReqArgs, RoomStateIdsResBody, RoomStateReqArgs, RoomStateResBody,
@@ -95,18 +98,29 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
     // A page of recent timeline events for the preview. `load_pdus_backward`
     // returns newest-first; reverse so the response reads oldest-to-newest.
     //
-    // The room is world-readable *now*, but older messages may have been sent
-    // while history visibility was joined/shared. Filter every event against
-    // its own history-visibility state for the requesting server so a peek can
-    // never leak messages the server wouldn't otherwise be allowed to see.
+    // History visibility is evaluated at the point each event was sent (per the
+    // spec), not from the room's *current* state. The room is world-readable
+    // now, but older messages may have been sent while it was joined/shared. A
+    // peeking server is an unaffiliated non-member, so it may only receive
+    // events whose history visibility *at that event's own state* was
+    // world-readable; everything else is excluded to avoid leaking history from
+    // before a later switch to world_readable.
     let limit = args.limit.clamp(1, 100);
     let recent = timeline::stream::load_pdus_backward(None, room_id, None, None, None, limit).await?;
     let mut messages = Vec::with_capacity(recent.len());
     for (_sn, pdu) in recent.into_iter().rev() {
-        if !state::server_can_see_event(origin, room_id, &pdu.event_id)
+        let event_world_readable = match state::get_pdu_frame_id(&pdu.event_id).await {
+            Ok(frame_id) => state::get_state_content::<RoomHistoryVisibilityEventContent>(
+                frame_id,
+                &StateEventType::RoomHistoryVisibility,
+                "",
+            )
             .await
-            .unwrap_or(false)
-        {
+            .map(|c| c.history_visibility == HistoryVisibility::WorldReadable)
+            .unwrap_or(false),
+            Err(_) => false,
+        };
+        if !event_world_readable {
             continue;
         }
         match timeline::get_pdu_json(&pdu.event_id).await {
