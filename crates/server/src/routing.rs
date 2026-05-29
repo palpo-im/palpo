@@ -7,7 +7,7 @@ mod policy;
 
 use bytes::Bytes;
 use salvo::http::StatusCode;
-use salvo::http::header::{CONTENT_TYPE, HeaderValue};
+use salvo::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use salvo::prelude::*;
 use salvo::serve_static::StaticDir;
 
@@ -23,6 +23,13 @@ const DEFAULT_HOME_PAGE_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 const DEFAULT_HOME_PAGE_BODY: &str = "Palpo works";
 const HEALTH_CHECK_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 const HEALTH_CHECK_BODY: &str = "ok";
+
+// Cache-Control for the federation/client discovery documents. Peers cache the
+// well-known per this header; with no header they default to 24h (per the
+// Matrix server-resolution spec), which means a delegation fix can take a full
+// day to propagate. 1 hour bounds that window while keeping well-known traffic
+// negligible (peers only refetch on expiry).
+const WELL_KNOWN_CACHE_CONTROL: &str = "public, max-age=3600";
 
 pub mod prelude {
     pub use salvo::prelude::*;
@@ -179,7 +186,11 @@ pub async fn limit_rate() -> AppResult<()> {
 }
 
 #[endpoint]
-fn well_known_client() -> JsonResult<ClientResBody> {
+fn well_known_client(res: &mut Response) -> JsonResult<ClientResBody> {
+    res.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(WELL_KNOWN_CACHE_CONTROL),
+    );
     let conf = config::get();
     let client_url = conf.well_known_client();
     let mut body = ClientResBody::new(HomeServerInfo {
@@ -301,7 +312,11 @@ mod tests {
 }
 
 #[endpoint]
-fn well_known_server() -> JsonResult<ServerResBody> {
+fn well_known_server(res: &mut Response) -> JsonResult<ServerResBody> {
+    res.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(WELL_KNOWN_CACHE_CONTROL),
+    );
     json_ok(ServerResBody {
         server: config::get().well_known_server(),
     })
