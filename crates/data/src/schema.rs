@@ -567,6 +567,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    user_peeks (id) {
+        id -> Int8,
+        user_id -> Text,
+        room_id -> Text,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
@@ -1203,6 +1212,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     user_login_tokens,
     user_openid_tokens,
     user_passwords,
+    user_peeks,
     user_presences,
     user_profiles,
     user_pushers,

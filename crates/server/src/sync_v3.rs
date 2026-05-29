@@ -116,6 +116,42 @@ pub async fn sync_events(
         }
     }
 
+    // MSC2753: rooms this user is peeking (not a member of). They use the same
+    // shape as joined rooms. Skip any the user is actually joined to to avoid
+    // duplicate delivery. Built here, while the device/membership accumulators
+    // are still mutably available.
+    let mut peeked_rooms = BTreeMap::new();
+    for room_id in data::room::peek::user_peeked_rooms(sender_id).await? {
+        if all_joined_rooms.contains(&room_id) {
+            continue;
+        }
+        match load_joined_room(
+            sender_id,
+            device_id,
+            &room_id,
+            since_tk,
+            Some(BatchToken::new_live(curr_sn)),
+            next_batch,
+            full_state,
+            &filter,
+            args.use_state_after,
+            &mut device_list_updates,
+            &mut joined_users,
+            &mut left_users,
+        )
+        .await
+        {
+            Ok((peeked_room, _)) => {
+                if since_tk.is_none() || !peeked_room.is_empty() {
+                    peeked_rooms.insert(room_id, peeked_room);
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, "load peeked room failed");
+            }
+        }
+    }
+
     let mut left_rooms = BTreeMap::new();
     let all_left_rooms = room::user::left_rooms(sender_id, since_tk).await?;
 
@@ -307,6 +343,7 @@ pub async fn sync_events(
         join: joined_rooms,
         invite: invited_rooms,
         knock: knocked_rooms,
+        peek: peeked_rooms,
     };
     let presence = Presence {
         events: presence_updates

@@ -187,3 +187,54 @@ pub async fn peeked_room_ids() -> DataResult<Vec<OwnedRoomId>> {
         .await?;
     Ok(rooms)
 }
+
+// ---------------------------------------------------------------------------
+// MSC2753 client-side peeking: which local users peek which rooms.
+// ---------------------------------------------------------------------------
+
+/// Record that a local user is peeking a room (idempotent).
+pub async fn add_user_peek(user_id: &UserId, room_id: &RoomId) -> DataResult<()> {
+    let now = UnixMillis::now().get() as i64;
+    diesel::insert_into(user_peeks::table)
+        .values((
+            user_peeks::user_id.eq(user_id),
+            user_peeks::room_id.eq(room_id),
+            user_peeks::created_at.eq(now),
+        ))
+        .on_conflict_do_nothing()
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Stop a local user peeking a room.
+pub async fn remove_user_peek(user_id: &UserId, room_id: &RoomId) -> DataResult<()> {
+    diesel::delete(
+        user_peeks::table
+            .filter(user_peeks::user_id.eq(user_id))
+            .filter(user_peeks::room_id.eq(room_id)),
+    )
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
+/// Rooms a local user is currently peeking.
+pub async fn user_peeked_rooms(user_id: &UserId) -> DataResult<Vec<OwnedRoomId>> {
+    let rooms = user_peeks::table
+        .filter(user_peeks::user_id.eq(user_id))
+        .select(user_peeks::room_id)
+        .load::<OwnedRoomId>(&mut connect().await?)
+        .await?;
+    Ok(rooms)
+}
+
+/// Number of local users currently peeking a room.
+pub async fn room_peeker_count(room_id: &RoomId) -> DataResult<i64> {
+    let count: i64 = user_peeks::table
+        .filter(user_peeks::room_id.eq(room_id))
+        .count()
+        .get_result(&mut connect().await?)
+        .await?;
+    Ok(count)
+}
