@@ -139,6 +139,13 @@ async fn peek_start(
 
     let room_version = room::get_version(room_id).await?;
 
+    // Register the peer FIRST, before capturing the snapshot, so any event
+    // created while we read state/messages is forwarded to it (rather than
+    // falling into a gap between the snapshot and registration). A forwarded
+    // event the peer can't place yet is recovered via prev_events backfill, and
+    // duplicates with the snapshot are harmless/idempotent on its side.
+    fed_peek::register_peeking_server(room_id, &origin, &args.peek_id).await?;
+
     // Full current state + backing auth chain (like a send_join response) so the
     // peer can construct a complete, verifiable local copy of this world-readable
     // room. This is a deeper relationship than the stripped-state snapshot above
@@ -166,9 +173,6 @@ async fn peek_start(
     }
 
     let messages = recent_world_readable_messages(room_id, 50).await?;
-
-    // Register the peer so subsequent room events are forwarded to it.
-    fed_peek::register_peeking_server(room_id, &origin, &args.peek_id).await?;
 
     json_ok(PeekStartResBody {
         room_version,
