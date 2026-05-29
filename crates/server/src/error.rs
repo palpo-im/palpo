@@ -228,7 +228,15 @@ impl Writer for AppError {
                         | Self::Send(_)
                         | Self::OpenDal(_)
                 );
-                let mut matrix = MatrixError::unknown(e.to_string());
+                // A reqwest error's Display embeds the request URL, which for appservice
+                // requests carries the homeserver `access_token` query parameter. Strip
+                // the URL before it can reach a client; the full value is still logged
+                // above via `tracing::error!`.
+                let message = match e {
+                    Self::Reqwest(err) => format!("reqwest error: {}", err.without_url()),
+                    other => other.to_string(),
+                };
+                let mut matrix = MatrixError::unknown(message);
                 if is_upstream {
                     // Failures talking to an upstream (federation peer, object store,
                     // db pool) are gateway errors, not malformed client requests.
