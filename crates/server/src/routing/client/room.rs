@@ -351,11 +351,12 @@ async fn peek_room(
     let sender_id = authed.user_id();
     let room_id = room_id.into_inner();
 
-    // For a remote room we don't hold yet, set up the federation peek first.
-    if !room::room_exists(&room_id).await?
-        && room_id
-            .server_name()
-            .is_ok_and(|server| *server != config::get().server_name)
+    // For a remote room, ensure a live federation peek (idempotent: it no-ops if
+    // already peeking or already participating). Calling this even when a stale
+    // local copy exists re-subscribes so updates resume.
+    if room_id
+        .server_name()
+        .is_ok_and(|server| *server != config::get().server_name)
     {
         crate::federation::peek::ensure_peek(&room_id).await?;
     }

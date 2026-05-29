@@ -20,7 +20,7 @@ use crate::event::{ensure_event_sn, parse_fetched_pdu};
 use crate::room::state::{CompressedEvent, DeltaInfo};
 use crate::room::{state, timeline};
 use crate::{
-    AppError, AppResult, GetUrlOrigin, OptionalExtension, SnPduEvent, data, room, sending,
+    AppError, AppResult, GetUrlOrigin, OptionalExtension, SnPduEvent, config, data, room, sending,
 };
 
 /// How long a peek subscription is valid before the peeking server must renew.
@@ -223,13 +223,38 @@ pub async fn start_peek(
     Ok(())
 }
 
-/// Ensure we hold a live peek on a remote room: returns the existing peek's id if
-/// one is active, otherwise establishes a new one. The room's home server (from
-/// the room id) is used as the peek target.
+/// Renew an existing outbound peek without re-ingesting room state. The
+/// subscription is already live and events flow via `/send`; this is just a
+/// heartbeat that re-registers us with the resident and pushes the renewal
+/// deadline back. If the resident refuses (e.g. the room is no longer
+/// world-readable) this errors and the caller drops the peek.
+async fn renew_peek(room_id: &RoomId, target_server: &ServerName, peek_id: &str) -> AppResult<()> {
+    let request = peek_start_request(&target_server.origin().await, room_id, peek_id, &[])
+        .map_err(|e| AppError::public(format!("failed to build peek renewal: {e}")))?
+        .into_inner();
+    let body = sending::send_federation_request(target_server, request, None)
+        .await?
+        .json::<PeekStartResBody>()
+        .await?;
+    let renew_at = now_ms() + (body.renewal_interval as i64 / 2).max(1);
+    data::room::peek::upsert_peek(room_id, peek_id, target_server, renew_at).await?;
+    Ok(())
+}
+
+/// Ensure we hold a live peek on a remote room: no-op if one is already active
+/// or if our server already participates (a local user is joined, so we receive
+/// events as a member); otherwise establishes a new peek. The room's home server
+/// (from the room id) is the peek target.
 pub async fn ensure_peek(room_id: &RoomId) -> AppResult<()> {
-    if let Some(existing) = data::room::peek::get_peek(room_id).await? {
+    if data::room::peek::is_peeked(room_id).await? {
         // Already peeking; renewal is handled by the background task.
-        let _ = existing;
+        return Ok(());
+    }
+    if room::is_server_joined(&config::get().server_name, room_id)
+        .await
+        .unwrap_or(false)
+    {
+        // We already receive this room's events as a participating server.
         return Ok(());
     }
     let target = room_id
@@ -271,7 +296,7 @@ pub async fn run_maintenance() {
         }
     };
     for peek in due {
-        if let Err(e) = start_peek(&peek.room_id, &peek.target_server, &peek.peek_id).await {
+        if let Err(e) = renew_peek(&peek.room_id, &peek.target_server, &peek.peek_id).await {
             warn!(
                 "peek: renewal of {} via {} failed, dropping: {e}",
                 peek.room_id, peek.target_server
