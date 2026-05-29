@@ -12,6 +12,7 @@ use crate::core::federation::event::{
 use crate::core::federation::knock::{
     MakeKnockReqArgs, MakeKnockResBody, SendKnockReqArgs, SendKnockReqBody, SendKnockResBody,
 };
+use crate::core::federation::peek::{PeekReqArgs, PeekResBody};
 use crate::core::identifiers::*;
 use crate::core::serde::JsonObject;
 use crate::event::{gen_event_id_canonical_json, handler};
@@ -32,6 +33,80 @@ pub fn router() -> Router {
         .push(Router::with_path("send_knock/{room_id}/{event_id}").put(send_knock))
         .push(Router::with_path("make_knock/{room_id}/{user_id}").get(make_knock))
         .push(Router::with_path("state_ids/{room_id}").get(get_state_at_event))
+        .push(Router::with_path("peek/{room_id}").get(peek))
+}
+
+/// #GET /_matrix/federation/v1/peek/{room_id}
+/// Returns a snapshot (current state + auth chain + recent messages) of a
+/// world-readable room so a remote server can render a preview for a user who
+/// has not joined it. Lightweight federated peek in the spirit of MSC2444.
+#[endpoint]
+async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult<PeekResBody> {
+    // Authenticated as a federating server by the auth hoop.
+    let _origin = depot.origin()?;
+    let room_id = &args.room_id;
+
+    if !room::room_exists(room_id).await? {
+        return Err(MatrixError::not_found("Room not found on this server.").into());
+    }
+
+    // Only world-readable rooms may be peeked without membership; otherwise the
+    // requesting server has no business reading the state.
+    if !room::is_world_readable(room_id).await {
+        return Err(MatrixError::forbidden("Room is not world-readable; peeking is not permitted.", None).into());
+    }
+
+    let room_version = room::get_version(room_id).await?;
+    let frame_id = room::get_frame_id(room_id, None).await?;
+
+    // Current resolved room state.
+    let state_ids: Vec<OwnedEventId> = state::get_full_state_ids(frame_id)
+        .await?
+        .into_values()
+        .collect();
+
+    let mut pdus = Vec::with_capacity(state_ids.len());
+    for id in &state_ids {
+        match timeline::get_pdu_json(id).await {
+            Ok(Some(json)) => pdus.push(sending::convert_to_outgoing_federation_event(json).await),
+            Ok(None) => error!("peek: missing json for state event {id}"),
+            Err(e) => error!("peek: failed to load state event {id}: {e}"),
+        }
+    }
+
+    // Auth chain backing that state.
+    let auth_chain_ids =
+        room::auth_chain::get_auth_chain_ids(room_id, state_ids.iter().map(AsRef::as_ref)).await?;
+    let mut auth_chain = Vec::with_capacity(auth_chain_ids.len());
+    for id in &auth_chain_ids {
+        match timeline::get_pdu_json(id).await {
+            Ok(Some(json)) => {
+                auth_chain.push(sending::convert_to_outgoing_federation_event(json).await)
+            }
+            Ok(None) => error!("peek: missing json for auth event {id}"),
+            Err(_) => {}
+        }
+    }
+
+    // A page of recent timeline events for the preview. `load_pdus_backward`
+    // returns newest-first; reverse so the response reads oldest-to-newest.
+    let limit = args.limit.clamp(1, 100);
+    let recent = timeline::stream::load_pdus_backward(None, room_id, None, None, None, limit).await?;
+    let mut messages = Vec::with_capacity(recent.len());
+    for (_sn, pdu) in recent.into_iter().rev() {
+        match timeline::get_pdu_json(&pdu.event_id).await {
+            Ok(Some(json)) => messages.push(sending::convert_to_outgoing_federation_event(json).await),
+            Ok(None) => {}
+            Err(_) => {}
+        }
+    }
+
+    json_ok(PeekResBody {
+        room_version,
+        auth_chain,
+        pdus,
+        messages,
+    })
 }
 
 /// #GET /_matrix/federation/v1/state/{room_id}

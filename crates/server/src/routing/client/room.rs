@@ -26,6 +26,7 @@ use crate::core::client::room::{
     UpgradeRoomResBody,
 };
 use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
+use crate::core::federation::peek::{PeekReqArgs, PeekResBody, peek_request};
 use crate::core::events::fully_read::{FullyReadEvent, FullyReadEventContent};
 use crate::core::events::receipt::{
     Receipt, ReceiptEvent, ReceiptEventContent, ReceiptThread, ReceiptType,
@@ -48,12 +49,12 @@ use crate::core::room::{JoinRule, Visibility};
 use crate::core::room_version_rules::{AuthorizationRules, RoomIdFormatVersion, RoomVersionRules};
 use crate::core::serde::{CanonicalJsonObject, JsonValue, RawJson};
 use crate::core::state::events::RoomCreateEvent;
-use crate::event::PduBuilder;
+use crate::event::{PduBuilder, PduEvent, gen_event_id_canonical_json};
 use crate::room::{push_action, timeline};
 use crate::user::user_is_ignored;
 use crate::{
-    AppResult, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, RoomMutexGuard, config,
-    data, empty_ok, hoops, json_ok, room,
+    AppResult, AuthArgs, DepotExt, EmptyResult, GetUrlOrigin, JsonResult, MatrixError,
+    RoomMutexGuard, config, data, empty_ok, hoops, json_ok, room, sending,
 };
 
 const LIMIT_MAX: usize = 100;
@@ -159,6 +160,20 @@ async fn initial_sync(
     let sender_id = authed.user_id();
     let room_id = &args.room_id;
 
+    // If the room is not known locally, it may be a remote room the user is
+    // trying to preview (e.g. opening `#room:other.server` without joining).
+    // For rooms hosted on another server, attempt a federated peek to render a
+    // preview; otherwise there is nothing to show.
+    if !room::room_exists(room_id).await? {
+        if room_id
+            .server_name()
+            .is_ok_and(|server| *server != config::get().server_name)
+        {
+            return remote_peek_preview(room_id, args.limit.unwrap_or(20)).await;
+        }
+        return Err(MatrixError::forbidden("No room preview available.", None).into());
+    }
+
     if !room::state::user_can_see_events(sender_id, room_id).await? {
         return Err(MatrixError::forbidden("No room preview available.", None).into());
     }
@@ -207,6 +222,106 @@ async fn initial_sync(
         membership: room::user::membership(sender_id, room_id).await.ok(),
     })
 }
+
+/// Render a preview for a room hosted on another server via a federated peek.
+///
+/// The user has not joined the room (we have no local copy of it). We ask the
+/// room's home server for a snapshot — current state plus a page of recent
+/// messages — of a world-readable room and render directly from the response
+/// without persisting anything locally, so a transient preview never mutates
+/// real room state. To follow live updates the user performs a normal join.
+///
+/// Any failure (room not world-readable, federation disabled, server
+/// unreachable, malformed response) collapses to a clean "no preview" error so
+/// the client falls back to showing the join prompt instead of a hard error.
+async fn remote_peek_preview(room_id: &RoomId, limit: usize) -> JsonResult<InitialSyncResBody> {
+    let no_preview = || MatrixError::forbidden("No room preview available.", None);
+
+    let server = room_id.server_name().map_err(|_| no_preview())?;
+
+    let request = peek_request(
+        &server.origin().await,
+        PeekReqArgs {
+            room_id: room_id.to_owned(),
+            limit: limit.min(LIMIT_MAX),
+        },
+    )
+    .map_err(|e| {
+        tracing::warn!("failed to build peek request for {room_id}: {e}");
+        no_preview()
+    })?
+    .into_inner();
+
+    let body = sending::send_federation_request(server, request, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!("federated peek of {room_id} via {server} failed: {e}");
+            no_preview()
+        })?
+        .json::<PeekResBody>()
+        .await
+        .map_err(|e| {
+            tracing::warn!("invalid peek response for {room_id} from {server}: {e}");
+            no_preview()
+        })?;
+
+    let room_version = body.room_version;
+
+    let state: Vec<_> = body
+        .pdus
+        .iter()
+        .filter_map(|raw| {
+            parse_peek_pdu(room_id, &room_version, raw).map(|pdu| pdu.to_state_event())
+        })
+        .collect();
+
+    // Nothing usable came back — treat as no preview rather than an empty room.
+    if state.is_empty() {
+        return Err(no_preview().into());
+    }
+
+    let chunk: Vec<_> = body
+        .messages
+        .iter()
+        .filter_map(|raw| {
+            parse_peek_pdu(room_id, &room_version, raw).map(|pdu| pdu.to_room_event())
+        })
+        .collect();
+
+    let messages = if chunk.is_empty() {
+        None
+    } else {
+        Some(PaginationChunk {
+            // No persistent pagination tokens exist for a remote snapshot.
+            start: None,
+            end: String::new(),
+            chunk,
+        })
+    };
+
+    json_ok(InitialSyncResBody {
+        room_id: room_id.to_owned(),
+        account_data: None,
+        state: Some(state),
+        messages,
+        // Peeking is only granted for world-readable rooms.
+        visibility: Some(Visibility::Public),
+        // The user is previewing, not a member.
+        membership: None,
+    })
+}
+
+/// Parse one federation PDU from a peek response into a [`PduEvent`], computing
+/// its event id from the room version. Returns `None` on malformed input.
+fn parse_peek_pdu(
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    raw: &crate::core::serde::RawJsonValue,
+) -> Option<PduEvent> {
+    let (event_id, value) = gen_event_id_canonical_json(raw, room_version).ok()?;
+    PduEvent::from_canonical_object(room_id, &event_id, value).ok()
+}
+
 /// `#POST /_matrix/client/r0/rooms/{room_id}/read_markers`
 /// Sets different types of read markers.
 ///
