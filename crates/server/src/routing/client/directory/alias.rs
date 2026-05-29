@@ -20,8 +20,16 @@ pub(super) async fn get_alias(
     room_alias: PathParam<OwnedRoomAliasId>,
 ) -> JsonResult<AliasResBody> {
     let room_alias = room_alias.into_inner();
-    let Ok((room_id, servers)) = crate::room::resolve_alias(&room_alias, None).await else {
-        return Err(MatrixError::not_found("Room with alias not found.").into());
+    let (room_id, servers) = match crate::room::resolve_alias(&room_alias, None).await {
+        Ok(resolved) => resolved,
+        // A genuinely unknown alias is reported as a clean `M_NOT_FOUND`, but any other
+        // failure (federation transport, signature rejection, internal error, ...) is
+        // propagated as-is so it stays visible to the client and in the logs instead of
+        // being masked as "room does not exist".
+        Err(e) if e.is_not_found() => {
+            return Err(MatrixError::not_found("Room with alias not found.").into());
+        }
+        Err(e) => return Err(e),
     };
     let servers = crate::room::room_available_servers(&room_id, &room_alias, servers).await?;
     debug!(?room_alias, ?room_id, "available servers: {servers:?}");

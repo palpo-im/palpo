@@ -1,6 +1,6 @@
 use crate::core::federation::query::{RoomInfoResBody, directory_request};
 use crate::core::identifiers::*;
-use crate::{AppResult, GetUrlOrigin, MatrixError};
+use crate::{AppError, AppResult, GetUrlOrigin, MatrixError};
 
 pub(super) async fn remote_resolve(
     room_alias: &RoomAliasId,
@@ -11,9 +11,13 @@ pub(super) async fn remote_resolve(
 
     let mut resolved_servers = Vec::new();
     let mut resolved_room_id: Option<OwnedRoomId> = None;
+    let mut last_error: Option<AppError> = None;
     for server in servers {
         match remote_request(room_alias, &server).await {
-            Err(e) => tracing::error!("Failed to query for {room_alias:?} from {server}: {e}"),
+            Err(e) => {
+                tracing::error!("Failed to query for {room_alias:?} from {server}: {e}");
+                last_error = Some(e);
+            }
             Ok(RoomInfoResBody { room_id, servers }) => {
                 debug!(
                     "Server {server} answered with {room_id:?} for {room_alias:?} servers: \
@@ -30,11 +34,15 @@ pub(super) async fn remote_resolve(
         }
     }
 
-    resolved_room_id
-        .map(|room_id| (room_id, resolved_servers))
-        .ok_or_else(|| {
+    match resolved_room_id {
+        Some(room_id) => Ok((room_id, resolved_servers)),
+        // Surface the actual failure from the last queried server (e.g. a transport or
+        // signature error) so it is not masked as a plain "not found". Only fall back to
+        // the generic message when no server produced an error to report.
+        None => Err(last_error.unwrap_or_else(|| {
             MatrixError::not_found("No servers could assist in resolving the room alias").into()
-        })
+        })),
+    }
 }
 
 async fn remote_request(
