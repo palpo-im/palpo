@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::push::PusherIds;
 
 use crate::core::UnixMillis;
@@ -78,12 +79,13 @@ impl TryInto<Pusher> for DbPusher {
     }
 }
 
-pub fn get_pusher(user_id: &UserId, pushkey: &str) -> DataResult<Option<Pusher>> {
+pub async fn get_pusher(user_id: &UserId, pushkey: &str) -> DataResult<Option<Pusher>> {
     let pusher = user_pushers::table
         .filter(user_pushers::user_id.eq(user_id))
         .filter(user_pushers::pushkey.eq(pushkey))
         .order_by(user_pushers::id.desc())
-        .first::<DbPusher>(&mut connect()?)
+        .first::<DbPusher>(&mut connect().await?)
+        .await
         .optional()?;
     if let Some(pusher) = pusher {
         pusher.try_into().map(Option::Some)
@@ -92,11 +94,12 @@ pub fn get_pusher(user_id: &UserId, pushkey: &str) -> DataResult<Option<Pusher>>
     }
 }
 
-pub fn get_pushers(user_id: &UserId) -> DataResult<Vec<DbPusher>> {
+pub async fn get_pushers(user_id: &UserId) -> DataResult<Vec<DbPusher>> {
     user_pushers::table
         .filter(user_pushers::user_id.eq(user_id))
         .order_by(user_pushers::id.desc())
-        .load::<DbPusher>(&mut connect()?)
+        .load::<DbPusher>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
@@ -118,6 +121,7 @@ pub async fn get_actions<'a>(
         member_count: 10_u32.into(), // TODO: get member count efficiently
         user_id: user.to_owned(),
         user_display_name: crate::user::display_name(user)
+            .await
             .ok()
             .flatten()
             .unwrap_or_else(|| user.localpart().to_owned()),
@@ -131,26 +135,29 @@ pub async fn get_actions<'a>(
     Ok(ruleset.get_actions(pdu, &ctx).await)
 }
 
-pub fn get_push_keys(user_id: &UserId) -> DataResult<Vec<String>> {
+pub async fn get_push_keys(user_id: &UserId) -> DataResult<Vec<String>> {
     user_pushers::table
         .filter(user_pushers::user_id.eq(user_id))
         .select(user_pushers::pushkey)
-        .load::<String>(&mut connect()?)
+        .load::<String>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
-pub fn delete_user_pushers(user_id: &UserId) -> DataResult<()> {
+pub async fn delete_user_pushers(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_pushers::table.filter(user_pushers::user_id.eq(user_id)))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn delete_device_pushers(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+pub async fn delete_device_pushers(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     diesel::delete(
         user_pushers::table
             .filter(user_pushers::user_id.eq(user_id))
             .filter(user_pushers::device_id.eq(device_id)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }

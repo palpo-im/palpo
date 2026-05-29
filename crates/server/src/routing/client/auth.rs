@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::{PathParam, QueryParam};
 use salvo::prelude::*;
 
@@ -51,7 +52,7 @@ async fn uiaa_fallback(
     };
 
     if should_complete {
-        complete_uiaa_stage(&session_id, auth_type.clone())?;
+        complete_uiaa_stage(&session_id, auth_type.clone()).await?;
         let html = render_completion_html(server_name);
         res.add_header("Content-Type", "text/html; charset=utf-8", true)?;
         res.write_body(html)?;
@@ -76,7 +77,7 @@ async fn uiaa_fallback(
     Ok(())
 }
 
-fn load_uiaa_info_by_session(
+async fn load_uiaa_info_by_session(
     session: &str,
 ) -> Result<
     (
@@ -93,7 +94,8 @@ fn load_uiaa_info_by_session(
             user_uiaa_datas::device_id,
             user_uiaa_datas::uiaa_info,
         ))
-        .first::<(OwnedUserId, OwnedDeviceId, JsonValue)>(&mut connect()?)
+        .first::<(OwnedUserId, OwnedDeviceId, JsonValue)>(&mut connect().await?)
+        .await
         .optional()?;
     let Some((user_id, device_id, uiaa_info)) = record else {
         return Err(MatrixError::invalid_param("Invalid session").into());
@@ -102,8 +104,8 @@ fn load_uiaa_info_by_session(
     Ok((user_id, device_id, uiaa_info))
 }
 
-fn complete_uiaa_stage(session: &str, stage: AuthType) -> Result<(), crate::AppError> {
-    let (user_id, device_id, mut uiaa_info) = load_uiaa_info_by_session(session)?;
+async fn complete_uiaa_stage(session: &str, stage: AuthType) -> Result<(), crate::AppError> {
+    let (user_id, device_id, mut uiaa_info) = load_uiaa_info_by_session(session).await?;
 
     if !uiaa_info.completed.contains(&stage) {
         uiaa_info.completed.push(stage);
@@ -120,9 +122,9 @@ fn complete_uiaa_stage(session: &str, stage: AuthType) -> Result<(), crate::AppE
     }
 
     if completed {
-        crate::uiaa::update_session(&user_id, &device_id, session, None)?;
+        crate::uiaa::update_session(&user_id, &device_id, session, None).await?;
     } else {
-        crate::uiaa::update_session(&user_id, &device_id, session, Some(&uiaa_info))?;
+        crate::uiaa::update_session(&user_id, &device_id, session, Some(&uiaa_info)).await?;
     }
 
     Ok(())

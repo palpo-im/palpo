@@ -71,7 +71,7 @@ pub async fn send_server_notice(
         );
     }
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("User not found").into());
     }
 
@@ -80,10 +80,10 @@ pub async fn send_server_notice(
     // Find an existing shared room between the server user and the target,
     // or create one if none exists.
     let server_user = crate::config::server_user_id();
-    let rooms = crate::data::user::joined_rooms(&user_id)?;
+    let rooms = crate::data::user::joined_rooms(&user_id).await?;
     let mut notice_room = None;
     for room_id in &rooms {
-        if crate::room::user::is_joined(server_user, room_id)? {
+        if crate::room::user::is_joined(server_user, room_id).await? {
             notice_room = Some(room_id.clone());
             break;
         }
@@ -95,7 +95,7 @@ pub async fn send_server_notice(
     };
 
     let state_lock = crate::room::lock_state(&room_id).await;
-    let room_version = crate::room::get_version(&room_id)?;
+    let room_version = crate::room::get_version(&room_id).await?;
 
     let pdu = if event_type == "m.room.message" {
         let content: RoomMessageEventContent = serde_json::from_value(body.content)
@@ -152,7 +152,7 @@ async fn create_notice_room(
         RoomIdFormatVersion::V1 => {
             let room_id = RoomId::new_v1(&conf.server_name);
             let state_lock = room::lock_state(&room_id).await;
-            room::ensure_room(&room_id, &room_version)?;
+            room::ensure_room(&room_id, &room_version).await?;
 
             // 1. Room create event
             timeline::build_and_append_pdu(
@@ -175,7 +175,7 @@ async fn create_notice_room(
             let temp_room_id =
                 OwnedRoomId::try_from("!placehold").expect("placeholder room id is valid");
             let temp_lock = room::lock_state(&temp_room_id).await;
-            room::ensure_room(&temp_room_id, &room_version)?;
+            room::ensure_room(&temp_room_id, &room_version).await?;
 
             // 1. Room create event, using a placeholder room_id
             let create_event = timeline::build_and_append_pdu(
@@ -199,13 +199,15 @@ async fn create_notice_room(
     };
 
     // 2. Server user joins
+    let server_display_name = data::user::display_name(server_user).await.ok().flatten();
+    let server_avatar_url = data::user::avatar_url(server_user).await.ok().flatten();
     timeline::build_and_append_pdu(
         PduBuilder {
             event_type: TimelineEventType::RoomMember,
             content: to_raw_value(&RoomMemberEventContent {
                 membership: MembershipState::Join,
-                display_name: data::user::display_name(server_user).ok().flatten(),
-                avatar_url: data::user::avatar_url(server_user).ok().flatten(),
+                display_name: server_display_name,
+                avatar_url: server_avatar_url,
                 is_direct: Some(true),
                 third_party_invite: None,
                 blurhash: None,
@@ -334,13 +336,15 @@ async fn create_notice_room(
     .await?;
 
     // 9. Auto-join target user
+    let target_display_name = data::user::display_name(target_user).await.ok().flatten();
+    let target_avatar_url = data::user::avatar_url(target_user).await.ok().flatten();
     timeline::build_and_append_pdu(
         PduBuilder {
             event_type: TimelineEventType::RoomMember,
             content: to_raw_value(&RoomMemberEventContent {
                 membership: MembershipState::Join,
-                display_name: data::user::display_name(target_user).ok().flatten(),
-                avatar_url: data::user::avatar_url(target_user).ok().flatten(),
+                display_name: target_display_name,
+                avatar_url: target_avatar_url,
                 is_direct: Some(true),
                 third_party_invite: None,
                 blurhash: None,

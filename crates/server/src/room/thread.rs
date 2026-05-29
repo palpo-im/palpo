@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde_json::json;
 
 use crate::core::client::room::IncludeThreads;
@@ -11,7 +12,7 @@ use crate::data::schema::*;
 use crate::room::timeline;
 use crate::{AppResult, SnPduEvent};
 
-pub fn get_threads(
+pub async fn get_threads(
     room_id: &RoomId,
     _include: &IncludeThreads,
     limit: i64,
@@ -24,28 +25,30 @@ pub fn get_threads(
             .select((threads::event_id, threads::event_sn))
             .order_by(threads::last_sn.desc())
             .limit(limit)
-            .load::<(OwnedEventId, i64)>(&mut connect()?)?
+            .load::<(OwnedEventId, i64)>(&mut connect().await?)
+            .await?
     } else {
         threads::table
             .filter(threads::room_id.eq(room_id))
             .select((threads::event_id, threads::event_sn))
             .order_by(threads::last_sn.desc())
             .limit(limit)
-            .load::<(OwnedEventId, i64)>(&mut connect()?)?
+            .load::<(OwnedEventId, i64)>(&mut connect().await?)
+            .await?
     };
     let next_token = items.last().map(|(_, sn)| *sn - 1);
 
     let mut events = Vec::with_capacity(items.len());
     for (event_id, _) in items {
-        if let Ok(pdu) = timeline::get_pdu(&event_id) {
+        if let Ok(pdu) = timeline::get_pdu(&event_id).await {
             events.push((event_id, pdu));
         }
     }
     Ok((events, next_token))
 }
 
-pub fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<()> {
-    let (root_pdu, mut root_pdu_json) = timeline::get_pdu_and_data(thread_id)?;
+pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<()> {
+    let (root_pdu, mut root_pdu_json) = timeline::get_pdu_and_data(thread_id).await?;
 
     if let CanonicalJsonValue::Object(unsigned) = root_pdu_json
         .entry("unsigned".to_owned())
@@ -89,12 +92,13 @@ pub fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<()> {
             );
         }
 
-        timeline::replace_pdu(thread_id, &root_pdu_json)?;
+        timeline::replace_pdu(thread_id, &root_pdu_json).await?;
     }
 
     diesel::update(event_points::table.find(&pdu.event_id))
         .set(event_points::thread_id.eq(thread_id))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     diesel::insert_into(threads::table)
         .values(DbThread {
@@ -110,6 +114,7 @@ pub fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<()> {
             threads::last_id.eq(&pdu.event_id),
             threads::last_sn.eq(pdu.event_sn),
         ))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }

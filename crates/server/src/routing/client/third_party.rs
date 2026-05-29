@@ -42,7 +42,7 @@ fn encode_query_value(value: &str) -> String {
 async fn protocols(_aa: AuthArgs) -> JsonResult<ProtocolsResBody> {
     let mut result = BTreeMap::new();
 
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
@@ -84,7 +84,7 @@ async fn protocols(_aa: AuthArgs) -> JsonResult<ProtocolsResBody> {
 async fn get_protocol(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<ProtocolResBody> {
     let protocol_id = protocol.into_inner();
 
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
@@ -115,7 +115,7 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
     let alias = req.query::<String>("alias");
     let mut result = Vec::new();
 
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         if appservice.registration.protocols.is_none() {
             continue;
         }
@@ -160,7 +160,7 @@ async fn protocol_locations(
     let protocol_id = protocol.into_inner();
     let mut result = Vec::new();
 
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };
@@ -202,7 +202,7 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
     let userid = req.query::<String>("userid");
     let mut result = Vec::new();
 
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         if appservice.registration.protocols.is_none() {
             continue;
         }
@@ -244,7 +244,7 @@ async fn protocol_users(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResul
     let protocol_id = protocol.into_inner();
     let mut result = Vec::new();
 
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         let Some(proto_list) = &appservice.registration.protocols else {
             continue;
         };

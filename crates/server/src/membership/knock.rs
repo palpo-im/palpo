@@ -23,7 +23,7 @@ pub async fn knock_room(
     reason: Option<String>,
     servers: &[OwnedServerName],
 ) -> AppResult<Option<SnPduEvent>> {
-    if room::user::is_invited(sender_id, room_id)? {
+    if room::user::is_invited(sender_id, room_id).await? {
         warn!("{sender_id} is already invited in {room_id} but attempted to knock");
         return Err(MatrixError::forbidden(
             "you cannot knock on a room you are already invited/accepted to.",
@@ -32,7 +32,7 @@ pub async fn knock_room(
         .into());
     }
 
-    if room::user::is_joined(sender_id, room_id)? {
+    if room::user::is_joined(sender_id, room_id).await? {
         warn!("{sender_id} is already joined in {room_id} but attempted to knock");
         return Err(MatrixError::forbidden(
             "you cannot knock on a room you are already joined in.",
@@ -41,12 +41,12 @@ pub async fn knock_room(
         .into());
     }
 
-    if room::user::is_knocked(sender_id, room_id)? {
+    if room::user::is_knocked(sender_id, room_id).await? {
         warn!("{sender_id} is already knocked in {room_id}");
         return Ok(None);
     }
 
-    if let Ok(memeber) = room::get_member(room_id, sender_id, None)
+    if let Ok(memeber) = room::get_member(room_id, sender_id, None).await
         && memeber.membership == MembershipState::Ban
     {
         warn!("{sender_id} is banned from {room_id} but attempted to knock");
@@ -58,10 +58,10 @@ pub async fn knock_room(
     }
 
     let conf = config::get();
-    if room::is_server_joined(&conf.server_name, room_id).unwrap_or(false) {
+    if room::is_server_joined(&conf.server_name, room_id).await.unwrap_or(false) {
         use RoomVersionId::*;
         info!("we can knock locally");
-        let room_version = room::get_version(room_id)?;
+        let room_version = room::get_version(room_id).await?;
         if matches!(room_version, V1 | V2 | V3 | V4 | V5 | V6) {
             return Err(MatrixError::forbidden(
                 "this room version does not support knocking",
@@ -70,7 +70,7 @@ pub async fn knock_room(
             .into());
         }
 
-        let join_rule = room::get_join_rule(room_id)?;
+        let join_rule = room::get_join_rule(room_id).await?;
         if !matches!(
             join_rule,
             JoinRule::Invite | JoinRule::Knock | JoinRule::KnockRestricted(..)
@@ -79,9 +79,9 @@ pub async fn knock_room(
         }
 
         let content = RoomMemberEventContent {
-            display_name: crate::data::user::display_name(sender_id).ok().flatten(),
-            avatar_url: crate::data::user::avatar_url(sender_id).ok().flatten(),
-            blurhash: crate::data::user::blurhash(sender_id).ok().flatten(),
+            display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
+            avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
+            blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
             reason: reason.clone(),
             ..RoomMemberEventContent::new(MembershipState::Knock)
         };
@@ -91,7 +91,7 @@ pub async fn knock_room(
             PduBuilder::state(sender_id.to_string(), &content),
             sender_id,
             room_id,
-            &crate::room::get_version(room_id)?,
+            &crate::room::get_version(room_id).await?,
             &room::lock_state(room_id).await,
         )
         .await
@@ -102,7 +102,7 @@ pub async fn knock_room(
                     &pdu.event_id,
                     &[sender_id.server_name().to_owned()],
                     &[],
-                ) {
+                ).await {
                     error!("failed to notify banned user server: {e}");
                 }
                 return Ok(Some(pdu));
@@ -129,7 +129,7 @@ pub async fn knock_room(
             .brief("remote room version {room_version} is not supported by palpo")
             .into());
     }
-    crate::room::ensure_room(room_id, &room_version)?;
+    crate::room::ensure_room(room_id, &room_version).await?;
 
     let mut knock_event_stub: CanonicalJsonObject =
         serde_json::from_str(make_knock_response.event.get()).map_err(|e| {
@@ -145,9 +145,9 @@ pub async fn knock_room(
     knock_event_stub.insert(
         "content".to_owned(),
         to_canonical_value(RoomMemberEventContent {
-            display_name: crate::data::user::display_name(sender_id).ok().flatten(),
-            avatar_url: crate::data::user::avatar_url(sender_id).ok().flatten(),
-            blurhash: crate::data::user::blurhash(sender_id).ok().flatten(),
+            display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
+            avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
+            blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
             reason,
             ..RoomMemberEventContent::new(MembershipState::Knock)
         })
@@ -179,7 +179,7 @@ pub async fn knock_room(
         },
         SendKnockReqBody::new(crate::sending::convert_to_outgoing_federation_event(
             knock_event.clone(),
-        )),
+        ).await),
     )?
     .into_inner();
 
@@ -200,7 +200,7 @@ pub async fn knock_room(
 
     info!("appending room knock event locally");
     let event_id = parsed_knock_pdu.event_id.clone();
-    let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id)?;
+    let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
     NewDbEvent {
         id: event_id.to_owned(),
         sn: event_sn,
@@ -221,7 +221,7 @@ pub async fn knock_room(
         is_rejected: false,
         rejection_reason: None,
     }
-    .save()?;
+    .save().await?;
     let knock_pdu = SnPduEvent {
         pdu: parsed_knock_pdu,
         event_sn,

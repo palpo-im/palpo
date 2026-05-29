@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use palpo_core::serde::JsonValue;
 use palpo_data::user::DbUser;
@@ -52,19 +53,19 @@ pub async fn join_room(
     appservice: Option<&RegistrationInfo>,
     extra_data: BTreeMap<String, JsonValue>,
 ) -> AppResult<JoinRoomResBody> {
-    if sender.is_guest && appservice.is_none() && !room::guest_can_join(room_id) {
+    if sender.is_guest && appservice.is_none() && !room::guest_can_join(room_id).await {
         return Err(
             MatrixError::forbidden("guests are not allowed to join this room", None).into(),
         );
     }
     let sender_id = &sender.id;
-    if room::user::is_joined(sender_id, room_id)? {
+    if room::user::is_joined(sender_id, room_id).await? {
         return Ok(JoinRoomResBody {
             room_id: room_id.into(),
         });
     }
 
-    if let Ok(membership) = room::get_member(room_id, sender_id, None)
+    if let Ok(membership) = room::get_member(room_id, sender_id, None).await
         && membership.membership == MembershipState::Ban
     {
         tracing::warn!(
@@ -80,15 +81,15 @@ pub async fn join_room(
 
     if !should_remote {
         info!("we can join locally");
-        let join_rule = room::get_join_rule(room_id)?;
+        let join_rule = room::get_join_rule(room_id).await?;
 
         let event = RoomMemberEventContent {
             membership: MembershipState::Join,
-            display_name: data::user::display_name(sender_id).ok().flatten(),
-            avatar_url: data::user::avatar_url(sender_id).ok().flatten(),
+            display_name: data::user::display_name(sender_id).await.ok().flatten(),
+            avatar_url: data::user::avatar_url(sender_id).await.ok().flatten(),
             is_direct: None,
             third_party_invite: None,
-            blurhash: data::user::blurhash(sender_id).ok().flatten(),
+            blurhash: data::user::blurhash(sender_id).await.ok().flatten(),
             reason: reason.clone(),
             join_authorized_via_users_server: get_first_user_can_issue_invite(
                 room_id,
@@ -110,7 +111,7 @@ pub async fn join_room(
             },
             sender_id,
             room_id,
-            &crate::room::get_version(room_id)?,
+            &crate::room::get_version(room_id).await?,
             &room::lock_state(room_id).await,
         )
         .await
@@ -121,10 +122,11 @@ pub async fn join_room(
                         sender_id,
                         device_id,
                         &[room_id.to_owned()],
-                    )?;
+                    )
+                    .await?;
                 }
 
-                if let Err(e) = sending::send_pdu_room(room_id, &pdu.event_id, &[], &[]) {
+                if let Err(e) = sending::send_pdu_room(room_id, &pdu.event_id, &[], &[]).await {
                     error!("failed to notify banned user server: {e}");
                 }
                 return Ok(JoinRoomResBody::new(room_id.to_owned()));
@@ -180,11 +182,11 @@ pub async fn join_room(
         // canonical JSON, so map the error instead of panicking.
         to_canonical_value(RoomMemberEventContent {
             membership: MembershipState::Join,
-            display_name: data::user::display_name(sender_id)?,
-            avatar_url: data::user::avatar_url(sender_id)?,
+            display_name: data::user::display_name(sender_id).await?,
+            avatar_url: data::user::avatar_url(sender_id).await?,
             is_direct: None,
             third_party_invite: None,
-            blurhash: data::user::blurhash(sender_id)?,
+            blurhash: data::user::blurhash(sender_id).await?,
             reason,
             join_authorized_via_users_server,
             #[cfg(feature = "unstable-msc4293")]
@@ -221,9 +223,9 @@ pub async fn join_room(
     // up the room version — this room isn't in our DB yet during a federation join.
     let mut outgoing = join_event.clone();
     maybe_strip_event_id(&mut outgoing, &room_version);
-    let body = SendJoinReqBody(crate::sending::convert_to_outgoing_federation_event(
-        outgoing,
-    ));
+    let body = SendJoinReqBody(
+        crate::sending::convert_to_outgoing_federation_event(outgoing).await,
+    );
     info!("asking {remote_server} for send_join");
     let send_join_request = crate::core::federation::membership::send_join_request(
         &remote_server.origin().await,
@@ -291,7 +293,7 @@ pub async fn join_room(
         }
     }
 
-    room::ensure_room(room_id, &room_version)?;
+    room::ensure_room(room_id, &room_version).await?;
 
     let parsed_join_pdu = PduEvent::from_canonical_object(room_id, &event_id, join_event.clone())
         .map_err(|e| {
@@ -299,7 +301,7 @@ pub async fn join_room(
         AppError::public("invalid join event pdu")
     })?;
     let join_event_id = parsed_join_pdu.event_id.clone();
-    let (join_event_sn, event_guard) = ensure_event_sn(room_id, &join_event_id)?;
+    let (join_event_sn, event_guard) = ensure_event_sn(room_id, &join_event_id).await?;
 
     let mut state = HashMap::new();
     let pub_key_map = RwLock::new(BTreeMap::new());
@@ -318,7 +320,8 @@ pub async fn join_room(
         MembershipState::Join,
         sender_id,
         None,
-    )?;
+    )
+    .await?;
 
     let mut parsed_pdus = IndexMap::new();
     for auth_pdu in resp_auth {
@@ -329,7 +332,19 @@ pub async fn join_room(
         let (event_id, event_value) = parse_fetched_pdu(room_id, &room_version, state)?;
         parsed_pdus.insert(event_id, event_value);
     }
-    for (event_id, event_value) in parsed_pdus {
+    // Process the trusted send_join auth_chain/state events in topological
+    // (depth) order so that each event's prev_events are already stored by the
+    // time it is handled. Processing them in arbitrary order makes an event
+    // whose ancestors haven't been stored yet look like it has missing
+    // prev_events, which drives the incoming-PDU pipeline to fire
+    // `get_missing_events`/`state_ids`/`state` federation requests back at the
+    // remote. Against servers that only answer make/send_join (e.g. Complement
+    // test servers) those 404 and needlessly congest the outbound send queue,
+    // delaying real traffic such as a redaction we're trying to deliver.
+    let mut ordered_pdus: Vec<_> = parsed_pdus.into_iter().collect();
+    ordered_pdus
+        .sort_by_key(|(_, value)| value.get("depth").and_then(|v| v.as_integer()).unwrap_or(0));
+    for (event_id, event_value) in ordered_pdus {
         if let Err(e) = process_incoming_pdu(
             &remote_server,
             &event_id,
@@ -357,10 +372,10 @@ pub async fn join_room(
             Err(_) => continue,
         };
 
-        let pdu = if let Some(pdu) = timeline::get_pdu(&event_id).optional()? {
+        let pdu = if let Some(pdu) = timeline::get_pdu(&event_id).await.optional()? {
             pdu
         } else {
-            let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id)?;
+            let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
             let pdu = SnPduEvent::from_canonical_object(
                 room_id,
                 &event_id,
@@ -378,7 +393,8 @@ pub async fn join_room(
             NewDbEvent::from_canonical_json_with_room_id(
                 &event_id, event_sn, &value, false, room_id,
             )?
-            .save()?;
+            .save()
+            .await?;
             DbEventData {
                 event_id: pdu.event_id.to_owned(),
                 event_sn,
@@ -387,14 +403,16 @@ pub async fn join_room(
                 json_data: serde_json::to_value(&value)?,
                 format_version: None,
             }
-            .save()?;
+            .save()
+            .await?;
 
             drop(event_guard);
             pdu
         };
 
         if let Some(state_key) = &pdu.state_key {
-            let state_key_id = state::ensure_field_id(&pdu.event_ty.to_string().into(), state_key)?;
+            let state_key_id =
+                state::ensure_field_id(&pdu.event_ty.to_string().into(), state_key).await?;
             state.insert(state_key_id, (pdu.event_id.clone(), pdu.event_sn));
         }
     }
@@ -411,12 +429,13 @@ pub async fn join_room(
             Err(_) => continue,
         };
 
-        if !timeline::has_pdu(&event_id) {
-            let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id)?;
+        if !timeline::has_pdu(&event_id).await {
+            let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
             NewDbEvent::from_canonical_json_with_room_id(
                 &event_id, event_sn, &value, false, room_id,
             )?
-            .save()?;
+            .save()
+            .await?;
             DbEventData {
                 event_id: event_id.to_owned(),
                 event_sn,
@@ -425,7 +444,8 @@ pub async fn join_room(
                 json_data: serde_json::to_value(&value)?,
                 format_version: None,
             }
-            .save()?;
+            .save()
+            .await?;
             drop(event_guard);
         }
     }
@@ -465,9 +485,10 @@ pub async fn join_room(
                 .map(|(k, (_event_id, event_sn))| Ok(CompressedEvent::new(k, event_sn)))
                 .collect::<AppResult<_>>()?,
         ),
-    )?;
+    )
+    .await?;
 
-    state::force_state(room_id, frame_id, appended, disposed)?;
+    state::force_state(room_id, frame_id, appended, disposed).await?;
     info!("appending new room join event");
     diesel::insert_into(events::table)
         .values(NewDbEvent::from_canonical_json_with_room_id(
@@ -478,7 +499,8 @@ pub async fn join_room(
             room_id,
         )?)
         .on_conflict_do_nothing()
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     let join_pdu = SnPduEvent {
         pdu: parsed_join_pdu,
@@ -489,13 +511,13 @@ pub async fn join_room(
     };
 
     timeline::append_pdu(&join_pdu, join_event, &state_lock).await?;
-    let frame_id_after_join = state::append_to_state(&join_pdu)?;
+    let frame_id_after_join = state::append_to_state(&join_pdu).await?;
     drop(event_guard);
 
     info!("setting final room state for new room");
     // We set the room state after inserting the pdu, so that we never have a moment in time
     // where events in the current room state do not exist
-    state::set_room_state(room_id, frame_id_after_join)?;
+    state::set_room_state(room_id, frame_id_after_join).await?;
     drop(state_lock);
 
     if let Some(device_id) = device_id
@@ -505,14 +527,14 @@ pub async fn join_room(
             .filter(room_users::room_id.ne(room_id))
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::room_server_id.eq(room_server_id));
-        if !diesel_exists!(query, &mut connect()?)? {
+        if !diesel_exists!(query, &mut connect().await?)? {
             let content = DeviceListUpdateContent::new(
                 sender_id.to_owned(),
                 device_id.to_owned(),
-                data::next_sn()? as u64,
+                data::next_sn().await? as u64,
             );
             let edu = Edu::DeviceListUpdate(content);
-            send_edu_server(room_server_id, &edu)?;
+            send_edu_server(room_server_id, &edu).await?;
         }
     }
 
@@ -524,9 +546,16 @@ pub async fn get_first_user_can_issue_invite(
     invitee_id: &UserId,
     restriction_rooms: &[OwnedRoomId],
 ) -> AppResult<OwnedUserId> {
-    let invitee_in_restriction_room = restriction_rooms.iter().any(|restriction_room_id| {
-        room::user::is_joined(invitee_id, restriction_room_id).unwrap_or(false)
-    });
+    let mut invitee_in_restriction_room = false;
+    for restriction_room_id in restriction_rooms.iter() {
+        if room::user::is_joined(invitee_id, restriction_room_id)
+            .await
+            .unwrap_or(false)
+        {
+            invitee_in_restriction_room = true;
+            break;
+        }
+    }
     if !invitee_in_restriction_room {
         debug!(
             "get_first_user_can_issue_invite: invitee {invitee_id} not in any restriction room {:?}",
@@ -534,7 +563,7 @@ pub async fn get_first_user_can_issue_invite(
         );
     }
     if invitee_in_restriction_room {
-        let joined_users: Vec<_> = room::joined_users(room_id, None)?;
+        let joined_users: Vec<_> = room::joined_users(room_id, None).await?;
         for joined_user in &joined_users {
             if joined_user.server_name() == config::get().server_name
                 && room::user_can_invite(room_id, joined_user, invitee_id).await
@@ -556,10 +585,18 @@ pub async fn get_users_can_issue_invite(
     restriction_rooms: &[OwnedRoomId],
 ) -> AppResult<Vec<OwnedUserId>> {
     let mut users = vec![];
-    if restriction_rooms.iter().any(|restriction_room_id| {
-        room::user::is_joined(invitee_id, restriction_room_id).unwrap_or(false)
-    }) {
-        for joined_user in room::joined_users(room_id, None)? {
+    let mut invitee_in_restriction_room = false;
+    for restriction_room_id in restriction_rooms.iter() {
+        if room::user::is_joined(invitee_id, restriction_room_id)
+            .await
+            .unwrap_or(false)
+        {
+            invitee_in_restriction_room = true;
+            break;
+        }
+    }
+    if invitee_in_restriction_room {
+        for joined_user in room::joined_users(room_id, None).await? {
             if joined_user.server_name() == config::get().server_name
                 && room::user_can_invite(room_id, &joined_user, invitee_id).await
             {
@@ -575,7 +612,7 @@ async fn make_join_request(
     room_id: &RoomId,
     servers: &[OwnedServerName],
 ) -> AppResult<(MakeJoinResBody, OwnedServerName)> {
-    let invited_locally = room::user::is_invited(user_id, room_id).unwrap_or(false);
+    let invited_locally = room::user::is_invited(user_id, room_id).await.unwrap_or(false);
     let mut last_join_error = Err(StatusError::bad_request()
         .brief("no server available to assist in joining")
         .into());

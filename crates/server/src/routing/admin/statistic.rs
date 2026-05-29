@@ -49,7 +49,7 @@ pub struct UserMediaStats {
 ///
 /// Get statistics about uploaded media by users
 #[endpoint]
-pub fn user_media_statistics(
+pub async fn user_media_statistics(
     from: QueryParam<i64, false>,
     limit: QueryParam<i64, false>,
     order_by: QueryParam<String, false>,
@@ -68,7 +68,8 @@ pub fn user_media_statistics(
         search_term.as_deref(),
         order_by.as_deref(),
         dir.as_deref(),
-    )?;
+    )
+    .await?;
 
     let next_token = if from + limit < total {
         Some((from + limit).to_string())

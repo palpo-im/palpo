@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 
 use crate::core::client::search::{
@@ -18,23 +19,23 @@ use crate::event::BatchToken;
 use crate::room::{state, timeline};
 use crate::{AppResult, MatrixError, SnPduEvent};
 
-pub fn search_pdus(
+pub async fn search_pdus(
     user_id: &UserId,
     criteria: &Criteria,
     next_batch: Option<&str>,
 ) -> AppResult<ResultRoomEvents> {
     let filter = &criteria.filter;
 
-    let room_ids = filter
-        .rooms
-        .clone()
-        .unwrap_or_else(|| data::user::joined_rooms(user_id).unwrap_or_default());
+    let room_ids = match filter.rooms.clone() {
+        Some(rooms) => rooms,
+        None => data::user::joined_rooms(user_id).await.unwrap_or_default(),
+    };
 
     // Use limit or else 10, with maximum 100
     let limit = filter.limit.unwrap_or(10).min(100);
 
     for room_id in &room_ids {
-        if !crate::room::user::is_joined(user_id, room_id)? {
+        if !crate::room::user::is_joined(user_id, room_id).await? {
             return Err(MatrixError::forbidden(
                 "you don't have permission to view this room",
                 None,
@@ -70,17 +71,19 @@ pub fn search_pdus(
     let items = if criteria.order_by == Some(OrderBy::Rank) {
         data_query
             .order_by(diesel::dsl::sql::<diesel::sql_types::Int8>("1"))
-            .load::<(f32, OwnedEventId, i64, i64)>(&mut connect()?)?
+            .load::<(f32, OwnedEventId, i64, i64)>(&mut connect().await?)
+            .await?
     } else {
         data_query
             .order_by(event_searches::origin_server_ts.desc())
             .then_order_by(event_searches::event_sn.desc())
-            .load::<(f32, OwnedEventId, i64, i64)>(&mut connect()?)?
+            .load::<(f32, OwnedEventId, i64, i64)>(&mut connect().await?)
+            .await?
     };
     // let _ids: Vec<i64> = event_searches::table
     //     .select(event_searches::id)
     //     .load(&mut connect()?)?;
-    let count: i64 = base_query.count().first(&mut connect()?)?;
+    let count: i64 = base_query.count().first(&mut connect().await?).await?;
     let next_batch = if items.len() < limit {
         None
     } else if let Some(last) = items.last() {
@@ -93,23 +96,25 @@ pub fn search_pdus(
         None
     };
 
-    let results: Vec<_> = items
-        .into_iter()
-        .filter_map(|(rank, event_id, ..)| {
-            let pdu = timeline::get_pdu(&event_id).ok()?;
-            if state::user_can_see_event(user_id, &pdu.event_id).unwrap_or(false) {
-                Some((rank, pdu))
-            } else {
-                None
-            }
-        })
-        .map(|(rank, pdu)| SearchResult {
+    let mut results: Vec<_> = Vec::new();
+    for (rank, event_id, ..) in items {
+        let Ok(pdu) = timeline::get_pdu(&event_id).await else {
+            continue;
+        };
+        if !state::user_can_see_event(user_id, &pdu.event_id)
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        results.push(SearchResult {
             context: calc_event_context(user_id, &pdu.room_id, pdu.event_sn, 10, 10, false)
+                .await
                 .unwrap_or_default(),
             rank: Some(rank as f64),
             result: Some(pdu.to_room_event()),
-        })
-        .collect();
+        });
+    }
 
     Ok(ResultRoomEvents {
         count: Some(count as u64),
@@ -126,7 +131,7 @@ pub fn search_pdus(
 }
 
 // Calculates the contextual events for any search results.
-fn calc_event_context(
+async fn calc_event_context(
     user_id: &UserId,
     room_id: &RoomId,
     event_sn: Seqnum,
@@ -141,7 +146,8 @@ fn calc_event_context(
         None,
         None,
         before_limit,
-    )?;
+    )
+    .await?;
     let after_pdus = timeline::stream::load_pdus_forward(
         Some(user_id),
         room_id,
@@ -149,14 +155,16 @@ fn calc_event_context(
         None,
         None,
         after_limit,
-    )?;
+    )
+    .await?;
     let mut profile = BTreeMap::new();
-    if include_profile && let Ok(frame_id) = crate::event::get_frame_id(room_id, event_sn) {
+    if include_profile && let Ok(frame_id) = crate::event::get_frame_id(room_id, event_sn).await {
         let RoomMemberEventContent {
             display_name,
             avatar_url,
             ..
-        } = state::get_state_content(frame_id, &StateEventType::RoomMember, user_id.as_str())?;
+        } = state::get_state_content(frame_id, &StateEventType::RoomMember, user_id.as_str())
+            .await?;
         if let Some(display_name) = display_name {
             profile.insert("displayname".to_string(), display_name);
         }
@@ -166,7 +174,7 @@ fn calc_event_context(
     }
 
     let context = EventContextResult {
-        start: before_pdus.first().map(|(sn, _)| sn.to_string()),
+        start: before_pdus.iter().next().map(|(sn, _)| sn.to_string()),
         end: after_pdus.last().map(|(sn, _)| sn.to_string()),
         events_before: before_pdus
             .into_iter()
@@ -182,7 +190,7 @@ fn calc_event_context(
     Ok(context)
 }
 
-pub fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppResult<()> {
+pub async fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppResult<()> {
     let Some(CanonicalJsonValue::Object(content)) = pdu_json.get("content") else {
         return Ok(());
     };
@@ -219,7 +227,8 @@ pub fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppResult<(
         .bind::<diesel::sql_types::Int8, _>(pdu.origin_server_ts)
         .bind::<diesel::sql_types::Text, _>(vector)
         .bind::<diesel::sql_types::Int8, _>(pdu.origin_server_ts)
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     Ok(())
 }

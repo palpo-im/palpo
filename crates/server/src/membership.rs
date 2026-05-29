@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use diesel::prelude::*;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use tokio::sync::RwLock;
 
 use crate::core::events::direct::DirectEventContent;
@@ -103,7 +104,7 @@ async fn validate_and_add_event_id(
 
 /// Update current membership data.
 #[tracing::instrument(skip(last_state))]
-pub fn update_membership(
+pub async fn update_membership(
     event_id: &EventId,
     event_sn: i64,
     room_id: &RoomId,
@@ -114,8 +115,10 @@ pub fn update_membership(
 ) -> AppResult<()> {
     let conf = crate::config::get();
     // Keep track what remote users exist by adding them as "deactivated" users
-    if user_id.server_name() != conf.server_name && !crate::data::user::user_exists(user_id)? {
-        crate::user::create_user(user_id, None)?;
+    if user_id.server_name() != conf.server_name
+        && !crate::data::user::user_exists(user_id).await?
+    {
+        crate::user::create_user(user_id, None).await?;
         // TODO: display_name, avatar url
     }
 
@@ -128,7 +131,8 @@ pub fn update_membership(
     match &membership {
         MembershipState::Join => {
             // Check if the user never joined this room
-            if !(room::user::is_joined(user_id, room_id)? || room::user::is_left(user_id, room_id)?)
+            if !(room::user::is_joined(user_id, room_id).await?
+                || room::user::is_left(user_id, room_id).await?)
             {
                 // Check if the room has a predecessor
                 if let Ok(Some(predecessor)) = room::get_state_content::<RoomCreateEventContent>(
@@ -137,6 +141,7 @@ pub fn update_membership(
                     "",
                     None,
                 )
+                .await
                 .map(|c| c.predecessor)
                 {
                     // Copy user settings from predecessor to the current room:
@@ -169,13 +174,16 @@ pub fn update_membership(
                         user_id,
                         &predecessor.room_id,
                         &RoomAccountDataEventType::Tag.to_string(),
-                    )? {
+                    )
+                    .await?
+                    {
                         crate::data::user::set_data(
                             user_id,
                             Some(room_id.to_owned()),
                             &RoomAccountDataEventType::Tag.to_string(),
                             tag_event_content,
                         )
+                        .await
                         .ok();
                     };
 
@@ -186,6 +194,7 @@ pub fn update_membership(
                             None,
                             &GlobalAccountDataEventType::Direct.to_string(),
                         )
+                        .await
                     {
                         let mut room_ids_updated = false;
 
@@ -202,48 +211,47 @@ pub fn update_membership(
                                 None,
                                 &GlobalAccountDataEventType::Direct.to_string(),
                                 serde_json::to_value(&direct_event_content)?,
-                            )?;
+                            )
+                            .await?;
                         }
                     };
                 }
             }
-            connect()?.transaction::<_, AppError, _>(|conn| {
-                // let forgotten = room_users::table
-                //     .filter(room_users::room_id.eq(room_id))
-                //     .filter(room_users::user_id.eq(user_id))
-                //     .select(room_users::forgotten)
-                //     .first::<bool>(conn)
-                //     .optional()?
-                //     .unwrap_or_default();
-                diesel::delete(
-                    room_users::table
-                        .filter(room_users::room_id.eq(room_id))
-                        .filter(room_users::user_id.eq(user_id)),
-                )
-                .execute(conn)?;
-                diesel::insert_into(room_users::table)
-                    .values(&NewDbRoomUser {
-                        room_id: room_id.to_owned(),
-                        room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
-                        user_id: user_id.to_owned(),
-                        user_server_id: user_id.server_name().to_owned(),
-                        event_id: event_id.to_owned(),
-                        event_sn,
-                        sender_id: sender_id.to_owned(),
-                        membership: membership.to_string(),
-                        forgotten: false,
-                        display_name: None,
-                        avatar_url: None,
-                        state_data,
-                        created_at: UnixMillis::now(),
-                    })
-                    .execute(conn)?;
-                Ok(())
-            })?;
+            connect()
+                .await?
+                .transaction::<_, AppError, _>(async |conn| {
+                    diesel::delete(
+                        room_users::table
+                            .filter(room_users::room_id.eq(room_id))
+                            .filter(room_users::user_id.eq(user_id)),
+                    )
+                    .execute(conn)
+                    .await?;
+                    diesel::insert_into(room_users::table)
+                        .values(&NewDbRoomUser {
+                            room_id: room_id.to_owned(),
+                            room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
+                            user_id: user_id.to_owned(),
+                            user_server_id: user_id.server_name().to_owned(),
+                            event_id: event_id.to_owned(),
+                            event_sn,
+                            sender_id: sender_id.to_owned(),
+                            membership: membership.to_string(),
+                            forgotten: false,
+                            display_name: None,
+                            avatar_url: None,
+                            state_data,
+                            created_at: UnixMillis::now(),
+                        })
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+                .await?;
         }
         MembershipState::Invite | MembershipState::Knock => {
             // We want to know if the sender is ignored by the receiver
-            if crate::user::user_is_ignored(sender_id, user_id) {
+            if crate::user::user_is_ignored(sender_id, user_id).await {
                 return Ok(());
             }
             if let Some(last_state) = &last_state {
@@ -254,78 +262,74 @@ pub fn update_membership(
                 }
             }
             let _ = ensure_field(&StateEventType::RoomMember, user_id.as_str());
-            connect()?.transaction::<_, AppError, _>(|conn| {
-                // let forgotten = room_users::table
-                //     .filter(room_users::room_id.eq(room_id))
-                //     .filter(room_users::user_id.eq(user_id))
-                //     .select(room_users::forgotten)
-                //     .first::<bool>(conn)
-                //     .optional()?
-                //     .unwrap_or_default();
-                diesel::delete(
-                    room_users::table
-                        .filter(room_users::room_id.eq(room_id))
-                        .filter(room_users::user_id.eq(user_id)),
-                )
-                .execute(conn)?;
-                diesel::insert_into(room_users::table)
-                    .values(&NewDbRoomUser {
-                        room_id: room_id.to_owned(),
-                        room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
-                        user_id: user_id.to_owned(),
-                        user_server_id: user_id.server_name().to_owned(),
-                        event_id: event_id.to_owned(),
-                        event_sn,
-                        sender_id: sender_id.to_owned(),
-                        membership: membership.to_string(),
-                        forgotten: false,
-                        display_name: None,
-                        avatar_url: None,
-                        state_data,
-                        created_at: UnixMillis::now(),
-                    })
-                    .execute(conn)?;
-                Ok(())
-            })?;
+            connect()
+                .await?
+                .transaction::<_, AppError, _>(async |conn| {
+                    diesel::delete(
+                        room_users::table
+                            .filter(room_users::room_id.eq(room_id))
+                            .filter(room_users::user_id.eq(user_id)),
+                    )
+                    .execute(conn)
+                    .await?;
+                    diesel::insert_into(room_users::table)
+                        .values(&NewDbRoomUser {
+                            room_id: room_id.to_owned(),
+                            room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
+                            user_id: user_id.to_owned(),
+                            user_server_id: user_id.server_name().to_owned(),
+                            event_id: event_id.to_owned(),
+                            event_sn,
+                            sender_id: sender_id.to_owned(),
+                            membership: membership.to_string(),
+                            forgotten: false,
+                            display_name: None,
+                            avatar_url: None,
+                            state_data,
+                            created_at: UnixMillis::now(),
+                        })
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+                .await?;
         }
         MembershipState::Leave | MembershipState::Ban => {
-            connect()?.transaction::<_, AppError, _>(|conn| {
-                // let forgotten = room_users::table
-                //     .filter(room_users::room_id.eq(room_id))
-                //     .filter(room_users::user_id.eq(user_id))
-                //     .select(room_users::forgotten)
-                //     .first::<bool>(conn)
-                //     .optional()?
-                //     .unwrap_or_default();
-                diesel::delete(
-                    room_users::table
-                        .filter(room_users::room_id.eq(room_id))
-                        .filter(room_users::user_id.eq(user_id)),
-                )
-                .execute(conn)?;
-                diesel::insert_into(room_users::table)
-                    .values(&NewDbRoomUser {
-                        room_id: room_id.to_owned(),
-                        room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
-                        user_id: user_id.to_owned(),
-                        user_server_id: user_id.server_name().to_owned(),
-                        event_id: event_id.to_owned(),
-                        event_sn,
-                        sender_id: sender_id.to_owned(),
-                        membership: membership.to_string(),
-                        forgotten: false,
-                        display_name: None,
-                        avatar_url: None,
-                        state_data,
-                        created_at: UnixMillis::now(),
-                    })
-                    .execute(conn)?;
-                Ok(())
-            })?;
+            connect()
+                .await?
+                .transaction::<_, AppError, _>(async |conn| {
+                    diesel::delete(
+                        room_users::table
+                            .filter(room_users::room_id.eq(room_id))
+                            .filter(room_users::user_id.eq(user_id)),
+                    )
+                    .execute(conn)
+                    .await?;
+                    diesel::insert_into(room_users::table)
+                        .values(&NewDbRoomUser {
+                            room_id: room_id.to_owned(),
+                            room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
+                            user_id: user_id.to_owned(),
+                            user_server_id: user_id.server_name().to_owned(),
+                            event_id: event_id.to_owned(),
+                            event_sn,
+                            sender_id: sender_id.to_owned(),
+                            membership: membership.to_string(),
+                            forgotten: false,
+                            display_name: None,
+                            avatar_url: None,
+                            state_data,
+                            created_at: UnixMillis::now(),
+                        })
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+                .await?;
         }
         _ => {}
     }
-    crate::room::update_joined_servers(room_id)?;
-    crate::room::update_currents(room_id)?;
+    crate::room::update_joined_servers(room_id).await?;
+    crate::room::update_currents(room_id).await?;
     Ok(())
 }

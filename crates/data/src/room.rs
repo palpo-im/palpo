@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 
 use crate::core::events::StateEventType;
@@ -209,13 +210,14 @@ pub struct DbEventData {
 }
 
 impl DbEventData {
-    pub fn save(&self) -> DataResult<()> {
+    pub async fn save(&self) -> DataResult<()> {
         diesel::insert_into(event_datas::table)
             .values(self)
             .on_conflict(event_datas::event_id)
             .do_update()
             .set(self)
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(())
     }
 }
@@ -244,10 +246,11 @@ pub struct DbEvent {
     pub rejection_reason: Option<String>,
 }
 impl DbEvent {
-    pub fn get_by_id(id: &EventId) -> DataResult<Self> {
+    pub async fn get_by_id(id: &EventId) -> DataResult<Self> {
         events::table
             .find(id)
-            .first(&mut connect()?)
+            .first(&mut connect().await?)
+            .await
             .map_err(Into::into)
     }
 }
@@ -338,13 +341,14 @@ impl NewDbEvent {
             .map_err(|_e| MatrixError::bad_json("invalid json for event"))?)
     }
 
-    pub fn save(&self) -> DataResult<()> {
+    pub async fn save(&self) -> DataResult<()> {
         diesel::insert_into(events::table)
             .values(self)
             .on_conflict(events::id)
             .do_update()
             .set(self)
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(())
     }
 }
@@ -377,15 +381,15 @@ pub struct NewDbEventPushAction {
     pub thread_id: Option<OwnedEventId>,
 }
 
-pub fn is_disabled(room_id: &RoomId) -> DataResult<bool> {
+pub async fn is_disabled(room_id: &RoomId) -> DataResult<bool> {
     let query = rooms::table
         .filter(rooms::id.eq(room_id))
         .filter(rooms::disabled.eq(true));
-    Ok(diesel_exists!(query, &mut connect()?)?)
+    Ok(diesel_exists!(query, &mut connect().await?)?)
 }
 
-pub fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<()> {
-    let next_sn = crate::next_sn()?;
+pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<()> {
+    let next_sn = crate::next_sn().await?;
     diesel::insert_into(room_joined_servers::table)
         .values((
             room_joined_servers::room_id.eq(room_id),
@@ -393,7 +397,8 @@ pub fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResu
             room_joined_servers::occur_sn.eq(next_sn),
         ))
         .on_conflict_do_nothing()
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
@@ -405,16 +410,17 @@ pub struct NewDbBannedRoom {
     pub created_at: UnixMillis,
 }
 
-pub fn is_banned(room_id: &RoomId) -> DataResult<bool> {
+pub async fn is_banned(room_id: &RoomId) -> DataResult<bool> {
     let query = banned_rooms::table.filter(banned_rooms::room_id.eq(room_id));
-    Ok(diesel_exists!(query, &mut connect()?)?)
+    Ok(diesel_exists!(query, &mut connect().await?)?)
 }
 
-pub fn is_public(room_id: &RoomId) -> DataResult<bool> {
+pub async fn is_public(room_id: &RoomId) -> DataResult<bool> {
     rooms::table
         .filter(rooms::id.eq(room_id))
         .select(rooms::is_public)
-        .first(&mut connect()?)
+        .first(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
@@ -446,17 +452,18 @@ pub struct NewDbEventEdge {
 }
 
 impl NewDbEventEdge {
-    pub fn save(&self) -> DataResult<()> {
+    pub async fn save(&self) -> DataResult<()> {
         diesel::insert_into(event_edges::table)
             .values(self)
             .on_conflict_do_nothing()
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         Ok(())
     }
 }
 
 // >= min_sn and <= max_sn
-pub fn get_timeline_gaps(
+pub async fn get_timeline_gaps(
     room_id: &RoomId,
     min_sn: Seqnum,
     max_sn: Seqnum,
@@ -467,7 +474,8 @@ pub fn get_timeline_gaps(
         .filter(timeline_gaps::event_sn.le(max_sn))
         .order(timeline_gaps::event_sn.asc())
         .select(timeline_gaps::event_sn)
-        .load::<Seqnum>(&mut connect()?)?;
+        .load::<Seqnum>(&mut connect().await?)
+        .await?;
     Ok(gaps)
 }
 

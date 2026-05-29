@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::{LazyLock, Mutex};
 
 use lru_cache::LruCache;
 
@@ -54,22 +54,37 @@ pub async fn get_summary_and_children_local(
     identifier: &Identifier<'_>,
     suggested_only: bool,
 ) -> AppResult<Option<SummaryAccessibility>> {
-    match ROOM_ID_SPACE_CHUNK_CACHE
-        .lock()
-        .unwrap()
-        .get_mut(&(current_room.to_owned(), suggested_only))
-        .as_ref()
-    {
-        None => (), // cache miss
-        Some(None) => return Ok(None),
-        Some(Some(cached)) => {
+    // Snapshot the cache entry and drop the guard before any `.await` so the
+    // `MutexGuard` is never held across an await point.
+    enum CacheLookup {
+        Miss,
+        Negative,
+        Hit(SpaceHierarchyParentSummary),
+    }
+    let lookup = {
+        let mut cache = ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap();
+        match cache
+            .get_mut(&(current_room.to_owned(), suggested_only))
+            .as_ref()
+        {
+            None => CacheLookup::Miss, // cache miss
+            Some(None) => CacheLookup::Negative,
+            Some(Some(cached)) => CacheLookup::Hit(cached.summary.clone()),
+        }
+    };
+    match lookup {
+        CacheLookup::Miss => (), // cache miss
+        CacheLookup::Negative => return Ok(None),
+        CacheLookup::Hit(summary) => {
             let accessibility = if is_accessible_child(
                 current_room,
-                &cached.summary.join_rule,
+                &summary.join_rule,
                 identifier,
-                &cached.summary.allowed_room_ids,
-            ) {
-                SummaryAccessibility::Accessible(cached.summary.clone())
+                &summary.allowed_room_ids,
+            )
+            .await
+            {
+                SummaryAccessibility::Accessible(summary)
             } else {
                 SummaryAccessibility::Inaccessible
             };
@@ -77,7 +92,8 @@ pub async fn get_summary_and_children_local(
         }
     }
 
-    let children_pdus: Vec<_> = get_stripped_space_child_events(current_room, suggested_only)?;
+    let children_pdus: Vec<_> =
+        get_stripped_space_child_events(current_room, suggested_only).await?;
 
     let Ok(summary) = get_room_summary(current_room, children_pdus, identifier).await else {
         return Ok(None);
@@ -131,21 +147,16 @@ async fn get_summary_and_children_federation(
         return Ok(None);
     };
 
-    res_body
-        .children
-        .into_iter()
-        .filter_map(|child| {
-            if let Ok(mut cache) = ROOM_ID_SPACE_CHUNK_CACHE.lock() {
-                if !cache.contains_key(&(current_room.to_owned(), suggested_only)) {
-                    Some((child, cache))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .for_each(|(child, cache)| cache_insert(cache, current_room, child, suggested_only));
+    for child in res_body.children.into_iter() {
+        // Check (and short-circuit) without holding the guard across the await.
+        let should_insert = match ROOM_ID_SPACE_CHUNK_CACHE.lock() {
+            Ok(mut cache) => !cache.contains_key(&(current_room.to_owned(), suggested_only)),
+            Err(_) => false,
+        };
+        if should_insert {
+            cache_insert(current_room, child, suggested_only).await;
+        }
+    }
 
     let summary = res_body.room;
     let identifier = Identifier::UserId(user_id);
@@ -156,7 +167,7 @@ async fn get_summary_and_children_federation(
         &summary.allowed_room_ids,
     );
 
-    if is_accessible_child {
+    if is_accessible_child.await {
         return Ok(Some(SummaryAccessibility::Accessible(summary)));
     }
 
@@ -164,12 +175,13 @@ async fn get_summary_and_children_federation(
 }
 
 /// Simply returns the stripped m.space.child events of a room
-fn get_stripped_space_child_events(
+async fn get_stripped_space_child_events(
     room_id: &RoomId,
     suggested_only: bool,
 ) -> AppResult<Vec<RawJson<HierarchySpaceChildEvent>>> {
-    let frame_id = super::get_frame_id(room_id, None)?;
-    let child_events = get_full_state(frame_id)?
+    let frame_id = super::get_frame_id(room_id, None).await?;
+    let child_events = get_full_state(frame_id)
+        .await?
         .into_iter()
         .filter_map(|((state_event_type, state_key), pdu)| {
             if state_event_type == StateEventType::SpaceChild {
@@ -220,28 +232,28 @@ async fn get_room_summary(
         "",
         None,
     )
-    .map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule);
+    .await.map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule);
 
     let allowed_room_ids = state::allowed_room_ids(join_rule.clone());
 
     let join_rule: SpaceRoomJoinRule = join_rule.clone().into();
     let is_accessible_child =
-        is_accessible_child(room_id, &join_rule, identifier, &allowed_room_ids);
+        is_accessible_child(room_id, &join_rule, identifier, &allowed_room_ids).await;
 
     if !is_accessible_child {
         return Err(MatrixError::forbidden("User is not allowed to see the room", None).into());
     }
 
-    let name = super::get_name(room_id).ok();
-    let topic = super::get_topic(room_id).ok();
-    let room_type = super::get_room_type(room_id).ok().flatten();
-    let world_readable = super::is_world_readable(room_id);
-    let guest_can_join = super::guest_can_join(room_id);
-    let num_joined_members = super::joined_member_count(room_id).unwrap_or(0);
-    let canonical_alias = super::get_canonical_alias(room_id).ok().flatten();
-    let avatar_url = super::get_avatar_url(room_id).ok().flatten();
-    let room_version = super::get_version(room_id).ok();
-    let encryption = super::get_encryption(room_id).ok();
+    let name = super::get_name(room_id).await.ok();
+    let topic = super::get_topic(room_id).await.ok();
+    let room_type = super::get_room_type(room_id).await.ok().flatten();
+    let world_readable = super::is_world_readable(room_id).await;
+    let guest_can_join = super::guest_can_join(room_id).await;
+    let num_joined_members = super::joined_member_count(room_id).await.unwrap_or(0);
+    let canonical_alias = super::get_canonical_alias(room_id).await.ok().flatten();
+    let avatar_url = super::get_avatar_url(room_id).await.ok().flatten();
+    let room_version = super::get_version(room_id).await.ok();
+    let encryption = super::get_encryption(room_id).await.ok();
 
     Ok(SpaceHierarchyParentSummary {
         canonical_alias,
@@ -289,7 +301,7 @@ pub async fn get_room_hierarchy(
     let room_id = &args.room_id;
     let suggested_only = args.suggested_only;
     let mut queue: RoomDeque =
-        [(room_id.to_owned(), vec![crate::room::server_name(room_id)?])].into();
+        [(room_id.to_owned(), vec![crate::room::server_name(room_id).await?])].into();
 
     let mut rooms = Vec::with_capacity(limit);
     let mut parents = BTreeSet::new();
@@ -327,7 +339,7 @@ pub async fn get_room_hierarchy(
                 let populate = parents.len() >= room_sns.len();
 
                 let mut children = Vec::new();
-                let room_type = crate::room::get_room_type(&current_room).ok();
+                let room_type = crate::room::get_room_type(&current_room).await.ok();
                 if room_type.is_none() || Some(Some(RoomType::Space)) == room_type {
                     children = get_parent_children_via(&summary, suggested_only)
                         .into_iter()
@@ -361,10 +373,12 @@ pub async fn get_room_hierarchy(
     let next_batch = if let Some((room, _)) = queue.pop_front() {
         parents.insert(room);
 
-        let next_room_sns: Vec<_> = parents
-            .iter()
-            .filter_map(|room_id| crate::room::get_room_sn(room_id).ok())
-            .collect();
+        let mut next_room_sns: Vec<_> = Vec::new();
+        for room_id in parents.iter() {
+            if let Ok(sn) = crate::room::get_room_sn(room_id).await {
+                next_room_sns.push(sn);
+            }
+        }
 
         if !next_room_sns.is_empty() && next_room_sns.iter().ne(&room_sns) {
             Some(
@@ -386,7 +400,7 @@ pub async fn get_room_hierarchy(
 }
 
 /// With the given identifier, checks if a room is accessable
-fn is_accessible_child(
+async fn is_accessible_child(
     current_room: &RoomId,
     join_rule: &SpaceRoomJoinRule,
     identifier: &Identifier<'_>,
@@ -394,14 +408,14 @@ fn is_accessible_child(
 ) -> bool {
     // Checks if ACLs allow for the server to participate
     if let Identifier::ServerName(server_name) = identifier
-        && handler::acl_check(server_name, current_room).is_err()
+        && handler::acl_check(server_name, current_room).await.is_err()
     {
         return false;
     }
 
     if let Identifier::UserId(user_id) = identifier
-        && (crate::room::user::is_joined(user_id, current_room).unwrap_or(false)
-            || crate::room::user::is_invited(user_id, current_room).unwrap_or(false))
+        && (crate::room::user::is_joined(user_id, current_room).await.unwrap_or(false)
+            || crate::room::user::is_invited(user_id, current_room).await.unwrap_or(false))
     {
         return true;
     }
@@ -410,12 +424,22 @@ fn is_accessible_child(
         SpaceRoomJoinRule::Public
         | SpaceRoomJoinRule::Knock
         | SpaceRoomJoinRule::KnockRestricted => true,
-        SpaceRoomJoinRule::Restricted => allowed_room_ids.iter().any(|room| match identifier {
-            Identifier::UserId(user) => crate::room::user::is_joined(user, room).unwrap_or(false),
-            Identifier::ServerName(server) => {
-                crate::room::is_server_joined(server, room).unwrap_or(false)
+        SpaceRoomJoinRule::Restricted => {
+            for room in allowed_room_ids.iter() {
+                let accessible = match identifier {
+                    Identifier::UserId(user) => {
+                        crate::room::user::is_joined(user, room).await.unwrap_or(false)
+                    }
+                    Identifier::ServerName(server) => {
+                        crate::room::is_server_joined(server, room).await.unwrap_or(false)
+                    }
+                };
+                if accessible {
+                    return true;
+                }
             }
-        }),
+            false
+        }
 
         // Invite only, Private, or Custom join rule
         _ => false,
@@ -441,8 +465,7 @@ pub fn get_parent_children_via(
         .collect()
 }
 
-fn cache_insert(
-    mut cache: MutexGuard<'_, CacheItem>,
+async fn cache_insert(
     current_room: &RoomId,
     child: SpaceHierarchyChildSummary,
     suggested_only: bool,
@@ -463,6 +486,12 @@ fn cache_insert(
         encryption,
     } = child;
 
+    // Compute children_state before acquiring the lock so the MutexGuard is
+    // never held across the `.await`.
+    let children_state = get_stripped_space_child_events(&room_id, suggested_only)
+        .await
+        .unwrap_or_default();
+
     let summary = SpaceHierarchyParentSummary {
         canonical_alias,
         name,
@@ -475,16 +504,17 @@ fn cache_insert(
         room_type,
         allowed_room_ids,
         room_id: room_id.clone(),
-        children_state: get_stripped_space_child_events(&room_id, suggested_only)
-            .unwrap_or_default(),
+        children_state,
         room_version,
         encryption,
     };
 
-    cache.insert(
-        (current_room.to_owned(), suggested_only),
-        Some(CachedSpaceHierarchySummary { summary }),
-    );
+    if let Ok(mut cache) = ROOM_ID_SPACE_CHUNK_CACHE.lock() {
+        cache.insert(
+            (current_room.to_owned(), suggested_only),
+            Some(CachedSpaceHierarchySummary { summary }),
+        );
+    }
 }
 
 // Here because cannot implement `From` across palpo-federation-api and

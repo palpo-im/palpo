@@ -31,15 +31,19 @@ pub fn router() -> Router {
 ///
 /// - Only works if a user of this server is currently invited or joined the room
 #[endpoint]
-fn get_event(_aa: AuthArgs, args: EventReqArgs, depot: &mut Depot) -> JsonResult<EventResBody> {
+async fn get_event(
+    _aa: AuthArgs,
+    args: EventReqArgs,
+    depot: &mut Depot,
+) -> JsonResult<EventResBody> {
     let origin = depot.origin()?;
-    let event = DbEvent::get_by_id(&args.event_id)?;
+    let event = DbEvent::get_by_id(&args.event_id).await?;
     if event.rejection_reason.is_some() {
         warn!("event {} is rejected, returning 404", &args.event_id);
         return Err(MatrixError::not_found("event not found").into());
     }
 
-    let event_json = timeline::get_pdu_json(&args.event_id)?.ok_or_else(|| {
+    let event_json = timeline::get_pdu_json(&args.event_id).await?.ok_or_else(|| {
         warn!("event not found, event id: {:?}", &args.event_id);
         MatrixError::not_found("event not found")
     })?;
@@ -48,11 +52,11 @@ fn get_event(_aa: AuthArgs, args: EventReqArgs, depot: &mut Depot) -> JsonResult
     // event JSON. v12 events do not include `room_id` in their JSON content
     // (it's derived from the create event id), so reading it from JSON would
     // fail for those rooms.
-    crate::federation::access_check(origin, &event.room_id, Some(&args.event_id))?;
+    crate::federation::access_check(origin, &event.room_id, Some(&args.event_id)).await?;
     json_ok(EventResBody {
         origin: config::get().server_name.to_owned(),
         origin_server_ts: UnixMillis::now(),
-        pdu: crate::sending::convert_to_outgoing_federation_event(event_json),
+        pdu: crate::sending::convert_to_outgoing_federation_event(event_json).await,
     })
 }
 
@@ -61,15 +65,15 @@ fn get_event(_aa: AuthArgs, args: EventReqArgs, depot: &mut Depot) -> JsonResult
 ///
 /// - This does not include the event itself
 #[endpoint]
-fn auth_chain(
+async fn auth_chain(
     _aa: AuthArgs,
     args: EventAuthReqArgs,
     depot: &mut Depot,
 ) -> JsonResult<EventAuthResBody> {
     let origin = depot.origin()?;
-    crate::federation::access_check(origin, &args.room_id, None)?;
+    crate::federation::access_check(origin, &args.room_id, None).await?;
 
-    let event = timeline::get_pdu_json(&args.event_id)?.ok_or_else(|| {
+    let event = timeline::get_pdu_json(&args.event_id).await?.ok_or_else(|| {
         warn!("event not found, event id: {:?}", &args.event_id);
         MatrixError::not_found("event not found")
     })?;
@@ -80,18 +84,23 @@ fn auth_chain(
         Some(s) => s
             .try_into()
             .map_err(|_| AppError::internal("invalid room id field in event in database"))?,
-        None => DbEvent::get_by_id(&args.event_id)?.room_id,
+        None => DbEvent::get_by_id(&args.event_id).await?.room_id,
     };
 
     let auth_chain_ids =
-        crate::room::auth_chain::get_auth_chain_ids(&room_id_owned, [&*args.event_id].into_iter())?;
+        crate::room::auth_chain::get_auth_chain_ids(&room_id_owned, [&*args.event_id].into_iter())
+            .await?;
+
+    let mut auth_chain_events = Vec::new();
+    for id in auth_chain_ids.into_iter() {
+        if let Some(json) = timeline::get_pdu_json(&id).await.ok().flatten() {
+            auth_chain_events
+                .push(crate::sending::convert_to_outgoing_federation_event(json).await);
+        }
+    }
 
     json_ok(EventAuthResBody {
-        auth_chain: auth_chain_ids
-            .into_iter()
-            .filter_map(|id| timeline::get_pdu_json(&id).ok()?)
-            .map(crate::sending::convert_to_outgoing_federation_event)
-            .collect(),
+        auth_chain: auth_chain_events,
     })
 }
 
@@ -102,10 +111,10 @@ async fn timestamp_to_event(
     depot: &mut Depot,
 ) -> JsonResult<TimestampToEventResBody> {
     let origin = depot.origin()?;
-    crate::federation::access_check(origin, &args.room_id, None)?;
+    crate::federation::access_check(origin, &args.room_id, None).await?;
 
     let (event_id, origin_server_ts) =
-        crate::event::get_event_for_timestamp(&args.room_id, args.ts, args.dir)?;
+        crate::event::get_event_for_timestamp(&args.room_id, args.ts, args.dir).await?;
     json_ok(TimestampToEventResBody {
         event_id,
         origin_server_ts,
@@ -115,7 +124,7 @@ async fn timestamp_to_event(
 /// #POST /_matrix/federation/v1/get_missing_events/{room_id}
 /// Retrieves events that the sender is missing.
 #[endpoint]
-fn missing_events(
+async fn missing_events(
     _aa: AuthArgs,
     room_id: PathParam<OwnedRoomId>,
     body: JsonBody<MissingEventsReqBody>,
@@ -124,7 +133,7 @@ fn missing_events(
     let origin = depot.origin()?;
 
     let room_id = room_id.into_inner();
-    crate::federation::access_check(origin, &room_id, None)?;
+    crate::federation::access_check(origin, &room_id, None).await?;
 
     let mut queued_events = body.latest_events.clone();
     let mut events = Vec::new();
@@ -132,7 +141,7 @@ fn missing_events(
     let mut i = 0;
     while i < queued_events.len() && events.len() < body.limit {
         let event_id = queued_events[i].clone();
-        if let Some(pdu) = timeline::get_pdu_json(&event_id)? {
+        if let Some(pdu) = timeline::get_pdu_json(&event_id).await? {
             // For v12 rooms, the event JSON does not contain `room_id` (it is
             // derived from the create event id). Look it up from the events
             // table instead and only use the JSON room_id if present.
@@ -142,7 +151,7 @@ fn missing_events(
                         AppError::internal("invalid room id field in event in database")
                     })?,
                     None => {
-                        let db_event = DbEvent::get_by_id(&event_id)?;
+                        let db_event = DbEvent::get_by_id(&event_id).await?;
                         db_event.room_id
                     }
                 };
@@ -172,7 +181,7 @@ fn missing_events(
             if i >= body.latest_events.len() {
                 events.push((
                     event_id,
-                    crate::sending::convert_to_outgoing_federation_event(pdu),
+                    crate::sending::convert_to_outgoing_federation_event(pdu).await,
                 ));
             }
         } else {
@@ -180,17 +189,16 @@ fn missing_events(
         }
         i += 1;
     }
-    let events = events
-        .into_iter()
-        .rev()
-        .filter_map(|(event_id, event)| {
-            if state::server_can_see_event(origin, &room_id, &event_id).unwrap_or(false) {
-                Some(event)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut filtered_events = Vec::new();
+    for (event_id, event) in events.into_iter().rev() {
+        if state::server_can_see_event(origin, &room_id, &event_id)
+            .await
+            .unwrap_or(false)
+        {
+            filtered_events.push(event);
+        }
+    }
+    let events = filtered_events;
     json_ok(MissingEventsResBody { events })
 }
 

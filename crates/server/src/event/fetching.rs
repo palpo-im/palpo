@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use salvo::http::StatusError;
 
@@ -35,16 +36,25 @@ pub async fn fetch_and_process_missing_events(
     is_backfill: bool,
 ) -> AppResult<()> {
     let min_depth = timeline::first_pdu_in_room(room_id)
+        .await
         .ok()
         .and_then(|pdu| pdu.map(|p| p.depth))
         .unwrap_or(0);
     let mut fetched_events = IndexMap::with_capacity(10);
 
-    let earliest_events = room::state::get_forward_extremities(room_id)?;
+    let mut earliest_events = Vec::new();
+    for event_id in room::state::get_forward_extremities(room_id).await? {
+        let Ok(pdu) = timeline::get_pdu(&event_id).await else {
+            continue;
+        };
+        if !pdu.is_outlier && !pdu.soft_failed && !pdu.rejected() {
+            earliest_events.push(event_id);
+        }
+    }
     let mut known_events = HashSet::new();
     let mut missing_events = Vec::with_capacity(incoming_pdu.prev_events.len());
     for prev_id in &incoming_pdu.prev_events {
-        let pdu = timeline::get_pdu(prev_id);
+        let pdu = timeline::get_pdu(prev_id).await;
         if let Ok(pdu) = &pdu {
             if pdu.rejected() {
                 missing_events.push(prev_id.to_owned());
@@ -81,7 +91,7 @@ pub async fn fetch_and_process_missing_events(
             continue;
         }
 
-        if fetched_events.contains_key(&event_id) || timeline::get_pdu(&event_id).is_ok() {
+        if fetched_events.contains_key(&event_id) || timeline::get_pdu(&event_id).await.is_ok() {
             known_events.insert(event_id.clone());
             continue;
         }
@@ -100,7 +110,7 @@ pub async fn fetch_and_process_missing_events(
             events::table
                 .filter(events::id.eq(&event_id))
                 .filter(events::room_id.eq(&room_id)),
-            &mut connect()?
+            &mut connect().await?
         )?;
         if is_exists {
             continue;
@@ -144,7 +154,7 @@ pub async fn fetch_and_process_auth_chain(
     for event in res_body.auth_chain {
         let (event_id, event_value) =
             crate::event::parse_fetched_pdu(room_id, room_version, &event)?;
-        if let Ok(pdu) = timeline::get_pdu(&event_id) {
+        if let Ok(pdu) = timeline::get_pdu(&event_id).await {
             auth_events.push(pdu);
             continue;
         }
@@ -152,7 +162,7 @@ pub async fn fetch_and_process_auth_chain(
             events::table
                 .filter(events::id.eq(&event_id))
                 .filter(events::room_id.eq(&room_id)),
-            &mut connect()?
+            &mut connect().await?
         )? {
             let Some(outlier_pdu) = process_to_outlier_pdu(
                 remote_server,
@@ -165,7 +175,7 @@ pub async fn fetch_and_process_auth_chain(
             else {
                 continue;
             };
-            let pdu = outlier_pdu.save_to_database(true)?.0;
+            let pdu = outlier_pdu.save_to_database(true).await?.0;
             auth_events.push(pdu);
         }
     }
@@ -196,7 +206,7 @@ pub(super) async fn fetch_and_process_missing_state_by_ids(
 
     let desired_count = desired_events.len();
     let mut failed_missing_events = Vec::new();
-    let seen_events = seen_event_ids(room_id, &desired_events)?;
+    let seen_events = seen_event_ids(room_id, &desired_events).await?;
     let missing_events: Vec<_> = desired_events
         .into_iter()
         .filter(|e| !seen_events.contains(e))
@@ -255,7 +265,7 @@ pub async fn fetch_and_process_missing_state(
             Some(v) => v.as_str().unwrap_or(""),
             None => continue,
         };
-        let field_id = ensure_field_id(&event_type.into(), state_key)?;
+        let field_id = ensure_field_id(&event_type.into(), state_key).await?;
         state_events.insert(field_id, event_id);
     }
 
@@ -269,7 +279,7 @@ pub async fn fetch_and_process_missing_state(
             Some(v) => v.as_str().unwrap_or(""),
             None => continue,
         };
-        let field_id = ensure_field_id(&event_type.into(), state_key)?;
+        let field_id = ensure_field_id(&event_type.into(), state_key).await?;
         auth_events.insert(field_id, event_id);
     }
 
@@ -359,6 +369,6 @@ pub async fn fetch_and_process_event(
     else {
         return Ok(());
     };
-    outlier_pdu.save_to_database(true)?;
+    outlier_pdu.save_to_database(true).await?;
     Ok(())
 }

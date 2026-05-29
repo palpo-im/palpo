@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::iter::FromIterator;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::http::headers::HeaderMapExt;
 use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
@@ -59,7 +60,8 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
 
     let access_token = match user_access_tokens::table
         .filter(user_access_tokens::token.eq(token))
-        .first::<DbAccessToken>(&mut connect()?)
+        .first::<DbAccessToken>(&mut connect().await?)
+        .await
     {
         Ok(token) => Some(token),
         Err(diesel::result::Error::NotFound) => None,
@@ -71,13 +73,15 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
     if let Some(access_token) = access_token {
         let user = users::table
             .find(&access_token.user_id)
-            .first::<DbUser>(&mut connect()?)
+            .first::<DbUser>(&mut connect().await?)
+            .await
             .map_err(|_| MatrixError::unknown_token("User not found", true))?;
         crate::user::ensure_account_usable(&user)?;
         let user_device = user_devices::table
             .filter(user_devices::device_id.eq(&access_token.device_id))
             .filter(user_devices::user_id.eq(&user.id))
-            .first::<DbUserDevice>(&mut connect()?)
+            .first::<DbUserDevice>(&mut connect().await?)
+            .await
             .map_err(|_| MatrixError::unknown_token("User device not found", true))?;
 
         depot.inject(AuthedInfo {
@@ -88,7 +92,7 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         });
         Ok(())
     } else {
-        let appservices = crate::appservices();
+        let appservices = crate::appservices().await;
         for appservice in appservices {
             // Use constant-time comparison to prevent timing attacks
             if appservice
@@ -114,18 +118,20 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
                     }
 
                     // Get or create the masqueraded user
-                    let user = get_or_create_appservice_user(&user_id, &appservice.id)?;
+                    let user = get_or_create_appservice_user(&user_id, &appservice.id).await?;
                     let user_device =
-                        get_or_create_appservice_device(&user_id, aa.device_id.as_deref())?;
+                        get_or_create_appservice_device(&user_id, aa.device_id.as_deref()).await?;
                     (user, user_device)
                 } else {
                     // Use the appservice's main user
                     let user = users::table
                         .filter(users::appservice_id.eq(&appservice.id))
-                        .first::<DbUser>(&mut connect()?)?;
+                        .first::<DbUser>(&mut connect().await?)
+                        .await?;
                     let user_device = user_devices::table
                         .filter(user_devices::user_id.eq(&user.id))
-                        .first::<DbUserDevice>(&mut connect()?)?;
+                        .first::<DbUserDevice>(&mut connect().await?)
+                        .await?;
                     (user, user_device)
                 };
 
@@ -163,10 +169,11 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
     // User should already be provisioned by the auth service via MAS admin endpoints
     let mut user = users::table
         .find(&user_id)
-        .first::<DbUser>(&mut connect()?)
+        .first::<DbUser>(&mut connect().await?)
+        .await
         .map_err(|_| MatrixError::unknown_token("User not found (not yet provisioned?)", true))?;
     if user.is_guest {
-        crate::data::user::set_guest(&user_id, false)?;
+        crate::data::user::set_guest(&user_id, false).await?;
         user.is_guest = false;
     }
     crate::user::ensure_account_usable(&user)?;
@@ -187,7 +194,8 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         user_devices::table
             .filter(user_devices::user_id.eq(&user_id))
             .filter(user_devices::device_id.eq(&device_id))
-            .first::<DbUserDevice>(&mut connect()?)
+            .first::<DbUserDevice>(&mut connect().await?)
+            .await
             .map_err(|_| {
                 MatrixError::unknown_token("Device not found (not yet provisioned?)", true)
             })?
@@ -195,7 +203,8 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
         // No device_id — use first available device for this user
         user_devices::table
             .filter(user_devices::user_id.eq(&user_id))
-            .first::<DbUserDevice>(&mut connect()?)
+            .first::<DbUserDevice>(&mut connect().await?)
+            .await
             .map_err(|_| MatrixError::unknown_token("No device found for user", true))?
     };
 
@@ -209,9 +218,13 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
 }
 
 /// Get or create a user for an appservice
-fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) -> AppResult<DbUser> {
+async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) -> AppResult<DbUser> {
     // Try to get existing user
-    if let Ok(user) = users::table.find(user_id).first::<DbUser>(&mut connect()?) {
+    if let Ok(user) = users::table
+        .find(user_id)
+        .first::<DbUser>(&mut connect().await?)
+        .await
+    {
         return Ok(user);
     }
 
@@ -233,11 +246,12 @@ fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) -> AppRe
         .on_conflict(users::id)
         .do_update()
         .set(&new_user)
-        .get_result::<DbUser>(&mut connect()?)?;
+        .get_result::<DbUser>(&mut connect().await?)
+        .await?;
 
     // Create a profile for the user
     let display_name = user_id.localpart().to_owned();
-    if let Err(e) = crate::data::user::set_display_name(user_id, &display_name) {
+    if let Err(e) = crate::data::user::set_display_name(user_id, &display_name).await {
         tracing::warn!(
             "failed to set profile for appservice user (non-fatal): {}",
             e
@@ -248,7 +262,7 @@ fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) -> AppRe
 }
 
 /// Get or create a device for an appservice user
-fn get_or_create_appservice_device(
+async fn get_or_create_appservice_device(
     user_id: &UserId,
     device_id: Option<&str>,
 ) -> AppResult<DbUserDevice> {
@@ -260,7 +274,8 @@ fn get_or_create_appservice_device(
     if let Ok(device) = user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(&device_id))
-        .first::<DbUserDevice>(&mut connect()?)
+        .first::<DbUserDevice>(&mut connect().await?)
+        .await
     {
         return Ok(device);
     }
@@ -279,7 +294,8 @@ fn get_or_create_appservice_device(
 
     let device = diesel::insert_into(user_devices::table)
         .values(&new_device)
-        .get_result::<DbUserDevice>(&mut connect()?)?;
+        .get_result::<DbUserDevice>(&mut connect().await?)
+        .await?;
 
     Ok(device)
 }

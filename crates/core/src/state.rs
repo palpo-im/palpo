@@ -80,17 +80,19 @@ pub type EventIdSet = HashSet<OwnedEventId>;
 ///
 /// [state resolution]: https://spec.matrix.org/latest/rooms/v2/#state-resolution
 #[instrument(skip_all)]
-pub async fn resolve<'a, MapsIter, Pdu, Fetch, Fut>(
+pub async fn resolve<'a, MapsIter, Pdu, Fetch, Fut, FetchSub, FutSub>(
     auth_rules: &AuthorizationRules,
     state_res_rules: StateResolutionV2Rules,
     state_maps: impl IntoIterator<IntoIter = MapsIter>,
     auth_chains: Vec<EventIdSet>,
     fetch_event: &Fetch,
-    fetch_conflicted_state_subgraph: impl Fn(&StateMap<Vec<OwnedEventId>>) -> Option<EventIdSet>,
+    fetch_conflicted_state_subgraph: FetchSub,
 ) -> Result<StateMap<OwnedEventId>, StateError>
 where
     Fetch: Fn(OwnedEventId) -> Fut + Sync,
     Fut: Future<Output = StateResult<Pdu>> + Send,
+    FetchSub: FnOnce(&StateMap<Vec<OwnedEventId>>) -> FutSub,
+    FutSub: Future<Output = Option<EventIdSet>> + Send,
     Pdu: Event + Clone + Sync + Send,
     Pdu::Id: Clone,
     MapsIter: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone,
@@ -115,6 +117,7 @@ where
     // Since v12, fetch the conflicted state subgraph.
     let conflicted_state_subgraph = if state_res_rules.consider_conflicted_state_subgraph {
         let conflicted_state_subgraph = fetch_conflicted_state_subgraph(&conflicted_state_set)
+            .await
             .ok_or(StateError::FetchConflictedStateSubgraphFailed)?;
 
         info!(

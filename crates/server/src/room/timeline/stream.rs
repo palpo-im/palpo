@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
@@ -10,15 +11,15 @@ use crate::event::BatchToken;
 use crate::{AppResult, SnPduEvent, data, utils};
 
 /// Returns an iterator over all PDUs in a room.
-pub fn load_all_pdus(
+pub async fn load_all_pdus(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     until_tk: Option<BatchToken>,
 ) -> AppResult<IndexMap<i64, SnPduEvent>> {
-    load_pdus_forward(user_id, room_id, None, until_tk, None, usize::MAX)
+    load_pdus_forward(user_id, room_id, None, until_tk, None, usize::MAX).await
 }
 
-pub fn load_pdus_forward(
+pub async fn load_pdus_forward(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
@@ -35,8 +36,9 @@ pub fn load_pdus_forward(
         filter,
         Direction::Forward,
     )
+    .await
 }
-pub fn load_pdus_backward(
+pub async fn load_pdus_backward(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
@@ -53,13 +55,14 @@ pub fn load_pdus_backward(
         filter,
         Direction::Backward,
     )
+    .await
 }
 
 /// Returns an iterator over all events and their tokens in a room that happened before the
 /// event with id `until` in reverse-chronological order.
 /// Skips events before user joined the room.
 #[tracing::instrument]
-pub fn load_pdus(
+pub async fn load_pdus(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
@@ -69,7 +72,10 @@ pub fn load_pdus(
     dir: Direction,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
-    let ignored_users = user_id.map(crate::user::ignored_users);
+    let ignored_users = match user_id {
+        Some(user_id) => Some(crate::user::ignored_users(user_id).await),
+        None => None,
+    };
     let mut offset = 0;
     let mut start_sn = if dir == Direction::Forward {
         0
@@ -80,10 +86,12 @@ pub fn load_pdus(
         let max_in_room: Option<Seqnum> = events::table
             .filter(events::room_id.eq(room_id))
             .select(diesel::dsl::max(events::sn))
-            .first::<Option<Seqnum>>(&mut connect()?)?;
-        max_in_room
-            .map(|sn| sn + 1)
-            .unwrap_or_else(|| data::curr_sn().unwrap_or(0) + 1)
+            .first::<Option<Seqnum>>(&mut connect().await?)
+            .await?;
+        match max_in_room {
+            Some(sn) => sn + 1,
+            None => data::curr_sn().await.unwrap_or(0) + 1,
+        }
     };
 
     while list.len() < limit {
@@ -150,7 +158,8 @@ pub fn load_pdus(
                 .offset(offset)
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
-                .load::<(OwnedEventId, Seqnum)>(&mut connect()?)?
+                .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+                .await?
                 .into_iter()
                 .rev()
                 .collect()
@@ -161,7 +170,8 @@ pub fn load_pdus(
                 .order(events::sn.desc())
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
-                .load::<(OwnedEventId, Seqnum)>(&mut connect()?)?
+                .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+                .await?
                 .into_iter()
                 .collect()
         };
@@ -179,10 +189,10 @@ pub fn load_pdus(
             };
         }
         for (event_id, event_sn) in events {
-            match super::get_pdu(&event_id) {
+            match super::get_pdu(&event_id).await {
                 Ok(mut pdu) => {
                     if let Some(user_id) = user_id
-                        && !pdu.user_can_see(user_id).unwrap_or(false)
+                        && !pdu.user_can_see(user_id).await.unwrap_or(false)
                     {
                         continue;
                     }
@@ -195,7 +205,7 @@ pub fn load_pdus(
                         if pdu.sender != user_id {
                             pdu.remove_transaction_id()?;
                         }
-                        let _ = pdu.add_unsigned_membership(user_id);
+                        let _ = pdu.add_unsigned_membership(user_id).await;
                     }
                     let _ = pdu.add_age();
                     list.insert(event_sn, pdu);

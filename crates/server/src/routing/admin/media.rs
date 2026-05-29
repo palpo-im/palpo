@@ -114,14 +114,15 @@ pub struct DeleteMediaByDateSizeQuery {
 
 /// GET /_synapse/admin/v1/media/{server_name}/{media_id}
 #[endpoint(operation_id = "get_media_info")]
-pub fn get_media_info(
+pub async fn get_media_info(
     server_name: PathParam<OwnedServerName>,
     media_id: PathParam<String>,
 ) -> JsonResult<MediaInfoResponse> {
     let server_name = server_name.into_inner();
     let media_id = media_id.into_inner();
 
-    let metadata = data::media::get_metadata(&server_name, &media_id)?
+    let metadata = data::media::get_metadata(&server_name, &media_id)
+        .await?
         .ok_or_else(|| MatrixError::not_found("Unknown media"))?;
 
     json_ok(MediaInfoResponse {
@@ -131,7 +132,7 @@ pub fn get_media_info(
 
 /// DELETE /_synapse/admin/v1/media/{server_name}/{media_id}
 #[endpoint(operation_id = "delete_media")]
-pub fn delete_media(
+pub async fn delete_media(
     server_name: PathParam<OwnedServerName>,
     media_id: PathParam<String>,
 ) -> JsonResult<DeleteMediaResponse> {
@@ -142,10 +143,11 @@ pub fn delete_media(
         return Err(MatrixError::invalid_param("Can only delete local media").into());
     }
 
-    let _ = data::media::get_metadata(&server_name, &media_id)?
+    let _ = data::media::get_metadata(&server_name, &media_id)
+        .await?
         .ok_or_else(|| MatrixError::not_found("Unknown media"))?;
 
-    let (deleted_media, total) = data::media::delete_media_by_ids(&server_name, &[media_id])?;
+    let (deleted_media, total) = data::media::delete_media_by_ids(&server_name, &[media_id]).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -155,7 +157,7 @@ pub fn delete_media(
 
 /// POST /_synapse/admin/v1/media/delete
 #[endpoint(operation_id = "delete_media_by_date_size")]
-pub fn delete_media_by_date_size(
+pub async fn delete_media_by_date_size(
     query: DeleteMediaByDateSizeQuery,
 ) -> JsonResult<DeleteMediaResponse> {
     let before_ts = query.before_ts;
@@ -171,7 +173,7 @@ pub fn delete_media_by_date_size(
 
     let local_server = &config::get().server_name;
     let (deleted_media, total) =
-        data::media::delete_old_local_media(local_server, before_ts, size_gt)?;
+        data::media::delete_old_local_media(local_server, before_ts, size_gt).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -195,7 +197,7 @@ pub fn list_media_in_room(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomMed
 
 /// GET /_synapse/admin/v1/users/{user_id}/media
 #[endpoint(operation_id = "list_user_media")]
-pub fn list_user_media(
+pub async fn list_user_media(
     user_id: PathParam<OwnedUserId>,
     query: ListUserMediaQuery,
 ) -> JsonResult<UserMediaResponse> {
@@ -209,12 +211,12 @@ pub fn list_user_media(
         return Err(MatrixError::invalid_param("Can only look up local users").into());
     }
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("Unknown user").into());
     }
 
     let (media_list, total) =
-        data::media::list_media_by_user(&user_id, from, limit, order_by, dir)?;
+        data::media::list_media_by_user(&user_id, from, limit, order_by, dir).await?;
 
     let media: Vec<MediaInfo> = media_list.into_iter().map(Into::into).collect();
     let next_token = if (from + limit) < total {
@@ -232,7 +234,7 @@ pub fn list_user_media(
 
 /// DELETE /_synapse/admin/v1/users/{user_id}/media
 #[endpoint(operation_id = "delete_user_media")]
-pub fn delete_user_media(
+pub async fn delete_user_media(
     user_id: PathParam<OwnedUserId>,
     query: ListUserMediaQuery,
 ) -> JsonResult<DeleteMediaResponse> {
@@ -246,15 +248,16 @@ pub fn delete_user_media(
         return Err(MatrixError::invalid_param("Can only look up local users").into());
     }
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(MatrixError::not_found("Unknown user").into());
     }
 
-    let (media_list, _) = data::media::list_media_by_user(&user_id, from, limit, order_by, dir)?;
+    let (media_list, _) =
+        data::media::list_media_by_user(&user_id, from, limit, order_by, dir).await?;
     let media_ids: Vec<String> = media_list.iter().map(|m| m.media_id.clone()).collect();
 
     let local_server = &config::get().server_name;
-    let (deleted_media, total) = data::media::delete_media_by_ids(local_server, &media_ids)?;
+    let (deleted_media, total) = data::media::delete_media_by_ids(local_server, &media_ids).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -264,7 +267,9 @@ pub fn delete_user_media(
 
 /// POST /_synapse/admin/v1/purge_media_cache
 #[endpoint(operation_id = "purge_media_cache")]
-pub fn purge_media_cache(before_ts: QueryParam<i64, true>) -> JsonResult<PurgeMediaCacheResponse> {
+pub async fn purge_media_cache(
+    before_ts: QueryParam<i64, true>,
+) -> JsonResult<PurgeMediaCacheResponse> {
     let before_ts = before_ts.into_inner();
 
     if before_ts < 0 {
@@ -282,7 +287,7 @@ pub fn purge_media_cache(before_ts: QueryParam<i64, true>) -> JsonResult<PurgeMe
     }
 
     let local_server = &config::get().server_name;
-    let deleted = data::media::purge_remote_media_cache(local_server, before_ts)?;
+    let deleted = data::media::purge_remote_media_cache(local_server, before_ts).await?;
 
     json_ok(PurgeMediaCacheResponse { deleted })
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::de::DeserializeOwned;
 
 use crate::core::events::{AnyRawAccountDataEvent, RoomAccountDataEventType};
@@ -34,61 +35,73 @@ pub struct NewDbUserData {
 
 /// Places one event in the account data of the user and removes the previous entry.
 #[tracing::instrument(skip(room_id, user_id, event_type, json_data))]
-pub fn set_data(
+pub async fn set_data(
     user_id: &UserId,
     room_id: Option<OwnedRoomId>,
     event_type: &str,
     json_data: JsonValue,
 ) -> DataResult<DbUserData> {
-    if let Some(room_id) = &room_id {
-        let user_data = user_datas::table
+    // Locate the current row explicitly. Global account data is stored with
+    // `room_id = NULL`, and the `user_datas_udx` unique index treats NULLs as
+    // distinct (Postgres default), so `ON CONFLICT (user_id, room_id,
+    // data_type)` never matches a NULL `room_id` and would insert a duplicate
+    // row on every update. We therefore find the latest existing row and
+    // update it in place (or insert when none exists).
+    let existing = if let Some(room_id) = &room_id {
+        user_datas::table
             .filter(user_datas::user_id.eq(user_id))
             .filter(user_datas::room_id.eq(room_id))
             .filter(user_datas::data_type.eq(event_type))
-            .first::<DbUserData>(&mut connect()?)
-            .optional()?;
-        if let Some(user_data) = user_data
-            && user_data.json_data == json_data
-        {
-            return Ok(user_data);
-        }
+            .order_by(user_datas::id.desc())
+            .first::<DbUserData>(&mut connect().await?)
+            .await
+            .optional()?
     } else {
-        let user_data = user_datas::table
+        user_datas::table
             .filter(user_datas::user_id.eq(user_id))
             .filter(user_datas::room_id.is_null())
             .filter(user_datas::data_type.eq(event_type))
-            .first::<DbUserData>(&mut connect()?)
-            .optional()?;
-        if let Some(user_data) = user_data
-            && user_data.json_data == json_data
-        {
-            return Ok(user_data);
-        }
+            .order_by(user_datas::id.desc())
+            .first::<DbUserData>(&mut connect().await?)
+            .await
+            .optional()?
+    };
+
+    if let Some(existing) = &existing
+        && existing.json_data == json_data
+    {
+        return Ok(existing.clone());
     }
 
-    let new_data = NewDbUserData {
-        user_id: user_id.to_owned(),
-        room_id: room_id.clone(),
-        data_type: event_type.to_owned(),
-        json_data,
-        occur_sn: Some(crate::next_sn()?),
-        created_at: UnixMillis::now(),
-    };
-    diesel::insert_into(user_datas::table)
-        .values(&new_data)
-        .on_conflict((
-            user_datas::user_id,
-            user_datas::room_id,
-            user_datas::data_type,
-        ))
-        .do_update()
-        .set(&new_data)
-        .get_result::<DbUserData>(&mut connect()?)
-        .map_err(Into::into)
+    if let Some(existing) = existing {
+        diesel::update(user_datas::table.find(existing.id))
+            .set((
+                user_datas::json_data.eq(&json_data),
+                user_datas::occur_sn.eq(crate::next_sn().await?),
+                user_datas::created_at.eq(UnixMillis::now()),
+            ))
+            .get_result::<DbUserData>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    } else {
+        let new_data = NewDbUserData {
+            user_id: user_id.to_owned(),
+            room_id: room_id.clone(),
+            data_type: event_type.to_owned(),
+            json_data,
+            occur_sn: Some(crate::next_sn().await?),
+            created_at: UnixMillis::now(),
+        };
+        diesel::insert_into(user_datas::table)
+            .values(&new_data)
+            .get_result::<DbUserData>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[tracing::instrument]
-pub fn get_data<E: DeserializeOwned>(
+pub async fn get_data<E: DeserializeOwned>(
     user_id: &UserId,
     room_id: Option<&RoomId>,
     kind: &str,
@@ -102,13 +115,14 @@ pub fn get_data<E: DeserializeOwned>(
         )
         .filter(user_datas::data_type.eq(kind))
         .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect()?)?;
+        .first::<DbUserData>(&mut connect().await?)
+        .await?;
     Ok(serde_json::from_value(row.json_data)?)
 }
 
 /// Searches the account data for a specific kind.
 #[tracing::instrument]
-pub fn get_room_data<E: DeserializeOwned>(
+pub async fn get_room_data<E: DeserializeOwned>(
     user_id: &UserId,
     room_id: &RoomId,
     kind: &str,
@@ -118,7 +132,8 @@ pub fn get_room_data<E: DeserializeOwned>(
         .filter(user_datas::room_id.eq(room_id))
         .filter(user_datas::data_type.eq(kind))
         .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect()?)
+        .first::<DbUserData>(&mut connect().await?)
+        .await
         .optional()?;
     if let Some(row) = row {
         Ok(Some(serde_json::from_value(row.json_data)?))
@@ -128,13 +143,17 @@ pub fn get_room_data<E: DeserializeOwned>(
 }
 
 #[tracing::instrument]
-pub fn get_global_data<E: DeserializeOwned>(user_id: &UserId, kind: &str) -> DataResult<Option<E>> {
+pub async fn get_global_data<E: DeserializeOwned>(
+    user_id: &UserId,
+    kind: &str,
+) -> DataResult<Option<E>> {
     let row = user_datas::table
         .filter(user_datas::user_id.eq(user_id))
         .filter(user_datas::room_id.is_null())
         .filter(user_datas::data_type.eq(kind))
         .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect()?)
+        .first::<DbUserData>(&mut connect().await?)
+        .await
         .optional()?;
     if let Some(row) = row {
         Ok(Some(serde_json::from_value(row.json_data)?))
@@ -144,18 +163,19 @@ pub fn get_global_data<E: DeserializeOwned>(user_id: &UserId, kind: &str) -> Dat
 }
 
 /// Get all global account data for a user
-pub fn get_global_account_data(user_id: &UserId) -> DataResult<HashMap<String, JsonValue>> {
+pub async fn get_global_account_data(user_id: &UserId) -> DataResult<HashMap<String, JsonValue>> {
     user_datas::table
         .filter(user_datas::user_id.eq(user_id))
         .filter(user_datas::room_id.is_null())
         .select((user_datas::data_type, user_datas::json_data))
-        .load::<(String, JsonValue)>(&mut connect()?)
+        .load::<(String, JsonValue)>(&mut connect().await?)
+        .await
         .map(|rows| rows.into_iter().collect())
         .map_err(Into::into)
 }
 
 /// Get all room-specific account data for a user
-pub fn get_room_account_data(
+pub async fn get_room_account_data(
     user_id: &UserId,
 ) -> DataResult<HashMap<String, HashMap<String, JsonValue>>> {
     let rows = user_datas::table
@@ -166,7 +186,8 @@ pub fn get_room_account_data(
             user_datas::data_type,
             user_datas::json_data,
         ))
-        .load::<(Option<OwnedRoomId>, String, JsonValue)>(&mut connect()?)?;
+        .load::<(Option<OwnedRoomId>, String, JsonValue)>(&mut connect().await?)
+        .await?;
 
     let mut result = HashMap::new();
     for (room_id, data_type, json_data) in rows {
@@ -182,7 +203,7 @@ pub fn get_room_account_data(
 
 /// Returns all changes to the account data that happened after `since`.
 #[tracing::instrument(skip(room_id, user_id, since_sn))]
-pub fn data_changes(
+pub async fn data_changes(
     room_id: Option<&RoomId>,
     user_id: &UserId,
     since_sn: Seqnum,
@@ -203,11 +224,13 @@ pub fn data_changes(
         query
             .filter(user_datas::occur_sn.le(until_sn))
             .order_by(user_datas::occur_sn.asc())
-            .load::<DbUserData>(&mut connect()?)?
+            .load::<DbUserData>(&mut connect().await?)
+            .await?
     } else {
         query
             .order_by(user_datas::occur_sn.asc())
-            .load::<DbUserData>(&mut connect()?)?
+            .load::<DbUserData>(&mut connect().await?)
+            .await?
     };
 
     for db_data in db_datas {

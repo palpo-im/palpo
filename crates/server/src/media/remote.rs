@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::Response;
 
 use super::{Dimension, FileMeta};
@@ -535,13 +536,15 @@ pub async fn delete_past_remote_media(
             .filter(media_metadatas::origin_server.ne(config::server_name()))
             .filter(media_metadatas::created_at.lt(time as i64))
             .select((media_metadatas::origin_server, media_metadatas::media_id))
-            .load::<(OwnedServerName, String)>(&mut connect()?)?
+            .load::<(OwnedServerName, String)>(&mut connect().await?)
+            .await?
     } else {
         media_metadatas::table
             .filter(media_metadatas::origin_server.eq(config::server_name()))
             .filter(media_metadatas::created_at.gt(time as i64))
             .select((media_metadatas::origin_server, media_metadatas::media_id))
-            .load::<(OwnedServerName, String)>(&mut connect()?)?
+            .load::<(OwnedServerName, String)>(&mut connect().await?)
+            .await?
     };
     let mut count = 0;
     for (origin_server, media_id) in &mxcs {
@@ -562,7 +565,7 @@ pub async fn delete_remote_media(
     media_id: &str,
     yes_i_want_to_delete_local_media: bool,
 ) -> AppResult<()> {
-    crate::data::media::delete_media(server_name, media_id)?;
+    crate::data::media::delete_media(server_name, media_id).await?;
 
     if !yes_i_want_to_delete_local_media {
         return Ok(());

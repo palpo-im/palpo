@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
@@ -42,20 +43,20 @@ pub(super) async fn upsert_alias(
         return Err(MatrixError::invalid_param("alias is from another server").into());
     }
 
-    if crate::room::resolve_local_alias(&alias_id).is_ok() {
+    if crate::room::resolve_local_alias(&alias_id).await.is_ok() {
         return Err(MatrixError::forbidden("alias already exists", None).into());
     }
 
     let query = room_aliases::table
         .filter(room_aliases::alias_id.eq(&alias_id))
         .filter(room_aliases::room_id.ne(&body.room_id));
-    if diesel_exists!(query, &mut connect()?)? {
+    if diesel_exists!(query, &mut connect().await?)? {
         return Err(StatusError::conflict()
             .brief("a room alias with that name already exists")
             .into());
     }
 
-    crate::room::set_alias(body.room_id.clone(), alias_id, authed.user_id())?;
+    crate::room::set_alias(body.room_id.clone(), alias_id, authed.user_id()).await?;
 
     empty_ok()
 }

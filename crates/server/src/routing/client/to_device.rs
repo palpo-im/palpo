@@ -18,7 +18,7 @@ pub fn authed_router() -> Router {
 /// #PUT /_matrix/client/r0/sendToDevice/{event_type}/{txn_id}
 /// Send a to-device event to a set of client devices.
 #[endpoint]
-fn send_to_device(
+async fn send_to_device(
     _aa: AuthArgs,
     args: SendEventToDeviceReqArgs,
     body: JsonBody<SendEventToDeviceReqBody>,
@@ -30,7 +30,9 @@ fn send_to_device(
         &args.txn_id,
         authed.user_id(),
         Some(authed.device_id()),
-    )? {
+    )
+    .await?
+    {
         return empty_ok();
     }
 
@@ -52,7 +54,8 @@ fn send_to_device(
                         messages,
                     }),
                     &message_id.to_string(),
-                )?;
+                )
+                .await?;
 
                 continue;
             }
@@ -67,11 +70,12 @@ fn send_to_device(
                         event
                             .deserialize_as()
                             .map_err(|_| MatrixError::invalid_param("Event is invalid"))?,
-                    )?
+                    )
+                    .await?
                 }
 
                 DeviceIdOrAllDevices::AllDevices => {
-                    for target_device_id in data::user::all_device_ids(target_user_id)? {
+                    for target_device_id in data::user::all_device_ids(target_user_id).await? {
                         data::user::device::add_to_device_event(
                             authed.user_id(),
                             target_user_id,
@@ -80,7 +84,8 @@ fn send_to_device(
                             event
                                 .deserialize_as()
                                 .map_err(|_| MatrixError::invalid_param("Event is invalid"))?,
-                        )?;
+                        )
+                        .await?;
                     }
                 }
             }
@@ -94,7 +99,8 @@ fn send_to_device(
         Some(authed.device_id()),
         None,
         None,
-    )?;
+    )
+    .await?;
 
     empty_ok()
 }

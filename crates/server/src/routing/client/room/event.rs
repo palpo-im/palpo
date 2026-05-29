@@ -32,14 +32,14 @@ use crate::{
 ///
 /// - You have to currently be joined to the room (TODO: Respect history visibility)
 #[endpoint]
-pub(super) fn get_room_event(
+pub(super) async fn get_room_event(
     _aa: AuthArgs,
     args: RoomEventReqArgs,
     depot: &mut Depot,
 ) -> JsonResult<RoomEventResBody> {
     let authed = depot.authed_info()?;
 
-    let event = DbEvent::get_by_id(&args.event_id)?;
+    let event = DbEvent::get_by_id(&args.event_id).await?;
     if event.rejection_reason.is_some() {
         warn!("event {} is rejected", &args.event_id);
         return Err(MatrixError::not_found("event not found").into());
@@ -49,19 +49,19 @@ pub(super) fn get_room_event(
         return Err(MatrixError::not_found("event not found").into());
     }
 
-    let event = timeline::get_pdu(&args.event_id)?;
+    let event = timeline::get_pdu(&args.event_id).await?;
 
-    if !state::user_can_see_event(authed.user_id(), &args.event_id)? {
+    if !state::user_can_see_event(authed.user_id(), &args.event_id).await? {
         return Err(MatrixError::not_found("event not found").into());
     }
-    if crate::event::is_ignored_sender_pdu(&event, authed.user_id()) {
+    if crate::event::is_ignored_sender_pdu(&event, authed.user_id()).await {
         return Err(MatrixError::sender_ignored(
             "the sender of the requested event is ignored",
             Some(event.sender.clone()),
         )
         .into());
     }
-    if crate::event::is_ignored_pdu(&event, authed.user_id()) {
+    if crate::event::is_ignored_pdu(&event, authed.user_id()).await {
         return Err(MatrixError::not_found("event not found").into());
     }
 
@@ -81,7 +81,7 @@ pub(super) async fn report(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
-    let pdu = timeline::get_pdu(&args.event_id)?;
+    let pdu = timeline::get_pdu(&args.event_id).await?;
     let body = body.into_inner();
 
     if let Some(true) = body.score.map(|s| !(-100..=0).contains(&s)) {
@@ -107,7 +107,8 @@ pub(super) async fn report(
             "score": report_score,
         })),
         report_score,
-    ))?;
+    ))
+    .await?;
 
     let _ = crate::admin::send_message(RoomMessageEventContent::text_html(
         format!(
@@ -148,7 +149,7 @@ pub(super) async fn report(
 /// - Only works if the user is joined (TODO: always allow, but only show events if the user was
 /// joined, depending on history_visibility)
 #[endpoint]
-pub(super) fn get_context(
+pub(super) async fn get_context(
     _aa: AuthArgs,
     args: ContextReqArgs,
     depot: &mut Depot,
@@ -165,16 +166,17 @@ pub(super) fn get_context(
 
     let mut lazy_loaded = HashSet::new();
     let base_token = crate::event::get_live_token(&args.event_id)
+        .await
         .map_err(|_| MatrixError::not_found("base event id not found"))?;
-    let base_event = timeline::get_pdu(&args.event_id)?;
+    let base_event = timeline::get_pdu(&args.event_id).await?;
     let room_id = base_event.room_id.clone();
 
-    if !state::user_can_see_event(sender_id, &args.event_id)? {
+    if !state::user_can_see_event(sender_id, &args.event_id).await? {
         return Err(
             MatrixError::forbidden("you don't have permission to view this event", None).into(),
         );
     }
-    if crate::event::is_ignored_sender_pdu(&base_event, sender_id) {
+    if crate::event::is_ignored_sender_pdu(&base_event, sender_id).await {
         return Err(MatrixError::sender_ignored(
             "the sender of the requested event is ignored",
             Some(base_event.sender.clone()),
@@ -187,7 +189,9 @@ pub(super) fn get_context(
         authed.device_id(),
         &room_id,
         &base_event.sender,
-    )? || lazy_load_send_redundant
+    )
+    .await?
+        || lazy_load_send_redundant
     {
         lazy_loaded.insert(base_event.sender.as_str().to_owned());
     }
@@ -195,17 +199,24 @@ pub(super) fn get_context(
     // Use limit with maximum 100
     let limit = args.limit.min(100);
     let base_event = base_event.to_room_event();
-    let events_before = timeline::stream::load_pdus_backward(
+    let events_before_loaded = timeline::stream::load_pdus_backward(
         Some(sender_id),
         &room_id,
         Some(base_token),
         None,
         None,
         limit / 2,
-    )?
-    .into_iter()
-    .filter(|(_, pdu)| state::user_can_see_event(sender_id, &pdu.event_id).unwrap_or(false))
-    .collect::<Vec<_>>();
+    )
+    .await?;
+    let mut events_before = Vec::new();
+    for (sn, pdu) in events_before_loaded {
+        if state::user_can_see_event(sender_id, &pdu.event_id)
+            .await
+            .unwrap_or(false)
+        {
+            events_before.push((sn, pdu));
+        }
+    }
 
     for (_, event) in &events_before {
         if !crate::room::lazy_loading::lazy_load_was_sent_before(
@@ -213,7 +224,9 @@ pub(super) fn get_context(
             authed.device_id(),
             &room_id,
             &event.sender,
-        )? || lazy_load_send_redundant
+        )
+        .await?
+            || lazy_load_send_redundant
         {
             lazy_loaded.insert(event.sender.as_str().to_owned());
         }
@@ -234,7 +247,8 @@ pub(super) fn get_context(
         None,
         None,
         limit / 2,
-    )?;
+    )
+    .await?;
 
     for (_, event) in &events_after {
         if !crate::room::lazy_loading::lazy_load_was_sent_before(
@@ -242,7 +256,9 @@ pub(super) fn get_context(
             authed.device_id(),
             &room_id,
             &event.sender,
-        )? || lazy_load_send_redundant
+        )
+        .await?
+            || lazy_load_send_redundant
         {
             lazy_loaded.insert(event.sender.as_str().to_owned());
         }
@@ -252,11 +268,15 @@ pub(super) fn get_context(
         events_after
             .last()
             .map_or(&*args.event_id, |(_, e)| &*e.event_id),
-    ) {
+    )
+    .await
+    {
         Ok(s) => s,
-        Err(_) => crate::room::get_frame_id(&room_id, None).unwrap_or_default(),
+        Err(_) => crate::room::get_frame_id(&room_id, None)
+            .await
+            .unwrap_or_default(),
     };
-    let state_ids = state::get_full_state_ids(frame_id).unwrap_or_default();
+    let state_ids = state::get_full_state_ids(frame_id).await.unwrap_or_default();
     let end_token = events_after
         .last()
         .map(|(_, e)| e.live_token())
@@ -272,10 +292,10 @@ pub(super) fn get_context(
             event_ty,
             state_key,
             ..
-        } = state::get_field(field_id)?;
+        } = state::get_field(field_id).await?;
 
         if event_ty != StateEventType::RoomMember {
-            let pdu = match timeline::get_pdu(&event_id) {
+            let pdu = match timeline::get_pdu(&event_id).await {
                 Ok(pdu) => pdu,
                 Err(_) => {
                     error!("pdu in state not found: {}", event_id);
@@ -284,7 +304,7 @@ pub(super) fn get_context(
             };
             state.push(pdu.to_state_event());
         } else if !lazy_load_enabled || lazy_loaded.contains(&state_key) {
-            let pdu = match timeline::get_pdu(&event_id) {
+            let pdu = match timeline::get_pdu(&event_id).await {
                 Ok(pdu) => pdu,
                 Err(_) => {
                     error!("pdu in state not found: {}", event_id);
@@ -332,7 +352,7 @@ pub(super) async fn send_redact(
         },
         authed.user_id(),
         &args.room_id,
-        &crate::room::get_version(&args.room_id)?,
+        &crate::room::get_version(&args.room_id).await?,
         &state_lock,
     )
     .await?
@@ -351,28 +371,30 @@ pub(super) async fn timestamp_to_event(
     depot: &mut Depot,
 ) -> JsonResult<TimestampToEventResBody> {
     let authed = depot.authed_info()?;
-    if !room::user::is_joined(authed.user_id(), &args.room_id)? {
+    if !room::user::is_joined(authed.user_id(), &args.room_id).await? {
         return Err(MatrixError::forbidden("You are not joined to this room.", None).into());
     }
-    let local_event =
-        crate::event::get_event_for_timestamp(&args.room_id, args.ts, args.dir).optional()?;
+    let local_event = crate::event::get_event_for_timestamp(&args.room_id, args.ts, args.dir)
+        .await
+        .optional()?;
 
     let mut is_event_next_to_backward_gap = false;
     let mut is_event_next_to_forward_gap = false;
     if let Some(local_event) = &local_event {
-        let local_event = timeline::get_pdu(&local_event.0)?;
+        let local_event = timeline::get_pdu(&local_event.0).await?;
         match args.dir {
             Direction::Backward => {
-                is_event_next_to_forward_gap = timeline::is_event_next_to_forward_gap(&local_event)?
+                is_event_next_to_forward_gap =
+                    timeline::is_event_next_to_forward_gap(&local_event).await?
             }
             Direction::Forward => {
                 is_event_next_to_backward_gap =
-                    timeline::is_event_next_to_backward_gap(&local_event)?
+                    timeline::is_event_next_to_backward_gap(&local_event).await?
             }
         }
     }
     if local_event.is_none() || is_event_next_to_backward_gap || is_event_next_to_forward_gap {
-        let remote_servers = room::admin_servers(&args.room_id, false)?;
+        let remote_servers = room::admin_servers(&args.room_id, false).await?;
         let Ok((
             remote_server,
             TimestampToEventResBody {
@@ -397,7 +419,7 @@ pub(super) async fn timestamp_to_event(
                 Err(StatusError::not_found().brief("no event found").into())
             };
         };
-        let room_version = crate::room::get_version(&args.room_id)?;
+        let room_version = crate::room::get_version(&args.room_id).await?;
         let Ok((event_id, event_value)) = parse_fetched_pdu(
             &args.room_id,
             &room_version,
@@ -418,6 +440,19 @@ pub(super) async fn timestamp_to_event(
             true,
         )
         .await?;
+
+        // Per the spec, after finding the event the server "should try to
+        // backfill this event". Fetching the single event above leaves it as an
+        // outlier whenever its prev_events aren't local yet, which keeps it out
+        // of `/messages` pagination (the timeline page stops at the gap). Pull
+        // the surrounding history so the event becomes a connected, non-outlier
+        // timeline event that subsequent backward pagination can return.
+        if let Err(e) =
+            timeline::backfill_from_extremities(&args.room_id, std::slice::from_ref(&event_id), 100)
+                .await
+        {
+            warn!("failed to backfill history around timestamp_to_event result: {e}");
+        }
 
         return json_ok(TimestampToEventResBody {
             event_id,

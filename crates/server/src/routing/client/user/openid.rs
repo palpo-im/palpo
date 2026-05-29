@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::PathParam;
 use salvo::prelude::*;
 
@@ -47,7 +48,8 @@ pub(super) async fn request_token(
             user_openid_tokens::token.eq(&access_token),
             user_openid_tokens::expires_at.eq(expires_at),
         ))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     json_ok(RequstOpenidTokenResBody::new(
         access_token,

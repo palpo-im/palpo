@@ -21,7 +21,7 @@ pub async fn send_state_event_for_key(
     json: RawJson<AnyStateEventContent>,
     state_key: String,
 ) -> AppResult<OwnedEventId> {
-    allowed_to_send_state_event(room_id, event_type, &state_key, &json)?;
+    allowed_to_send_state_event(room_id, event_type, &state_key, &json).await?;
     let pdu = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: event_type.to_string().into(),
@@ -40,7 +40,7 @@ pub async fn send_state_event_for_key(
     Ok(pdu.event_id)
 }
 
-fn allowed_to_send_state_event(
+async fn allowed_to_send_state_event(
     room_id: &RoomId,
     event_type: &StateEventType,
     state_key: &str,
@@ -66,7 +66,7 @@ fn allowed_to_send_state_event(
         }
         // admin room is a sensitive room, it should not ever be made public
         StateEventType::RoomJoinRules => {
-            if crate::room::is_admin_room(room_id)?
+            if crate::room::is_admin_room(room_id).await?
                 && let Ok(join_rule) =
                     serde_json::from_str::<RoomJoinRulesEventContent>(json.inner().get())
                 && join_rule.join_rule == JoinRule::Public
@@ -82,7 +82,7 @@ fn allowed_to_send_state_event(
         StateEventType::RoomHistoryVisibility => {
             if let Ok(visibility_content) =
                 serde_json::from_str::<RoomHistoryVisibilityEventContent>(json.inner().get())
-                && crate::room::is_admin_room(room_id)?
+                && crate::room::is_admin_room(room_id).await?
                 && visibility_content.history_visibility == HistoryVisibility::WorldReadable
             {
                 return Err(MatrixError::forbidden(
@@ -112,7 +112,7 @@ fn allowed_to_send_state_event(
                         .into());
                     }
 
-                    if !crate::room::resolve_local_alias(&alias).is_ok_and(|room| room == room_id)
+                    if !crate::room::resolve_local_alias(&alias).await.is_ok_and(|room| room == room_id)
                     // Make sure it's the right room
                     {
                         return Err(MatrixError::bad_alias(
@@ -152,7 +152,7 @@ fn allowed_to_send_state_event(
                     .into());
                 }
 
-                if crate::room::user::is_joined(&state_key, room_id)? {
+                if crate::room::user::is_joined(&state_key, room_id).await? {
                     return Err(MatrixError::invalid_param(
                         "{state_key} is already joined, an authorising user is not required.",
                     )
@@ -166,7 +166,7 @@ fn allowed_to_send_state_event(
                     .into());
                 }
 
-                if !crate::room::user::is_joined(&authorising_user, room_id)? {
+                if !crate::room::user::is_joined(&authorising_user, room_id).await? {
                     return Err(MatrixError::invalid_param(
                         "Authorising user {authorising_user} is not in the room, they cannot \
 						 authorise the join.",
@@ -176,7 +176,7 @@ fn allowed_to_send_state_event(
             }
         }
         StateEventType::RoomPowerLevels => {
-            let room_version = room::get_version(room_id)?;
+            let room_version = room::get_version(room_id).await?;
             let version_rules = crate::room::get_version_rules(&room_version)?;
             if version_rules
                 .authorization
@@ -192,7 +192,7 @@ fn allowed_to_send_state_event(
                     .into());
                 };
 
-                let create_event = crate::room::get_create(room_id)?;
+                let create_event = crate::room::get_create(room_id).await?;
                 for crator in create_event.creators()? {
                     if power_level_content.users.contains_key(&crator) {
                         return Err(MatrixError::bad_json(

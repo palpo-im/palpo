@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use rand::seq::SliceRandom;
 use serde_json::value::to_raw_value;
 
@@ -66,7 +67,7 @@ pub async fn resolve_alias(
         return remote_resolve(room_alias, servers.unwrap_or_default()).await;
     }
 
-    let room_id = match resolve_local_alias(room_alias) {
+    let room_id = match resolve_local_alias(room_alias).await {
         Ok(r) => r,
         Err(_) => resolve_appservice_alias(room_alias).await?,
     };
@@ -75,17 +76,18 @@ pub async fn resolve_alias(
 }
 
 #[tracing::instrument(level = "debug")]
-pub fn resolve_local_alias(alias_id: &RoomAliasId) -> AppResult<OwnedRoomId> {
+pub async fn resolve_local_alias(alias_id: &RoomAliasId) -> AppResult<OwnedRoomId> {
     let room_id = room_aliases::table
         .filter(room_aliases::alias_id.eq(alias_id))
         .select(room_aliases::room_id)
-        .first::<String>(&mut connect()?)?;
+        .first::<String>(&mut connect().await?)
+        .await?;
 
     RoomId::parse(room_id).map_err(|_| AppError::public("Room ID is invalid."))
 }
 
 async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRoomId> {
-    for appservice in crate::appservice::all()?.values() {
+    for appservice in crate::appservice::all().await?.values() {
         if appservice.aliases.is_match(room_alias.as_str())
             && let Some(url) = &appservice.registration.url
         {
@@ -105,7 +107,7 @@ async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRo
             {
                 Ok(Some(_)) => {
                     // Appservice acknowledged the alias, try resolving locally now
-                    match resolve_local_alias(room_alias) {
+                    match resolve_local_alias(room_alias).await {
                         Ok(room_id) => return Ok(room_id),
                         Err(e) => {
                             warn!(
@@ -134,35 +136,40 @@ async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRo
     Err(MatrixError::not_found("resolve appservice alias not found").into())
 }
 
-pub fn local_aliases_for_room(room_id: &RoomId) -> AppResult<Vec<OwnedRoomAliasId>> {
+pub async fn local_aliases_for_room(room_id: &RoomId) -> AppResult<Vec<OwnedRoomAliasId>> {
     room_aliases::table
         .filter(room_aliases::room_id.eq(room_id))
         .select(room_aliases::alias_id)
-        .load::<OwnedRoomAliasId>(&mut connect()?)
+        .load::<OwnedRoomAliasId>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn all_local_aliases() -> AppResult<Vec<(OwnedRoomId, String)>> {
+pub async fn all_local_aliases() -> AppResult<Vec<(OwnedRoomId, String)>> {
     let lists = room_aliases::table
         .select((room_aliases::room_id, room_aliases::alias_id))
-        .load::<(OwnedRoomId, OwnedRoomAliasId)>(&mut connect()?)?
+        .load::<(OwnedRoomId, OwnedRoomAliasId)>(&mut connect().await?)
+        .await?
         .into_iter()
         .map(|(room_id, alias_id)| (room_id, alias_id.alias().to_owned()))
         .collect::<Vec<_>>();
     Ok(lists)
 }
 
-pub fn is_admin_room(room_id: &RoomId) -> bool {
-    admin_room_id().is_ok_and(|admin_room_id| admin_room_id == room_id)
+pub async fn is_admin_room(room_id: &RoomId) -> bool {
+    admin_room_id()
+        .await
+        .is_ok_and(|admin_room_id| admin_room_id == room_id)
 }
 
-pub fn admin_room_id() -> AppResult<OwnedRoomId> {
+pub async fn admin_room_id() -> AppResult<OwnedRoomId> {
     crate::room::resolve_local_alias(
         <&RoomAliasId>::try_from(format!("#admins:{}", &config::get().server_name).as_str())
             .expect("#admins:server_name is a valid room alias"),
     )
+    .await
 }
 
-pub fn set_alias(
+pub async fn set_alias(
     room_id: impl Into<OwnedRoomId>,
     alias_id: impl Into<OwnedRoomAliasId>,
     created_by: impl Into<OwnedUserId>,
@@ -178,7 +185,8 @@ pub fn set_alias(
             created_at: UnixMillis::now(),
         })
         .on_conflict_do_nothing()
-        .execute(&mut connect()?)
+        .execute(&mut connect().await?)
+        .await
         .map(|_| ())
         .map_err(Into::into)
 }
@@ -199,10 +207,10 @@ pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<Alias
     }
 
     let mut room_id = None;
-    match resolve_local_alias(&room_alias) {
+    match resolve_local_alias(&room_alias).await {
         Ok(r) => room_id = Some(r),
         Err(_) => {
-            for appservice in crate::appservice::all()?.values() {
+            for appservice in crate::appservice::all().await?.values() {
                 let url = appservice
                     .registration
                     .build_url(&format!("app/v1/rooms/{room_alias}"))?;
@@ -212,7 +220,7 @@ pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<Alias
                         Ok(Some(_opt_result))
                     )
                 {
-                    room_id = Some(resolve_local_alias(&room_alias).map_err(|_| {
+                    room_id = Some(resolve_local_alias(&room_alias).await.map_err(|_| {
                         AppError::public("Appservice lied to us. Room does not exist.")
                     })?);
                     break;
@@ -234,12 +242,12 @@ pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<Alias
 
 #[tracing::instrument]
 pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()> {
-    let room_id = resolve_local_alias(alias_id)?;
-    let room_version = crate::room::get_version(&room_id)?;
+    let room_id = resolve_local_alias(alias_id).await?;
+    let room_version = crate::room::get_version(&room_id).await?;
     if user_can_remove_alias(alias_id, user).await? {
         let state_alias = super::get_canonical_alias(&room_id);
 
-        if state_alias.is_ok() {
+        if state_alias.await.is_ok() {
             timeline::build_and_append_pdu(
                 PduBuilder {
                     event_type: TimelineEventType::RoomCanonicalAlias,
@@ -260,7 +268,8 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
             .ok();
         }
         diesel::delete(room_aliases::table.filter(room_aliases::alias_id.eq(alias_id)))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
 
         Ok(())
     } else {
@@ -269,11 +278,12 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
 }
 #[tracing::instrument]
 async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<bool> {
-    let room_id = resolve_local_alias(alias_id)?;
+    let room_id = resolve_local_alias(alias_id).await?;
 
     let alias = room_aliases::table
         .find(alias_id)
-        .first::<DbRoomAlias>(&mut connect()?)?;
+        .first::<DbRoomAlias>(&mut connect().await?)
+        .await?;
 
     // The creator of an alias can remove it
     if alias.created_by == user.id
@@ -287,7 +297,7 @@ async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResu
     } else if let Ok(power_levels) = super::get_power_levels(&room_id).await {
         Ok(power_levels.user_can_send_state(&user.id, StateEventType::RoomCanonicalAlias))
     // If there is no power levels event, only the room creator can change canonical aliases
-    } else if let Ok(event) = super::get_state(&room_id, &StateEventType::RoomCreate, "", None) {
+    } else if let Ok(event) = super::get_state(&room_id, &StateEventType::RoomCreate, "", None).await {
         Ok(event.sender == user.id)
     } else {
         error!("Room {} has no m.room.create event (VERY BAD)!", room_id);

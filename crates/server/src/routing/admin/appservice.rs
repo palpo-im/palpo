@@ -100,8 +100,8 @@ pub fn router() -> Router {
 ///
 /// GET /_synapse/admin/v1/appservices
 #[endpoint(operation_id = "list_appservices")]
-pub fn list_appservices() -> JsonResult<ListAppservicesResponse> {
-    let rows = svc::list_all_registrations()?;
+pub async fn list_appservices() -> JsonResult<ListAppservicesResponse> {
+    let rows = svc::list_all_registrations().await?;
     let appservices = rows
         .into_iter()
         .map(|(r, disabled)| AppserviceSummary {
@@ -118,11 +118,13 @@ pub fn list_appservices() -> JsonResult<ListAppservicesResponse> {
 ///
 /// GET /_synapse/admin/v1/appservices/{id}
 #[endpoint(operation_id = "get_appservice")]
-pub fn get_appservice(id: PathParam<String>) -> JsonResult<AppserviceRegistrationBody> {
+pub async fn get_appservice(id: PathParam<String>) -> JsonResult<AppserviceRegistrationBody> {
     let id = id.into_inner();
-    let registration = svc::get_registration(&id)?
+    let registration = svc::get_registration(&id)
+        .await?
         .ok_or_else(|| MatrixError::not_found(format!("No such appservice: {}", id)))?;
-    let disabled = svc::list_all_registrations()?
+    let disabled = svc::list_all_registrations()
+        .await?
         .into_iter()
         .find(|(r, _)| r.id == id)
         .map(|(_, d)| d)
@@ -139,14 +141,14 @@ pub fn get_appservice(id: PathParam<String>) -> JsonResult<AppserviceRegistratio
 ///
 /// Request body: a full appservice `Registration` object.
 #[endpoint(operation_id = "register_appservice")]
-pub fn register_appservice(
+pub async fn register_appservice(
     body: JsonBody<AppserviceRegistrationBody>,
 ) -> JsonResult<AppserviceResponse> {
     let body = body.into_inner();
     if body.id.is_empty() {
         return Err(MatrixError::invalid_param("id must not be empty").into());
     }
-    if svc::get_registration(&body.id)?.is_some() {
+    if svc::get_registration(&body.id).await?.is_some() {
         return Err(MatrixError::invalid_param(format!(
             "Appservice with id {} already exists",
             body.id
@@ -156,7 +158,7 @@ pub fn register_appservice(
     let registration = body
         .into_registration()
         .map_err(|e| MatrixError::invalid_param(format!("invalid namespaces: {e}")))?;
-    let id = svc::register_appservice(registration)?;
+    let id = svc::register_appservice(registration).await?;
     json_ok(AppserviceResponse { id })
 }
 
@@ -164,12 +166,12 @@ pub fn register_appservice(
 ///
 /// DELETE /_synapse/admin/v1/appservices/{id}
 #[endpoint(operation_id = "delete_appservice")]
-pub fn delete_appservice(id: PathParam<String>) -> EmptyResult {
+pub async fn delete_appservice(id: PathParam<String>) -> EmptyResult {
     let id = id.into_inner();
-    if svc::get_registration(&id)?.is_none() {
+    if svc::get_registration(&id).await?.is_none() {
         return Err(MatrixError::not_found(format!("No such appservice: {}", id)).into());
     }
-    svc::unregister_appservice(&id)?;
+    svc::unregister_appservice(&id).await?;
     empty_ok()
 }
 
@@ -178,9 +180,9 @@ pub fn delete_appservice(id: PathParam<String>) -> EmptyResult {
 ///
 /// POST /_synapse/admin/v1/appservices/{id}/disable
 #[endpoint(operation_id = "disable_appservice")]
-pub fn disable_appservice(id: PathParam<String>) -> EmptyResult {
+pub async fn disable_appservice(id: PathParam<String>) -> EmptyResult {
     let id = id.into_inner();
-    if !svc::set_appservice_disabled(&id, true)? {
+    if !svc::set_appservice_disabled(&id, true).await? {
         return Err(MatrixError::not_found(format!("No such appservice: {}", id)).into());
     }
     empty_ok()
@@ -190,9 +192,9 @@ pub fn disable_appservice(id: PathParam<String>) -> EmptyResult {
 ///
 /// POST /_synapse/admin/v1/appservices/{id}/enable
 #[endpoint(operation_id = "enable_appservice")]
-pub fn enable_appservice(id: PathParam<String>) -> EmptyResult {
+pub async fn enable_appservice(id: PathParam<String>) -> EmptyResult {
     let id = id.into_inner();
-    if !svc::set_appservice_disabled(&id, false)? {
+    if !svc::set_appservice_disabled(&id, false).await? {
         return Err(MatrixError::not_found(format!("No such appservice: {}", id)).into());
     }
     empty_ok()

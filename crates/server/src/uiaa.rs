@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use subtle::ConstantTimeEq;
 
 use crate::core::client::uiaa::{
@@ -11,7 +12,7 @@ use crate::data::schema::*;
 use crate::{AppResult, MatrixError, SESSION_ID_LENGTH, data, utils};
 
 /// Creates a new Uiaa session. Make sure the session token is unique.
-pub fn create_session(
+pub async fn create_session(
     user_id: &UserId,
     device_id: &DeviceId,
     uiaa_info: &UiaaInfo,
@@ -19,13 +20,13 @@ pub fn create_session(
 ) -> AppResult<()> {
     let session = uiaa_info.session.as_ref().expect("session should be set");
     // First create/update the DB row with uiaa_info
-    update_session(user_id, device_id, session, Some(uiaa_info))?;
+    update_session(user_id, device_id, session, Some(uiaa_info)).await?;
     // Then store the request body (now the row exists)
-    set_uiaa_request(user_id, device_id, session, json_body)?;
+    set_uiaa_request(user_id, device_id, session, json_body).await?;
     Ok(())
 }
 
-pub fn update_session(
+pub async fn update_session(
     user_id: &UserId,
     device_id: &DeviceId,
     session: &str,
@@ -47,7 +48,8 @@ pub fn update_session(
             ))
             .do_update()
             .set(user_uiaa_datas::uiaa_info.eq(&uiaa_info))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
     } else {
         diesel::delete(
             user_uiaa_datas::table
@@ -55,29 +57,35 @@ pub fn update_session(
                 .filter(user_uiaa_datas::device_id.eq(device_id))
                 .filter(user_uiaa_datas::session.eq(session)),
         )
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     };
     Ok(())
 }
-pub fn get_session(user_id: &UserId, device_id: &DeviceId, session: &str) -> AppResult<UiaaInfo> {
+pub async fn get_session(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    session: &str,
+) -> AppResult<UiaaInfo> {
     let uiaa_info = user_uiaa_datas::table
         .filter(user_uiaa_datas::user_id.eq(user_id))
         .filter(user_uiaa_datas::device_id.eq(device_id))
         .filter(user_uiaa_datas::session.eq(session))
         .select(user_uiaa_datas::uiaa_info)
-        .first::<JsonValue>(&mut connect()?)?;
+        .first::<JsonValue>(&mut connect().await?)
+        .await?;
     Ok(serde_json::from_value(uiaa_info)?)
 }
-pub fn try_auth(
+pub async fn try_auth(
     user_id: &UserId,
     device_id: &DeviceId,
     auth: &AuthData,
     uiaa_info: &UiaaInfo,
 ) -> AppResult<(bool, UiaaInfo)> {
-    let mut uiaa_info = auth
-        .session()
-        .map(|session| get_session(user_id, device_id, session))
-        .unwrap_or_else(|| Ok(uiaa_info.clone()))?;
+    let mut uiaa_info = match auth.session() {
+        Some(session) => get_session(user_id, device_id, session).await?,
+        None => uiaa_info.clone(),
+    };
 
     if uiaa_info.session.is_none() {
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
@@ -104,10 +112,10 @@ pub fn try_auth(
                 return Err(MatrixError::forbidden("User ID does not match.", None).into());
             }
 
-            let Ok(user) = data::user::get_user(&auth_user_id) else {
+            let Ok(user) = data::user::get_user(&auth_user_id).await else {
                 return Err(MatrixError::unauthorized("user not found.").into());
             };
-            crate::user::verify_password(&user, password)?;
+            crate::user::verify_password(&user, password).await?;
         }
         AuthData::RegistrationToken(t) => {
             let token_valid = conf
@@ -154,7 +162,8 @@ pub fn try_auth(
             device_id,
             uiaa_info.session.as_ref().expect("session is always set"),
             Some(&uiaa_info),
-        )?;
+        )
+        .await?;
         return Ok((false, uiaa_info));
     }
 
@@ -164,12 +173,13 @@ pub fn try_auth(
         device_id,
         uiaa_info.session.as_ref().expect("session is always set"),
         None,
-    )?;
+    )
+    .await?;
     Ok((true, uiaa_info))
 }
 
 /// Store the UIAA request body in the database for cross-instance access.
-pub fn set_uiaa_request(
+pub async fn set_uiaa_request(
     user_id: &UserId,
     device_id: &DeviceId,
     session: &str,
@@ -183,12 +193,13 @@ pub fn set_uiaa_request(
             .filter(user_uiaa_datas::session.eq(session)),
     )
     .set(user_uiaa_datas::request_body.eq(Some(&request_body)))
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
 /// Get the UIAA request body from the database.
-pub fn get_uiaa_request(
+pub async fn get_uiaa_request(
     user_id: &UserId,
     device_id: &DeviceId,
     session: &str,
@@ -198,7 +209,8 @@ pub fn get_uiaa_request(
         .filter(user_uiaa_datas::device_id.eq(device_id))
         .filter(user_uiaa_datas::session.eq(session))
         .select(user_uiaa_datas::request_body)
-        .first::<Option<JsonValue>>(&mut connect().ok()?)
+        .first::<Option<JsonValue>>(&mut connect().await.ok()?)
+        .await
         .ok()
         .flatten()?;
 

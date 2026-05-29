@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::json;
@@ -45,7 +46,7 @@ pub fn router_v2() -> Router {
 /// Creates a join template.
 #[endpoint]
 async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJoinResBody> {
-    if !room::room_exists(&args.room_id)? {
+    if !room::room_exists(&args.room_id).await? {
         return Err(MatrixError::not_found("Room is unknown to this server.").into());
     }
 
@@ -56,9 +57,9 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
         );
     }
 
-    handler::acl_check(args.user_id.server_name(), &args.room_id)?;
+    handler::acl_check(args.user_id.server_name(), &args.room_id).await?;
 
-    let room_version_id = room::get_version(&args.room_id)?;
+    let room_version_id = room::get_version(&args.room_id).await?;
     if !args.ver.contains(&room_version_id) {
         return Err(MatrixError::incompatible_room_version(
             "Room version not supported.",
@@ -71,7 +72,7 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
 
     if args.user_id.is_remote()
         && args.room_id.is_remote()
-        && !room::is_server_joined(&config::get().server_name, &args.room_id)?
+        && !room::is_server_joined(&config::get().server_name, &args.room_id).await?
     {
         return Err(MatrixError::bad_json("Not allowed to join on unkonwn remote server.").into());
     }
@@ -81,8 +82,8 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
             // room version does not support restricted join rules
             None
         } else {
-            let join_rule = room::get_join_rule(&args.room_id)?;
-            let guest_can_join = room::guest_can_join(&args.room_id);
+            let join_rule = room::get_join_rule(&args.room_id).await?;
+            let guest_can_join = room::guest_can_join(&args.room_id).await;
             if join_rule == JoinRule::Public || guest_can_join {
                 None
             } else if crate::federation::user_can_perform_restricted_join(
@@ -151,7 +152,7 @@ async fn invite_user(
     let body = body.into_inner();
     let origin = depot.origin()?;
     let conf = config::get();
-    handler::acl_check(origin, &args.room_id)?;
+    handler::acl_check(origin, &args.room_id).await?;
 
     if !config::supported_room_versions().contains(&body.room_version) {
         return Err(MatrixError::incompatible_room_version(
@@ -175,8 +176,9 @@ async fn invite_user(
         return Err(MatrixError::invalid_param("cannot invite remote users").into());
     }
     let invitee = data::user::get_user(&invitee_id)
+        .await
         .map_err(|_| MatrixError::not_found("invitee user not found"))?;
-    handler::acl_check(invitee_id.server_name(), &args.room_id)?;
+    handler::acl_check(invitee_id.server_name(), &args.room_id).await?;
 
     crate::server_key::hash_and_sign_event(&mut signed_event, &body.room_version)
         .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
@@ -191,8 +193,8 @@ async fn invite_user(
     );
 
     let state_lock = room::lock_state(&args.room_id).await;
-    ensure_room(&args.room_id, &body.room_version)?;
-    if data::room::is_banned(&args.room_id)? {
+    ensure_room(&args.room_id, &body.room_version).await?;
+    if data::room::is_banned(&args.room_id).await? {
         return Err(MatrixError::forbidden("this room is banned on this homeserver", None).into());
     }
 
@@ -213,7 +215,7 @@ async fn invite_user(
     // let event_id: OwnedEventId = format!("$dummy_{}", Ulid::new().to_string()).try_into()?;
     event.insert("event_id".to_owned(), event_id.to_string().into());
 
-    let (event_sn, event_guard) = crate::event::ensure_event_sn(&args.room_id, &event_id)?;
+    let (event_sn, event_guard) = crate::event::ensure_event_sn(&args.room_id, &event_id).await?;
     let pdu = SnPduEvent::from_canonical_object(
         &args.room_id,
         &event_id,
@@ -227,7 +229,7 @@ async fn invite_user(
         warn!("invalid invite event: {}", e);
         MatrixError::invalid_param("invalid invite event")
     })?;
-    invite_state.push(pdu.to_stripped_state_event());
+    invite_state.push(pdu.to_stripped_state_event().await);
 
     NewDbEvent {
         id: pdu.event_id.to_owned(),
@@ -249,7 +251,8 @@ async fn invite_user(
         is_rejected: false,
         rejection_reason: None,
     }
-    .save()?;
+    .save()
+    .await?;
     timeline::append_pdu(&pdu, event, &state_lock).await?;
 
     // let sender_id: OwnedUserId = serde_json::from_value(
@@ -270,7 +273,8 @@ async fn invite_user(
         ),
     )
     .set(room_users::state_data.eq(json!(invite_state)))
-    .execute(&mut connect()?)
+    .execute(&mut connect().await?)
+    .await
     .ok();
 
     drop(event_guard);
@@ -278,7 +282,7 @@ async fn invite_user(
     drop(state_lock);
 
     json_ok(InviteUserResBodyV2 {
-        event: crate::sending::convert_to_outgoing_federation_event(signed_event),
+        event: crate::sending::convert_to_outgoing_federation_event(signed_event).await,
     })
 }
 
@@ -291,14 +295,14 @@ async fn make_leave(args: MakeLeaveReqArgs, depot: &mut Depot) -> JsonResult<Mak
             MatrixError::bad_json("not allowed to leave on behalf of another server").into(),
         );
     }
-    if !room::is_room_exists(&args.room_id)? {
+    if !room::is_room_exists(&args.room_id).await? {
         return Err(MatrixError::forbidden("room is unknown to this server", None).into());
     }
 
     // ACL check origin
-    handler::acl_check(origin, &args.room_id)?;
+    handler::acl_check(origin, &args.room_id).await?;
 
-    let room_version_id = room::get_version(&args.room_id)?;
+    let room_version_id = room::get_version(&args.room_id).await?;
     let state_lock = crate::room::lock_state(&args.room_id).await;
 
     let (_pdu, mut pdu_json) = PduBuilder::state(
@@ -364,13 +368,13 @@ async fn send_leave(
     let origin = depot.origin()?;
     let body = body.into_inner();
 
-    if !room::is_room_exists(&args.room_id)? {
+    if !room::is_room_exists(&args.room_id).await? {
         return Err(MatrixError::forbidden("Room is unknown to this server.", None).into());
     }
-    handler::acl_check(origin, &args.room_id)?;
+    handler::acl_check(origin, &args.room_id).await?;
 
     // We do not add the event_id field to the pdu here because of signature and hashes checks
-    let room_version_id = room::get_version(&args.room_id)?;
+    let room_version_id = room::get_version(&args.room_id).await?;
 
     let Ok((event_id, value)) =
         crate::event::gen_event_id_canonical_json(&body.0, &room_version_id)
@@ -439,7 +443,7 @@ async fn send_leave(
     )
     .map_err(|_| MatrixError::bad_json("user in sender is invalid"))?;
 
-    handler::acl_check(sender.server_name(), &args.room_id)?;
+    handler::acl_check(sender.server_name(), &args.room_id).await?;
 
     if sender.server_name() != origin {
         return Err(
@@ -470,7 +474,7 @@ async fn send_leave(
         false,
     )
     .await?;
-    if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]) {
+    if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]).await {
         error!("failed to notify leave event: {e}");
     }
     empty_ok()

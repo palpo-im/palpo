@@ -36,11 +36,11 @@ pub async fn get_public_rooms(
 
         Ok(body)
     } else {
-        get_local_public_rooms(limit, since, filter, network)
+        get_local_public_rooms(limit, since, filter, network).await
     }
 }
 
-fn get_local_public_rooms(
+async fn get_local_public_rooms(
     limit: Option<usize>,
     since: Option<&str>,
     filter: &PublicRoomFilter,
@@ -71,71 +71,72 @@ fn get_local_public_rooms(
         .generic_search_term
         .as_ref()
         .map(|q| q.to_lowercase());
-    let public_room_ids = room::public_room_ids()?;
-    let mut all_rooms: Vec<_> = public_room_ids
-        .into_iter()
-        .map(|room_id| {
+    let public_room_ids = room::public_room_ids().await?;
+    let mut all_rooms: Vec<PublicRoomsChunk> = Vec::new();
+    for room_id in public_room_ids.into_iter() {
+        let build_chunk = async {
             let chunk = PublicRoomsChunk {
-                canonical_alias: room::get_canonical_alias(&room_id).ok().flatten(),
-                name: room::get_name(&room_id).ok(),
-                num_joined_members: room::joined_member_count(&room_id).unwrap_or_else(|_| {
+                canonical_alias: room::get_canonical_alias(&room_id).await.ok().flatten(),
+                name: room::get_name(&room_id).await.ok(),
+                num_joined_members: room::joined_member_count(&room_id).await.unwrap_or_else(|_| {
                     warn!("Room {} has no member count", room_id);
                     0
                 }),
-                topic: room::get_topic(&room_id).ok(),
-                world_readable: room::is_world_readable(&room_id),
-                guest_can_join: room::guest_can_join(&room_id),
-                avatar_url: room::get_avatar_url(&room_id).ok().flatten(),
+                topic: room::get_topic(&room_id).await.ok(),
+                world_readable: room::is_world_readable(&room_id).await,
+                guest_can_join: room::guest_can_join(&room_id).await,
+                avatar_url: room::get_avatar_url(&room_id).await.ok().flatten(),
                 join_rule: room::get_state_content::<RoomJoinRulesEventContent>(
                     &room_id,
                     &StateEventType::RoomJoinRules,
                     "",
                     None,
                 )
-                .map(|c| match c.join_rule {
+                .await.map(|c| match c.join_rule {
                     JoinRule::Public => Some(PublicRoomJoinRule::Public),
                     JoinRule::Knock => Some(PublicRoomJoinRule::Knock),
                     JoinRule::KnockRestricted(..) => Some(PublicRoomJoinRule::KnockRestricted),
                     _ => None,
                 })?
                 .ok_or_else(|| AppError::public("Missing room join rule event for room."))?,
-                room_type: room::get_room_type(&room_id).ok().flatten(),
+                room_type: room::get_room_type(&room_id).await.ok().flatten(),
                 room_id,
             };
-            Ok(chunk)
-        })
-        .filter_map(|r: AppResult<_>| r.ok()) // Filter out buggy rooms
-        .filter(|chunk| {
-            if let Some(search_term) = &search_term {
-                if let Some(name) = &chunk.name
-                    && name.as_str().to_lowercase().contains(search_term)
-                {
-                    return true;
-                }
+            Ok::<_, AppError>(chunk)
+        };
 
-                if let Some(topic) = &chunk.topic
-                    && topic.to_lowercase().contains(search_term)
-                {
-                    return true;
-                }
+        // Filter out buggy rooms
+        let Ok(chunk) = build_chunk.await else {
+            continue;
+        };
 
-                if let Some(canonical_alias) = &chunk.canonical_alias
-                    && canonical_alias
+        let matches = if let Some(search_term) = &search_term {
+            if let Some(name) = &chunk.name
+                && name.as_str().to_lowercase().contains(search_term)
+            {
+                true
+            } else if let Some(topic) = &chunk.topic
+                && topic.to_lowercase().contains(search_term)
+            {
+                true
+            } else {
+                chunk.canonical_alias.as_ref().is_some_and(|canonical_alias| {
+                    canonical_alias
                         .as_str()
                         .to_lowercase()
                         .contains(search_term)
-                {
-                    return true;
-                }
-
-                false
-            } else {
-                // No search term
-                true
+                })
             }
-        })
-        // We need to collect all, so we can sort by member count
-        .collect();
+        } else {
+            // No search term
+            true
+        };
+
+        if matches {
+            // We need to collect all, so we can sort by member count
+            all_rooms.push(chunk);
+        }
+    }
 
     all_rooms.sort_by(|l, r| r.num_joined_members.cmp(&l.num_joined_members));
 

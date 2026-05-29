@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use salvo::prelude::*;
 
 use crate::core::UnixMillis;
+use crate::core::events::room::history_visibility::HistoryVisibility;
 use crate::core::federation::backfill::{BackfillReqArgs, BackfillResBody};
 use crate::data::connect;
 use crate::data::schema::*;
@@ -27,17 +29,32 @@ async fn get_backfill(
     let origin = depot.origin()?;
     debug!("got backfill request from: {}", origin);
 
+    let seed_prev_ids = event_edges::table
+        .filter(event_edges::event_id.eq_any(&args.v))
+        .select(event_edges::prev_id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?;
+
     let seeds = events::table
-        .filter(events::id.eq_any(&args.v))
+        .filter(events::id.eq_any(seed_prev_ids))
         .select((events::id, events::depth))
-        .load::<(OwnedEventId, i64)>(&mut connect()?)?;
+        .load::<(OwnedEventId, i64)>(&mut connect().await?)
+        .await?;
 
     let mut queue = BTreeMap::new();
     for (seed_id, seed_depth) in seeds {
-        queue.insert(seed_depth, seed_id);
+        queue.insert((seed_depth, seed_id.clone()), seed_id);
     }
 
     let limit = args.limit;
+    let can_see_all_events = crate::room::get_history_visibility(&args.room_id)
+        .await
+        .is_ok_and(|visibility| {
+            matches!(
+                visibility,
+                HistoryVisibility::WorldReadable | HistoryVisibility::Shared
+            )
+        });
 
     let mut events = IndexMap::with_capacity(limit);
     while !queue.is_empty() && events.len() < limit {
@@ -47,23 +64,26 @@ async fn get_backfill(
         let mut prev_ids = event_edges::table
             .filter(event_edges::event_id.eq(&event_id))
             .select(event_edges::prev_id)
-            .load::<OwnedEventId>(&mut connect()?)?;
+            .load::<OwnedEventId>(&mut connect().await?)
+            .await?;
         prev_ids.retain(|p| !events.contains_key(p));
         if !events.contains_key(&event_id)
-            && let Ok((pdu, data)) = timeline::get_pdu_and_data(&event_id)
-            && state::server_can_see_event(origin, &args.room_id, &pdu.event_id)?
+            && let Ok((pdu, data)) = timeline::get_pdu_and_data(&event_id).await
+            && (can_see_all_events
+                || state::server_can_see_event(origin, &args.room_id, &pdu.event_id).await?)
         {
             events.insert(
                 event_id.clone(),
-                crate::sending::convert_to_outgoing_federation_event(data),
+                crate::sending::convert_to_outgoing_federation_event(data).await,
             );
         }
         let prevs = events::table
             .filter(events::id.eq_any(&prev_ids))
             .select((events::id, events::depth))
-            .load::<(OwnedEventId, i64)>(&mut connect()?)?;
+            .load::<(OwnedEventId, i64)>(&mut connect().await?)
+            .await?;
         for (prev_id, prev_depth) in prevs {
-            queue.insert(prev_depth, prev_id);
+            queue.insert((prev_depth, prev_id.clone()), prev_id);
         }
     }
     json_ok(BackfillResBody {

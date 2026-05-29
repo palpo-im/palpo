@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::AppResult;
 use crate::core::identifiers::*;
@@ -20,30 +21,33 @@ pub struct RoomCurrent {
 }
 
 #[tracing::instrument]
-pub fn get_current(room_id: &RoomId) -> AppResult<Option<RoomCurrent>> {
+pub async fn get_current(room_id: &RoomId) -> AppResult<Option<RoomCurrent>> {
     stats_room_currents::table
         .filter(stats_room_currents::room_id.eq(room_id))
-        .first::<RoomCurrent>(&mut connect()?)
+        .first::<RoomCurrent>(&mut connect().await?)
+        .await
         .optional()
         .map_err(Into::into)
 }
 
 #[tracing::instrument]
-pub fn invite_count(room_id: &RoomId, user_id: &UserId) -> AppResult<Option<u64>> {
+pub async fn invite_count(room_id: &RoomId, user_id: &UserId) -> AppResult<Option<u64>> {
     let count = stats_room_currents::table
         .filter(stats_room_currents::room_id.eq(room_id))
         .select(stats_room_currents::invited_members)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .optional()?;
     Ok(count.map(|c| c as u64))
 }
 
 #[tracing::instrument]
-pub fn left_count(room_id: &RoomId, user_id: &UserId) -> AppResult<Option<u64>> {
+pub async fn left_count(room_id: &RoomId, user_id: &UserId) -> AppResult<Option<u64>> {
     let count = stats_room_currents::table
         .filter(stats_room_currents::room_id.eq(room_id))
         .select(stats_room_currents::left_members)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .optional()?;
     Ok(count.map(|c| c as u64))
 }

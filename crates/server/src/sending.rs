@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
@@ -184,10 +185,10 @@ pub fn push_gateway_client() -> reqwest::Client {
 }
 
 #[tracing::instrument(skip(pdu_id, user, pushkey))]
-pub fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> AppResult<()> {
+pub async fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> AppResult<()> {
     let outgoing_kind = OutgoingKind::Push(user.to_owned(), pushkey);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
-    let keys = queue_requests(&[(&outgoing_kind, event.clone())])?;
+    let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
     if let Some(key) = keys.into_iter().next() {
         sender()
             .send((outgoing_kind, event, key))
@@ -198,7 +199,7 @@ pub fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> AppRes
 }
 
 #[tracing::instrument(level = "debug")]
-pub fn send_pdu_room(
+pub async fn send_pdu_room(
     room_id: &RoomId,
     pdu_id: &EventId,
     extra_servers: &[OwnedServerName],
@@ -209,7 +210,8 @@ pub fn send_pdu_room(
         .filter(room_joined_servers::server_id.ne(&config::get().server_name))
         // .filter(room_joined_servers::server_id.ne_all(skip_servers))
         .select(room_joined_servers::server_id)
-        .load::<OwnedServerName>(&mut connect()?)?;
+        .load::<OwnedServerName>(&mut connect().await?)
+        .await?;
     let mut servers = servers
         .into_iter()
         .chain(extra_servers.iter().cloned())
@@ -217,11 +219,11 @@ pub fn send_pdu_room(
     servers.sort_unstable();
     servers.dedup();
     let servers = servers.into_iter().filter(|s| !ignore_servers.contains(s));
-    send_pdu_servers(servers, pdu_id)
+    send_pdu_servers(servers, pdu_id).await
 }
 
 #[tracing::instrument(skip(servers, pdu_id), level = "debug")]
-pub fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
+pub async fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
     servers: S,
     pdu_id: &EventId,
 ) -> AppResult<()> {
@@ -249,7 +251,8 @@ pub fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
             .iter()
             .map(|(o, e)| (o, e.clone()))
             .collect::<Vec<_>>(),
-    )?;
+    )
+    .await?;
     for ((outgoing_kind, event_type), key) in requests.into_iter().zip(keys) {
         if let Err(e) = sender().send((outgoing_kind.to_owned(), event_type, key)) {
             error!("failed to send pdu: {}", e);
@@ -260,17 +263,18 @@ pub fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
 }
 
 #[tracing::instrument(skip(room_id, edu), level = "debug")]
-pub fn send_edu_room(room_id: &RoomId, edu: &Edu) -> AppResult<()> {
+pub async fn send_edu_room(room_id: &RoomId, edu: &Edu) -> AppResult<()> {
     let servers = room_joined_servers::table
         .filter(room_joined_servers::room_id.eq(room_id))
         .filter(room_joined_servers::server_id.ne(&config::get().server_name))
         .select(room_joined_servers::server_id)
-        .load::<OwnedServerName>(&mut connect()?)?;
-    send_edu_servers(servers.into_iter(), edu)
+        .load::<OwnedServerName>(&mut connect().await?)
+        .await?;
+    send_edu_servers(servers.into_iter(), edu).await
 }
 
 #[tracing::instrument(skip(servers, edu), level = "debug")]
-pub fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
+pub async fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
     servers: S,
     edu: &Edu,
 ) -> AppResult<()> {
@@ -300,7 +304,8 @@ pub fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
             .iter()
             .map(|(o, e)| (o, e.clone()))
             .collect::<Vec<_>>(),
-    )?;
+    )
+    .await?;
     for ((outgoing_kind, event), key) in requests.into_iter().zip(keys) {
         sender()
             .send((outgoing_kind.to_owned(), event, key))
@@ -310,7 +315,7 @@ pub fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
     Ok(())
 }
 #[tracing::instrument(skip(server, edu), level = "debug")]
-pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
+pub async fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
     let mut serialized = EduBuf::new();
     serde_json::to_writer(&mut serialized, &edu)
         .map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
@@ -329,7 +334,7 @@ pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
-    let key = queue_request(&outgoing_kind, &event)?;
+    let key = queue_request(&outgoing_kind, &event).await?;
     sender()
         .send((outgoing_kind, event, key))
         .map_err(|e| AppError::internal(e.to_string()))?;
@@ -338,7 +343,7 @@ pub fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
 }
 
 #[tracing::instrument(skip(server, edu))]
-pub fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<()> {
+pub async fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<()> {
     let mut serialized = EduBuf::new();
     serde_json::to_writer(&mut serialized, &edu)
         .map_err(|e| AppError::internal(format!("failed to serialize edu: {e}")))?;
@@ -357,7 +362,7 @@ pub fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized);
-    let keys = queue_requests(&[(&outgoing_kind, event.clone())])?;
+    let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
     if let Some(key) = keys.into_iter().next() {
         sender()
             .send((outgoing_kind, event, key))
@@ -368,10 +373,10 @@ pub fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppResult<
 }
 
 #[tracing::instrument]
-pub fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> AppResult<()> {
+pub async fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> AppResult<()> {
     let outgoing_kind = OutgoingKind::Appservice(appservice_id);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
-    let keys = queue_requests(&[(&outgoing_kind, event.clone())])?;
+    let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
     if let Some(key) = keys.into_iter().next() {
         sender()
             .send((outgoing_kind, event, key))
@@ -394,6 +399,7 @@ async fn send_events(
                     SendingEventType::Pdu(event_id) => {
                         pdu_jsons.push(
                             timeline::get_pdu(event_id)
+                                .await
                                 .map_err(|e| (kind.clone(), e))?
                                 .to_room_event(),
                         );
@@ -409,6 +415,7 @@ async fn send_events(
             let permit = max_request.acquire().await;
 
             let registration = crate::appservice::get_registration(id)
+                .await
                 .map_err(|e| (kind.clone(), e))?
                 .ok_or_else(|| {
                     (
@@ -452,7 +459,11 @@ async fn send_events(
             for event in &events {
                 match event {
                     SendingEventType::Pdu(event_id) => {
-                        pdus.push(timeline::get_pdu(event_id).map_err(|e| (kind.clone(), e))?);
+                        pdus.push(
+                            timeline::get_pdu(event_id)
+                                .await
+                                .map_err(|e| (kind.clone(), e))?,
+                        );
                     }
                     SendingEventType::Edu(_) => {
                         // Push gateways don't need EDUs (?)
@@ -467,7 +478,7 @@ async fn send_events(
                     continue;
                 }
                 let pusher =
-                    match data::user::pusher::get_pusher(user_id, pushkey).map_err(|e| {
+                    match data::user::pusher::get_pusher(user_id, pushkey).await.map_err(|e| {
                         (
                             OutgoingKind::Push(user_id.clone(), pushkey.clone()),
                             e.into(),
@@ -481,11 +492,13 @@ async fn send_events(
                     user_id,
                     &GlobalAccountDataEventType::PushRules.to_string(),
                 )
+                .await
                 .unwrap_or_default()
                 .map(|content: PushRulesEventContent| content.global)
                 .unwrap_or_else(|| push::Ruleset::server_default(user_id));
 
                 let notify_summary = crate::room::user::notify_summary(user_id, &pdu.room_id)
+                    .await
                     .map_err(|e| (kind.clone(), e))?;
 
                 let max_request = crate::sending::max_request();
@@ -515,6 +528,7 @@ async fn send_events(
                     SendingEventType::Pdu(pdu_id) => {
                         let raw = crate::sending::convert_to_outgoing_federation_event(
                             timeline::get_pdu_json(pdu_id)
+                                .await
                                 .map_err(|e| (OutgoingKind::Normal(server.clone()), e))?
                                 .ok_or_else(|| {
                                     error!("event not found: {server} {pdu_id:?}");
@@ -525,7 +539,8 @@ async fn send_events(
                                         )),
                                     )
                                 })?,
-                        );
+                        )
+                        .await;
                         pdu_jsons.push(raw);
                     }
                     SendingEventType::Edu(edu) => {
@@ -630,10 +645,11 @@ where
     Ok(response.json().await?)
 }
 
-fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType)>> {
+async fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType)>> {
     let outgoing_requests = outgoing_requests::table
         .filter(outgoing_requests::state.eq("pending"))
-        .load::<DbOutgoingRequest>(&mut connect()?)?;
+        .load::<DbOutgoingRequest>(&mut connect().await?)
+        .await?;
     Ok(outgoing_requests
         .into_iter()
         .filter_map(|item| {
@@ -675,12 +691,14 @@ fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType)>> {
         .collect())
 }
 
-fn delete_request(id: i64) -> AppResult<()> {
-    diesel::delete(outgoing_requests::table.find(id)).execute(&mut connect()?)?;
+async fn delete_request(id: i64) -> AppResult<()> {
+    diesel::delete(outgoing_requests::table.find(id))
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
+async fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
     match outgoing_kind {
         OutgoingKind::Appservice(appservice_id) => {
             diesel::delete(
@@ -689,7 +707,8 @@ fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()>
                     .filter(outgoing_requests::state.eq("pending"))
                     .filter(outgoing_requests::appservice_id.eq(appservice_id)),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
         OutgoingKind::Normal(server_id) => {
             diesel::delete(
@@ -698,7 +717,8 @@ fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()>
                     .filter(outgoing_requests::state.eq("pending"))
                     .filter(outgoing_requests::server_id.eq(server_id.as_str())),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
         OutgoingKind::Push(user_id, pushkey) => {
             diesel::delete(
@@ -708,14 +728,15 @@ fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()>
                     .filter(outgoing_requests::user_id.eq(user_id.as_str()))
                     .filter(outgoing_requests::pushkey.eq(pushkey)),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
     }
 
     Ok(())
 }
 
-fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
+async fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
     match outgoing_kind {
         OutgoingKind::Appservice(appservice_id) => {
             diesel::delete(
@@ -723,7 +744,8 @@ fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
                     .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
                     .filter(outgoing_requests::appservice_id.eq(appservice_id)),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
         OutgoingKind::Normal(server_id) => {
             diesel::delete(
@@ -731,7 +753,8 @@ fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
                     .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
                     .filter(outgoing_requests::server_id.eq(server_id.as_str())),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
         OutgoingKind::Push(user_id, pushkey) => {
             diesel::delete(
@@ -740,21 +763,22 @@ fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
                     .filter(outgoing_requests::user_id.eq(user_id.as_str()))
                     .filter(outgoing_requests::pushkey.eq(pushkey)),
             )
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
     }
 
     Ok(())
 }
 
-fn queue_requests(requests: &[(&OutgoingKind, SendingEventType)]) -> AppResult<Vec<i64>> {
+async fn queue_requests(requests: &[(&OutgoingKind, SendingEventType)]) -> AppResult<Vec<i64>> {
     let mut ids = Vec::new();
     for (outgoing_kind, event) in requests {
-        ids.push(queue_request(outgoing_kind, event)?);
+        ids.push(queue_request(outgoing_kind, event).await?);
     }
     Ok(ids)
 }
-fn queue_request(outgoing_kind: &OutgoingKind, event: &SendingEventType) -> AppResult<i64> {
+async fn queue_request(outgoing_kind: &OutgoingKind, event: &SendingEventType) -> AppResult<i64> {
     let appservice_id = if let OutgoingKind::Appservice(service_id) = outgoing_kind {
         Some(service_id.clone())
     } else {
@@ -786,11 +810,14 @@ fn queue_request(outgoing_kind: &OutgoingKind, event: &SendingEventType) -> AppR
             edu_json,
         })
         .returning(outgoing_requests::id)
-        .get_result::<i64>(&mut connect()?)?;
+        .get_result::<i64>(&mut connect().await?)
+        .await?;
     Ok(id)
 }
 
-fn active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
+async fn active_requests_for(
+    outgoing_kind: &OutgoingKind,
+) -> AppResult<Vec<(i64, SendingEventType)>> {
     let mut query = outgoing_requests::table
         .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
         .filter(outgoing_requests::state.eq("pending"))
@@ -812,7 +839,8 @@ fn active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, Send
     }
 
     let list = query
-        .load::<DbOutgoingRequest>(&mut connect()?)?
+        .load::<DbOutgoingRequest>(&mut connect().await?)
+        .await?
         .into_iter()
         .filter_map(|r| {
             if let Some(value) = r.edu_json {
@@ -828,7 +856,7 @@ fn active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, Send
     Ok(list)
 }
 
-fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
+async fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
     let mut query = outgoing_requests::table
         .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
         // Exclude already active requests (state="pending" means being processed)
@@ -851,7 +879,8 @@ fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingE
     }
 
     Ok(query
-        .load::<DbOutgoingRequest>(&mut connect()?)?
+        .load::<DbOutgoingRequest>(&mut connect().await?)
+        .await?
         .into_iter()
         .filter_map(|r| {
             if let Some(value) = r.edu_json {
@@ -864,7 +893,7 @@ fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingE
         })
         .collect())
 }
-fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
+async fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
     for (id, e) in events {
         let value = if let SendingEventType::Edu(value) = &e {
             &**value
@@ -876,7 +905,8 @@ fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
                 outgoing_requests::data.eq(value),
                 outgoing_requests::state.eq("pending"),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
     }
 
     Ok(())
@@ -888,7 +918,7 @@ fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
 /// `event_id` based on the room version. Room versions V1/V2 require `event_id` in
 /// the federation format; V3+ derive it from the event hash.
 #[tracing::instrument]
-pub fn convert_to_outgoing_federation_event(
+pub async fn convert_to_outgoing_federation_event(
     mut pdu_json: CanonicalJsonObject,
 ) -> Box<RawJsonValue> {
     if let Some(unsigned) = pdu_json
@@ -904,18 +934,24 @@ pub fn convert_to_outgoing_federation_event(
     // intentionally has no room_id and other events are looked up via the
     // event_id stored elsewhere), so fall back to looking up room_id from the
     // events table by event_id when the JSON doesn't have one.
-    let room_version = pdu_json
+    let mut room_version = None;
+    if let Some(r) = pdu_json
         .get("room_id")
         .and_then(|v| v.as_str())
         .and_then(|r| <&RoomId>::try_from(r).ok())
-        .and_then(|r| crate::room::get_version(r).ok())
-        .or_else(|| {
-            // Fall back: look up room_id by the event's id from the DB.
+    {
+        room_version = crate::room::get_version(r).await.ok();
+    }
+    if room_version.is_none() {
+        // Fall back: look up room_id by the event's id from the DB.
+        room_version = async {
             let event_id_str = pdu_json.get("event_id").and_then(|v| v.as_str())?;
             let event_id = <&crate::core::identifiers::EventId>::try_from(event_id_str).ok()?;
-            let db_event = crate::data::room::DbEvent::get_by_id(event_id).ok()?;
-            crate::room::get_version(&db_event.room_id).ok()
-        });
+            let db_event = crate::data::room::DbEvent::get_by_id(event_id).await.ok()?;
+            crate::room::get_version(&db_event.room_id).await.ok()
+        }
+        .await;
+    }
 
     match room_version {
         Some(room_version) => {

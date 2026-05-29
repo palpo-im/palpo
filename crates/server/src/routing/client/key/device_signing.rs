@@ -36,16 +36,16 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     let uia_required = if config::get().enabled_delegated_auth().is_some() {
         false
     } else if none_auth {
-        let exist_master_key = crate::user::key::get_master_key(sender_id)?;
-        let exist_self_signing_key = crate::user::key::get_self_signing_key(sender_id)?;
-        let exist_user_signing_key = crate::user::key::get_user_signing_key(sender_id)?;
+        let exist_master_key = crate::user::key::get_master_key(sender_id).await?;
+        let exist_self_signing_key = crate::user::key::get_self_signing_key(sender_id).await?;
+        let exist_user_signing_key = crate::user::key::get_user_signing_key(sender_id).await?;
         if exist_master_key.is_none()
             && exist_self_signing_key.is_none()
             && exist_user_signing_key.is_none()
         {
             false
         } else if let Some(expires_ts) =
-            data::user::key::get_cross_signing_replacement_allowed(sender_id)?
+            data::user::key::get_cross_signing_replacement_allowed(sender_id).await?
         {
             let now_ms = crate::core::UnixMillis::now().get() as i64;
             // Bypass still valid — skip UIA
@@ -71,7 +71,7 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     if body.is_err() || uia_required {
         if let Ok(json) = serde_json::from_slice::<CanonicalJsonValue>(payload) {
             uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-            crate::uiaa::create_session(sender_id, authed.device_id(), &uiaa_info, json)?;
+            crate::uiaa::create_session(sender_id, authed.device_id(), &uiaa_info, json).await?;
             return Err(uiaa_info.into());
         } else {
             return Err(MatrixError::not_json("no json body was sent when required").into());
@@ -83,7 +83,7 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             return Err(MatrixError::not_json("auth is none should not happend").into());
         };
 
-        crate::uiaa::try_auth(sender_id, authed.device_id(), auth, &uiaa_info)?;
+        crate::uiaa::try_auth(sender_id, authed.device_id(), auth, &uiaa_info).await?;
     }
 
     if let Some(master_key) = &body.master_key {
@@ -93,7 +93,8 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             &body.self_signing_key,
             &body.user_signing_key,
             true, // notify so that other users see the new keys
-        )?;
+        )
+        .await?;
     }
     empty_ok()
 }

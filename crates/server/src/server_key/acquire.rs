@@ -116,7 +116,7 @@ where
 {
     let mut missing = Batch::new();
     for (server, key_ids) in batch {
-        let available_keys = verify_keys_for(server);
+        let available_keys = verify_keys_for(server).await;
         let missing_key_ids = missing_local_key_ids(&available_keys, key_ids);
         if !missing_key_ids.is_empty() {
             missing.insert(server.into(), missing_key_ids);

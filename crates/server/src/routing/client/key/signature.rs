@@ -43,7 +43,7 @@ pub(super) async fn upload(
                         .ok_or(MatrixError::invalid_param("Invalid signature value."))?
                         .to_owned(),
                 );
-                crate::user::sign_key(user_id, key_id, signature, authed.user_id())?;
+                crate::user::sign_key(user_id, key_id, signature, authed.user_id()).await?;
             }
         }
     }

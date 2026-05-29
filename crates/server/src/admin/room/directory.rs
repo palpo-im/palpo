@@ -25,20 +25,20 @@ pub(crate) enum RoomDirectoryCommand {
 pub(super) async fn process(command: RoomDirectoryCommand, context: &Context<'_>) -> AppResult<()> {
     match command {
         RoomDirectoryCommand::Publish { room_id } => {
-            crate::room::directory::set_public(&room_id, true)?;
+            crate::room::directory::set_public(&room_id, true).await?;
             context.write_str("Room published").await
         }
         RoomDirectoryCommand::Unpublish { room_id } => {
-            crate::room::directory::set_public(&room_id, false)?;
+            crate::room::directory::set_public(&room_id, false).await?;
             context.write_str("Room unpublished").await
         }
         RoomDirectoryCommand::List { page } => {
             // TODO: i know there's a way to do this with clap, but i can't seem to find it
             let page = page.unwrap_or(1);
-            let mut rooms: Vec<_> = crate::room::public_room_ids()?
-                .into_iter()
-                .map(|room_id| get_room_info(&room_id))
-                .collect();
+            let mut rooms: Vec<_> = Vec::new();
+            for room_id in crate::room::public_room_ids().await?.into_iter() {
+                rooms.push(get_room_info(&room_id).await);
+            }
 
             rooms.sort_by_key(|r| r.joined_members);
             rooms.reverse();

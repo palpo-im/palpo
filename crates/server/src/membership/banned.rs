@@ -14,13 +14,13 @@ pub async fn banned_room_check(
     server_name: Option<&ServerName>,
     client_addr: &SocketAddr,
 ) -> AppResult<()> {
-    if data::user::is_admin(user_id)? {
+    if data::user::is_admin(user_id).await? {
         return Ok(());
     }
 
     let conf = crate::config::get();
     if let Some(room_id) = room_id {
-        if data::room::is_disabled(room_id)?
+        if data::room::is_disabled(room_id).await?
             || (room_id.server_name().is_ok()
                 && conf.forbidden_remote_server_names.is_match(
                     room_id
@@ -48,7 +48,7 @@ pub async fn banned_room_check(
                     .ok();
                 }
 
-                let all_joined_rooms: Vec<OwnedRoomId> = data::user::joined_rooms(user_id)?;
+                let all_joined_rooms: Vec<OwnedRoomId> = data::user::joined_rooms(user_id).await?;
 
                 crate::user::full_user_deactivate(user_id, &all_joined_rooms).await?;
             }
@@ -78,7 +78,7 @@ pub async fn banned_room_check(
                 .ok();
             }
 
-            let all_joined_rooms = data::user::joined_rooms(user_id)?;
+            let all_joined_rooms = data::user::joined_rooms(user_id).await?;
             crate::user::full_user_deactivate(user_id, &all_joined_rooms).await?;
         }
 

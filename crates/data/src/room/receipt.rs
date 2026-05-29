@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::events::AnySyncEphemeralRoomEvent;
 use crate::core::events::receipt::{Receipt, ReceiptEventContent, ReceiptType};
@@ -13,7 +14,7 @@ use crate::{DataResult, connect, next_sn};
 
 /// Returns an iterator over the most recent read_receipts in a room that happened after the event
 /// with id `since`.
-pub fn read_receipts(
+pub async fn read_receipts(
     room_id: &RoomId,
     since_sn: Seqnum,
 ) -> DataResult<BTreeMap<OwnedUserId, ReceiptEventContent>> {
@@ -22,7 +23,8 @@ pub fn read_receipts(
         .filter(event_receipts::sn.ge(since_sn))
         .filter(event_receipts::room_id.eq(room_id))
         .order_by(event_receipts::sn.desc())
-        .load::<DbReceipt>(&mut connect()?)?;
+        .load::<DbReceipt>(&mut connect().await?)
+        .await?;
     let unthread_receipts = receipts
         .iter()
         .filter(|r| r.thread_id.is_none())
@@ -69,7 +71,7 @@ pub fn read_receipts(
 
 /// Sets a private read marker at `count`.
 #[tracing::instrument]
-pub fn set_private_read(
+pub async fn set_private_read(
     room_id: &RoomId,
     user_id: &UserId,
     event_id: &EventId,
@@ -77,7 +79,7 @@ pub fn set_private_read(
 ) -> DataResult<()> {
     diesel::insert_into(event_receipts::table)
         .values(&DbReceipt {
-            sn: next_sn()?,
+            sn: next_sn().await?,
             ty: ReceiptType::ReadPrivate.to_string(),
             room_id: room_id.to_owned(),
             user_id: user_id.to_owned(),
@@ -87,18 +89,20 @@ pub fn set_private_read(
             json_data: JsonValue::default(),
             receipt_at: UnixMillis::now(),
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn last_private_read_update_sn(user_id: &UserId, room_id: &RoomId) -> DataResult<Seqnum> {
+pub async fn last_private_read_update_sn(user_id: &UserId, room_id: &RoomId) -> DataResult<Seqnum> {
     let event_sn = event_receipts::table
         .filter(event_receipts::room_id.eq(room_id))
         .filter(event_receipts::user_id.eq(user_id))
         .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
         .order_by(event_receipts::event_sn.desc())
         .select(event_receipts::event_sn)
-        .first::<Seqnum>(&mut connect()?)?;
+        .first::<Seqnum>(&mut connect().await?)
+        .await?;
 
     Ok(event_sn)
 }

@@ -2,6 +2,7 @@ use std::{fmt::Debug, mem};
 
 use bytes::BytesMut;
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::push::PusherIds;
 use tracing::{info, warn};
 
@@ -68,10 +69,11 @@ pub struct NewDbPushRule {
 //     }
 // }
 
-pub fn get_push_rules(user_id: &UserId) -> DataResult<Vec<DbPushRule>> {
+pub async fn get_push_rules(user_id: &UserId) -> DataResult<Vec<DbPushRule>> {
     let push_rules = push_rules::table
         .filter(push_rules::user_id.eq(user_id))
         .order_by((push_rules::priority_class.asc(), push_rules::priority.asc()))
-        .load::<DbPushRule>(&mut db::connect()?)?;
+        .load::<DbPushRule>(&mut db::connect().await?)
+        .await?;
     Ok(push_rules)
 }

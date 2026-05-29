@@ -12,17 +12,17 @@ pub async fn send_join_v1(
     room_id: &RoomId,
     pdu: &RawJsonValue,
 ) -> AppResult<RoomStateV1> {
-    if !room::room_exists(room_id)? {
+    if !room::room_exists(room_id).await? {
         return Err(MatrixError::not_found("room is unknown to this server.").into());
     }
 
-    handler::acl_check(origin, room_id)?;
+    handler::acl_check(origin, room_id).await?;
 
     // We need to return the state prior to joining, let's keep a reference to that here
-    let frame_id = room::get_frame_id(room_id, None).unwrap_or_default();
+    let frame_id = room::get_frame_id(room_id, None).await.unwrap_or_default();
 
     // We do not add the event_id field to the pdu here because of signature and hashes checks
-    let room_version_id = room::get_version(room_id)?;
+    let room_version_id = room::get_version(room_id).await?;
 
     let (event_id, mut value) = gen_event_id_canonical_json(pdu, &room_version_id)
         .map_err(|_| MatrixError::invalid_param("could not convert event to canonical json"))?;
@@ -84,11 +84,11 @@ pub async fn send_join_v1(
     )
     .map_err(|e| MatrixError::bad_json(format!("sender property is not a valid user id: {e}")))?;
 
-    if room::user::is_banned(&sender, room_id)? {
+    if room::user::is_banned(&sender, room_id).await? {
         return Err(MatrixError::forbidden("user is banned from the room", None).into());
     }
 
-    handler::acl_check(sender.server_name(), room_id)?;
+    handler::acl_check(sender.server_name(), room_id).await?;
 
     // check if origin server is trying to send for another server
     if sender.server_name() != origin {
@@ -130,7 +130,7 @@ pub async fn send_join_v1(
             .into());
         }
 
-        if !room::user::is_joined(&authorising_user, room_id)? {
+        if !room::user::is_joined(&authorising_user, room_id).await? {
             return Err(MatrixError::invalid_param(
                 "authorising user {authorising_user} is not in the room you are trying to join, \
 				 they cannot authorise your join",
@@ -177,21 +177,23 @@ pub async fn send_join_v1(
     )
     .await?;
 
-    let state_ids = state::get_full_state_ids(frame_id)?;
-    let state = state_ids
-        .iter()
-        .filter_map(|(_, id)| timeline::get_pdu_json(id).ok().flatten())
-        .map(crate::sending::convert_to_outgoing_federation_event)
-        .collect();
+    let state_ids = state::get_full_state_ids(frame_id).await?;
+    let mut state = Vec::new();
+    for (_, id) in state_ids.iter() {
+        if let Some(pdu_json) = timeline::get_pdu_json(id).await.ok().flatten() {
+            state.push(crate::sending::convert_to_outgoing_federation_event(pdu_json).await);
+        }
+    }
     let auth_chain_ids =
-        room::auth_chain::get_auth_chain_ids(room_id, state_ids.values().map(|id| &**id))?;
-    let auth_chain = auth_chain_ids
-        .into_iter()
-        .filter_map(|id| timeline::get_pdu_json(&id).ok().flatten())
-        .map(crate::sending::convert_to_outgoing_federation_event)
-        .collect();
+        room::auth_chain::get_auth_chain_ids(room_id, state_ids.values().map(|id| &**id)).await?;
+    let mut auth_chain = Vec::new();
+    for id in auth_chain_ids.into_iter() {
+        if let Some(pdu_json) = timeline::get_pdu_json(&id).await.ok().flatten() {
+            auth_chain.push(crate::sending::convert_to_outgoing_federation_event(pdu_json).await);
+        }
+    }
 
-    if let Err(e) = sending::send_pdu_room(room_id, &event_id, &[], &[origin.to_owned()]) {
+    if let Err(e) = sending::send_pdu_room(room_id, &event_id, &[], &[origin.to_owned()]).await {
         error!("failed to notify user joined to servers: {e}");
     }
 

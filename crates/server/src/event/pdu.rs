@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::to_raw_value;
@@ -74,22 +75,22 @@ impl SnPduEvent {
         }
     }
 
-    pub fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
+    pub async fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
         if self.event_ty == TimelineEventType::RoomMember
             && self.state_key.as_deref() == Some(user_id.as_str())
         {
             return Ok(true);
         }
         if self.is_room_state() {
-            if room::is_world_readable(&self.room_id) {
-                return Ok(!room::user::is_banned(user_id, &self.room_id)?);
-            } else if room::user::is_joined(user_id, &self.room_id)? {
+            if room::is_world_readable(&self.room_id).await {
+                return Ok(!room::user::is_banned(user_id, &self.room_id).await?);
+            } else if room::user::is_joined(user_id, &self.room_id).await? {
                 return Ok(true);
             }
         }
-        let frame_id = match state::get_pdu_frame_id(&self.event_id) {
+        let frame_id = match state::get_pdu_frame_id(&self.event_id).await {
             Ok(frame_id) => frame_id,
-            Err(_) => match state::get_room_frame_id(&self.room_id, None) {
+            Err(_) => match state::get_room_frame_id(&self.room_id, None).await {
                 Ok(frame_id) => frame_id,
                 Err(_) => {
                     return Ok(false);
@@ -110,6 +111,7 @@ impl SnPduEvent {
             &StateEventType::RoomHistoryVisibility,
             "",
         )
+        .await
         .map_or(
             HistoryVisibility::Shared,
             |c: RoomHistoryVisibilityEventContent| c.history_visibility,
@@ -118,20 +120,20 @@ impl SnPduEvent {
         let visibility = match history_visibility {
             HistoryVisibility::WorldReadable => true,
             HistoryVisibility::Shared => {
-                let Ok(membership) = state::user_membership(frame_id, user_id) else {
-                    return crate::room::user::is_joined(user_id, &self.room_id);
+                let Ok(membership) = state::user_membership(frame_id, user_id).await else {
+                    return crate::room::user::is_joined(user_id, &self.room_id).await;
                 };
                 membership == MembershipState::Join
-                    || crate::room::user::is_joined(user_id, &self.room_id)?
+                    || crate::room::user::is_joined(user_id, &self.room_id).await?
             }
             HistoryVisibility::Invited => {
                 // Allow if any member on requesting server was AT LEAST invited, else deny
-                state::user_was_invited(frame_id, user_id)
+                state::user_was_invited(frame_id, user_id).await
             }
             HistoryVisibility::Joined => {
                 // Allow if any member on requested server was joined, else deny
-                state::user_was_joined(frame_id, user_id)
-                    || state::user_was_joined(frame_id - 1, user_id)
+                state::user_was_joined(frame_id, user_id).await
+                    || state::user_was_joined(frame_id - 1, user_id).await
             }
             _ => {
                 error!("unknown history visibility {history_visibility}");
@@ -146,7 +148,7 @@ impl SnPduEvent {
         Ok(visibility)
     }
 
-    pub fn add_unsigned_membership(&mut self, user_id: &UserId) -> AppResult<()> {
+    pub async fn add_unsigned_membership(&mut self, user_id: &UserId) -> AppResult<()> {
         #[derive(Deserialize)]
         struct ExtractMemebership {
             membership: String,
@@ -157,8 +159,9 @@ impl SnPduEvent {
             self.get_content::<ExtractMemebership>()
                 .map(|m| m.membership)
                 .ok()
-        } else if let Ok(frame_id) = crate::event::get_frame_id(&self.room_id, self.event_sn) {
+        } else if let Ok(frame_id) = crate::event::get_frame_id(&self.room_id, self.event_sn).await {
             state::user_membership(frame_id, user_id)
+                .await
                 .ok()
                 .map(|m| m.to_string())
         } else {
@@ -586,9 +589,10 @@ impl PduEvent {
     }
 
     #[tracing::instrument]
-    pub fn to_stripped_state_event(&self) -> RawJson<AnyStrippedStateEvent> {
+    pub async fn to_stripped_state_event(&self) -> RawJson<AnyStrippedStateEvent> {
         if self.event_ty == TimelineEventType::RoomCreate {
             let version_rules = crate::room::get_version(&self.room_id)
+                .await
                 .and_then(|version| crate::room::get_version_rules(&version));
             if let Ok(version_rules) = version_rules
                 && version_rules.authorization.room_create_event_id_as_room_id
@@ -836,7 +840,7 @@ impl PduBuilder {
         _state_lock: &RoomMutexGuard,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let (pdu, pdu_json) = self.hash_sign(sender_id, room_id, room_version).await?;
-        let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id)?;
+        let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id).await?;
         let content_value: JsonValue = serde_json::from_str(pdu.content.get())?;
         NewDbEvent {
             id: pdu.event_id.to_owned(),
@@ -858,7 +862,8 @@ impl PduBuilder {
             is_rejected: false,
             rejection_reason: None,
         }
-        .save()?;
+        .save()
+        .await?;
         DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
@@ -867,7 +872,8 @@ impl PduBuilder {
             json_data: serde_json::to_value(&pdu_json)?,
             format_version: None,
         }
-        .save()?;
+        .save()
+        .await?;
 
         Ok((
             SnPduEvent {
@@ -898,7 +904,8 @@ impl PduBuilder {
             ..
         } = self;
 
-        let prev_events: Vec<_> = state::get_forward_extremities(room_id)?
+        let prev_events: Vec<_> = state::get_forward_extremities(room_id)
+            .await?
             .into_iter()
             .take(20)
             .collect();
@@ -926,19 +933,22 @@ impl PduBuilder {
             state_key.as_deref(),
             &content,
             auth_rules,
-        )?;
+        )
+        .await?;
 
         // Our depth is the maximum depth of prev_events + 1
-        let depth = prev_events
-            .iter()
-            .filter_map(|event_id| Some(get_pdu(event_id).ok()?.depth))
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let mut max_depth = 0;
+        for event_id in &prev_events {
+            if let Ok(prev_pdu) = get_pdu(event_id).await {
+                max_depth = max_depth.max(prev_pdu.depth);
+            }
+        }
+        let depth = max_depth + 1;
 
         if let Some(state_key) = &state_key
             && let Ok(prev_pdu) =
                 crate::room::get_state(room_id, &event_type.to_string().into(), state_key, None)
+                    .await
         {
             unsigned.insert("prev_content".to_owned(), prev_pdu.content.clone());
             unsigned.insert(
@@ -980,6 +990,7 @@ impl PduBuilder {
 
         let fetch_event = async |event_id: OwnedEventId| {
             get_pdu(&event_id)
+                .await
                 .map(|s| s.pdu)
                 .map_err(|_| StateError::other("missing PDU 6"))
         };
@@ -992,6 +1003,7 @@ impl PduBuilder {
             }
             if auth_rules.room_create_event_id_as_room_id && k == StateEventType::RoomCreate {
                 let pdu = crate::room::get_create(room_id)
+                    .await
                     .map_err(|_| StateError::other("missing create event"))?
                     .into_inner();
                 if pdu.room_id != *room_id {
@@ -1002,7 +1014,7 @@ impl PduBuilder {
             } else {
                 // If the state event is not found in auth_events, try to look it up
                 // directly from room state as a fallback.
-                if let Ok(state_pdu) = crate::room::get_state(room_id, &k, &s, None) {
+                if let Ok(state_pdu) = crate::room::get_state(room_id, &k, &s, None).await {
                     return Ok(state_pdu.pdu);
                 }
                 warn!(
@@ -1064,7 +1076,8 @@ impl PduBuilder {
                     .filter(event_forward_extremities::room_id.eq(room_id)),
             )
             .set(event_forward_extremities::room_id.eq(&pdu.room_id))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
 
         pdu_json.insert(

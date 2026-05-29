@@ -30,12 +30,12 @@ pub(crate) enum FederationCommand {
 }
 
 pub(super) async fn disable_room(ctx: &Context<'_>, room_id: OwnedRoomId) -> AppResult<()> {
-    crate::room::disable_room(&room_id, true)?;
+    crate::room::disable_room(&room_id, true).await?;
     ctx.write_str("Room disabled.").await
 }
 
 pub(super) async fn enable_room(ctx: &Context<'_>, room_id: OwnedRoomId) -> AppResult<()> {
-    crate::room::disable_room(&room_id, false)?;
+    crate::room::disable_room(&room_id, false).await?;
     ctx.write_str("Room enabled.").await
 }
 
@@ -88,16 +88,16 @@ pub(super) async fn remote_user_in_rooms(ctx: &Context<'_>, user_id: OwnedUserId
         ));
     }
 
-    if !data::user::user_exists(&user_id)? {
+    if !data::user::user_exists(&user_id).await? {
         return Err(AppError::public(
             "Remote user does not exist in our database.",
         ));
     }
 
-    let mut rooms: Vec<RoomInfo> = data::user::joined_rooms(&user_id)?
-        .into_iter()
-        .map(|room_id| get_room_info(&room_id))
-        .collect();
+    let mut rooms: Vec<RoomInfo> = Vec::new();
+    for room_id in data::user::joined_rooms(&user_id).await? {
+        rooms.push(get_room_info(&room_id).await);
+    }
 
     if rooms.is_empty() {
         return Err(AppError::public("User is not in any rooms."));

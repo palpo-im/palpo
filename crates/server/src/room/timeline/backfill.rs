@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -49,7 +50,8 @@ pub async fn backfill_if_required(
         let existing: Vec<OwnedEventId> = events::table
             .filter(events::id.eq_any(&pdu.prev_events))
             .select(events::id)
-            .load(&mut connect()?)?;
+            .load(&mut connect().await?)
+            .await?;
         if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
             return backfill_from_extremities(room_id, std::slice::from_ref(&pdu.event_id), limit)
                 .await;
@@ -74,11 +76,12 @@ pub async fn backfill_if_required(
             .filter(event_backward_extremities::room_id.eq(room_id))
             .select(event_backward_extremities::event_id)
             .distinct()
-            .load(&mut connect()?)?;
+            .load(&mut connect().await?)
+            .await?;
 
         let mut fill_from: Vec<OwnedEventId> = Vec::new();
         for ext_id in extremity_ids {
-            let Ok(pdu) = super::get_pdu(&ext_id) else {
+            let Ok(pdu) = super::get_pdu(&ext_id).await else {
                 // Event isn't locally known — it's a synthetic frontier marker
                 // for a parent we couldn't fetch yet. Use it as-is.
                 fill_from.push(ext_id);
@@ -90,7 +93,8 @@ pub async fn backfill_if_required(
             let existing: Vec<OwnedEventId> = events::table
                 .filter(events::id.eq_any(&pdu.prev_events))
                 .select(events::id)
-                .load(&mut connect()?)?;
+                .load(&mut connect().await?)
+                .await?;
             if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
                 fill_from.push(ext_id);
             }
@@ -104,6 +108,36 @@ pub async fn backfill_if_required(
     Ok(vec![])
 }
 
+/// Keep a backward `/messages` page contiguous after a federation backfill.
+///
+/// Backfilled events can sit above older local state events. If we return both
+/// sides of that gap in one page, the `end` token points below the gap and the
+/// next pagination misses the newly backfillable events.
+pub async fn trim_pdus_until_backfill_gap(
+    pdus: IndexMap<Seqnum, SnPduEvent>,
+) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    let mut trimmed = IndexMap::with_capacity(pdus.len());
+    for (event_sn, pdu) in pdus {
+        let has_missing_prev = if pdu.prev_events.is_empty() {
+            false
+        } else {
+            let existing: Vec<OwnedEventId> = events::table
+                .filter(events::id.eq_any(&pdu.prev_events))
+                .filter(events::is_outlier.eq(false))
+                .select(events::id)
+                .load(&mut connect().await?)
+                .await?;
+            pdu.prev_events.iter().any(|id| !existing.contains(id))
+        };
+
+        trimmed.insert(event_sn, pdu);
+        if has_missing_prev {
+            break;
+        }
+    }
+    Ok(trimmed)
+}
+
 /// Backfill events from the given backward extremities. Used when the messages
 /// endpoint returns fewer events than the limit and we need to fetch history
 /// from federation (e.g., after re-joining a room).
@@ -111,10 +145,10 @@ pub async fn backfill_if_required(
 pub async fn backfill_from_extremities(
     room_id: &RoomId,
     extremities: &[OwnedEventId],
-    limit: usize,
+    _limit: usize,
 ) -> AppResult<Vec<SnPduEvent>> {
-    let admin_servers = room::admin_servers(room_id, false)?;
-    let room_version = room::get_version(room_id)?;
+    let admin_servers = room::admin_servers(room_id, false).await?;
+    let room_version = room::get_version(room_id).await?;
 
     for backfill_server in &admin_servers {
         info!("asking {backfill_server} for backfill from extremities");
@@ -123,10 +157,12 @@ pub async fn backfill_from_extremities(
             BackfillReqArgs {
                 room_id: room_id.to_owned(),
                 v: extremities.to_vec(),
-                // Synapse caps `/backfill` at 100 events per call, so asking
-                // for more is wasted; ask for the max so we make as much
-                // progress per round-trip as possible.
-                limit: limit.max(100),
+                // Synapse caps `/backfill` at 100 events per call. Use that
+                // bounded batch size regardless of the client page size: small
+                // `/messages` pages should still fetch enough history to
+                // continue locally, while large pages should not block on more
+                // than one federation batch.
+                limit: 100,
             },
         )?
         .into_inner();
@@ -162,7 +198,7 @@ pub async fn backfill_from_extremities(
                         process_to_timeline_pdu(pdu, content, Some(backfill_server)).await
                     {
                         error!("failed to process backfill pdu to timeline {}", e);
-                    } else if let Ok(pdu) = super::get_pdu(&event_id) {
+                    } else if let Ok(pdu) = super::get_pdu(&event_id).await {
                         events.push(pdu);
                     }
                 }
@@ -185,9 +221,10 @@ pub async fn backfill_pdu(
 ) -> AppResult<(SnPduEvent, CanonicalJsonObject)> {
     let (event_id, value) = parse_fetched_pdu(room_id, room_version, &pdu)?;
     // Skip the PDU if we already have it as a timeline event
-    if let Ok(pdu) = super::get_pdu(&event_id) {
+    if let Ok(pdu) = super::get_pdu(&event_id).await {
         info!("we already know {event_id}, skipping backfill");
-        let value = super::get_pdu_json(&event_id)?
+        let value = super::get_pdu_json(&event_id)
+            .await?
             .ok_or_else(|| AppError::public("event json not found"))?;
         return Ok((pdu, value));
     }
@@ -197,7 +234,7 @@ pub async fn backfill_pdu(
     else {
         return Err(AppError::internal("failed to process backfilled pdu"));
     };
-    let (pdu, value, _) = outlier_pdu.save_to_database(true)?;
+    let (pdu, value, _) = outlier_pdu.save_to_database(true).await?;
 
     if pdu.event_ty == TimelineEventType::RoomMessage {
         #[derive(Deserialize)]

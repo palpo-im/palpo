@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::presence::PresenceState;
 use salvo::oapi::extract::{JsonBody, QueryParam};
 use salvo::prelude::*;
@@ -77,7 +78,7 @@ async fn register(
                     })
                     .ok_or(MatrixError::invalid_username("username is invalid"))?;
             proposed_user_id.validate_strict()?;
-            if data::user::user_exists(&proposed_user_id)? {
+            if data::user::user_exists(&proposed_user_id).await? {
                 return Err(MatrixError::user_in_use("desired user id is already taken").into());
             }
             proposed_user_id
@@ -88,7 +89,7 @@ async fn register(
                 &conf.server_name,
             )?;
             proposed_user_id.validate_strict()?;
-            if !data::user::user_exists(&proposed_user_id)? {
+            if !data::user::user_exists(&proposed_user_id).await? {
                 break proposed_user_id;
             }
         },
@@ -100,7 +101,7 @@ async fn register(
         // Constant-time comparison so we don't leak `as_token` bytes via
         // response timing. The same pattern is used in `hoops/auth.rs`.
         let matched = crate::appservices()
-            .iter()
+            .await.iter()
             .find(|appservice| {
                 appservice
                     .as_token
@@ -117,7 +118,7 @@ async fn register(
             return Err(MatrixError::exclusive("user is not in appservice namespace").into());
         }
         appservice = Some(matched);
-    } else if crate::appservice::is_exclusive_user_id(&user_id)? {
+    } else if crate::appservice::is_exclusive_user_id(&user_id).await? {
         return Err(MatrixError::exclusive("user id reserved by appservice").into());
     }
 
@@ -144,7 +145,8 @@ async fn register(
                 &body.device_id.clone().unwrap_or_else(|| "".into()),
                 auth,
                 &uiaa_info,
-            )?;
+            )
+            .await?;
             if !authed {
                 return Err(AppError::Uiaa(uiaa));
             }
@@ -156,16 +158,17 @@ async fn register(
                 &body.device_id.clone().unwrap_or_else(|| "".into()),
                 uiaa_info.session.as_ref().expect("session is always set"),
                 Some(&uiaa_info),
-            )?;
+            )
+            .await?;
             return Err(uiaa_info.into());
         }
     }
 
     // Create user
     let db_user = if is_guest {
-        crate::user::create_guest_user(user_id.clone())?
+        crate::user::create_guest_user(user_id.clone()).await?
     } else {
-        crate::user::create_user(user_id.clone(), body.password.as_deref())?
+        crate::user::create_user(user_id.clone(), body.password.as_deref()).await?
     };
 
     // Presence update
@@ -182,7 +185,8 @@ async fn register(
             occur_sn: None,
         },
         true,
-    )?;
+    )
+    .await?;
 
     // Initial account data
     crate::data::user::set_data(
@@ -193,7 +197,8 @@ async fn register(
             global: Ruleset::server_default(&user_id),
         })
         .expect("to json always works"),
-    )?;
+    )
+    .await?;
 
     // Inhibit login does not work for guests
     if !is_guest && body.inhibit_login {
@@ -224,7 +229,8 @@ async fn register(
         &token,
         body.initial_device_display_name.clone(),
         Some(req.remote_addr().to_string()),
-    )?;
+    )
+    .await?;
 
     // If this is the first real user, grant them admin privileges
     // Note: the server user, @palpo:servername, is generated first
@@ -257,7 +263,7 @@ async fn register(
                 continue;
             };
 
-            if !room::is_server_joined(&conf.server_name, &room_id)? {
+            if !room::is_server_joined(&conf.server_name, &room_id).await? {
                 warn!("skipping room {room} to automatically join as we have never joined before.");
                 continue;
             }
@@ -318,12 +324,12 @@ async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableRe
 
     // Check if username is creative enough
     let query = users::table.find(&user_id);
-    if diesel_exists!(query, &mut connect()?)? {
+    if diesel_exists!(query, &mut connect().await?)? {
         return Err(MatrixError::user_in_use("Desired user ID is already taken.").into());
     }
 
     // Check if the username is reserved by an appservice exclusive namespace
-    if crate::appservice::is_exclusive_user_id(&user_id)? {
+    if crate::appservice::is_exclusive_user_id(&user_id).await? {
         return Err(
             MatrixError::exclusive("Username is reserved by an application service.").into(),
         );

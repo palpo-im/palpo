@@ -42,7 +42,7 @@ pub(crate) enum RoomAliasCommand {
 }
 
 pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) -> AppResult<()> {
-    let server_user = config::server_user();
+    let server_user = config::server_user().await;
 
     match command {
         RoomAliasCommand::Set {
@@ -64,9 +64,10 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
             };
             match command {
                 RoomAliasCommand::Set { force, room_id, .. } => {
-                    match (force, crate::room::resolve_local_alias(&room_alias)) {
+                    match (force, crate::room::resolve_local_alias(&room_alias).await) {
                         (true, Ok(id)) => {
-                            match crate::room::set_alias(&room_id, &room_alias, &server_user.id) {
+                            match crate::room::set_alias(&room_id, &room_alias, &server_user.id).await
+                            {
                                 Err(err) => {
                                     Err(AppError::public(format!("Failed to remove alias: {err}")))
                                 }
@@ -84,7 +85,8 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
 							 overwrite"
                         ))),
                         (_, Err(_)) => {
-                            match crate::room::set_alias(&room_id, &room_alias, &server_user.id) {
+                            match crate::room::set_alias(&room_id, &room_alias, &server_user.id).await
+                            {
                                 Err(err) => {
                                     Err(AppError::public(format!("Failed to remove alias: {err}")))
                                 }
@@ -94,7 +96,7 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
                     }
                 }
                 RoomAliasCommand::Remove { .. } => {
-                    match crate::room::resolve_local_alias(&room_alias) {
+                    match crate::room::resolve_local_alias(&room_alias).await {
                         Err(_) => Err(AppError::public("Alias isn't in use.")),
                         Ok(id) => {
                             match crate::room::remove_alias(&room_alias, &server_user).await {
@@ -109,7 +111,7 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
                     }
                 }
                 RoomAliasCommand::Which { .. } => {
-                    match crate::room::resolve_local_alias(&room_alias) {
+                    match crate::room::resolve_local_alias(&room_alias).await {
                         Err(_) => Err(AppError::public("Alias isn't in use.")),
                         Ok(id) => context.write_str(&format!("Alias resolves to {id}")).await,
                     }
@@ -119,7 +121,8 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
         }
         RoomAliasCommand::List { room_id } => {
             if let Some(room_id) = room_id {
-                let aliases: Vec<OwnedRoomAliasId> = crate::room::local_aliases_for_room(&room_id)?;
+                let aliases: Vec<OwnedRoomAliasId> =
+                    crate::room::local_aliases_for_room(&room_id).await?;
 
                 let plain_list = aliases.iter().fold(String::new(), |mut output, alias| {
                     writeln!(output, "- {alias}")
@@ -130,7 +133,7 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
                 let plain = format!("Aliases for {room_id}:\n{plain_list}");
                 context.write_str(&plain).await
             } else {
-                let aliases = crate::room::all_local_aliases()?;
+                let aliases = crate::room::all_local_aliases().await?;
 
                 let server_name = config::server_name();
                 let plain_list = aliases

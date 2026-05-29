@@ -11,6 +11,7 @@ pub mod session;
 use std::{collections::BTreeSet, mem};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 pub use presence::*;
 use serde::de::DeserializeOwned;
 
@@ -26,23 +27,26 @@ use crate::data::{DataResult, connect};
 use crate::room::timeline;
 use crate::{AppError, AppResult, IsRemoteOrLocal, MatrixError, PduBuilder, config, data, room};
 
-pub fn is_username_available(username: &str) -> AppResult<bool> {
+pub async fn is_username_available(username: &str) -> AppResult<bool> {
     let user_id = UserId::parse(format!("@{}:{}", username, config::server_name()))
         .map_err(|_| AppError::internal("invalid username format"))?;
     user_id.validate_strict()?;
-    let available = !data::user::user_exists(&user_id)?;
+    let available = !data::user::user_exists(&user_id).await?;
     Ok(available)
 }
 
-pub fn create_user(user_id: impl Into<OwnedUserId>, password: Option<&str>) -> AppResult<DbUser> {
-    create_user_inner(user_id, password, false)
+pub async fn create_user(
+    user_id: impl Into<OwnedUserId>,
+    password: Option<&str>,
+) -> AppResult<DbUser> {
+    create_user_inner(user_id, password, false).await
 }
 
-pub fn create_guest_user(user_id: impl Into<OwnedUserId>) -> AppResult<DbUser> {
-    create_user_inner(user_id, None, true)
+pub async fn create_guest_user(user_id: impl Into<OwnedUserId>) -> AppResult<DbUser> {
+    create_user_inner(user_id, None, true).await
 }
 
-fn create_user_inner(
+async fn create_user_inner(
     user_id: impl Into<OwnedUserId>,
     password: Option<&str>,
     is_guest: bool,
@@ -64,7 +68,8 @@ fn create_user_inner(
         .on_conflict(users::id)
         .do_update()
         .set(&new_user)
-        .get_result::<DbUser>(&mut connect()?)?;
+        .get_result::<DbUser>(&mut connect().await?)
+        .await?;
     // Default to pretty display_name
     let display_name = user_id.localpart().to_owned();
     // // If enabled append lightning bolt to display name (default true)
@@ -79,20 +84,22 @@ fn create_user_inner(
             avatar_url: None,
             blurhash: None,
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     if let Some(password) = password {
-        crate::user::set_password(&user.id, password)?;
+        crate::user::set_password(&user.id, password).await?;
     }
-    if let Err(e) = set_display_name(&user.id, &display_name) {
+    if let Err(e) = set_display_name(&user.id, &display_name).await {
         tracing::warn!("failed to set profile for new user (non-fatal): {}", e);
     }
     Ok(user)
 }
 
-pub fn list_local_users() -> AppResult<Vec<OwnedUserId>> {
+pub async fn list_local_users() -> AppResult<Vec<OwnedUserId>> {
     let users = user_passwords::table
         .select(user_passwords::user_id)
-        .load::<OwnedUserId>(&mut connect()?)?;
+        .load::<OwnedUserId>(&mut connect().await?)
+        .await?;
     Ok(users)
 }
 /// Ensure that a user only sees signatures from themselves and the target user
@@ -125,14 +132,17 @@ pub fn clean_signatures<F: Fn(&UserId) -> bool>(
 
 /// Returns true/false based on whether the recipient/receiving user has
 /// blocked the sender
-pub fn user_is_ignored(sender_id: &UserId, recipient_id: &UserId) -> bool {
+pub async fn user_is_ignored(sender_id: &UserId, recipient_id: &UserId) -> bool {
     ignored_users(recipient_id)
+        .await
         .iter()
         .any(|blocked_user| blocked_user == sender_id)
 }
 
-pub fn ignored_users(recipient_id: &UserId) -> BTreeSet<OwnedUserId> {
-    let ignored_user_ids = data::user::ignored_users(recipient_id).unwrap_or_default();
+pub async fn ignored_users(recipient_id: &UserId) -> BTreeSet<OwnedUserId> {
+    let ignored_user_ids = data::user::ignored_users(recipient_id)
+        .await
+        .unwrap_or_default();
     if !ignored_user_ids.is_empty() {
         return ignored_user_ids.into_iter().collect();
     }
@@ -140,7 +150,9 @@ pub fn ignored_users(recipient_id: &UserId) -> BTreeSet<OwnedUserId> {
     if let Ok(Some(ignored)) = data::user::get_global_data::<IgnoredUserListEvent>(
         recipient_id,
         &GlobalAccountDataEventType::IgnoredUserList.to_string(),
-    ) {
+    )
+    .await
+    {
         ignored.content.ignored_users.keys().cloned().collect()
     } else {
         BTreeSet::new()
@@ -158,8 +170,8 @@ pub async fn full_user_deactivate(
     user_id: &UserId,
     all_joined_rooms: &[OwnedRoomId],
 ) -> AppResult<()> {
-    data::user::deactivate(user_id).ok();
-    data::user::delete_profile(user_id).ok();
+    data::user::deactivate(user_id).await.ok();
+    data::user::delete_profile(user_id).await.ok();
 
     // TODO: remove all user data
     // for profile_key in data::user::all_profile_keys(user_id) {
@@ -169,7 +181,7 @@ pub async fn full_user_deactivate(
     for room_id in all_joined_rooms {
         let state_lock = room::lock_state(room_id).await;
 
-        let room_version = room::get_version(room_id)?;
+        let room_version = room::get_version(room_id).await?;
         let version_rules = room::get_version_rules(&room_version)?;
         let room_power_levels = room::get_power_levels(room_id).await.ok();
 
@@ -178,7 +190,7 @@ pub async fn full_user_deactivate(
         });
 
         let user_can_demote_self = user_can_change_self
-            || room::get_create(room_id).is_ok_and(|event| event.sender == user_id);
+            || room::get_create(room_id).await.is_ok_and(|event| event.sender == user_id);
 
         if user_can_demote_self {
             let mut power_levels_content: RoomPowerLevelsEventContent = room_power_levels
@@ -219,14 +231,16 @@ pub async fn find_from_openid_token(token: &str) -> AppResult<OwnedUserId> {
     let Ok((user_id, expires_at)) = user_openid_tokens::table
         .filter(user_openid_tokens::token.eq(token))
         .select((user_openid_tokens::user_id, user_openid_tokens::expires_at))
-        .first::<(OwnedUserId, UnixMillis)>(&mut connect()?)
+        .first::<(OwnedUserId, UnixMillis)>(&mut connect().await?)
+        .await
     else {
         return Err(MatrixError::unauthorized("OpenID token is unrecognised").into());
     };
     if expires_at < UnixMillis::now() {
         tracing::warn!("OpenID token is expired, removing");
         diesel::delete(user_openid_tokens::table.filter(user_openid_tokens::token.eq(token)))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
 
         return Err(MatrixError::unauthorized("OpenID token is expired").into());
     }
@@ -236,7 +250,7 @@ pub async fn find_from_openid_token(token: &str) -> AppResult<OwnedUserId> {
 
 /// Creates a short-lived login token, which can be used to log in using the
 /// `m.login.token` mechanism.
-pub fn create_login_token(user_id: &UserId, token: &str) -> AppResult<u64> {
+pub async fn create_login_token(user_id: &UserId, token: &str) -> AppResult<u64> {
     let expires_in = crate::config::get().login_token_ttl;
     let now = UnixMillis::now().get();
     let expires_at = now.saturating_add(expires_in).min(i64::MAX as u64) as i64;
@@ -250,18 +264,20 @@ pub fn create_login_token(user_id: &UserId, token: &str) -> AppResult<u64> {
         .on_conflict(user_login_tokens::token)
         .do_update()
         .set(user_login_tokens::expires_at.eq(expires_at))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     Ok(expires_in)
 }
 
 /// Find out which user a login token belongs to.
 /// Removes the token to prevent double-use attacks.
-pub fn take_login_token(token: &str) -> AppResult<OwnedUserId> {
+pub async fn take_login_token(token: &str) -> AppResult<OwnedUserId> {
     let Ok((user_id, expires_at)) = user_login_tokens::table
         .filter(user_login_tokens::token.eq(token))
         .select((user_login_tokens::user_id, user_login_tokens::expires_at))
-        .first::<(OwnedUserId, UnixMillis)>(&mut connect()?)
+        .first::<(OwnedUserId, UnixMillis)>(&mut connect().await?)
+        .await
     else {
         return Err(MatrixError::forbidden("Login token is unrecognised.", None).into());
     };
@@ -269,23 +285,30 @@ pub fn take_login_token(token: &str) -> AppResult<OwnedUserId> {
     if expires_at < UnixMillis::now() {
         trace!(?user_id, ?token, "Removing expired login token");
         diesel::delete(user_login_tokens::table.filter(user_login_tokens::token.eq(token)))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         return Err(MatrixError::forbidden("Login token is expired.", None).into());
     }
 
     diesel::delete(user_login_tokens::table.filter(user_login_tokens::token.eq(token)))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
 
     Ok(user_id)
 }
 
-pub fn valid_refresh_token(user_id: &UserId, device_id: &DeviceId, token: &str) -> AppResult<()> {
+pub async fn valid_refresh_token(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    token: &str,
+) -> AppResult<()> {
     let Ok(expires_at) = user_refresh_tokens::table
         .filter(user_refresh_tokens::user_id.eq(user_id))
         .filter(user_refresh_tokens::device_id.eq(device_id))
         .filter(user_refresh_tokens::token.eq(token))
         .select(user_refresh_tokens::expires_at)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
     else {
         return Err(MatrixError::unauthorized("Invalid refresh token.").into());
     };
@@ -295,40 +318,42 @@ pub fn valid_refresh_token(user_id: &UserId, device_id: &DeviceId, token: &str) 
     Ok(())
 }
 
-pub fn make_user_admin(user_id: &UserId) -> AppResult<()> {
+pub async fn make_user_admin(user_id: &UserId) -> AppResult<()> {
     let user_id = user_id.to_owned();
     diesel::update(users::table.filter(users::id.eq(&user_id)))
         .set(users::is_admin.eq(true))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
 /// Places one event in the account data of the user and removes the previous entry.
 #[tracing::instrument(skip(room_id, user_id, event_type, json_data))]
-pub fn set_data(
+pub async fn set_data(
     user_id: &UserId,
     room_id: Option<OwnedRoomId>,
     event_type: &str,
     json_data: JsonValue,
 ) -> DataResult<DbUserData> {
-    let user_data = data::user::set_data(user_id, room_id, event_type, json_data)?;
+    let user_data = data::user::set_data(user_id, room_id, event_type, json_data).await?;
     Ok(user_data)
 }
 
-pub fn get_data<E: DeserializeOwned>(
+pub async fn get_data<E: DeserializeOwned>(
     user_id: &UserId,
     room_id: Option<&RoomId>,
     kind: &str,
 ) -> DataResult<E> {
-    let data = data::user::get_data::<E>(user_id, room_id, kind)?;
+    let data = data::user::get_data::<E>(user_id, room_id, kind).await?;
     Ok(data)
 }
 
-pub fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
+pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
     let datas = user_datas::table
         .filter(user_datas::user_id.eq(user_id))
         .filter(user_datas::room_id.is_null())
-        .load::<DbUserData>(&mut connect()?)?;
+        .load::<DbUserData>(&mut connect().await?)
+        .await?;
     Ok(datas)
 }
 
@@ -336,7 +361,8 @@ pub async fn delete_all_media(user_id: &UserId) -> AppResult<i64> {
     let medias = media_metadatas::table
         .filter(media_metadatas::created_by.eq(user_id))
         .select((media_metadatas::origin_server, media_metadatas::media_id))
-        .load::<(OwnedServerName, String)>(&mut connect()?)?;
+        .load::<(OwnedServerName, String)>(&mut connect().await?)
+        .await?;
 
     for (origin_server, media_id) in &medias {
         if let Err(e) = crate::media::delete_media(origin_server, media_id).await {
@@ -349,6 +375,7 @@ pub async fn delete_all_media(user_id: &UserId) -> AppResult<i64> {
 pub async fn deactivate_account(user_id: &UserId) -> AppResult<()> {
     diesel::update(users::table.find(user_id))
         .set(users::deactivated_at.eq(UnixMillis::now()))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }

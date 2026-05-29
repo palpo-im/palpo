@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_data::user::set_display_name;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -167,10 +167,10 @@ async fn login(
             //         admin::revoke_admin(&user_id).await?;
             //     }
             // } else {
-            let Ok(user) = data::user::get_user(&user_id) else {
+            let Ok(user) = data::user::get_user(&user_id).await else {
                 return Err(MatrixError::forbidden("User not found.", None).into());
             };
-            if let Err(e) = user::verify_password(&user, password) {
+            if let Err(e) = user::verify_password(&user, password).await {
                 res.status_code(StatusCode::FORBIDDEN); //for complement testing: TestLogin/parallel/POST_/login_wrong_password_is_rejected
                 if let AppError::Matrix(matrix) = e {
                     if matches!(
@@ -192,7 +192,7 @@ async fn login(
             if !crate::config::get().login_via_existing_session {
                 return Err(MatrixError::unknown("Token login is not enabled.").into());
             }
-            user::take_login_token(token)?
+            user::take_login_token(token).await?
         }
         LoginInfo::Jwt(info) => {
             let conf = config::get();
@@ -209,7 +209,7 @@ async fn login(
                     ))
                 })?;
 
-            if !data::user::user_exists(&user_id)? {
+            if !data::user::user_exists(&user_id).await? {
                 if !jwt_conf.register_user {
                     return Err(
                         MatrixError::not_found("user is not registered on this server.").into(),
@@ -232,10 +232,11 @@ async fn login(
                     .on_conflict(users::id)
                     .do_update()
                     .set(&new_user)
-                    .get_result::<DbUser>(&mut connect()?)?;
+                    .get_result::<DbUser>(&mut connect().await?)
+                    .await?;
 
                 // Set initial user profile
-                if let Err(e) = set_display_name(&user.id, user.id.localpart()) {
+                if let Err(e) = set_display_name(&user.id, user.id.localpart()).await {
                     tracing::warn!("failed to set profile for new user (non-fatal): {}", e);
                 }
             }
@@ -257,6 +258,7 @@ async fn login(
     };
 
     let user = data::user::get_user(&user_id)
+        .await
         .map_err(|_| MatrixError::forbidden("User not found.", None))?;
     user::ensure_account_usable(&user)?;
 
@@ -280,20 +282,22 @@ async fn login(
             &refresh_token,
             expires_at,
             ultimate_session_expires_at,
-        )?;
+        )
+        .await?;
         (Some(refresh_token), Some(refresh_token_id))
     } else {
         (None, None)
     };
 
     // Determine if device_id was provided and exists in the db for this user
-    if data::user::device::is_device_exists(&user_id, &device_id)? {
+    if data::user::device::is_device_exists(&user_id, &device_id).await? {
         data::user::device::set_access_token(
             &user_id,
             &device_id,
             &access_token,
             refresh_token_id,
-        )?;
+        )
+        .await?;
     } else {
         data::user::device::create_device(
             &user_id,
@@ -301,7 +305,8 @@ async fn login(
             &access_token,
             body.initial_device_display_name.clone(),
             Some(req.remote_addr().to_string()),
-        )?;
+        )
+        .await?;
     }
 
     tracing::info!("{} logged in", user_id);
@@ -354,21 +359,22 @@ async fn get_access_token(
     let payload = req.payload().await?;
     let body = serde_json::from_slice::<TokenReqBody>(payload);
     if let Ok(Some(auth)) = body.as_ref().map(|b| &b.auth) {
-        let (worked, uiaa_info) = crate::uiaa::try_auth(sender_id, device_id, auth, &uiaa_info)?;
+        let (worked, uiaa_info) =
+            crate::uiaa::try_auth(sender_id, device_id, auth, &uiaa_info).await?;
 
         if !worked {
             return Err(AppError::Uiaa(uiaa_info));
         }
     } else if let Ok(json) = serde_json::from_slice::<CanonicalJsonValue>(payload) {
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-        let _ = crate::uiaa::create_session(sender_id, device_id, &uiaa_info, json);
+        let _ = crate::uiaa::create_session(sender_id, device_id, &uiaa_info, json).await;
         return Err(AppError::Uiaa(uiaa_info));
     } else {
         return Err(MatrixError::not_json("No JSON body was sent when required.").into());
     }
 
     let login_token = utils::random_string(TOKEN_LENGTH);
-    let expires_in = crate::user::create_login_token(sender_id, &login_token)?;
+    let expires_in = crate::user::create_login_token(sender_id, &login_token).await?;
 
     json_ok(TokenResBody {
         expires_in: Duration::from_millis(expires_in),
@@ -403,7 +409,7 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
         tracing::warn!("Failed to revoke delegated auth token: {e}");
     }
 
-    data::user::device::remove_device(authed.user_id(), authed.device_id())?;
+    data::user::device::remove_device(authed.user_id(), authed.device_id()).await?;
     empty_ok()
 }
 
@@ -455,7 +461,7 @@ async fn logout_all(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
         return empty_ok();
     };
 
-    data::user::remove_all_devices(authed.user_id())?;
+    data::user::remove_all_devices(authed.user_id()).await?;
 
     empty_ok()
 }
@@ -469,7 +475,7 @@ async fn refresh_access_token(
     let authed = depot.authed_info()?;
     let user_id = authed.user_id();
     let device_id = authed.device_id();
-    crate::user::valid_refresh_token(user_id, device_id, &body.refresh_token)?;
+    crate::user::valid_refresh_token(user_id, device_id, &body.refresh_token).await?;
 
     let access_token = utils::random_string(TOKEN_LENGTH);
     let refresh_token = utils::random_string(TOKEN_LENGTH);
@@ -481,14 +487,16 @@ async fn refresh_access_token(
         &refresh_token,
         expires_at,
         ultimate_session_expires_at,
-    )?;
-    if data::user::device::is_device_exists(user_id, device_id)? {
+    )
+    .await?;
+    if data::user::device::is_device_exists(user_id, device_id).await? {
         data::user::device::set_access_token(
             user_id,
             device_id,
             &access_token,
             Some(refresh_token_id),
-        )?;
+        )
+        .await?;
     } else {
         return Err(MatrixError::not_found("Device not found.").into());
     }

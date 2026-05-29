@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::Seqnum;
@@ -88,42 +89,46 @@ impl From<Vec<DbEventPushSummary>> for UserNotifySummary {
     }
 }
 
-pub fn notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<UserNotifySummary> {
+pub async fn notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<UserNotifySummary> {
     let summaries = event_push_summaries::table
         .filter(event_push_summaries::user_id.eq(user_id))
         .filter(event_push_summaries::room_id.eq(room_id))
-        .load::<DbEventPushSummary>(&mut connect()?)?;
+        .load::<DbEventPushSummary>(&mut connect().await?)
+        .await?;
     Ok(summaries.into())
 }
 
-pub fn highlight_count(user_id: &UserId, room_id: &RoomId) -> AppResult<u64> {
+pub async fn highlight_count(user_id: &UserId, room_id: &RoomId) -> AppResult<u64> {
     let count = event_push_summaries::table
         .filter(event_push_summaries::user_id.eq(user_id))
         .filter(event_push_summaries::room_id.eq(room_id))
         .select(event_push_summaries::highlight_count)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .unwrap_or_default();
     Ok(count as u64)
 }
 
-pub fn last_read_notification(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
+pub async fn last_read_notification(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
     let sn = event_receipts::table
         .filter(event_receipts::user_id.eq(user_id))
         .filter(event_receipts::room_id.eq(room_id))
         .order_by(event_receipts::event_sn.desc())
         .select(event_receipts::event_sn)
-        .first::<Seqnum>(&mut connect()?)
+        .first::<Seqnum>(&mut connect().await?)
+        .await
         .unwrap_or_default();
     Ok(sn)
 }
 
-pub fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoomId>> {
+pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoomId>> {
     let mut user_rooms: Vec<(OwnedUserId, Vec<OwnedRoomId>)> = Vec::new();
     for user_id in user_ids {
         let room_ids = room_users::table
             .filter(room_users::user_id.eq(&user_id))
             .select(room_users::room_id)
-            .load::<OwnedRoomId>(&mut connect()?)?;
+            .load::<OwnedRoomId>(&mut connect().await?)
+            .await?;
         user_rooms.push((user_id, room_ids));
     }
 
@@ -142,116 +147,124 @@ pub fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoomId>> {
     Ok(shared_rooms)
 }
 
-pub fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
+pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("join"))
         .select(room_users::event_sn)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn join_depth(user_id: &UserId, room_id: &RoomId) -> AppResult<u64> {
-    let join_sn = join_sn(user_id, room_id)?;
+pub async fn join_depth(user_id: &UserId, room_id: &RoomId) -> AppResult<u64> {
+    let join_sn = join_sn(user_id, room_id).await?;
     events::table
         .filter(events::sn.eq(join_sn))
         .select(events::depth)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .map(|depth| depth as u64)
         .map_err(Into::into)
 }
-pub fn join_count(room_id: &RoomId) -> AppResult<i64> {
+pub async fn join_count(room_id: &RoomId) -> AppResult<i64> {
     let count = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq("join"))
         .select(room_users::user_id)
         .count()
-        .get_result(&mut connect()?)?;
+        .get_result(&mut connect().await?)
+        .await?;
     Ok(count)
 }
 
-pub fn knock_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {
+pub async fn knock_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("knock"))
         .select(room_users::event_sn)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
-pub fn knock_count(room_id: &RoomId) -> AppResult<i64> {
+pub async fn knock_count(room_id: &RoomId) -> AppResult<i64> {
     let count = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq("knock"))
         .select(room_users::user_id)
         .count()
-        .get_result(&mut connect()?)?;
+        .get_result(&mut connect().await?)
+        .await?;
     Ok(count)
 }
-pub fn leave_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {
+pub async fn leave_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("leave"))
         .select(room_users::event_sn)
-        .first::<i64>(&mut connect()?)
+        .first::<i64>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
 #[tracing::instrument]
-pub fn is_invited(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
+pub async fn is_invited(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
     let query = room_users::table
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Invite.to_string()));
-    diesel_exists!(query, &mut connect()?).map_err(Into::into)
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 
 #[tracing::instrument]
-pub fn is_banned(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
+pub async fn is_banned(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
     let query = room_users::table
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Ban.to_string()));
-    diesel_exists!(query, &mut connect()?).map_err(Into::into)
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 
 #[tracing::instrument]
-pub fn is_left(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
+pub async fn is_left(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
     let left = room_users::table
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .order_by(room_users::id.desc())
         .select(room_users::membership)
-        .first::<String>(&mut connect()?)
+        .first::<String>(&mut connect().await?)
+        .await
         .map(|m| m == MembershipState::Leave.to_string())
         .unwrap_or(true);
     Ok(left)
 }
 
 #[tracing::instrument]
-pub fn is_knocked(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
+pub async fn is_knocked(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
     let query = room_users::table
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Knock.to_string()));
-    diesel_exists!(query, &mut connect()?).map_err(Into::into)
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 #[tracing::instrument]
-pub fn is_joined(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
+pub async fn is_joined(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
     let joined = room_users::table
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .order_by(room_users::id.desc())
         .select(room_users::membership)
-        .first::<String>(&mut connect()?)
+        .first::<String>(&mut connect().await?)
+        .await
         .map(|m| m == MembershipState::Join.to_string())
         .unwrap_or(false);
     Ok(joined)
 }
 
 #[tracing::instrument]
-pub fn left_sn(room_id: &RoomId, user_id: &UserId) -> AppResult<Seqnum> {
+pub async fn left_sn(room_id: &RoomId, user_id: &UserId) -> AppResult<Seqnum> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
@@ -261,12 +274,13 @@ pub fn left_sn(room_id: &RoomId, user_id: &UserId) -> AppResult<Seqnum> {
                 .or(room_users::membership.eq("ban")),
         )
         .select(room_users::event_sn)
-        .first::<Seqnum>(&mut connect()?)
+        .first::<Seqnum>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
 #[tracing::instrument(level = "trace")]
-pub fn invite_state(
+pub async fn invite_state(
     user_id: &UserId,
     room_id: &RoomId,
 ) -> AppResult<Vec<RawJson<AnyStrippedStateEvent>>> {
@@ -275,7 +289,8 @@ pub fn invite_state(
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Invite.to_string()))
         .select(room_users::state_data)
-        .first::<Option<JsonValue>>(&mut connect()?)
+        .first::<Option<JsonValue>>(&mut connect().await?)
+        .await
         .unwrap_or_default()
     {
         Ok(serde_json::from_value(state)?)
@@ -285,13 +300,14 @@ pub fn invite_state(
 }
 
 #[tracing::instrument(level = "trace")]
-pub fn membership(user_id: &UserId, room_id: &RoomId) -> AppResult<MembershipState> {
+pub async fn membership(user_id: &UserId, room_id: &RoomId) -> AppResult<MembershipState> {
     let membership = room_users::table
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .order_by(room_users::id.desc())
         .select(room_users::membership)
-        .first::<String>(&mut connect()?);
+        .first::<String>(&mut connect().await?)
+        .await;
     if let Ok(membership) = membership {
         Ok(membership.into())
     } else {
@@ -303,7 +319,7 @@ pub fn membership(user_id: &UserId, room_id: &RoomId) -> AppResult<MembershipSta
 }
 /// Returns an iterator over all rooms a user left.
 #[tracing::instrument]
-pub fn left_rooms(
+pub async fn left_rooms(
     user_id: &UserId,
     since_tk: Option<BatchToken>,
 ) -> AppResult<HashMap<OwnedRoomId, Vec<RawJson<AnySyncStateEvent>>>> {
@@ -321,7 +337,8 @@ pub fn left_rooms(
     };
     let room_event_ids = query
         .select((room_users::room_id, room_users::event_id))
-        .load::<(OwnedRoomId, OwnedEventId)>(&mut connect()?)
+        .load::<(OwnedRoomId, OwnedEventId)>(&mut connect().await?)
+        .await
         .map(|rows| {
             let mut map: HashMap<OwnedRoomId, Vec<OwnedEventId>> = HashMap::new();
             for (room_id, event_id) in rows {
@@ -334,7 +351,8 @@ pub fn left_rooms(
         let events = event_datas::table
             .filter(event_datas::event_id.eq_any(&event_ids))
             .select(event_datas::json_data)
-            .load::<JsonValue>(&mut connect()?)?
+            .load::<JsonValue>(&mut connect().await?)
+            .await?
             .into_iter()
             .filter_map(|value| RawJson::<AnySyncStateEvent>::from_value(&value).ok())
             .collect::<Vec<_>>();
@@ -343,20 +361,22 @@ pub fn left_rooms(
     Ok(room_events)
 }
 
-pub fn get_tags(user_id: &UserId, room_id: &RoomId) -> AppResult<Vec<DbRoomTag>> {
+pub async fn get_tags(user_id: &UserId, room_id: &RoomId) -> AppResult<Vec<DbRoomTag>> {
     let tags = room_tags::table
         .filter(room_tags::user_id.eq(user_id))
         .filter(room_tags::room_id.eq(room_id))
-        .load::<DbRoomTag>(&mut connect()?)?;
+        .load::<DbRoomTag>(&mut connect().await?)
+        .await?;
     Ok(tags)
 }
-pub fn local_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
+pub async fn local_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
     let users = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq("join"))
         .select(room_users::user_id)
         .distinct()
-        .load::<OwnedUserId>(&mut connect()?)?;
+        .load::<OwnedUserId>(&mut connect().await?)
+        .await?;
     let users = users
         .into_iter()
         .filter(|user_id| user_id.server_name().is_local())
@@ -365,7 +385,7 @@ pub fn local_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
 }
 
 /// Copies the tags and direct room state from one room to another.
-pub fn copy_room_tags_and_direct_to_room(
+pub async fn copy_room_tags_and_direct_to_room(
     user_id: &UserId,
     old_room_id: &RoomId,
     new_room_id: &RoomId,
@@ -374,7 +394,9 @@ pub fn copy_room_tags_and_direct_to_room(
         user_id,
         None,
         &GlobalAccountDataEventType::Direct.to_string(),
-    ) else {
+    )
+    .await
+    else {
         return Ok(());
     };
 
@@ -394,9 +416,10 @@ pub fn copy_room_tags_and_direct_to_room(
         None,
         &GlobalAccountDataEventType::Direct.to_string(),
         serde_json::to_value(direct_rooms)?,
-    )?;
+    )
+    .await?;
 
-    let room_tags = get_tags(user_id, &old_room_id)?;
+    let room_tags = get_tags(user_id, &old_room_id).await?;
     for tag in room_tags {
         let DbRoomTag {
             user_id,
@@ -412,13 +435,14 @@ pub fn copy_room_tags_and_direct_to_room(
         };
         diesel::insert_into(room_tags::table)
             .values(&new_tag)
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
     }
     Ok(())
 }
 
 /// Copy all of the push rules from one room to another for a specific user
-pub fn copy_push_rules_from_room_to_room(
+pub async fn copy_push_rules_from_room_to_room(
     user_id: &UserId,
     _old_room_id: &RoomId,
     new_room_id: &RoomId,
@@ -427,7 +451,9 @@ pub fn copy_push_rules_from_room_to_room(
         user_id,
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
-    ) else {
+    )
+    .await
+    else {
         return Ok(());
     };
 
@@ -462,6 +488,7 @@ pub fn copy_push_rules_from_room_to_room(
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
         serde_json::to_value(user_data_content)?,
-    )?;
+    )
+    .await?;
     Ok(())
 }

@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::client::account::ChangePasswordReqBody;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -50,19 +51,23 @@ async fn change_password(
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
         return Err(uiaa_info.into());
     };
-    if crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).is_err() {
+    if crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info)
+        .await
+        .is_err()
+    {
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
         return Err(uiaa_info.into());
     }
 
-    crate::user::set_password(authed.user_id(), &body.new_password)?;
+    crate::user::set_password(authed.user_id(), &body.new_password).await?;
     if let Some(access_token_id) = authed.access_token_id() {
         diesel::delete(
             user_pushers::table
                 .filter(user_pushers::user_id.eq(authed.user_id()))
                 .filter(user_pushers::access_token_id.ne(access_token_id)),
         )
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     }
     if body.logout_devices {
         // Logout all devices except the current one
@@ -71,19 +76,22 @@ async fn change_password(
                 .filter(user_devices::user_id.eq(authed.user_id()))
                 .filter(user_devices::device_id.ne(authed.device_id())),
         )
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
         diesel::delete(
             user_access_tokens::table
                 .filter(user_access_tokens::user_id.eq(authed.user_id()))
                 .filter(user_access_tokens::device_id.ne(authed.device_id())),
         )
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
         diesel::delete(
             user_refresh_tokens::table
                 .filter(user_refresh_tokens::user_id.eq(authed.user_id()))
                 .filter(user_refresh_tokens::device_id.ne(authed.device_id())),
         )
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     }
 
     info!("User {} changed their password.", authed.user_id());

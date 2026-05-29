@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use super::DbUser;
 use crate::core::UnixMillis;
@@ -21,10 +22,11 @@ pub fn ensure_account_usable(user: &DbUser) -> AppResult<()> {
     Ok(())
 }
 
-pub fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
+pub async fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
     ensure_account_usable(user)?;
 
     let hash = crate::user::get_password_hash(&user.id)
+        .await
         .map_err(|_| MatrixError::unauthorized("wrong username or password."))?;
     if hash.is_empty() {
         return Err(MatrixError::user_deactivated("the user has been deactivated").into());
@@ -39,17 +41,18 @@ pub fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
     }
 }
 
-pub fn get_password_hash(user_id: &UserId) -> AppResult<String> {
+pub async fn get_password_hash(user_id: &UserId) -> AppResult<String> {
     user_passwords::table
         .filter(user_passwords::user_id.eq(user_id))
         .order_by(user_passwords::id.desc())
         .select(user_passwords::hash)
-        .first::<String>(&mut connect()?)
+        .first::<String>(&mut connect().await?)
+        .await
         .map_err(Into::into)
 }
 
 /// Set/update password hash for a user
-pub fn set_password(user_id: &UserId, password: &str) -> AppResult<()> {
+pub async fn set_password(user_id: &UserId, password: &str) -> AppResult<()> {
     let hash = crate::utils::hash_password(password)?;
     diesel::insert_into(user_passwords::table)
         .values(NewDbPassword {
@@ -57,9 +60,11 @@ pub fn set_password(user_id: &UserId, password: &str) -> AppResult<()> {
             hash: hash.to_owned(),
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     diesel::update(users::table.find(user_id))
         .set(users::is_guest.eq(false))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }

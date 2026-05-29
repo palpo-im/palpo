@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::UnixMillis;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -167,7 +168,8 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
     }) = user_profiles::table
         .filter(user_profiles::user_id.eq(&user_id))
         .filter(user_profiles::room_id.is_null())
-        .first::<DbProfile>(&mut connect()?)
+        .first::<DbProfile>(&mut connect().await?)
+        .await
     else {
         return json_ok(ProfileResBody {
             avatar_url: None,
@@ -221,7 +223,8 @@ async fn get_profile_field(
         return json_ok(ProfileFieldBody::single(field, value));
     }
 
-    let value = data::user::profile_field(&user_id, &field)?
+    let value = data::user::profile_field(&user_id, &field)
+        .await?
         .ok_or_else(|| MatrixError::not_found("Profile field not found."))?;
 
     json_ok(ProfileFieldBody::single(field, value))
@@ -262,7 +265,8 @@ async fn get_avatar_url(
         ..
     } = user_profiles::table
         .filter(user_profiles::user_id.eq(&user_id))
-        .first::<DbProfile>(&mut connect()?)?;
+        .first::<DbProfile>(&mut connect().await?)
+        .await?;
 
     json_ok(AvatarUrlResBody {
         avatar_url,
@@ -296,7 +300,7 @@ async fn set_avatar_url(
     let query = user_profiles::table
         .filter(user_profiles::user_id.eq(&user_id))
         .filter(user_profiles::room_id.is_null());
-    let profile_exists = diesel_exists!(query, &mut connect()?)?;
+    let profile_exists = diesel_exists!(query, &mut connect().await?)?;
     if profile_exists {
         #[derive(AsChangeset, Debug)]
         #[diesel(table_name = user_profiles, treat_none_as_null = true)]
@@ -310,16 +314,17 @@ async fn set_avatar_url(
         };
         diesel::update(query)
             .set(updata_params)
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
     } else {
         return Err(StatusError::not_found().brief("Profile not found.").into());
     }
 
     // Send a new membership event and presence update into all joined rooms
-    let all_joined_rooms: Vec<_> = data::user::joined_rooms(&user_id)?
-        .into_iter()
-        .map(|room_id| {
-            Ok::<_, AppError>((
+    let mut all_joined_rooms: Vec<_> = Vec::new();
+    for room_id in data::user::joined_rooms(&user_id).await?.into_iter() {
+        let result: Result<_, AppError> = async {
+            Ok((
                 PduBuilder {
                     event_type: TimelineEventType::RoomMember,
                     content: to_raw_value(&RoomMemberEventContent {
@@ -329,7 +334,8 @@ async fn set_avatar_url(
                             &StateEventType::RoomMember,
                             user_id.as_str(),
                             None,
-                        )?
+                        )
+                        .await?
                     })
                     .expect("event is valid, we just created it"),
                     state_key: Some(user_id.to_string()),
@@ -337,9 +343,12 @@ async fn set_avatar_url(
                 },
                 room_id,
             ))
-        })
-        .filter_map(|r| r.ok())
-        .collect();
+        }
+        .await;
+        if let Ok(item) = result {
+            all_joined_rooms.push(item);
+        }
+    }
 
     // Presence update
     crate::data::user::set_presence(
@@ -355,13 +364,14 @@ async fn set_avatar_url(
             occur_sn: None,
         },
         true,
-    )?;
+    )
+    .await?;
     for (pdu_builder, room_id) in all_joined_rooms {
         let _ = timeline::build_and_append_pdu(
             pdu_builder,
             &user_id,
             &room_id,
-            &room::get_version(&room_id)?,
+            &room::get_version(&room_id).await?,
             &room::lock_state(&room_id).await,
         )
         .await?;
@@ -398,7 +408,7 @@ async fn get_display_name(
         return json_ok(body);
     }
     json_ok(DisplayNameResBody {
-        display_name: data::user::display_name(&user_id).ok().flatten(),
+        display_name: data::user::display_name(&user_id).await.ok().flatten(),
     })
 }
 
@@ -422,14 +432,14 @@ async fn set_display_name(
     let SetDisplayNameReqBody { display_name } = body.into_inner();
 
     if let Some(display_name) = display_name.as_deref() {
-        data::user::set_display_name(&user_id, display_name)?;
+        data::user::set_display_name(&user_id, display_name).await?;
     }
 
     // Send a new membership event and presence update into all joined rooms
-    let all_joined_rooms: Vec<_> = data::user::joined_rooms(&user_id)?
-        .into_iter()
-        .map(|room_id| {
-            Ok::<_, AppError>((
+    let mut all_joined_rooms: Vec<_> = Vec::new();
+    for room_id in data::user::joined_rooms(&user_id).await?.into_iter() {
+        let result: Result<_, AppError> = async {
+            Ok((
                 PduBuilder {
                     event_type: TimelineEventType::RoomMember,
                     content: to_raw_value(&RoomMemberEventContent {
@@ -439,7 +449,8 @@ async fn set_display_name(
                             &StateEventType::RoomMember,
                             user_id.as_str(),
                             None,
-                        )?
+                        )
+                        .await?
                     })
                     .expect("event is valid, we just created it"),
                     state_key: Some(user_id.to_string()),
@@ -447,16 +458,19 @@ async fn set_display_name(
                 },
                 room_id,
             ))
-        })
-        .filter_map(|r| r.ok())
-        .collect();
+        }
+        .await;
+        if let Ok(item) = result {
+            all_joined_rooms.push(item);
+        }
+    }
 
     for (pdu_builder, room_id) in all_joined_rooms {
         let _ = timeline::build_and_append_pdu(
             pdu_builder,
             &user_id,
             &room_id,
-            &crate::room::get_version(&room_id)?,
+            &crate::room::get_version(&room_id).await?,
             &room::lock_state(&room_id).await,
         )
         .await?;
@@ -475,7 +489,8 @@ async fn set_display_name(
                 occur_sn: None,
             },
             true,
-        )?;
+        )
+        .await?;
     }
 
     empty_ok()
@@ -504,7 +519,7 @@ async fn set_profile_field(
         .remove(&field)
         .ok_or_else(|| MatrixError::bad_json("Profile field body does not match path field."))?;
 
-    data::user::set_profile_field(&user_id, &field, value)?;
+    data::user::set_profile_field(&user_id, &field, value).await?;
 
     empty_ok()
 }
@@ -525,7 +540,7 @@ async fn delete_profile_field(
     let authed = depot.authed_info()?;
     ensure_profile_update_allowed(authed, &user_id)?;
 
-    data::user::delete_profile_field(&user_id, &field)?;
+    data::user::delete_profile_field(&user_id, &field).await?;
 
     empty_ok()
 }

@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
@@ -21,7 +22,7 @@ pub(super) async fn get_visibility(
     let query = rooms::table
         .filter(rooms::id.eq(&room_id))
         .filter(rooms::is_public.eq(true));
-    let visibility = if diesel_exists!(query, &mut connect()?)? {
+    let visibility = if diesel_exists!(query, &mut connect().await?)? {
         Visibility::Public
     } else {
         Visibility::Private
@@ -42,11 +43,13 @@ pub(super) async fn set_visibility(
     let room_id = room_id.into_inner();
     let room = rooms::table
         .find(&room_id)
-        .first::<DbRoom>(&mut connect()?)?;
+        .first::<DbRoom>(&mut connect().await?)
+        .await?;
 
     diesel::update(&room)
         .set(rooms::is_public.eq(body.visibility == Visibility::Public))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     empty_ok()
 }
 

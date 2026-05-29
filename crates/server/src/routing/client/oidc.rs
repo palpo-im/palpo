@@ -1097,6 +1097,7 @@ async fn create_or_get_user(
     oidc_config: &crate::config::OidcConfig,
 ) -> AppResult<DbUser> {
     use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
 
     use crate::core::identifiers::UserId;
     use crate::data::connect;
@@ -1108,11 +1109,12 @@ async fn create_or_get_user(
     // Check if user already exists
     let exist_user = users::table
         .filter(users::id.eq(&parsed_user_id))
-        .first::<DbUser>(&mut connect()?);
+        .first::<DbUser>(&mut connect().await?)
+        .await;
     if let Ok(mut exist_user) = exist_user {
         tracing::debug!("Found existing user account: {}", user_id);
         if exist_user.is_guest {
-            data::user::set_guest(&exist_user.id, false)?;
+            data::user::set_guest(&exist_user.id, false).await?;
             exist_user.is_guest = false;
         }
 
@@ -1154,15 +1156,16 @@ async fn create_or_get_user(
 
     let user = diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result::<DbUser>(&mut connect()?)
+        .get_result::<DbUser>(&mut connect().await?)
+        .await
         .map_err(|e| MatrixError::unknown(format!("Failed to create user account: {}", e)))?;
 
     // Set initial user profile
-    if let Err(e) = data::user::set_display_name(&user.id, display_name) {
+    if let Err(e) = data::user::set_display_name(&user.id, display_name).await {
         tracing::warn!("failed to set profile for new user (non-fatal): {}", e);
     }
     if let Some(picture) = user_info.picture.as_deref()
-        && let Err(e) = data::user::set_avatar_url(&user.id, picture.into())
+        && let Err(e) = data::user::set_avatar_url(&user.id, picture.into()).await
     {
         tracing::warn!("failed to set profile for new user (non-fatal): {}", e);
     }
@@ -1183,6 +1186,7 @@ async fn create_or_get_user(
 /// - Proper database transaction handling
 async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResult<String> {
     use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
 
     use crate::data::connect;
     use crate::data::schema::*;
@@ -1206,7 +1210,8 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
         .on_conflict((user_devices::user_id, user_devices::device_id))
         .do_update()
         .set(user_devices::last_seen_at.eq(Some(UnixMillis::now())))
-        .execute(&mut connect()?)
+        .execute(&mut connect().await?)
+        .await
         .map_err(|e| MatrixError::unknown(format!("Failed to create/update device: {}", e)))?;
 
     // Generate cryptographically secure access token
@@ -1226,7 +1231,8 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
 
     diesel::insert_into(user_access_tokens::table)
         .values(&new_access_token)
-        .execute(&mut connect()?)
+        .execute(&mut connect().await?)
+        .await
         .map_err(|e| MatrixError::unknown(format!("Failed to create access token: {}", e)))?;
 
     Ok(access_token)

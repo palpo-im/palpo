@@ -21,7 +21,10 @@ pub fn authed_router() -> Router {
 ///
 /// - Only works if you share a room with the user
 #[endpoint]
-fn get_status(user_id: PathParam<OwnedUserId>, depot: &mut Depot) -> JsonResult<PresenceResBody> {
+async fn get_status(
+    user_id: PathParam<OwnedUserId>,
+    depot: &mut Depot,
+) -> JsonResult<PresenceResBody> {
     if !crate::config::get().presence.allow_local {
         return Err(MatrixError::forbidden("presence is disabled on this server", None).into());
     }
@@ -30,13 +33,13 @@ fn get_status(user_id: PathParam<OwnedUserId>, depot: &mut Depot) -> JsonResult<
     let sender_id = authed.user_id();
     let user_id = user_id.into_inner();
 
-    if !state::user_can_see_user(sender_id, &user_id)? {
+    if !state::user_can_see_user(sender_id, &user_id).await? {
         return Err(
             MatrixError::unauthorized("you cannot get the presence state of this user").into(),
         );
     }
 
-    let content = crate::data::user::last_presence(&user_id)?.content;
+    let content = crate::data::user::last_presence(&user_id).await?.content;
 
     json_ok(PresenceResBody {
         // TODO: Should just use the presenceeventcontent type here?
@@ -83,7 +86,7 @@ async fn set_status(
         presence,
         status_msg,
     } = body.into_inner();
-    crate::user::set_presence(authed.user_id(), Some(presence), status_msg.clone(), true)?;
+    crate::user::set_presence(authed.user_id(), Some(presence), status_msg.clone(), true).await?;
 
     empty_ok()
 }

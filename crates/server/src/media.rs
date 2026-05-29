@@ -4,6 +4,7 @@ use std::cmp;
 use std::num::Saturating;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 pub use preview::*;
 pub use remote::*;
 
@@ -122,7 +123,7 @@ pub fn media_storage_key(server_name: &ServerName, media_id: &str) -> String {
 }
 
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> AppResult<()> {
-    data::media::delete_media(server_name, media_id)?;
+    data::media::delete_media(server_name, media_id).await?;
     let key = media_storage_key(server_name, media_id);
     if let Err(e) = storage::delete(&key).await {
         tracing::error!("failed to delete media file '{key}': {e}");
@@ -166,10 +167,11 @@ pub fn validate_thumbnail_dimensions(width: u32, height: u32) -> AppResult<()> {
     Ok(())
 }
 
-pub fn get_all_mxcs() -> AppResult<Vec<OwnedMxcUri>> {
+pub async fn get_all_mxcs() -> AppResult<Vec<OwnedMxcUri>> {
     let mxcs = media_metadatas::table
         .select((media_metadatas::origin_server, media_metadatas::media_id))
-        .load::<(String, String)>(&mut connect()?)?
+        .load::<(String, String)>(&mut connect().await?)
+        .await?
         .into_iter()
         .map(|(origin_server, media_id)| {
             OwnedMxcUri::from(format!("mxc://{origin_server}/{media_id}"))
@@ -203,7 +205,8 @@ pub async fn save_thumbnail(
         .values(&db_thumbnail)
         .on_conflict_do_nothing()
         .returning(media_thumbnails::id)
-        .get_result::<i64>(&mut connect()?)
+        .get_result::<i64>(&mut connect().await?)
+        .await
         .optional()?;
 
     if let Some(id) = id {

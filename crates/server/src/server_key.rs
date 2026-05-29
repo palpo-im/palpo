@@ -7,6 +7,7 @@ use std::time::Duration;
 
 pub use acquire::*;
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 pub use request::*;
 use serde_json::value::RawValue as RawJsonValue;
 pub use verify::*;
@@ -47,14 +48,15 @@ fn merge_signing_keys_for_storage(
     keys
 }
 
-pub(crate) fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<()> {
+pub(crate) async fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<()> {
     let server = new_keys.server_name.clone();
 
     // (timo) Not atomic, but this is not critical
     let existing = server_signing_keys::table
         .find(&server)
         .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect()?)
+        .first::<JsonValue>(&mut connect().await?)
+        .await
         .optional()?;
     let existing = existing
         .map(serde_json::from_value::<ServerSigningKeys>)
@@ -74,17 +76,22 @@ pub(crate) fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<()> {
             server_signing_keys::key_data.eq(serde_json::to_value(&keys)?),
             server_signing_keys::updated_at.eq(UnixMillis::now()),
         ))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub fn verify_key_exists(server: &ServerName, key_id: &ServerSigningKeyId) -> AppResult<bool> {
+pub async fn verify_key_exists(
+    server: &ServerName,
+    key_id: &ServerSigningKeyId,
+) -> AppResult<bool> {
     type KeysMap<'a> = BTreeMap<&'a str, &'a RawJsonValue>;
 
     let key_data = server_signing_keys::table
         .filter(server_signing_keys::server_id.eq(server))
         .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect()?)
+        .first::<JsonValue>(&mut connect().await?)
+        .await
         .optional()?;
 
     let Some(keys) = key_data else {
@@ -107,8 +114,9 @@ pub fn verify_key_exists(server: &ServerName, key_id: &ServerSigningKeyId) -> Ap
     Ok(false)
 }
 
-pub fn verify_keys_for(server: &ServerName) -> VerifyKeys {
+pub async fn verify_keys_for(server: &ServerName) -> VerifyKeys {
     let mut keys = signing_keys_for(server)
+        .await
         .map(|keys| merge_old_keys(keys).verify_keys)
         .unwrap_or_default();
 
@@ -127,11 +135,12 @@ pub fn verify_keys_for(server: &ServerName) -> VerifyKeys {
     keys
 }
 
-pub fn signing_keys_for(server: &ServerName) -> AppResult<ServerSigningKeys> {
+pub async fn signing_keys_for(server: &ServerName) -> AppResult<ServerSigningKeys> {
     let key_data = server_signing_keys::table
         .filter(server_signing_keys::server_id.eq(server))
         .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect()?)?;
+        .first::<JsonValue>(&mut connect().await?)
+        .await?;
     Ok(serde_json::from_value(key_data)?)
 }
 
@@ -219,7 +228,7 @@ pub async fn get_verify_key(
     let notary_first = crate::config::get().query_trusted_key_servers_first;
     let notary_only = crate::config::get().only_query_trusted_key_servers;
 
-    if let Some(result) = verify_keys_for(origin).remove(key_id) {
+    if let Some(result) = verify_keys_for(origin).await.remove(key_id) {
         return Ok(result);
     }
 
@@ -246,7 +255,7 @@ async fn get_verify_key_from_notaries(
     for notary in &crate::config::get().trusted_servers {
         if let Ok(server_keys) = notary_request(notary, origin).await {
             for server_key in server_keys.clone() {
-                add_signing_keys(server_key)?;
+                add_signing_keys(server_key).await?;
             }
 
             for server_key in server_keys {
@@ -267,7 +276,7 @@ async fn get_verify_key_from_origin(
     key_id: &ServerSigningKeyId,
 ) -> AppResult<VerifyKey> {
     if let Ok(server_key) = server_request(origin).await {
-        add_signing_keys(server_key.clone())?;
+        add_signing_keys(server_key.clone()).await?;
         if let Some(result) = extract_key(server_key, key_id) {
             return Ok(result);
         }

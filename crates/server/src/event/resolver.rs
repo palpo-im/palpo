@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::identifiers::*;
@@ -21,43 +22,40 @@ pub async fn resolve_state(
     incoming_state: IndexMap<i64, OwnedEventId>,
 ) -> AppResult<(Arc<CompressedState>, Vec<SeqnumQueueGuard>)> {
     debug!("loading current room state ids");
-    let current_state_ids = if let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None) {
-        state::get_full_state_ids(current_frame_id)?
-    } else {
-        IndexMap::new()
-    };
+    let current_state_ids =
+        if let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None).await {
+            state::get_full_state_ids(current_frame_id).await?
+        } else {
+            IndexMap::new()
+        };
 
     debug!("loading fork states");
     let fork_states = [current_state_ids, incoming_state];
 
     let mut auth_chain_sets = Vec::new();
     for state in &fork_states {
-        auth_chain_sets.push(crate::room::auth_chain::get_auth_chain_ids(
-            room_id,
-            state.values().map(|e| &**e),
-        )?);
+        auth_chain_sets.push(
+            crate::room::auth_chain::get_auth_chain_ids(room_id, state.values().map(|e| &**e))
+                .await?,
+        );
     }
 
-    let fork_states: Vec<_> = fork_states
-        .into_iter()
-        .map(|map| {
-            map.into_iter()
-                .filter_map(|(k, event_id)| {
-                    state::get_field(k)
-                        .map(
-                            |DbRoomStateField {
-                                 event_ty,
-                                 state_key,
-                                 ..
-                             }| {
-                                ((event_ty.to_string().into(), state_key), event_id)
-                            },
-                        )
-                        .ok()
-                })
-                .collect::<StateMap<_>>()
-        })
-        .collect();
+    let mut resolved_fork_states: Vec<StateMap<_>> = Vec::with_capacity(fork_states.len());
+    for map in fork_states {
+        let mut state_map = StateMap::new();
+        for (k, event_id) in map {
+            if let Ok(DbRoomStateField {
+                event_ty,
+                state_key,
+                ..
+            }) = state::get_field(k).await
+            {
+                state_map.insert((event_ty.to_string().into(), state_key), event_id);
+            }
+        }
+        resolved_fork_states.push(state_map);
+    }
+    let fork_states = resolved_fork_states;
     debug!("resolving state");
 
     let version_rules = crate::room::get_version_rules(room_version_id)?;
@@ -72,26 +70,34 @@ pub async fn resolve_state(
             .iter()
             .map(|set| set.iter().map(|id| id.to_owned()).collect::<HashSet<_>>())
             .collect::<Vec<_>>(),
-        &async |id| timeline::get_pdu(&id).map_err(|_| StateError::other("missing pdu 4")),
+        &async |id| {
+            timeline::get_pdu(&id)
+                .await
+                .map_err(|_| StateError::other("missing pdu 4"))
+        },
         |map| {
-            let mut subgraph = HashSet::new();
-            for event_ids in map.values() {
-                for event_id in event_ids {
-                    if let Ok(pdu) = timeline::get_pdu(event_id) {
+            // Snapshot the event ids synchronously so the returned future owns its
+            // data (no borrow of `map` across the await, no blocking the runtime).
+            let event_ids: Vec<OwnedEventId> = map.values().flatten().cloned().collect();
+            async move {
+                let mut subgraph = HashSet::new();
+                for event_id in &event_ids {
+                    if let Ok(pdu) = timeline::get_pdu(event_id).await {
                         subgraph.extend(pdu.auth_events.iter().cloned());
                         subgraph.extend(pdu.prev_events.iter().cloned());
                     }
                 }
+                let subgraph = events::table
+                    .filter(events::id.eq_any(subgraph))
+                    .filter(events::state_key.is_not_null())
+                    .select(events::id)
+                    .load::<OwnedEventId>(&mut connect().await.ok()?)
+                    .await
+                    .ok()?
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                Some(subgraph)
             }
-            let subgraph = events::table
-                .filter(events::id.eq_any(subgraph))
-                .filter(events::state_key.is_not_null())
-                .select(events::id)
-                .load::<OwnedEventId>(&mut connect().unwrap())
-                .unwrap()
-                .into_iter()
-                .collect::<HashSet<_>>();
-            Some(subgraph)
         },
     )
     .await
@@ -109,8 +115,8 @@ pub async fn resolve_state(
     let mut new_room_state = BTreeSet::new();
     let mut guards = Vec::new();
     for ((event_type, state_key), event_id) in state {
-        let state_key_id = state::ensure_field_id(&event_type.to_string().into(), &state_key)?;
-        let (event_sn, guard) = crate::event::ensure_event_sn(room_id, &event_id)?;
+        let state_key_id = state::ensure_field_id(&event_type.to_string().into(), &state_key).await?;
+        let (event_sn, guard) = crate::event::ensure_event_sn(room_id, &event_id).await?;
         if let Some(guard) = guard {
             guards.push(guard);
         }
@@ -164,7 +170,7 @@ pub(super) async fn resolve_state_at_incoming(
 
     for prev_event_id in &incoming_pdu.prev_events {
         had_prev_events = true;
-        let Ok(prev_event) = timeline::get_pdu(prev_event_id) else {
+        let Ok(prev_event) = timeline::get_pdu(prev_event_id).await else {
             // Truly unknown prev event — don't fall back to current state. The
             // caller (e.g. process_incoming) needs to keep the event soft-failed
             // so the missing-events fetch path runs. Returning None here
@@ -178,7 +184,7 @@ pub(super) async fn resolve_state_at_incoming(
             continue;
         }
 
-        if let Ok(frame_id) = state::get_pdu_frame_id(prev_event_id) {
+        if let Ok(frame_id) = state::get_pdu_frame_id(prev_event_id).await {
             extremity_state_hashes.insert(frame_id, prev_event);
         } else {
             // Outlier (not yet promoted to a timeline event) — treat as if
@@ -198,9 +204,9 @@ pub(super) async fn resolve_state_at_incoming(
     if had_prev_events
         && extremity_state_hashes.is_empty()
         && had_in_db_unresolvable
-        && let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None)
+        && let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None).await
     {
-        let state = state::get_full_state_ids(frame_id)?;
+        let state = state::get_full_state_ids(frame_id).await?;
         return Ok(Some(state));
     }
 
@@ -208,11 +214,11 @@ pub(super) async fn resolve_state_at_incoming(
     let mut auth_chain_sets = Vec::with_capacity(extremity_state_hashes.len());
 
     for (frame_id, prev_event) in extremity_state_hashes {
-        let mut leaf_state = state::get_full_state_ids(frame_id)?;
+        let mut leaf_state = state::get_full_state_ids(frame_id).await?;
 
         if let Some(state_key) = &prev_event.state_key {
             let state_key_id =
-                state::ensure_field_id(&prev_event.event_ty.to_string().into(), state_key)?;
+                state::ensure_field_id(&prev_event.event_ty.to_string().into(), state_key).await?;
             leaf_state.insert(state_key_id, prev_event.event_id.clone());
             // Now it's the state after the pdu
         }
@@ -225,7 +231,7 @@ pub(super) async fn resolve_state_at_incoming(
                 event_ty,
                 state_key,
                 ..
-            }) = state::get_field(k)
+            }) = state::get_field(k).await
             {
                 // FIXME: Undo .to_string().into() when StateMap is updated to use StateEventType
                 state.insert((event_ty.to_string().into(), state_key), id.clone());
@@ -236,10 +242,13 @@ pub(super) async fn resolve_state_at_incoming(
         }
 
         for starting_event in starting_events {
-            auth_chain_sets.push(crate::room::auth_chain::get_auth_chain_ids(
-                &incoming_pdu.room_id,
-                [&*starting_event].into_iter(),
-            )?);
+            auth_chain_sets.push(
+                crate::room::auth_chain::get_auth_chain_ids(
+                    &incoming_pdu.room_id,
+                    [&*starting_event].into_iter(),
+                )
+                .await?,
+            );
         }
 
         fork_states.push(state);
@@ -259,37 +268,39 @@ pub(super) async fn resolve_state_at_incoming(
             .collect::<Vec<_>>(),
         &async |event_id| {
             timeline::get_pdu(&event_id)
+                .await
                 .map(|s| s.pdu)
                 .map_err(|_| StateError::other("missing pdu 5"))
         },
         |map| {
-            let mut subgraph = HashSet::new();
-            for event_ids in map.values() {
-                for event_id in event_ids {
-                    if let Ok(pdu) = timeline::get_pdu(event_id) {
+            // Snapshot the event ids synchronously so the returned future owns its
+            // data (no borrow of `map` across the await, no blocking the runtime).
+            let event_ids: Vec<OwnedEventId> = map.values().flatten().cloned().collect();
+            async move {
+                let mut subgraph = HashSet::new();
+                for event_id in &event_ids {
+                    if let Ok(pdu) = timeline::get_pdu(event_id).await {
                         subgraph.extend(pdu.auth_events.iter().cloned());
                         subgraph.extend(pdu.prev_events.iter().cloned());
                     }
                 }
+                Some(subgraph)
             }
-            Some(subgraph)
         },
     )
     .await;
     drop(state_lock);
 
     match result {
-        Ok(new_state) => Ok(Some(
-            new_state
-                .into_iter()
-                .map(|((event_type, state_key), event_id)| {
-                    let state_key_id =
-                        state::ensure_field_id(&event_type.to_string().into(), &state_key)?;
-                    Ok((state_key_id, event_id))
-                })
-                //  .chain(outlier_state.into_iter().map(|(k, v)| Ok((k, v))))
-                .collect::<AppResult<_>>()?,
-        )),
+        Ok(new_state) => {
+            let mut resolved = IndexMap::new();
+            for ((event_type, state_key), event_id) in new_state {
+                let state_key_id =
+                    state::ensure_field_id(&event_type.to_string().into(), &state_key).await?;
+                resolved.insert(state_key_id, event_id);
+            }
+            Ok(Some(resolved))
+        }
         Err(e) => {
             warn!("state resolution on prev events failed: {}", e);
             Ok(None)

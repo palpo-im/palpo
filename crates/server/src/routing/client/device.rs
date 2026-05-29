@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use palpo_core::UnixMillis;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
@@ -44,7 +45,7 @@ async fn get_device(
 ) -> JsonResult<DeviceResBody> {
     let authed = depot.authed_info()?;
 
-    let Ok(device) = data::user::device::get_device(authed.user_id(), &device_id) else {
+    let Ok(device) = data::user::device::get_device(authed.user_id(), &device_id).await else {
         return Err(MatrixError::not_found("Device is not found.").into());
     };
     json_ok(DeviceResBody(device.into_matrix_device()))
@@ -58,7 +59,8 @@ async fn list_devices(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<DevicesRes
 
     let devices = user_devices::table
         .filter(user_devices::user_id.eq(authed.user_id()))
-        .load::<DbUserDevice>(&mut connect()?)?;
+        .load::<DbUserDevice>(&mut connect().await?)
+        .await?;
     json_ok(DevicesResBody {
         devices: devices
             .into_iter()
@@ -70,7 +72,7 @@ async fn list_devices(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<DevicesRes
 /// #PUT /_matrix/client/r0/devices/{device_id}
 /// Updates the metadata on a given device of the sender user.
 #[endpoint]
-fn update_device(
+async fn update_device(
     _aa: AuthArgs,
     device_id: PathParam<OwnedDeviceId>,
     body: JsonBody<UpdatedDeviceReqBody>,
@@ -81,7 +83,8 @@ fn update_device(
     let device_id = device_id.into_inner();
     let device = user_devices::table
         .filter(user_devices::device_id.eq(&device_id))
-        .first::<DbUserDevice>(&mut connect()?)
+        .first::<DbUserDevice>(&mut connect().await?)
+        .await
         .optional()?;
 
     if let Some(device) = device {
@@ -91,8 +94,9 @@ fn update_device(
                 user_devices::last_seen_ip.eq(&req.remote_addr().to_string()),
                 user_devices::last_seen_at.eq(UnixMillis::now()),
             ))
-            .execute(&mut connect()?)?;
-        crate::user::key::send_device_key_update(&device.user_id, &device_id)?;
+            .execute(&mut connect().await?)
+            .await?;
+        crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
     } else {
         let Some(appservice) = authed.appservice() else {
             return Err(MatrixError::not_found("Device is not found.").into());
@@ -114,8 +118,9 @@ fn update_device(
             &appservice.registration.as_token,
             None,
             Some(req.remote_addr().to_string()),
-        )?;
-        crate::user::key::send_device_key_update(&device.user_id, &device_id)?;
+        )
+        .await?;
+        crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
     }
 
     empty_ok()
@@ -160,7 +165,7 @@ async fn delete_device(
         return Err(uiaa_info.into());
     };
 
-    if let Err(e) = crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info) {
+    if let Err(e) = crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info).await {
         if let AppError::Matrix(e) = e
             && let ErrorKind::Forbidden = e.kind
         {
@@ -174,7 +179,7 @@ async fn delete_device(
         res.status_code(StatusCode::UNAUTHORIZED); // TestDeviceManagement asks http code 401
         return Err(uiaa_info.into());
     }
-    data::user::device::remove_device(authed.user_id(), &device_id)?;
+    data::user::device::remove_device(authed.user_id(), &device_id).await?;
     empty_ok()
 }
 
@@ -211,13 +216,14 @@ async fn delete_devices(
         return Err(uiaa_info.into());
     };
 
-    crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info)?;
+    crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info).await?;
     diesel::delete(
         user_devices::table
             .filter(user_devices::user_id.eq(authed.device_id()))
             .filter(user_devices::device_id.eq_any(&devices)),
     )
-    .execute(&mut connect()?)?;
+    .execute(&mut connect().await?)
+    .await?;
 
     empty_ok()
 }
@@ -231,7 +237,7 @@ pub(super) async fn dehydrated(_aa: AuthArgs) -> EmptyResult {
 #[endpoint]
 pub(super) async fn delete_dehydrated(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let authed = depot.authed_info()?;
-    data::user::delete_dehydrated_devices(authed.user_id())?;
+    data::user::delete_dehydrated_devices(authed.user_id()).await?;
     empty_ok()
 }
 

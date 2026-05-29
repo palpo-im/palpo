@@ -29,11 +29,11 @@ pub async fn get_summary_msc_3266(
     let (room_id, servers) =
         room::alias::resolve_with_servers(&args.room_id_or_alias, Some(args.via.clone())).await?;
 
-    if data::room::is_disabled(&room_id)? {
+    if data::room::is_disabled(&room_id).await? {
         return Err(MatrixError::forbidden("This room is banned on this homeserver.", None).into());
     }
 
-    if room::is_server_joined(&config::get().server_name, &room_id)? {
+    if room::is_server_joined(&config::get().server_name, &room_id).await? {
         let res_body = local_room_summary(&room_id, sender_id).await?;
         json_ok(res_body)
     } else {
@@ -66,9 +66,9 @@ async fn local_room_summary(
         ?sender_id,
         "Sending local room summary response for {room_id:?}"
     );
-    let join_rule = room::get_join_rule(room_id)?;
-    let world_readable = room::is_world_readable(room_id);
-    let guest_can_join = room::guest_can_join(room_id);
+    let join_rule = room::get_join_rule(room_id).await?;
+    let world_readable = room::is_world_readable(room_id).await;
+    let guest_can_join = room::guest_can_join(room_id).await;
 
     trace!("{join_rule:?}, {world_readable:?}, {guest_can_join:?}");
 
@@ -82,18 +82,22 @@ async fn local_room_summary(
     )
     .await?;
 
-    let canonical_alias = room::get_canonical_alias(room_id).ok().flatten();
-    let name = room::get_name(room_id).ok();
-    let topic = room::get_topic(room_id).ok();
-    let room_type = room::get_room_type(room_id).ok().flatten();
-    let avatar_url = room::get_avatar_url(room_id).ok().flatten();
-    let room_version = room::get_version(room_id).ok();
-    let encryption = room::get_encryption(room_id).ok();
-    let num_joined_members = room::joined_member_count(room_id).unwrap_or(0);
-    let membership = sender_id.map(|sender_id| {
-        room::get_member(room_id, sender_id, None)
-            .map_or(MembershipState::Leave, |content| content.membership)
-    });
+    let canonical_alias = room::get_canonical_alias(room_id).await.ok().flatten();
+    let name = room::get_name(room_id).await.ok();
+    let topic = room::get_topic(room_id).await.ok();
+    let room_type = room::get_room_type(room_id).await.ok().flatten();
+    let avatar_url = room::get_avatar_url(room_id).await.ok().flatten();
+    let room_version = room::get_version(room_id).await.ok();
+    let encryption = room::get_encryption(room_id).await.ok();
+    let num_joined_members = room::joined_member_count(room_id).await.unwrap_or(0);
+    let membership = match sender_id {
+        Some(sender_id) => Some(
+            room::get_member(room_id, sender_id, None)
+                .await
+                .map_or(MembershipState::Leave, |content| content.membership),
+        ),
+        None => None,
+    };
 
     Ok(SummaryMsc3266ResBody {
         room_id: room_id.to_owned(),
@@ -129,7 +133,7 @@ async fn remote_room_summary_hierarchy(
         return Err(MatrixError::forbidden("Federation is disabled.", None).into());
     }
 
-    if room::is_disabled(room_id)? {
+    if room::is_disabled(room_id).await? {
         return Err(MatrixError::forbidden(
             "Federaton of room {room_id} is currently disabled on this server.",
             None,
@@ -193,7 +197,7 @@ async fn require_user_can_see_summary<'a, I>(
     join_rule: &SpaceRoomJoinRule,
     guest_can_join: bool,
     world_readable: bool,
-    mut allowed_room_ids: I,
+    allowed_room_ids: I,
     sender_id: Option<&UserId>,
 ) -> AppResult<()>
 where
@@ -205,10 +209,15 @@ where
     );
     match sender_id {
         Some(sender_id) => {
-            let user_can_see_events = state::user_can_see_events(sender_id, room_id)?;
-            let is_guest = data::user::is_guest(sender_id).unwrap_or(false);
-            let user_in_allowed_restricted_room = allowed_room_ids
-                .any(|room| room::user::is_joined(sender_id, room).unwrap_or(false));
+            let user_can_see_events = state::user_can_see_events(sender_id, room_id).await?;
+            let is_guest = data::user::is_guest(sender_id).await.unwrap_or(false);
+            let mut user_in_allowed_restricted_room = false;
+            for room in allowed_room_ids {
+                if room::user::is_joined(sender_id, room).await.unwrap_or(false) {
+                    user_in_allowed_restricted_room = true;
+                    break;
+                }
+            }
 
             if user_can_see_events
                 || (is_guest && guest_can_join)

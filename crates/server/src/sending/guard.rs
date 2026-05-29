@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 
@@ -44,7 +45,7 @@ async fn process() -> AppResult<()> {
     // Retry requests we could not finish yet
     let mut initial_transactions = HashMap::<OutgoingKind, Vec<SendingEventType>>::new();
 
-    for (id, outgoing_kind, event) in super::active_requests()? {
+    for (id, outgoing_kind, event) in super::active_requests().await? {
         let entry = initial_transactions
             .entry(outgoing_kind.clone())
             .or_default();
@@ -56,7 +57,7 @@ async fn process() -> AppResult<()> {
                 outgoing_kind,
                 id
             );
-            super::delete_request(id)?;
+            super::delete_request(id).await?;
             continue;
         }
 
@@ -75,14 +76,14 @@ async fn process() -> AppResult<()> {
             Some(response) = futures.next() => {
                 match response {
                     Ok(outgoing_kind) => {
-                        super::delete_all_active_requests_for(&outgoing_kind)?;
+                        super::delete_all_active_requests_for(&outgoing_kind).await?;
 
                         // Find events that have been added since starting the last request
-                        let new_events = super::queued_requests(&outgoing_kind).unwrap_or_default().into_iter().take(30).collect::<Vec<_>>();
+                        let new_events = super::queued_requests(&outgoing_kind).await.unwrap_or_default().into_iter().take(30).collect::<Vec<_>>();
 
                         if !new_events.is_empty() {
                             // Insert pdus we found
-                            super::mark_as_active(&new_events)?;
+                            super::mark_as_active(&new_events).await?;
 
                             futures.push(
                                 super::send_events(
@@ -110,7 +111,7 @@ async fn process() -> AppResult<()> {
                         });
                         // Persist retry state to DB for cross-instance coordination
                         if let Some(TransactionStatus::Failed(tries, _)) = current_transaction_status.get(&outgoing_kind) {
-                            let _ = persist_retry_state(&outgoing_kind, *tries);
+                            let _ = persist_retry_state(&outgoing_kind, *tries).await;
                         }
                     }
                 };
@@ -120,7 +121,7 @@ async fn process() -> AppResult<()> {
                     &outgoing_kind,
                     vec![(id, event)],
                     &mut current_transaction_status,
-                ) {
+                ).await {
                     futures.push(super::send_events(outgoing_kind, events));
                 }
             }
@@ -144,7 +145,7 @@ async fn process() -> AppResult<()> {
                     .collect::<Vec<_>>();
 
                 for (outgoing_kind, tries) in retry_ready {
-                    let active_events = match super::active_requests_for(&outgoing_kind) {
+                    let active_events = match super::active_requests_for(&outgoing_kind).await {
                         Ok(events) => events,
                         Err(e) => {
                             error!(
@@ -200,7 +201,7 @@ fn next_retry_delay(
 }
 
 #[tracing::instrument(skip_all)]
-fn select_events(
+async fn select_events(
     outgoing_kind: &OutgoingKind,
     new_events: Vec<(i64, SendingEventType)>, // Events we want to send: event and full key
     current_transaction_status: &mut HashMap<OutgoingKind, TransactionStatus>,
@@ -237,17 +238,17 @@ fn select_events(
 
     if retry {
         // We retry the previous transaction
-        for (_, e) in super::active_requests_for(outgoing_kind)? {
+        for (_, e) in super::active_requests_for(outgoing_kind).await? {
             events.push(e);
         }
     } else {
-        super::mark_as_active(&new_events)?;
+        super::mark_as_active(&new_events).await?;
         for (_, e) in new_events {
             events.push(e);
         }
 
         if let OutgoingKind::Normal(server_name) = outgoing_kind
-            && let Ok((select_edus, _last_count)) = select_edus(server_name)
+            && let Ok((select_edus, _last_count)) = select_edus(server_name).await
         {
             events.extend(select_edus.into_iter().map(SendingEventType::Edu));
         }
@@ -257,7 +258,7 @@ fn select_events(
 }
 
 /// Persist retry state to the database so other instances can respect backoff.
-fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()> {
+async fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()> {
     let now = UnixMillis::now().get() as i64;
     match outgoing_kind {
         OutgoingKind::Normal(server_name) => {
@@ -271,7 +272,8 @@ fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()
                 outgoing_requests::retry_count.eq(tries as i32),
                 outgoing_requests::last_failed_at.eq(Some(now)),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
         OutgoingKind::Appservice(id) => {
             diesel::update(
@@ -284,7 +286,8 @@ fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()
                 outgoing_requests::retry_count.eq(tries as i32),
                 outgoing_requests::last_failed_at.eq(Some(now)),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
         OutgoingKind::Push(user_id, pushkey) => {
             diesel::update(
@@ -298,7 +301,8 @@ fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()
                 outgoing_requests::retry_count.eq(tries as i32),
                 outgoing_requests::last_failed_at.eq(Some(now)),
             ))
-            .execute(&mut connect()?)?;
+            .execute(&mut connect().await?)
+            .await?;
         }
     }
     Ok(())
@@ -306,18 +310,19 @@ fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()
 
 /// Look for device changes
 #[tracing::instrument(level = "trace", skip(server_name))]
-fn select_edus_device_changes(
+async fn select_edus_device_changes(
     server_name: &ServerName,
     since_sn: Seqnum,
     _max_edu_sn: &Seqnum,
     events_len: &AtomicUsize,
 ) -> AppResult<EduVec> {
     let mut events = EduVec::new();
-    let server_rooms = state::server_joined_rooms(server_name)?;
+    let server_rooms = state::server_joined_rooms(server_name).await?;
 
     let mut device_list_changes = HashSet::<OwnedUserId>::new();
     for room_id in server_rooms {
-        let keys_changed = room::keys_changed_users(&room_id, since_sn, None)?
+        let keys_changed = room::keys_changed_users(&room_id, since_sn, None)
+            .await?
             .into_iter()
             .filter(|user_id| user_id.is_local());
 
@@ -357,25 +362,24 @@ fn select_edus_device_changes(
 
 /// Look for read receipts in this room
 #[tracing::instrument(level = "trace", skip(server_name, max_edu_sn))]
-fn select_edus_receipts(
+async fn select_edus_receipts(
     server_name: &ServerName,
     since_sn: Seqnum,
     max_edu_sn: &Seqnum,
 ) -> AppResult<Option<EduBuf>> {
     let mut num = 0;
-    let receipts: BTreeMap<OwnedRoomId, ReceiptMap> = state::server_joined_rooms(server_name)?
-        .into_iter()
-        .filter_map(|room_id| {
-            let receipt_map =
-                select_edus_receipts_room(&room_id, since_sn, max_edu_sn, &mut num).ok()?;
+    let mut receipts: BTreeMap<OwnedRoomId, ReceiptMap> = BTreeMap::new();
+    for room_id in state::server_joined_rooms(server_name).await? {
+        let Ok(receipt_map) =
+            select_edus_receipts_room(&room_id, since_sn, max_edu_sn, &mut num).await
+        else {
+            continue;
+        };
 
-            receipt_map
-                .read
-                .is_empty()
-                .eq(&false)
-                .then_some((room_id, receipt_map))
-        })
-        .collect();
+        if !receipt_map.read.is_empty() {
+            receipts.insert(room_id, receipt_map);
+        }
+    }
 
     if receipts.is_empty() {
         return Ok(None);
@@ -393,13 +397,13 @@ fn select_edus_receipts(
 }
 /// Look for read receipts in this room
 #[tracing::instrument(level = "trace", skip(since_sn))]
-fn select_edus_receipts_room(
+async fn select_edus_receipts_room(
     room_id: &RoomId,
     since_sn: Seqnum,
     _max_edu_sn: &Seqnum,
     num: &mut usize,
 ) -> AppResult<ReceiptMap> {
-    let receipts = data::room::receipt::read_receipts(room_id, since_sn)?;
+    let receipts = data::room::receipt::read_receipts(room_id, since_sn).await?;
 
     let mut read = BTreeMap::<OwnedUserId, ReceiptData>::new();
     for (user_id, read_receipt) in receipts {
@@ -456,12 +460,12 @@ fn select_edus_receipts_room(
 
 /// Look for presence
 #[tracing::instrument(level = "trace", skip(server_name))]
-fn select_edus_presence(
+async fn select_edus_presence(
     server_name: &ServerName,
     since_sn: Seqnum,
     _max_edu_sn: &Seqnum,
 ) -> AppResult<Option<EduBuf>> {
-    let presences_since = crate::data::user::presences_since(since_sn)?;
+    let presences_since = crate::data::user::presences_since(since_sn).await?;
 
     let mut presence_updates = HashMap::<OwnedUserId, PresenceUpdate>::new();
     for (user_id, presence_event) in presences_since {
@@ -470,7 +474,7 @@ fn select_edus_presence(
             continue;
         }
 
-        if !state::server_can_see_user(server_name, &user_id)? {
+        if !state::server_can_see_user(server_name, &user_id).await? {
             continue;
         }
 
@@ -506,25 +510,25 @@ fn select_edus_presence(
 }
 
 #[tracing::instrument(skip(server_name))]
-pub fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
-    let max_edu_sn = data::curr_sn()?;
+pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
+    let max_edu_sn = data::curr_sn().await?;
     let conf = crate::config::get();
 
-    let since_sn = data::curr_sn()?;
+    let since_sn = data::curr_sn().await?;
 
     let events_len = AtomicUsize::default();
     let device_changes =
-        select_edus_device_changes(server_name, since_sn, &max_edu_sn, &events_len)?;
+        select_edus_device_changes(server_name, since_sn, &max_edu_sn, &events_len).await?;
 
     let mut events = device_changes;
     if conf.read_receipt.allow_outgoing
-        && let Some(receipts) = select_edus_receipts(server_name, since_sn, &max_edu_sn)?
+        && let Some(receipts) = select_edus_receipts(server_name, since_sn, &max_edu_sn).await?
     {
         events.push(receipts);
     }
 
     if conf.presence.allow_outgoing
-        && let Some(presence) = select_edus_presence(server_name, since_sn, &max_edu_sn)?
+        && let Some(presence) = select_edus_presence(server_name, since_sn, &max_edu_sn).await?
     {
         events.push(presence);
     }

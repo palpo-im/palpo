@@ -20,7 +20,7 @@ async fn get_hierarchy(
     args: HierarchyReqArgs,
     depot: &mut Depot,
 ) -> JsonResult<HierarchyResBody> {
-    if !crate::room::room_exists(&args.room_id)? {
+    if !crate::room::room_exists(&args.room_id).await? {
         return Err(MatrixError::not_found("Room does not exist.").into());
     }
 

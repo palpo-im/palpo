@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use regex::RegexSet;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -271,11 +272,12 @@ impl TryFrom<DbRegistration> for Registration {
 }
 
 /// Registers an appservice and returns the ID to the caller
-pub fn register_appservice(registration: Registration) -> AppResult<String> {
+pub async fn register_appservice(registration: Registration) -> AppResult<String> {
     let db_registration: DbRegistration = registration.into();
     diesel::insert_into(appservice_registrations::table)
         .values(&db_registration)
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(db_registration.id)
 }
 
@@ -284,22 +286,27 @@ pub fn register_appservice(registration: Registration) -> AppResult<String> {
 /// # Arguments
 ///
 /// * `service_name` - the name you send to register the service previously
-pub fn unregister_appservice(id: &str) -> AppResult<()> {
-    diesel::delete(appservice_registrations::table.find(id)).execute(&mut connect()?)?;
+pub async fn unregister_appservice(id: &str) -> AppResult<()> {
+    diesel::delete(appservice_registrations::table.find(id))
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
 /// Set the `disabled` flag on an appservice. Returns true if a row was updated.
-pub fn set_appservice_disabled(id: &str, disabled: bool) -> AppResult<bool> {
+pub async fn set_appservice_disabled(id: &str, disabled: bool) -> AppResult<bool> {
     let affected = diesel::update(appservice_registrations::table.find(id))
         .set(appservice_registrations::disabled.eq(disabled))
-        .execute(&mut connect()?)?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(affected > 0)
 }
 
 /// List all registrations in the database, including disabled ones.
-pub fn list_all_registrations() -> AppResult<Vec<(DbRegistration, bool)>> {
-    let regs = appservice_registrations::table.load::<DbRegistration>(&mut connect()?)?;
+pub async fn list_all_registrations() -> AppResult<Vec<(DbRegistration, bool)>> {
+    let regs = appservice_registrations::table
+        .load::<DbRegistration>(&mut connect().await?)
+        .await?;
     Ok(regs
         .into_iter()
         .map(|r| {
@@ -309,10 +316,11 @@ pub fn list_all_registrations() -> AppResult<Vec<(DbRegistration, bool)>> {
         .collect())
 }
 
-pub fn get_registration(id: &str) -> AppResult<Option<Registration>> {
+pub async fn get_registration(id: &str) -> AppResult<Option<Registration>> {
     if let Some(registration) = appservice_registrations::table
         .find(id)
-        .first::<DbRegistration>(&mut connect()?)
+        .first::<DbRegistration>(&mut connect().await?)
+        .await
         .optional()?
     {
         Ok(Some(registration.try_into()?))
@@ -323,7 +331,8 @@ pub fn get_registration(id: &str) -> AppResult<Option<Registration>> {
 pub async fn find_from_token(token: &str) -> AppResult<Option<RegistrationInfo>> {
     // Constant-time comparison so we don't leak `as_token` bytes via
     // response timing. The same pattern is used in `hoops/auth.rs`.
-    Ok(all()?
+    Ok(all()
+        .await?
         .values()
         .find(|info| {
             info.registration
@@ -336,8 +345,8 @@ pub async fn find_from_token(token: &str) -> AppResult<Option<RegistrationInfo>>
 }
 
 // Checks if a given user id matches any exclusive appservice regex
-pub fn is_exclusive_user_id(user_id: &UserId) -> AppResult<bool> {
-    for info in all()?.values() {
+pub async fn is_exclusive_user_id(user_id: &UserId) -> AppResult<bool> {
+    for info in all().await?.values() {
         if info.is_exclusive_user_match(user_id) {
             return Ok(true);
         }
@@ -347,7 +356,7 @@ pub fn is_exclusive_user_id(user_id: &UserId) -> AppResult<bool> {
 
 // Checks if a given room alias matches any exclusive appservice regex
 pub async fn is_exclusive_alias(alias: &RoomAliasId) -> AppResult<bool> {
-    for info in all()?.values() {
+    for info in all().await?.values() {
         if info.aliases.is_exclusive_match(alias.as_str()) {
             return Ok(true);
         }
@@ -357,7 +366,7 @@ pub async fn is_exclusive_alias(alias: &RoomAliasId) -> AppResult<bool> {
 
 // Checks if a given room id matches any exclusive appservice regex
 pub async fn is_exclusive_room_id(room_id: &RoomId) -> AppResult<bool> {
-    for info in all()?.values() {
+    for info in all().await?.values() {
         if info.rooms.is_exclusive_match(room_id.as_str()) {
             return Ok(true);
         }
@@ -365,10 +374,11 @@ pub async fn is_exclusive_room_id(room_id: &RoomId) -> AppResult<bool> {
     Ok(false)
 }
 
-pub fn all() -> AppResult<BTreeMap<String, RegistrationInfo>> {
+pub async fn all() -> AppResult<BTreeMap<String, RegistrationInfo>> {
     let registrations = appservice_registrations::table
         .filter(appservice_registrations::disabled.eq(false))
-        .load::<DbRegistration>(&mut connect()?)?;
+        .load::<DbRegistration>(&mut connect().await?)
+        .await?;
     Ok(registrations
         .into_iter()
         .filter_map(|db_registration| {
@@ -420,7 +430,8 @@ pub(crate) async fn send_request(
     *request.timeout_mut() = Some(Duration::from_secs(30));
 
     let url = request.url().clone();
-    let response = match sending::default_client().execute(request).await {
+    let client = sending::default_client();
+    let response = match reqwest::Client::execute(&client, request).await {
         Ok(r) => r,
         Err(e) => {
             warn!(

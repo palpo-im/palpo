@@ -49,7 +49,8 @@ RUN find crates -name '*.rs' -exec touch {} +
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build \
-    && cp target/debug/palpo palpo
+    && cp target/debug/palpo palpo \
+    && rm -rf target
 
 COPY tests/complement/palpo.toml palpo.toml
 COPY tests/complement/caddy.json caddy.json

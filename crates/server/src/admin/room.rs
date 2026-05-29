@@ -65,12 +65,16 @@ pub(super) async fn list_rooms(
 ) -> AppResult<()> {
     // TODO: i know there's a way to do this with clap, but i can't seem to find it
     let page = page.unwrap_or(1);
-    let mut rooms = crate::room::all_room_ids()?
-        .iter()
-        .filter(|room_id| !exclude_disabled || !crate::room::is_disabled(room_id).unwrap_or(false))
-        .filter(|room_id| !exclude_banned || !data::room::is_banned(room_id).unwrap_or(true))
-        .map(|room_id| get_room_info(room_id))
-        .collect::<Vec<_>>();
+    let mut rooms = Vec::new();
+    for room_id in crate::room::all_room_ids().await?.iter() {
+        if exclude_disabled && crate::room::is_disabled(room_id).await.unwrap_or(false) {
+            continue;
+        }
+        if exclude_banned && data::room::is_banned(room_id).await.unwrap_or(true) {
+            continue;
+        }
+        rooms.push(get_room_info(room_id).await);
+    }
 
     rooms.sort_by_key(|r| r.joined_members);
     rooms.reverse();
@@ -105,7 +109,7 @@ pub(super) async fn list_rooms(
 }
 
 pub(super) async fn exists(ctx: &Context<'_>, room_id: OwnedRoomId) -> AppResult<()> {
-    let result = crate::room::room_exists(&room_id)?;
+    let result = crate::room::room_exists(&room_id).await?;
 
     ctx.write_str(&format!("{result}")).await
 }

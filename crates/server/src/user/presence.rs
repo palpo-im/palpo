@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::federation::transaction::Edu;
 use crate::core::presence::{PresenceContent, PresenceState, PresenceUpdate};
@@ -9,14 +10,14 @@ use crate::data::user::{NewDbPresence, last_presence};
 use crate::{AppResult, config, data, sending};
 
 /// Resets the presence timeout, so the user will stay in their current presence state.
-pub fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppResult<()> {
+pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppResult<()> {
     if !config::get().presence.allow_local {
         return Ok(());
     }
 
     const REFRESH_TIMEOUT: u64 = 60 * 1000;
 
-    let last_presence = last_presence(user_id);
+    let last_presence = last_presence(user_id).await;
     let state_changed = match last_presence {
         Err(_) => true,
         Ok(ref presence) => presence.content.presence != *new_state,
@@ -51,12 +52,13 @@ pub fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppResult<(
             occur_sn: None,
         },
         false,
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
 /// Adds a presence event which will be saved until a new event replaces it.
-pub fn set_presence(
+pub async fn set_presence(
     sender_id: &UserId,
     presence_state: Option<PresenceState>,
     status_msg: Option<String>,
@@ -67,7 +69,7 @@ pub fn set_presence(
     }
 
     let Some(presence_state) = presence_state else {
-        data::user::remove_presence(sender_id)?;
+        data::user::remove_presence(sender_id).await?;
         return Ok(false);
     };
     let db_presence = NewDbPresence {
@@ -82,7 +84,7 @@ pub fn set_presence(
         occur_sn: None,
     };
 
-    let state_changed = data::user::set_presence(db_presence, force)?;
+    let state_changed = data::user::set_presence(db_presence, force).await?;
     if state_changed {
         let edu = Edu::Presence(PresenceContent {
             push: vec![PresenceUpdate {
@@ -94,14 +96,15 @@ pub fn set_presence(
             }],
         });
 
-        let joined_rooms = data::user::joined_rooms(sender_id)?;
+        let joined_rooms = data::user::joined_rooms(sender_id).await?;
         let remote_servers = room_joined_servers::table
             .filter(room_joined_servers::room_id.eq_any(joined_rooms))
             .select(room_joined_servers::server_id)
             .distinct()
-            .load::<OwnedServerName>(&mut connect()?)?;
+            .load::<OwnedServerName>(&mut connect().await?)
+            .await?;
 
-        sending::send_edu_servers(remote_servers.into_iter(), &edu)?;
+        sending::send_edu_servers(remote_servers.into_iter(), &edu).await?;
     }
 
     Ok(state_changed)

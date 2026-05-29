@@ -122,7 +122,7 @@ fn normalize_event_report_status(status: &str) -> Option<&'static str> {
 ///
 /// List all reported events with pagination and filtering
 #[endpoint(operation_id = "list_event_reports")]
-pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventReportsResponse> {
+pub async fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventReportsResponse> {
     let from = query.from.unwrap_or(0);
     if from < 0 {
         return Err(MatrixError::invalid_param("from must be a non-negative integer").into());
@@ -160,7 +160,7 @@ pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventRepor
         room_id,
     };
 
-    let (reports, total) = data::room::list_event_reports(&filter)?;
+    let (reports, total) = data::room::list_event_reports(&filter).await?;
 
     let event_reports: Vec<EventReport> = reports.into_iter().map(Into::into).collect();
     let next_token = if (from + limit) < total {
@@ -180,10 +180,11 @@ pub fn list_event_reports(query: ListEventReportsQuery) -> JsonResult<EventRepor
 ///
 /// Get details of a specific event report including the event JSON
 #[endpoint(operation_id = "get_event_report")]
-pub fn get_event_report(report_id: PathParam<i64>) -> JsonResult<EventReportDetailResponse> {
+pub async fn get_event_report(report_id: PathParam<i64>) -> JsonResult<EventReportDetailResponse> {
     let report_id = report_id.into_inner();
 
-    let report = data::room::get_event_report(report_id)?
+    let report = data::room::get_event_report(report_id)
+        .await?
         .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
 
     json_ok(report.into())
@@ -193,7 +194,7 @@ pub fn get_event_report(report_id: PathParam<i64>) -> JsonResult<EventReportDeta
 ///
 /// Update the moderation status of an event report
 #[endpoint(operation_id = "update_event_report_status")]
-pub fn update_event_report_status(
+pub async fn update_event_report_status(
     report_id: PathParam<i64>,
     body: JsonBody<UpdateEventReportReqBody>,
 ) -> JsonResult<EventReportDetailResponse> {
@@ -203,7 +204,8 @@ pub fn update_event_report_status(
         MatrixError::invalid_param("status must be one of: new, in_review, resolved")
     })?;
 
-    let report = data::room::update_event_report_status(report_id, status)?
+    let report = data::room::update_event_report_status(report_id, status)
+        .await?
         .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
 
     json_ok(report.into())
@@ -213,10 +215,10 @@ pub fn update_event_report_status(
 ///
 /// Delete an event report
 #[endpoint(operation_id = "delete_event_report")]
-pub fn delete_event_report(report_id: PathParam<i64>) -> EmptyResult {
+pub async fn delete_event_report(report_id: PathParam<i64>) -> EmptyResult {
     let report_id = report_id.into_inner();
 
-    let deleted = data::room::delete_event_report(report_id)?;
+    let deleted = data::room::delete_event_report(report_id).await?;
     if !deleted {
         return Err(MatrixError::not_found(format!("Event report {} not found", report_id)).into());
     }
