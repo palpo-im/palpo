@@ -304,8 +304,10 @@ async fn remote_peek_preview(room_id: &RoomId, limit: usize) -> JsonResult<Initi
         account_data: None,
         state: Some(state),
         messages,
-        // Peeking is only granted for world-readable rooms.
-        visibility: Some(Visibility::Public),
+        // `visibility` here is the /publicRooms *directory* visibility, which is
+        // independent of world-readable history visibility and unknown to us for
+        // a remote room — omit it rather than mislabel an unlisted room public.
+        visibility: None,
         // The user is previewing, not a member.
         membership: None,
     })
