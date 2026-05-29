@@ -149,7 +149,12 @@ pub async fn sync_events(
         )
         .await
         {
-            Ok((peeked_room, _)) => {
+            Ok((mut peeked_room, _)) => {
+                // Strip joined-only ephemeral (read receipts, typing) and the
+                // user's own room account data: a peeker is not a member and
+                // shouldn't receive that activity for a room they only preview.
+                peeked_room.ephemeral = Default::default();
+                peeked_room.account_data = Default::default();
                 if since_tk.is_none() || !peeked_room.is_empty() {
                     peeked_rooms.insert(room_id, peeked_room);
                 }

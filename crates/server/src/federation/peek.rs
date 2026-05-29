@@ -113,6 +113,27 @@ pub async fn start_peek(
     let renew_at = now_ms() + (body.renewal_interval as i64 / 2).max(1);
     data::room::peek::upsert_peek(room_id, peek_id, target_server, renew_at).await?;
 
+    // Ingest the snapshot. On failure, roll back the registration we just wrote
+    // so we don't leave an ownerless federation subscription that the
+    // maintenance task renews forever (and that the incoming-PDU gate would keep
+    // accepting events for).
+    if let Err(e) = ingest_peek_snapshot(room_id, target_server, &room_version, &body).await {
+        let _ = data::room::peek::remove_peek(room_id).await;
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Ingest a peek snapshot (auth chain + current state + recent messages) into
+/// the local store, mirroring the send_join ingestion path. Called by
+/// `start_peek` only after the `room_peeks` row exists, so the incoming-PDU gate
+/// accepts the seed events.
+async fn ingest_peek_snapshot(
+    room_id: &RoomId,
+    target_server: &ServerName,
+    room_version: &RoomVersionId,
+    body: &PeekStartResBody,
+) -> AppResult<()> {
     // Make sure we hold the signing keys needed to verify the returned events.
     crate::server_key::acquire_events_pubkeys(body.auth_chain.iter().chain(body.state.iter()))
         .await;
@@ -121,7 +142,7 @@ pub async fn start_peek(
     // (depth) order so each event's ancestors are present first.
     let mut parsed: IndexMap<OwnedEventId, CanonicalJsonObject> = IndexMap::new();
     for raw in body.auth_chain.iter().chain(body.state.iter()) {
-        if let Ok((event_id, value)) = parse_fetched_pdu(room_id, &room_version, raw) {
+        if let Ok((event_id, value)) = parse_fetched_pdu(room_id, room_version, raw) {
             parsed.insert(event_id, value);
         }
     }
@@ -132,7 +153,7 @@ pub async fn start_peek(
             target_server,
             event_id,
             room_id,
-            &room_version,
+            room_version,
             value.clone(),
             true,
             false,
@@ -146,7 +167,7 @@ pub async fn start_peek(
     // Build the resolved current state map and persist it as the room's state.
     let mut state_map = HashMap::new();
     for raw in &body.state {
-        let (event_id, value) = match parse_fetched_pdu(room_id, &room_version, raw) {
+        let (event_id, value) = match parse_fetched_pdu(room_id, room_version, raw) {
             Ok(t) => t,
             Err(_) => continue,
         };
@@ -208,7 +229,7 @@ pub async fn start_peek(
     let mut msgs: Vec<_> = body
         .messages
         .iter()
-        .filter_map(|raw| parse_fetched_pdu(room_id, &room_version, raw).ok())
+        .filter_map(|raw| parse_fetched_pdu(room_id, room_version, raw).ok())
         .collect();
     msgs.sort_by_key(|(_, v)| v.get("depth").and_then(|d| d.as_integer()).unwrap_or(0));
     for (event_id, value) in &msgs {
@@ -216,7 +237,7 @@ pub async fn start_peek(
             target_server,
             event_id,
             room_id,
-            &room_version,
+            room_version,
             value.clone(),
             true,
             false,
