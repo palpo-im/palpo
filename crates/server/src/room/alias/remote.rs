@@ -16,7 +16,13 @@ pub(super) async fn remote_resolve(
         match remote_request(room_alias, &server).await {
             Err(e) => {
                 tracing::error!("Failed to query for {room_alias:?} from {server}: {e}");
-                last_error = Some(e);
+                // Keep the most informative failure across candidate servers: a
+                // transport/signature/internal error from one server must not be
+                // overwritten by a later not-found, otherwise the client path would
+                // re-mask it as "Room with alias not found" depending on server order.
+                if !e.is_not_found() || last_error.as_ref().is_none_or(AppError::is_not_found) {
+                    last_error = Some(e);
+                }
             }
             Ok(RoomInfoResBody { room_id, servers }) => {
                 debug!(
