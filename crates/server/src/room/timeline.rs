@@ -808,7 +808,13 @@ pub async fn build_and_append_pdu(
     //     crate::room::update_currents(&room_id)?;
     // }
 
-    let servers = super::participating_servers(room_id, false).await?;
+    let mut servers = super::participating_servers(room_id, false).await?;
+    // MSC2444: also forward to remote servers holding a live peek on this room,
+    // so peeking servers receive ongoing events. Dedup in case a peeking server
+    // is also a participating server.
+    servers.extend(crate::federation::peek::active_peeking_servers(room_id).await);
+    servers.sort_unstable();
+    servers.dedup();
     crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
 
     Ok(pdu)

@@ -162,16 +162,26 @@ async fn initial_sync(
 
     // If the room is not known locally, it may be a remote room the user is
     // trying to preview (e.g. opening `#room:other.server` without joining).
-    // For rooms hosted on another server, attempt a federated peek to render a
-    // preview; otherwise there is nothing to show.
+    // For rooms hosted on another server, establish an MSC2444 ongoing peek so
+    // we hold a live local copy that keeps updating; if that can't be set up,
+    // fall back to a one-shot snapshot preview. Local-only unknown rooms have
+    // nothing to show.
     if !room::room_exists(room_id).await? {
         if room_id
             .server_name()
             .is_ok_and(|server| *server != config::get().server_name)
         {
-            return remote_peek_preview(room_id, args.limit.unwrap_or(20)).await;
+            // Try to start (or reuse) a live peek. On success the room now
+            // exists locally and we fall through to normal rendering, which also
+            // means subsequent events delivered over federation keep it fresh.
+            if crate::federation::peek::ensure_peek(room_id).await.is_err()
+                || !room::room_exists(room_id).await?
+            {
+                return remote_peek_preview(room_id, args.limit.unwrap_or(20)).await;
+            }
+        } else {
+            return Err(MatrixError::forbidden("No room preview available.", None).into());
         }
-        return Err(MatrixError::forbidden("No room preview available.", None).into());
     }
 
     if !room::state::user_can_see_events(sender_id, room_id).await? {

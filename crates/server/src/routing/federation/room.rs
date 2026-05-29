@@ -15,14 +15,17 @@ use crate::core::federation::event::{
 use crate::core::federation::knock::{
     MakeKnockReqArgs, MakeKnockResBody, SendKnockReqArgs, SendKnockReqBody, SendKnockResBody,
 };
-use crate::core::federation::peek::{PeekReqArgs, PeekResBody};
+use crate::core::federation::peek::{
+    PeekReqArgs, PeekResBody, PeekStartResBody, PeekSubReqArgs,
+};
 use crate::core::identifiers::*;
-use crate::core::serde::JsonObject;
+use crate::core::serde::{JsonObject, RawJsonValue};
 use crate::event::{gen_event_id_canonical_json, handler};
+use crate::federation::peek as fed_peek;
 use crate::room::{state, timeline};
 use crate::{
-    AuthArgs, DepotExt, IsRemoteOrLocal, JsonResult, MatrixError, PduBuilder, PduEvent, data,
-    json_ok, room, sending,
+    AppResult, AuthArgs, DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError,
+    PduBuilder, PduEvent, data, empty_ok, json_ok, room, sending,
 };
 
 pub fn router() -> Router {
@@ -37,6 +40,11 @@ pub fn router() -> Router {
         .push(Router::with_path("make_knock/{room_id}/{user_id}").get(make_knock))
         .push(Router::with_path("state_ids/{room_id}").get(get_state_at_event))
         .push(Router::with_path("peek/{room_id}").get(peek))
+        .push(
+            Router::with_path("peek/{room_id}/{peek_id}")
+                .put(peek_start)
+                .delete(peek_cancel),
+        )
 }
 
 /// #GET /_matrix/federation/v1/peek/{room_id}
@@ -95,7 +103,99 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
     // non-readable events could otherwise yield an empty page while older
     // readable events still exist. So we grow the scan window (doubling, capped)
     // until the visible page is filled or the room history is exhausted.
-    let limit = args.limit.clamp(1, 100);
+    let messages = recent_world_readable_messages(room_id, args.limit.clamp(1, 100)).await?;
+
+    json_ok(PeekResBody {
+        room_version,
+        pdus,
+        messages,
+    })
+}
+
+/// #PUT /_matrix/federation/v1/peek/{room_id}/{peek_id}
+/// Start or renew an ongoing peek subscription (MSC2444). Records the requesting
+/// server so it receives new room events, and returns the full current state +
+/// auth chain + recent messages so the peer can build a local copy of the room.
+#[endpoint]
+async fn peek_start(
+    _aa: AuthArgs,
+    args: PeekSubReqArgs,
+    depot: &mut Depot,
+) -> JsonResult<PeekStartResBody> {
+    let origin = depot.origin()?.clone();
+    let room_id = &args.room_id;
+
+    if !room::room_exists(room_id).await? {
+        return Err(MatrixError::not_found("Room not found on this server.").into());
+    }
+    handler::acl_check(&origin, room_id).await?;
+    if !room::is_world_readable(room_id).await {
+        return Err(MatrixError::forbidden(
+            "Room is not world-readable; peeking is not permitted.",
+            None,
+        )
+        .into());
+    }
+
+    let room_version = room::get_version(room_id).await?;
+
+    // Full current state + backing auth chain (like a send_join response) so the
+    // peer can construct a complete, verifiable local copy of this world-readable
+    // room. This is a deeper relationship than the stripped-state snapshot above
+    // and is gated on the room being world-readable + ACL-allowed.
+    let frame_id = room::get_frame_id(room_id, None).await?;
+    let state_ids: Vec<OwnedEventId> = state::get_full_state_ids(frame_id)
+        .await?
+        .into_values()
+        .collect();
+
+    let mut state = Vec::with_capacity(state_ids.len());
+    for id in &state_ids {
+        if let Ok(Some(json)) = timeline::get_pdu_json(id).await {
+            state.push(sending::convert_to_outgoing_federation_event(json).await);
+        }
+    }
+
+    let auth_chain_ids =
+        room::auth_chain::get_auth_chain_ids(room_id, state_ids.iter().map(AsRef::as_ref)).await?;
+    let mut auth_chain = Vec::with_capacity(auth_chain_ids.len());
+    for id in &auth_chain_ids {
+        if let Ok(Some(json)) = timeline::get_pdu_json(id).await {
+            auth_chain.push(sending::convert_to_outgoing_federation_event(json).await);
+        }
+    }
+
+    let messages = recent_world_readable_messages(room_id, 50).await?;
+
+    // Register the peer so subsequent room events are forwarded to it.
+    fed_peek::register_peeking_server(room_id, &origin, &args.peek_id).await?;
+
+    json_ok(PeekStartResBody {
+        room_version,
+        state,
+        auth_chain,
+        messages,
+        renewal_interval: fed_peek::PEEK_RENEWAL_INTERVAL_MS,
+    })
+}
+
+/// #DELETE /_matrix/federation/v1/peek/{room_id}/{peek_id}
+/// Cancel an ongoing peek subscription (MSC2444).
+#[endpoint]
+async fn peek_cancel(_aa: AuthArgs, args: PeekSubReqArgs, depot: &mut Depot) -> EmptyResult {
+    let origin = depot.origin()?.clone();
+    fed_peek::unregister_peeking_server(&args.room_id, &origin, &args.peek_id).await?;
+    empty_ok()
+}
+
+/// Collect up to `limit` of the most recent timeline events that were
+/// world-readable at the point they were sent, oldest-to-newest. Grows the scan
+/// window (doubling, capped) so a run of recent non-readable events doesn't
+/// yield an empty page while older readable events still exist.
+async fn recent_world_readable_messages(
+    room_id: &RoomId,
+    limit: usize,
+) -> AppResult<Vec<Box<RawJsonValue>>> {
     let mut messages = Vec::with_capacity(limit);
     let mut scan = limit.saturating_mul(2).clamp(limit, 100);
     loop {
@@ -103,7 +203,6 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
             timeline::stream::load_pdus_backward(None, room_id, None, None, None, scan).await?;
         let raw = recent.len();
 
-        // `recent` is newest-first; keep the newest `limit` visible events.
         messages.clear();
         for (_sn, pdu) in &recent {
             if messages.len() >= limit {
@@ -117,21 +216,13 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
             }
         }
 
-        // Enough collected, history exhausted (loader returned a short page), or
-        // we hit the work cap — stop.
         if messages.len() >= limit || raw < scan || scan >= PEEK_SCAN_CAP {
             break;
         }
         scan = scan.saturating_mul(2).min(PEEK_SCAN_CAP);
     }
-    // Collected newest-first; the response should read oldest-to-newest.
     messages.reverse();
-
-    json_ok(PeekResBody {
-        room_version,
-        pdus,
-        messages,
-    })
+    Ok(messages)
 }
 
 /// Upper bound on how many recent events a single peek will scan while looking
