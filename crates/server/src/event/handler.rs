@@ -510,8 +510,15 @@ pub async fn process_to_timeline_pdu(
     // 10. Fetch missing state and auth chain events by calling /state_ids at backwards extremities
     //     doing all the checks in this list starting at 1. These are not timeline events.
     debug!("resolving state at event");
+    // We process a room's incoming timeline events when we participate in it, or
+    // when we hold an active MSC2444 peek on it (the resident forwards events to
+    // us over /send; without this, a peek would only ever show the initial seed
+    // and never update live).
     let server_joined =
-        crate::room::is_server_joined(crate::config::server_name(), &incoming_pdu.room_id).await?;
+        crate::room::is_server_joined(crate::config::server_name(), &incoming_pdu.room_id).await?
+            || crate::data::room::peek::is_peeked(&incoming_pdu.room_id)
+                .await
+                .unwrap_or(false);
 
     if !server_joined {
         if let Some(state_key) = incoming_pdu.state_key.as_deref()
