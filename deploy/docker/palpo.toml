@@ -55,6 +55,9 @@ pool_size = 10
 [well_known]
 # Palpo handles the /.well-known/matrix/* endpoints, making both clients and servers try to access palpo with the host
 # server_name and port 443 by default.
-# If you want to override these defaults, uncomment and edit the following lines accordingly:
-server = "matrix.palpo.im"
+# If you want to override these defaults, uncomment and edit the following lines accordingly.
+# NOTE: the `server` value MUST include a port. Without one, other homeservers fall
+# back to port 8448 (per the Matrix server-resolution spec), which is almost never
+# what a reverse-proxy deployment on 443 wants.
+server = "matrix.palpo.im:443"
 client = "https://matrix.palpo.im"
