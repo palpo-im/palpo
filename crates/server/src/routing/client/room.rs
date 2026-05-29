@@ -342,6 +342,7 @@ async fn peek_room(
 ) -> JsonResult<JsonValue> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
+    let device_id = authed.device_id();
     let room_id = room_id.into_inner();
 
     // For a remote room, ensure a live federation peek (idempotent: it no-ops if
@@ -359,7 +360,7 @@ async fn peek_room(
         return Err(MatrixError::forbidden("Room is not peekable.", None).into());
     }
 
-    data::room::peek::add_user_peek(sender_id, &room_id).await?;
+    data::room::peek::add_user_peek(sender_id, device_id, &room_id).await?;
     json_ok(json!({ "room_id": room_id }))
 }
 
@@ -374,9 +375,10 @@ async fn unpeek_room(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
+    let device_id = authed.device_id();
     let room_id = room_id.into_inner();
 
-    data::room::peek::remove_user_peek(sender_id, &room_id).await?;
+    data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await?;
     if data::room::peek::room_peeker_count(&room_id).await? == 0 {
         // No local user is peeking anymore; drop the federation subscription.
         let _ = crate::federation::peek::stop_peek(&room_id).await;

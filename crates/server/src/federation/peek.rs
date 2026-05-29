@@ -106,6 +106,13 @@ pub async fn start_peek(
     let room_version = body.room_version.clone();
     room::ensure_room(room_id, &room_version).await?;
 
+    // Record the peek BEFORE ingesting anything. The incoming-PDU gate accepts
+    // events for a non-joined room only when `is_peeked` is true, so the seed
+    // messages below (and any /send events racing in during ingestion) would be
+    // dropped if the row didn't exist yet. Renew at half the resident's interval.
+    let renew_at = now_ms() + (body.renewal_interval as i64 / 2).max(1);
+    data::room::peek::upsert_peek(room_id, peek_id, target_server, renew_at).await?;
+
     // Make sure we hold the signing keys needed to verify the returned events.
     crate::server_key::acquire_events_pubkeys(body.auth_chain.iter().chain(body.state.iter()))
         .await;
@@ -217,9 +224,6 @@ pub async fn start_peek(
         .await;
     }
 
-    // Record (or refresh) the peek; renew at half the resident's interval.
-    let renew_at = now_ms() + (body.renewal_interval as i64 / 2).max(1);
-    data::room::peek::upsert_peek(room_id, peek_id, target_server, renew_at).await?;
     Ok(())
 }
 

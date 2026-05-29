@@ -192,12 +192,18 @@ pub async fn peeked_room_ids() -> DataResult<Vec<OwnedRoomId>> {
 // MSC2753 client-side peeking: which local users peek which rooms.
 // ---------------------------------------------------------------------------
 
-/// Record that a local user is peeking a room (idempotent).
-pub async fn add_user_peek(user_id: &UserId, room_id: &RoomId) -> DataResult<()> {
+/// Record that a local user's device is peeking a room (idempotent). Peeks are
+/// per-device so another device of the same account is unaffected.
+pub async fn add_user_peek(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    room_id: &RoomId,
+) -> DataResult<()> {
     let now = UnixMillis::now().get() as i64;
     diesel::insert_into(user_peeks::table)
         .values((
             user_peeks::user_id.eq(user_id),
+            user_peeks::device_id.eq(device_id),
             user_peeks::room_id.eq(room_id),
             user_peeks::created_at.eq(now),
         ))
@@ -207,11 +213,16 @@ pub async fn add_user_peek(user_id: &UserId, room_id: &RoomId) -> DataResult<()>
     Ok(())
 }
 
-/// Stop a local user peeking a room.
-pub async fn remove_user_peek(user_id: &UserId, room_id: &RoomId) -> DataResult<()> {
+/// Stop a local user's device peeking a room.
+pub async fn remove_user_peek(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    room_id: &RoomId,
+) -> DataResult<()> {
     diesel::delete(
         user_peeks::table
             .filter(user_peeks::user_id.eq(user_id))
+            .filter(user_peeks::device_id.eq(device_id))
             .filter(user_peeks::room_id.eq(room_id)),
     )
     .execute(&mut connect().await?)
@@ -219,17 +230,22 @@ pub async fn remove_user_peek(user_id: &UserId, room_id: &RoomId) -> DataResult<
     Ok(())
 }
 
-/// Rooms a local user is currently peeking.
-pub async fn user_peeked_rooms(user_id: &UserId) -> DataResult<Vec<OwnedRoomId>> {
+/// Rooms a specific device of a user is currently peeking.
+pub async fn user_peeked_rooms(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Vec<OwnedRoomId>> {
     let rooms = user_peeks::table
         .filter(user_peeks::user_id.eq(user_id))
+        .filter(user_peeks::device_id.eq(device_id))
         .select(user_peeks::room_id)
         .load::<OwnedRoomId>(&mut connect().await?)
         .await?;
     Ok(rooms)
 }
 
-/// Number of local users currently peeking a room.
+/// Number of local user-devices currently peeking a room (across all accounts
+/// and devices). Used to decide when the federation peek can be torn down.
 pub async fn room_peeker_count(room_id: &RoomId) -> DataResult<i64> {
     let count: i64 = user_peeks::table
         .filter(user_peeks::room_id.eq(room_id))

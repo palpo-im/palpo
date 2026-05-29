@@ -570,6 +570,7 @@ diesel::table! {
     user_peeks (id) {
         id -> Int8,
         user_id -> Text,
+        device_id -> Text,
         room_id -> Text,
         created_at -> Int8,
     }

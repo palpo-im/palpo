@@ -129,7 +129,7 @@ pub async fn sync_events(
     let mut peek_device_updates = HashSet::new();
     let mut peek_joined_users = HashSet::new();
     let mut peek_left_users = HashSet::new();
-    for room_id in data::room::peek::user_peeked_rooms(sender_id).await? {
+    for room_id in data::room::peek::user_peeked_rooms(sender_id, device_id).await? {
         if all_joined_rooms.contains(&room_id) {
             continue;
         }
