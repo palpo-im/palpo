@@ -118,9 +118,17 @@ pub async fn sync_events(
 
     // MSC2753: rooms this user is peeking (not a member of). They use the same
     // shape as joined rooms. Skip any the user is actually joined to to avoid
-    // duplicate delivery. Built here, while the device/membership accumulators
-    // are still mutably available.
+    // duplicate delivery.
+    //
+    // Crucially, the device-list / presence accumulators are kept SEPARATE and
+    // discarded: a non-member peeking a world-readable room must not receive
+    // member device-key changes or presence for users they don't share a joined
+    // room with. `load_joined_room` mutates those sets as a side effect, so we
+    // give it throwaway ones here.
     let mut peeked_rooms = BTreeMap::new();
+    let mut peek_device_updates = HashSet::new();
+    let mut peek_joined_users = HashSet::new();
+    let mut peek_left_users = HashSet::new();
     for room_id in data::room::peek::user_peeked_rooms(sender_id).await? {
         if all_joined_rooms.contains(&room_id) {
             continue;
@@ -135,9 +143,9 @@ pub async fn sync_events(
             full_state,
             &filter,
             args.use_state_after,
-            &mut device_list_updates,
-            &mut joined_users,
-            &mut left_users,
+            &mut peek_device_updates,
+            &mut peek_joined_users,
+            &mut peek_left_users,
         )
         .await
         {
@@ -151,6 +159,9 @@ pub async fn sync_events(
             }
         }
     }
+    // peek_device_updates / peek_joined_users / peek_left_users go out of scope
+    // here unused — peeked rooms must not contribute device/presence info to the
+    // real sync sets.
 
     let mut left_rooms = BTreeMap::new();
     let all_left_rooms = room::user::left_rooms(sender_id, since_tk).await?;
