@@ -82,46 +82,79 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
         }
     }
 
-    // A page of recent timeline events for the preview. `load_pdus_backward`
-    // returns newest-first; reverse so the response reads oldest-to-newest.
+    // A page of recent timeline events for the preview.
     //
     // History visibility is evaluated at the point each event was sent (per the
     // spec), not from the room's *current* state. The room is world-readable
     // now, but older messages may have been sent while it was joined/shared. A
     // peeking server is an unaffiliated non-member, so it may only receive
     // events whose history visibility *at that event's own state* was
-    // world-readable; everything else is excluded to avoid leaking history from
-    // before a later switch to world_readable.
+    // world-readable; everything else is excluded.
+    //
+    // Because that filter runs outside the loader, a run of recent
+    // non-readable events could otherwise yield an empty page while older
+    // readable events still exist. So we grow the scan window (doubling, capped)
+    // until the visible page is filled or the room history is exhausted.
     let limit = args.limit.clamp(1, 100);
-    let recent = timeline::stream::load_pdus_backward(None, room_id, None, None, None, limit).await?;
-    let mut messages = Vec::with_capacity(recent.len());
-    for (_sn, pdu) in recent.into_iter().rev() {
-        let event_world_readable = match state::get_pdu_frame_id(&pdu.event_id).await {
-            Ok(frame_id) => state::get_state_content::<RoomHistoryVisibilityEventContent>(
-                frame_id,
-                &StateEventType::RoomHistoryVisibility,
-                "",
-            )
-            .await
-            .map(|c| c.history_visibility == HistoryVisibility::WorldReadable)
-            .unwrap_or(false),
-            Err(_) => false,
-        };
-        if !event_world_readable {
-            continue;
+    let mut messages = Vec::with_capacity(limit);
+    let mut scan = limit.saturating_mul(2).clamp(limit, 100);
+    loop {
+        let recent =
+            timeline::stream::load_pdus_backward(None, room_id, None, None, None, scan).await?;
+        let raw = recent.len();
+
+        // `recent` is newest-first; keep the newest `limit` visible events.
+        messages.clear();
+        for (_sn, pdu) in &recent {
+            if messages.len() >= limit {
+                break;
+            }
+            if !event_world_readable(&pdu.event_id).await {
+                continue;
+            }
+            if let Ok(Some(json)) = timeline::get_pdu_json(&pdu.event_id).await {
+                messages.push(sending::convert_to_outgoing_federation_event(json).await);
+            }
         }
-        match timeline::get_pdu_json(&pdu.event_id).await {
-            Ok(Some(json)) => messages.push(sending::convert_to_outgoing_federation_event(json).await),
-            Ok(None) => {}
-            Err(_) => {}
+
+        // Enough collected, history exhausted (loader returned a short page), or
+        // we hit the work cap — stop.
+        if messages.len() >= limit || raw < scan || scan >= PEEK_SCAN_CAP {
+            break;
         }
+        scan = scan.saturating_mul(2).min(PEEK_SCAN_CAP);
     }
+    // Collected newest-first; the response should read oldest-to-newest.
+    messages.reverse();
 
     json_ok(PeekResBody {
         room_version,
         pdus,
         messages,
     })
+}
+
+/// Upper bound on how many recent events a single peek will scan while looking
+/// for world-readable messages, so the responder stays cheap even if a long run
+/// of recent events is not world-readable.
+const PEEK_SCAN_CAP: usize = 1000;
+
+/// Whether an event was world-readable at the point it was sent, i.e. the
+/// `m.room.history_visibility` in the room state *at that event's own frame* was
+/// `world_readable`. This is the only visibility a non-member peeking server is
+/// allowed to see; anything else (or an unresolvable frame/visibility) is false.
+async fn event_world_readable(event_id: &EventId) -> bool {
+    let Ok(frame_id) = state::get_pdu_frame_id(event_id).await else {
+        return false;
+    };
+    state::get_state_content::<RoomHistoryVisibilityEventContent>(
+        frame_id,
+        &StateEventType::RoomHistoryVisibility,
+        "",
+    )
+    .await
+    .map(|c| c.history_visibility == HistoryVisibility::WorldReadable)
+    .unwrap_or(false)
 }
 
 /// The room "description" state shared in a peek preview — the recommended
