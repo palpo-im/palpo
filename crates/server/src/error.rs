@@ -152,8 +152,8 @@ impl Writer for AppError {
             Self::FrequentlyRequest => MatrixError::unknown("frequently request resource"),
             Self::Public(msg) => MatrixError::unknown(msg),
             Self::Internal(msg) => {
-                error!(error = ?msg, "internal error");
-                MatrixError::unknown("unknown error")
+                error!(error = %msg, "internal error");
+                MatrixError::unknown(format!("internal error: {msg}"))
             }
             // Self::LocalUnableProcess(msg) => MatrixError::unrecognized(msg),
             Self::Matrix(e) => e,
@@ -215,8 +215,34 @@ impl Writer for AppError {
                 return;
             }
             e => {
-                tracing::error!(error = ?e, "unknown error");
-                MatrixError::unknown("unknown error happened")
+                // These are unexpected errors that aren't mapped to a specific Matrix
+                // error. Log the full detail at error level and surface the underlying
+                // message to the caller instead of an opaque "unknown error happened",
+                // so federation/transport/internal failures are actually diagnosable.
+                tracing::error!(error = ?e, error_display = %e, "unhandled application error");
+                let is_upstream = matches!(
+                    e,
+                    Self::Reqwest(_)
+                        | Self::ReqwestMiddleware(_)
+                        | Self::Pool(_)
+                        | Self::Send(_)
+                        | Self::OpenDal(_)
+                );
+                // A reqwest error's Display embeds the request URL, which for appservice
+                // requests carries the homeserver `access_token` query parameter. Strip
+                // the URL before it can reach a client; the full value is still logged
+                // above via `tracing::error!`.
+                let message = match e {
+                    Self::Reqwest(err) => format!("reqwest error: {}", err.without_url()),
+                    other => other.to_string(),
+                };
+                let mut matrix = MatrixError::unknown(message);
+                if is_upstream {
+                    // Failures talking to an upstream (federation peer, object store,
+                    // db pool) are gateway errors, not malformed client requests.
+                    matrix.status_code = Some(StatusCode::BAD_GATEWAY);
+                }
+                matrix
             }
         };
         matrix.write(req, depot, res).await;
