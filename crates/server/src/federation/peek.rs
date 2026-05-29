@@ -331,12 +331,25 @@ pub async fn run_maintenance() {
         }
     };
     for peek in due {
-        if let Err(e) = renew_peek(&peek.room_id, &peek.target_server, &peek.peek_id).await {
+        if renew_peek(&peek.room_id, &peek.target_server, &peek.peek_id)
+            .await
+            .is_ok()
+        {
+            continue;
+        }
+        // Lightweight renewal failed. It may be transient (a network blip) or
+        // the resident may have forgotten us, so attempt a full re-establish,
+        // which re-registers and re-ingests current state.
+        if let Err(e) = start_peek(&peek.room_id, &peek.target_server, &peek.peek_id).await {
+            // Still failing — give up. Drop the federation subscription AND the
+            // per-device user peeks for this room, so a dead peek stops being
+            // surfaced in sync (rather than freezing on stale state forever).
             warn!(
-                "peek: renewal of {} via {} failed, dropping: {e}",
+                "peek: renewal and re-establish of {} via {} both failed, dropping: {e}",
                 peek.room_id, peek.target_server
             );
             let _ = data::room::peek::remove_peek(&peek.room_id).await;
+            let _ = data::room::peek::remove_room_user_peeks(&peek.room_id).await;
         }
     }
 }

@@ -244,6 +244,15 @@ pub async fn user_peeked_rooms(
     Ok(rooms)
 }
 
+/// Remove all user-device peeks on a room (e.g. when the underlying federation
+/// peek is permanently torn down, so sync stops surfacing a dead peek).
+pub async fn remove_room_user_peeks(room_id: &RoomId) -> DataResult<()> {
+    diesel::delete(user_peeks::table.filter(user_peeks::room_id.eq(room_id)))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 /// Number of local user-devices currently peeking a room (across all accounts
 /// and devices). Used to decide when the federation peek can be torn down.
 pub async fn room_peeker_count(room_id: &RoomId) -> DataResult<i64> {
