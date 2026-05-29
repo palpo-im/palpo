@@ -133,6 +133,15 @@ pub async fn sync_events(
         if all_joined_rooms.contains(&room_id) {
             continue;
         }
+        // Re-check peekability every sync: if the room is no longer
+        // world-readable, peek access is revoked. Drop the peek so it stops
+        // appearing in sync (and the maintenance task tears down any federation
+        // subscription once no device peeks it), rather than leaking subsequent
+        // private state to a non-member.
+        if !room::is_world_readable(&room_id).await {
+            let _ = data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await;
+            continue;
+        }
         match load_joined_room(
             sender_id,
             device_id,

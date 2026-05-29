@@ -313,6 +313,16 @@ pub async fn run_maintenance() {
         warn!("peek: failed to purge expired peeking servers: {e}");
     }
 
+    // Tear down federation peeks no local user device wants anymore (e.g. every
+    // peeker was dropped during sync because the room stopped being
+    // world-readable, or all users unpeeked). Prevents ownerless subscriptions
+    // from being renewed forever.
+    for room_id in data::room::peek::peeked_room_ids().await.unwrap_or_default() {
+        if data::room::peek::room_peeker_count(&room_id).await.unwrap_or(1) == 0 {
+            let _ = stop_peek(&room_id).await;
+        }
+    }
+
     let due = match data::room::peek::peeks_due_for_renewal(now_ms()).await {
         Ok(due) => due,
         Err(e) => {
