@@ -43,12 +43,16 @@ pub fn router() -> Router {
 #[endpoint]
 async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult<PeekResBody> {
     // Authenticated as a federating server by the auth hoop.
-    let _origin = depot.origin()?;
+    let origin = depot.origin()?;
     let room_id = &args.room_id;
 
     if !room::room_exists(room_id).await? {
         return Err(MatrixError::not_found("Room not found on this server.").into());
     }
+
+    // Honour `m.room.server_acl`: a server denied by the room's ACL must not be
+    // able to read room data through peeking either.
+    handler::acl_check(origin, room_id).await?;
 
     // Only world-readable rooms may be peeked without membership; otherwise the
     // requesting server has no business reading the state.
@@ -90,10 +94,21 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
 
     // A page of recent timeline events for the preview. `load_pdus_backward`
     // returns newest-first; reverse so the response reads oldest-to-newest.
+    //
+    // The room is world-readable *now*, but older messages may have been sent
+    // while history visibility was joined/shared. Filter every event against
+    // its own history-visibility state for the requesting server so a peek can
+    // never leak messages the server wouldn't otherwise be allowed to see.
     let limit = args.limit.clamp(1, 100);
     let recent = timeline::stream::load_pdus_backward(None, room_id, None, None, None, limit).await?;
     let mut messages = Vec::with_capacity(recent.len());
     for (_sn, pdu) in recent.into_iter().rev() {
+        if !state::server_can_see_event(origin, room_id, &pdu.event_id)
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
         match timeline::get_pdu_json(&pdu.event_id).await {
             Ok(Some(json)) => messages.push(sending::convert_to_outgoing_federation_event(json).await),
             Ok(None) => {}
