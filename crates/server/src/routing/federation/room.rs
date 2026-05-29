@@ -129,7 +129,23 @@ async fn peek_start(
         return Err(MatrixError::not_found("Room not found on this server.").into());
     }
     handler::acl_check(&origin, room_id).await?;
-    if !room::is_world_readable(room_id).await {
+
+    let room_version = room::get_version(room_id).await?;
+
+    // Pin the frame we'll serve, then verify world-readability *at that exact
+    // frame* (not "current"). This closes the TOCTOU where an admin makes the
+    // room private between a coarse is_world_readable() check and reading the
+    // state: whatever frame we return, we've confirmed it was world-readable.
+    let frame_id = room::get_frame_id(room_id, None).await?;
+    let frame_world_readable = state::get_state_content::<RoomHistoryVisibilityEventContent>(
+        frame_id,
+        &StateEventType::RoomHistoryVisibility,
+        "",
+    )
+    .await
+    .map(|c| c.history_visibility == HistoryVisibility::WorldReadable)
+    .unwrap_or(false);
+    if !frame_world_readable {
         return Err(MatrixError::forbidden(
             "Room is not world-readable; peeking is not permitted.",
             None,
@@ -137,20 +153,17 @@ async fn peek_start(
         .into());
     }
 
-    let room_version = room::get_version(room_id).await?;
-
-    // Register the peer FIRST, before capturing the snapshot, so any event
-    // created while we read state/messages is forwarded to it (rather than
-    // falling into a gap between the snapshot and registration). A forwarded
-    // event the peer can't place yet is recovered via prev_events backfill, and
-    // duplicates with the snapshot are harmless/idempotent on its side.
+    // Register the peer before capturing the snapshot, so any event created while
+    // we read state/messages is forwarded to it (rather than falling into a gap
+    // between the snapshot and registration). A forwarded event the peer can't
+    // place yet is recovered via prev_events backfill, and duplicates with the
+    // snapshot are harmless/idempotent on its side. (Ongoing relay is itself
+    // re-guarded by world-readability + ACL in append_pdu.)
     fed_peek::register_peeking_server(room_id, &origin, &args.peek_id).await?;
 
     // Full current state + backing auth chain (like a send_join response) so the
     // peer can construct a complete, verifiable local copy of this world-readable
-    // room. This is a deeper relationship than the stripped-state snapshot above
-    // and is gated on the room being world-readable + ACL-allowed.
-    let frame_id = room::get_frame_id(room_id, None).await?;
+    // room, built from the same `frame_id` we verified above.
     let state_ids: Vec<OwnedEventId> = state::get_full_state_ids(frame_id)
         .await?
         .into_values()

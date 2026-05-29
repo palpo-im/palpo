@@ -14,13 +14,12 @@ use crate::core::UnixMillis;
 use crate::core::federation::peek::{PeekStartResBody, peek_cancel_request, peek_start_request};
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonObject;
-use crate::data::room::{DbEventData, NewDbEvent};
 use crate::event::handler::process_incoming_pdu;
-use crate::event::{ensure_event_sn, parse_fetched_pdu};
+use crate::event::parse_fetched_pdu;
 use crate::room::state::{CompressedEvent, DeltaInfo};
 use crate::room::{state, timeline};
 use crate::{
-    AppError, AppResult, GetUrlOrigin, OptionalExtension, SnPduEvent, config, data, room, sending,
+    AppError, AppResult, GetUrlOrigin, OptionalExtension, config, data, room, sending,
 };
 
 /// How long a peek subscription is valid before the peeking server must renew.
@@ -164,39 +163,24 @@ async fn ingest_peek_snapshot(
         }
     }
 
-    // Build the resolved current state map and persist it as the room's state.
+    // Build the resolved current state map from events that were actually
+    // validated and stored by `process_incoming_pdu` above. We must NOT persist
+    // a state event the validation rejected (bad signature/auth) and then force
+    // it as the room's current state — a malicious resident could otherwise
+    // smuggle in arbitrary state. If a snapshot state event isn't in the
+    // timeline (i.e. it failed validation), abort the whole peek; `start_peek`
+    // rolls back the registration and the caller falls back to the one-shot
+    // snapshot preview.
     let mut state_map = HashMap::new();
     for raw in &body.state {
-        let (event_id, value) = match parse_fetched_pdu(room_id, room_version, raw) {
-            Ok(t) => t,
+        let event_id = match parse_fetched_pdu(room_id, room_version, raw) {
+            Ok((event_id, _)) => event_id,
             Err(_) => continue,
         };
-        let pdu = if let Some(pdu) = timeline::get_pdu(&event_id).await.optional()? {
-            pdu
-        } else {
-            let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
-            let pdu = SnPduEvent::from_canonical_object(
-                room_id, &event_id, event_sn, value.clone(), false, false, false,
-            )
-            .map_err(|e| {
-                warn!("peek: invalid state pdu {event_id}: {e}");
-                AppError::public("invalid state pdu in peek response")
-            })?;
-            NewDbEvent::from_canonical_json_with_room_id(&event_id, event_sn, &value, false, room_id)?
-                .save()
-                .await?;
-            DbEventData {
-                event_id: event_id.clone(),
-                event_sn,
-                room_id: room_id.to_owned(),
-                internal_metadata: None,
-                json_data: serde_json::to_value(&value)?,
-                format_version: None,
-            }
-            .save()
-            .await?;
-            drop(event_guard);
-            pdu
+        let Some(pdu) = timeline::get_pdu(&event_id).await.optional()? else {
+            return Err(AppError::public(format!(
+                "peek snapshot state event {event_id} failed validation; aborting peek"
+            )));
         };
 
         if let Some(state_key) = &pdu.state_key {
