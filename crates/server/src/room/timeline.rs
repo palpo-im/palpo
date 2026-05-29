@@ -685,10 +685,24 @@ pub async fn append_pdu(
     // non-resident server there are no peekers, so this is a cheap no-op.
     let peeking_servers = crate::federation::peek::active_peeking_servers(&pdu.room_id).await;
     if !peeking_servers.is_empty() && crate::room::is_world_readable(&pdu.room_id).await {
-        if let Err(e) =
-            crate::sending::send_pdu_servers(peeking_servers.into_iter(), &pdu.event_id).await
-        {
-            error!("failed to forward pdu to peeking servers: {e}");
+        // Re-apply the room's server ACL: a server banned via m.room.server_acl
+        // after its peek started must stop receiving events immediately, not
+        // only when its peek eventually fails to renew.
+        let mut allowed = Vec::with_capacity(peeking_servers.len());
+        for server in peeking_servers {
+            if crate::event::handler::acl_check(&server, &pdu.room_id)
+                .await
+                .is_ok()
+            {
+                allowed.push(server);
+            }
+        }
+        if !allowed.is_empty() {
+            if let Err(e) =
+                crate::sending::send_pdu_servers(allowed.into_iter(), &pdu.event_id).await
+            {
+                error!("failed to forward pdu to peeking servers: {e}");
+            }
         }
     }
 
