@@ -59,11 +59,6 @@ use crate::{
 
 const LIMIT_MAX: usize = 100;
 
-pub fn public_router() -> Router {
-    Router::with_path("rooms").push(
-        Router::with_path("{room_id}").push(Router::with_path("initialSync").get(initial_sync)),
-    )
-}
 pub fn authed_router() -> Router {
     Router::with_path("rooms")
         .push(
@@ -84,6 +79,7 @@ pub fn authed_router() -> Router {
                             .put(receipt::send_receipt),
                     )
                     .push(Router::with_path("timestamp_to_event").get(event::timestamp_to_event))
+                    .push(Router::with_path("initialSync").get(initial_sync))
                     .push(Router::with_path("peek").post(peek_room))
                     .push(Router::with_path("unpeek").post(unpeek_room)),
             ),

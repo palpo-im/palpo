@@ -50,7 +50,6 @@ pub fn router() -> Router {
                     .push(profile::public_router())
                     .push(register::public_router())
                     .push(session::public_router())
-                    .push(room::public_router())
                     .push(directory::public_router())
                     .push(media::self_auth_router())
                     .push(
