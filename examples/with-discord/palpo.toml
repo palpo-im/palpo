@@ -16,7 +16,7 @@ address = "0.0.0.0:6006"
 format = "pretty" # pretty, json, compact
 
 [db]
-url = "postgres://postgres:root@localhost:5432/palpo_local"
+url = "postgres://postgres:REPLACE_WITH_STRONG_PASSWORD@localhost:5432/palpo_local"
 pool_size = 10
 
 [federation]

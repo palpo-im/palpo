@@ -107,6 +107,8 @@ async fn send_to_device(
 
 #[endpoint]
 pub(super) async fn for_dehydrated(_aa: AuthArgs) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+    Err(MatrixError::unrecognized(
+        "To-device messages for dehydrated devices are not implemented.",
+    )
+    .into())
 }

@@ -6,7 +6,7 @@ services:
     volumes:
       - ./data/pgsql:/var/lib/postgresql/data
     environment:
-      POSTGRES_PASSWORD: root
+      POSTGRES_PASSWORD: ${PALPO_POSTGRES_PASSWORD:?set PALPO_POSTGRES_PASSWORD in examples/with-telegram/.env}
       POSTGRES_USER: postgres
       POSTGRES_DB: palpo_local
     healthcheck:
@@ -33,6 +33,7 @@ services:
       - 6006:6006
     environment:
       PALPO_CONFIG: /var/palpo/palpo.toml
+      PALPO_DB__URL: postgres://postgres:${PALPO_POSTGRES_PASSWORD:?set PALPO_POSTGRES_PASSWORD in examples/with-telegram/.env}@postgres:5432/palpo_local
       RUST_LOG: "palpo=info,palpo_core=warn"
     networks:
       - internal

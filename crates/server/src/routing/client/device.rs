@@ -230,8 +230,7 @@ async fn delete_devices(
 
 #[endpoint]
 pub(super) async fn dehydrated(_aa: AuthArgs) -> EmptyResult {
-    // TODO: Later
-    empty_ok()
+    Err(MatrixError::unrecognized("Dehydrated device retrieval is not implemented.").into())
 }
 
 #[endpoint]
@@ -243,6 +242,5 @@ pub(super) async fn delete_dehydrated(_aa: AuthArgs, depot: &mut Depot) -> Empty
 
 #[endpoint]
 pub(super) async fn upsert_dehydrated(_aa: AuthArgs) -> EmptyResult {
-    // TODO: Later
-    empty_ok()
+    Err(MatrixError::unrecognized("Dehydrated device upload is not implemented.").into())
 }

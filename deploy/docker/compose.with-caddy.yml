@@ -26,9 +26,9 @@ services:
     volumes:
       - ./data/pgsql:/var/lib/postgresql
     environment:
-      POSTGRES_PASSWORD: changeme
+      POSTGRES_PASSWORD: ${PALPO_POSTGRES_PASSWORD:?set PALPO_POSTGRES_PASSWORD in deploy/docker/.env}
       POSTGRES_USER: palpo
-      POSTGRES_DATABASE: palpo
+      POSTGRES_DB: palpo
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U palpo"]
       interval: 5s
@@ -38,13 +38,14 @@ services:
       - caddy
 
   palpo:
-    image: docker.io/ghcr.io/palpo-im/palpo:latest
+    image: ghcr.io/palpo-im/palpo:latest
     restart: unless-stopped
     volumes:
       - db:/var/lib/palpo
       - ./palpo.toml:/var/palpo/palpo.toml:ro
     environment:
       PALPO_CONFIG: '/var/palpo/palpo.toml'
+      PALPO_DB__URL: postgres://palpo:${PALPO_POSTGRES_PASSWORD:?set PALPO_POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/palpo
     networks:
       - caddy
     labels:

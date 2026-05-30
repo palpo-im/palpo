@@ -53,7 +53,7 @@ federation {
 }
 
 db {
-    url "postgres://palpo:changeme@postgres:5432/palpo"
+    url "postgres://palpo:REPLACE_WITH_STRONG_PASSWORD@postgres:5432/palpo"
     pool_size 10
 }
 
