@@ -67,7 +67,7 @@ hyper-util = "0.1.20"
 hmac = "0.13.0"
 http-auth = { version = "0.1.10", default-features = false }
 html5ever = "0.39.0"
-http = "1.4.0"
+http = "1.4.1"
 image = "0.25.10"
 opendal = { version = "0.56.0", default-features = false }
 indexmap = "2.14.0"
