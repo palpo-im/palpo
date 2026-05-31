@@ -14,6 +14,7 @@
 - [x] 修复未实现的管理命令返回“成功”的问题。`reload-config`、`reload-mods`、`restart`、`shutdown` 现在会明确返回未实现错误，避免误导管理员。
 - [x] 修复 `config::reload` 空实现却返回 `Ok(())` 的问题。
 - [x] 删除未接入的 `admin/debug` 死代码模块，并移除仍指向 debug 命令的注释和配置示例。
+- [x] 将旧 debug 命令中可安全复用的能力接成 admin-only REST API，供管理界面调试 PDU、房间状态、签名、server key、依赖信息和 federation ping。
 - [x] 为 `PALPO_` 环境变量增加 `__` 嵌套配置支持，例如 `PALPO_DB__URL` 可覆盖 `db.url`。
 - [x] 为 Docker 部署和桥接示例增加 `.env.example`，并让 Compose 通过 `PALPO_POSTGRES_PASSWORD` 和 `PALPO_DB__URL` 使用同一份数据库密码。
 - [x] 替换部署与桥接示例配置中的 `changeme`、`root`、`your_password` 数据库密码为环境变量或明确占位符。

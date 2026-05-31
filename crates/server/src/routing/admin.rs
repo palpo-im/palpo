@@ -1,4 +1,5 @@
 mod appservice;
+mod debug;
 mod event;
 mod event_report;
 mod federation;
@@ -62,6 +63,7 @@ pub fn router() -> Router {
                 .hoop(require_admin)
                 .get(home)
                 .push(appservice::router())
+                .push(debug::router())
                 .push(event::router())
                 .push(event_report::router())
                 .push(federation::router())
