@@ -1263,7 +1263,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01334b89b69ff726750c5ce5073fc8bd860e99aa9a8fc5ca11b04730e3aee97a"
 dependencies = [
  "link-section",
- "linktime-proc-macro 0.2.0",
+ "linktime-proc-macro",
 ]
 
 [[package]]
@@ -1586,11 +1586,11 @@ dependencies = [
 
 [[package]]
 name = "dtor"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2137ce22f50d4c43ce098daf41c904cc700de1ce8bc2daf53ed4e702180a464"
+checksum = "6d738e43aa64edab57c983d56de890d65fea7dc05605490c74451ce721dfd84b"
 dependencies = [
- "linktime-proc-macro 0.1.0",
+ "linktime-proc-macro",
 ]
 
 [[package]]
@@ -3001,12 +3001,6 @@ name = "linked-hash-map"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
-
-[[package]]
-name = "linktime-proc-macro"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a44cd706ff0d503ee32b2071166510ca27e281228de10cd3aa8d35ff94560f81"
 
 [[package]]
 name = "linktime-proc-macro"
