@@ -7,10 +7,7 @@ use salvo::prelude::*;
 use crate::core::federation::query::{EduTypesResBody, ProfileResBody, RoomInfoResBody};
 use crate::core::identifiers::*;
 use crate::core::profile::ProfileFieldValue;
-use crate::{
-    AuthArgs, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, config, data, empty_ok,
-    json_ok,
-};
+use crate::{AuthArgs, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, config, data, json_ok};
 
 pub fn router() -> Router {
     Router::with_path("query")
@@ -111,6 +108,5 @@ async fn get_directory(
 }
 #[endpoint]
 async fn query_by_type(_aa: AuthArgs) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+    Err(MatrixError::unrecognized("Unsupported federation query type.").into())
 }

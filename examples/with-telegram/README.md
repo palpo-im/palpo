@@ -67,7 +67,7 @@ telegram:
   api_id: <your_telegram_api_id>
   api_hash: <your_telegram_api_hash>
 
-database: postgres://postgres:root@postgres:5432/mautrix_telegram?sslmode=disable
+database: postgres://postgres:<PALPO_POSTGRES_PASSWORD>@postgres:5432/mautrix_telegram?sslmode=disable
 ```
 
 Get Telegram API credentials from https://my.telegram.org/apps.

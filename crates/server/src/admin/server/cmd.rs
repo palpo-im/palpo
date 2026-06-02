@@ -17,12 +17,9 @@ pub(super) async fn show_config(ctx: &Context<'_>) -> AppResult<()> {
     ctx.write_str(&format!("{}", config::get())).await
 }
 
-pub(super) async fn reload_config(ctx: &Context<'_>, _path: Option<PathBuf>) -> AppResult<()> {
-    // TODO: admin
-    // let path = path.as_deref();
-    // config::reload(path)?;
-
-    ctx.write_str("Successfully reconfigured.").await
+pub(super) async fn reload_config(_ctx: &Context<'_>, path: Option<PathBuf>) -> AppResult<()> {
+    let path = path.unwrap_or_default();
+    config::reload(path)
 }
 
 pub(super) async fn list_features(
@@ -70,13 +67,11 @@ pub(super) async fn admin_notice(ctx: &Context<'_>, message: Vec<String>) -> App
     ctx.write_str("Notice was sent to #admins").await
 }
 
-pub(super) async fn reload_mods(ctx: &Context<'_>) -> AppResult<()> {
-    // TODO: reload mods
-
-    ctx.write_str("(TODO) Reloading server...").await
+pub(super) async fn reload_mods(_ctx: &Context<'_>) -> AppResult<()> {
+    Err(AppError::public("module reload is not implemented yet."))
 }
 
-pub(super) async fn restart(ctx: &Context<'_>, force: bool) -> AppResult<()> {
+pub(super) async fn restart(_ctx: &Context<'_>, force: bool) -> AppResult<()> {
     use crate::utils::sys::current_exe_deleted;
 
     if !force && current_exe_deleted() {
@@ -86,14 +81,10 @@ pub(super) async fn restart(ctx: &Context<'_>, force: bool) -> AppResult<()> {
         ));
     }
 
-    // TODO: restart server
-
-    ctx.write_str("(TODO) Restarting server...").await
+    Err(AppError::public("server restart is not implemented yet."))
 }
 
-pub(super) async fn shutdown(ctx: &Context<'_>) -> AppResult<()> {
+pub(super) async fn shutdown(_ctx: &Context<'_>) -> AppResult<()> {
     warn!("shutdown command");
-    // TODO: shutdown server
-
-    ctx.write_str("(TODO) Shutting down server...").await
+    Err(AppError::public("server shutdown is not implemented yet."))
 }

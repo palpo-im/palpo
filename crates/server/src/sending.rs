@@ -974,9 +974,11 @@ pub async fn convert_to_outgoing_federation_event(
 
 fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBuilder> {
     let mut reqwest_client_builder = reqwest::Client::builder()
-        .pool_max_idle_per_host(0)
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60 * 3));
+        .pool_idle_timeout(Some(Duration::from_millis(config.request_idle_timeout)))
+        .pool_max_idle_per_host(config.request_idle_per_host.into())
+        .connect_timeout(Duration::from_millis(config.request_conn_timeout))
+        .read_timeout(Duration::from_millis(config.request_timeout))
+        .timeout(Duration::from_millis(config.request_total_timeout));
 
     if config.allow_invalid_tls_certificates {
         tracing::warn!(

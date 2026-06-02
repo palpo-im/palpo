@@ -457,9 +457,10 @@ pub(crate) async fn send_request(
     // }); // TODO: handle timeout
 
     if status != 200 {
+        let redacted_url = redacted_access_token_url(&url);
         warn!(
             "Appservice returned bad response {} {}\n{}",
-            destination, status, url,
+            destination, status, redacted_url,
         );
     }
 
@@ -470,4 +471,51 @@ pub(crate) async fn send_request(
     // );
 
     Ok(response)
+}
+
+fn redacted_access_token_url(url: &url::Url) -> url::Url {
+    let mut redacted = url.clone();
+    let Some(_) = redacted.query() else {
+        return redacted;
+    };
+
+    let query_pairs = redacted
+        .query_pairs()
+        .map(|(key, value)| {
+            let value = if key == "access_token" {
+                "REDACTED".to_owned()
+            } else {
+                value.into_owned()
+            };
+            (key.into_owned(), value)
+        })
+        .collect::<Vec<_>>();
+
+    redacted.set_query(None);
+    redacted.query_pairs_mut().extend_pairs(
+        query_pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    );
+    redacted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redacted_access_token_url;
+
+    #[test]
+    fn redacts_access_token_query_parameter() {
+        let url = url::Url::parse(
+            "https://appservice.example/_matrix/app/v1/transactions/1?foo=bar&access_token=secret",
+        )
+        .unwrap();
+
+        let redacted = redacted_access_token_url(&url);
+        let redacted = redacted.as_str();
+
+        assert!(redacted.contains("foo=bar"));
+        assert!(redacted.contains("access_token=REDACTED"));
+        assert!(!redacted.contains("secret"));
+    }
 }

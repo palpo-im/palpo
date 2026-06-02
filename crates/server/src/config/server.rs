@@ -1200,7 +1200,7 @@ fn default_session_ttl() -> u64 {
     60 * 60_000
 }
 fn default_openid_token_ttl() -> u64 {
-    60 * 60_000
+    60 * 60
 }
 
 fn default_ip_lookup_strategy() -> u8 {
@@ -1301,7 +1301,7 @@ fn default_request_idle_timeout() -> u64 {
 }
 
 fn default_request_idle_per_host() -> u16 {
-    1_000
+    1
 }
 fn default_appservice_timeout() -> u64 {
     35_000
@@ -1373,5 +1373,20 @@ fn default_rc_message() -> RateLimitConfig {
     RateLimitConfig {
         per_second: 10.0,
         burst: 50,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_openid_token_ttl, default_request_idle_per_host};
+
+    #[test]
+    fn openid_token_ttl_default_is_seconds() {
+        assert_eq!(default_openid_token_ttl(), 60 * 60);
+    }
+
+    #[test]
+    fn request_idle_per_host_matches_documented_default() {
+        assert_eq!(default_request_idle_per_host(), 1);
     }
 }

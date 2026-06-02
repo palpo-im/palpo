@@ -4,13 +4,13 @@ services:
     image: postgres:18
     restart: always
     ports:
-      - 5432:5432
+      - 127.0.0.1:5432:5432
     volumes:
       - ./data/pgsql:/var/lib/postgresql
     environment:
-      POSTGRES_PASSWORD: changeme
+      POSTGRES_PASSWORD: ${PALPO_POSTGRES_PASSWORD:?set PALPO_POSTGRES_PASSWORD in deploy/docker/.env}
       POSTGRES_USER: palpo
-      POSTGRES_DATABASE: palpo
+      POSTGRES_DB: palpo
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U palpo"]
       interval: 5s
@@ -26,6 +26,7 @@ services:
       - 8448:8448
     environment:
       PALPO_CONFIG: '/var/palpo/palpo.toml'
+      PALPO_DB__URL: postgres://palpo:${PALPO_POSTGRES_PASSWORD:?set PALPO_POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/palpo
     volumes:
       - $PWD/palpo.toml:/var/palpo/palpo.toml
       - $PWD/data/media:/var/palpo/media

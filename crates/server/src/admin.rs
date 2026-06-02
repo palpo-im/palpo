@@ -1,6 +1,5 @@
 pub(crate) mod appservice;
 mod console;
-// pub(crate) mod debug;
 pub(crate) mod federation;
 pub(crate) mod media;
 pub(crate) mod room;
@@ -92,9 +91,6 @@ pub(crate) enum AdminCommand {
     #[command(subcommand)]
     /// - Commands for managing media
     Media(MediaCommand),
-    // #[command(subcommand)]
-    // /// - Commands for debugging things
-    // Debug(DebugCommand),
 }
 
 #[derive(Debug)]
@@ -158,7 +154,6 @@ pub(super) async fn process(command: AdminCommand, context: &Context<'_>) -> App
         Room(command) => room::process(command, context).await,
         Federation(command) => federation::process(command, context).await,
         Server(command) => server::process(command, context).await,
-        // Debug(command) => debug::process(command, context).await,
     }
 }
 

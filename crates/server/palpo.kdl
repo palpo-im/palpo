@@ -17,7 +17,7 @@ logger {
 }
 
 db {
-    url "postgres://postgres:root@localhost:5432/palpo_local"
+    url "postgres://postgres:REPLACE_WITH_STRONG_PASSWORD@localhost:5432/palpo_local"
     pool_size 10
 }
 
@@ -34,7 +34,7 @@ well_known {
 }
 
 turn {
-    secret "n0t4ctuAllymatr1Xd0TorgSshar3d5ecret4obvIousreAsons"
+    secret "REPLACE_WITH_STRONG_TURN_SECRET"
     allow_guests true
     uris {
         - "turn:127.0.0.1?transport=udp"

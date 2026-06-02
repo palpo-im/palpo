@@ -10,9 +10,7 @@ use crate::core::identifiers::*;
 use crate::core::room::{TimestampToEventReqArgs, TimestampToEventResBody};
 use crate::data::room::DbEvent;
 use crate::room::{state, timeline};
-use crate::{
-    AppError, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config, empty_ok, json_ok,
-};
+use crate::{AppError, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config, json_ok};
 
 pub fn router() -> Router {
     Router::new()
@@ -204,6 +202,5 @@ async fn missing_events(
 
 #[endpoint]
 async fn exchange_third_party_invite(_aa: AuthArgs) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+    Err(MatrixError::unrecognized("Third-party invite exchange is not implemented.").into())
 }

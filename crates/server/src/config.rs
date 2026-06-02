@@ -59,10 +59,10 @@ pub use oidc::*;
 mod delegated_auth;
 pub use delegated_auth::*;
 
-use crate::AppResult;
 use crate::core::client::discovery::capabilities::RoomVersionStability;
 use crate::core::identifiers::*;
 use crate::core::signatures::Ed25519KeyPair;
+use crate::{AppError, AppResult};
 
 pub static CONFIG: OnceLock<ServerConfig> = OnceLock::new();
 
@@ -202,7 +202,9 @@ pub fn init(config_path: impl AsRef<Path>) {
         panic!("config file not found: `{}`", config_path.display());
     }
 
-    let raw_conf = figment_from_path(config_path).merge(Env::prefixed("PALPO_").global());
+    let raw_conf = figment_from_path(config_path)
+        .merge(Env::prefixed("PALPO_").global())
+        .merge(Env::prefixed("PALPO_").split("__").global());
     let conf = match raw_conf.extract::<ServerConfig>() {
         Ok(s) => s,
         Err(e) => {
@@ -214,8 +216,9 @@ pub fn init(config_path: impl AsRef<Path>) {
     CONFIG.set(conf).expect("config should be set once");
 }
 pub fn reload(_path: impl AsRef<Path>) -> AppResult<()> {
-    // TODO: reload config
-    Ok(())
+    Err(AppError::public(
+        "configuration reload is not implemented yet.",
+    ))
 }
 
 pub fn get() -> &'static ServerConfig {

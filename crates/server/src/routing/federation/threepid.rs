@@ -1,6 +1,6 @@
 use salvo::prelude::*;
 
-use crate::{AuthArgs, EmptyResult, empty_ok};
+use crate::{AuthArgs, EmptyResult, MatrixError};
 
 pub fn router() -> Router {
     Router::with_path("3pid/onbind").put(on_bind)
@@ -8,6 +8,5 @@ pub fn router() -> Router {
 
 #[endpoint]
 async fn on_bind(_aa: AuthArgs) -> EmptyResult {
-    // TODO: todo
-    empty_ok()
+    Err(MatrixError::unrecognized("3PID bind notifications are not implemented.").into())
 }
