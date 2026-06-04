@@ -1,14 +1,10 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use subtle::ConstantTimeEq;
 
 use crate::core::client::uiaa::{
     AuthData, AuthError, AuthType, Password, UiaaInfo, UserIdentifier,
 };
 use crate::core::identifiers::*;
-use crate::core::serde::{CanonicalJsonValue, JsonValue};
-use crate::data::connect;
-use crate::data::schema::*;
+use crate::core::serde::CanonicalJsonValue;
 use crate::{AppResult, MatrixError, SESSION_ID_LENGTH, data, utils};
 
 /// Creates a new Uiaa session. Make sure the session token is unique.
@@ -32,34 +28,7 @@ pub async fn update_session(
     session: &str,
     uiaa_info: Option<&UiaaInfo>,
 ) -> AppResult<()> {
-    if let Some(uiaa_info) = uiaa_info {
-        let uiaa_info = serde_json::to_value(uiaa_info)?;
-        diesel::insert_into(user_uiaa_datas::table)
-            .values((
-                user_uiaa_datas::user_id.eq(user_id),
-                user_uiaa_datas::device_id.eq(device_id),
-                user_uiaa_datas::session.eq(session),
-                user_uiaa_datas::uiaa_info.eq(&uiaa_info),
-            ))
-            .on_conflict((
-                user_uiaa_datas::user_id,
-                user_uiaa_datas::device_id,
-                user_uiaa_datas::session,
-            ))
-            .do_update()
-            .set(user_uiaa_datas::uiaa_info.eq(&uiaa_info))
-            .execute(&mut connect().await?)
-            .await?;
-    } else {
-        diesel::delete(
-            user_uiaa_datas::table
-                .filter(user_uiaa_datas::user_id.eq(user_id))
-                .filter(user_uiaa_datas::device_id.eq(device_id))
-                .filter(user_uiaa_datas::session.eq(session)),
-        )
-        .execute(&mut connect().await?)
-        .await?;
-    };
+    data::user::uiaa::update_session(user_id, device_id, session, uiaa_info).await?;
     Ok(())
 }
 pub async fn get_session(
@@ -67,14 +36,7 @@ pub async fn get_session(
     device_id: &DeviceId,
     session: &str,
 ) -> AppResult<UiaaInfo> {
-    let uiaa_info = user_uiaa_datas::table
-        .filter(user_uiaa_datas::user_id.eq(user_id))
-        .filter(user_uiaa_datas::device_id.eq(device_id))
-        .filter(user_uiaa_datas::session.eq(session))
-        .select(user_uiaa_datas::uiaa_info)
-        .first::<JsonValue>(&mut connect().await?)
-        .await?;
-    Ok(serde_json::from_value(uiaa_info)?)
+    Ok(data::user::uiaa::get_session(user_id, device_id, session).await?)
 }
 pub async fn try_auth(
     user_id: &UserId,
@@ -185,16 +147,7 @@ pub async fn set_uiaa_request(
     session: &str,
     request: CanonicalJsonValue,
 ) -> AppResult<()> {
-    let request_body = serde_json::to_value(&request)?;
-    diesel::update(
-        user_uiaa_datas::table
-            .filter(user_uiaa_datas::user_id.eq(user_id))
-            .filter(user_uiaa_datas::device_id.eq(device_id))
-            .filter(user_uiaa_datas::session.eq(session)),
-    )
-    .set(user_uiaa_datas::request_body.eq(Some(&request_body)))
-    .execute(&mut connect().await?)
-    .await?;
+    data::user::uiaa::set_uiaa_request(user_id, device_id, session, &request).await?;
     Ok(())
 }
 
@@ -204,15 +157,8 @@ pub async fn get_uiaa_request(
     device_id: &DeviceId,
     session: &str,
 ) -> Option<CanonicalJsonValue> {
-    let request_body = user_uiaa_datas::table
-        .filter(user_uiaa_datas::user_id.eq(user_id))
-        .filter(user_uiaa_datas::device_id.eq(device_id))
-        .filter(user_uiaa_datas::session.eq(session))
-        .select(user_uiaa_datas::request_body)
-        .first::<Option<JsonValue>>(&mut connect().await.ok()?)
+    data::user::uiaa::get_uiaa_request(user_id, device_id, session)
         .await
         .ok()
-        .flatten()?;
-
-    serde_json::from_value(request_body).ok()
+        .flatten()
 }

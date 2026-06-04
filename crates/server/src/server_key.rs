@@ -6,25 +6,20 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub use acquire::*;
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 pub use request::*;
 use serde_json::value::RawValue as RawJsonValue;
 pub use verify::*;
 
 use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
 use crate::core::room_version_rules::RoomVersionRules;
-use crate::core::serde::{Base64, CanonicalJsonObject, JsonValue, RawJson};
+use crate::core::serde::{Base64, CanonicalJsonObject, RawJson};
 use crate::core::signatures::{self, PublicKeyMap, PublicKeySet};
 use crate::core::{
     OwnedServerSigningKeyId, RoomVersionId, ServerName, ServerSigningKeyId, UnixMillis,
 };
-use crate::data::connect;
-use crate::data::misc::DbServerSigningKeys;
-use crate::data::schema::*;
 use crate::exts::*;
 use crate::utils::timepoint_from_now;
-use crate::{AppError, AppResult, config};
+use crate::{AppError, AppResult, config, data};
 
 pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;
@@ -52,32 +47,13 @@ pub(crate) async fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<(
     let server = new_keys.server_name.clone();
 
     // (timo) Not atomic, but this is not critical
-    let existing = server_signing_keys::table
-        .find(&server)
-        .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
-    let existing = existing
+    let existing = data::misc::signing_keys_data(&server)
+        .await?
         .map(serde_json::from_value::<ServerSigningKeys>)
         .transpose()?;
     let keys = merge_signing_keys_for_storage(existing, new_keys);
 
-    diesel::insert_into(server_signing_keys::table)
-        .values(DbServerSigningKeys {
-            server_id: server.clone(),
-            key_data: serde_json::to_value(&keys)?,
-            updated_at: UnixMillis::now(),
-            created_at: UnixMillis::now(),
-        })
-        .on_conflict(server_signing_keys::server_id)
-        .do_update()
-        .set((
-            server_signing_keys::key_data.eq(serde_json::to_value(&keys)?),
-            server_signing_keys::updated_at.eq(UnixMillis::now()),
-        ))
-        .execute(&mut connect().await?)
-        .await?;
+    data::misc::upsert_signing_keys(&server, serde_json::to_value(&keys)?).await?;
     Ok(())
 }
 
@@ -87,12 +63,7 @@ pub async fn verify_key_exists(
 ) -> AppResult<bool> {
     type KeysMap<'a> = BTreeMap<&'a str, &'a RawJsonValue>;
 
-    let key_data = server_signing_keys::table
-        .filter(server_signing_keys::server_id.eq(server))
-        .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = data::misc::signing_keys_data(server).await?;
 
     let Some(keys) = key_data else {
         return Ok(false);
@@ -136,11 +107,9 @@ pub async fn verify_keys_for(server: &ServerName) -> VerifyKeys {
 }
 
 pub async fn signing_keys_for(server: &ServerName) -> AppResult<ServerSigningKeys> {
-    let key_data = server_signing_keys::table
-        .filter(server_signing_keys::server_id.eq(server))
-        .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await?;
+    let key_data = data::misc::signing_keys_data(server)
+        .await?
+        .ok_or_else(|| AppError::public("no signing keys found for server"))?;
     Ok(serde_json::from_value(key_data)?)
 }
 

@@ -3,8 +3,6 @@ use std::future::pending;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 
@@ -17,9 +15,7 @@ use crate::core::events::receipt::{ReceiptContent, ReceiptData, ReceiptMap, Rece
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
 use crate::core::presence::{PresenceContent, PresenceUpdate};
-use crate::core::{Seqnum, UnixMillis, device_id};
-use crate::data::connect;
-use crate::data::schema::*;
+use crate::core::{Seqnum, device_id};
 use crate::exts::*;
 use crate::room::state;
 use crate::{AppResult, data, room};
@@ -259,52 +255,15 @@ async fn select_events(
 
 /// Persist retry state to the database so other instances can respect backoff.
 async fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()> {
-    let now = UnixMillis::now().get() as i64;
-    match outgoing_kind {
-        OutgoingKind::Normal(server_name) => {
-            diesel::update(
-                outgoing_requests::table
-                    .filter(outgoing_requests::kind.eq("normal"))
-                    .filter(outgoing_requests::server_id.eq(server_name))
-                    .filter(outgoing_requests::state.eq("active")),
-            )
-            .set((
-                outgoing_requests::retry_count.eq(tries as i32),
-                outgoing_requests::last_failed_at.eq(Some(now)),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
-        }
-        OutgoingKind::Appservice(id) => {
-            diesel::update(
-                outgoing_requests::table
-                    .filter(outgoing_requests::kind.eq("appservice"))
-                    .filter(outgoing_requests::appservice_id.eq(id))
-                    .filter(outgoing_requests::state.eq("active")),
-            )
-            .set((
-                outgoing_requests::retry_count.eq(tries as i32),
-                outgoing_requests::last_failed_at.eq(Some(now)),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
-        }
-        OutgoingKind::Push(user_id, pushkey) => {
-            diesel::update(
-                outgoing_requests::table
-                    .filter(outgoing_requests::kind.eq("push"))
-                    .filter(outgoing_requests::user_id.eq(user_id))
-                    .filter(outgoing_requests::pushkey.eq(pushkey))
-                    .filter(outgoing_requests::state.eq("active")),
-            )
-            .set((
-                outgoing_requests::retry_count.eq(tries as i32),
-                outgoing_requests::last_failed_at.eq(Some(now)),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
-        }
-    }
+    let dest = match outgoing_kind {
+        OutgoingKind::Normal(server_name) => data::sending::OutgoingDestination::Normal(server_name),
+        OutgoingKind::Appservice(id) => data::sending::OutgoingDestination::Appservice(id),
+        OutgoingKind::Push(user_id, pushkey) => data::sending::OutgoingDestination::Push {
+            user_id,
+            pushkey,
+        },
+    };
+    data::sending::persist_retry_state(dest, tries).await?;
     Ok(())
 }
 
