@@ -48,14 +48,35 @@ async fn change_password(
         auth_error: None,
     };
     let Some(auth) = &body.auth else {
+        // Generate a UIA session and persist it so the client's follow-up
+        // call (with credentials attached) can be matched back to it.
+        // Without this `update_session` write, `try_auth → get_session`
+        // on the second call returns NotFound, the handler issues yet
+        // another fresh challenge, and the loop never terminates.
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
+        crate::uiaa::update_session(
+            authed.user_id(),
+            authed.device_id(),
+            uiaa_info.session.as_ref().expect("just set above"),
+            Some(&uiaa_info),
+        )
+        .await?;
         return Err(uiaa_info.into());
     };
     if crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info)
         .await
         .is_err()
     {
+        // Same idea on retry: hand the client a fresh session and persist
+        // it so the next attempt can be matched.
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
+        crate::uiaa::update_session(
+            authed.user_id(),
+            authed.device_id(),
+            uiaa_info.session.as_ref().expect("just set above"),
+            Some(&uiaa_info),
+        )
+        .await?;
         return Err(uiaa_info.into());
     }
 
