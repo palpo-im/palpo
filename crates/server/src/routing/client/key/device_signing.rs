@@ -71,10 +71,23 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             return Err(MatrixError::not_json("no json body was sent when required").into());
         }
     };
-    let body = body.expect("body should be ok");
+    let mut body = body.expect("body should be ok");
     if uia_required {
         let Some(auth) = &body.auth else {
             return Err(MatrixError::not_json("auth is none should not happend").into());
+        };
+
+        let challenged_body = if let Some(session) = auth.session() {
+            crate::uiaa::get_uiaa_request(sender_id, authed.device_id(), session)
+                .await
+                .map(|request| {
+                    serde_json::from_value::<UploadSigningKeysReqBody>(serde_json::to_value(
+                        request,
+                    )?)
+                })
+                .transpose()?
+        } else {
+            None
         };
 
         let (authenticated, uiaa) =
@@ -82,6 +95,7 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         if !authenticated {
             return Err(uiaa.into());
         }
+        restore_signing_key_payload(&mut body, challenged_body)?;
     }
 
     if let Some(master_key) = &body.master_key {
@@ -95,4 +109,86 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         .await?;
     }
     empty_ok()
+}
+
+fn signing_key_payload_missing(body: &UploadSigningKeysReqBody) -> bool {
+    body.master_key.is_none() && body.self_signing_key.is_none() && body.user_signing_key.is_none()
+}
+
+fn restore_signing_key_payload(
+    body: &mut UploadSigningKeysReqBody,
+    challenged_body: Option<UploadSigningKeysReqBody>,
+) -> Result<(), MatrixError> {
+    if let Some(challenged_body) = challenged_body {
+        *body = challenged_body;
+    }
+
+    if signing_key_payload_missing(body) {
+        return Err(MatrixError::bad_json("missing signing key payload"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_upload_body() -> UploadSigningKeysReqBody {
+        UploadSigningKeysReqBody {
+            auth: None,
+            master_key: None,
+            self_signing_key: None,
+            user_signing_key: None,
+        }
+    }
+
+    fn upload_body_with_master_key(user_id: &str) -> UploadSigningKeysReqBody {
+        serde_json::from_value(serde_json::json!({
+            "master_key": {
+                "user_id": user_id,
+                "usage": ["master"],
+                "keys": {
+                    "ed25519:abc": "abc"
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn restore_signing_key_payload_restores_challenged_payload() {
+        let mut body = empty_upload_body();
+
+        restore_signing_key_payload(
+            &mut body,
+            Some(upload_body_with_master_key("@alice:example.com")),
+        )
+        .unwrap();
+
+        assert!(body.master_key.is_some());
+    }
+
+    #[test]
+    fn restore_signing_key_payload_prefers_challenged_payload() {
+        let mut body = upload_body_with_master_key("@bob:example.com");
+
+        restore_signing_key_payload(
+            &mut body,
+            Some(upload_body_with_master_key("@alice:example.com")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            body.master_key.as_ref().unwrap().user_id.as_str(),
+            "@alice:example.com"
+        );
+    }
+
+    #[test]
+    fn restore_signing_key_payload_rejects_missing_payload() {
+        let mut body = empty_upload_body();
+
+        assert!(restore_signing_key_payload(&mut body, None).is_err());
+        assert!(restore_signing_key_payload(&mut body, Some(empty_upload_body())).is_err());
+    }
 }
