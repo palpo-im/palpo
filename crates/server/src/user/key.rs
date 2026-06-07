@@ -409,17 +409,28 @@ pub async fn add_cross_signing_keys(
     user_signing_key: &Option<CrossSigningKey>,
     notify: bool,
 ) -> AppResult<()> {
-    // TODO: Check signatures
-    diesel::insert_into(e2e_cross_signing_keys::table)
-        .values(NewDbCrossSigningKey {
-            user_id: user_id.to_owned(),
-            key_type: "master".to_owned(),
-            key_data: serde_json::to_value(master_key)?,
-        })
-        .execute(&mut connect().await?)
-        .await?;
+    add_cross_signing_key_updates(
+        user_id,
+        Some(master_key),
+        self_signing_key.as_ref(),
+        user_signing_key.as_ref(),
+        notify,
+    )
+    .await
+}
 
-    // Self-signing key
+pub async fn add_cross_signing_key_updates(
+    user_id: &UserId,
+    master_key: Option<&CrossSigningKey>,
+    self_signing_key: Option<&CrossSigningKey>,
+    user_signing_key: Option<&CrossSigningKey>,
+    notify: bool,
+) -> AppResult<()> {
+    // TODO: Check signatures
+    if let Some(master_key) = master_key {
+        add_cross_signing_key(user_id, "master", master_key).await?;
+    }
+
     if let Some(self_signing_key) = self_signing_key {
         let mut self_signing_key_ids = self_signing_key.keys.values();
 
@@ -437,17 +448,9 @@ pub async fn add_cross_signing_keys(
             .into());
         }
 
-        diesel::insert_into(e2e_cross_signing_keys::table)
-            .values(NewDbCrossSigningKey {
-                user_id: user_id.to_owned(),
-                key_type: "self_signing".to_owned(),
-                key_data: serde_json::to_value(self_signing_key)?,
-            })
-            .execute(&mut connect().await?)
-            .await?;
+        add_cross_signing_key(user_id, "self_signing", self_signing_key).await?;
     }
 
-    // User-signing key
     if let Some(user_signing_key) = user_signing_key {
         let mut user_signing_key_ids = user_signing_key.keys.values();
 
@@ -465,19 +468,29 @@ pub async fn add_cross_signing_keys(
             .into());
         }
 
-        diesel::insert_into(e2e_cross_signing_keys::table)
-            .values(NewDbCrossSigningKey {
-                user_id: user_id.to_owned(),
-                key_type: "user_signing".to_owned(),
-                key_data: serde_json::to_value(user_signing_key)?,
-            })
-            .execute(&mut connect().await?)
-            .await?;
+        add_cross_signing_key(user_id, "user_signing", user_signing_key).await?;
     }
 
     if notify {
         mark_signing_key_update(user_id).await?;
     }
+
+    Ok(())
+}
+
+async fn add_cross_signing_key(
+    user_id: &UserId,
+    key_type: &str,
+    key: &CrossSigningKey,
+) -> AppResult<()> {
+    diesel::insert_into(e2e_cross_signing_keys::table)
+        .values(NewDbCrossSigningKey {
+            user_id: user_id.to_owned(),
+            key_type: key_type.to_owned(),
+            key_data: serde_json::to_value(key)?,
+        })
+        .execute(&mut connect().await?)
+        .await?;
 
     Ok(())
 }

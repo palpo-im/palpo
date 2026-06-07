@@ -2,6 +2,7 @@ use salvo::prelude::*;
 
 use crate::core::client::key::UploadSigningKeysReqBody;
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+use crate::core::encryption::CrossSigningKey;
 use crate::core::serde::CanonicalJsonValue;
 use crate::{
     AuthArgs, DepotExt, EmptyResult, MatrixError, SESSION_ID_LENGTH, config, data, empty_ok, utils,
@@ -50,9 +51,12 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             // Bypass still valid — skip UIA
             now_ms >= expires_ts
         } else {
-            exist_master_key.as_ref() != body.master_key.as_ref()
-                || exist_self_signing_key.as_ref() != body.self_signing_key.as_ref()
-                || exist_user_signing_key.as_ref() != body.user_signing_key.as_ref()
+            signing_key_payload_changed(
+                body,
+                exist_master_key.as_ref(),
+                exist_self_signing_key.as_ref(),
+                exist_user_signing_key.as_ref(),
+            )
         }
     } else {
         true
@@ -98,12 +102,19 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         restore_signing_key_payload(&mut body, challenged_body)?;
     }
 
-    if let Some(master_key) = &body.master_key {
-        crate::user::add_cross_signing_keys(
+    if !signing_key_payload_missing(&body) {
+        if body.master_key.is_none()
+            && (body.self_signing_key.is_some() || body.user_signing_key.is_some())
+            && crate::user::key::get_master_key(sender_id).await?.is_none()
+        {
+            return Err(MatrixError::invalid_param("Missing master signing key.").into());
+        }
+
+        crate::user::add_cross_signing_key_updates(
             sender_id,
-            master_key,
-            &body.self_signing_key,
-            &body.user_signing_key,
+            body.master_key.as_ref(),
+            body.self_signing_key.as_ref(),
+            body.user_signing_key.as_ref(),
             true, // notify so that other users see the new keys
         )
         .await?;
@@ -113,6 +124,24 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
 
 fn signing_key_payload_missing(body: &UploadSigningKeysReqBody) -> bool {
     body.master_key.is_none() && body.self_signing_key.is_none() && body.user_signing_key.is_none()
+}
+
+fn signing_key_changed(
+    existing_key: Option<&CrossSigningKey>,
+    provided_key: Option<&CrossSigningKey>,
+) -> bool {
+    provided_key.is_some_and(|provided_key| existing_key != Some(provided_key))
+}
+
+fn signing_key_payload_changed(
+    body: &UploadSigningKeysReqBody,
+    existing_master_key: Option<&CrossSigningKey>,
+    existing_self_signing_key: Option<&CrossSigningKey>,
+    existing_user_signing_key: Option<&CrossSigningKey>,
+) -> bool {
+    signing_key_changed(existing_master_key, body.master_key.as_ref())
+        || signing_key_changed(existing_self_signing_key, body.self_signing_key.as_ref())
+        || signing_key_changed(existing_user_signing_key, body.user_signing_key.as_ref())
 }
 
 fn restore_signing_key_payload(
@@ -153,6 +182,55 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    fn upload_body_with_self_signing_key(user_id: &str, key_id: &str) -> UploadSigningKeysReqBody {
+        serde_json::from_value(serde_json::json!({
+            "self_signing_key": {
+                "user_id": user_id,
+                "usage": ["self_signing"],
+                "keys": {
+                    key_id: "abc"
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn signing_key_payload_changed_ignores_omitted_existing_keys() {
+        let master_body = upload_body_with_master_key("@alice:example.com");
+        let self_body = upload_body_with_self_signing_key("@alice:example.com", "ed25519:self");
+        let existing_master_key = master_body.master_key.as_ref().unwrap();
+        let existing_self_signing_key = self_body.self_signing_key.as_ref().unwrap();
+
+        assert!(!signing_key_payload_changed(
+            &self_body,
+            Some(existing_master_key),
+            Some(existing_self_signing_key),
+            None,
+        ));
+    }
+
+    #[test]
+    fn signing_key_payload_changed_detects_new_provided_key() {
+        let self_body = upload_body_with_self_signing_key("@alice:example.com", "ed25519:self");
+
+        assert!(signing_key_payload_changed(&self_body, None, None, None));
+    }
+
+    #[test]
+    fn signing_key_payload_changed_detects_replacement_key() {
+        let existing_self_body =
+            upload_body_with_self_signing_key("@alice:example.com", "ed25519:self");
+        let new_self_body = upload_body_with_self_signing_key("@alice:example.com", "ed25519:new");
+
+        assert!(signing_key_payload_changed(
+            &new_self_body,
+            None,
+            existing_self_body.self_signing_key.as_ref(),
+            None,
+        ));
     }
 
     #[test]
