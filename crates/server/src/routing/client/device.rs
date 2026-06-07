@@ -14,8 +14,8 @@ use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::DbUserDevice;
 use crate::{
-    AppError, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError,
-    SESSION_ID_LENGTH, data, empty_ok, json_ok, utils,
+    AppError, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError, data,
+    empty_ok, json_ok, utils,
 };
 
 pub fn authed_router() -> Router {
@@ -157,27 +157,47 @@ async fn delete_device(
         auth_error: None,
     };
     let Some(auth) = auth else {
-        uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
         uiaa_info.auth_error = Some(AuthError::new(
             ErrorKind::Unauthorized,
             "Missing authentication data",
         ));
+        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
+            .await?;
         return Err(uiaa_info.into());
     };
 
-    if let Err(e) = crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info).await {
-        if let AppError::Matrix(e) = e
-            && let ErrorKind::Forbidden = e.kind
-        {
-            return Err(e.into());
+    let (authenticated, uiaa) = match crate::uiaa::try_auth(
+        authed.user_id(),
+        authed.device_id(),
+        &auth,
+        &uiaa_info,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            if let AppError::Matrix(e) = e
+                && let ErrorKind::Forbidden = e.kind
+            {
+                return Err(e.into());
+            }
+            uiaa_info.auth_error = Some(AuthError::new(
+                ErrorKind::Forbidden,
+                "Invalid authentication data",
+            ));
+            crate::uiaa::create_challenge_session(
+                authed.user_id(),
+                authed.device_id(),
+                &mut uiaa_info,
+            )
+            .await?;
+            res.status_code(StatusCode::UNAUTHORIZED); // TestDeviceManagement asks http code 401
+            return Err(uiaa_info.into());
         }
-        uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-        uiaa_info.auth_error = Some(AuthError::new(
-            ErrorKind::Forbidden,
-            "Invalid authentication data",
-        ));
+    };
+    if !authenticated {
         res.status_code(StatusCode::UNAUTHORIZED); // TestDeviceManagement asks http code 401
-        return Err(uiaa_info.into());
+        return Err(uiaa.into());
     }
     data::user::device::remove_device(authed.user_id(), &device_id).await?;
     empty_ok()
@@ -203,7 +223,7 @@ async fn delete_devices(
     let DeleteDevicesReqBody { devices, auth } = body.into_inner();
 
     // UIAA
-    let uiaa_info = UiaaInfo {
+    let mut uiaa_info = UiaaInfo {
         flows: vec![AuthFlow {
             stages: vec![AuthType::Password],
         }],
@@ -213,17 +233,19 @@ async fn delete_devices(
         auth_error: None,
     };
     let Some(auth) = auth else {
+        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
+            .await?;
         return Err(uiaa_info.into());
     };
 
-    crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info).await?;
-    diesel::delete(
-        user_devices::table
-            .filter(user_devices::user_id.eq(authed.device_id()))
-            .filter(user_devices::device_id.eq_any(&devices)),
-    )
-    .execute(&mut connect().await?)
-    .await?;
+    let (authenticated, uiaa) =
+        crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info).await?;
+    if !authenticated {
+        return Err(uiaa.into());
+    }
+    for device_id in devices {
+        data::user::device::remove_device(authed.user_id(), &device_id).await?;
+    }
 
     empty_ok()
 }

@@ -367,7 +367,7 @@ async fn get_access_token(
         }
     } else if let Ok(json) = serde_json::from_slice::<CanonicalJsonValue>(payload) {
         uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-        let _ = crate::uiaa::create_session(sender_id, device_id, &uiaa_info, json).await;
+        crate::uiaa::create_session(sender_id, device_id, &uiaa_info, json).await?;
         return Err(AppError::Uiaa(uiaa_info));
     } else {
         return Err(MatrixError::not_json("No JSON body was sent when required.").into());

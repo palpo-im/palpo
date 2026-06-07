@@ -9,9 +9,7 @@ use crate::core::client::account::{
 };
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
 use crate::exts::*;
-use crate::{
-    AuthArgs, EmptyResult, JsonResult, MatrixError, SESSION_ID_LENGTH, data, hoops, json_ok, utils,
-};
+use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, hoops, json_ok};
 
 pub fn public_router() -> Router {
     Router::with_path("account")
@@ -118,12 +116,20 @@ async fn deactivate(
     };
 
     let Some(auth) = &body.auth else {
-        uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
+        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
+            .await?;
         return Err(uiaa_info.into());
     };
-    if crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).await.is_err() {
-        res.status_code(StatusCode::UNAUTHORIZED);
-        return Err(MatrixError::forbidden("Authentication failed.", None).into());
+    let (authenticated, uiaa) =
+        match crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).await {
+            Ok(result) => result,
+            Err(_) => {
+                res.status_code(StatusCode::UNAUTHORIZED);
+                return Err(MatrixError::forbidden("Authentication failed.", None).into());
+            }
+        };
+    if !authenticated {
+        return Err(uiaa.into());
     }
 
     // Remove devices and mark account as deactivated

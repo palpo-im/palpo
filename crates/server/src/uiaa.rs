@@ -26,6 +26,21 @@ pub async fn create_session(
     Ok(())
 }
 
+pub async fn create_challenge_session(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    uiaa_info: &mut UiaaInfo,
+) -> AppResult<()> {
+    uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
+    update_session(
+        user_id,
+        device_id,
+        uiaa_info.session.as_ref().expect("session should be set"),
+        Some(uiaa_info),
+    )
+    .await
+}
+
 pub async fn update_session(
     user_id: &UserId,
     device_id: &DeviceId,
@@ -116,6 +131,9 @@ pub async fn try_auth(
                 return Err(MatrixError::unauthorized("user not found.").into());
             };
             crate::user::verify_password(&user, password).await?;
+            if !uiaa_info.completed.contains(&AuthType::Password) {
+                uiaa_info.completed.push(AuthType::Password);
+            }
         }
         AuthData::RegistrationToken(t) => {
             let token_valid = conf

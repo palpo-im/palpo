@@ -28,14 +28,13 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         auth_error: None,
     };
     let body = serde_json::from_slice::<UploadSigningKeysReqBody>(payload);
-    let none_auth = body.as_ref().map(|b| b.auth.is_none()).unwrap_or(true);
     // When delegated auth (OIDC) is enabled, UIA is not used — the OIDC
     // token already proves the user's identity.  Pasion calls
     // `allow_cross_signing_reset` to set a time-limited bypass before
     // Element uploads new keys, so we also honour that flag.
     let uia_required = if config::get().enabled_delegated_auth().is_some() {
         false
-    } else if none_auth {
+    } else if let Ok(body) = &body {
         let exist_master_key = crate::user::key::get_master_key(sender_id).await?;
         let exist_self_signing_key = crate::user::key::get_self_signing_key(sender_id).await?;
         let exist_user_signing_key = crate::user::key::get_user_signing_key(sender_id).await?;
@@ -51,24 +50,19 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             // Bypass still valid — skip UIA
             now_ms >= expires_ts
         } else {
-            exist_master_key.as_ref()
-                != body.as_ref().map(|b| b.master_key.as_ref()).unwrap_or(None)
-                || exist_self_signing_key.as_ref()
-                    != body
-                        .as_ref()
-                        .map(|b| b.self_signing_key.as_ref())
-                        .unwrap_or(None)
-                || exist_user_signing_key.as_ref()
-                    != body
-                        .as_ref()
-                        .map(|b| b.user_signing_key.as_ref())
-                        .unwrap_or(None)
+            exist_master_key.as_ref() != body.master_key.as_ref()
+                || exist_self_signing_key.as_ref() != body.self_signing_key.as_ref()
+                || exist_user_signing_key.as_ref() != body.user_signing_key.as_ref()
         }
     } else {
-        false
+        true
     };
 
-    if body.is_err() || uia_required {
+    if body.is_err()
+        || body
+            .as_ref()
+            .is_ok_and(|body| uia_required && body.auth.is_none())
+    {
         if let Ok(json) = serde_json::from_slice::<CanonicalJsonValue>(payload) {
             uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
             crate::uiaa::create_session(sender_id, authed.device_id(), &uiaa_info, json).await?;
@@ -83,7 +77,11 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             return Err(MatrixError::not_json("auth is none should not happend").into());
         };
 
-        crate::uiaa::try_auth(sender_id, authed.device_id(), auth, &uiaa_info).await?;
+        let (authenticated, uiaa) =
+            crate::uiaa::try_auth(sender_id, authed.device_id(), auth, &uiaa_info).await?;
+        if !authenticated {
+            return Err(uiaa.into());
+        }
     }
 
     if let Some(master_key) = &body.master_key {
