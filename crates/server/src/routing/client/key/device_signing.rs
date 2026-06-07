@@ -29,6 +29,19 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         auth_error: None,
     };
     let body = serde_json::from_slice::<UploadSigningKeysReqBody>(payload);
+    let mut challenged_body = if let Ok(body) = &body {
+        if signing_key_payload_missing(body) {
+            if let Some(session) = body.auth.as_ref().and_then(|auth| auth.session()) {
+                load_challenged_signing_key_payload(sender_id, authed.device_id(), session).await?
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // When delegated auth (OIDC) is enabled, UIA is not used — the OIDC
     // token already proves the user's identity.  Pasion calls
     // `allow_cross_signing_reset` to set a time-limited bypass before
@@ -51,6 +64,7 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             // Bypass still valid — skip UIA
             now_ms >= expires_ts
         } else {
+            let body = signing_key_payload_for_uia(body, challenged_body.as_ref());
             signing_key_payload_changed(
                 body,
                 exist_master_key.as_ref(),
@@ -81,18 +95,12 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
             return Err(MatrixError::not_json("auth is none should not happend").into());
         };
 
-        let challenged_body = if let Some(session) = auth.session() {
-            crate::uiaa::get_uiaa_request(sender_id, authed.device_id(), session)
-                .await
-                .map(|request| {
-                    serde_json::from_value::<UploadSigningKeysReqBody>(serde_json::to_value(
-                        request,
-                    )?)
-                })
-                .transpose()?
-        } else {
-            None
-        };
+        if challenged_body.is_none()
+            && let Some(session) = auth.session()
+        {
+            challenged_body =
+                load_challenged_signing_key_payload(sender_id, authed.device_id(), session).await?;
+        }
 
         let (authenticated, uiaa) =
             crate::uiaa::try_auth(sender_id, authed.device_id(), auth, &uiaa_info).await?;
@@ -124,6 +132,31 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
 
 fn signing_key_payload_missing(body: &UploadSigningKeysReqBody) -> bool {
     body.master_key.is_none() && body.self_signing_key.is_none() && body.user_signing_key.is_none()
+}
+
+fn signing_key_payload_for_uia<'a>(
+    body: &'a UploadSigningKeysReqBody,
+    challenged_body: Option<&'a UploadSigningKeysReqBody>,
+) -> &'a UploadSigningKeysReqBody {
+    if signing_key_payload_missing(body) {
+        challenged_body.unwrap_or(body)
+    } else {
+        body
+    }
+}
+
+async fn load_challenged_signing_key_payload(
+    sender_id: &crate::core::identifiers::UserId,
+    device_id: &crate::core::identifiers::DeviceId,
+    session: &str,
+) -> crate::AppResult<Option<UploadSigningKeysReqBody>> {
+    crate::uiaa::get_uiaa_request(sender_id, device_id, session)
+        .await
+        .map(|request| {
+            serde_json::from_value::<UploadSigningKeysReqBody>(serde_json::to_value(request)?)
+        })
+        .transpose()
+        .map_err(Into::into)
 }
 
 fn signing_key_changed(
@@ -231,6 +264,30 @@ mod tests {
             existing_self_body.self_signing_key.as_ref(),
             None,
         ));
+    }
+
+    #[test]
+    fn signing_key_payload_for_uia_uses_challenged_payload_for_auth_only_body() {
+        let body = empty_upload_body();
+        let challenged_body = upload_body_with_master_key("@alice:example.com");
+
+        assert!(
+            signing_key_payload_for_uia(&body, Some(&challenged_body))
+                .master_key
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn signing_key_payload_for_uia_keeps_current_payload_when_keys_are_present() {
+        let body = upload_body_with_self_signing_key("@alice:example.com", "ed25519:self");
+        let challenged_body = upload_body_with_master_key("@alice:example.com");
+
+        assert!(
+            signing_key_payload_for_uia(&body, Some(&challenged_body))
+                .self_signing_key
+                .is_some()
+        );
     }
 
     #[test]
