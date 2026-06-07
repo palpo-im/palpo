@@ -146,7 +146,9 @@ fn auth_only_retry_missing_challenged_payload(
 ) -> bool {
     signing_key_payload_missing(body)
         && body.auth.as_ref().and_then(|auth| auth.session()).is_some()
-        && challenged_body.is_none()
+        && challenged_body
+            .map(signing_key_payload_missing)
+            .unwrap_or(true)
 }
 
 fn signing_key_payload_for_uia<'a>(
@@ -304,6 +306,10 @@ mod tests {
         assert!(!auth_only_retry_missing_challenged_payload(
             &body,
             Some(&upload_body_with_master_key("@alice:example.com")),
+        ));
+        assert!(auth_only_retry_missing_challenged_payload(
+            &body,
+            Some(&empty_upload_body()),
         ));
     }
 
