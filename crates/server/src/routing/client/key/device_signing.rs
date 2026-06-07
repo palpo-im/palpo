@@ -42,6 +42,12 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     } else {
         None
     };
+    if body.as_ref().is_ok_and(|body| {
+        auth_only_retry_missing_challenged_payload(body, challenged_body.as_ref())
+    }) {
+        return Err(MatrixError::bad_json("missing challenged signing key payload").into());
+    }
+
     // When delegated auth (OIDC) is enabled, UIA is not used — the OIDC
     // token already proves the user's identity.  Pasion calls
     // `allow_cross_signing_reset` to set a time-limited bypass before
@@ -132,6 +138,15 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
 
 fn signing_key_payload_missing(body: &UploadSigningKeysReqBody) -> bool {
     body.master_key.is_none() && body.self_signing_key.is_none() && body.user_signing_key.is_none()
+}
+
+fn auth_only_retry_missing_challenged_payload(
+    body: &UploadSigningKeysReqBody,
+    challenged_body: Option<&UploadSigningKeysReqBody>,
+) -> bool {
+    signing_key_payload_missing(body)
+        && body.auth.as_ref().and_then(|auth| auth.session()).is_some()
+        && challenged_body.is_none()
 }
 
 fn signing_key_payload_for_uia<'a>(
@@ -230,6 +245,21 @@ mod tests {
         .unwrap()
     }
 
+    fn auth_only_upload_body(session: &str) -> UploadSigningKeysReqBody {
+        serde_json::from_value(serde_json::json!({
+            "auth": {
+                "type": "m.login.password",
+                "identifier": {
+                    "type": "m.id.user",
+                    "user": "@alice:example.com"
+                },
+                "password": "secret",
+                "session": session
+            }
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn signing_key_payload_changed_ignores_omitted_existing_keys() {
         let master_body = upload_body_with_master_key("@alice:example.com");
@@ -263,6 +293,17 @@ mod tests {
             None,
             existing_self_body.self_signing_key.as_ref(),
             None,
+        ));
+    }
+
+    #[test]
+    fn auth_only_retry_requires_challenged_payload() {
+        let body = auth_only_upload_body("uia-session");
+
+        assert!(auth_only_retry_missing_challenged_payload(&body, None));
+        assert!(!auth_only_retry_missing_challenged_payload(
+            &body,
+            Some(&upload_body_with_master_key("@alice:example.com")),
         ));
     }
 
