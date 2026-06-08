@@ -20,8 +20,7 @@ use crate::data::{connect, diesel_exists};
 use crate::exts::*;
 use crate::{
     AppError, AuthArgs, DEVICE_ID_LENGTH, EmptyResult, JsonResult, MatrixError,
-    RANDOM_USER_ID_LENGTH, SESSION_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops,
-    membership, room, utils,
+    RANDOM_USER_ID_LENGTH, TOKEN_LENGTH, config, data, empty_ok, hoops, membership, room, utils,
 };
 
 pub fn public_router() -> Router {
@@ -151,13 +150,12 @@ async fn register(
                 return Err(AppError::Uiaa(uiaa));
             }
         } else {
-            uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-            crate::uiaa::update_session(
-                &UserId::parse_with_server_name("", &config::get().server_name)
-                    .expect("we know this is valid"),
+            let uiaa_user_id = UserId::parse_with_server_name("", &config::get().server_name)
+                .expect("we know this is valid");
+            crate::uiaa::create_challenge_session(
+                &uiaa_user_id,
                 &body.device_id.clone().unwrap_or_else(|| "".into()),
-                uiaa_info.session.as_ref().expect("session is always set"),
-                Some(&uiaa_info),
+                &mut uiaa_info,
             )
             .await?;
             return Err(uiaa_info.into());

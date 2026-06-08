@@ -8,7 +8,7 @@ use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::exts::*;
-use crate::{AuthArgs, EmptyResult, SESSION_ID_LENGTH, empty_ok, hoops, utils};
+use crate::{AuthArgs, EmptyResult, empty_ok, hoops};
 
 pub fn authed_router() -> Router {
     Router::with_path("password")
@@ -48,36 +48,25 @@ async fn change_password(
         auth_error: None,
     };
     let Some(auth) = &body.auth else {
-        // Generate a UIA session and persist it so the client's follow-up
-        // call (with credentials attached) can be matched back to it.
-        // Without this `update_session` write, `try_auth → get_session`
-        // on the second call returns NotFound, the handler issues yet
-        // another fresh challenge, and the loop never terminates.
-        uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-        crate::uiaa::update_session(
-            authed.user_id(),
-            authed.device_id(),
-            uiaa_info.session.as_ref().expect("just set above"),
-            Some(&uiaa_info),
-        )
-        .await?;
+        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
+            .await?;
         return Err(uiaa_info.into());
     };
-    if crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info)
-        .await
-        .is_err()
-    {
-        // Same idea on retry: hand the client a fresh session and persist
-        // it so the next attempt can be matched.
-        uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-        crate::uiaa::update_session(
-            authed.user_id(),
-            authed.device_id(),
-            uiaa_info.session.as_ref().expect("just set above"),
-            Some(&uiaa_info),
-        )
-        .await?;
-        return Err(uiaa_info.into());
+    let (authenticated, uiaa) =
+        match crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).await {
+            Ok(result) => result,
+            Err(_) => {
+                crate::uiaa::create_challenge_session(
+                    authed.user_id(),
+                    authed.device_id(),
+                    &mut uiaa_info,
+                )
+                .await?;
+                return Err(uiaa_info.into());
+            }
+        };
+    if !authenticated {
+        return Err(uiaa.into());
     }
 
     crate::user::set_password(authed.user_id(), &body.new_password).await?;
