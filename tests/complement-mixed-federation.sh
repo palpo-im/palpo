@@ -14,6 +14,12 @@
 #                  federation/interoperability tests.
 #   TEST_SKIP      Go test -skip regex (default: known unstable mixed restart
 #                  subtests)
+#   SYNAPSE_PALPO_TEST_SKIP
+#                  Additional go test -skip regex for Synapse -> Palpo
+#                  direction. Defaults to the Synapse retry-backoff-sensitive
+#                  interrupted to-device subtest.
+#   PALPO_SYNAPSE_TEST_SKIP
+#                  Additional go test -skip regex for Palpo -> Synapse direction.
 #   TEST_TIMEOUT   Go test timeout (default: 90m)
 
 set -euo pipefail
@@ -27,6 +33,8 @@ SYNAPSE_IMAGE="${SYNAPSE_IMAGE:-complement-synapse}"
 DEFAULT_TEST_FILTER='^(TestDeviceListsUpdateOverFederation|TestUserAppearsInChangedDeviceListOnJoinOverFederation|TestContentMediaV1|TestRemotePresence|TestRemoteAliasRequestsUnderstandUnicode|TestUnbanViaInvite|TestFederationRejectInvite|TestJoinViaRoomIDAndServerName|TestJoinFederatedRoomFailOver|TestRemoteTyping|TestFederationRoomsInvite|TestToDeviceMessagesOverFederation|TestFederationKeyUploadQuery|TestRestrictedRoomsSpacesSummaryFederation|TestMessagesOverFederation)$'
 TEST_FILTER="${TEST_FILTER:-$DEFAULT_TEST_FILTER}"
 TEST_SKIP="${TEST_SKIP:-^TestToDeviceMessagesOverFederation/stopped_server$}"
+SYNAPSE_PALPO_TEST_SKIP="${SYNAPSE_PALPO_TEST_SKIP-^TestToDeviceMessagesOverFederation/interrupted_connectivity$}"
+PALPO_SYNAPSE_TEST_SKIP="${PALPO_SYNAPSE_TEST_SKIP-}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-90m}"
 
 test_packages=(
@@ -36,12 +44,29 @@ test_packages=(
 
 mkdir -p "$RESULTS_DIR"
 
+combine_skip() {
+    local base="$1"
+    local extra="$2"
+
+    if [[ -n "$base" && -n "$extra" ]]; then
+        printf '(%s)|(%s)' "$base" "$extra"
+    elif [[ -n "$base" ]]; then
+        printf '%s' "$base"
+    else
+        printf '%s' "$extra"
+    fi
+}
+
 run_direction() {
     local name="$1"
     local default_image="$2"
     local hs1_image="$3"
     local hs2_image="$4"
+    local direction_skip="${5:-}"
     local dir="$RESULTS_DIR/$name"
+    local effective_skip
+
+    effective_skip="$(combine_skip "$TEST_SKIP" "$direction_skip")"
 
     mkdir -p "$dir"
 
@@ -50,11 +75,11 @@ run_direction() {
     echo "HS1 image:     $hs1_image"
     echo "HS2 image:     $hs2_image"
     echo "Test filter:   $TEST_FILTER"
-    echo "Test skip:     ${TEST_SKIP:-<none>}"
+    echo "Test skip:     ${effective_skip:-<none>}"
 
     go_test_args=(-tags="palpo_blacklist" -count=1 -timeout "$TEST_TIMEOUT" -run "$TEST_FILTER")
-    if [[ -n "$TEST_SKIP" ]]; then
-        go_test_args+=(-skip "$TEST_SKIP")
+    if [[ -n "$effective_skip" ]]; then
+        go_test_args+=(-skip "$effective_skip")
     fi
 
     set +o pipefail
@@ -93,14 +118,14 @@ exit_code=0
 
 case "$DIRECTION" in
     synapse-palpo)
-        run_direction "synapse-palpo" "$SYNAPSE_IMAGE" "$SYNAPSE_IMAGE" "$PALPO_IMAGE" || exit_code=1
+        run_direction "synapse-palpo" "$SYNAPSE_IMAGE" "$SYNAPSE_IMAGE" "$PALPO_IMAGE" "$SYNAPSE_PALPO_TEST_SKIP" || exit_code=1
         ;;
     palpo-synapse)
-        run_direction "palpo-synapse" "$PALPO_IMAGE" "$PALPO_IMAGE" "$SYNAPSE_IMAGE" || exit_code=1
+        run_direction "palpo-synapse" "$PALPO_IMAGE" "$PALPO_IMAGE" "$SYNAPSE_IMAGE" "$PALPO_SYNAPSE_TEST_SKIP" || exit_code=1
         ;;
     both)
-        run_direction "synapse-palpo" "$SYNAPSE_IMAGE" "$SYNAPSE_IMAGE" "$PALPO_IMAGE" || exit_code=1
-        run_direction "palpo-synapse" "$PALPO_IMAGE" "$PALPO_IMAGE" "$SYNAPSE_IMAGE" || exit_code=1
+        run_direction "synapse-palpo" "$SYNAPSE_IMAGE" "$SYNAPSE_IMAGE" "$PALPO_IMAGE" "$SYNAPSE_PALPO_TEST_SKIP" || exit_code=1
+        run_direction "palpo-synapse" "$PALPO_IMAGE" "$PALPO_IMAGE" "$SYNAPSE_IMAGE" "$PALPO_SYNAPSE_TEST_SKIP" || exit_code=1
         ;;
     *)
         echo "Unknown DIRECTION: $DIRECTION" >&2
