@@ -48,7 +48,7 @@ cyborgtime = "2.1.1"
 data-encoding = "2.11.0"
 date_header = "1.0.5"
 deadpool = { version = "0.13" }
-diesel = { version = "2.3.9" }
+diesel = { version = "2.3.10" }
 diesel-async = { version = "0.9.1" }
 # diesel_full_text_search = { version = "2.2.0" }
 diesel_migrations = "2.3.2"
