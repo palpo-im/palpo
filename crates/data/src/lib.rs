@@ -18,6 +18,7 @@ pub mod full_text_search;
 pub mod pool;
 pub use pool::{DieselPool, PgPooledConnection, PoolError};
 
+pub mod appservice;
 pub mod media;
 pub mod misc;
 pub mod room;

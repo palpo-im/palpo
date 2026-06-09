@@ -5,8 +5,17 @@ use diesel_async::RunQueryDsl;
 
 use crate::core::identifiers::*;
 pub use crate::core::sending::*;
+use crate::core::UnixMillis;
 use crate::schema::*;
 use crate::{DataResult, connect};
+
+/// Selector identifying which active outgoing-request rows a retry-state update
+/// applies to. Mirrors the variants of the server-side `OutgoingKind`.
+pub enum OutgoingDestination<'a> {
+    Normal(&'a ServerName),
+    Appservice(&'a str),
+    Push { user_id: &'a UserId, pushkey: &'a str },
+}
 
 #[derive(Identifiable, Queryable, Insertable, Debug, Clone)]
 #[diesel(table_name = outgoing_requests)]
@@ -65,6 +74,61 @@ pub async fn get_destination_rooms(server: &ServerName) -> DataResult<Vec<OwnedR
         .load(&mut connect().await?)
         .await?;
     Ok(rooms)
+}
+
+/// Persist retry state for the active outgoing requests of a destination so
+/// other instances can respect the same backoff window.
+pub async fn persist_retry_state(
+    dest: OutgoingDestination<'_>,
+    tries: u32,
+) -> DataResult<()> {
+    let now = UnixMillis::now().get() as i64;
+    match dest {
+        OutgoingDestination::Normal(server_name) => {
+            diesel::update(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq("normal"))
+                    .filter(outgoing_requests::server_id.eq(server_name))
+                    .filter(outgoing_requests::state.eq("active")),
+            )
+            .set((
+                outgoing_requests::retry_count.eq(tries as i32),
+                outgoing_requests::last_failed_at.eq(Some(now)),
+            ))
+            .execute(&mut connect().await?)
+            .await?;
+        }
+        OutgoingDestination::Appservice(id) => {
+            diesel::update(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq("appservice"))
+                    .filter(outgoing_requests::appservice_id.eq(id))
+                    .filter(outgoing_requests::state.eq("active")),
+            )
+            .set((
+                outgoing_requests::retry_count.eq(tries as i32),
+                outgoing_requests::last_failed_at.eq(Some(now)),
+            ))
+            .execute(&mut connect().await?)
+            .await?;
+        }
+        OutgoingDestination::Push { user_id, pushkey } => {
+            diesel::update(
+                outgoing_requests::table
+                    .filter(outgoing_requests::kind.eq("push"))
+                    .filter(outgoing_requests::user_id.eq(user_id))
+                    .filter(outgoing_requests::pushkey.eq(pushkey))
+                    .filter(outgoing_requests::state.eq("active")),
+            )
+            .set((
+                outgoing_requests::retry_count.eq(tries as i32),
+                outgoing_requests::last_failed_at.eq(Some(now)),
+            ))
+            .execute(&mut connect().await?)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Reset retry timings for a destination

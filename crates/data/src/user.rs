@@ -24,6 +24,7 @@ pub use session::*;
 pub mod external_id;
 pub mod presence;
 pub mod registration_token;
+pub mod uiaa;
 use std::mem;
 
 use diesel::dsl;

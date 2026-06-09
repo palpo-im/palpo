@@ -14,6 +14,7 @@ pub mod event_report;
 pub mod peek;
 pub mod receipt;
 pub mod timeline;
+pub mod transaction_id;
 pub use event_report::*;
 
 #[derive(Insertable, Identifiable, Queryable, Debug, Clone)]

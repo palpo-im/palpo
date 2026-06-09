@@ -18,9 +18,8 @@ use crate::appservice::DbRegistration;
 use crate::core::appservice::Registration;
 use crate::core::federation::discovery::{OldVerifyKey, ServerSigningKeys};
 use crate::core::identifiers::*;
-use crate::core::serde::{Base64, JsonValue};
+use crate::core::serde::Base64;
 use crate::core::{Seqnum, UnixMillis};
-use crate::data::misc::DbServerSigningKeys;
 use crate::data::schema::*;
 use crate::data::user::{NewDbUser, NewDbUserDevice};
 use crate::data::{connect, diesel_exists};
@@ -267,12 +266,7 @@ pub async fn add_signing_key_from_trusted_server(
     from_server: &ServerName,
     new_keys: ServerSigningKeys,
 ) -> AppResult<SigningKeys> {
-    let key_data = server_signing_keys::table
-        .filter(server_signing_keys::server_id.eq(from_server))
-        .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = crate::data::misc::signing_keys_data(from_server).await?;
 
     let prev_keys: Option<ServerSigningKeys> = key_data.map(serde_json::from_value).transpose()?;
 
@@ -287,37 +281,11 @@ pub async fn add_signing_key_from_trusted_server(
         prev_keys.old_verify_keys.extend(old_verify_keys);
         prev_keys.valid_until_ts = new_keys.valid_until_ts;
 
-        diesel::insert_into(server_signing_keys::table)
-            .values(DbServerSigningKeys {
-                server_id: from_server.to_owned(),
-                key_data: serde_json::to_value(&prev_keys)?,
-                updated_at: UnixMillis::now(),
-                created_at: UnixMillis::now(),
-            })
-            .on_conflict(server_signing_keys::server_id)
-            .do_update()
-            .set((
-                server_signing_keys::key_data.eq(serde_json::to_value(&prev_keys)?),
-                server_signing_keys::updated_at.eq(UnixMillis::now()),
-            ))
-            .execute(&mut connect().await?)
+        crate::data::misc::upsert_signing_keys(from_server, serde_json::to_value(&prev_keys)?)
             .await?;
         Ok(prev_keys.into())
     } else {
-        diesel::insert_into(server_signing_keys::table)
-            .values(DbServerSigningKeys {
-                server_id: from_server.to_owned(),
-                key_data: serde_json::to_value(&new_keys)?,
-                updated_at: UnixMillis::now(),
-                created_at: UnixMillis::now(),
-            })
-            .on_conflict(server_signing_keys::server_id)
-            .do_update()
-            .set((
-                server_signing_keys::key_data.eq(serde_json::to_value(&new_keys)?),
-                server_signing_keys::updated_at.eq(UnixMillis::now()),
-            ))
-            .execute(&mut connect().await?)
+        crate::data::misc::upsert_signing_keys(from_server, serde_json::to_value(&new_keys)?)
             .await?;
         Ok(new_keys.into())
     }
@@ -326,12 +294,7 @@ pub async fn add_signing_key_from_origin(
     origin: &ServerName,
     new_keys: ServerSigningKeys,
 ) -> AppResult<SigningKeys> {
-    let key_data = server_signing_keys::table
-        .filter(server_signing_keys::server_id.eq(origin))
-        .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = crate::data::misc::signing_keys_data(origin).await?;
 
     let prev_keys: Option<ServerSigningKeys> = key_data.map(serde_json::from_value).transpose()?;
 
@@ -355,38 +318,10 @@ pub async fn add_signing_key_from_origin(
         prev_keys.old_verify_keys.extend(old_verify_keys);
         prev_keys.valid_until_ts = new_keys.valid_until_ts;
 
-        diesel::insert_into(server_signing_keys::table)
-            .values(DbServerSigningKeys {
-                server_id: origin.to_owned(),
-                key_data: serde_json::to_value(&prev_keys)?,
-                updated_at: UnixMillis::now(),
-                created_at: UnixMillis::now(),
-            })
-            .on_conflict(server_signing_keys::server_id)
-            .do_update()
-            .set((
-                server_signing_keys::key_data.eq(serde_json::to_value(&prev_keys)?),
-                server_signing_keys::updated_at.eq(UnixMillis::now()),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
+        crate::data::misc::upsert_signing_keys(origin, serde_json::to_value(&prev_keys)?).await?;
         Ok(prev_keys.into())
     } else {
-        diesel::insert_into(server_signing_keys::table)
-            .values(DbServerSigningKeys {
-                server_id: origin.to_owned(),
-                key_data: serde_json::to_value(&new_keys)?,
-                updated_at: UnixMillis::now(),
-                created_at: UnixMillis::now(),
-            })
-            .on_conflict(server_signing_keys::server_id)
-            .do_update()
-            .set((
-                server_signing_keys::key_data.eq(serde_json::to_value(&new_keys)?),
-                server_signing_keys::updated_at.eq(UnixMillis::now()),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
+        crate::data::misc::upsert_signing_keys(origin, serde_json::to_value(&new_keys)?).await?;
         Ok(new_keys.into())
     }
 }
