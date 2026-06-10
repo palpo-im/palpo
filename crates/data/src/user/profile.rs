@@ -32,6 +32,15 @@ pub struct NewDbProfile {
     pub blurhash: Option<String>,
 }
 
+/// Insert a profile row.
+pub async fn create_profile(profile: &NewDbProfile) -> DataResult<()> {
+    diesel::insert_into(user_profiles::table)
+        .values(profile)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 pub async fn get_profile(user_id: &UserId, room_id: Option<&RoomId>) -> DataResult<Option<DbProfile>> {
     let profile = if let Some(room_id) = room_id {
         user_profiles::table

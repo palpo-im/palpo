@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap, hash_map};
 use std::time::Instant;
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::json;
 
@@ -14,13 +12,8 @@ use crate::core::federation::key::{
 };
 use crate::core::federation::transaction::{Edu, SigningKeyUpdateContent};
 use crate::core::identifiers::*;
-use crate::core::serde::JsonValue;
 use crate::core::{DeviceKeyAlgorithm, UnixMillis, client, federation};
-use crate::data::connect;
-use crate::data::schema::*;
-use crate::data::user::{
-    DbOneTimeKey, NewDbCrossSignature, NewDbCrossSigningKey, NewDbKeyChange, NewDbOneTimeKey,
-};
+use crate::data::user::{NewDbCrossSignature, NewDbKeyChange};
 use crate::exts::*;
 use crate::user::clean_signatures;
 use crate::{AppError, AppResult, BAD_QUERY_RATE_LIMITER, MatrixError, config, data, sending};
@@ -246,13 +239,7 @@ pub async fn claim_one_time_keys(
 }
 
 pub async fn get_master_key(user_id: &UserId) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = e2e_cross_signing_keys::table
-        .filter(e2e_cross_signing_keys::user_id.eq(user_id))
-        .filter(e2e_cross_signing_keys::key_type.eq("master"))
-        .select(e2e_cross_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = data::user::key::get_cross_signing_key(user_id, "master").await?;
     if let Some(key_data) = key_data {
         Ok(serde_json::from_value(key_data).ok())
     } else {
@@ -265,14 +252,7 @@ pub async fn get_allowed_master_key(
     user_id: &UserId,
     allowed_signatures: &(dyn Fn(&UserId) -> bool + Send + Sync),
 ) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = e2e_cross_signing_keys::table
-        .filter(e2e_cross_signing_keys::user_id.eq(user_id))
-        .filter(e2e_cross_signing_keys::key_type.eq("master"))
-        .order_by(e2e_cross_signing_keys::id.desc())
-        .select(e2e_cross_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = data::user::key::get_cross_signing_key(user_id, "master").await?;
     if let Some(mut key_data) = key_data {
         clean_signatures(&mut key_data, sender_id, user_id, allowed_signatures)?;
         Ok(serde_json::from_value(key_data).ok())
@@ -282,14 +262,7 @@ pub async fn get_allowed_master_key(
 }
 
 pub async fn get_self_signing_key(user_id: &UserId) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = e2e_cross_signing_keys::table
-        .filter(e2e_cross_signing_keys::user_id.eq(user_id))
-        .filter(e2e_cross_signing_keys::key_type.eq("self_signing"))
-        .order_by(e2e_cross_signing_keys::id.desc())
-        .select(e2e_cross_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = data::user::key::get_cross_signing_key(user_id, "self_signing").await?;
     if let Some(key_data) = key_data {
         Ok(serde_json::from_value(key_data).ok())
     } else {
@@ -301,14 +274,7 @@ pub async fn get_allowed_self_signing_key(
     user_id: &UserId,
     allowed_signatures: &(dyn Fn(&UserId) -> bool + Send + Sync),
 ) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = e2e_cross_signing_keys::table
-        .filter(e2e_cross_signing_keys::user_id.eq(user_id))
-        .filter(e2e_cross_signing_keys::key_type.eq("self_signing"))
-        .order_by(e2e_cross_signing_keys::id.desc())
-        .select(e2e_cross_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .optional()?;
+    let key_data = data::user::key::get_cross_signing_key(user_id, "self_signing").await?;
     if let Some(mut key_data) = key_data {
         clean_signatures(&mut key_data, sender_id, user_id, allowed_signatures)?;
         Ok(serde_json::from_value(key_data).ok())
@@ -318,17 +284,8 @@ pub async fn get_allowed_self_signing_key(
 }
 
 pub async fn get_user_signing_key(user_id: &UserId) -> AppResult<Option<CrossSigningKey>> {
-    e2e_cross_signing_keys::table
-        .filter(e2e_cross_signing_keys::user_id.eq(user_id))
-        .filter(e2e_cross_signing_keys::key_type.eq("user_signing"))
-        .order_by(e2e_cross_signing_keys::id.desc())
-        .select(e2e_cross_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
-        .await
-        .map(|data| serde_json::from_value(data).ok())
-        .optional()
-        .map(|v| v.flatten())
-        .map_err(Into::into)
+    let key_data = data::user::key::get_cross_signing_key(user_id, "user_signing").await?;
+    Ok(key_data.and_then(|data| serde_json::from_value(data).ok()))
 }
 
 pub async fn add_one_time_key(
@@ -337,25 +294,7 @@ pub async fn add_one_time_key(
     key_id: &DeviceKeyId,
     one_time_key: &OneTimeKey,
 ) -> AppResult<()> {
-    diesel::insert_into(e2e_one_time_keys::table)
-        .values(&NewDbOneTimeKey {
-            user_id: user_id.to_owned(),
-            device_id: device_id.to_owned(),
-            algorithm: key_id.algorithm().to_string(),
-            key_id: key_id.to_owned(),
-            key_data: serde_json::to_value(one_time_key).unwrap(),
-            created_at: UnixMillis::now(),
-        })
-        .on_conflict((
-            e2e_one_time_keys::user_id,
-            e2e_one_time_keys::device_id,
-            e2e_one_time_keys::algorithm,
-            e2e_one_time_keys::key_id,
-        ))
-        .do_update()
-        .set(e2e_one_time_keys::key_data.eq(serde_json::to_value(one_time_key).unwrap()))
-        .execute(&mut connect().await?)
-        .await?;
+    data::user::key::add_one_time_key(user_id, device_id, key_id, one_time_key).await?;
     Ok(())
 }
 
@@ -364,31 +303,7 @@ pub async fn claim_one_time_key(
     device_id: &DeviceId,
     key_algorithm: &DeviceKeyAlgorithm,
 ) -> AppResult<Option<(OwnedDeviceKeyId, OneTimeKey)>> {
-    let one_time_key = e2e_one_time_keys::table
-        .filter(e2e_one_time_keys::user_id.eq(user_id))
-        .filter(e2e_one_time_keys::device_id.eq(device_id))
-        .filter(e2e_one_time_keys::algorithm.eq(key_algorithm.as_ref()))
-        .order(e2e_one_time_keys::id.asc())
-        .first::<DbOneTimeKey>(&mut connect().await?)
-        .await
-        .optional()?;
-    if let Some(DbOneTimeKey {
-        id,
-        key_id,
-        key_data,
-        ..
-    }) = one_time_key
-    {
-        diesel::delete(e2e_one_time_keys::table.find(id))
-            .execute(&mut connect().await?)
-            .await?;
-        Ok(Some((
-            key_id,
-            serde_json::from_value::<OneTimeKey>(key_data)?,
-        )))
-    } else {
-        Ok(None)
-    }
+    Ok(data::user::key::claim_one_time_key(user_id, device_id, key_algorithm).await?)
 }
 
 pub async fn add_device_keys(
@@ -483,15 +398,7 @@ async fn add_cross_signing_key(
     key_type: &str,
     key: &CrossSigningKey,
 ) -> AppResult<()> {
-    diesel::insert_into(e2e_cross_signing_keys::table)
-        .values(NewDbCrossSigningKey {
-            user_id: user_id.to_owned(),
-            key_type: key_type.to_owned(),
-            key_data: serde_json::to_value(key)?,
-        })
-        .execute(&mut connect().await?)
-        .await?;
-
+    data::user::key::add_cross_signing_key(user_id, key_type, key).await?;
     Ok(())
 }
 
@@ -516,16 +423,14 @@ pub async fn sign_key(
     //     .or_defaut()
     //     .insert(key_id.clone(), signature.1);
 
-    diesel::insert_into(e2e_cross_signing_sigs::table)
-        .values(NewDbCrossSignature {
-            origin_user_id: sender_id.to_owned(),
-            origin_key_id,
-            target_user_id: target_user_id.to_owned(),
-            target_device_id: OwnedDeviceId::from(target_device_id),
-            signature: signature.1,
-        })
-        .execute(&mut connect().await?)
-        .await?;
+    data::user::key::add_cross_signing_sig(NewDbCrossSignature {
+        origin_user_id: sender_id.to_owned(),
+        origin_key_id,
+        target_user_id: target_user_id.to_owned(),
+        target_device_id: OwnedDeviceId::from(target_device_id),
+        signature: signature.1,
+    })
+    .await?;
     mark_signing_key_update(target_user_id).await
 }
 
@@ -546,17 +451,7 @@ pub async fn mark_signing_key_update(user_id: &UserId) -> AppResult<()> {
             occur_sn: data::next_sn().await?,
         };
 
-        diesel::delete(
-            e2e_key_changes::table
-                .filter(e2e_key_changes::user_id.eq(user_id))
-                .filter(e2e_key_changes::room_id.eq(room_id)),
-        )
-        .execute(&mut connect().await?)
-        .await?;
-        diesel::insert_into(e2e_key_changes::table)
-            .values(&change)
-            .execute(&mut connect().await?)
-            .await?;
+        data::user::key::replace_key_change(&change).await?;
     }
 
     let change = NewDbKeyChange {
@@ -566,25 +461,10 @@ pub async fn mark_signing_key_update(user_id: &UserId) -> AppResult<()> {
         occur_sn: data::next_sn().await?,
     };
 
-    diesel::delete(
-        e2e_key_changes::table
-            .filter(e2e_key_changes::user_id.eq(user_id))
-            .filter(e2e_key_changes::room_id.is_null()),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-    diesel::insert_into(e2e_key_changes::table)
-        .values(&change)
-        .execute(&mut connect().await?)
-        .await?;
+    data::user::key::replace_key_change(&change).await?;
 
     if user_id.is_local() {
-        let remote_servers = room_joined_servers::table
-            .filter(room_joined_servers::room_id.eq_any(joined_rooms))
-            .select(room_joined_servers::server_id)
-            .distinct()
-            .load::<OwnedServerName>(&mut connect().await?)
-            .await?;
+        let remote_servers = data::room::joined_servers_for_rooms(&joined_rooms).await?;
 
         let content = SigningKeyUpdateContent::new(user_id.to_owned());
         let edu = Edu::SigningKeyUpdate(content);
@@ -613,17 +493,7 @@ pub async fn mark_device_key_update(user_id: &UserId, _device_id: &DeviceId) -> 
             occur_sn,
         };
 
-        diesel::delete(
-            e2e_key_changes::table
-                .filter(e2e_key_changes::user_id.eq(user_id))
-                .filter(e2e_key_changes::room_id.eq(room_id)),
-        )
-        .execute(&mut connect().await?)
-        .await?;
-        diesel::insert_into(e2e_key_changes::table)
-            .values(&change)
-            .execute(&mut connect().await?)
-            .await?;
+        data::user::key::replace_key_change(&change).await?;
     }
 
     let change = NewDbKeyChange {
@@ -633,17 +503,7 @@ pub async fn mark_device_key_update(user_id: &UserId, _device_id: &DeviceId) -> 
         occur_sn,
     };
 
-    diesel::delete(
-        e2e_key_changes::table
-            .filter(e2e_key_changes::user_id.eq(user_id))
-            .filter(e2e_key_changes::room_id.is_null()),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-    diesel::insert_into(e2e_key_changes::table)
-        .values(&change)
-        .execute(&mut connect().await?)
-        .await?;
+    data::user::key::replace_key_change(&change).await?;
 
     Ok(())
 }
@@ -663,17 +523,7 @@ pub async fn mark_device_key_update_with_joined_rooms(
             occur_sn,
         };
 
-        diesel::delete(
-            e2e_key_changes::table
-                .filter(e2e_key_changes::user_id.eq(user_id))
-                .filter(e2e_key_changes::room_id.eq(room_id)),
-        )
-        .execute(&mut connect().await?)
-        .await?;
-        diesel::insert_into(e2e_key_changes::table)
-            .values(&change)
-            .execute(&mut connect().await?)
-            .await?;
+        data::user::key::replace_key_change(&change).await?;
     }
     Ok(())
 }
@@ -691,12 +541,7 @@ async fn send_device_key_update_with_joined_rooms(
     if user_id.is_remote() {
         return Ok(());
     }
-    let remote_servers = room_joined_servers::table
-        .filter(room_joined_servers::room_id.eq_any(joined_rooms))
-        .select(room_joined_servers::server_id)
-        .distinct()
-        .load::<OwnedServerName>(&mut connect().await?)
-        .await?;
+    let remote_servers = data::room::joined_servers_for_rooms(joined_rooms).await?;
 
     let content = DeviceListUpdateContent::new(
         user_id.to_owned(),

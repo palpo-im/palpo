@@ -1,5 +1,3 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use palpo_core::push::PusherIds;
 use url::Url;
 
@@ -13,8 +11,6 @@ use crate::core::push::push_gateway::{
 use crate::core::push::{
     Action, HighlightTweakValue, PushFormat, Pusher, PusherKind, Ruleset, Tweak,
 };
-use crate::data::connect;
-use crate::data::schema::*;
 use crate::data::user::pusher::NewDbPusher;
 use crate::event::PduEvent;
 use crate::utils::url_guard;
@@ -37,43 +33,27 @@ pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<
                 append,
             } = data;
             if !append {
-                diesel::delete(
-                    user_pushers::table
-                        .filter(user_pushers::user_id.eq(authed.user_id()))
-                        .filter(user_pushers::pushkey.eq(&pushkey))
-                        .filter(user_pushers::app_id.eq(&app_id)),
-                )
-                .execute(&mut connect().await?)
-                .await?;
+                data::user::pusher::delete_pusher(authed.user_id(), &app_id, &pushkey).await?;
             }
-            diesel::insert_into(user_pushers::table)
-                .values(&NewDbPusher {
-                    user_id: authed.user_id().to_owned(),
-                    profile_tag,
-                    kind: kind.name().to_owned(),
-                    app_id,
-                    app_display_name,
-                    device_id: authed.device_id().to_owned(),
-                    device_display_name,
-                    access_token_id: authed.access_token_id().to_owned(),
-                    pushkey,
-                    lang,
-                    data: kind.json_data()?,
-                    enabled: true, // TODO
-                    created_at: UnixMillis::now(),
-                })
-                .execute(&mut connect().await?)
-                .await?;
+            data::user::pusher::insert_pusher(&NewDbPusher {
+                user_id: authed.user_id().to_owned(),
+                profile_tag,
+                kind: kind.name().to_owned(),
+                app_id,
+                app_display_name,
+                device_id: authed.device_id().to_owned(),
+                device_display_name,
+                access_token_id: authed.access_token_id().to_owned(),
+                pushkey,
+                lang,
+                data: kind.json_data()?,
+                enabled: true, // TODO
+                created_at: UnixMillis::now(),
+            })
+            .await?;
         }
         PusherAction::Delete(ids) => {
-            diesel::delete(
-                user_pushers::table
-                    .filter(user_pushers::user_id.eq(authed.user_id()))
-                    .filter(user_pushers::pushkey.eq(ids.pushkey))
-                    .filter(user_pushers::app_id.eq(ids.app_id)),
-            )
-            .execute(&mut connect().await?)
-            .await?;
+            data::user::pusher::delete_pusher(authed.user_id(), &ids.app_id, &ids.pushkey).await?;
         }
     }
     Ok(())

@@ -1,11 +1,6 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
-
 use crate::core::federation::transaction::Edu;
 use crate::core::presence::{PresenceContent, PresenceState, PresenceUpdate};
-use crate::core::{OwnedServerName, UnixMillis, UserId};
-use crate::data::connect;
-use crate::data::schema::*;
+use crate::core::{UnixMillis, UserId};
 use crate::data::user::{NewDbPresence, last_presence};
 use crate::{AppResult, config, data, sending};
 
@@ -97,12 +92,7 @@ pub async fn set_presence(
         });
 
         let joined_rooms = data::user::joined_rooms(sender_id).await?;
-        let remote_servers = room_joined_servers::table
-            .filter(room_joined_servers::room_id.eq_any(joined_rooms))
-            .select(room_joined_servers::server_id)
-            .distinct()
-            .load::<OwnedServerName>(&mut connect().await?)
-            .await?;
+        let remote_servers = data::room::joined_servers_for_rooms(&joined_rooms).await?;
 
         sending::send_edu_servers(remote_servers.into_iter(), &edu).await?;
     }

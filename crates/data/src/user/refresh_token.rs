@@ -1,8 +1,10 @@
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
+use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_refresh_tokens)]
@@ -46,4 +48,21 @@ impl NewDbRefreshToken {
             created_at: UnixMillis::now(),
         }
     }
+}
+
+/// Return the expiry of a refresh token if it exists for this `(user, device)`.
+pub async fn get_refresh_token_expires_at(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    token: &str,
+) -> DataResult<Option<i64>> {
+    user_refresh_tokens::table
+        .filter(user_refresh_tokens::user_id.eq(user_id))
+        .filter(user_refresh_tokens::device_id.eq(device_id))
+        .filter(user_refresh_tokens::token.eq(token))
+        .select(user_refresh_tokens::expires_at)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
 }

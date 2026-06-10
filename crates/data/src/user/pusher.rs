@@ -161,3 +161,25 @@ pub async fn delete_device_pushers(user_id: &UserId, device_id: &DeviceId) -> Da
     .await?;
     Ok(())
 }
+
+/// Remove the pusher identified by `(user_id, app_id, pushkey)`.
+pub async fn delete_pusher(user_id: &UserId, app_id: &str, pushkey: &str) -> DataResult<()> {
+    diesel::delete(
+        user_pushers::table
+            .filter(user_pushers::user_id.eq(user_id))
+            .filter(user_pushers::pushkey.eq(pushkey))
+            .filter(user_pushers::app_id.eq(app_id)),
+    )
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
+/// Insert a pusher row.
+pub async fn insert_pusher(new_pusher: &NewDbPusher) -> DataResult<()> {
+    diesel::insert_into(user_pushers::table)
+        .values(new_pusher)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
