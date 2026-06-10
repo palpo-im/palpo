@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
-use crate::core::encryption::DeviceKeys;
+use crate::core::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
 use crate::core::{DeviceKeyAlgorithm, Seqnum, UnixMillis};
@@ -283,4 +283,135 @@ pub async fn get_cross_signing_replacement_allowed(user_id: &UserId) -> DataResu
         .await
         .optional()
         .map_err(Into::into)
+}
+
+/// Return the raw `key_data` JSON of the latest cross-signing key of a kind.
+pub async fn get_cross_signing_key(
+    user_id: &UserId,
+    key_type: &str,
+) -> DataResult<Option<JsonValue>> {
+    e2e_cross_signing_keys::table
+        .filter(e2e_cross_signing_keys::user_id.eq(user_id))
+        .filter(e2e_cross_signing_keys::key_type.eq(key_type))
+        .order_by(e2e_cross_signing_keys::id.desc())
+        .select(e2e_cross_signing_keys::key_data)
+        .first::<JsonValue>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Insert a cross-signing key of the given kind.
+pub async fn add_cross_signing_key(
+    user_id: &UserId,
+    key_type: &str,
+    key: &CrossSigningKey,
+) -> DataResult<()> {
+    diesel::insert_into(e2e_cross_signing_keys::table)
+        .values(NewDbCrossSigningKey {
+            user_id: user_id.to_owned(),
+            key_type: key_type.to_owned(),
+            key_data: serde_json::to_value(key)?,
+        })
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Insert a cross-signing signature row.
+pub async fn add_cross_signing_sig(signature: NewDbCrossSignature) -> DataResult<()> {
+    diesel::insert_into(e2e_cross_signing_sigs::table)
+        .values(signature)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Insert or replace a one-time key for a device.
+pub async fn add_one_time_key(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    key_id: &DeviceKeyId,
+    one_time_key: &OneTimeKey,
+) -> DataResult<()> {
+    diesel::insert_into(e2e_one_time_keys::table)
+        .values(&NewDbOneTimeKey {
+            user_id: user_id.to_owned(),
+            device_id: device_id.to_owned(),
+            algorithm: key_id.algorithm().to_string(),
+            key_id: key_id.to_owned(),
+            key_data: serde_json::to_value(one_time_key)?,
+            created_at: UnixMillis::now(),
+        })
+        .on_conflict((
+            e2e_one_time_keys::user_id,
+            e2e_one_time_keys::device_id,
+            e2e_one_time_keys::algorithm,
+            e2e_one_time_keys::key_id,
+        ))
+        .do_update()
+        .set(e2e_one_time_keys::key_data.eq(serde_json::to_value(one_time_key)?))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Claim (read and remove) the oldest one-time key for a device and algorithm.
+pub async fn claim_one_time_key(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    key_algorithm: &DeviceKeyAlgorithm,
+) -> DataResult<Option<(OwnedDeviceKeyId, OneTimeKey)>> {
+    let one_time_key = e2e_one_time_keys::table
+        .filter(e2e_one_time_keys::user_id.eq(user_id))
+        .filter(e2e_one_time_keys::device_id.eq(device_id))
+        .filter(e2e_one_time_keys::algorithm.eq(key_algorithm.as_ref()))
+        .order(e2e_one_time_keys::id.asc())
+        .first::<DbOneTimeKey>(&mut connect().await?)
+        .await
+        .optional()?;
+    if let Some(DbOneTimeKey {
+        id,
+        key_id,
+        key_data,
+        ..
+    }) = one_time_key
+    {
+        diesel::delete(e2e_one_time_keys::table.find(id))
+            .execute(&mut connect().await?)
+            .await?;
+        Ok(Some((key_id, serde_json::from_value::<OneTimeKey>(key_data)?)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Replace the key-change marker for a `(user, room)` (or global when
+/// `change.room_id` is `None`) with a fresh row.
+pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
+    match &change.room_id {
+        Some(room_id) => {
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(&change.user_id))
+                    .filter(e2e_key_changes::room_id.eq(room_id)),
+            )
+            .execute(&mut connect().await?)
+            .await?;
+        }
+        None => {
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(&change.user_id))
+                    .filter(e2e_key_changes::room_id.is_null()),
+            )
+            .execute(&mut connect().await?)
+            .await?;
+        }
+    }
+    diesel::insert_into(e2e_key_changes::table)
+        .values(change)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
 }
