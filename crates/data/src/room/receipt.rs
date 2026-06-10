@@ -106,3 +106,29 @@ pub async fn last_private_read_update_sn(user_id: &UserId, room_id: &RoomId) -> 
 
     Ok(event_sn)
 }
+
+/// Insert a fully-built receipt row.
+pub async fn insert_receipt(receipt: &DbReceipt) -> DataResult<()> {
+    diesel::insert_into(event_receipts::table)
+        .values(receipt)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Event id of the user's most recent private read receipt in a room.
+pub async fn last_private_read_event_id(
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> DataResult<Option<OwnedEventId>> {
+    event_receipts::table
+        .filter(event_receipts::room_id.eq(room_id))
+        .filter(event_receipts::user_id.eq(user_id))
+        .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
+        .order_by(event_receipts::sn.desc())
+        .select(event_receipts::event_id)
+        .first::<OwnedEventId>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}

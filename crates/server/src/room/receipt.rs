@@ -1,19 +1,14 @@
 use std::collections::BTreeMap;
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
-
 use crate::core::UnixMillis;
 use crate::core::events::receipt::{
-    Receipt, ReceiptContent, ReceiptData, ReceiptEvent, ReceiptEventContent, ReceiptMap,
-    ReceiptType, Receipts,
+    Receipt, ReceiptContent, ReceiptData, ReceiptEvent, ReceiptEventContent, ReceiptMap, Receipts,
 };
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
+use crate::data::next_sn;
 use crate::data::room::DbReceipt;
-use crate::data::schema::*;
-use crate::data::{connect, next_sn};
-use crate::{AppResult, sending};
+use crate::{AppResult, MatrixError, data, sending};
 
 /// Replaces the previous read receipt.
 #[tracing::instrument]
@@ -45,15 +40,7 @@ pub async fn update_read(
                     json_data: serde_json::to_value(receipt)?,
                     receipt_at,
                 };
-                // Acquire the connection inline for the insert only. Holding a
-                // named `conn` across `next_sn()` above (which checks out its
-                // own connection) would pin two connections at once and risk
-                // exhausting the pool on this fairly hot receipt path.
-                if let Err(e) = diesel::insert_into(event_receipts::table)
-                    .values(&receipt)
-                    .execute(&mut connect().await?)
-                    .await
-                {
+                if let Err(e) = data::room::receipt::insert_receipt(&receipt).await {
                     error!("failed to insert receipt: {}", e);
                 }
             }
@@ -82,14 +69,10 @@ pub async fn last_private_read(
     user_id: &UserId,
     room_id: &RoomId,
 ) -> AppResult<ReceiptEventContent> {
-    let event_id = event_receipts::table
-        .filter(event_receipts::room_id.eq(room_id))
-        .filter(event_receipts::user_id.eq(user_id))
-        .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
-        .order_by(event_receipts::sn.desc())
-        .select(event_receipts::event_id)
-        .first::<OwnedEventId>(&mut connect().await?)
-        .await?;
+    let Some(event_id) = data::room::receipt::last_private_read_event_id(user_id, room_id).await?
+    else {
+        return Err(MatrixError::not_found("No private read receipt.").into());
+    };
 
     // let room_sn = crate::room::get_room_sn(room_id)
     //     .map_err(|e| MatrixError::bad_state(format!("room does not exist in database for
