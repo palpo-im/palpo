@@ -1,5 +1,3 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use rand::seq::SliceRandom;
 use serde_json::value::to_raw_value;
 
@@ -10,24 +8,14 @@ use crate::core::events::TimelineEventType;
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::federation::query::directory_request;
 use crate::core::identifiers::*;
-use crate::data::connect;
-use crate::data::schema::*;
+use crate::data::room::DbRoomAlias;
 use crate::data::user::DbUser;
 use crate::exts::*;
 use crate::room::{StateEventType, timeline};
-use crate::{AppError, AppResult, GetUrlOrigin, MatrixError, PduBuilder, config};
+use crate::{AppError, AppResult, GetUrlOrigin, MatrixError, PduBuilder, config, data};
 
 mod remote;
 use remote::remote_resolve;
-
-#[derive(Insertable, Identifiable, Queryable, Debug, Clone)]
-#[diesel(table_name = room_aliases, primary_key(alias_id))]
-pub struct DbRoomAlias {
-    pub alias_id: OwnedRoomAliasId,
-    pub room_id: OwnedRoomId,
-    pub created_by: OwnedUserId,
-    pub created_at: UnixMillis,
-}
 
 #[inline]
 pub async fn resolve(room: &RoomOrAliasId) -> AppResult<OwnedRoomId> {
@@ -77,13 +65,9 @@ pub async fn resolve_alias(
 
 #[tracing::instrument(level = "debug")]
 pub async fn resolve_local_alias(alias_id: &RoomAliasId) -> AppResult<OwnedRoomId> {
-    let room_id = room_aliases::table
-        .filter(room_aliases::alias_id.eq(alias_id))
-        .select(room_aliases::room_id)
-        .first::<String>(&mut connect().await?)
-        .await?;
-
-    RoomId::parse(room_id).map_err(|_| AppError::public("Room ID is invalid."))
+    data::room::get_alias_room_id(alias_id)
+        .await?
+        .ok_or_else(|| MatrixError::not_found("Room alias not found.").into())
 }
 
 async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRoomId> {
@@ -137,17 +121,10 @@ async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRo
 }
 
 pub async fn local_aliases_for_room(room_id: &RoomId) -> AppResult<Vec<OwnedRoomAliasId>> {
-    room_aliases::table
-        .filter(room_aliases::room_id.eq(room_id))
-        .select(room_aliases::alias_id)
-        .load::<OwnedRoomAliasId>(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+    Ok(data::room::local_aliases_for_room(room_id).await?)
 }
 pub async fn all_local_aliases() -> AppResult<Vec<(OwnedRoomId, String)>> {
-    let lists = room_aliases::table
-        .select((room_aliases::room_id, room_aliases::alias_id))
-        .load::<(OwnedRoomId, OwnedRoomAliasId)>(&mut connect().await?)
+    let lists = data::room::all_local_aliases()
         .await?
         .into_iter()
         .map(|(room_id, alias_id)| (room_id, alias_id.alias().to_owned()))
@@ -177,18 +154,13 @@ pub async fn set_alias(
     let alias_id = alias_id.into();
     let room_id = room_id.into();
 
-    diesel::insert_into(room_aliases::table)
-        .values(DbRoomAlias {
-            alias_id,
-            room_id,
-            created_by: created_by.into(),
-            created_at: UnixMillis::now(),
-        })
-        .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
-        .await
-        .map(|_| ())
-        .map_err(Into::into)
+    Ok(data::room::set_alias(DbRoomAlias {
+        alias_id,
+        room_id,
+        created_by: created_by.into(),
+        created_at: UnixMillis::now(),
+    })
+    .await?)
 }
 
 pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<AliasResBody> {
@@ -267,9 +239,7 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
             .await
             .ok();
         }
-        diesel::delete(room_aliases::table.filter(room_aliases::alias_id.eq(alias_id)))
-            .execute(&mut connect().await?)
-            .await?;
+        data::room::remove_alias(alias_id).await?;
 
         Ok(())
     } else {
@@ -280,10 +250,9 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
 async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<bool> {
     let room_id = resolve_local_alias(alias_id).await?;
 
-    let alias = room_aliases::table
-        .find(alias_id)
-        .first::<DbRoomAlias>(&mut connect().await?)
-        .await?;
+    let alias = data::room::get_alias(alias_id)
+        .await?
+        .ok_or_else(|| MatrixError::not_found("Room alias not found."))?;
 
     // The creator of an alias can remove it
     if alias.created_by == user.id
