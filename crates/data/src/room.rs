@@ -404,6 +404,19 @@ pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> Da
     Ok(())
 }
 
+/// Return the distinct set of servers joined to any of the given rooms.
+pub async fn joined_servers_for_rooms(
+    room_ids: &[OwnedRoomId],
+) -> DataResult<Vec<OwnedServerName>> {
+    room_joined_servers::table
+        .filter(room_joined_servers::room_id.eq_any(room_ids))
+        .select(room_joined_servers::server_id)
+        .distinct()
+        .load::<OwnedServerName>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = banned_rooms)]
 pub struct NewDbBannedRoom {
