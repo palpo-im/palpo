@@ -439,6 +439,84 @@ pub async fn is_public(room_id: &RoomId) -> DataResult<bool> {
         .map_err(Into::into)
 }
 
+/// Set whether a room is published in the public room directory.
+pub async fn set_public(room_id: &RoomId, value: bool) -> DataResult<()> {
+    diesel::update(rooms::table.find(room_id))
+        .set(rooms::is_public.eq(value))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Resolve a local alias to the room id it points at.
+pub async fn get_alias_room_id(alias_id: &RoomAliasId) -> DataResult<Option<OwnedRoomId>> {
+    room_aliases::table
+        .filter(room_aliases::alias_id.eq(alias_id))
+        .select(room_aliases::room_id)
+        .first::<OwnedRoomId>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Fetch the full record for a local alias.
+pub async fn get_alias(alias_id: &RoomAliasId) -> DataResult<Option<DbRoomAlias>> {
+    room_aliases::table
+        .find(alias_id)
+        .first::<DbRoomAlias>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// All local aliases pointing at a room.
+pub async fn local_aliases_for_room(room_id: &RoomId) -> DataResult<Vec<OwnedRoomAliasId>> {
+    room_aliases::table
+        .filter(room_aliases::room_id.eq(room_id))
+        .select(room_aliases::alias_id)
+        .load::<OwnedRoomAliasId>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// All local `(room_id, alias_id)` pairs.
+pub async fn all_local_aliases() -> DataResult<Vec<(OwnedRoomId, OwnedRoomAliasId)>> {
+    room_aliases::table
+        .select((room_aliases::room_id, room_aliases::alias_id))
+        .load::<(OwnedRoomId, OwnedRoomAliasId)>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Whether the alias already exists but points at a different room.
+pub async fn alias_exists_for_other_room(
+    alias_id: &RoomAliasId,
+    room_id: &RoomId,
+) -> DataResult<bool> {
+    let query = room_aliases::table
+        .filter(room_aliases::alias_id.eq(alias_id))
+        .filter(room_aliases::room_id.ne(room_id));
+    Ok(diesel_exists!(query, &mut connect().await?)?)
+}
+
+/// Insert an alias, ignoring conflicts with an existing one.
+pub async fn set_alias(alias: DbRoomAlias) -> DataResult<()> {
+    diesel::insert_into(room_aliases::table)
+        .values(alias)
+        .on_conflict_do_nothing()
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Remove a local alias.
+pub async fn remove_alias(alias_id: &RoomAliasId) -> DataResult<()> {
+    diesel::delete(room_aliases::table.filter(room_aliases::alias_id.eq(alias_id)))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = timeline_gaps)]
 pub struct NewDbTimelineGap {

@@ -1,14 +1,10 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
 use crate::core::client::room::{AliasResBody, SetAliasReqBody};
 use crate::core::identifiers::*;
-use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
 use crate::exts::*;
-use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, empty_ok, json_ok};
+use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, empty_ok, json_ok};
 
 /// #GET /_matrix/client/r0/directory/room/{room_alias}
 /// Resolve an alias locally or over federation.
@@ -55,10 +51,7 @@ pub(super) async fn upsert_alias(
         return Err(MatrixError::forbidden("alias already exists", None).into());
     }
 
-    let query = room_aliases::table
-        .filter(room_aliases::alias_id.eq(&alias_id))
-        .filter(room_aliases::room_id.ne(&body.room_id));
-    if diesel_exists!(query, &mut connect().await?)? {
+    if data::room::alias_exists_for_other_room(&alias_id, &body.room_id).await? {
         return Err(StatusError::conflict()
             .brief("a room alias with that name already exists")
             .into());
