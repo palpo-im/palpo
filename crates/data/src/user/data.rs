@@ -162,6 +162,16 @@ pub async fn get_global_data<E: DeserializeOwned>(
     }
 }
 
+/// Load all global account-data rows for a user.
+pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
+    user_datas::table
+        .filter(user_datas::user_id.eq(user_id))
+        .filter(user_datas::room_id.is_null())
+        .load::<DbUserData>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 /// Get all global account data for a user
 pub async fn get_global_account_data(user_id: &UserId) -> DataResult<HashMap<String, JsonValue>> {
     user_datas::table

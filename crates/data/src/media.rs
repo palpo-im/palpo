@@ -36,6 +36,16 @@ pub struct NewDbMetadata {
     pub created_at: UnixMillis,
 }
 
+/// List `(origin_server, media_id)` for every media item created by a user.
+pub async fn list_media_created_by(user_id: &UserId) -> DataResult<Vec<(OwnedServerName, String)>> {
+    media_metadatas::table
+        .filter(media_metadatas::created_by.eq(user_id))
+        .select((media_metadatas::origin_server, media_metadatas::media_id))
+        .load::<(OwnedServerName, String)>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn get_metadata(
     server_name: &ServerName,
     media_id: &str,

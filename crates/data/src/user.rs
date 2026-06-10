@@ -22,6 +22,8 @@ pub use key_backup::*;
 pub mod session;
 pub use session::*;
 pub mod external_id;
+pub mod login_token;
+pub mod openid_token;
 pub mod presence;
 pub mod registration_token;
 pub mod uiaa;
@@ -212,6 +214,27 @@ pub async fn get_user(user_id: &UserId) -> DataResult<DbUser> {
         .first::<DbUser>(&mut connect().await?)
         .await
         .map_err(Into::into)
+}
+
+/// Insert a user, updating the existing row if one already exists.
+pub async fn create_user(new_user: &NewDbUser) -> DataResult<DbUser> {
+    diesel::insert_into(users::table)
+        .values(new_user)
+        .on_conflict(users::id)
+        .do_update()
+        .set(new_user)
+        .get_result::<DbUser>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Mark a user account as deactivated without touching its other data.
+pub async fn mark_deactivated(user_id: &UserId) -> DataResult<()> {
+    diesel::update(users::table.find(user_id))
+        .set(users::deactivated_at.eq(UnixMillis::now()))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
 }
 
 /// Returns the number of users registered on this server.
