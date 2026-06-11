@@ -1,5 +1,3 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 use serde::Deserialize;
 
@@ -9,9 +7,8 @@ use crate::core::client::relation::RelationEventsResBody;
 use crate::core::events::TimelineEventType;
 use crate::core::events::relation::RelationType;
 use crate::core::identifiers::*;
-use crate::data::connect;
-use crate::data::room::{DbEventRelation, NewDbEventRelation};
-use crate::data::schema::*;
+use crate::data;
+use crate::data::room::NewDbEventRelation;
 use crate::event::{BatchToken, SnPduEvent};
 use crate::room::timeline;
 
@@ -34,19 +31,17 @@ pub async fn add_relation(
 ) -> AppResult<()> {
     let (event_sn, event_ty) = crate::event::get_event_sn_and_ty(event_id).await?;
     let (child_sn, child_ty) = crate::event::get_event_sn_and_ty(child_id).await?;
-    diesel::insert_into(event_relations::table)
-        .values(&NewDbEventRelation {
-            room_id: room_id.to_owned(),
-            event_id: event_id.to_owned(),
-            event_sn,
-            event_ty,
-            child_id: child_id.to_owned(),
-            child_sn,
-            child_ty,
-            rel_type: rel_type.map(|v| v.to_string()),
-        })
-        .execute(&mut connect().await?)
-        .await?;
+    data::room::add_event_relation(&NewDbEventRelation {
+        room_id: room_id.to_owned(),
+        event_id: event_id.to_owned(),
+        event_sn,
+        event_ty,
+        child_id: child_id.to_owned(),
+        child_sn,
+        child_ty,
+        rel_type: rel_type.map(|v| v.to_string()),
+    })
+    .await?;
     Ok(())
 }
 
@@ -127,36 +122,19 @@ pub async fn get_relations(
     dir: Direction,
     limit: usize,
 ) -> AppResult<Vec<(Seqnum, SnPduEvent)>> {
-    let mut query = event_relations::table
-        .filter(event_relations::room_id.eq(room_id))
-        .filter(event_relations::event_id.eq(event_id))
-        .into_boxed();
-    if let Some(child_ty) = child_ty {
-        query = query.filter(event_relations::child_ty.eq(child_ty.to_string()));
-    }
-    if let Some(rel_type) = rel_type {
-        query = query.filter(event_relations::rel_type.eq(rel_type.to_string()));
-    }
-    match dir {
-        Direction::Forward => {
-            query = query.filter(event_relations::child_sn.ge(from));
-            if let Some(to) = to {
-                query = query.filter(event_relations::child_sn.le(to));
-            }
-            query = query.order_by(event_relations::child_sn.asc());
-        }
-        Direction::Backward => {
-            query = query.filter(event_relations::child_sn.le(from));
-            if let Some(to) = to {
-                query = query.filter(event_relations::child_sn.ge(to));
-            }
-            query = query.order_by(event_relations::child_sn.desc());
-        }
-    }
-    let relations = query
-        .limit(limit as i64)
-        .load::<DbEventRelation>(&mut connect().await?)
-        .await?;
+    let child_ty = child_ty.map(|t| t.to_string());
+    let rel_type = rel_type.map(|t| t.to_string());
+    let relations = data::room::get_event_relations(
+        room_id,
+        event_id,
+        child_ty.as_deref(),
+        rel_type.as_deref(),
+        from,
+        to,
+        matches!(dir, Direction::Forward),
+        limit,
+    )
+    .await?;
     let mut pdus = Vec::with_capacity(relations.len());
     for relation in relations {
         if let Ok(mut pdu) = timeline::get_pdu(&relation.child_id).await {
@@ -190,18 +168,10 @@ pub async fn get_relations(
 
 #[tracing::instrument(skip(event_id))]
 pub async fn mark_event_soft_failed(event_id: &EventId) -> AppResult<()> {
-    diesel::update(events::table.filter(events::id.eq(event_id)))
-        .set(events::soft_failed.eq(true))
-        .execute(&mut connect().await?)
-        .await?;
+    data::room::set_event_soft_failed(event_id).await?;
     Ok(())
 }
 
 pub async fn is_event_soft_failed(event_id: &EventId) -> AppResult<bool> {
-    events::table
-        .filter(events::id.eq(event_id))
-        .select(events::soft_failed)
-        .first(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+    Ok(data::room::is_event_soft_failed(event_id).await?)
 }
