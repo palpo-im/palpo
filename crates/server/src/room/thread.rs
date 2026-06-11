@@ -1,16 +1,12 @@
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use serde_json::json;
 
 use crate::core::client::room::IncludeThreads;
 use crate::core::events::relation::BundledThread;
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
-use crate::data::connect;
 use crate::data::room::DbThread;
-use crate::data::schema::*;
 use crate::room::timeline;
-use crate::{AppResult, SnPduEvent};
+use crate::{AppResult, SnPduEvent, data};
 
 pub async fn get_threads(
     room_id: &RoomId,
@@ -18,24 +14,7 @@ pub async fn get_threads(
     limit: i64,
     from_token: Option<i64>,
 ) -> AppResult<(Vec<(OwnedEventId, SnPduEvent)>, Option<i64>)> {
-    let items = if let Some(from_token) = from_token {
-        threads::table
-            .filter(threads::room_id.eq(room_id))
-            .filter(threads::event_sn.le(from_token))
-            .select((threads::event_id, threads::event_sn))
-            .order_by(threads::last_sn.desc())
-            .limit(limit)
-            .load::<(OwnedEventId, i64)>(&mut connect().await?)
-            .await?
-    } else {
-        threads::table
-            .filter(threads::room_id.eq(room_id))
-            .select((threads::event_id, threads::event_sn))
-            .order_by(threads::last_sn.desc())
-            .limit(limit)
-            .load::<(OwnedEventId, i64)>(&mut connect().await?)
-            .await?
-    };
+    let items = data::room::list_threads(room_id, from_token, limit).await?;
     let next_token = items.last().map(|(_, sn)| *sn - 1);
 
     let mut events = Vec::with_capacity(items.len());
@@ -95,26 +74,15 @@ pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<(
         timeline::replace_pdu(thread_id, &root_pdu_json).await?;
     }
 
-    diesel::update(event_points::table.find(&pdu.event_id))
-        .set(event_points::thread_id.eq(thread_id))
-        .execute(&mut connect().await?)
-        .await?;
+    data::room::set_event_thread_id(&pdu.event_id, thread_id).await?;
 
-    diesel::insert_into(threads::table)
-        .values(DbThread {
-            event_id: root_pdu.event_id.clone(),
-            event_sn: root_pdu.event_sn,
-            room_id: root_pdu.room_id.clone(),
-            last_id: pdu.event_id.clone(),
-            last_sn: pdu.event_sn,
-        })
-        .on_conflict(threads::event_id)
-        .do_update()
-        .set((
-            threads::last_id.eq(&pdu.event_id),
-            threads::last_sn.eq(pdu.event_sn),
-        ))
-        .execute(&mut connect().await?)
-        .await?;
+    data::room::upsert_thread(DbThread {
+        event_id: root_pdu.event_id.clone(),
+        event_sn: root_pdu.event_sn,
+        room_id: root_pdu.room_id.clone(),
+        last_id: pdu.event_id.clone(),
+        last_sn: pdu.event_sn,
+    })
+    .await?;
     Ok(())
 }

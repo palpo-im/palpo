@@ -15,6 +15,7 @@ pub mod peek;
 pub mod receipt;
 pub mod timeline;
 pub mod transaction_id;
+pub mod typing;
 pub use event_report::*;
 
 #[derive(Insertable, Identifiable, Queryable, Debug, Clone)]
@@ -512,6 +513,51 @@ pub async fn set_alias(alias: DbRoomAlias) -> DataResult<()> {
 /// Remove a local alias.
 pub async fn remove_alias(alias_id: &RoomAliasId) -> DataResult<()> {
     diesel::delete(room_aliases::table.filter(room_aliases::alias_id.eq(alias_id)))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// List a room's thread roots as `(event_id, event_sn)`, newest activity first,
+/// optionally only those with `event_sn <= before_sn`.
+pub async fn list_threads(
+    room_id: &RoomId,
+    before_sn: Option<i64>,
+    limit: i64,
+) -> DataResult<Vec<(OwnedEventId, i64)>> {
+    let mut query = threads::table
+        .filter(threads::room_id.eq(room_id))
+        .into_boxed();
+    if let Some(before_sn) = before_sn {
+        query = query.filter(threads::event_sn.le(before_sn));
+    }
+    query
+        .select((threads::event_id, threads::event_sn))
+        .order_by(threads::last_sn.desc())
+        .limit(limit)
+        .load::<(OwnedEventId, i64)>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Set the thread id an event belongs to.
+pub async fn set_event_thread_id(event_id: &EventId, thread_id: &EventId) -> DataResult<()> {
+    diesel::update(event_points::table.find(event_id))
+        .set(event_points::thread_id.eq(thread_id))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Insert a thread root, updating its latest event if it already exists.
+pub async fn upsert_thread(thread: DbThread) -> DataResult<()> {
+    let last_id = thread.last_id.clone();
+    let last_sn = thread.last_sn;
+    diesel::insert_into(threads::table)
+        .values(thread)
+        .on_conflict(threads::event_id)
+        .do_update()
+        .set((threads::last_id.eq(last_id), threads::last_sn.eq(last_sn)))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
