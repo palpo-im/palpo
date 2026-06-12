@@ -32,8 +32,8 @@ PALPO_IMAGE="${PALPO_IMAGE:-complement-palpo}"
 SYNAPSE_IMAGE="${SYNAPSE_IMAGE:-complement-synapse}"
 DEFAULT_TEST_FILTER='^(TestDeviceListsUpdateOverFederation|TestUserAppearsInChangedDeviceListOnJoinOverFederation|TestContentMediaV1|TestRemotePresence|TestRemoteAliasRequestsUnderstandUnicode|TestUnbanViaInvite|TestFederationRejectInvite|TestJoinViaRoomIDAndServerName|TestJoinFederatedRoomFailOver|TestRemoteTyping|TestFederationRoomsInvite|TestToDeviceMessagesOverFederation|TestFederationKeyUploadQuery|TestRestrictedRoomsSpacesSummaryFederation|TestMessagesOverFederation)$'
 TEST_FILTER="${TEST_FILTER:-$DEFAULT_TEST_FILTER}"
-TEST_SKIP="${TEST_SKIP:-^TestToDeviceMessagesOverFederation/stopped_server$}"
-SYNAPSE_PALPO_TEST_SKIP="${SYNAPSE_PALPO_TEST_SKIP-^TestToDeviceMessagesOverFederation/interrupted_connectivity$}"
+TEST_SKIP="${TEST_SKIP:-^TestToDeviceMessagesOverFederation$/^stopped_server$}"
+SYNAPSE_PALPO_TEST_SKIP="${SYNAPSE_PALPO_TEST_SKIP-^TestToDeviceMessagesOverFederation$/^interrupted_connectivity$}"
 PALPO_SYNAPSE_TEST_SKIP="${PALPO_SYNAPSE_TEST_SKIP-}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-90m}"
 
@@ -49,6 +49,16 @@ combine_skip() {
     local extra="$2"
 
     if [[ -n "$base" && -n "$extra" ]]; then
+        # Go splits -skip patterns on slash, so combine same-parent subtests at
+        # the subtest component instead of alternating whole slash paths.
+        local base_parent="${base%%/*}"
+        local base_child="${base#*/}"
+        local extra_parent="${extra%%/*}"
+        local extra_child="${extra#*/}"
+        if [[ "$base" == */* && "$extra" == */* && "$base_parent" == "$extra_parent" ]]; then
+            printf '%s/(%s|%s)' "$base_parent" "$base_child" "$extra_child"
+            return
+        fi
         printf '(%s)|(%s)' "$base" "$extra"
     elif [[ -n "$base" ]]; then
         printf '%s' "$base"

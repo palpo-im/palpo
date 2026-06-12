@@ -11,6 +11,7 @@ use crate::{DataResult, connect};
 
 pub mod event;
 pub mod event_report;
+pub mod lazy_loading;
 pub mod peek;
 pub mod receipt;
 pub mod timeline;
@@ -561,6 +562,110 @@ pub async fn upsert_thread(thread: DbThread) -> DataResult<()> {
         .execute(&mut connect().await?)
         .await?;
     Ok(())
+}
+
+/// Current per-room statistics row, if present.
+pub async fn get_room_current(room_id: &RoomId) -> DataResult<Option<DbRoomCurrent>> {
+    stats_room_currents::table
+        .filter(stats_room_currents::room_id.eq(room_id))
+        .first::<DbRoomCurrent>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Number of invited members recorded for a room.
+pub async fn invited_members_count(room_id: &RoomId) -> DataResult<Option<i64>> {
+    stats_room_currents::table
+        .filter(stats_room_currents::room_id.eq(room_id))
+        .select(stats_room_currents::invited_members)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Number of left members recorded for a room.
+pub async fn left_members_count(room_id: &RoomId) -> DataResult<Option<i64>> {
+    stats_room_currents::table
+        .filter(stats_room_currents::room_id.eq(room_id))
+        .select(stats_room_currents::left_members)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Insert an event relation row.
+pub async fn add_event_relation(relation: &NewDbEventRelation) -> DataResult<()> {
+    diesel::insert_into(event_relations::table)
+        .values(relation)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Load event relations for a target event, ordered by child sequence number in
+/// the requested direction. `forward` selects ascending order from `from`,
+/// otherwise descending.
+#[allow(clippy::too_many_arguments)]
+pub async fn get_event_relations(
+    room_id: &RoomId,
+    event_id: &EventId,
+    child_ty: Option<&str>,
+    rel_type: Option<&str>,
+    from: Seqnum,
+    to: Option<Seqnum>,
+    forward: bool,
+    limit: usize,
+) -> DataResult<Vec<DbEventRelation>> {
+    let mut query = event_relations::table
+        .filter(event_relations::room_id.eq(room_id))
+        .filter(event_relations::event_id.eq(event_id))
+        .into_boxed();
+    if let Some(child_ty) = child_ty {
+        query = query.filter(event_relations::child_ty.eq(child_ty));
+    }
+    if let Some(rel_type) = rel_type {
+        query = query.filter(event_relations::rel_type.eq(rel_type));
+    }
+    if forward {
+        query = query.filter(event_relations::child_sn.ge(from));
+        if let Some(to) = to {
+            query = query.filter(event_relations::child_sn.le(to));
+        }
+        query = query.order_by(event_relations::child_sn.asc());
+    } else {
+        query = query.filter(event_relations::child_sn.le(from));
+        if let Some(to) = to {
+            query = query.filter(event_relations::child_sn.ge(to));
+        }
+        query = query.order_by(event_relations::child_sn.desc());
+    }
+    query
+        .limit(limit as i64)
+        .load::<DbEventRelation>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Mark an event as soft-failed.
+pub async fn set_event_soft_failed(event_id: &EventId) -> DataResult<()> {
+    diesel::update(events::table.filter(events::id.eq(event_id)))
+        .set(events::soft_failed.eq(true))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Whether an event is recorded as soft-failed.
+pub async fn is_event_soft_failed(event_id: &EventId) -> DataResult<bool> {
+    events::table
+        .filter(events::id.eq(event_id))
+        .select(events::soft_failed)
+        .first(&mut connect().await?)
+        .await
+        .map_err(Into::into)
 }
 
 #[derive(Insertable, Debug, Clone)]

@@ -1,13 +1,10 @@
 use std::collections::HashSet;
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 
 use crate::AppResult;
 use crate::core::{DeviceId, OwnedUserId, RoomId, UserId};
-use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
+use crate::data;
 
 #[tracing::instrument]
 pub async fn lazy_load_was_sent_before(
@@ -16,12 +13,7 @@ pub async fn lazy_load_was_sent_before(
     room_id: &RoomId,
     confirmed_user_id: &UserId,
 ) -> AppResult<bool> {
-    let query = lazy_load_deliveries::table
-        .filter(lazy_load_deliveries::user_id.eq(user_id))
-        .filter(lazy_load_deliveries::device_id.eq(device_id))
-        .filter(lazy_load_deliveries::room_id.eq(room_id))
-        .filter(lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    Ok(data::room::lazy_loading::was_sent_before(user_id, device_id, room_id, confirmed_user_id).await?)
 }
 
 /// Marks lazy load entries as sent by writing directly to the database.
@@ -34,23 +26,9 @@ pub async fn lazy_load_mark_sent(
     lazy_load: HashSet<OwnedUserId>,
     _until_sn: Seqnum,
 ) {
-    // Check out a single connection and reuse it for every insert. The loop body
-    // performs no nested connection acquisition, so holding one connection here
-    // is safe and avoids one checkout/release round-trip per confirmed user.
-    let Ok(mut conn) = connect().await else {
-        return;
-    };
-    for confirmed_user_id in lazy_load {
-        let _ = diesel::insert_into(lazy_load_deliveries::table)
-            .values((
-                lazy_load_deliveries::user_id.eq(user_id),
-                lazy_load_deliveries::device_id.eq(device_id),
-                lazy_load_deliveries::room_id.eq(room_id),
-                lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id),
-            ))
-            .on_conflict_do_nothing()
-            .execute(&mut conn)
-            .await;
+    if let Err(e) = data::room::lazy_loading::mark_sent(user_id, device_id, room_id, lazy_load).await
+    {
+        warn!("failed to mark lazy-load deliveries as sent: {e}");
     }
 }
 
@@ -73,13 +51,6 @@ pub async fn lazy_load_reset(
     device_id: &DeviceId,
     room_id: &RoomId,
 ) -> AppResult<()> {
-    diesel::delete(
-        lazy_load_deliveries::table
-            .filter(lazy_load_deliveries::user_id.eq(user_id))
-            .filter(lazy_load_deliveries::device_id.eq(device_id))
-            .filter(lazy_load_deliveries::room_id.eq(room_id)),
-    )
-    .execute(&mut connect().await?)
-    .await?;
+    data::room::lazy_loading::reset(user_id, device_id, room_id).await?;
     Ok(())
 }
