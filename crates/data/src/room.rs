@@ -668,6 +668,171 @@ pub async fn is_event_soft_failed(event_id: &EventId) -> DataResult<bool> {
         .map_err(Into::into)
 }
 
+// ---------------------------------------------------------------------------
+// Room state: fields, frames and deltas
+// ---------------------------------------------------------------------------
+
+/// Look up a state field by its id.
+pub async fn get_state_field(field_id: i64) -> DataResult<DbRoomStateField> {
+    room_state_fields::table
+        .find(field_id)
+        .first::<DbRoomStateField>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Id of the `(event_ty, state_key)` state field, if it exists.
+pub async fn get_state_field_id(event_ty: &StateEventType, state_key: &str) -> DataResult<i64> {
+    room_state_fields::table
+        .filter(room_state_fields::event_ty.eq(event_ty))
+        .filter(room_state_fields::state_key.eq(state_key))
+        .select(room_state_fields::id)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Id of the `(event_ty, state_key)` state field, creating it if missing.
+pub async fn ensure_state_field_id(
+    event_ty: &StateEventType,
+    state_key: &str,
+) -> DataResult<i64> {
+    let id = diesel::insert_into(room_state_fields::table)
+        .values((
+            room_state_fields::event_ty.eq(event_ty),
+            room_state_fields::state_key.eq(state_key),
+        ))
+        .on_conflict_do_nothing()
+        .returning(room_state_fields::id)
+        .get_result::<i64>(&mut connect().await?)
+        .await
+        .optional()?;
+    if let Some(id) = id {
+        Ok(id)
+    } else {
+        room_state_fields::table
+            .filter(room_state_fields::event_ty.eq(event_ty))
+            .filter(room_state_fields::state_key.eq(state_key))
+            .select(room_state_fields::id)
+            .first::<i64>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// The `(event_ty, state_key)` state field, creating it if missing.
+pub async fn ensure_state_field(
+    event_ty: &StateEventType,
+    state_key: &str,
+) -> DataResult<DbRoomStateField> {
+    let id = diesel::insert_into(room_state_fields::table)
+        .values((
+            room_state_fields::event_ty.eq(event_ty),
+            room_state_fields::state_key.eq(state_key),
+        ))
+        .on_conflict_do_nothing()
+        .returning(room_state_fields::id)
+        .get_result::<i64>(&mut connect().await?)
+        .await
+        .optional()?;
+    if let Some(id) = id {
+        room_state_fields::table
+            .find(id)
+            .first::<DbRoomStateField>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    } else {
+        room_state_fields::table
+            .filter(room_state_fields::event_ty.eq(event_ty))
+            .filter(room_state_fields::state_key.eq(state_key))
+            .first::<DbRoomStateField>(&mut connect().await?)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// Resolve the state frame id for a room, optionally at or before `until_sn`.
+pub async fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> DataResult<Option<i64>> {
+    if let Some(until_sn) = until_sn {
+        event_points::table
+            .filter(event_points::room_id.eq(room_id))
+            .filter(event_points::event_sn.le(until_sn))
+            .filter(event_points::frame_id.is_not_null())
+            .select(event_points::frame_id)
+            .order(event_points::event_sn.desc())
+            .first::<Option<i64>>(&mut connect().await?)
+            .await
+            .optional()
+            .map(Option::flatten)
+            .map_err(Into::into)
+    } else {
+        rooms::table
+            .find(room_id)
+            .select(rooms::state_frame_id)
+            .first::<Option<i64>>(&mut connect().await?)
+            .await
+            .optional()
+            .map(Option::flatten)
+            .map_err(Into::into)
+    }
+}
+
+/// State frame id recorded for an event, if any.
+pub async fn get_pdu_frame_id(event_id: &EventId) -> DataResult<Option<i64>> {
+    event_points::table
+        .filter(event_points::event_id.eq(event_id))
+        .select(event_points::frame_id)
+        .first::<Option<i64>>(&mut connect().await?)
+        .await
+        .optional()
+        .map(Option::flatten)
+        .map_err(Into::into)
+}
+
+/// Insert a state frame for `(room_id, hash_data)` and return its id.
+pub async fn ensure_state_frame(room_id: &RoomId, hash_data: Vec<u8>) -> DataResult<i64> {
+    diesel::insert_into(room_state_frames::table)
+        .values((
+            room_state_frames::room_id.eq(room_id),
+            room_state_frames::hash_data.eq(hash_data),
+        ))
+        .on_conflict_do_nothing()
+        .returning(room_state_frames::id)
+        .get_result(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Id of an existing state frame for `(room_id, hash_data)`.
+pub async fn get_state_frame_id(room_id: &RoomId, hash_data: &[u8]) -> DataResult<i64> {
+    room_state_frames::table
+        .filter(room_state_frames::room_id.eq(room_id))
+        .filter(room_state_frames::hash_data.eq(hash_data))
+        .select(room_state_frames::id)
+        .get_result(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// The raw state delta row for a frame.
+pub async fn get_state_delta(frame_id: i64) -> DataResult<DbRoomStateDelta> {
+    room_state_deltas::table
+        .find(frame_id)
+        .first::<DbRoomStateDelta>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// Insert a state delta row, ignoring conflicts.
+pub async fn save_state_delta(delta: DbRoomStateDelta) -> DataResult<()> {
+    diesel::insert_into(room_state_deltas::table)
+        .values(delta)
+        .on_conflict_do_nothing()
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = timeline_gaps)]
 pub struct NewDbTimelineGap {

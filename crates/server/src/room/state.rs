@@ -41,24 +41,7 @@ pub static SERVER_VISIBILITY_CACHE: LazyLock<Mutex<LruCache<(OwnedServerName, i6
 pub static USER_VISIBILITY_CACHE: LazyLock<Mutex<LruCache<(OwnedUserId, i64), bool>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(100)));
 
-#[derive(Insertable, Identifiable, Queryable, Debug, Clone)]
-#[diesel(table_name = room_state_deltas, primary_key(frame_id))]
-pub struct DbRoomStateDelta {
-    pub frame_id: i64,
-    pub room_id: OwnedRoomId,
-    pub parent_id: Option<i64>,
-    pub appended: Vec<u8>,
-    pub disposed: Vec<u8>,
-}
-// #[derive(Insertable, Debug, Clone)]
-// #[diesel(table_name = room_state_deltas)]
-// pub struct NewDbRoomStateDelta {
-//     pub room_id: OwnedRoomId,
-//     pub frame_id: i64,
-//     pub parent_id: Option<i64>,
-//     pub appended: Vec<u8>,
-//     pub disposed: Vec<u8>,
-// }
+pub use crate::data::room::DbRoomStateDelta;
 
 pub async fn server_joined_rooms(server_name: &ServerName) -> AppResult<Vec<OwnedRoomId>> {
     room_joined_servers::table
