@@ -3,12 +3,10 @@ use std::mem::size_of;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
-
-use super::{DbRoomStateDelta, FrameInfo, room_state_deltas};
+use super::FrameInfo;
 use crate::core::{OwnedEventId, RoomId, Seqnum};
-use crate::data::connect;
+use crate::data;
+use crate::data::room::DbRoomStateDelta;
 use crate::{AppResult, utils};
 
 pub struct StateDiff {
@@ -82,11 +80,7 @@ pub fn compress_event(
 }
 
 pub async fn get_detla(frame_id: i64) -> AppResult<DbRoomStateDelta> {
-    room_state_deltas::table
-        .find(frame_id)
-        .first::<DbRoomStateDelta>(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+    Ok(data::room::get_state_delta(frame_id).await?)
 }
 pub async fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
     let DbRoomStateDelta {
@@ -94,10 +88,7 @@ pub async fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
         appended,
         disposed,
         ..
-    } = room_state_deltas::table
-        .find(frame_id)
-        .first::<DbRoomStateDelta>(&mut connect().await?)
-        .await?;
+    } = data::room::get_state_delta(frame_id).await?;
     Ok(StateDiff {
         parent_id,
         appended: Arc::new(
@@ -121,25 +112,22 @@ pub async fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) 
         appended,
         disposed,
     } = diff;
-    diesel::insert_into(room_state_deltas::table)
-        .values(DbRoomStateDelta {
-            frame_id,
-            room_id: room_id.to_owned(),
-            parent_id,
-            appended: appended
-                .iter()
-                .flat_map(|event| event.as_bytes())
-                .cloned()
-                .collect::<Vec<_>>(),
-            disposed: disposed
-                .iter()
-                .flat_map(|event| event.as_bytes())
-                .cloned()
-                .collect::<Vec<_>>(),
-        })
-        .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
-        .await?;
+    data::room::save_state_delta(DbRoomStateDelta {
+        frame_id,
+        room_id: room_id.to_owned(),
+        parent_id,
+        appended: appended
+            .iter()
+            .flat_map(|event| event.as_bytes())
+            .cloned()
+            .collect::<Vec<_>>(),
+        disposed: disposed
+            .iter()
+            .flat_map(|event| event.as_bytes())
+            .cloned()
+            .collect::<Vec<_>>(),
+    })
+    .await?;
     Ok(())
 }
 /// Creates a new state_hash that often is just a diff to an already existing

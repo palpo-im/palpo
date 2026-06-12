@@ -1,14 +1,10 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use lru_cache::LruCache;
 
 use super::{CompressedState, StateDiff};
 use crate::core::identifiers::*;
-use crate::data::connect;
-use crate::data::schema::*;
-use crate::{AppResult, MatrixError};
+use crate::{AppResult, MatrixError, data};
 
 pub static STATE_INFO_CACHE: LazyLock<Mutex<LruCache<i64, Vec<FrameInfo>>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(100_000)));
@@ -71,53 +67,21 @@ pub async fn load_frame_info(frame_id: i64) -> AppResult<Vec<FrameInfo>> {
 }
 
 pub async fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> AppResult<i64> {
-    let frame_id = if let Some(until_sn) = until_sn {
-        event_points::table
-            .filter(event_points::room_id.eq(room_id))
-            .filter(event_points::event_sn.le(until_sn))
-            .filter(event_points::frame_id.is_not_null())
-            .select(event_points::frame_id)
-            .order(event_points::event_sn.desc())
-            .first::<Option<i64>>(&mut connect().await?)
-            .await?
-    } else {
-        rooms::table
-            .find(room_id)
-            .select(rooms::state_frame_id)
-            .first::<Option<i64>>(&mut connect().await?)
-            .await?
-    };
-    frame_id.ok_or(MatrixError::not_found("room frame is not found").into())
+    data::room::get_room_frame_id(room_id, until_sn)
+        .await?
+        .ok_or(MatrixError::not_found("room frame is not found").into())
 }
 
 pub async fn get_pdu_frame_id(event_id: &EventId) -> AppResult<i64> {
-    let frame_id = event_points::table
-        .filter(event_points::event_id.eq(event_id))
-        .select(event_points::frame_id)
-        .first::<Option<i64>>(&mut connect().await?)
-        .await?;
-    frame_id.ok_or(MatrixError::not_found("pdu frame is not found").into())
+    data::room::get_pdu_frame_id(event_id)
+        .await?
+        .ok_or(MatrixError::not_found("pdu frame is not found").into())
 }
 /// Returns (state_hash, already_existed)
 pub async fn ensure_frame(room_id: &RoomId, hash_data: Vec<u8>) -> AppResult<i64> {
-    diesel::insert_into(room_state_frames::table)
-        .values((
-            room_state_frames::room_id.eq(room_id),
-            room_state_frames::hash_data.eq(hash_data),
-        ))
-        .on_conflict_do_nothing()
-        .returning(room_state_frames::id)
-        .get_result(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+    Ok(data::room::ensure_state_frame(room_id, hash_data).await?)
 }
 
 pub async fn get_frame_id(room_id: &RoomId, hash_data: &[u8]) -> AppResult<i64> {
-    room_state_frames::table
-        .filter(room_state_frames::room_id.eq(room_id))
-        .filter(room_state_frames::hash_data.eq(hash_data))
-        .select(room_state_frames::id)
-        .get_result(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+    Ok(data::room::get_state_frame_id(room_id, hash_data).await?)
 }
