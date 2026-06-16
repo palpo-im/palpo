@@ -15,7 +15,7 @@ use crate::core::serde::CanonicalJsonValue;
 use crate::core::{UnixMillis, signatures};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::data::user::{DbAccessToken, DbUser, DbUserDevice, NewDbUser, NewDbUserDevice};
+use crate::data::user::{DbUser, DbUserDevice, NewDbUser, NewDbUserDevice};
 use crate::exts::DepotExt;
 use crate::server_key::{PubKeyMap, PubKeys};
 use crate::{AppResult, AuthArgs, AuthedInfo, MatrixError, config};
@@ -58,36 +58,26 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         return auth_by_delegated_token(token, &aa, depot).await;
     }
 
-    let access_token = match user_access_tokens::table
-        .filter(user_access_tokens::token.eq(token))
-        .first::<DbAccessToken>(&mut connect().await?)
+    // Native auth: resolve the token to its user/device via a cached lookup so
+    // the hot path stays off the database. `None` means it isn't a user access
+    // token, so we fall through to the appservice token scheme below.
+    let token_auth = crate::data::user::authenticate_token(token)
         .await
-    {
-        Ok(token) => Some(token),
-        Err(diesel::result::Error::NotFound) => None,
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("failed to query access token: {e}");
-            return Err(MatrixError::unknown("Internal server error during authentication").into());
-        }
-    };
-    if let Some(access_token) = access_token {
-        let user = users::table
-            .find(&access_token.user_id)
-            .first::<DbUser>(&mut connect().await?)
-            .await
-            .map_err(|_| MatrixError::unknown_token("User not found", true))?;
+            MatrixError::unknown("Internal server error during authentication")
+        })?;
+    if let Some(crate::data::user::TokenAuth {
+        user,
+        device,
+        access_token_id,
+    }) = token_auth
+    {
         crate::user::ensure_account_usable(&user)?;
-        let user_device = user_devices::table
-            .filter(user_devices::device_id.eq(&access_token.device_id))
-            .filter(user_devices::user_id.eq(&user.id))
-            .first::<DbUserDevice>(&mut connect().await?)
-            .await
-            .map_err(|_| MatrixError::unknown_token("User device not found", true))?;
-
         depot.inject(AuthedInfo {
             user,
-            user_device,
-            access_token_id: Some(access_token.id),
+            user_device: device,
+            access_token_id: Some(access_token_id),
             appservice: None,
         });
         Ok(())

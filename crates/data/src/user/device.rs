@@ -281,6 +281,7 @@ pub async fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> Dat
     )
     .execute(&mut connect().await?)
     .await?;
+    super::access_token::invalidate_user(user_id);
     Ok(())
 }
 
