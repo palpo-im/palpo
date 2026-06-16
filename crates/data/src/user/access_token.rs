@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -77,14 +78,20 @@ struct CachedAuth {
 /// Maximum number of token authentications kept in memory.
 const CACHE_CAPACITY: usize = 100_000;
 /// How long a cached authentication may be served before it is re-validated
-/// against the database. Explicit invalidation (see [`invalidate_user`]) covers
-/// logout and account-state changes immediately; this short TTL is only a
-/// backstop bounding staleness for anything not explicitly invalidated (e.g. a
-/// token orphaned by refresh-token rotation).
+/// against the database. Logout, account-state changes and token rotation all
+/// invalidate explicitly (see [`invalidate_user`] / [`invalidate_token`]), so
+/// this short TTL is only defense-in-depth bounding staleness for any path that
+/// might mutate a token or account without invalidating.
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
 static CACHE: LazyLock<Mutex<LruCache<String, CachedAuth>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(CACHE_CAPACITY)));
+
+/// Bumped on every invalidation. A lookup captures this before it reads the
+/// database and only writes its result back if the value is unchanged, so an
+/// invalidation that races an in-flight (cache-missing) lookup cannot be undone
+/// by that lookup re-populating a now-stale entry.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn cache_get(token: &str) -> Option<TokenAuth> {
     let mut cache = CACHE.lock().ok()?;
@@ -99,8 +106,19 @@ fn cache_get(token: &str) -> Option<TokenAuth> {
     fresh
 }
 
-fn cache_put(token: &str, auth: TokenAuth) {
+/// Insert a freshly resolved authentication, unless an invalidation happened
+/// since `generation` was captured (i.e. while this lookup was reading the
+/// database) — in that case the result may already be stale, so it is dropped.
+fn cache_put(token: &str, auth: TokenAuth, generation: u64) {
     if let Ok(mut cache) = CACHE.lock() {
+        // Re-check under the lock. `invalidate_*` bump the generation before
+        // taking the lock to scan, so either we observe the bump here and skip,
+        // or we insert first and their scan removes our entry afterwards.
+        // Fully qualified: diesel's blanket `RunQueryDsl` impl otherwise shadows
+        // `AtomicU64::load` via its by-value `.load()`.
+        if AtomicU64::load(&GENERATION, Ordering::Acquire) != generation {
+            return;
+        }
         cache.insert(
             token.to_owned(),
             CachedAuth {
@@ -111,12 +129,25 @@ fn cache_put(token: &str, auth: TokenAuth) {
     }
 }
 
+/// Drop a single cached token authentication.
+///
+/// Used when a specific token is replaced (e.g. refresh-token rotation via
+/// `set_access_token`), so the orphaned old token stops authenticating at once
+/// rather than lingering until the TTL.
+pub fn invalidate_token(token: &str) {
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.remove(token);
+    }
+}
+
 /// Drop every cached authentication that belongs to `user_id`.
 ///
 /// Must be called whenever a user's access tokens are revoked or any
 /// account-usability state changes, so that a logged-out / deactivated /
 /// locked / suspended user can never keep authenticating from the cache.
 pub fn invalidate_user(user_id: &UserId) {
+    GENERATION.fetch_add(1, Ordering::AcqRel);
     if let Ok(mut cache) = CACHE.lock() {
         let stale: Vec<String> = cache
             .iter()
@@ -139,6 +170,10 @@ pub async fn authenticate_token(token: &str) -> DataResult<Option<TokenAuth>> {
     if let Some(hit) = cache_get(token) {
         return Ok(Some(hit));
     }
+
+    // Capture the generation before reading the database; `cache_put` will
+    // refuse to store the result if an invalidation raced these reads.
+    let generation = AtomicU64::load(&GENERATION, Ordering::Acquire);
 
     let access_token = match user_access_tokens::table
         .filter(user_access_tokens::token.eq(token))
@@ -176,6 +211,6 @@ pub async fn authenticate_token(token: &str) -> DataResult<Option<TokenAuth>> {
         device,
         access_token_id: access_token.id,
     };
-    cache_put(token, auth.clone());
+    cache_put(token, auth.clone(), generation);
     Ok(Some(auth))
 }
