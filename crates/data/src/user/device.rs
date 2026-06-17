@@ -194,6 +194,11 @@ pub async fn is_device_exists(user_id: &UserId, device_id: &DeviceId) -> DataRes
 }
 
 pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+    // Evict before deleting the device row: a cache hit (which checks only TTL,
+    // not generation) would otherwise keep serving this device's cloned auth
+    // during the window between the row deletion and the post-delete eviction in
+    // `delete_access_tokens` below.
+    super::access_token::invalidate_user(user_id);
     let count = diesel::delete(
         user_devices::table
             .filter(user_devices::user_id.eq(user_id))

@@ -473,6 +473,10 @@ pub fn clean_signatures<F: Fn(&UserId) -> bool>(
 }
 
 pub async fn deactivate(user_id: &UserId) -> DataResult<()> {
+    // Evict before the state change so a cache hit can't keep serving the
+    // still-usable account during the deletes below; invalidated again at the
+    // end to drop anything a concurrent lookup re-populated.
+    access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set((users::deactivated_at.eq(UnixMillis::now()),))
         .execute(&mut connect().await?)
