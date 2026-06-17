@@ -79,9 +79,9 @@ struct CachedAuth {
 const CACHE_CAPACITY: usize = 100_000;
 /// How long a cached authentication may be served before it is re-validated
 /// against the database. Logout, account-state changes and token rotation all
-/// invalidate explicitly (see [`invalidate_user`] / [`invalidate_token`]), so
-/// this short TTL is only defense-in-depth bounding staleness for any path that
-/// might mutate a token or account without invalidating.
+/// invalidate explicitly (see [`invalidate_user`]), so this short TTL is only
+/// defense-in-depth bounding staleness for any path that might mutate a token
+/// or account without invalidating.
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
 static CACHE: LazyLock<Mutex<LruCache<String, CachedAuth>>> =
@@ -126,18 +126,6 @@ fn cache_put(token: &str, auth: TokenAuth, generation: u64) {
                 cached_at: Instant::now(),
             },
         );
-    }
-}
-
-/// Drop a single cached token authentication.
-///
-/// Used when a specific token is replaced (e.g. refresh-token rotation via
-/// `set_access_token`), so the orphaned old token stops authenticating at once
-/// rather than lingering until the TTL.
-pub fn invalidate_token(token: &str) {
-    GENERATION.fetch_add(1, Ordering::AcqRel);
-    if let Ok(mut cache) = CACHE.lock() {
-        cache.remove(token);
     }
 }
 

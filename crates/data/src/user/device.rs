@@ -258,18 +258,6 @@ pub async fn set_access_token(
     token: &str,
     refresh_token_id: Option<i64>,
 ) -> DataResult<()> {
-    // Capture the token currently bound to this device (if any). The upsert
-    // below replaces it, orphaning that string in the DB; its cached
-    // authentication must be dropped or it would keep authenticating until the
-    // cache TTL (e.g. the pre-rotation token after a refresh).
-    let old_token = user_access_tokens::table
-        .filter(user_access_tokens::user_id.eq(user_id))
-        .filter(user_access_tokens::device_id.eq(device_id))
-        .select(user_access_tokens::token)
-        .first::<String>(&mut connect().await?)
-        .await
-        .optional()?;
-
     diesel::insert_into(user_access_tokens::table)
         .values(NewDbAccessToken::new(
             user_id.to_owned(),
@@ -283,11 +271,13 @@ pub async fn set_access_token(
         .execute(&mut connect().await?)
         .await?;
 
-    if let Some(old_token) = old_token
-        && old_token != token
-    {
-        super::access_token::invalidate_token(&old_token);
-    }
+    // The upsert replaces any token previously bound to this device, orphaning
+    // that string in the DB. Invalidate by user *after* the write: a precise
+    // read-then-invalidate of the old token would race a concurrent
+    // refresh/login for the same device (both read the same old token, leaving
+    // one of the new tokens cached). Invalidating after the write drops every
+    // stale entry for the user regardless of interleaving.
+    super::access_token::invalidate_user(user_id);
     Ok(())
 }
 

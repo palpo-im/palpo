@@ -102,6 +102,11 @@ async fn change_password(
         )
         .execute(&mut connect().await?)
         .await?;
+        // These bulk deletes bypass the invalidating data-layer helpers, and the
+        // earlier set_password invalidation ran before them; invalidate again
+        // *after* the deletes so a device that authenticated in between cannot
+        // keep a cached entry alive until the TTL.
+        crate::data::user::invalidate_user(authed.user_id());
     }
 
     info!("User {} changed their password.", authed.user_id());
