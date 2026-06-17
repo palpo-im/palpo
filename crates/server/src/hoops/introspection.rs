@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use lru_cache::LruCache;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -22,8 +22,14 @@ struct CachedEntry {
     cached_at: Instant,
 }
 
-static CACHE: LazyLock<Mutex<HashMap<[u8; 32], CachedEntry>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Upper bound on cached introspection results. Without a bound the cache grew
+/// without limit, since rotated/expired tokens were only ever evicted when the
+/// exact same token hash was looked up again. The LRU bound keeps memory capped
+/// regardless of how many distinct tokens are seen.
+const CACHE_CAPACITY: usize = 100_000;
+
+static CACHE: LazyLock<Mutex<LruCache<[u8; 32], CachedEntry>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(CACHE_CAPACITY)));
 
 fn token_cache_key(token: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -42,13 +48,20 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
     // Check cache
     if ttl > 0 {
         let key = token_cache_key(token);
-        if let Ok(mut cache) = CACHE.lock()
-            && let Some(entry) = cache.get(&key)
-        {
-            if entry.cached_at.elapsed() < Duration::from_secs(ttl) {
-                return Ok(entry.result.clone());
+        if let Ok(mut cache) = CACHE.lock() {
+            let hit = match cache.get_mut(&key) {
+                Some(entry) if entry.cached_at.elapsed() < Duration::from_secs(ttl) => {
+                    Some(entry.result.clone())
+                }
+                Some(_) => None, // expired
+                None => None,
+            };
+            match hit {
+                Some(result) => return Ok(result),
+                None => {
+                    cache.remove(&key);
+                }
             }
-            cache.remove(&key);
         }
     }
 
