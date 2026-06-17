@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::iter::FromIterator;
+use std::time::Duration;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -58,10 +59,12 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
         return auth_by_delegated_token(token, &aa, depot).await;
     }
 
-    // Native auth: resolve the token to its user/device via a cached lookup so
-    // the hot path stays off the database. `None` means it isn't a user access
-    // token, so we fall through to the appservice token scheme below.
-    let token_auth = crate::data::user::authenticate_token(token)
+    // Native auth: resolve the token to its user/device, optionally via an
+    // in-memory cache (disabled when native_token_cache_ttl is 0). `None` means
+    // it isn't a user access token, so we fall through to the appservice token
+    // scheme below.
+    let cache_ttl = Duration::from_secs(config::get().native_token_cache_ttl);
+    let token_auth = crate::data::user::authenticate_token(token, cache_ttl)
         .await
         .map_err(|e| {
             tracing::error!("failed to query access token: {e}");

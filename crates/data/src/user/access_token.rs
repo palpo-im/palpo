@@ -77,12 +77,6 @@ struct CachedAuth {
 
 /// Maximum number of token authentications kept in memory.
 const CACHE_CAPACITY: usize = 100_000;
-/// How long a cached authentication may be served before it is re-validated
-/// against the database. Logout, account-state changes and token rotation all
-/// invalidate explicitly (see [`invalidate_user`]), so this short TTL is only
-/// defense-in-depth bounding staleness for any path that might mutate a token
-/// or account without invalidating.
-const CACHE_TTL: Duration = Duration::from_secs(60);
 
 static CACHE: LazyLock<Mutex<LruCache<String, CachedAuth>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(CACHE_CAPACITY)));
@@ -93,10 +87,10 @@ static CACHE: LazyLock<Mutex<LruCache<String, CachedAuth>>> =
 /// by that lookup re-populating a now-stale entry.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-fn cache_get(token: &str) -> Option<TokenAuth> {
+fn cache_get(token: &str, ttl: Duration) -> Option<TokenAuth> {
     let mut cache = CACHE.lock().ok()?;
     let fresh = match cache.get_mut(token) {
-        Some(entry) if entry.cached_at.elapsed() < CACHE_TTL => Some(entry.auth.clone()),
+        Some(entry) if entry.cached_at.elapsed() < ttl => Some(entry.auth.clone()),
         Some(_) => None, // expired
         None => return None,
     };
@@ -150,12 +144,20 @@ pub fn invalidate_user(user_id: &UserId) {
 
 /// Resolve a native access token to its user, device and token id.
 ///
-/// Uses an in-memory cache to keep the authentication hot path off the
-/// database (a cache hit avoids three round-trips per request). Returns
-/// `Ok(None)` when `token` is not a known user access token, so the caller can
-/// fall through to other schemes (e.g. appservice tokens).
-pub async fn authenticate_token(token: &str) -> DataResult<Option<TokenAuth>> {
-    if let Some(hit) = cache_get(token) {
+/// When `cache_ttl` is non-zero, an in-memory cache keeps the authentication
+/// hot path off the database (a cache hit avoids three round-trips per
+/// request); entries older than `cache_ttl` are re-validated. `cache_ttl` of
+/// zero disables the cache entirely (every call hits the database) — the safe
+/// default for multi-instance deployments, since the cache is process-local.
+///
+/// Returns `Ok(None)` when `token` is not a known user access token, so the
+/// caller can fall through to other schemes (e.g. appservice tokens).
+pub async fn authenticate_token(
+    token: &str,
+    cache_ttl: Duration,
+) -> DataResult<Option<TokenAuth>> {
+    let caching = !cache_ttl.is_zero();
+    if caching && let Some(hit) = cache_get(token, cache_ttl) {
         return Ok(Some(hit));
     }
 
@@ -199,6 +201,8 @@ pub async fn authenticate_token(token: &str) -> DataResult<Option<TokenAuth>> {
         device,
         access_token_id: access_token.id,
     };
-    cache_put(token, auth.clone(), generation);
+    if caching {
+        cache_put(token, auth.clone(), generation);
+    }
     Ok(Some(auth))
 }
