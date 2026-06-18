@@ -95,22 +95,29 @@ pub async fn create_backup(
         .map_err(Into::into)
 }
 
+/// Update an existing backup version's `auth_data` in place and bump its etag.
+///
+/// The version identifier is preserved (per the Matrix spec, `PUT
+/// /room_keys/version/{version}` updates the named version rather than creating
+/// a new one). Trashed versions are ignored. Returns `true` if a matching,
+/// live version was updated, `false` if no such version exists.
 pub async fn update_backup(
     user_id: &UserId,
     version: i64,
     algorithm: &BackupAlgorithm,
-) -> DataResult<()> {
-    diesel::update(
+) -> DataResult<bool> {
+    let affected = diesel::update(
         e2e_room_keys_versions::table
             .filter(e2e_room_keys_versions::user_id.eq(user_id))
-            .filter(e2e_room_keys_versions::version.eq(version)),
+            .filter(e2e_room_keys_versions::version.eq(version))
+            .filter(e2e_room_keys_versions::is_trashed.eq(false)),
     )
     .set((
         e2e_room_keys_versions::algorithm.eq(serde_json::to_value(algorithm)?),
         e2e_room_keys_versions::etag.eq(UnixMillis::now().get() as i64),
     ))
     .execute(&mut connect().await?).await?;
-    Ok(())
+    Ok(affected > 0)
 }
 
 pub async fn get_latest_room_key(user_id: &UserId) -> DataResult<Option<DbRoomKey>> {

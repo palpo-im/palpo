@@ -293,15 +293,25 @@ async fn create_version(
 
 /// #PUT /_matrix/client/r0/room_keys/version/{version}
 /// Update information about an existing backup. Only `auth_data` can be modified.
+///
+/// The version named in the path is updated in place; unlike `create_version`
+/// this must not mint a new version, otherwise clients that just signed the
+/// backup find their signature on a now-superseded version and never settle on
+/// a trusted backup.
 #[endpoint]
 async fn update_version(
     _aa: AuthArgs,
+    version: PathParam<i64>,
     body: JsonBody<CreateVersionReqBody>,
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
-    let algorithm = body.into_inner().0;
-    key_backup::create_backup(authed.user_id(), &algorithm).await?;
+    let version = version.into_inner();
+    let algorithm = body.into_inner().0.deserialize()?;
+
+    if !key_backup::update_backup(authed.user_id(), version, &algorithm).await? {
+        return Err(MatrixError::not_found("Key backup does not exist.").into());
+    }
 
     empty_ok()
 }
