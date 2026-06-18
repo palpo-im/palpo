@@ -8,7 +8,7 @@ use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::exts::*;
-use crate::{AuthArgs, EmptyResult, empty_ok, hoops};
+use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok, hoops};
 
 pub fn authed_router() -> Router {
     Router::with_path("password")
@@ -37,6 +37,14 @@ async fn change_password(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
+
+    if crate::config::get().enabled_delegated_auth().is_some() {
+        return Err(MatrixError::forbidden(
+            "Password changes are handled by the delegated authentication service.",
+            None,
+        )
+        .into());
+    }
 
     let mut uiaa_info = UiaaInfo {
         flows: vec![AuthFlow {
