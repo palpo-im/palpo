@@ -81,6 +81,7 @@ fn supported_login_flows(delegated_auth_enabled: bool) -> Vec<LoginType> {
 /// supported login types.
 #[endpoint]
 async fn login(
+    aa: AuthArgs,
     body: JsonBody<LoginReqBody>,
     req: &mut Request,
     res: &mut Response,
@@ -240,13 +241,7 @@ async fn login(
             user_id
         }
         LoginInfo::Appservice(Appservice { identifier }) => {
-            let username = if let UserIdentifier::Matrix(user_id) = identifier {
-                user_id.user.to_lowercase()
-            } else {
-                return Err(MatrixError::forbidden("Bad login type.", None).into());
-            };
-            UserId::parse_with_server_name(username, &config::get().server_name)
-                .map_err(|_| MatrixError::invalid_username("Username is invalid."))?
+            authenticate_appservice_login(identifier, &aa).await?
         }
         _ => {
             warn!("Unsupported or unknown login type: {:?}", &body.login_info);
@@ -316,6 +311,44 @@ async fn login(
         refresh_token,
         expires_in: None,
     })
+}
+
+async fn authenticate_appservice_login(
+    identifier: &UserIdentifier,
+    aa: &AuthArgs,
+) -> AppResult<OwnedUserId> {
+    let user_id = appservice_login_user_id(identifier)?;
+    let token = aa.require_access_token()?;
+    let appservice = crate::appservice::find_from_token(token)
+        .await?
+        .ok_or_else(|| MatrixError::forbidden("Invalid application service token.", None))?;
+
+    ensure_appservice_can_login_as(&appservice, &user_id)?;
+    Ok(user_id)
+}
+
+fn appservice_login_user_id(identifier: &UserIdentifier) -> Result<OwnedUserId, MatrixError> {
+    let username = if let UserIdentifier::Matrix(user_id) = identifier {
+        user_id.user.to_lowercase()
+    } else {
+        return Err(MatrixError::forbidden("Bad login type.", None));
+    };
+    UserId::parse_with_server_name(username, &config::get().server_name)
+        .map_err(|_| MatrixError::invalid_username("Username is invalid."))
+}
+
+fn ensure_appservice_can_login_as(
+    appservice: &crate::appservice::RegistrationInfo,
+    user_id: &UserId,
+) -> Result<(), MatrixError> {
+    if appservice.is_user_match(user_id) {
+        Ok(())
+    } else {
+        Err(MatrixError::forbidden(
+            "User is not in appservice's namespace",
+            None,
+        ))
+    }
 }
 
 /// # `POST /_matrix/client/v1/login/get_token`
@@ -447,6 +480,32 @@ async fn revoke_delegated_token(
 mod tests {
     use super::*;
 
+    fn test_appservice_info() -> crate::appservice::RegistrationInfo {
+        use crate::core::appservice::{Namespace, Namespaces, Registration};
+
+        Registration {
+            id: "test".to_owned(),
+            url: None,
+            as_token: "as-token".to_owned(),
+            hs_token: "hs-token".to_owned(),
+            sender_localpart: "bridgebot".to_owned(),
+            namespaces: Namespaces {
+                users: vec![Namespace::new(
+                    true,
+                    r"^@bridge_.+:example\.com$".to_owned(),
+                )],
+                aliases: Vec::new(),
+                rooms: Vec::new(),
+            },
+            rate_limited: None,
+            protocols: None,
+            receive_ephemeral: false,
+            device_management: false,
+        }
+        .try_into()
+        .unwrap()
+    }
+
     #[test]
     fn delegated_auth_advertises_password_and_sso_login() {
         let flows = supported_login_flows(true);
@@ -471,6 +530,30 @@ mod tests {
             flow_types,
             vec!["m.login.password", "m.login.application_service"]
         );
+    }
+
+    #[test]
+    fn appservice_login_allows_namespaced_users() {
+        let appservice = test_appservice_info();
+        let user_id = UserId::parse("@bridge_alice:example.com").unwrap();
+
+        assert!(ensure_appservice_can_login_as(&appservice, &user_id).is_ok());
+    }
+
+    #[test]
+    fn appservice_login_allows_sender_localpart() {
+        let appservice = test_appservice_info();
+        let user_id = UserId::parse("@bridgebot:example.com").unwrap();
+
+        assert!(ensure_appservice_can_login_as(&appservice, &user_id).is_ok());
+    }
+
+    #[test]
+    fn appservice_login_rejects_users_outside_namespace() {
+        let appservice = test_appservice_info();
+        let user_id = UserId::parse("@alice:example.com").unwrap();
+
+        assert!(ensure_appservice_can_login_as(&appservice, &user_id).is_err());
     }
 }
 
