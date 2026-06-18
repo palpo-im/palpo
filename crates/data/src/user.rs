@@ -234,6 +234,7 @@ pub async fn mark_deactivated(user_id: &UserId) -> DataResult<()> {
         .set(users::deactivated_at.eq(UnixMillis::now()))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -401,6 +402,7 @@ pub async fn set_guest(user_id: &UserId, is_guest: bool) -> DataResult<()> {
         .set(users::is_guest.eq(is_guest))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -417,6 +419,7 @@ pub async fn delete_access_tokens(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_access_tokens::table.filter(user_access_tokens::user_id.eq(user_id)))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -470,6 +473,10 @@ pub fn clean_signatures<F: Fn(&UserId) -> bool>(
 }
 
 pub async fn deactivate(user_id: &UserId) -> DataResult<()> {
+    // Evict before the state change so a cache hit can't keep serving the
+    // still-usable account during the deletes below; invalidated again at the
+    // end to drop anything a concurrent lookup re-populated.
+    access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set((users::deactivated_at.eq(UnixMillis::now()),))
         .execute(&mut connect().await?)
@@ -481,6 +488,7 @@ pub async fn deactivate(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_access_tokens::table.filter(user_access_tokens::user_id.eq(user_id)))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
 
     Ok(())
 }
@@ -490,6 +498,7 @@ pub async fn reactivate(user_id: &UserId) -> DataResult<()> {
         .set(users::deactivated_at.eq::<Option<UnixMillis>>(None))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -589,6 +598,7 @@ pub async fn set_admin(user_id: &UserId, is_admin: bool) -> DataResult<()> {
         .set(users::is_admin.eq(is_admin))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -598,6 +608,7 @@ pub async fn set_shadow_banned(user_id: &UserId, shadow_banned: bool) -> DataRes
         .set(users::shadow_banned.eq(shadow_banned))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -607,6 +618,7 @@ pub async fn set_user_type(user_id: &UserId, user_type: Option<&str>) -> DataRes
         .set(users::ty.eq(user_type))
         .execute(&mut connect().await?)
         .await?;
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -629,6 +641,7 @@ pub async fn set_locked(user_id: &UserId, locked: bool, locker_id: Option<&UserI
             .execute(&mut connect().await?)
             .await?;
     }
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
@@ -645,6 +658,7 @@ pub async fn set_suspended(user_id: &UserId, suspended: bool) -> DataResult<()> 
             .execute(&mut connect().await?)
             .await?;
     }
+    access_token::invalidate_user(user_id);
     Ok(())
 }
 
