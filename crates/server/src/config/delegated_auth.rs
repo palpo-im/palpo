@@ -12,7 +12,9 @@ pub struct DelegatedAuthConfig {
     /// Enable MSC3861 delegated OIDC authentication.
     /// When enabled, Palpo accepts delegated OIDC access tokens from an
     /// external authorization server (like Pasion) via token introspection.
-    /// Local password/appservice login remains available.
+    /// Local password login, local user registration, and local password changes
+    /// are disabled while delegated auth is enabled; local appservice login
+    /// remains available for bridge/admin integrations.
     ///
     /// default: false
     #[serde(default)]

@@ -60,7 +60,11 @@ async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
 }
 
 fn supported_login_flows(delegated_auth_enabled: bool) -> Vec<LoginType> {
-    let mut flows = vec![LoginType::password(), LoginType::appservice()];
+    let mut flows = Vec::new();
+    if !delegated_auth_enabled {
+        flows.push(LoginType::password());
+    }
+    flows.push(LoginType::appservice());
     if delegated_auth_enabled {
         flows.push(LoginType::Sso(
             crate::core::client::session::SsoLoginType::new(),
@@ -101,6 +105,14 @@ async fn login(
             };
             let user_id = UserId::parse_with_server_name(username, &config::get().server_name)
                 .map_err(|_| MatrixError::invalid_username("Username is invalid."))?;
+
+            if config::get().enabled_delegated_auth().is_some() {
+                return Err(MatrixError::forbidden(
+                    "Password login is disabled while delegated authentication is enabled. Use SSO/OIDC or a delegated access token.",
+                    None,
+                )
+                .into());
+            }
 
             // if let Some(ldap) = config::enabled_ldap() {
             //     let (user_dn, is_ldap_admin) = match ldap.bind_dn.as_ref() {
@@ -283,13 +295,8 @@ async fn login(
 
     // Determine if device_id was provided and exists in the db for this user
     if data::user::device::is_device_exists(&user_id, &device_id).await? {
-        data::user::device::set_access_token(
-            &user_id,
-            &device_id,
-            &access_token,
-            refresh_token_id,
-        )
-        .await?;
+        data::user::device::set_access_token(&user_id, &device_id, &access_token, refresh_token_id)
+            .await?;
     } else {
         data::user::device::create_device(
             &user_id,
@@ -374,6 +381,13 @@ async fn get_access_token(
         return Err(
             MatrixError::forbidden("login via an existing session is not enabled", None).into(),
         );
+    }
+    if conf.enabled_delegated_auth().is_some() {
+        return Err(MatrixError::forbidden(
+            "Login token issuance via password UIAA is disabled while delegated authentication is enabled.",
+            None,
+        )
+        .into());
     }
 
     // This route SHOULD have UIA
@@ -509,17 +523,13 @@ mod tests {
     }
 
     #[test]
-    fn delegated_auth_advertises_password_and_sso_login() {
+    fn delegated_auth_advertises_delegated_login_flows() {
         let flows = supported_login_flows(true);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
             flow_types,
-            vec![
-                "m.login.password",
-                "m.login.application_service",
-                "m.login.sso",
-            ]
+            vec!["m.login.application_service", "m.login.sso"]
         );
     }
 

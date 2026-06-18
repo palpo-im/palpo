@@ -66,6 +66,16 @@ async fn register(
         return Err(MatrixError::forbidden("registration has been disabled", None).into());
     }
 
+    if conf.enabled_delegated_auth().is_some()
+        && body.login_type != Some(LoginType::ApplicationService)
+    {
+        return Err(MatrixError::forbidden(
+            "Local registration is disabled while delegated authentication is enabled. Use SSO/OIDC registration.",
+            None,
+        )
+        .into());
+    }
+
     let is_guest = body.kind == RegistrationKind::Guest;
     let user_id = match (&body.username, is_guest) {
         (Some(username), false) => {
@@ -100,7 +110,8 @@ async fn register(
         // Constant-time comparison so we don't leak `as_token` bytes via
         // response timing. The same pattern is used in `hoops/auth.rs`.
         let matched = crate::appservices()
-            .await.iter()
+            .await
+            .iter()
             .find(|appservice| {
                 appservice
                     .as_token
@@ -312,6 +323,14 @@ async fn register(
 /// register
 #[endpoint]
 async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableResBody> {
+    if config::get().enabled_delegated_auth().is_some() {
+        return Err(MatrixError::forbidden(
+            "Local registration is disabled while delegated authentication is enabled.",
+            None,
+        )
+        .into());
+    }
+
     let username = username.into_inner().to_lowercase();
     // Validate user id
     let server_name = &config::get().server_name;
