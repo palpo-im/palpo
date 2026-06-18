@@ -319,6 +319,8 @@ async fn authenticate_appservice_login(
 ) -> AppResult<OwnedUserId> {
     let user_id = appservice_login_user_id(identifier)?;
     let token = aa.require_access_token()?;
+    // Ensure file-backed appservice registrations are loaded before token lookup.
+    crate::appservices().await;
     let appservice = crate::appservice::find_from_token(token)
         .await?
         .ok_or_else(|| MatrixError::forbidden("Invalid application service token.", None))?;
