@@ -156,7 +156,13 @@ async fn initial_sync(
 ) -> JsonResult<InitialSyncResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let room_id = &args.room_id;
+    let room_id = match OwnedRoomId::try_from(args.room_id.as_str()) {
+        Ok(room_id) => room_id,
+        Err(_) => {
+            return Err(MatrixError::forbidden("No room preview available.", None).into());
+        }
+    };
+    let room_id = &room_id;
 
     // If the room is not known locally, it may be a remote room the user is
     // trying to preview (e.g. opening `#room:other.server` without joining).
