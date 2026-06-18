@@ -30,6 +30,9 @@ impl AuthedInfo {
     pub fn appservice(&self) -> Option<&RegistrationInfo> {
         self.appservice.as_ref()
     }
+    pub fn is_delegated_auth(&self) -> bool {
+        self.access_token_id.is_none() && self.appservice.is_none()
+    }
     pub fn is_admin(&self) -> bool {
         self.user.is_admin
     }

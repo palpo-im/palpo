@@ -54,14 +54,19 @@ pub fn authed_router() -> Router {
 /// when logging in.
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
-    let flows = if config::get().enabled_delegated_auth().is_some() {
-        vec![LoginType::Sso(
+    Ok(Json(LoginTypesResBody::new(supported_login_flows(
+        config::get().enabled_delegated_auth().is_some(),
+    ))))
+}
+
+fn supported_login_flows(delegated_auth_enabled: bool) -> Vec<LoginType> {
+    let mut flows = vec![LoginType::password(), LoginType::appservice()];
+    if delegated_auth_enabled {
+        flows.push(LoginType::Sso(
             crate::core::client::session::SsoLoginType::new(),
-        )]
-    } else {
-        vec![LoginType::password(), LoginType::appservice()]
-    };
-    Ok(Json(LoginTypesResBody::new(flows)))
+        ));
+    }
+    flows
 }
 
 /// #POST /_matrix/client/r0/login
@@ -76,18 +81,11 @@ async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
 /// supported login types.
 #[endpoint]
 async fn login(
+    aa: AuthArgs,
     body: JsonBody<LoginReqBody>,
     req: &mut Request,
     res: &mut Response,
 ) -> JsonResult<LoginResBody> {
-    if config::get().enabled_delegated_auth().is_some() {
-        return Err(MatrixError::forbidden(
-            "This server uses delegated authentication. Use the OIDC provider to log in.",
-            None,
-        )
-        .into());
-    }
-
     // Validate login method
     // TODO: Other login methods
     let user_id = match &body.login_info {
@@ -243,13 +241,7 @@ async fn login(
             user_id
         }
         LoginInfo::Appservice(Appservice { identifier }) => {
-            let username = if let UserIdentifier::Matrix(user_id) = identifier {
-                user_id.user.to_lowercase()
-            } else {
-                return Err(MatrixError::forbidden("Bad login type.", None).into());
-            };
-            UserId::parse_with_server_name(username, &config::get().server_name)
-                .map_err(|_| MatrixError::invalid_username("Username is invalid."))?
+            authenticate_appservice_login(identifier, &aa).await?
         }
         _ => {
             warn!("Unsupported or unknown login type: {:?}", &body.login_info);
@@ -319,6 +311,46 @@ async fn login(
         refresh_token,
         expires_in: None,
     })
+}
+
+async fn authenticate_appservice_login(
+    identifier: &UserIdentifier,
+    aa: &AuthArgs,
+) -> AppResult<OwnedUserId> {
+    let user_id = appservice_login_user_id(identifier)?;
+    let token = aa.require_access_token()?;
+    // Ensure file-backed appservice registrations are loaded before token lookup.
+    crate::appservices().await;
+    let appservice = crate::appservice::find_from_token(token)
+        .await?
+        .ok_or_else(|| MatrixError::forbidden("Invalid application service token.", None))?;
+
+    ensure_appservice_can_login_as(&appservice, &user_id)?;
+    Ok(user_id)
+}
+
+fn appservice_login_user_id(identifier: &UserIdentifier) -> Result<OwnedUserId, MatrixError> {
+    let username = if let UserIdentifier::Matrix(user_id) = identifier {
+        user_id.user.to_lowercase()
+    } else {
+        return Err(MatrixError::forbidden("Bad login type.", None));
+    };
+    UserId::parse_with_server_name(username, &config::get().server_name)
+        .map_err(|_| MatrixError::invalid_username("Username is invalid."))
+}
+
+fn ensure_appservice_can_login_as(
+    appservice: &crate::appservice::RegistrationInfo,
+    user_id: &UserId,
+) -> Result<(), MatrixError> {
+    if appservice.is_user_match(user_id) {
+        Ok(())
+    } else {
+        Err(MatrixError::forbidden(
+            "User is not in appservice's namespace",
+            None,
+        ))
+    }
 }
 
 /// # `POST /_matrix/client/v1/login/get_token`
@@ -396,9 +428,10 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
         return empty_ok();
     };
 
-    // When using delegated auth, also revoke the access token at the OIDC
-    // provider so that the browser session is properly invalidated.
-    if let Some(da) = config::get().enabled_delegated_auth()
+    // Delegated tokens are owned by the OIDC provider; local password/appservice
+    // sessions are revoked only from Palpo's local device tables below.
+    if authed.is_delegated_auth()
+        && let Some(da) = config::get().enabled_delegated_auth()
         && let Some(token) = req
             .headers()
             .get("authorization")
@@ -443,6 +476,87 @@ async fn revoke_delegated_token(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_appservice_info() -> crate::appservice::RegistrationInfo {
+        use crate::core::appservice::{Namespace, Namespaces, Registration};
+
+        Registration {
+            id: "test".to_owned(),
+            url: None,
+            as_token: "as-token".to_owned(),
+            hs_token: "hs-token".to_owned(),
+            sender_localpart: "bridgebot".to_owned(),
+            namespaces: Namespaces {
+                users: vec![Namespace::new(
+                    true,
+                    r"^@bridge_.+:example\.com$".to_owned(),
+                )],
+                aliases: Vec::new(),
+                rooms: Vec::new(),
+            },
+            rate_limited: None,
+            protocols: None,
+            receive_ephemeral: false,
+            device_management: false,
+        }
+        .try_into()
+        .unwrap()
+    }
+
+    #[test]
+    fn delegated_auth_advertises_password_and_sso_login() {
+        let flows = supported_login_flows(true);
+        let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
+
+        assert_eq!(
+            flow_types,
+            vec![
+                "m.login.password",
+                "m.login.application_service",
+                "m.login.sso",
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_auth_keeps_existing_login_flows() {
+        let flows = supported_login_flows(false);
+        let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
+
+        assert_eq!(
+            flow_types,
+            vec!["m.login.password", "m.login.application_service"]
+        );
+    }
+
+    #[test]
+    fn appservice_login_allows_namespaced_users() {
+        let appservice = test_appservice_info();
+        let user_id = UserId::parse("@bridge_alice:example.com").unwrap();
+
+        assert!(ensure_appservice_can_login_as(&appservice, &user_id).is_ok());
+    }
+
+    #[test]
+    fn appservice_login_allows_sender_localpart() {
+        let appservice = test_appservice_info();
+        let user_id = UserId::parse("@bridgebot:example.com").unwrap();
+
+        assert!(ensure_appservice_can_login_as(&appservice, &user_id).is_ok());
+    }
+
+    #[test]
+    fn appservice_login_rejects_users_outside_namespace() {
+        let appservice = test_appservice_info();
+        let user_id = UserId::parse("@alice:example.com").unwrap();
+
+        assert!(ensure_appservice_can_login_as(&appservice, &user_id).is_err());
+    }
 }
 
 /// #POST /_matrix/client/r0/logout/all
