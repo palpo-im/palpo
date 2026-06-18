@@ -10,8 +10,9 @@ fn default_introspection_cache_ttl() -> u64 {
 #[derive(Clone, Debug, Deserialize, Default)]
 pub struct DelegatedAuthConfig {
     /// Enable MSC3861 delegated OIDC authentication.
-    /// When enabled, Palpo delegates token validation to an external
-    /// authorization server (like Pasion) via token introspection.
+    /// When enabled, Palpo accepts delegated OIDC access tokens from an
+    /// external authorization server (like Pasion) via token introspection.
+    /// Local password/appservice login remains available.
     ///
     /// default: false
     #[serde(default)]

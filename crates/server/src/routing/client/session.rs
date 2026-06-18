@@ -54,14 +54,19 @@ pub fn authed_router() -> Router {
 /// when logging in.
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
-    let flows = if config::get().enabled_delegated_auth().is_some() {
-        vec![LoginType::Sso(
+    Ok(Json(LoginTypesResBody::new(supported_login_flows(
+        config::get().enabled_delegated_auth().is_some(),
+    ))))
+}
+
+fn supported_login_flows(delegated_auth_enabled: bool) -> Vec<LoginType> {
+    let mut flows = vec![LoginType::password(), LoginType::appservice()];
+    if delegated_auth_enabled {
+        flows.push(LoginType::Sso(
             crate::core::client::session::SsoLoginType::new(),
-        )]
-    } else {
-        vec![LoginType::password(), LoginType::appservice()]
-    };
-    Ok(Json(LoginTypesResBody::new(flows)))
+        ));
+    }
+    flows
 }
 
 /// #POST /_matrix/client/r0/login
@@ -80,14 +85,6 @@ async fn login(
     req: &mut Request,
     res: &mut Response,
 ) -> JsonResult<LoginResBody> {
-    if config::get().enabled_delegated_auth().is_some() {
-        return Err(MatrixError::forbidden(
-            "This server uses delegated authentication. Use the OIDC provider to log in.",
-            None,
-        )
-        .into());
-    }
-
     // Validate login method
     // TODO: Other login methods
     let user_id = match &body.login_info {
@@ -396,9 +393,10 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
         return empty_ok();
     };
 
-    // When using delegated auth, also revoke the access token at the OIDC
-    // provider so that the browser session is properly invalidated.
-    if let Some(da) = config::get().enabled_delegated_auth()
+    // Delegated tokens are owned by the OIDC provider; local password/appservice
+    // sessions are revoked only from Palpo's local device tables below.
+    if authed.is_delegated_auth()
+        && let Some(da) = config::get().enabled_delegated_auth()
         && let Some(token) = req
             .headers()
             .get("authorization")
@@ -443,6 +441,37 @@ async fn revoke_delegated_token(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delegated_auth_advertises_password_and_sso_login() {
+        let flows = supported_login_flows(true);
+        let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
+
+        assert_eq!(
+            flow_types,
+            vec![
+                "m.login.password",
+                "m.login.application_service",
+                "m.login.sso",
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_auth_keeps_existing_login_flows() {
+        let flows = supported_login_flows(false);
+        let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
+
+        assert_eq!(
+            flow_types,
+            vec!["m.login.password", "m.login.application_service"]
+        );
+    }
 }
 
 /// #POST /_matrix/client/r0/logout/all
