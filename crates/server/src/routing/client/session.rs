@@ -1,9 +1,11 @@
 use std::time::Duration;
 
+use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
 use palpo_data::user::set_display_name;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::core::UnixMillis;
 use crate::core::client::session::*;
@@ -13,7 +15,7 @@ use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::data::user::{DbUser, NewDbUser};
+use crate::data::user::{DbUser, DbUserDevice, NewDbUser};
 use crate::exts::*;
 use crate::{
     AppError, AppResult, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult,
@@ -54,14 +56,21 @@ pub fn authed_router() -> Router {
 /// when logging in.
 #[endpoint]
 async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
+    let delegated_auth = config::get().enabled_delegated_auth();
     Ok(Json(LoginTypesResBody::new(supported_login_flows(
-        config::get().enabled_delegated_auth().is_some(),
+        delegated_auth.is_some(),
+        delegated_auth
+            .map(config::DelegatedAuthConfig::password_login_enabled)
+            .unwrap_or(false),
     ))))
 }
 
-fn supported_login_flows(delegated_auth_enabled: bool) -> Vec<LoginType> {
+fn supported_login_flows(
+    delegated_auth_enabled: bool,
+    delegated_password_login_enabled: bool,
+) -> Vec<LoginType> {
     let mut flows = Vec::new();
-    if !delegated_auth_enabled {
+    if !delegated_auth_enabled || delegated_password_login_enabled {
         flows.push(LoginType::password());
     }
     flows.push(LoginType::appservice());
@@ -106,12 +115,19 @@ async fn login(
             let user_id = UserId::parse_with_server_name(username, &config::get().server_name)
                 .map_err(|_| MatrixError::invalid_username("Username is invalid."))?;
 
-            if config::get().enabled_delegated_auth().is_some() {
-                return Err(MatrixError::forbidden(
-                    "Password login is disabled while delegated authentication is enabled. Use SSO/OIDC or a delegated access token.",
-                    None,
+            if let Some(da) = config::get().enabled_delegated_auth() {
+                let device_id = body
+                    .device_id
+                    .clone()
+                    .unwrap_or_else(|| utils::random_string(DEVICE_ID_LENGTH).into());
+                return delegated_password_login(
+                    da,
+                    &user_id,
+                    password,
+                    device_id,
+                    body.initial_device_display_name.clone(),
                 )
-                .into());
+                .await;
             }
 
             // if let Some(ldap) = config::enabled_ldap() {
@@ -360,6 +376,185 @@ fn ensure_appservice_can_login_as(
     }
 }
 
+#[derive(Serialize)]
+struct DelegatedPasswordLoginRequest<'a> {
+    username: &'a str,
+    password: &'a str,
+    device_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_device_display_name: Option<String>,
+    refresh_token: bool,
+}
+
+#[derive(Deserialize)]
+struct DelegatedPasswordLoginResponse {
+    access_token: String,
+    user_id: String,
+    device_id: String,
+    #[serde(default)]
+    expires_in_ms: Option<u64>,
+}
+
+async fn delegated_password_login(
+    da: &config::DelegatedAuthConfig,
+    user_id: &UserId,
+    password: &str,
+    device_id: OwnedDeviceId,
+    initial_device_display_name: Option<String>,
+) -> JsonResult<LoginResBody> {
+    let endpoint = da
+        .password_login_endpoint
+        .as_deref()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .ok_or_else(|| {
+            MatrixError::forbidden(
+                "Password login is not configured for delegated authentication.",
+                None,
+            )
+        })?;
+    let mas_secret = config::get()
+        .admin
+        .mas_secret
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown("admin.mas_secret not configured"))?;
+
+    let request = DelegatedPasswordLoginRequest {
+        username: user_id.as_str(),
+        password,
+        device_id: device_id.as_str(),
+        initial_device_display_name,
+        // Palpo's Matrix /refresh endpoint only validates locally stored
+        // refresh tokens. Do not request delegated refresh tokens until that
+        // endpoint can proxy delegated refreshes as well.
+        refresh_token: false,
+    };
+
+    let client = crate::sending::default_client();
+    let response = client
+        .post(endpoint)
+        .bearer_auth(mas_secret)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| MatrixError::unknown(format!("Delegated password login failed: {e}")))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(MatrixError::forbidden("Wrong username or password.", None).into());
+        }
+        return Err(MatrixError::unknown(format!(
+            "Delegated password login failed (status={status}): {body}"
+        ))
+        .into());
+    }
+
+    let delegated = response
+        .json::<DelegatedPasswordLoginResponse>()
+        .await
+        .map_err(|e| {
+            MatrixError::unknown(format!(
+                "Delegated password login returned invalid JSON: {e}"
+            ))
+        })?;
+    let delegated_user_id = UserId::parse(delegated.user_id)
+        .map_err(|_| MatrixError::unknown("Delegated password login returned invalid user_id"))?;
+    if delegated_user_id != user_id {
+        return Err(
+            MatrixError::unknown("Delegated password login returned a mismatched user_id").into(),
+        );
+    }
+    let delegated_device_id: OwnedDeviceId = delegated.device_id.into();
+    if delegated_device_id.as_str() != device_id.as_str() {
+        return Err(MatrixError::unknown(
+            "Delegated password login returned a mismatched device_id",
+        )
+        .into());
+    }
+    verify_delegated_login_token(&delegated.access_token, &delegated_user_id, &device_id).await?;
+    data::user::device::delete_access_tokens(&delegated_user_id, &device_id).await?;
+    data::user::device::delete_refresh_tokens(&delegated_user_id, &device_id).await?;
+
+    tracing::info!(
+        "{} logged in with delegated password auth",
+        delegated_user_id
+    );
+
+    json_ok(LoginResBody {
+        user_id: delegated_user_id,
+        access_token: delegated.access_token,
+        device_id,
+        well_known: None,
+        refresh_token: None,
+        expires_in: delegated.expires_in_ms.map(Duration::from_millis),
+    })
+}
+
+async fn verify_delegated_login_token(
+    access_token: &str,
+    expected_user_id: &UserId,
+    expected_device_id: &DeviceId,
+) -> AppResult<()> {
+    let introspection = hoops::introspection::introspect_token(access_token).await?;
+    if !introspection.active {
+        return Err(
+            MatrixError::unknown("Delegated password login returned an inactive token").into(),
+        );
+    }
+
+    let username = introspection.username.as_deref().ok_or_else(|| {
+        MatrixError::unknown("Delegated password login token is missing username")
+    })?;
+    let token_user_id = UserId::parse_with_server_name(username, &config::get().server_name)
+        .map_err(|_| MatrixError::unknown("Delegated password login token has invalid username"))?;
+    if token_user_id != expected_user_id {
+        return Err(MatrixError::unknown(
+            "Delegated password login token resolved to a mismatched user_id",
+        )
+        .into());
+    }
+
+    let token_device_id = introspection
+        .device_id
+        .or_else(|| {
+            introspection
+                .scope
+                .as_deref()
+                .and_then(hoops::introspection::device_id_from_scope)
+        })
+        .ok_or_else(|| {
+            MatrixError::unknown("Delegated password login token is missing device_id")
+        })?;
+    if token_device_id.as_str() != expected_device_id.as_str() {
+        return Err(MatrixError::unknown(
+            "Delegated password login token resolved to a mismatched device_id",
+        )
+        .into());
+    }
+
+    let mut conn = connect().await?;
+    let mut user = users::table
+        .find(expected_user_id)
+        .first::<DbUser>(&mut conn)
+        .await
+        .map_err(|_| MatrixError::unknown("Delegated password login user is not provisioned"))?;
+    if user.is_guest {
+        crate::data::user::set_guest(expected_user_id, false).await?;
+        user.is_guest = false;
+    }
+    crate::user::ensure_account_usable(&user)?;
+
+    user_devices::table
+        .filter(user_devices::user_id.eq(expected_user_id))
+        .filter(user_devices::device_id.eq(expected_device_id))
+        .first::<DbUserDevice>(&mut conn)
+        .await
+        .map_err(|_| MatrixError::unknown("Delegated password login device is not provisioned"))?;
+
+    Ok(())
+}
+
 /// # `POST /_matrix/client/v1/login/get_token`
 ///
 /// Allows a logged-in user to get a short-lived token which can be used
@@ -523,8 +718,8 @@ mod tests {
     }
 
     #[test]
-    fn delegated_auth_advertises_delegated_login_flows() {
-        let flows = supported_login_flows(true);
+    fn delegated_auth_advertises_delegated_login_flows_without_password_exchange() {
+        let flows = supported_login_flows(true, false);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
@@ -534,8 +729,23 @@ mod tests {
     }
 
     #[test]
+    fn delegated_auth_advertises_password_when_exchange_is_configured() {
+        let flows = supported_login_flows(true, true);
+        let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
+
+        assert_eq!(
+            flow_types,
+            vec![
+                "m.login.password",
+                "m.login.application_service",
+                "m.login.sso"
+            ]
+        );
+    }
+
+    #[test]
     fn legacy_auth_keeps_existing_login_flows() {
-        let flows = supported_login_flows(false);
+        let flows = supported_login_flows(false, false);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
