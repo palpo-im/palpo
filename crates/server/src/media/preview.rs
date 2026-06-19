@@ -135,7 +135,17 @@ impl From<DbUrlPreview> for UrlPreviewData {
     }
 }
 
-pub fn url_preview_allowed(url: &Url) -> bool {
+fn contains_wildcard(values: &[String]) -> bool {
+    values.iter().any(|value| value == "*")
+}
+
+fn value_contains_any_non_empty(value: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| !pattern.is_empty() && value.contains(pattern))
+}
+
+pub(crate) fn url_preview_allowed_by_config(url: &Url, conf: &config::UrlPreviewConfig) -> bool {
     if ["http", "https"]
         .iter()
         .all(|&scheme| scheme != url.scheme().to_lowercase())
@@ -155,22 +165,10 @@ pub fn url_preview_allowed(url: &Url) -> bool {
         Some(h) => h.to_owned(),
     };
 
-    let conf = crate::config::get();
-    let allowlist_domain_contains = &conf.url_preview.domain_contains_allowlist;
-    let allowlist_domain_explicit = &conf.url_preview.domain_explicit_allowlist;
-    let denylist_domain_explicit = &conf.url_preview.domain_explicit_denylist;
-    let allowlist_url_contains = &conf.url_preview.url_contains_allowlist;
-
-    if allowlist_domain_contains.contains(&"*".to_owned())
-        || allowlist_domain_explicit.contains(&"*".to_owned())
-        || allowlist_url_contains.contains(&"*".to_owned())
-    {
-        debug!(
-            "Config key contains * which is allowing all URL previews. Allowing URL {}",
-            url
-        );
-        return true;
-    }
+    let allowlist_domain_contains = &conf.domain_contains_allowlist;
+    let allowlist_domain_explicit = &conf.domain_explicit_allowlist;
+    let denylist_domain_explicit = &conf.domain_explicit_denylist;
+    let allowlist_url_contains = &conf.url_contains_allowlist;
 
     if !host.is_empty() {
         if denylist_domain_explicit.contains(&host) {
@@ -181,6 +179,34 @@ pub fn url_preview_allowed(url: &Url) -> bool {
             return false;
         }
 
+        let root_domain = if conf.check_root_domain {
+            debug!("Checking root domain");
+            host.split_once('.').map(|(_, root_domain)| root_domain)
+        } else {
+            None
+        };
+
+        if let Some(root_domain) = root_domain
+            && denylist_domain_explicit.contains(&root_domain.to_owned())
+        {
+            debug!(
+                "Root domain {} is not allowed by url_preview_domain_explicit_denylist",
+                &root_domain
+            );
+            return false;
+        }
+
+        if contains_wildcard(allowlist_domain_contains)
+            || contains_wildcard(allowlist_domain_explicit)
+            || contains_wildcard(allowlist_url_contains)
+        {
+            debug!(
+                "Config key contains * which is allowing all URL previews. Allowing URL {}",
+                url
+            );
+            return true;
+        }
+
         if allowlist_domain_explicit.contains(&host) {
             debug!(
                 "Host {} is allowed by url_preview_domain_explicit_allowlist (check 2/4)",
@@ -189,10 +215,7 @@ pub fn url_preview_allowed(url: &Url) -> bool {
             return true;
         }
 
-        if allowlist_domain_contains
-            .iter()
-            .any(|domain_s| domain_s.contains(&host.clone()))
-        {
+        if value_contains_any_non_empty(&host, allowlist_domain_contains) {
             debug!(
                 "Host {} is allowed by url_preview_domain_contains_allowlist (check 3/4)",
                 &host
@@ -200,10 +223,7 @@ pub fn url_preview_allowed(url: &Url) -> bool {
             return true;
         }
 
-        if allowlist_url_contains
-            .iter()
-            .any(|url_s| url.to_string().contains(url_s))
-        {
+        if value_contains_any_non_empty(url.as_str(), allowlist_url_contains) {
             debug!(
                 "URL {} is allowed by url_preview_url_contains_allowlist (check 4/4)",
                 &host
@@ -212,46 +232,32 @@ pub fn url_preview_allowed(url: &Url) -> bool {
         }
 
         // check root domain if available and if user has root domain checks
-        if conf.url_preview.check_root_domain {
-            debug!("Checking root domain");
-            match host.split_once('.') {
-                None => return false,
-                Some((_, root_domain)) => {
-                    if denylist_domain_explicit.contains(&root_domain.to_owned()) {
-                        debug!(
-                            "Root domain {} is not allowed by \
-    						 url_preview_domain_explicit_denylist (check 1/3)",
-                            &root_domain
-                        );
-                        return false;
-                    }
-
-                    if allowlist_domain_explicit.contains(&root_domain.to_owned()) {
-                        debug!(
-                            "Root domain {} is allowed by url_preview_domain_explicit_allowlist \
+        if let Some(root_domain) = root_domain {
+            if allowlist_domain_explicit.contains(&root_domain.to_owned()) {
+                debug!(
+                    "Root domain {} is allowed by url_preview_domain_explicit_allowlist \
     						 (check 2/3)",
-                            &root_domain
-                        );
-                        return true;
-                    }
+                    &root_domain
+                );
+                return true;
+            }
 
-                    if allowlist_domain_contains
-                        .iter()
-                        .any(|domain_s| domain_s.contains(&root_domain.to_owned()))
-                    {
-                        debug!(
-                            "Root domain {} is allowed by url_preview_domain_contains_allowlist \
+            if value_contains_any_non_empty(root_domain, allowlist_domain_contains) {
+                debug!(
+                    "Root domain {} is allowed by url_preview_domain_contains_allowlist \
     						 (check 3/3)",
-                            &root_domain
-                        );
-                        return true;
-                    }
-                }
+                    &root_domain
+                );
+                return true;
             }
         }
     }
 
     false
+}
+
+pub fn url_preview_allowed(url: &Url) -> bool {
+    url_preview_allowed_by_config(url, &config::get().url_preview)
 }
 
 pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
@@ -311,7 +317,8 @@ async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
         img if img.starts_with("image/") => download_image(url).await?,
         _ => return Err(MatrixError::unknown("unsupported content-type").into()),
     };
-    crate::data::media::set_url_preview(&data.clone().into_new_db_url_preview(url.as_str())).await?;
+    crate::data::media::set_url_preview(&data.clone().into_new_db_url_preview(url.as_str()))
+        .await?;
 
     Ok(data)
 }
@@ -411,4 +418,51 @@ async fn download_html(url: &Url) -> AppResult<UrlPreviewData> {
     data.og_description = props.get("description").cloned().or(html.description);
 
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed(url: &str, preview: config::UrlPreviewConfig) -> bool {
+        url_preview_allowed_by_config(&Url::parse(url).unwrap(), &preview)
+    }
+
+    #[test]
+    fn domain_contains_allowlist_matches_hosts_that_contain_pattern() {
+        let preview = config::UrlPreviewConfig {
+            domain_contains_allowlist: vec!["google.com".to_owned()],
+            ..Default::default()
+        };
+
+        assert!(allowed("https://www.google.com/path", preview.clone()));
+        assert!(allowed(
+            "https://mymaliciousdomainexamplegoogle.com/path",
+            preview.clone()
+        ));
+        assert!(!allowed("https://example.org/path", preview));
+    }
+
+    #[test]
+    fn explicit_denylist_wins_over_wildcard_allowlist() {
+        let preview = config::UrlPreviewConfig {
+            domain_explicit_allowlist: vec!["*".to_owned()],
+            domain_explicit_denylist: vec!["blocked.example".to_owned()],
+            ..Default::default()
+        };
+
+        assert!(!allowed("https://blocked.example/path", preview.clone()));
+        assert!(allowed("https://allowed.example/path", preview));
+    }
+
+    #[test]
+    fn empty_contains_entries_do_not_allow_everything() {
+        let preview = config::UrlPreviewConfig {
+            domain_contains_allowlist: vec![String::new()],
+            url_contains_allowlist: vec![String::new()],
+            ..Default::default()
+        };
+
+        assert!(!allowed("https://example.org/path", preview));
+    }
 }

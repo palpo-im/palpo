@@ -98,7 +98,7 @@ database:
   # WARNING: You will almost certainly be fine with sqlite unless your bridge
   # is in heavy demand and you suffer from IO slowness.
   filename: "/data/discord.db"
-  # conn_string: "postgresql://postgres:root@localhost/discord_bridge"
+  # conn_string: "postgresql://postgres:REPLACE_WITH_STRONG_PASSWORD@localhost/discord_bridge"
   # url: "sqlite:///data/discord.db"
   max_connections: 10
   min_connections: 1

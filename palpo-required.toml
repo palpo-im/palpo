@@ -8,7 +8,7 @@ allow_registration = true
 address = "0.0.0.0:8008"
 
 [db]
-url = "postgres://postgres:root@localhost:5432/palpo_local" # Update with your database URL
+url = "postgres://postgres:REPLACE_WITH_STRONG_PASSWORD@localhost:5432/palpo_local" # Update with your database URL
 
 [well_known]
 # Palpo handles the /.well-known/matrix/* endpoints, making both clients and servers try to access palpo with the host
