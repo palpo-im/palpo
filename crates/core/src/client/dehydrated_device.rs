@@ -99,6 +99,10 @@ pub struct UpsertDehydratedDeviceReqBody {
     /// Identity keys for the dehydrated device.
     pub device_keys: DeviceKeys,
 
+    /// The human-readable display name for the dehydrated device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_device_display_name: Option<String>,
+
     /// One-time public keys for "pre-key" messages.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub one_time_keys: BTreeMap<OwnedDeviceKeyId, OneTimeKey>,

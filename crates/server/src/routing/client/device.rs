@@ -295,7 +295,8 @@ pub(super) async fn upsert_dehydrated(
     let UpsertDehydratedDeviceReqBody {
         device_id,
         device_data,
-        device_keys,
+        mut device_keys,
+        initial_device_display_name,
         one_time_keys,
         fallback_keys,
     } = body.into_inner();
@@ -314,9 +315,17 @@ pub(super) async fn upsert_dehydrated(
         .into());
     }
 
-    data::user::upsert_dehydrated_device(authed.user_id(), &device_id, &device_data).await?;
-    crate::user::add_device_keys(authed.user_id(), &device_id, &device_keys).await?;
+    // Carry the client-supplied display name on the device keys so the dehydrated
+    // device is not advertised nameless through `/keys/query`.
+    if let Some(display_name) = initial_device_display_name {
+        device_keys.unsigned.device_display_name = Some(display_name);
+    }
 
+    data::user::upsert_dehydrated_device(authed.user_id(), &device_id, &device_data).await?;
+
+    // Persist the pre-keys before publishing the device. `add_device_keys` sends the
+    // device-list update, so storing the one-time/fallback keys first ensures a peer
+    // reacting to that update can immediately claim keys for the new device.
     for (key_id, one_time_key) in &one_time_keys {
         crate::user::add_one_time_key(authed.user_id(), &device_id, key_id, one_time_key).await?;
     }
@@ -324,6 +333,8 @@ pub(super) async fn upsert_dehydrated(
     for (key_id, fallback_key) in &fallback_keys {
         crate::user::add_fallback_key(authed.user_id(), &device_id, key_id, fallback_key).await?;
     }
+
+    crate::user::add_device_keys(authed.user_id(), &device_id, &device_keys).await?;
 
     json_ok(UpsertDehydratedDeviceResBody::new(device_id))
 }
