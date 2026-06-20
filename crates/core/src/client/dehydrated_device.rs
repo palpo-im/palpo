@@ -1,9 +1,14 @@
 //! Endpoints for managing dehydrated devices.
 
+use std::collections::BTreeMap;
+
+use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::PrivOwnedStr;
+use crate::encryption::{DeviceKeys, OneTimeKey};
 use crate::serde::StringEnum;
+use crate::{OwnedDeviceId, OwnedDeviceKeyId};
 
 /// Data for a dehydrated device.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -41,7 +46,7 @@ impl DehydratedDeviceV1 {
 
 /// The algorithms used for dehydrated devices.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
-#[derive(Clone, StringEnum)]
+#[derive(ToSchema, Clone, StringEnum)]
 #[non_exhaustive]
 pub enum DeviceDehydrationAlgorithm {
     /// The `org.matrix.msc3814.v1.olm` device dehydration algorithm.
@@ -49,6 +54,64 @@ pub enum DeviceDehydrationAlgorithm {
     V1,
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
+}
+
+/// Request type for storing a dehydrated device.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct UpsertDehydratedDeviceReqBody {
+    /// The ID of the dehydrated device.
+    pub device_id: OwnedDeviceId,
+
+    /// The dehydrated device payload.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub device_data: DehydratedDeviceData,
+
+    /// Identity keys for the dehydrated device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_keys: Option<DeviceKeys>,
+
+    /// One-time public keys for "pre-key" messages.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub one_time_keys: BTreeMap<OwnedDeviceKeyId, OneTimeKey>,
+
+    /// Fallback public keys for "pre-key" messages.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fallback_keys: BTreeMap<OwnedDeviceKeyId, OneTimeKey>,
+}
+
+/// Response type for storing a dehydrated device.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct UpsertDehydratedDeviceResBody {
+    /// The ID of the stored dehydrated device.
+    pub device_id: OwnedDeviceId,
+}
+
+impl UpsertDehydratedDeviceResBody {
+    /// Creates a response for the stored dehydrated device.
+    pub fn new(device_id: OwnedDeviceId) -> Self {
+        Self { device_id }
+    }
+}
+
+/// Response type for retrieving a dehydrated device.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct GetDehydratedDeviceResBody {
+    /// The ID of the dehydrated device.
+    pub device_id: OwnedDeviceId,
+
+    /// The dehydrated device payload.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub device_data: DehydratedDeviceData,
+}
+
+impl GetDehydratedDeviceResBody {
+    /// Creates a response with the stored dehydrated device.
+    pub fn new(device_id: OwnedDeviceId, device_data: DehydratedDeviceData) -> Self {
+        Self {
+            device_id,
+            device_data,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]

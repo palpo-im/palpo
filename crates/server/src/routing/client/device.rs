@@ -5,6 +5,9 @@ use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
 use crate::core::OwnedDeviceId;
+use crate::core::client::dehydrated_device::{
+    GetDehydratedDeviceResBody, UpsertDehydratedDeviceReqBody, UpsertDehydratedDeviceResBody,
+};
 use crate::core::client::device::{
     DeleteDeviceReqBody, DeleteDevicesReqBody, DeviceResBody, DevicesResBody, UpdatedDeviceReqBody,
 };
@@ -251,8 +254,18 @@ async fn delete_devices(
 }
 
 #[endpoint]
-pub(super) async fn dehydrated(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::unrecognized("Dehydrated device retrieval is not implemented.").into())
+pub(super) async fn dehydrated(
+    _aa: AuthArgs,
+    depot: &mut Depot,
+) -> JsonResult<GetDehydratedDeviceResBody> {
+    let authed = depot.authed_info()?;
+    let Some((device_id, device_data)) =
+        data::user::get_dehydrated_device(authed.user_id()).await?
+    else {
+        return Err(MatrixError::not_found("No dehydrated device available.").into());
+    };
+
+    json_ok(GetDehydratedDeviceResBody::new(device_id, device_data))
 }
 
 #[endpoint]
@@ -263,6 +276,42 @@ pub(super) async fn delete_dehydrated(_aa: AuthArgs, depot: &mut Depot) -> Empty
 }
 
 #[endpoint]
-pub(super) async fn upsert_dehydrated(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::unrecognized("Dehydrated device upload is not implemented.").into())
+pub(super) async fn upsert_dehydrated(
+    _aa: AuthArgs,
+    body: JsonBody<UpsertDehydratedDeviceReqBody>,
+    depot: &mut Depot,
+) -> JsonResult<UpsertDehydratedDeviceResBody> {
+    let authed = depot.authed_info()?;
+    let UpsertDehydratedDeviceReqBody {
+        device_id,
+        device_data,
+        device_keys,
+        one_time_keys,
+        fallback_keys,
+    } = body.into_inner();
+
+    if let Some(device_keys) = &device_keys {
+        if device_keys.user_id != authed.user_id() || device_keys.device_id != device_id {
+            return Err(MatrixError::invalid_param(
+                "Dehydrated device keys must match the authenticated user and device ID.",
+            )
+            .into());
+        }
+    }
+
+    data::user::upsert_dehydrated_device(authed.user_id(), &device_id, &device_data).await?;
+
+    if let Some(device_keys) = &device_keys {
+        crate::user::add_device_keys(authed.user_id(), &device_id, device_keys).await?;
+    }
+
+    for (key_id, one_time_key) in &one_time_keys {
+        crate::user::add_one_time_key(authed.user_id(), &device_id, key_id, one_time_key).await?;
+    }
+
+    for (key_id, fallback_key) in &fallback_keys {
+        crate::user::add_fallback_key(authed.user_id(), &device_id, key_id, fallback_key).await?;
+    }
+
+    json_ok(UpsertDehydratedDeviceResBody::new(device_id))
 }

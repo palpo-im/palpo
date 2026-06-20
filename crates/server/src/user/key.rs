@@ -297,6 +297,16 @@ pub async fn add_one_time_key(
     Ok(())
 }
 
+pub async fn add_fallback_key(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    key_id: &DeviceKeyId,
+    fallback_key: &OneTimeKey,
+) -> AppResult<()> {
+    data::user::key::add_fallback_key(user_id, device_id, key_id, fallback_key).await?;
+    Ok(())
+}
+
 pub async fn claim_one_time_key(
     user_id: &UserId,
     device_id: &DeviceId,

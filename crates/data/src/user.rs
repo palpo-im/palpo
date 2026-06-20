@@ -36,6 +36,7 @@ pub use external_id::*;
 pub use presence::*;
 pub use registration_token::*;
 
+use crate::core::client::dehydrated_device::DehydratedDeviceData;
 use crate::core::events::AnyStrippedStateEvent;
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonValue, RawJson};
@@ -112,6 +113,23 @@ pub struct NewDbUserThreepid {
     pub address: String,
     pub validated_at: UnixMillis,
     pub added_at: UnixMillis,
+}
+
+#[derive(Identifiable, Queryable, Debug, Clone)]
+#[diesel(table_name = user_dehydrated_devices)]
+pub struct DbUserDehydratedDevice {
+    pub id: i64,
+    pub user_id: OwnedUserId,
+    pub device_id: OwnedDeviceId,
+    pub device_data: JsonValue,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = user_dehydrated_devices)]
+pub struct NewDbUserDehydratedDevice {
+    pub user_id: OwnedUserId,
+    pub device_id: OwnedDeviceId,
+    pub device_data: JsonValue,
 }
 
 pub async fn is_admin(user_id: &UserId) -> DataResult<bool> {
@@ -438,6 +456,49 @@ pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
     )
     .execute(&mut connect().await?)
     .await?;
+    Ok(())
+}
+
+pub async fn get_dehydrated_device(
+    user_id: &UserId,
+) -> DataResult<Option<(OwnedDeviceId, DehydratedDeviceData)>> {
+    let Some((device_id, device_data)) = user_dehydrated_devices::table
+        .filter(user_dehydrated_devices::user_id.eq(user_id))
+        .order_by(user_dehydrated_devices::id.desc())
+        .select((
+            user_dehydrated_devices::device_id,
+            user_dehydrated_devices::device_data,
+        ))
+        .first::<(OwnedDeviceId, JsonValue)>(&mut connect().await?)
+        .await
+        .optional()?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some((device_id, serde_json::from_value(device_data)?)))
+}
+
+pub async fn upsert_dehydrated_device(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    device_data: &DehydratedDeviceData,
+) -> DataResult<()> {
+    let new_device = NewDbUserDehydratedDevice {
+        user_id: user_id.to_owned(),
+        device_id: device_id.to_owned(),
+        device_data: serde_json::to_value(device_data)?,
+    };
+    diesel::insert_into(user_dehydrated_devices::table)
+        .values(&new_device)
+        .on_conflict(user_dehydrated_devices::user_id)
+        .do_update()
+        .set((
+            user_dehydrated_devices::device_id.eq(&new_device.device_id),
+            user_dehydrated_devices::device_data.eq(&new_device.device_data),
+        ))
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
