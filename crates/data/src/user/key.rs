@@ -290,15 +290,23 @@ pub async fn get_cross_signing_key(
     user_id: &UserId,
     key_type: &str,
 ) -> DataResult<Option<JsonValue>> {
-    let Some(key_data) = e2e_cross_signing_keys::table
+    e2e_cross_signing_keys::table
         .filter(e2e_cross_signing_keys::user_id.eq(user_id))
         .filter(e2e_cross_signing_keys::key_type.eq(key_type))
         .order_by(e2e_cross_signing_keys::id.desc())
         .select(e2e_cross_signing_keys::key_data)
         .first::<JsonValue>(&mut connect().await?)
         .await
-        .optional()?
-    else {
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Return the latest cross-signing key of a kind with uploaded signatures attached.
+pub async fn get_cross_signing_key_and_sigs(
+    user_id: &UserId,
+    key_type: &str,
+) -> DataResult<Option<JsonValue>> {
+    let Some(key_data) = get_cross_signing_key(user_id, key_type).await? else {
         return Ok(None);
     };
 
