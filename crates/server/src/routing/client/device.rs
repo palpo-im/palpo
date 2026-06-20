@@ -307,6 +307,13 @@ pub(super) async fn upsert_dehydrated(
         .into());
     }
 
+    if data::user::device::is_device_exists(authed.user_id(), &device_id).await? {
+        return Err(MatrixError::invalid_param(
+            "Dehydrated device ID must not match an existing device.",
+        )
+        .into());
+    }
+
     data::user::upsert_dehydrated_device(authed.user_id(), &device_id, &device_data).await?;
     crate::user::add_device_keys(authed.user_id(), &device_id, &device_keys).await?;
 
