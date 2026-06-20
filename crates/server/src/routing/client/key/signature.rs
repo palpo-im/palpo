@@ -138,10 +138,7 @@ async fn validate_target_key(
 
     if let Ok(cross_signing_key) = serde_json::from_value::<CrossSigningKey>(key_value.clone()) {
         if &cross_signing_key.user_id != target_user_id
-            || !cross_signing_key
-                .keys
-                .keys()
-                .any(|key_id| key_id.as_str() == target_key_id)
+            || !cross_signing_key_contains_key_name(&cross_signing_key, target_key_id)
         {
             return Ok(Some(Failure::invalid_signature(
                 "Signed cross-signing key does not match the target key.",
@@ -169,11 +166,7 @@ async fn validate_target_key(
             )));
         };
 
-        if !existing_key
-            .keys
-            .keys()
-            .any(|key_id| key_id.as_str() == target_key_id)
-        {
+        if !cross_signing_key_contains_key_name(&existing_key, target_key_id) {
             return Ok(Some(Failure::invalid_signature(
                 "Target cross-signing key does not match the stored key.",
             )));
@@ -195,6 +188,12 @@ async fn validate_target_key(
     Ok(Some(Failure::invalid_signature(
         "Signed key is neither a device key nor a cross-signing key.",
     )))
+}
+
+fn cross_signing_key_contains_key_name(key: &CrossSigningKey, key_name: &str) -> bool {
+    key.keys
+        .keys()
+        .any(|key_id| key_id.key_name().as_str() == key_name)
 }
 
 fn key_matches_stored_key(

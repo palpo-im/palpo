@@ -308,7 +308,7 @@ pub async fn get_cross_signing_key(
             .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
             .filter(
                 e2e_cross_signing_sigs::target_device_id
-                    .eq(OwnedDeviceId::from(target_key_id.as_str())),
+                    .eq(OwnedDeviceId::from(target_key_id.key_name().as_str())),
             )
             .load::<DbCrossSignature>(&mut connect().await?)
             .await?;
