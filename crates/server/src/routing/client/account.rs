@@ -157,13 +157,16 @@ pub(super) async fn delete_account_data_msc3391(
     let authed = depot.authed_info()?;
     let user_id = user_id.into_inner();
     if &user_id != authed.user_id() {
-        return Err(MatrixError::forbidden(
-            "Cannot delete account data for another user.",
-            None,
-        )
-        .into());
+        return Err(
+            MatrixError::forbidden("Cannot delete account data for another user.", None).into(),
+        );
     }
 
-    data::user::delete_global_data(authed.user_id(), &account_type.into_inner()).await?;
+    let account_type = account_type.into_inner();
+    if account_type == "m.ignored_user_list" {
+        data::user::set_ignored_users(authed.user_id(), &[]).await?;
+    }
+
+    data::user::delete_global_data(authed.user_id(), &account_type).await?;
     empty_ok()
 }

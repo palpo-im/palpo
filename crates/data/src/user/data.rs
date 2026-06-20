@@ -11,6 +11,12 @@ use crate::core::{Seqnum, UnixMillis};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
+fn is_account_data_tombstone(json_data: &JsonValue) -> bool {
+    json_data
+        .as_object()
+        .is_some_and(|content| content.is_empty())
+}
+
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_datas)]
 pub struct DbUserData {
@@ -117,6 +123,9 @@ pub async fn get_data<E: DeserializeOwned>(
         .order_by(user_datas::id.desc())
         .first::<DbUserData>(&mut connect().await?)
         .await?;
+    if is_account_data_tombstone(&row.json_data) {
+        return Err(diesel::result::Error::NotFound.into());
+    }
     Ok(serde_json::from_value(row.json_data)?)
 }
 
@@ -136,6 +145,9 @@ pub async fn get_room_data<E: DeserializeOwned>(
         .await
         .optional()?;
     if let Some(row) = row {
+        if is_account_data_tombstone(&row.json_data) {
+            return Ok(None);
+        }
         Ok(Some(serde_json::from_value(row.json_data)?))
     } else {
         Ok(None)
@@ -156,6 +168,9 @@ pub async fn get_global_data<E: DeserializeOwned>(
         .await
         .optional()?;
     if let Some(row) = row {
+        if is_account_data_tombstone(&row.json_data) {
+            return Ok(None);
+        }
         Ok(Some(serde_json::from_value(row.json_data)?))
     } else {
         Ok(None)
@@ -163,14 +178,43 @@ pub async fn get_global_data<E: DeserializeOwned>(
 }
 
 pub async fn delete_global_data(user_id: &UserId, kind: &str) -> DataResult<()> {
+    let mut conn = connect().await?;
+    let existing = user_datas::table
+        .filter(user_datas::user_id.eq(user_id))
+        .filter(user_datas::room_id.is_null())
+        .filter(user_datas::data_type.eq(kind))
+        .order_by(user_datas::id.desc())
+        .first::<DbUserData>(&mut conn)
+        .await
+        .optional()?;
+
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+
     diesel::delete(
         user_datas::table
             .filter(user_datas::user_id.eq(user_id))
             .filter(user_datas::room_id.is_null())
-            .filter(user_datas::data_type.eq(kind)),
+            .filter(user_datas::data_type.eq(kind))
+            .filter(user_datas::id.ne(existing.id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut conn)
     .await?;
+
+    if is_account_data_tombstone(&existing.json_data) {
+        return Ok(());
+    }
+
+    diesel::update(user_datas::table.find(existing.id))
+        .set((
+            user_datas::json_data.eq(json!({})),
+            user_datas::occur_sn.eq(crate::next_sn().await?),
+            user_datas::created_at.eq(UnixMillis::now()),
+        ))
+        .execute(&mut conn)
+        .await?;
+
     Ok(())
 }
 
@@ -192,7 +236,11 @@ pub async fn get_global_account_data(user_id: &UserId) -> DataResult<HashMap<Str
         .select((user_datas::data_type, user_datas::json_data))
         .load::<(String, JsonValue)>(&mut connect().await?)
         .await
-        .map(|rows| rows.into_iter().collect())
+        .map(|rows| {
+            rows.into_iter()
+                .filter(|(_, json_data)| !is_account_data_tombstone(json_data))
+                .collect()
+        })
         .map_err(Into::into)
 }
 
@@ -214,6 +262,9 @@ pub async fn get_room_account_data(
     let mut result = HashMap::new();
     for (room_id, data_type, json_data) in rows {
         if let Some(room_id) = room_id {
+            if is_account_data_tombstone(&json_data) {
+                continue;
+            }
             result
                 .entry(room_id.to_string())
                 .or_insert_with(HashMap::new)
@@ -256,6 +307,9 @@ pub async fn data_changes(
     };
 
     for db_data in db_datas {
+        if since_sn == 0 && is_account_data_tombstone(&db_data.json_data) {
+            continue;
+        }
         let kind = RoomAccountDataEventType::from(&*db_data.data_type);
         let account_data = json!({
             "type": kind,
