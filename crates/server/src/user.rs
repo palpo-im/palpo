@@ -214,6 +214,12 @@ pub async fn full_user_deactivate(
     Ok(())
 }
 
+pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> AppResult<()> {
+    data::user::device::remove_device(user_id, device_id).await?;
+    crate::user::key::mark_device_key_update(user_id, device_id).await?;
+    crate::user::key::send_device_key_update(user_id, device_id).await
+}
+
 pub async fn remove_all_devices(user_id: &UserId) -> AppResult<()> {
     let mut changed_device_ids = data::user::all_device_ids(user_id).await?;
     for device_id in data::user::key::all_device_key_ids(user_id).await? {

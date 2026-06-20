@@ -149,7 +149,7 @@ pub async fn delete_device(
     user_id: PathParam<OwnedUserId>,
     device_id: PathParam<OwnedDeviceId>,
 ) -> EmptyResult {
-    data::user::device::remove_device(&user_id, &device_id).await?;
+    crate::user::remove_device(&user_id, &device_id).await?;
     empty_ok()
 }
 
@@ -167,7 +167,7 @@ pub async fn delete_devices(
 
     for device_id in body.devices {
         let device_id: OwnedDeviceId = device_id.into();
-        let _ = data::user::device::remove_device(&user_id, &device_id).await;
+        let _ = crate::user::remove_device(&user_id, &device_id).await;
     }
 
     empty_ok()
