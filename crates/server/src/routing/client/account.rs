@@ -8,8 +8,9 @@ use crate::core::client::account::{
     DeactivateReqBody, DeactivateResBody, ThirdPartyIdRemovalStatus, WhoamiResBody,
 };
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+use crate::core::identifiers::*;
 use crate::exts::*;
-use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, hoops, json_ok};
+use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, empty_ok, hoops, json_ok};
 
 pub fn public_router() -> Router {
     Router::with_path("account")
@@ -147,9 +148,22 @@ async fn deactivate(
 
 // msc3391
 #[handler]
-pub(super) fn delete_account_data_msc3391(
-    _req: &mut Request,
-    _res: &mut Response,
-) -> JsonResult<()> {
-    json_ok(())
+pub(super) async fn delete_account_data_msc3391(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    account_type: PathParam<String>,
+    depot: &mut Depot,
+) -> EmptyResult {
+    let authed = depot.authed_info()?;
+    let user_id = user_id.into_inner();
+    if &user_id != authed.user_id() {
+        return Err(MatrixError::forbidden(
+            "Cannot delete account data for another user.",
+            None,
+        )
+        .into());
+    }
+
+    data::user::delete_global_data(authed.user_id(), &account_type.into_inner()).await?;
+    empty_ok()
 }

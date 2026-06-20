@@ -162,6 +162,18 @@ pub async fn get_global_data<E: DeserializeOwned>(
     }
 }
 
+pub async fn delete_global_data(user_id: &UserId, kind: &str) -> DataResult<()> {
+    diesel::delete(
+        user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.is_null())
+            .filter(user_datas::data_type.eq(kind)),
+    )
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
 /// Load all global account-data rows for a user.
 pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
     user_datas::table
