@@ -253,7 +253,13 @@ pub async fn get_allowed_master_key(
     user_id: &UserId,
     allowed_signatures: &(dyn Fn(&UserId) -> bool + Send + Sync),
 ) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = data::user::key::get_cross_signing_key_and_sigs(user_id, "master").await?;
+    let key_data =
+        data::user::key::get_cross_signing_key_and_sigs(user_id, "master", |signature_user_id| {
+            sender_id == Some(signature_user_id)
+                || signature_user_id == user_id
+                || allowed_signatures(signature_user_id)
+        })
+        .await?;
     if let Some(mut key_data) = key_data {
         clean_signatures(&mut key_data, sender_id, user_id, allowed_signatures)?;
         Ok(serde_json::from_value(key_data).ok())
@@ -275,7 +281,16 @@ pub async fn get_allowed_self_signing_key(
     user_id: &UserId,
     allowed_signatures: &(dyn Fn(&UserId) -> bool + Send + Sync),
 ) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = data::user::key::get_cross_signing_key_and_sigs(user_id, "self_signing").await?;
+    let key_data = data::user::key::get_cross_signing_key_and_sigs(
+        user_id,
+        "self_signing",
+        |signature_user_id| {
+            sender_id == Some(signature_user_id)
+                || signature_user_id == user_id
+                || allowed_signatures(signature_user_id)
+        },
+    )
+    .await?;
     if let Some(mut key_data) = key_data {
         clean_signatures(&mut key_data, sender_id, user_id, allowed_signatures)?;
         Ok(serde_json::from_value(key_data).ok())

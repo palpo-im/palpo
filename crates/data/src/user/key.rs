@@ -302,10 +302,14 @@ pub async fn get_cross_signing_key(
 }
 
 /// Return the latest cross-signing key of a kind with uploaded signatures attached.
-pub async fn get_cross_signing_key_and_sigs(
+pub async fn get_cross_signing_key_and_sigs<F>(
     user_id: &UserId,
     key_type: &str,
-) -> DataResult<Option<JsonValue>> {
+    allowed_signature_origin: F,
+) -> DataResult<Option<JsonValue>>
+where
+    F: Fn(&UserId) -> bool,
+{
     let Some(key_data) = get_cross_signing_key(user_id, key_type).await? else {
         return Ok(None);
     };
@@ -327,6 +331,9 @@ pub async fn get_cross_signing_key_and_sigs(
             ..
         } in signatures
         {
+            if !allowed_signature_origin(&origin_user_id) {
+                continue;
+            }
             key.signatures
                 .entry(origin_user_id)
                 .or_default()
