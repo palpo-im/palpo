@@ -260,11 +260,21 @@ pub async fn delete_device_keys(user_id: &UserId, device_id: &DeviceId) -> DataR
 
 pub async fn delete_all_device_keys(user_id: &UserId) -> DataResult<()> {
     let mut conn = connect().await?;
-    diesel::delete(
-        e2e_cross_signing_sigs::table.filter(e2e_cross_signing_sigs::target_user_id.eq(user_id)),
-    )
-    .execute(&mut conn)
-    .await?;
+    let device_ids = e2e_device_keys::table
+        .filter(e2e_device_keys::user_id.eq(user_id))
+        .select(e2e_device_keys::device_id)
+        .load::<OwnedDeviceId>(&mut conn)
+        .await?;
+
+    if !device_ids.is_empty() {
+        diesel::delete(
+            e2e_cross_signing_sigs::table
+                .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
+                .filter(e2e_cross_signing_sigs::target_device_id.eq_any(&device_ids)),
+        )
+        .execute(&mut conn)
+        .await?;
+    }
     diesel::delete(e2e_device_keys::table.filter(e2e_device_keys::user_id.eq(user_id)))
         .execute(&mut conn)
         .await?;
