@@ -54,15 +54,14 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
             }
             device_keys.insert(user_id.to_owned(), container);
         } else {
+            let mut container = BTreeMap::new();
             for device_id in device_ids {
-                let mut container = BTreeMap::new();
-                if let Some(keys) =
-                    data::user::get_device_keys_and_sigs(user_id, device_id).await?
+                if let Some(keys) = data::user::get_device_keys_and_sigs(user_id, device_id).await?
                 {
                     container.insert(device_id.to_owned(), keys);
                 }
-                device_keys.insert(user_id.to_owned(), container);
             }
+            device_keys.insert(user_id.to_owned(), container);
         }
 
         if let Some(master_key) =
