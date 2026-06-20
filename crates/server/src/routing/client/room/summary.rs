@@ -1,7 +1,7 @@
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use salvo::prelude::*;
 
-use crate::core::client::room::{SummaryMsc3266ReqArgs, SummaryMsc3266ResBody};
+use crate::core::client::room::{RoomSummaryResBody, SummaryMsc3266ReqArgs, SummaryMsc3266ResBody};
 use crate::core::events::room::member::MembershipState;
 use crate::core::federation::space::{
     HierarchyReqArgs, HierarchyResBody, SpaceHierarchyParentSummary, hierarchy_request,
@@ -23,6 +23,25 @@ pub async fn get_summary_msc_3266(
     args: SummaryMsc3266ReqArgs,
     depot: &mut Depot,
 ) -> JsonResult<SummaryMsc3266ResBody> {
+    json_ok(room_summary(args, depot).await?)
+}
+
+/// # `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`
+///
+/// Returns a short description of the state of a room.
+#[handler]
+pub async fn get_summary(
+    _aa: AuthArgs,
+    args: SummaryMsc3266ReqArgs,
+    depot: &mut Depot,
+) -> JsonResult<RoomSummaryResBody> {
+    json_ok(room_summary(args, depot).await?.into())
+}
+
+async fn room_summary(
+    args: SummaryMsc3266ReqArgs,
+    depot: &mut Depot,
+) -> AppResult<SummaryMsc3266ResBody> {
     let authed = depot.authed_info().ok();
     let sender_id = authed.map(|a| a.user_id());
 
@@ -34,12 +53,11 @@ pub async fn get_summary_msc_3266(
     }
 
     if room::is_server_joined(&config::get().server_name, &room_id).await? {
-        let res_body = local_room_summary(&room_id, sender_id).await?;
-        json_ok(res_body)
+        local_room_summary(&room_id, sender_id).await
     } else {
         let room = remote_room_summary_hierarchy(&room_id, &servers, sender_id).await?;
 
-        json_ok(SummaryMsc3266ResBody {
+        Ok(SummaryMsc3266ResBody {
             room_id: room_id.to_owned(),
             canonical_alias: room.canonical_alias,
             avatar_url: room.avatar_url,
@@ -213,7 +231,10 @@ where
             let is_guest = data::user::is_guest(sender_id).await.unwrap_or(false);
             let mut user_in_allowed_restricted_room = false;
             for room in allowed_room_ids {
-                if room::user::is_joined(sender_id, room).await.unwrap_or(false) {
+                if room::user::is_joined(sender_id, room)
+                    .await
+                    .unwrap_or(false)
+                {
                     user_in_allowed_restricted_room = true;
                     break;
                 }
