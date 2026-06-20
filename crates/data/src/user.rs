@@ -501,9 +501,7 @@ pub async fn upsert_dehydrated_device(
         .await
         .optional()?;
 
-    if let Some(current_device_id) = current_device_id
-        && current_device_id != device_id
-    {
+    if let Some(current_device_id) = current_device_id {
         key::delete_device_key_material(user_id, &current_device_id).await?;
     }
 
