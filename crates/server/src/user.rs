@@ -156,6 +156,9 @@ pub async fn full_user_deactivate(
     all_joined_rooms: &[OwnedRoomId],
 ) -> AppResult<()> {
     data::user::deactivate(user_id).await.ok();
+    if let Err(e) = data::user::remove_all_devices(user_id).await {
+        tracing::warn!(%user_id, "failed to remove devices during deactivation: {e}");
+    }
     data::user::delete_profile(user_id).await.ok();
 
     // TODO: remove all user data

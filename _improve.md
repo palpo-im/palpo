@@ -15,7 +15,7 @@
 
 ## 仍需专项处理
 
-- [ ] `POST /_matrix/client/*/account/deactivate` 注释声明会离开房间、清设备、清 to-device 等，但当前路由只调用 `data::user::deactivate`，没有接入已有的 `full_user_deactivate` 完整流程。
+- [x] `POST /_matrix/client/*/account/deactivate` 注释声明会离开房间、清设备、清 to-device 等，但当前路由只调用 `data::user::deactivate`，没有接入已有的 `full_user_deactivate` 完整流程。
 - [ ] E2EE cross-signing 仍有未完成校验：`add_cross_signing_key_updates` 标注 `TODO: Check signatures`，`keys/signatures/upload` 也只是持久化签名并固定返回空 `failures`。
 - [ ] MSC3391 account data delete 路由当前返回成功但没有删除数据，属于未实现功能返回假成功。
 - [ ] 多处 Matrix 协议缺口仍以明确错误返回，例如 dehydrated devices、third-party invite exchange、3PID bind 等，需要按协议功能专项补齐。

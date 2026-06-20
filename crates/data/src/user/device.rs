@@ -214,6 +214,7 @@ pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult
 
     delete_access_tokens(user_id, device_id).await?;
     delete_refresh_tokens(user_id, device_id).await?;
+    remove_all_to_device_events(user_id, device_id).await?;
     super::pusher::delete_device_pushers(user_id, device_id).await?;
     Ok(())
 }
@@ -351,6 +352,17 @@ pub async fn remove_to_device_events(
             .filter(device_inboxes::user_id.eq(user_id))
             .filter(device_inboxes::device_id.eq(device_id))
             .filter(device_inboxes::occur_sn.le(until_sn)),
+    )
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
+pub async fn remove_all_to_device_events(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+    diesel::delete(
+        device_inboxes::table
+            .filter(device_inboxes::user_id.eq(user_id))
+            .filter(device_inboxes::device_id.eq(device_id)),
     )
     .execute(&mut connect().await?)
     .await?;

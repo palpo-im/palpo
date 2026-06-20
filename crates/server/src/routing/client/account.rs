@@ -132,8 +132,8 @@ async fn deactivate(
         return Err(uiaa.into());
     }
 
-    // Remove devices and mark account as deactivated
-    data::user::deactivate(authed.user_id()).await?;
+    let all_joined_rooms = data::user::joined_rooms(authed.user_id()).await?;
+    crate::user::full_user_deactivate(authed.user_id(), &all_joined_rooms).await?;
 
     // info!("User {} deactivated their account.", authed.user_id());
     // crate::admin::send_message(RoomMessageEventContent::notice_plain(format!(
