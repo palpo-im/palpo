@@ -138,12 +138,18 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
                     let json = serde_json::to_value(master_key).expect("to_value always works");
                     let raw =
                         serde_json::from_value(json).expect("RawJson::from_value always works");
-                    crate::user::add_cross_signing_keys(
+                    if crate::user::add_cross_signing_keys(
                         &user_id, &raw, &None, &None,
                         false, /* Dont notify. A notification would trigger another key request
                                * resulting in an endless loop */
                     )
-                    .await?;
+                    .await
+                    .is_err()
+                    {
+                        back_off(server.to_owned());
+                        failures.insert(server.to_string(), json!({}));
+                        continue;
+                    }
                     master_keys.insert(user_id.to_owned(), raw);
                 }
 
