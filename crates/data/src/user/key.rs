@@ -243,6 +243,16 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
     .execute(&mut conn)
     .await?;
 
+    // Drop cross-signing signatures targeting this device so a later reuse of the
+    // same device ID cannot resurrect stale signatures over fresh device keys.
+    diesel::delete(
+        e2e_cross_signing_sigs::table
+            .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
+            .filter(e2e_cross_signing_sigs::target_device_id.eq(device_id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
     Ok(())
 }
 
