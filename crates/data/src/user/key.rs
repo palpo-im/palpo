@@ -189,6 +189,15 @@ pub async fn get_device_keys(user_id: &UserId, device_id: &DeviceId) -> DataResu
         .transpose()
 }
 
+pub async fn all_device_key_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> {
+    e2e_device_keys::table
+        .filter(e2e_device_keys::user_id.eq(user_id))
+        .select(e2e_device_keys::device_id)
+        .load::<OwnedDeviceId>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn get_device_keys_and_sigs(
     user_id: &UserId,
     device_id: &DeviceId,

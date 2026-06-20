@@ -364,7 +364,7 @@ pub async fn put_user_v2(
 
             // Logout devices if requested
             if body.logout_devices.unwrap_or(true) {
-                data::user::remove_all_devices(&user_id).await?;
+                user::remove_all_devices(&user_id).await?;
             }
         }
     }
@@ -579,7 +579,7 @@ pub async fn reset_password(
 
     // Logout all devices if requested (default true)
     if body.logout_devices.unwrap_or(true) {
-        data::user::remove_all_devices(&user_id).await?;
+        user::remove_all_devices(&user_id).await?;
     }
 
     empty_ok()

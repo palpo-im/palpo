@@ -795,7 +795,7 @@ async fn logout_all(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
         return empty_ok();
     };
 
-    data::user::remove_all_devices(authed.user_id()).await?;
+    crate::user::remove_all_devices(authed.user_id()).await?;
 
     empty_ok()
 }
