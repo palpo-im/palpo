@@ -249,6 +249,25 @@ pub async fn delete_device_keys(user_id: &UserId, device_id: &DeviceId) -> DataR
     Ok(())
 }
 
+pub async fn delete_all_device_keys(user_id: &UserId) -> DataResult<()> {
+    let mut conn = connect().await?;
+    diesel::delete(
+        e2e_cross_signing_sigs::table.filter(e2e_cross_signing_sigs::target_user_id.eq(user_id)),
+    )
+    .execute(&mut conn)
+    .await?;
+    diesel::delete(e2e_device_keys::table.filter(e2e_device_keys::user_id.eq(user_id)))
+        .execute(&mut conn)
+        .await?;
+    diesel::delete(e2e_one_time_keys::table.filter(e2e_one_time_keys::user_id.eq(user_id)))
+        .execute(&mut conn)
+        .await?;
+    diesel::delete(e2e_fallback_keys::table.filter(e2e_fallback_keys::user_id.eq(user_id)))
+        .execute(&mut conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn keys_changed_users(
     user_id: &UserId,
     since_sn: Seqnum,
