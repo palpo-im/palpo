@@ -290,20 +290,15 @@ pub(super) async fn upsert_dehydrated(
         fallback_keys,
     } = body.into_inner();
 
-    if let Some(device_keys) = &device_keys {
-        if device_keys.user_id != authed.user_id() || device_keys.device_id != device_id {
-            return Err(MatrixError::invalid_param(
-                "Dehydrated device keys must match the authenticated user and device ID.",
-            )
-            .into());
-        }
+    if device_keys.user_id != authed.user_id() || device_keys.device_id != device_id {
+        return Err(MatrixError::invalid_param(
+            "Dehydrated device keys must match the authenticated user and device ID.",
+        )
+        .into());
     }
 
     data::user::upsert_dehydrated_device(authed.user_id(), &device_id, &device_data).await?;
-
-    if let Some(device_keys) = &device_keys {
-        crate::user::add_device_keys(authed.user_id(), &device_id, device_keys).await?;
-    }
+    crate::user::add_device_keys(authed.user_id(), &device_id, &device_keys).await?;
 
     for (key_id, one_time_key) in &one_time_keys {
         crate::user::add_one_time_key(authed.user_id(), &device_id, key_id, one_time_key).await?;
