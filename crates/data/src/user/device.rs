@@ -214,6 +214,7 @@ pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult
 
     delete_access_tokens(user_id, device_id).await?;
     delete_refresh_tokens(user_id, device_id).await?;
+    super::key::delete_device_keys(user_id, device_id).await?;
     remove_all_to_device_events(user_id, device_id).await?;
     super::pusher::delete_device_pushers(user_id, device_id).await?;
     Ok(())
