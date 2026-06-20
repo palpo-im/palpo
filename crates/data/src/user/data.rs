@@ -111,17 +111,38 @@ pub async fn get_data<E: DeserializeOwned>(
     room_id: Option<&RoomId>,
     kind: &str,
 ) -> DataResult<E> {
-    let row = user_datas::table
-        .filter(user_datas::user_id.eq(user_id))
-        .filter(
-            user_datas::room_id
-                .eq(room_id)
-                .or(user_datas::room_id.is_null()),
-        )
-        .filter(user_datas::data_type.eq(kind))
-        .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect().await?)
-        .await?;
+    let mut conn = connect().await?;
+    let row = if let Some(room_id) = room_id {
+        let room_row = user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.eq(room_id))
+            .filter(user_datas::data_type.eq(kind))
+            .order_by(user_datas::id.desc())
+            .first::<DbUserData>(&mut conn)
+            .await
+            .optional()?;
+
+        if let Some(row) = room_row {
+            row
+        } else {
+            user_datas::table
+                .filter(user_datas::user_id.eq(user_id))
+                .filter(user_datas::room_id.is_null())
+                .filter(user_datas::data_type.eq(kind))
+                .order_by(user_datas::id.desc())
+                .first::<DbUserData>(&mut conn)
+                .await?
+        }
+    } else {
+        user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.is_null())
+            .filter(user_datas::data_type.eq(kind))
+            .order_by(user_datas::id.desc())
+            .first::<DbUserData>(&mut conn)
+            .await?
+    };
+
     if row.is_deleted {
         return Err(diesel::result::Error::NotFound.into());
     }
