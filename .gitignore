@@ -18,6 +18,5 @@ __*
 examples/with-*/data/
 examples/with-*/space/
 _*.md
-!_improve.md
 .gitnexus/
 .DS_Store
