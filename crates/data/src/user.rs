@@ -451,6 +451,16 @@ pub async fn remove_all_devices(user_id: &UserId) -> DataResult<()> {
     pusher::delete_user_pushers(user_id).await
 }
 pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
+    let device_ids = user_dehydrated_devices::table
+        .filter(user_dehydrated_devices::user_id.eq(user_id))
+        .select(user_dehydrated_devices::device_id)
+        .load::<OwnedDeviceId>(&mut connect().await?)
+        .await?;
+
+    for device_id in device_ids {
+        key::delete_device_key_material(user_id, &device_id).await?;
+    }
+
     diesel::delete(
         user_dehydrated_devices::table.filter(user_dehydrated_devices::user_id.eq(user_id)),
     )
@@ -484,6 +494,19 @@ pub async fn upsert_dehydrated_device(
     device_id: &DeviceId,
     device_data: &DehydratedDeviceData,
 ) -> DataResult<()> {
+    let current_device_id = user_dehydrated_devices::table
+        .filter(user_dehydrated_devices::user_id.eq(user_id))
+        .select(user_dehydrated_devices::device_id)
+        .first::<OwnedDeviceId>(&mut connect().await?)
+        .await
+        .optional()?;
+
+    if let Some(current_device_id) = current_device_id
+        && current_device_id != device_id
+    {
+        key::delete_device_key_material(user_id, &current_device_id).await?;
+    }
+
     let new_device = NewDbUserDehydratedDevice {
         user_id: user_id.to_owned(),
         device_id: device_id.to_owned(),

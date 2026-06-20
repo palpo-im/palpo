@@ -52,6 +52,12 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
                     container.insert(device_id, keys);
                 }
             }
+            if let Some((device_id, _)) = data::user::get_dehydrated_device(user_id).await?
+                && !container.contains_key(&device_id)
+                && let Some(keys) = data::user::get_device_keys_and_sigs(user_id, &device_id).await?
+            {
+                container.insert(device_id, keys);
+            }
             device_keys.insert(user_id.to_owned(), container);
         } else {
             let mut container = BTreeMap::new();
