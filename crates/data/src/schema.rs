@@ -838,6 +838,7 @@ diesel::table! {
         room_id -> Nullable<Text>,
         data_type -> Text,
         json_data -> Json,
+        is_deleted -> Bool,
         occur_sn -> Int8,
         created_at -> Int8,
     }
