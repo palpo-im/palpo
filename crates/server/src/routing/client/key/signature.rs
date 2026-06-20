@@ -115,13 +115,22 @@ async fn validate_target_key(
             )));
         }
 
-        if data::user::key::get_device_keys(target_user_id, &device_keys.device_id)
-            .await?
-            .is_none()
-        {
+        let Some(stored_device_keys) =
+            data::user::key::get_device_keys(target_user_id, &device_keys.device_id).await?
+        else {
             return Ok(Some(Failure::invalid_signature(
                 "Unknown target device key.",
             )));
+        };
+
+        match key_matches_stored_key(key_value, &stored_device_keys) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(Some(Failure::invalid_signature(
+                    "Signed device key does not match the stored key.",
+                )));
+            }
+            Err(failure) => return Ok(Some(failure)),
         }
 
         return Ok(None);
@@ -145,14 +154,16 @@ async fn validate_target_key(
             )));
         };
 
-        let Some(existing_key) =
+        let Some(existing_key_value) =
             data::user::key::get_cross_signing_key(target_user_id, key_type).await?
         else {
             return Ok(Some(Failure::invalid_signature(
                 "Unknown target cross-signing key.",
             )));
         };
-        let Ok(existing_key) = serde_json::from_value::<CrossSigningKey>(existing_key) else {
+        let Ok(existing_key) =
+            serde_json::from_value::<CrossSigningKey>(existing_key_value.clone())
+        else {
             return Ok(Some(Failure::invalid_signature(
                 "Stored target cross-signing key is invalid.",
             )));
@@ -168,12 +179,48 @@ async fn validate_target_key(
             )));
         }
 
+        match key_matches_stored_key_value(key_value, &existing_key_value) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(Some(Failure::invalid_signature(
+                    "Signed cross-signing key does not match the stored key.",
+                )));
+            }
+            Err(failure) => return Ok(Some(failure)),
+        }
+
         return Ok(None);
     }
 
     Ok(Some(Failure::invalid_signature(
         "Signed key is neither a device key nor a cross-signing key.",
     )))
+}
+
+fn key_matches_stored_key(
+    uploaded_key_value: &JsonValue,
+    stored_key: &impl serde::Serialize,
+) -> Result<bool, Failure> {
+    let stored_key_value = serde_json::to_value(stored_key)
+        .map_err(|_| Failure::invalid_signature("Stored target key is invalid."))?;
+
+    key_matches_stored_key_value(uploaded_key_value, &stored_key_value)
+}
+
+fn key_matches_stored_key_value(
+    uploaded_key_value: &JsonValue,
+    stored_key_value: &JsonValue,
+) -> Result<bool, Failure> {
+    Ok(canonical_json_for_signing(uploaded_key_value)?
+        == canonical_json_for_signing(stored_key_value)?)
+}
+
+fn canonical_json_for_signing(key_value: &JsonValue) -> Result<String, Failure> {
+    let object = serde_json::from_value::<CanonicalJsonObject>(key_value.clone())
+        .map_err(|_| Failure::invalid_signature("Signed key is not canonical JSON."))?;
+
+    signatures::to_canonical_json_string_for_signing(&object)
+        .map_err(|_| Failure::invalid_signature("Signed key is not canonical JSON."))
 }
 
 fn sender_signature_map<'a>(

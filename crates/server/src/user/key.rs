@@ -349,12 +349,11 @@ pub async fn add_cross_signing_key_updates(
             None
         };
 
+    let master_key_for_signatures = master_key.or(existing_master_key.as_ref());
+
     if let Some(master_key) = master_key {
         validate_cross_signing_key(user_id, CrossSigningKeyKind::Master, master_key)?;
-        add_cross_signing_key(user_id, "master", master_key).await?;
     }
-
-    let master_key_for_signatures = master_key.or(existing_master_key.as_ref());
 
     if let Some(self_signing_key) = self_signing_key {
         validate_cross_signing_key(user_id, CrossSigningKeyKind::SelfSigning, self_signing_key)?;
@@ -364,8 +363,6 @@ pub async fn add_cross_signing_key_updates(
             master_key_for_signatures
                 .ok_or(MatrixError::invalid_param("Missing master signing key."))?,
         )?;
-
-        add_cross_signing_key(user_id, "self_signing", self_signing_key).await?;
     }
 
     if let Some(user_signing_key) = user_signing_key {
@@ -376,7 +373,17 @@ pub async fn add_cross_signing_key_updates(
             master_key_for_signatures
                 .ok_or(MatrixError::invalid_param("Missing master signing key."))?,
         )?;
+    }
 
+    if let Some(master_key) = master_key {
+        add_cross_signing_key(user_id, "master", master_key).await?;
+    }
+
+    if let Some(self_signing_key) = self_signing_key {
+        add_cross_signing_key(user_id, "self_signing", self_signing_key).await?;
+    }
+
+    if let Some(user_signing_key) = user_signing_key {
         add_cross_signing_key(user_id, "user_signing", user_signing_key).await?;
     }
 
