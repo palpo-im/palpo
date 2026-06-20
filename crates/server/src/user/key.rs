@@ -155,6 +155,11 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
 
                 self_signing_keys.extend(response.self_signing_keys);
                 for (user_id, devices) in &response.device_keys {
+                    if user_id.server_name() != server {
+                        back_off(server.to_owned());
+                        failures.insert(server.to_string(), json!({}));
+                        continue;
+                    }
                     for (device_id, keys) in devices {
                         if &keys.user_id != user_id || &keys.device_id != device_id {
                             back_off(server.to_owned());
