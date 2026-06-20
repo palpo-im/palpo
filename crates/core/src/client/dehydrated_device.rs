@@ -126,6 +126,20 @@ impl UpsertDehydratedDeviceResBody {
     }
 }
 
+/// Response type for deleting a dehydrated device.
+#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
+pub struct DeleteDehydratedDeviceResBody {
+    /// The ID of the deleted dehydrated device.
+    pub device_id: OwnedDeviceId,
+}
+
+impl DeleteDehydratedDeviceResBody {
+    /// Creates a response for the deleted dehydrated device.
+    pub fn new(device_id: OwnedDeviceId) -> Self {
+        Self { device_id }
+    }
+}
+
 /// Response type for retrieving a dehydrated device.
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
 pub struct GetDehydratedDeviceResBody {

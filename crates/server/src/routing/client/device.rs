@@ -6,7 +6,8 @@ use salvo::prelude::*;
 
 use crate::core::OwnedDeviceId;
 use crate::core::client::dehydrated_device::{
-    GetDehydratedDeviceResBody, UpsertDehydratedDeviceReqBody, UpsertDehydratedDeviceResBody,
+    DeleteDehydratedDeviceResBody, GetDehydratedDeviceResBody, UpsertDehydratedDeviceReqBody,
+    UpsertDehydratedDeviceResBody,
 };
 use crate::core::client::device::{
     DeleteDeviceReqBody, DeleteDevicesReqBody, DeviceResBody, DevicesResBody, UpdatedDeviceReqBody,
@@ -269,20 +270,21 @@ pub(super) async fn dehydrated(
 }
 
 #[endpoint]
-pub(super) async fn delete_dehydrated(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
+pub(super) async fn delete_dehydrated(
+    _aa: AuthArgs,
+    depot: &mut Depot,
+) -> JsonResult<DeleteDehydratedDeviceResBody> {
     let authed = depot.authed_info()?;
-    let device_id = data::user::get_dehydrated_device(authed.user_id())
-        .await?
-        .map(|(device_id, _)| device_id);
+    let Some((device_id, _)) = data::user::get_dehydrated_device(authed.user_id()).await? else {
+        return Err(MatrixError::not_found("No dehydrated device available.").into());
+    };
 
     data::user::delete_dehydrated_devices(authed.user_id()).await?;
 
-    if let Some(device_id) = device_id {
-        crate::user::key::mark_device_key_update(authed.user_id(), &device_id).await?;
-        crate::user::key::send_device_key_update(authed.user_id(), &device_id).await?;
-    }
+    crate::user::key::mark_device_key_update(authed.user_id(), &device_id).await?;
+    crate::user::key::send_device_key_update(authed.user_id(), &device_id).await?;
 
-    empty_ok()
+    json_ok(DeleteDehydratedDeviceResBody::new(device_id))
 }
 
 #[endpoint]
