@@ -290,15 +290,43 @@ pub async fn get_cross_signing_key(
     user_id: &UserId,
     key_type: &str,
 ) -> DataResult<Option<JsonValue>> {
-    e2e_cross_signing_keys::table
+    let Some(key_data) = e2e_cross_signing_keys::table
         .filter(e2e_cross_signing_keys::user_id.eq(user_id))
         .filter(e2e_cross_signing_keys::key_type.eq(key_type))
         .order_by(e2e_cross_signing_keys::id.desc())
         .select(e2e_cross_signing_keys::key_data)
         .first::<JsonValue>(&mut connect().await?)
         .await
-        .optional()
-        .map_err(Into::into)
+        .optional()?
+    else {
+        return Ok(None);
+    };
+
+    let mut key = serde_json::from_value::<CrossSigningKey>(key_data)?;
+    for target_key_id in key.keys.keys() {
+        let signatures = e2e_cross_signing_sigs::table
+            .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
+            .filter(
+                e2e_cross_signing_sigs::target_device_id
+                    .eq(OwnedDeviceId::from(target_key_id.as_str())),
+            )
+            .load::<DbCrossSignature>(&mut connect().await?)
+            .await?;
+        for DbCrossSignature {
+            origin_user_id,
+            origin_key_id,
+            signature,
+            ..
+        } in signatures
+        {
+            key.signatures
+                .entry(origin_user_id)
+                .or_default()
+                .insert(origin_key_id, signature);
+        }
+    }
+
+    serde_json::to_value(key).map(Some).map_err(Into::into)
 }
 
 /// Insert a cross-signing key of the given kind.
