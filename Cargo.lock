@@ -2724,6 +2724,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3611,7 +3620,7 @@ dependencies = [
  "image",
  "indexmap",
  "ipaddress",
- "itertools",
+ "itertools 0.15.0",
  "jsonwebtoken",
  "kdl",
  "lru-cache",
@@ -3690,7 +3699,7 @@ dependencies = [
  "http",
  "http-auth",
  "indexmap",
- "itertools",
+ "itertools 0.15.0",
  "js_option",
  "jsonwebtoken",
  "konst",
@@ -3777,7 +3786,7 @@ dependencies = [
  "hmac 0.13.0",
  "hyper-util",
  "image",
- "itertools",
+ "itertools 0.15.0",
  "jsonwebtoken",
  "lru-cache",
  "maplit",
@@ -4590,7 +4599,7 @@ dependencies = [
  "built",
  "cfg-if",
  "interpolate_name",
- "itertools",
+ "itertools 0.14.0",
  "libc",
  "libfuzzer-sys",
  "log",
@@ -5999,7 +6008,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
