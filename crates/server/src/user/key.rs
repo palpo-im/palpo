@@ -6,12 +6,14 @@ use serde_json::json;
 
 use crate::core::client::key::ClaimKeysResBody;
 use crate::core::device::DeviceListUpdateContent;
-use crate::core::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
+use crate::core::encryption::{CrossSigningKey, DeviceKeys, KeyUsage, OneTimeKey};
 use crate::core::federation::key::{
     QueryKeysReqBody, QueryKeysResBody, claim_keys_request, query_keys_request,
 };
 use crate::core::federation::transaction::{Edu, SigningKeyUpdateContent};
 use crate::core::identifiers::*;
+use crate::core::serde::{Base64, CanonicalJsonObject, JsonValue};
+use crate::core::signatures::{self, PublicKeyMap, PublicKeySet};
 use crate::core::{DeviceKeyAlgorithm, UnixMillis, client, federation};
 use crate::data::user::{NewDbCrossSignature, NewDbKeyChange};
 use crate::exts::*;
@@ -142,16 +144,43 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
                     let json = serde_json::to_value(master_key).expect("to_value always works");
                     let raw =
                         serde_json::from_value(json).expect("RawJson::from_value always works");
-                    crate::user::add_cross_signing_keys(
+                    if crate::user::add_cross_signing_keys(
                         &user_id, &raw, &None, &None,
                         false, /* Dont notify. A notification would trigger another key request
                                * resulting in an endless loop */
                     )
-                    .await?;
+                    .await
+                    .is_err()
+                    {
+                        back_off(server.to_owned());
+                        failures.insert(server.to_string(), json!({}));
+                        continue;
+                    }
                     master_keys.insert(user_id.to_owned(), raw);
                 }
 
                 self_signing_keys.extend(response.self_signing_keys);
+                for (user_id, devices) in &response.device_keys {
+                    if user_id.server_name() != server {
+                        back_off(server.to_owned());
+                        failures.insert(server.to_string(), json!({}));
+                        continue;
+                    }
+                    for (device_id, keys) in devices {
+                        if &keys.user_id != user_id || &keys.device_id != device_id {
+                            back_off(server.to_owned());
+                            failures.insert(server.to_string(), json!({}));
+                            continue;
+                        }
+                        if data::user::key::add_device_keys(user_id, device_id, keys)
+                            .await
+                            .is_err()
+                        {
+                            back_off(server.to_owned());
+                            failures.insert(server.to_string(), json!({}));
+                        }
+                    }
+                }
                 device_keys.extend(response.device_keys);
             }
             _ => {
@@ -257,7 +286,13 @@ pub async fn get_allowed_master_key(
     user_id: &UserId,
     allowed_signatures: &(dyn Fn(&UserId) -> bool + Send + Sync),
 ) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = data::user::key::get_cross_signing_key(user_id, "master").await?;
+    let key_data =
+        data::user::key::get_cross_signing_key_and_sigs(user_id, "master", |signature_user_id| {
+            sender_id == Some(signature_user_id)
+                || signature_user_id == user_id
+                || allowed_signatures(signature_user_id)
+        })
+        .await?;
     if let Some(mut key_data) = key_data {
         clean_signatures(&mut key_data, sender_id, user_id, allowed_signatures)?;
         Ok(serde_json::from_value(key_data).ok())
@@ -279,7 +314,16 @@ pub async fn get_allowed_self_signing_key(
     user_id: &UserId,
     allowed_signatures: &(dyn Fn(&UserId) -> bool + Send + Sync),
 ) -> AppResult<Option<CrossSigningKey>> {
-    let key_data = data::user::key::get_cross_signing_key(user_id, "self_signing").await?;
+    let key_data = data::user::key::get_cross_signing_key_and_sigs(
+        user_id,
+        "self_signing",
+        |signature_user_id| {
+            sender_id == Some(signature_user_id)
+                || signature_user_id == user_id
+                || allowed_signatures(signature_user_id)
+        },
+    )
+    .await?;
     if let Some(mut key_data) = key_data {
         clean_signatures(&mut key_data, sender_id, user_id, allowed_signatures)?;
         Ok(serde_json::from_value(key_data).ok())
@@ -356,54 +400,188 @@ pub async fn add_cross_signing_key_updates(
     user_signing_key: Option<&CrossSigningKey>,
     notify: bool,
 ) -> AppResult<()> {
-    // TODO: Check signatures
+    let existing_master_key =
+        if master_key.is_none() && (self_signing_key.is_some() || user_signing_key.is_some()) {
+            get_master_key(user_id).await?
+        } else {
+            None
+        };
+
+    let master_key_for_signatures = master_key.or(existing_master_key.as_ref());
+
+    if let Some(master_key) = master_key {
+        validate_cross_signing_key(user_id, CrossSigningKeyKind::Master, master_key)?;
+    }
+
+    if let Some(self_signing_key) = self_signing_key {
+        validate_cross_signing_key(user_id, CrossSigningKeyKind::SelfSigning, self_signing_key)?;
+        verify_cross_signing_key_signature(
+            self_signing_key,
+            user_id,
+            master_key_for_signatures
+                .ok_or(MatrixError::invalid_param("Missing master signing key."))?,
+        )?;
+    }
+
+    if let Some(user_signing_key) = user_signing_key {
+        validate_cross_signing_key(user_id, CrossSigningKeyKind::UserSigning, user_signing_key)?;
+        verify_cross_signing_key_signature(
+            user_signing_key,
+            user_id,
+            master_key_for_signatures
+                .ok_or(MatrixError::invalid_param("Missing master signing key."))?,
+        )?;
+    }
+
     if let Some(master_key) = master_key {
         add_cross_signing_key(user_id, "master", master_key).await?;
     }
 
     if let Some(self_signing_key) = self_signing_key {
-        let mut self_signing_key_ids = self_signing_key.keys.values();
-
-        let _self_signing_key_id =
-            self_signing_key_ids
-                .next()
-                .ok_or(MatrixError::invalid_param(
-                    "Self signing key contained no key.",
-                ))?;
-
-        if self_signing_key_ids.next().is_some() {
-            return Err(MatrixError::invalid_param(
-                "Self signing key contained more than one key.",
-            )
-            .into());
-        }
-
         add_cross_signing_key(user_id, "self_signing", self_signing_key).await?;
     }
 
     if let Some(user_signing_key) = user_signing_key {
-        let mut user_signing_key_ids = user_signing_key.keys.values();
-
-        let _user_signing_key_id =
-            user_signing_key_ids
-                .next()
-                .ok_or(MatrixError::invalid_param(
-                    "User signing key contained no key.",
-                ))?;
-
-        if user_signing_key_ids.next().is_some() {
-            return Err(MatrixError::invalid_param(
-                "User signing key contained more than one key.",
-            )
-            .into());
-        }
-
         add_cross_signing_key(user_id, "user_signing", user_signing_key).await?;
     }
 
     if notify {
         mark_signing_key_update(user_id).await?;
     }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum CrossSigningKeyKind {
+    Master,
+    SelfSigning,
+    UserSigning,
+}
+
+impl CrossSigningKeyKind {
+    fn matches_usage(self, usage: &KeyUsage) -> bool {
+        matches!(
+            (self, usage),
+            (Self::Master, KeyUsage::Master)
+                | (Self::SelfSigning, KeyUsage::SelfSigning)
+                | (Self::UserSigning, KeyUsage::UserSigning)
+        )
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Master => "Master",
+            Self::SelfSigning => "Self signing",
+            Self::UserSigning => "User signing",
+        }
+    }
+}
+
+fn validate_cross_signing_key(
+    user_id: &UserId,
+    kind: CrossSigningKeyKind,
+    key: &CrossSigningKey,
+) -> AppResult<()> {
+    if &key.user_id != user_id {
+        return Err(MatrixError::invalid_param(format!(
+            "{} key user_id does not match the authenticated user.",
+            kind.display_name()
+        ))
+        .into());
+    }
+
+    if key.usage.len() != 1 || !key.usage.iter().any(|usage| kind.matches_usage(usage)) {
+        return Err(MatrixError::invalid_param(format!(
+            "{} key contained invalid usage.",
+            kind.display_name()
+        ))
+        .into());
+    }
+
+    if key.keys.len() != 1 {
+        return Err(MatrixError::invalid_param(format!(
+            "{} key must contain exactly one key.",
+            kind.display_name()
+        ))
+        .into());
+    }
+
+    let (key_id, public_key) = key
+        .keys
+        .iter()
+        .next()
+        .expect("cross-signing key length checked above");
+    if key_id.algorithm() != DeviceKeyAlgorithm::Ed25519 {
+        return Err(MatrixError::invalid_param(format!(
+            "{} key must use ed25519.",
+            kind.display_name()
+        ))
+        .into());
+    }
+    let _: Base64 = Base64::parse(public_key).map_err(|_| {
+        MatrixError::invalid_param(format!(
+            "{} key contained an invalid public key.",
+            kind.display_name()
+        ))
+    })?;
+
+    Ok(())
+}
+
+fn verify_cross_signing_key_signature(
+    signed_key: &CrossSigningKey,
+    signer_user_id: &UserId,
+    signer_key: &CrossSigningKey,
+) -> AppResult<()> {
+    let signer_signatures =
+        signed_key
+            .signatures
+            .get(signer_user_id)
+            .ok_or(MatrixError::invalid_param(
+                "Missing cross-signing key signature.",
+            ))?;
+    let mut public_keys = PublicKeySet::new();
+    for (key_id, public_key) in &signer_key.keys {
+        if signer_signatures.contains_key(key_id) {
+            public_keys.insert(
+                key_id.to_string(),
+                Base64::parse(public_key).map_err(|_| {
+                    MatrixError::invalid_param("Master key contained an invalid public key.")
+                })?,
+            );
+        }
+    }
+    if public_keys.is_empty() {
+        return Err(
+            MatrixError::invalid_param("Missing signature from the user's master key.").into(),
+        );
+    }
+
+    let mut value = serde_json::to_value(signed_key)?;
+    let Some(object) = value.as_object_mut() else {
+        return Err(MatrixError::invalid_param("Invalid cross-signing key.").into());
+    };
+    let mut signatures = serde_json::Map::new();
+    signatures.insert(
+        signer_user_id.to_string(),
+        JsonValue::Object(
+            serde_json::to_value(signer_signatures)?
+                .as_object()
+                .cloned()
+                .ok_or(MatrixError::invalid_param(
+                    "Invalid cross-signing key signatures.",
+                ))?,
+        ),
+    );
+    object.insert("signatures".to_owned(), JsonValue::Object(signatures));
+    let object: CanonicalJsonObject = serde_json::from_value(value)
+        .map_err(|_| MatrixError::invalid_param("Invalid cross-signing key canonical JSON."))?;
+
+    let mut public_key_map = PublicKeyMap::new();
+    public_key_map.insert(signer_user_id.to_string(), public_keys);
+    signatures::verify_json(&public_key_map, &object)
+        .map_err(|_| MatrixError::invalid_param("Invalid cross-signing key signature."))?;
 
     Ok(())
 }

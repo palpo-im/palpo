@@ -341,6 +341,49 @@ pub async fn get_cross_signing_key(
         .map_err(Into::into)
 }
 
+/// Return the latest cross-signing key of a kind with uploaded signatures attached.
+pub async fn get_cross_signing_key_and_sigs<F>(
+    user_id: &UserId,
+    key_type: &str,
+    allowed_signature_origin: F,
+) -> DataResult<Option<JsonValue>>
+where
+    F: Fn(&UserId) -> bool,
+{
+    let Some(key_data) = get_cross_signing_key(user_id, key_type).await? else {
+        return Ok(None);
+    };
+
+    let mut key = serde_json::from_value::<CrossSigningKey>(key_data)?;
+    for target_key_id in key.keys.keys() {
+        let signatures = e2e_cross_signing_sigs::table
+            .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
+            .filter(
+                e2e_cross_signing_sigs::target_device_id
+                    .eq(OwnedDeviceId::from(target_key_id.key_name().as_str())),
+            )
+            .load::<DbCrossSignature>(&mut connect().await?)
+            .await?;
+        for DbCrossSignature {
+            origin_user_id,
+            origin_key_id,
+            signature,
+            ..
+        } in signatures
+        {
+            if !allowed_signature_origin(&origin_user_id) {
+                continue;
+            }
+            key.signatures
+                .entry(origin_user_id)
+                .or_default()
+                .insert(origin_key_id, signature);
+        }
+    }
+
+    serde_json::to_value(key).map(Some).map_err(Into::into)
+}
+
 /// Insert a cross-signing key of the given kind.
 pub async fn add_cross_signing_key(
     user_id: &UserId,

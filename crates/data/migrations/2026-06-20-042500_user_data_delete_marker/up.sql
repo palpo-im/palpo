@@ -1,0 +1,2 @@
+ALTER TABLE user_datas
+    ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
