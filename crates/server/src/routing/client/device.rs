@@ -199,7 +199,7 @@ async fn delete_device(
         res.status_code(StatusCode::UNAUTHORIZED); // TestDeviceManagement asks http code 401
         return Err(uiaa.into());
     }
-    data::user::device::remove_device(authed.user_id(), &device_id).await?;
+    crate::user::remove_device(authed.user_id(), &device_id).await?;
     empty_ok()
 }
 
@@ -244,7 +244,7 @@ async fn delete_devices(
         return Err(uiaa.into());
     }
     for device_id in devices {
-        data::user::device::remove_device(authed.user_id(), &device_id).await?;
+        crate::user::remove_device(authed.user_id(), &device_id).await?;
     }
 
     empty_ok()
