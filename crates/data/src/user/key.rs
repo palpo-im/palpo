@@ -51,7 +51,7 @@ pub struct NewDbCrossSignature {
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = e2e_fallback_keys)]
 pub struct DbFallbackKey {
-    pub id: String,
+    pub id: i64,
 
     pub user_id: OwnedUserId,
     pub device_id: OwnedDeviceId,
@@ -214,6 +214,46 @@ pub async fn get_device_keys_and_sigs(
             .insert(origin_key_id, signature);
     }
     Ok(Some(device_keys))
+}
+
+pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+    let mut conn = connect().await?;
+
+    diesel::delete(
+        e2e_device_keys::table
+            .filter(e2e_device_keys::user_id.eq(user_id))
+            .filter(e2e_device_keys::device_id.eq(device_id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
+    diesel::delete(
+        e2e_one_time_keys::table
+            .filter(e2e_one_time_keys::user_id.eq(user_id))
+            .filter(e2e_one_time_keys::device_id.eq(device_id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
+    diesel::delete(
+        e2e_fallback_keys::table
+            .filter(e2e_fallback_keys::user_id.eq(user_id))
+            .filter(e2e_fallback_keys::device_id.eq(device_id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
+    // Drop cross-signing signatures targeting this device so a later reuse of the
+    // same device ID cannot resurrect stale signatures over fresh device keys.
+    diesel::delete(
+        e2e_cross_signing_sigs::table
+            .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
+            .filter(e2e_cross_signing_sigs::target_device_id.eq(device_id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn keys_changed_users(
@@ -399,6 +439,37 @@ pub async fn add_one_time_key(
     Ok(())
 }
 
+/// Insert or replace a fallback key for a device and algorithm.
+pub async fn add_fallback_key(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    key_id: &DeviceKeyId,
+    fallback_key: &OneTimeKey,
+) -> DataResult<()> {
+    diesel::delete(
+        e2e_fallback_keys::table
+            .filter(e2e_fallback_keys::user_id.eq(user_id))
+            .filter(e2e_fallback_keys::device_id.eq(device_id))
+            .filter(e2e_fallback_keys::algorithm.eq(key_id.algorithm().to_string())),
+    )
+    .execute(&mut connect().await?)
+    .await?;
+
+    diesel::insert_into(e2e_fallback_keys::table)
+        .values(&NewDbFallbackKey {
+            user_id: user_id.to_owned(),
+            device_id: device_id.to_owned(),
+            algorithm: key_id.algorithm().to_string(),
+            key_id: key_id.to_owned(),
+            key_data: serde_json::to_value(fallback_key)?,
+            used_at: None,
+            created_at: UnixMillis::now(),
+        })
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 /// Claim (read and remove) the oldest one-time key for a device and algorithm.
 pub async fn claim_one_time_key(
     user_id: &UserId,
@@ -424,6 +495,31 @@ pub async fn claim_one_time_key(
             .execute(&mut connect().await?)
             .await?;
         Ok(Some((key_id, serde_json::from_value::<OneTimeKey>(key_data)?)))
+    } else if let Some(DbFallbackKey {
+        id,
+        key_id,
+        key_data,
+        used_at,
+        ..
+    }) = e2e_fallback_keys::table
+        .filter(e2e_fallback_keys::user_id.eq(user_id))
+        .filter(e2e_fallback_keys::device_id.eq(device_id))
+        .filter(e2e_fallback_keys::algorithm.eq(key_algorithm.as_ref()))
+        .order(e2e_fallback_keys::id.desc())
+        .first::<DbFallbackKey>(&mut connect().await?)
+        .await
+        .optional()?
+    {
+        if used_at.is_none() {
+            diesel::update(e2e_fallback_keys::table.find(id))
+                .set(e2e_fallback_keys::used_at.eq(UnixMillis::now().get() as i64))
+                .execute(&mut connect().await?)
+                .await?;
+        }
+        Ok(Some((
+            key_id,
+            serde_json::from_value::<OneTimeKey>(key_data)?,
+        )))
     } else {
         Ok(None)
     }
