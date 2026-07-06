@@ -263,6 +263,9 @@ pub async fn set_access_token(
     token: &str,
     refresh_token_id: Option<i64>,
 ) -> DataResult<()> {
+    // Evict before token rotation so a cached old token cannot authenticate
+    // after the row is replaced but before the post-upsert scan runs.
+    super::access_token::invalidate_user(user_id);
     diesel::insert_into(user_access_tokens::table)
         .values(NewDbAccessToken::new(
             user_id.to_owned(),
