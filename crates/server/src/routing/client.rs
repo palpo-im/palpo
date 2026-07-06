@@ -110,6 +110,14 @@ pub fn router() -> Router {
             )
     }
     client
+        .push(
+            Router::with_path("v1")
+                .hoop(hoops::auth_by_access_token)
+                .push(
+                    Router::with_path("room_summary/{room_id_or_alias}")
+                        .get(room::summary::get_summary),
+                ),
+        )
         .push(Router::with_path("versions").get(supported_versions))
         .push(Router::with_path("v1/auth_metadata").get(unstable::auth_metadata))
         .push(
@@ -159,14 +167,16 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
     for room_version in &*config::STABLE_ROOM_VERSIONS {
         available.insert(room_version.clone(), RoomVersionStability::Stable);
     }
+    let change_password_enabled = conf.enabled_delegated_auth().is_none();
     json_ok(CapabilitiesResBody {
         capabilities: Capabilities {
             room_versions: RoomVersionsCapability {
                 default: conf.default_room_version.clone(),
                 available,
             },
-            // TODO: use config values
-            change_password: ChangePasswordCapability { enabled: true },
+            change_password: ChangePasswordCapability {
+                enabled: change_password_enabled,
+            },
             thirdparty_id_changes: ThirdPartyIdChangesCapability { enabled: true },
             profile_fields: Some(ProfileFieldsCapability::new(true)),
             account_moderation,

@@ -10,8 +10,13 @@ fn default_introspection_cache_ttl() -> u64 {
 #[derive(Clone, Debug, Deserialize, Default)]
 pub struct DelegatedAuthConfig {
     /// Enable MSC3861 delegated OIDC authentication.
-    /// When enabled, Palpo delegates token validation to an external
-    /// authorization server (like Pasion) via token introspection.
+    /// When enabled, Palpo accepts delegated OIDC access tokens from an
+    /// external authorization server (like Pasion) via token introspection.
+    /// Local password storage, local user registration, and local password
+    /// changes are disabled while delegated auth is enabled; local appservice
+    /// login remains available for bridge/admin integrations. Password login can
+    /// still be advertised when `password_login_endpoint` is set, in which case
+    /// Palpo delegates username/password verification to the auth service.
     ///
     /// default: false
     #[serde(default)]
@@ -29,6 +34,12 @@ pub struct DelegatedAuthConfig {
     /// authorization server for SSO login.
     pub client_id: Option<String>,
 
+    /// Internal endpoint that accepts a Matrix password login exchange.
+    /// Palpo authenticates with `admin.mas_secret` as a Bearer token and expects
+    /// a delegated access token in response. When unset, `m.login.password` is
+    /// not advertised while delegated auth is enabled.
+    pub password_login_endpoint: Option<String>,
+
     /// Optional URL for account management UI.
     /// Included in the well-known client response under m.authentication.
     pub account_management_url: Option<String>,
@@ -39,4 +50,12 @@ pub struct DelegatedAuthConfig {
     /// default: 300
     #[serde(default = "default_introspection_cache_ttl")]
     pub introspection_cache_ttl: u64,
+}
+
+impl DelegatedAuthConfig {
+    pub fn password_login_enabled(&self) -> bool {
+        self.password_login_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| !endpoint.trim().is_empty())
+    }
 }

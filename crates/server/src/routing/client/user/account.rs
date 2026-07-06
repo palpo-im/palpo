@@ -57,7 +57,12 @@ pub(super) async fn set_global_data(
         data::user::set_ignored_users(authed.user_id(), &ignored_ids).await?;
     }
 
-    data::user::set_data(authed.user_id(), None, &event_type, body).await?;
+    if body.as_object().is_some_and(|content| content.is_empty()) {
+        data::user::delete_global_data(authed.user_id(), &event_type).await?;
+    } else {
+        data::user::set_data(authed.user_id(), None, &event_type, body).await?;
+    }
+
     empty_ok()
 }
 

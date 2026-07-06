@@ -54,11 +54,21 @@ pub async fn auth_by_signatures(
 async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
     let token = aa.require_access_token()?;
 
-    // Delegated auth: validate token via external introspection endpoint
+    if auth_by_local_token(token, &aa, depot).await? {
+        return Ok(());
+    }
+
+    // Delegated auth coexists with local tokens. Only fall back to external
+    // introspection after the token misses Palpo's local access/appservice
+    // stores, preserving existing password sessions when OIDC is enabled.
     if config::get().enabled_delegated_auth().is_some() {
         return auth_by_delegated_token(token, &aa, depot).await;
     }
 
+    Err(MatrixError::unknown_token("unknown access token", true).into())
+}
+
+async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> AppResult<bool> {
     // Native auth: resolve the token to its user/device, optionally via an
     // in-memory cache (disabled when native_token_cache_ttl is 0). `None` means
     // it isn't a user access token, so we fall through to the appservice token
@@ -83,7 +93,7 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
             access_token_id: Some(access_token_id),
             appservice: None,
         });
-        Ok(())
+        Ok(true)
     } else {
         let appservices = crate::appservices().await;
         for appservice in appservices {
@@ -135,10 +145,10 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
                     access_token_id: None,
                     appservice: Some(appservice_info),
                 });
-                return Ok(());
+                return Ok(true);
             }
         }
-        Err(MatrixError::unknown_token("unknown access token", true).into())
+        Ok(false)
     }
 }
 

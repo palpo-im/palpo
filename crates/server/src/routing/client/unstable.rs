@@ -30,6 +30,16 @@ pub(super) fn router() -> Router {
                         .post(super::sync_msc4186::sync_events_v5),
                 )
                 .push(
+                    Router::with_path("org.matrix.msc3814.v1/dehydrated_device")
+                        .get(super::device::dehydrated)
+                        .put(super::device::upsert_dehydrated)
+                        .delete(super::device::delete_dehydrated)
+                        .push(
+                            Router::with_path("{device_id}/events")
+                                .post(super::to_device::for_dehydrated),
+                        ),
+                )
+                .push(
                     Router::with_path("im.nheko.summary/rooms/{room_id_or_alias}/summary")
                         .get(super::room::summary::get_summary_msc_3266),
                 )

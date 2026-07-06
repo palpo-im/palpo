@@ -550,7 +550,7 @@ impl KnockResBody {
 pub struct InitialSyncReqArgs {
     /// The ID of the room.
     #[salvo(parameter(parameter_in = Path))]
-    pub room_id: OwnedRoomId,
+    pub room_id: String,
 
     /// Limit messages chunks size
     #[salvo(parameter(parameter_in = Query))]

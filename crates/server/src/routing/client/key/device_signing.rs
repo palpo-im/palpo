@@ -48,11 +48,12 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         return Err(MatrixError::bad_json("missing challenged signing key payload").into());
     }
 
-    // When delegated auth (OIDC) is enabled, UIA is not used — the OIDC
-    // token already proves the user's identity.  Pasion calls
-    // `allow_cross_signing_reset` to set a time-limited bypass before
-    // Element uploads new keys, so we also honour that flag.
-    let uia_required = if config::get().enabled_delegated_auth().is_some() {
+    // When this request is authenticated by a delegated OIDC token, UIA is not
+    // used. Local password/appservice sessions still follow the legacy UIA
+    // path even when delegated auth is enabled globally.
+    let uia_required = if config::get().enabled_delegated_auth().is_some()
+        && authed.is_delegated_auth()
+    {
         false
     } else if let Ok(body) = &body {
         let exist_master_key = crate::user::key::get_master_key(sender_id).await?;

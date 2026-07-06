@@ -37,6 +37,13 @@ pub struct DeviceKeys {
     /// servers, and not covered by the signatures.
     #[serde(default, skip_serializing_if = "UnsignedDeviceInfo::is_empty")]
     pub unsigned: UnsignedDeviceInfo,
+
+    /// Whether the device is a dehydrated device (MSC3814).
+    ///
+    /// Preserved verbatim so the stored and republished keys match the object
+    /// the client signed; omitted for ordinary devices.
+    #[serde(default, skip_serializing_if = "crate::serde::is_default")]
+    pub dehydrated: bool,
 }
 
 impl DeviceKeys {
@@ -56,6 +63,7 @@ impl DeviceKeys {
             keys,
             signatures,
             unsigned: Default::default(),
+            dehydrated: false,
         }
     }
 }

@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS user_dehydrated_devices_user_unique_idx;

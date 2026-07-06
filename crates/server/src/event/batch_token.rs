@@ -100,11 +100,53 @@ impl FromStr for BatchToken {
                 stream_ordering,
                 topological_ordering,
             })
+        } else if let Ok(stream_ordering) = input.parse::<Seqnum>() {
+            // Backward compatibility: older builds (pre-#69) and some paths
+            // serialized the raw `stream_ordering` without the leading 's'
+            // (e.g. "128"). Clients persist these tokens in local storage and
+            // replay them on back-pagination long after the server is upgraded,
+            // so reject-on-missing-prefix would brick history loading until
+            // every client cleared its cache. Treat a bare integer as a live
+            // token, which is exactly what those builds meant by it.
+            Ok(BatchToken::Live { stream_ordering })
         } else {
             Err(MatrixError::invalid_param(
                 "invalid batch token: must start with 's' or 't'",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_live_and_historic_tokens() {
+        assert_eq!(
+            "s2633508".parse::<BatchToken>().unwrap(),
+            BatchToken::Live { stream_ordering: 2633508 }
+        );
+        assert_eq!(
+            "t426-2633508".parse::<BatchToken>().unwrap(),
+            BatchToken::Historic { stream_ordering: 2633508, topological_ordering: 426 }
+        );
+    }
+
+    #[test]
+    fn accepts_bare_numeric_token_for_backward_compat() {
+        // Tokens minted by pre-#69 builds (and replayed from client storage)
+        // have no 's' prefix; they must still resolve to a live token.
+        assert_eq!(
+            "128".parse::<BatchToken>().unwrap(),
+            BatchToken::Live { stream_ordering: 128 }
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_garbage() {
+        assert!("garbage".parse::<BatchToken>().is_err());
+        assert!("".parse::<BatchToken>().is_err());
     }
 }
 
