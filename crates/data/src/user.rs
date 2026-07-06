@@ -687,6 +687,7 @@ pub async fn replace_threepids(
 
 /// Set admin status for a user
 pub async fn set_admin(user_id: &UserId, is_admin: bool) -> DataResult<()> {
+    access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set(users::is_admin.eq(is_admin))
         .execute(&mut connect().await?)
