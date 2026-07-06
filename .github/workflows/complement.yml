@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 150
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -122,11 +122,11 @@ jobs:
           fi
           PASS_RATE=$((PASS_COUNT * 100 / TOTAL))
           echo "Pass rate: ${PASS_RATE}%"
-          if [ "$PASS_RATE" -lt 90 ]; then
-            echo "::error::Pass rate ${PASS_RATE}% is below 90% threshold"
+          if [ "$PASS_RATE" -lt 98 ]; then
+            echo "::error::Pass rate ${PASS_RATE}% is below 98% threshold"
             exit 1
           fi
-          echo "✅ Pass rate ${PASS_RATE}% meets the 90% threshold"
+          echo "✅ Pass rate ${PASS_RATE}% meets the 98% threshold"
 
   mixed-federation:
     name: Mixed federation
@@ -134,7 +134,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Go
         uses: actions/setup-go@v6

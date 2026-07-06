@@ -19,6 +19,7 @@ pub struct DbUserData {
     pub room_id: Option<OwnedRoomId>,
     pub data_type: String,
     pub json_data: JsonValue,
+    pub is_deleted: bool,
     pub occur_sn: i64,
     pub created_at: UnixMillis,
 }
@@ -29,6 +30,7 @@ pub struct NewDbUserData {
     pub room_id: Option<OwnedRoomId>,
     pub data_type: String,
     pub json_data: JsonValue,
+    pub is_deleted: bool,
     pub occur_sn: Option<i64>,
     pub created_at: UnixMillis,
 }
@@ -68,6 +70,7 @@ pub async fn set_data(
     };
 
     if let Some(existing) = &existing
+        && !existing.is_deleted
         && existing.json_data == json_data
     {
         return Ok(existing.clone());
@@ -77,6 +80,7 @@ pub async fn set_data(
         diesel::update(user_datas::table.find(existing.id))
             .set((
                 user_datas::json_data.eq(&json_data),
+                user_datas::is_deleted.eq(false),
                 user_datas::occur_sn.eq(crate::next_sn().await?),
                 user_datas::created_at.eq(UnixMillis::now()),
             ))
@@ -89,6 +93,7 @@ pub async fn set_data(
             room_id: room_id.clone(),
             data_type: event_type.to_owned(),
             json_data,
+            is_deleted: false,
             occur_sn: Some(crate::next_sn().await?),
             created_at: UnixMillis::now(),
         };
@@ -106,17 +111,41 @@ pub async fn get_data<E: DeserializeOwned>(
     room_id: Option<&RoomId>,
     kind: &str,
 ) -> DataResult<E> {
-    let row = user_datas::table
-        .filter(user_datas::user_id.eq(user_id))
-        .filter(
-            user_datas::room_id
-                .eq(room_id)
-                .or(user_datas::room_id.is_null()),
-        )
-        .filter(user_datas::data_type.eq(kind))
-        .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect().await?)
-        .await?;
+    let mut conn = connect().await?;
+    let row = if let Some(room_id) = room_id {
+        let room_row = user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.eq(room_id))
+            .filter(user_datas::data_type.eq(kind))
+            .order_by(user_datas::id.desc())
+            .first::<DbUserData>(&mut conn)
+            .await
+            .optional()?;
+
+        if let Some(row) = room_row {
+            row
+        } else {
+            user_datas::table
+                .filter(user_datas::user_id.eq(user_id))
+                .filter(user_datas::room_id.is_null())
+                .filter(user_datas::data_type.eq(kind))
+                .order_by(user_datas::id.desc())
+                .first::<DbUserData>(&mut conn)
+                .await?
+        }
+    } else {
+        user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.is_null())
+            .filter(user_datas::data_type.eq(kind))
+            .order_by(user_datas::id.desc())
+            .first::<DbUserData>(&mut conn)
+            .await?
+    };
+
+    if row.is_deleted {
+        return Err(diesel::result::Error::NotFound.into());
+    }
     Ok(serde_json::from_value(row.json_data)?)
 }
 
@@ -136,6 +165,9 @@ pub async fn get_room_data<E: DeserializeOwned>(
         .await
         .optional()?;
     if let Some(row) = row {
+        if row.is_deleted {
+            return Ok(None);
+        }
         Ok(Some(serde_json::from_value(row.json_data)?))
     } else {
         Ok(None)
@@ -156,10 +188,55 @@ pub async fn get_global_data<E: DeserializeOwned>(
         .await
         .optional()?;
     if let Some(row) = row {
+        if row.is_deleted {
+            return Ok(None);
+        }
         Ok(Some(serde_json::from_value(row.json_data)?))
     } else {
         Ok(None)
     }
+}
+
+pub async fn delete_global_data(user_id: &UserId, kind: &str) -> DataResult<()> {
+    let mut conn = connect().await?;
+    let existing = user_datas::table
+        .filter(user_datas::user_id.eq(user_id))
+        .filter(user_datas::room_id.is_null())
+        .filter(user_datas::data_type.eq(kind))
+        .order_by(user_datas::id.desc())
+        .first::<DbUserData>(&mut conn)
+        .await
+        .optional()?;
+
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+
+    diesel::delete(
+        user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.is_null())
+            .filter(user_datas::data_type.eq(kind))
+            .filter(user_datas::id.ne(existing.id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
+    if existing.is_deleted {
+        return Ok(());
+    }
+
+    diesel::update(user_datas::table.find(existing.id))
+        .set((
+            user_datas::json_data.eq(json!({})),
+            user_datas::is_deleted.eq(true),
+            user_datas::occur_sn.eq(crate::next_sn().await?),
+            user_datas::created_at.eq(UnixMillis::now()),
+        ))
+        .execute(&mut conn)
+        .await?;
+
+    Ok(())
 }
 
 /// Load all global account-data rows for a user.
@@ -177,10 +254,20 @@ pub async fn get_global_account_data(user_id: &UserId) -> DataResult<HashMap<Str
     user_datas::table
         .filter(user_datas::user_id.eq(user_id))
         .filter(user_datas::room_id.is_null())
-        .select((user_datas::data_type, user_datas::json_data))
-        .load::<(String, JsonValue)>(&mut connect().await?)
+        .select((
+            user_datas::data_type,
+            user_datas::json_data,
+            user_datas::is_deleted,
+        ))
+        .load::<(String, JsonValue, bool)>(&mut connect().await?)
         .await
-        .map(|rows| rows.into_iter().collect())
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|(data_type, json_data, is_deleted)| {
+                    (!is_deleted).then_some((data_type, json_data))
+                })
+                .collect()
+        })
         .map_err(Into::into)
 }
 
@@ -195,13 +282,17 @@ pub async fn get_room_account_data(
             user_datas::room_id,
             user_datas::data_type,
             user_datas::json_data,
+            user_datas::is_deleted,
         ))
-        .load::<(Option<OwnedRoomId>, String, JsonValue)>(&mut connect().await?)
+        .load::<(Option<OwnedRoomId>, String, JsonValue, bool)>(&mut connect().await?)
         .await?;
 
     let mut result = HashMap::new();
-    for (room_id, data_type, json_data) in rows {
+    for (room_id, data_type, json_data, is_deleted) in rows {
         if let Some(room_id) = room_id {
+            if is_deleted {
+                continue;
+            }
             result
                 .entry(room_id.to_string())
                 .or_insert_with(HashMap::new)
@@ -244,6 +335,9 @@ pub async fn data_changes(
     };
 
     for db_data in db_datas {
+        if since_sn == 0 && db_data.is_deleted {
+            continue;
+        }
         let kind = RoomAccountDataEventType::from(&*db_data.data_type);
         let account_data = json!({
             "type": kind,

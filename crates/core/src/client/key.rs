@@ -323,6 +323,15 @@ pub struct Failure {
     /// Human-readable error message.
     error: String,
 }
+impl Failure {
+    /// Creates a signature processing failure.
+    pub fn invalid_signature(error: impl Into<String>) -> Self {
+        Self {
+            errcode: FailureErrorCode::InvalidSignature,
+            error: error.into(),
+        }
+    }
+}
 
 /// Error code for signed key processing failures.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]

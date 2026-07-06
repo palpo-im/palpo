@@ -71,7 +71,7 @@ http = "1.4.1"
 image = "0.25.10"
 opendal = { version = "0.57.0", default-features = false }
 indexmap = "2.14.0"
-itertools = "0.14.0"
+itertools = "0.15.0"
 jsonwebtoken = { version = "10.4.0", default-features = false, features = [
     "use_pem",
 ] }
@@ -86,7 +86,7 @@ mime-infer = "4.0.1"
 # nix = "0.26.1"
 path-slash = "0.2.1"
 percent-encoding = "2"
-phf = { version = "0.13.1", features = ["macros"] }
+phf = { version = "0.14.0", features = ["macros"] }
 pkcs8 = "0.11.0"
 proc-macro-crate = "3.5.0"
 proc-macro2 = "1.0.106"
@@ -107,7 +107,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 subtle = "2.6"
 serde_html_form = "0.4.0"
 serde_json = { version = "1.0.150" }
-serde-saphyr = { version = "0.0.27" }
+serde-saphyr = { version = "0.0.28" }
 serde_regex = { version = "1.2.0" }
 smallvec = { version = "1.15.1" }
 sha2 = "0.11.0"

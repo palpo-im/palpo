@@ -106,7 +106,12 @@ pub fn clean_signatures<F: Fn(&UserId) -> bool>(
         {
             let sid = <&UserId>::try_from(user.as_str())
                 .map_err(|_| AppError::internal("Invalid user ID in database."))?;
-            if sender_id == Some(user_id) || sid == user_id || allowed_signatures(sid) {
+            // Keep a signature only if it was made by the requesting user, by the
+            // target user themselves, or by an otherwise allowed origin. Comparing
+            // against `Some(sid)` (rather than `Some(user_id)`) prevents a self-query
+            // from leaking third-party cross-signing signatures stored over the
+            // target's keys.
+            if sender_id == Some(sid) || sid == user_id || allowed_signatures(sid) {
                 signatures.insert(user, signature);
             }
         }

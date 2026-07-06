@@ -18,6 +18,12 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 
 WORKDIR /work
 
+# Make crate downloads resilient to transient network failures (e.g. the
+# intermittent "Error in the HTTP2 framing layer" from crates.io). Retry more
+# and disable HTTP/2 multiplexing, which is the usual trigger for that error.
+ENV CARGO_NET_RETRY=10
+ENV CARGO_HTTP_MULTIPLEXING=false
+
 # Copy dependency manifests first for better layer caching.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/core-macros/Cargo.toml crates/core-macros/Cargo.toml

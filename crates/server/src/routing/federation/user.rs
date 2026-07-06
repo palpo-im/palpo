@@ -95,6 +95,22 @@ async fn get_devices(
             device_display_name: display_name,
         })
     }
+
+    // The dehydrated device is not tracked in `user_devices`, so include it
+    // explicitly; otherwise a remote homeserver resyncing this user's device
+    // list would drop it and never encrypt to it.
+    if let Some((dehydrated_id, _)) = data::user::get_dehydrated_device(&user_id).await?
+        && !devices.iter().any(|device| device.device_id == dehydrated_id)
+        && let Some(keys) = data::user::get_device_keys_and_sigs(&user_id, &dehydrated_id).await?
+    {
+        let device_display_name = keys.unsigned.device_display_name.clone();
+        devices.push(Device {
+            keys,
+            device_id: dehydrated_id,
+            device_display_name,
+        });
+    }
+
     json_ok(DevicesResBody {
         stream_id: stream_id as u64,
         devices,
