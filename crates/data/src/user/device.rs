@@ -290,6 +290,9 @@ pub async fn set_access_token(
 }
 
 pub async fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+    // Evict before revoking this device's tokens so a cached token cannot
+    // authenticate after the delete commits but before the post-delete scan runs.
+    super::access_token::invalidate_user(user_id);
     diesel::delete(
         user_access_tokens::table
             .filter(user_access_tokens::user_id.eq(user_id))
