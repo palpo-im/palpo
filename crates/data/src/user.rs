@@ -449,6 +449,7 @@ pub async fn remove_all_devices(user_id: &UserId) -> DataResult<()> {
     for device in device::get_devices(user_id).await? {
         device::remove_device(user_id, &device.device_id).await?;
     }
+    device::remove_all_user_to_device_events(user_id).await?;
     key::delete_all_device_keys(user_id).await?;
     delete_access_tokens(user_id).await?;
     delete_refresh_tokens(user_id).await?;

@@ -369,3 +369,10 @@ pub async fn remove_all_to_device_events(user_id: &UserId, device_id: &DeviceId)
     .await?;
     Ok(())
 }
+
+pub async fn remove_all_user_to_device_events(user_id: &UserId) -> DataResult<()> {
+    diesel::delete(device_inboxes::table.filter(device_inboxes::user_id.eq(user_id)))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
