@@ -45,6 +45,17 @@
 #
 # max_concurrent_requests =
 
+# Seconds to cache native (non-delegated) access-token authentications in
+# memory, avoiding a per-request database lookup on the auth hot path.
+#
+# The cache is process-local and is only invalidated within the process that
+# performs a logout / token rotation / account-state change. In a multi-instance
+# deployment sharing one database, another instance could keep accepting a
+# just-revoked token for up to this many seconds. Leave at 0 (disabled) unless
+# you run a single instance.
+#
+# native_token_cache_ttl = 0
+
 # Text which will be added to the end of the user's displayname upon
 # registration with a space before the text. In Conduit, this was the
 # lightning bolt emoji.

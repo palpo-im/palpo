@@ -47,5 +47,6 @@ pub async fn set_password_hash(user_id: &UserId, hash: &str) -> DataResult<()> {
         .set(users::is_guest.eq(false))
         .execute(&mut connect().await?)
         .await?;
+    super::access_token::invalidate_user(user_id);
     Ok(())
 }

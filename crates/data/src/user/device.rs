@@ -194,6 +194,11 @@ pub async fn is_device_exists(user_id: &UserId, device_id: &DeviceId) -> DataRes
 }
 
 pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+    // Evict before deleting the device row: a cache hit (which checks only TTL,
+    // not generation) would otherwise keep serving this device's cloned auth
+    // during the window between the row deletion and the post-delete eviction in
+    // `delete_access_tokens` below.
+    super::access_token::invalidate_user(user_id);
     let count = diesel::delete(
         user_devices::table
             .filter(user_devices::user_id.eq(user_id))
@@ -260,6 +265,9 @@ pub async fn set_access_token(
     token: &str,
     refresh_token_id: Option<i64>,
 ) -> DataResult<()> {
+    // Evict before token rotation so a cached old token cannot authenticate
+    // after the row is replaced but before the post-upsert scan runs.
+    super::access_token::invalidate_user(user_id);
     diesel::insert_into(user_access_tokens::table)
         .values(NewDbAccessToken::new(
             user_id.to_owned(),
@@ -272,10 +280,21 @@ pub async fn set_access_token(
         .set(user_access_tokens::token.eq(token))
         .execute(&mut connect().await?)
         .await?;
+
+    // The upsert replaces any token previously bound to this device, orphaning
+    // that string in the DB. Invalidate by user *after* the write: a precise
+    // read-then-invalidate of the old token would race a concurrent
+    // refresh/login for the same device (both read the same old token, leaving
+    // one of the new tokens cached). Invalidating after the write drops every
+    // stale entry for the user regardless of interleaving.
+    super::access_token::invalidate_user(user_id);
     Ok(())
 }
 
 pub async fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
+    // Evict before revoking this device's tokens so a cached token cannot
+    // authenticate after the delete commits but before the post-delete scan runs.
+    super::access_token::invalidate_user(user_id);
     diesel::delete(
         user_access_tokens::table
             .filter(user_access_tokens::user_id.eq(user_id))
@@ -283,6 +302,7 @@ pub async fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> Dat
     )
     .execute(&mut connect().await?)
     .await?;
+    super::access_token::invalidate_user(user_id);
     Ok(())
 }
 

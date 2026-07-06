@@ -109,6 +109,19 @@ pub struct ServerConfig {
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: u16,
 
+    /// Seconds to cache native (non-delegated) access-token authentications in
+    /// memory, avoiding a per-request database lookup on the auth hot path.
+    ///
+    /// The cache is process-local and only invalidated within the process that
+    /// performs a logout / token rotation / account-state change. In a
+    /// multi-instance deployment sharing one database, another instance could
+    /// keep accepting a just-revoked token for up to this many seconds. Leave at
+    /// 0 (disabled) unless you run a single instance.
+    ///
+    /// default: 0 (disabled)
+    #[serde(default = "default_native_token_cache_ttl")]
+    pub native_token_cache_ttl: u64,
+
     /// Text which will be added to the end of the user's displayname upon
     /// registration with a space before the text. In Conduit, this was the
     /// lightning bolt emoji.
@@ -1220,6 +1233,10 @@ fn default_max_upload_size() -> u32 {
 
 fn default_max_concurrent_requests() -> u16 {
     100
+}
+
+fn default_native_token_cache_ttl() -> u64 {
+    0
 }
 
 fn default_max_fetch_prev_events() -> u16 {
