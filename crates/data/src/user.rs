@@ -248,6 +248,9 @@ pub async fn create_user(new_user: &NewDbUser) -> DataResult<DbUser> {
 
 /// Mark a user account as deactivated without touching its other data.
 pub async fn mark_deactivated(user_id: &UserId) -> DataResult<()> {
+    // Evict before marking the account unusable so cached user state cannot
+    // authenticate after the update commits but before the post-update scan runs.
+    access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set(users::deactivated_at.eq(UnixMillis::now()))
         .execute(&mut connect().await?)
