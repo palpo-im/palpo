@@ -160,7 +160,10 @@ pub async fn full_user_deactivate(
     user_id: &UserId,
     all_joined_rooms: &[OwnedRoomId],
 ) -> AppResult<()> {
-    data::user::deactivate(user_id).await.ok();
+    data::user::deactivate(user_id).await?;
+    if let Err(e) = remove_all_devices(user_id).await {
+        tracing::warn!(%user_id, "failed to remove devices during deactivation: {e}");
+    }
     data::user::delete_profile(user_id).await.ok();
 
     // TODO: remove all user data
@@ -211,6 +214,36 @@ pub async fn full_user_deactivate(
 
     if let Err(e) = crate::membership::leave_all_rooms(user_id).await {
         tracing::warn!(%user_id, "failed to leave all rooms during deactivation: {e}");
+    }
+
+    Ok(())
+}
+
+pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> AppResult<()> {
+    data::user::device::remove_device(user_id, device_id).await?;
+    crate::user::key::mark_device_key_update(user_id, device_id).await?;
+    crate::user::key::send_device_key_update(user_id, device_id).await
+}
+
+pub async fn remove_all_devices(user_id: &UserId) -> AppResult<()> {
+    let mut changed_device_ids = data::user::all_device_ids(user_id).await?;
+    for device_id in data::user::key::all_device_key_ids(user_id).await? {
+        if !changed_device_ids
+            .iter()
+            .any(|existing| existing == &device_id)
+        {
+            changed_device_ids.push(device_id);
+        }
+    }
+
+    data::user::remove_all_devices(user_id).await?;
+
+    if let Some(device_id) = changed_device_ids.first() {
+        crate::user::key::mark_device_key_update(user_id, device_id).await?;
+    }
+
+    for device_id in changed_device_ids {
+        crate::user::key::send_device_key_update(user_id, &device_id).await?;
     }
 
     Ok(())

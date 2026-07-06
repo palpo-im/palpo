@@ -251,7 +251,7 @@ pub async fn mas_delete_device(body: JsonBody<DeleteDeviceReqBody>) -> EmptyResu
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
     let device_id: OwnedDeviceId = body.device_id.into();
-    data::user::device::remove_device(&user_id, &device_id).await?;
+    user::remove_device(&user_id, &device_id).await?;
     empty_ok()
 }
 
@@ -267,7 +267,7 @@ pub async fn sync_devices(body: JsonBody<SyncDevicesReqBody>) -> EmptyResult {
         .collect();
     for device in &current_devices {
         if !body.devices.contains(device.device_id.as_str()) {
-            let _ = data::user::device::remove_device(&user_id, &device.device_id).await;
+            let _ = user::remove_device(&user_id, &device.device_id).await;
         }
     }
     for device_id_str in &body.devices {

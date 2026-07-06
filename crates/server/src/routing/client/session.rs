@@ -651,7 +651,7 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
         tracing::warn!("Failed to revoke delegated auth token: {e}");
     }
 
-    data::user::device::remove_device(authed.user_id(), authed.device_id()).await?;
+    user::remove_device(authed.user_id(), authed.device_id()).await?;
     empty_ok()
 }
 
@@ -795,7 +795,7 @@ async fn logout_all(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
         return empty_ok();
     };
 
-    data::user::remove_all_devices(authed.user_id()).await?;
+    crate::user::remove_all_devices(authed.user_id()).await?;
 
     empty_ok()
 }
