@@ -5,6 +5,10 @@ use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
 use crate::core::OwnedDeviceId;
+use crate::core::client::dehydrated_device::{
+    DeleteDehydratedDeviceResBody, GetDehydratedDeviceResBody, UpsertDehydratedDeviceReqBody,
+    UpsertDehydratedDeviceResBody,
+};
 use crate::core::client::device::{
     DeleteDeviceReqBody, DeleteDevicesReqBody, DeviceResBody, DevicesResBody, UpdatedDeviceReqBody,
 };
@@ -251,18 +255,88 @@ async fn delete_devices(
 }
 
 #[endpoint]
-pub(super) async fn dehydrated(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::unrecognized("Dehydrated device retrieval is not implemented.").into())
-}
-
-#[endpoint]
-pub(super) async fn delete_dehydrated(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
+pub(super) async fn dehydrated(
+    _aa: AuthArgs,
+    depot: &mut Depot,
+) -> JsonResult<GetDehydratedDeviceResBody> {
     let authed = depot.authed_info()?;
-    data::user::delete_dehydrated_devices(authed.user_id()).await?;
-    empty_ok()
+    let Some((device_id, device_data)) =
+        data::user::get_dehydrated_device(authed.user_id()).await?
+    else {
+        return Err(MatrixError::not_found("No dehydrated device available.").into());
+    };
+
+    json_ok(GetDehydratedDeviceResBody::new(device_id, device_data))
 }
 
 #[endpoint]
-pub(super) async fn upsert_dehydrated(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::unrecognized("Dehydrated device upload is not implemented.").into())
+pub(super) async fn delete_dehydrated(
+    _aa: AuthArgs,
+    depot: &mut Depot,
+) -> JsonResult<DeleteDehydratedDeviceResBody> {
+    let authed = depot.authed_info()?;
+    let Some((device_id, _)) = data::user::get_dehydrated_device(authed.user_id()).await? else {
+        return Err(MatrixError::not_found("No dehydrated device available.").into());
+    };
+
+    data::user::delete_dehydrated_devices(authed.user_id()).await?;
+
+    crate::user::key::mark_device_key_update(authed.user_id(), &device_id).await?;
+    crate::user::key::send_device_key_update(authed.user_id(), &device_id).await?;
+
+    json_ok(DeleteDehydratedDeviceResBody::new(device_id))
+}
+
+#[endpoint]
+pub(super) async fn upsert_dehydrated(
+    _aa: AuthArgs,
+    body: JsonBody<UpsertDehydratedDeviceReqBody>,
+    depot: &mut Depot,
+) -> JsonResult<UpsertDehydratedDeviceResBody> {
+    let authed = depot.authed_info()?;
+    let UpsertDehydratedDeviceReqBody {
+        device_id,
+        device_data,
+        mut device_keys,
+        initial_device_display_name,
+        one_time_keys,
+        fallback_keys,
+    } = body.into_inner();
+
+    if device_keys.user_id != authed.user_id() || device_keys.device_id != device_id {
+        return Err(MatrixError::invalid_param(
+            "Dehydrated device keys must match the authenticated user and device ID.",
+        )
+        .into());
+    }
+
+    if data::user::device::is_device_exists(authed.user_id(), &device_id).await? {
+        return Err(MatrixError::invalid_param(
+            "Dehydrated device ID must not match an existing device.",
+        )
+        .into());
+    }
+
+    // Carry the client-supplied display name on the device keys so the dehydrated
+    // device is not advertised nameless through `/keys/query`.
+    if let Some(display_name) = initial_device_display_name {
+        device_keys.unsigned.device_display_name = Some(display_name);
+    }
+
+    data::user::upsert_dehydrated_device(authed.user_id(), &device_id, &device_data).await?;
+
+    // Persist the pre-keys before publishing the device. `add_device_keys` sends the
+    // device-list update, so storing the one-time/fallback keys first ensures a peer
+    // reacting to that update can immediately claim keys for the new device.
+    for (key_id, one_time_key) in &one_time_keys {
+        crate::user::add_one_time_key(authed.user_id(), &device_id, key_id, one_time_key).await?;
+    }
+
+    for (key_id, fallback_key) in &fallback_keys {
+        crate::user::add_fallback_key(authed.user_id(), &device_id, key_id, fallback_key).await?;
+    }
+
+    crate::user::add_device_keys(authed.user_id(), &device_id, &device_keys).await?;
+
+    json_ok(UpsertDehydratedDeviceResBody::new(device_id))
 }

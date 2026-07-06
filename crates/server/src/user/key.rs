@@ -54,6 +54,12 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
                     container.insert(device_id, keys);
                 }
             }
+            if let Some((device_id, _)) = data::user::get_dehydrated_device(user_id).await?
+                && !container.contains_key(&device_id)
+                && let Some(keys) = data::user::get_device_keys_and_sigs(user_id, &device_id).await?
+            {
+                container.insert(device_id, keys);
+            }
             device_keys.insert(user_id.to_owned(), container);
         } else {
             let mut container = BTreeMap::new();
@@ -338,6 +344,16 @@ pub async fn add_one_time_key(
     one_time_key: &OneTimeKey,
 ) -> AppResult<()> {
     data::user::key::add_one_time_key(user_id, device_id, key_id, one_time_key).await?;
+    Ok(())
+}
+
+pub async fn add_fallback_key(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    key_id: &DeviceKeyId,
+    fallback_key: &OneTimeKey,
+) -> AppResult<()> {
+    data::user::key::add_fallback_key(user_id, device_id, key_id, fallback_key).await?;
     Ok(())
 }
 
