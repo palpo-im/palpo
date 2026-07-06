@@ -105,9 +105,10 @@ fn cache_get(token: &str, ttl: Duration) -> Option<TokenAuth> {
 /// database) — in that case the result may already be stale, so it is dropped.
 fn cache_put(token: &str, auth: TokenAuth, generation: u64) {
     if let Ok(mut cache) = CACHE.lock() {
-        // Re-check under the lock. `invalidate_*` bump the generation before
-        // taking the lock to scan, so either we observe the bump here and skip,
-        // or we insert first and their scan removes our entry afterwards.
+        // Re-check under the lock. `invalidate_*` bump the generation while
+        // holding this same lock before scanning, so either we observe the bump
+        // here and skip, or we insert first and their scan removes our entry
+        // afterwards.
         // Fully qualified: diesel's blanket `RunQueryDsl` impl otherwise shadows
         // `AtomicU64::load` via its by-value `.load()`.
         if AtomicU64::load(&GENERATION, Ordering::Acquire) != generation {
@@ -129,8 +130,8 @@ fn cache_put(token: &str, auth: TokenAuth, generation: u64) {
 /// account-usability state changes, so that a logged-out / deactivated /
 /// locked / suspended user can never keep authenticating from the cache.
 pub fn invalidate_user(user_id: &UserId) {
-    GENERATION.fetch_add(1, Ordering::AcqRel);
     if let Ok(mut cache) = CACHE.lock() {
+        GENERATION.fetch_add(1, Ordering::AcqRel);
         let stale: Vec<String> = cache
             .iter()
             .filter(|(_, v)| v.auth.user.id.as_str() == user_id.as_str())
