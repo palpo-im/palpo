@@ -434,6 +434,9 @@ pub async fn all_device_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> 
 }
 
 pub async fn delete_access_tokens(user_id: &UserId) -> DataResult<()> {
+    // Evict before the bulk revocation so cached tokens cannot keep
+    // authenticating in the window before the post-delete scan runs.
+    access_token::invalidate_user(user_id);
     diesel::delete(user_access_tokens::table.filter(user_access_tokens::user_id.eq(user_id)))
         .execute(&mut connect().await?)
         .await?;
