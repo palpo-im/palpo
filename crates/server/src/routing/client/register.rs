@@ -38,6 +38,10 @@ pub fn authed_router() -> Router {
         .push(Router::with_path("msisdn/requestToken").post(token_via_msisdn))
 }
 
+fn registration_allowed(allow_registration: bool, from_appservice: bool) -> bool {
+    allow_registration || from_appservice
+}
+
 /// `POST /_matrix/client/*/register`
 ///
 /// Register an account on this homeserver.
@@ -62,7 +66,7 @@ async fn register(
     }
 
     let conf = crate::config::get();
-    if !conf.allow_registration && !aa.from_appservice && conf.registration_token.is_none() {
+    if !registration_allowed(conf.allow_registration, aa.from_appservice) {
         return Err(MatrixError::forbidden("registration has been disabled", None).into());
     }
 
@@ -411,4 +415,24 @@ async fn token_via_email(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
 async fn token_via_msisdn(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let _authed = depot.authed_info()?;
     empty_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registration_allowed;
+
+    #[test]
+    fn disabled_registration_blocks_regular_users() {
+        assert!(!registration_allowed(false, false));
+    }
+
+    #[test]
+    fn enabled_registration_allows_regular_users() {
+        assert!(registration_allowed(true, false));
+    }
+
+    #[test]
+    fn appservice_registration_bypasses_local_registration_switch() {
+        assert!(registration_allowed(false, true));
+    }
 }
