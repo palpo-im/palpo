@@ -1,7 +1,7 @@
 # Palpo: A High-Performance Matrix Homeserver
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 
 Palpo is a next-generation Matrix homeserver implementation written in Rust, designed for high performance, scalability, and robust federation. Built on the Salvo web framework and PostgreSQL database, Palpo delivers enterprise-grade real-time messaging and collaboration while maintaining minimal operational overhead.
 
@@ -93,7 +93,7 @@ Our test server is for **evaluation and testing purposes only**:
 ## 📦 Installation
 
 ### Prerequisites
-- Rust 1.93 or higher
+- Rust 1.94 or higher
 - PostgreSQL 16 or higher
 - Linux, macOS, or Windows (WSL2 recommended)
 
