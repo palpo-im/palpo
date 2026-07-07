@@ -1,38 +1,92 @@
 use salvo::prelude::*;
 
 use super::client::media::*;
-use crate::hoops;
+use crate::config::MediaConfig;
+use crate::{config, hoops};
+
+fn legacy_media_enabled(media: &MediaConfig) -> bool {
+    media.allow_legacy
+}
+
+fn legacy_media_writes_enabled(media: &MediaConfig) -> bool {
+    media.allow_legacy && !media.freeze_legacy
+}
 
 pub fn router() -> Router {
+    let media_config = &config::get().media;
     let mut media = Router::with_path("media").oapi_tag("media");
+    if !legacy_media_enabled(media_config) {
+        return media;
+    }
+
     for v in ["v3", "v1", "r0"] {
-        media = media
-            .push(
-                Router::with_path(v)
-                    .hoop(hoops::auth_by_access_token)
-                    .push(Router::with_path("create").post(create_mxc_uri))
-                    .push(
-                        Router::with_path("upload").post(create_content).push(
-                            Router::with_path("{server_name}/{media_id}").put(upload_content),
-                        ),
-                    )
-                    .push(
-                        Router::with_hoop(hoops::limit_rate)
-                            .push(Router::with_path("config").get(get_config))
-                            .push(Router::with_path("preview_url").get(preview_url)),
-                    ),
-            )
-            .push(
-                Router::with_path(v)
-                    .push(
-                        Router::with_path("download/{server_name}/{media_id}")
-                            .get(get_content)
-                            .push(Router::with_path("{filename}").get(get_content_with_filename)),
-                    )
-                    .push(Router::with_hoop(hoops::limit_rate).push(
-                        Router::with_path("thumbnail/{server_name}/{media_id}").get(get_thumbnail),
-                    )),
-            )
+        let mut authed_routes = Router::with_path(v).hoop(hoops::auth_by_access_token).push(
+            Router::with_hoop(hoops::limit_rate).push(Router::with_path("config").get(get_config)),
+        );
+
+        if legacy_media_writes_enabled(media_config) {
+            authed_routes = authed_routes
+                .push(Router::with_path("create").post(create_mxc_uri))
+                .push(
+                    Router::with_path("upload")
+                        .post(create_content)
+                        .push(Router::with_path("{server_name}/{media_id}").put(upload_content)),
+                )
+                .push(
+                    Router::with_hoop(hoops::limit_rate)
+                        .push(Router::with_path("preview_url").get(preview_url)),
+                );
+        }
+
+        media = media.push(authed_routes).push(
+            Router::with_path(v)
+                .push(
+                    Router::with_path("download/{server_name}/{media_id}")
+                        .get(get_content)
+                        .push(Router::with_path("{filename}").get(get_content_with_filename)),
+                )
+                .push(Router::with_hoop(hoops::limit_rate).push(
+                    Router::with_path("thumbnail/{server_name}/{media_id}").get(get_thumbnail),
+                )),
+        )
     }
     media
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{legacy_media_enabled, legacy_media_writes_enabled};
+    use crate::config::MediaConfig;
+
+    fn media_config(allow_legacy: bool, freeze_legacy: bool) -> MediaConfig {
+        MediaConfig {
+            allow_legacy,
+            freeze_legacy,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn legacy_media_can_be_disabled_entirely() {
+        let media = media_config(false, false);
+
+        assert!(!legacy_media_enabled(&media));
+        assert!(!legacy_media_writes_enabled(&media));
+    }
+
+    #[test]
+    fn frozen_legacy_media_is_read_only() {
+        let media = media_config(true, true);
+
+        assert!(legacy_media_enabled(&media));
+        assert!(!legacy_media_writes_enabled(&media));
+    }
+
+    #[test]
+    fn unfrozen_legacy_media_allows_writes() {
+        let media = media_config(true, false);
+
+        assert!(legacy_media_enabled(&media));
+        assert!(legacy_media_writes_enabled(&media));
+    }
 }
