@@ -585,8 +585,8 @@ pub struct ServerConfig {
     ///
     /// Currently this does not account for proxies in use like Synapse does.
     ///
-    /// To disable, set this to be an empty vector (`[]`) or omit the field.
-    /// If omitted, no IP range filtering is performed (use a firewall instead).
+    /// To disable, set this to be an empty vector (`[]`). If omitted, the
+    /// default denylist below is used.
     ///
     /// A safer recommended set is:
     /// ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
@@ -594,7 +594,7 @@ pub struct ServerConfig {
     /// "192.88.99.0/24", "198.18.0.0/15", "192.0.2.0/24", "198.51.100.0/24",
     /// "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
     /// "2001:db8::/32", "ff00::/8", "fec0::/10"]
-    #[serde(default)]
+    #[serde(default = "default_ip_range_denylist")]
     pub ip_range_denylist: Vec<String>,
 
     // pub auto_acme: Option<AcmeConfig>,
@@ -1408,7 +1408,9 @@ fn default_rc_message() -> RateLimitConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_openid_token_ttl, default_request_idle_per_host};
+    use super::{
+        default_ip_range_denylist, default_openid_token_ttl, default_request_idle_per_host,
+    };
 
     #[test]
     fn openid_token_ttl_default_is_seconds() {
@@ -1418,5 +1420,16 @@ mod tests {
     #[test]
     fn request_idle_per_host_matches_documented_default() {
         assert_eq!(default_request_idle_per_host(), 1);
+    }
+
+    #[test]
+    fn ip_range_denylist_default_blocks_internal_ranges() {
+        let denylist = default_ip_range_denylist();
+
+        assert!(denylist.contains(&"127.0.0.0/8".to_owned()));
+        assert!(denylist.contains(&"10.0.0.0/8".to_owned()));
+        assert!(denylist.contains(&"192.168.0.0/16".to_owned()));
+        assert!(denylist.contains(&"::1/128".to_owned()));
+        assert!(denylist.contains(&"fc00::/7".to_owned()));
     }
 }
