@@ -87,7 +87,7 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
     }) = token_auth
     {
         crate::user::ensure_account_usable(&user)?;
-        depot.inject(AuthedInfo {
+        depot.insert_typed(AuthedInfo {
             user,
             user_device: device,
             access_token_id: Some(access_token_id),
@@ -139,7 +139,7 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
                 };
 
                 crate::user::ensure_account_usable(&user)?;
-                depot.inject(AuthedInfo {
+                depot.insert_typed(AuthedInfo {
                     user,
                     user_device,
                     access_token_id: None,
@@ -211,7 +211,7 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
             .map_err(|_| MatrixError::unknown_token("No device found for user", true))?
     };
 
-    depot.inject(AuthedInfo {
+    depot.insert_typed(AuthedInfo {
         user,
         user_device,
         access_token_id: None,

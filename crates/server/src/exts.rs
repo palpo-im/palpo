@@ -14,7 +14,7 @@ pub trait DepotExt {
 }
 impl DepotExt for Depot {
     fn authed_info(&self) -> AppResult<&AuthedInfo> {
-        self.obtain::<AuthedInfo>()
+        self.get_typed::<AuthedInfo>()
             .map_err(|_| StatusError::unauthorized().into())
     }
     fn set_origin(&mut self, origin: OwnedServerName) {
@@ -25,7 +25,7 @@ impl DepotExt for Depot {
             .map_err(|_| StatusError::unauthorized().into())
     }
     fn take_authed_info(&mut self) -> AppResult<AuthedInfo> {
-        self.scrape::<AuthedInfo>()
+        self.remove_typed::<AuthedInfo>()
             .map_err(|_| StatusError::unauthorized().into())
     }
 }

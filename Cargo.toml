@@ -6,7 +6,7 @@ resolver = "3"
 version = "0.4.0"
 authors = ["Chrislearn Young <chris@acroidea.com>"]
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.94"
 description = """
 Matrix server implementation
 """
@@ -99,7 +99,7 @@ rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.93.0", features = ["rustls"]}
+salvo = { version = "0.94.0", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
