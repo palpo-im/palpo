@@ -106,7 +106,9 @@ pub fn list_dependencies(names_only: QueryParam<bool, false>) -> JsonResult<Depe
         .iter()
         .map(|(name, dep)| DependencyInfo {
             name: name.to_owned(),
-            version: dep.try_req().unwrap_or("*").to_owned(),
+            version: dep
+                .try_req()
+                .map_or_else(|_| "*".to_owned(), |req| req.to_string()),
             features: dep
                 .req_features()
                 .into_iter()
