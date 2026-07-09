@@ -22,9 +22,10 @@ pub struct MediaConfig {
     #[serde(default = "default_true")]
     pub allow_legacy: bool,
 
-    /// Keep legacy media endpoints read-only. When enabled, legacy download,
-    /// thumbnail, and config endpoints remain available, but legacy create,
-    /// upload, and preview_url endpoints are not mounted.
+    /// Withhold the outbound-fetching legacy `preview_url` endpoint. When
+    /// enabled, download, thumbnail, config, create, and upload stay available
+    /// (upload is the only media upload path on this server); only the legacy
+    /// `preview_url` endpoint is not mounted.
     #[serde(default = "default_true")]
     pub freeze_legacy: bool,
 
