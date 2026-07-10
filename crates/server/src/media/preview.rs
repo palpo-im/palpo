@@ -335,7 +335,7 @@ async fn download_image(url: &Url) -> AppResult<UrlPreviewData> {
     let content_type = content_type
         .and_then(|ct| ct.to_str().ok())
         .map(|c| c.to_owned());
-    let image = image.bytes().await?;
+    let image = utils::read_response_limited(image, conf.url_preview.max_image_size).await?;
     let mxc = Mxc {
         server_name: &conf.server_name,
         media_id: &utils::random_string(crate::MXC_LENGTH),

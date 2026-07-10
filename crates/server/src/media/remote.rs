@@ -136,7 +136,12 @@ async fn fetch_thumbnail_authenticated(
         .and_then(|s| ContentDisposition::from_str(s).ok());
 
     // Get the file content
-    let file = response.bytes().await?.to_vec();
+    let file = crate::utils::read_response_limited(
+        response,
+        config::get().media.max_remote_thumbnail_size,
+    )
+    .await?
+    .to_vec();
 
     // Save the thumbnail locally for caching
     if !file.is_empty()
@@ -234,7 +239,12 @@ async fn fetch_thumbnail_unauthenticated(
         .and_then(|s| ContentDisposition::from_str(s).ok());
 
     // Get the file content
-    let file = response.bytes().await?.to_vec();
+    let file = crate::utils::read_response_limited(
+        response,
+        config::get().media.max_remote_thumbnail_size,
+    )
+    .await?
+    .to_vec();
 
     // Save the thumbnail locally for caching
     if !file.is_empty()

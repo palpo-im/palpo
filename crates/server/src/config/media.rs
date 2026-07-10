@@ -25,6 +25,14 @@ pub struct MediaConfig {
     #[serde(default = "default_true")]
     pub freeze_legacy: bool,
 
+    /// Maximum number of bytes accepted when fetching a thumbnail from a
+    /// remote homeserver. Both authenticated and legacy thumbnail responses
+    /// are subject to this streamed hard limit.
+    ///
+    /// default: 20000000
+    #[serde(default = "default_max_remote_thumbnail_size")]
+    pub max_remote_thumbnail_size: usize,
+
     /// Check consistency of the media directory at startup:
     /// 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
     ///    back and forth between Conduit and palpo. Both options must be enabled to handle this.
@@ -76,10 +84,15 @@ impl Default for MediaConfig {
         Self {
             allow_legacy: true,
             freeze_legacy: true,
+            max_remote_thumbnail_size: default_max_remote_thumbnail_size(),
             startup_check: true,
             compat_file_link: false,
             prune_missing: false,
             prevent_downloads_from: Default::default(),
         }
     }
+}
+
+fn default_max_remote_thumbnail_size() -> usize {
+    20_000_000
 }

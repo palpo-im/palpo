@@ -3617,6 +3617,7 @@ dependencies = [
  "globwalk",
  "hickory-resolver",
  "hmac 0.13.0",
+ "http",
  "hyper-util",
  "image",
  "indexmap",
