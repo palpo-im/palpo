@@ -3,7 +3,7 @@ use std::iter::FromIterator;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use salvo::http::headers::HeaderMapExt;
 use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
@@ -16,10 +16,10 @@ use crate::core::serde::CanonicalJsonValue;
 use crate::core::{UnixMillis, signatures};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::data::user::{DbUser, DbUserDevice, NewDbUser, NewDbUserDevice};
+use crate::data::user::{DbUser, DbUserDevice, NewDbProfile, NewDbUser, NewDbUserDevice};
 use crate::exts::DepotExt;
 use crate::server_key::{PubKeyMap, PubKeys};
-use crate::{AppResult, AuthArgs, AuthedInfo, MatrixError, config};
+use crate::{AppError, AppResult, AuthArgs, AuthedInfo, MatrixError, config};
 
 #[handler]
 pub async fn auth_by_access_token_or_signatures(
@@ -245,27 +245,44 @@ async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) ->
         created_at: UnixMillis::now(),
     };
 
-    let user = diesel::insert_into(users::table)
-        .values(&new_user)
-        .on_conflict(users::id)
-        .do_update()
-        .set(&new_user)
-        .get_result::<DbUser>(&mut connect().await?)
-        .await?;
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            // The upsert locks the user row until this transaction commits. Concurrent
+            // first requests for the same virtual user therefore serialize before the
+            // profile existence check, despite NULL room IDs not being unique in Postgres.
+            let user = diesel::insert_into(users::table)
+                .values(&new_user)
+                .on_conflict(users::id)
+                .do_update()
+                .set(&new_user)
+                .get_result::<DbUser>(conn)
+                .await?;
 
-    // Create a profile for the user, as regular user creation does. Merely updating
-    // the display name would affect zero rows when the profile does not exist.
-    let display_name = user_id.localpart().to_owned();
-    crate::data::user::create_profile(&crate::data::user::NewDbProfile {
-        user_id: user_id.to_owned(),
-        room_id: None,
-        display_name: Some(display_name),
-        avatar_url: None,
-        blurhash: None,
-    })
-    .await?;
+            let profile_exists = user_profiles::table
+                .filter(user_profiles::user_id.eq(user_id))
+                .filter(user_profiles::room_id.is_null())
+                .select(user_profiles::id)
+                .first::<i64>(conn)
+                .await
+                .optional()?
+                .is_some();
+            if !profile_exists {
+                diesel::insert_into(user_profiles::table)
+                    .values(&NewDbProfile {
+                        user_id: user_id.to_owned(),
+                        room_id: None,
+                        display_name: Some(user_id.localpart().to_owned()),
+                        avatar_url: None,
+                        blurhash: None,
+                    })
+                    .execute(conn)
+                    .await?;
+            }
 
-    Ok(user)
+            Ok(user)
+        })
+        .await
 }
 
 /// Get or create a device for an appservice user
