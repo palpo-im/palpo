@@ -779,10 +779,6 @@
 #
 # pool_size =
 
-# This item is undocumented. Please contribute documentation for it.
-#
-# min_idle =
-
 # Number of seconds to wait for unacknowledged TCP packets before treating the connection as
 # broken. This value will determine how long crates.io stays unavailable in case of full
 # packet loss between the application and the database: setting it too high will result in an
@@ -802,11 +798,6 @@
 # returning an error.
 #
 # statement_timeout =
-
-# Number of threads to use for asynchronous operations such as connection
-# creation.
-#
-# helper_threads =
 
 # Whether to enforce that all the database connections are encrypted with TLS.
 #
