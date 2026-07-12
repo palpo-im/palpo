@@ -223,10 +223,11 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
 /// Get or create a user for an appservice
 async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) -> AppResult<DbUser> {
     // Try to get existing user
-    if let Ok(user) = users::table
+    if let Some(user) = users::table
         .find(user_id)
         .first::<DbUser>(&mut connect().await?)
         .await
+        .optional()?
     {
         return Ok(user);
     }
@@ -252,14 +253,17 @@ async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) ->
         .get_result::<DbUser>(&mut connect().await?)
         .await?;
 
-    // Create a profile for the user
+    // Create a profile for the user, as regular user creation does. Merely updating
+    // the display name would affect zero rows when the profile does not exist.
     let display_name = user_id.localpart().to_owned();
-    if let Err(e) = crate::data::user::set_display_name(user_id, &display_name).await {
-        tracing::warn!(
-            "failed to set profile for appservice user (non-fatal): {}",
-            e
-        );
-    }
+    crate::data::user::create_profile(&crate::data::user::NewDbProfile {
+        user_id: user_id.to_owned(),
+        room_id: None,
+        display_name: Some(display_name),
+        avatar_url: None,
+        blurhash: None,
+    })
+    .await?;
 
     Ok(user)
 }
