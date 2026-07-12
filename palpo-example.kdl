@@ -586,11 +586,9 @@
 //     // url "postgres://..."
 //
 //     // pool_size 10
-//     // min_idle 1
 //     // tcp_timeout 10
 //     // connection_timeout 10
 //     // statement_timeout 10
-//     // helper_threads 3
 //     // enforce_tls false
 // }
 

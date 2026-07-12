@@ -29,9 +29,6 @@ fn default_connection_timeout() -> u64 {
 fn default_statement_timeout() -> u64 {
     30000
 }
-fn default_helper_threads() -> usize {
-    10
-}
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct DbConfig {
@@ -41,7 +38,6 @@ pub struct DbConfig {
     pub url: String,
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
-    pub min_idle: Option<u32>,
 
     /// Number of seconds to wait for unacknowledged TCP packets before treating the connection as
     /// broken. This value will determine how long crates.io stays unavailable in case of full
@@ -60,10 +56,6 @@ pub struct DbConfig {
     /// returning an error.
     #[serde(default = "default_statement_timeout")]
     pub statement_timeout: u64,
-    /// Number of threads to use for asynchronous operations such as connection
-    /// creation.
-    #[serde(default = "default_helper_threads")]
-    pub helper_threads: usize,
     /// Whether to enforce that all the database connections are encrypted with TLS.
     #[serde(default = "default_false")]
     pub enforce_tls: bool,
@@ -75,7 +67,6 @@ impl fmt::Display for DbConfig {
         let lines = [
             ("tcp_timeout", self.tcp_timeout),
             // ("connection_timeout", &self.connection_timeout),
-            // ("helper_threads", &self.helper_threads),
             // ("enforce_tls", self.enforce_tls.to_string()),
         ];
 

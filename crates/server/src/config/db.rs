@@ -11,7 +11,6 @@ pub struct DbConfig {
     pub url: String,
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
-    pub min_idle: Option<u32>,
 
     /// Number of seconds to wait for unacknowledged TCP packets before treating the connection as
     /// broken. This value will determine how long crates.io stays unavailable in case of full
@@ -30,10 +29,6 @@ pub struct DbConfig {
     /// returning an error.
     #[serde(default = "default_statement_timeout")]
     pub statement_timeout: u64,
-    /// Number of threads to use for asynchronous operations such as connection
-    /// creation.
-    #[serde(default = "default_helper_threads")]
-    pub helper_threads: usize,
     /// Whether to enforce that all the database connections are encrypted with TLS.
     #[serde(default = "default_false")]
     pub enforce_tls: bool,
@@ -44,21 +39,17 @@ impl DbConfig {
         let Self {
             url,
             pool_size,
-            min_idle,
             tcp_timeout,
             connection_timeout,
             statement_timeout,
-            helper_threads,
             enforce_tls,
         } = self;
         crate::data::DbConfig {
             url: url.clone(),
             pool_size,
-            min_idle,
             tcp_timeout,
             connection_timeout,
             statement_timeout,
-            helper_threads,
             enforce_tls,
         }
     }
@@ -69,11 +60,9 @@ impl Default for DbConfig {
         Self {
             url: default_db_url(),
             pool_size: default_db_pool_size(),
-            min_idle: None,
             tcp_timeout: default_tcp_timeout(),
             connection_timeout: default_connection_timeout(),
             statement_timeout: default_statement_timeout(),
-            helper_threads: default_helper_threads(),
             enforce_tls: default_false(),
         }
     }
@@ -94,7 +83,4 @@ fn default_connection_timeout() -> u64 {
 }
 fn default_statement_timeout() -> u64 {
     30_000
-}
-fn default_helper_threads() -> usize {
-    10
 }
