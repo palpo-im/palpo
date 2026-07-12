@@ -686,11 +686,10 @@ pub async fn process_to_timeline_pdu(
         // Now we calculate the set of extremities this room has after the incoming event has been
         // applied. We start with the previous extremities (aka leaves)
         debug!("calculating extremities");
-        let mut extremities: BTreeSet<_> =
-            state::get_forward_extremities(&incoming_pdu.room_id)
-                .await?
-                .into_iter()
-                .collect();
+        let mut extremities: BTreeSet<_> = state::get_forward_extremities(&incoming_pdu.room_id)
+            .await?
+            .into_iter()
+            .collect();
 
         // Remove any forward extremities that are referenced by this incoming event's prev_events
         extremities.retain(|event_id| !incoming_pdu.prev_events.contains(event_id));

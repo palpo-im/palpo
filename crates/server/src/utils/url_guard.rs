@@ -2,16 +2,15 @@
 //!
 //! Two layers protect against SSRF:
 //!
-//! 1. The reqwest clients used for user-influenced outbound traffic (push
-//!    gateways, URL preview, federation) install a CIDR-filtering DNS
-//!    resolver (see [`crate::sending::resolver::Resolver::new_with_cidr_denylist`]).
-//!    That resolver filters DNS results against `config::cidr_range_denylist`
-//!    at connect time, which prevents both ordinary hostnames that resolve
-//!    to internal addresses and DNS-rebinding attempts.
+//! 1. The reqwest clients used for user-influenced outbound traffic (push gateways, URL preview,
+//!    federation) install a CIDR-filtering DNS resolver (see
+//!    [`crate::sending::resolver::Resolver::new_with_cidr_denylist`]). That resolver filters DNS
+//!    results against `config::cidr_range_denylist` at connect time, which prevents both ordinary
+//!    hostnames that resolve to internal addresses and DNS-rebinding attempts.
 //!
-//! 2. This module supplies fast pre-flight checks: scheme allowlist and
-//!    rejection of IP-literal hosts that fall inside the denylist (those
-//!    bypass DNS resolution entirely, so the resolver never sees them).
+//! 2. This module supplies fast pre-flight checks: scheme allowlist and rejection of IP-literal
+//!    hosts that fall inside the denylist (those bypass DNS resolution entirely, so the resolver
+//!    never sees them).
 //!
 //! Both layers are needed: the resolver alone misses IP-literal hosts,
 //! and the pre-flight check alone is racy with the actual connect.
@@ -51,11 +50,9 @@ pub fn ensure_ip_literal_host_allowed(url: &Url) -> AppResult<()> {
     if let Ok(ip) = IPAddress::parse(host)
         && !crate::config::valid_cidr_range(&ip)
     {
-        return Err(MatrixError::forbidden(
-            "Requesting from this address is forbidden.",
-            None,
-        )
-        .into());
+        return Err(
+            MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
+        );
     }
     Ok(())
 }

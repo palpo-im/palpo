@@ -2,9 +2,8 @@ use std::collections::HashSet;
 
 use palpo_core::Seqnum;
 
-use crate::AppResult;
 use crate::core::{DeviceId, OwnedUserId, RoomId, UserId};
-use crate::data;
+use crate::{AppResult, data};
 
 #[tracing::instrument]
 pub async fn lazy_load_was_sent_before(
@@ -13,7 +12,10 @@ pub async fn lazy_load_was_sent_before(
     room_id: &RoomId,
     confirmed_user_id: &UserId,
 ) -> AppResult<bool> {
-    Ok(data::room::lazy_loading::was_sent_before(user_id, device_id, room_id, confirmed_user_id).await?)
+    Ok(
+        data::room::lazy_loading::was_sent_before(user_id, device_id, room_id, confirmed_user_id)
+            .await?,
+    )
 }
 
 /// Marks lazy load entries as sent by writing directly to the database.
@@ -26,7 +28,8 @@ pub async fn lazy_load_mark_sent(
     lazy_load: HashSet<OwnedUserId>,
     _until_sn: Seqnum,
 ) {
-    if let Err(e) = data::room::lazy_loading::mark_sent(user_id, device_id, room_id, lazy_load).await
+    if let Err(e) =
+        data::room::lazy_loading::mark_sent(user_id, device_id, room_id, lazy_load).await
     {
         warn!("failed to mark lazy-load deliveries as sent: {e}");
     }

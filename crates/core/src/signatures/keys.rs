@@ -185,7 +185,7 @@ impl Ed25519KeyPair {
             .map_err(Error::DerParse)?;
         let private_key_info = PrivateKeyInfoRef {
             algorithm: ED25519_ALGORITHM_ID,
-            private_key: &private_key,
+            private_key,
             public_key: Some(public_key),
         };
         let encoded = SecretDocument::try_from(&private_key_info).map_err(Error::DerParse)?;

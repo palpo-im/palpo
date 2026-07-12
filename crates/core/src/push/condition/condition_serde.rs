@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue as RawJsonValue;
 
-use super::{PushCondition, _CustomPushCondition};
+use super::{_CustomPushCondition, PushCondition};
 use crate::serde::{JsonObject, from_raw_json_value};
 
 impl<'de> Deserialize<'de> for PushCondition {

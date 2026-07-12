@@ -18,9 +18,7 @@ use crate::event::handler::process_incoming_pdu;
 use crate::event::parse_fetched_pdu;
 use crate::room::state::{CompressedEvent, DeltaInfo};
 use crate::room::{state, timeline};
-use crate::{
-    AppError, AppResult, GetUrlOrigin, OptionalExtension, config, data, room, sending,
-};
+use crate::{AppError, AppResult, GetUrlOrigin, OptionalExtension, config, data, room, sending};
 
 /// How long a peek subscription is valid before the peeking server must renew.
 /// Returned to peers as `renewal_interval`.
@@ -301,8 +299,15 @@ pub async fn run_maintenance() {
     // peeker was dropped during sync because the room stopped being
     // world-readable, or all users unpeeked). Prevents ownerless subscriptions
     // from being renewed forever.
-    for room_id in data::room::peek::peeked_room_ids().await.unwrap_or_default() {
-        if data::room::peek::room_peeker_count(&room_id).await.unwrap_or(1) == 0 {
+    for room_id in data::room::peek::peeked_room_ids()
+        .await
+        .unwrap_or_default()
+    {
+        if data::room::peek::room_peeker_count(&room_id)
+            .await
+            .unwrap_or(1)
+            == 0
+        {
             let _ = stop_peek(&room_id).await;
         }
     }

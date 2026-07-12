@@ -198,15 +198,15 @@ async fn login(
             };
             if let Err(e) = user::verify_password(&user, password).await {
                 res.status_code(StatusCode::FORBIDDEN); //for complement testing: TestLogin/parallel/POST_/login_wrong_password_is_rejected
-                if let AppError::Matrix(matrix) = e {
-                    if matches!(
+                if let AppError::Matrix(matrix) = e
+                    && matches!(
                         matrix.kind,
                         ErrorKind::UserDeactivated
                             | ErrorKind::UserLocked
                             | ErrorKind::UserSuspended
-                    ) {
-                        return Err(matrix.into());
-                    }
+                    )
+                {
+                    return Err(matrix.into());
                 }
                 return Err(MatrixError::forbidden("Wrong username or password.", None).into());
             }

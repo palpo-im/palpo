@@ -26,7 +26,6 @@ use crate::core::client::room::{
     UpgradeRoomResBody,
 };
 use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
-use crate::core::federation::peek::{PeekReqArgs, PeekResBody, peek_request};
 use crate::core::events::fully_read::{FullyReadEvent, FullyReadEventContent};
 use crate::core::events::receipt::{
     Receipt, ReceiptEvent, ReceiptEventContent, ReceiptThread, ReceiptType,
@@ -44,6 +43,7 @@ use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::events::room::tombstone::RoomTombstoneEventContent;
 use crate::core::events::room::topic::RoomTopicEventContent;
 use crate::core::events::{self, RoomAccountDataEventType, StateEventType, TimelineEventType};
+use crate::core::federation::peek::{PeekReqArgs, PeekResBody, peek_request};
 use crate::core::identifiers::*;
 use crate::core::room::{JoinRule, Visibility};
 use crate::core::room_version_rules::{AuthorizationRules, RoomIdFormatVersion, RoomVersionRules};
@@ -630,8 +630,14 @@ async fn upgrade(
             event_type: TimelineEventType::RoomMember,
             content: to_raw_value(&RoomMemberEventContent {
                 membership: MembershipState::Join,
-                display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
-                avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
+                display_name: crate::data::user::display_name(sender_id)
+                    .await
+                    .ok()
+                    .flatten(),
+                avatar_url: crate::data::user::avatar_url(sender_id)
+                    .await
+                    .ok()
+                    .flatten(),
                 is_direct: None,
                 third_party_invite: None,
                 blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
@@ -846,7 +852,7 @@ pub(super) async fn create_room(
 
     let alias: Option<OwnedRoomAliasId> = if let Some(localpart) = &body.room_alias_name {
         // TODO: Check for invalid characters and maximum length
-        let alias = RoomAliasId::parse(format!("#{}:{}", localpart, &conf.server_name))
+        let alias = RoomAliasId::parse(format!("#{}:{}", localpart, conf.server_name))
             .map_err(|_| MatrixError::invalid_param("Invalid alias."))?;
 
         if room::resolve_local_alias(&alias).await.is_ok() {
@@ -880,8 +886,14 @@ pub(super) async fn create_room(
             event_type: TimelineEventType::RoomMember,
             content: to_raw_value(&RoomMemberEventContent {
                 membership: MembershipState::Join,
-                display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
-                avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
+                display_name: crate::data::user::display_name(sender_id)
+                    .await
+                    .ok()
+                    .flatten(),
+                avatar_url: crate::data::user::avatar_url(sender_id)
+                    .await
+                    .ok()
+                    .flatten(),
                 is_direct: Some(body.is_direct),
                 third_party_invite: None,
                 blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),

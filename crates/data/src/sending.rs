@@ -3,9 +3,9 @@ use std::fmt::Debug;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
+use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 pub use crate::core::sending::*;
-use crate::core::UnixMillis;
 use crate::schema::*;
 use crate::{DataResult, connect};
 
@@ -14,7 +14,10 @@ use crate::{DataResult, connect};
 pub enum OutgoingDestination<'a> {
     Normal(&'a ServerName),
     Appservice(&'a str),
-    Push { user_id: &'a UserId, pushkey: &'a str },
+    Push {
+        user_id: &'a UserId,
+        pushkey: &'a str,
+    },
 }
 
 #[derive(Identifiable, Queryable, Insertable, Debug, Clone)]
@@ -78,10 +81,7 @@ pub async fn get_destination_rooms(server: &ServerName) -> DataResult<Vec<OwnedR
 
 /// Persist retry state for the active outgoing requests of a destination so
 /// other instances can respect the same backoff window.
-pub async fn persist_retry_state(
-    dest: OutgoingDestination<'_>,
-    tries: u32,
-) -> DataResult<()> {
+pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> DataResult<()> {
     let now = UnixMillis::now().get() as i64;
     match dest {
         OutgoingDestination::Normal(server_name) => {

@@ -108,7 +108,7 @@ async fn validate_target_key(
     key_value: &JsonValue,
 ) -> AppResult<Option<Failure>> {
     if let Ok(device_keys) = serde_json::from_value::<DeviceKeys>(key_value.clone()) {
-        if &device_keys.user_id != target_user_id || device_keys.device_id.as_str() != target_key_id
+        if device_keys.user_id != target_user_id || device_keys.device_id.as_str() != target_key_id
         {
             return Ok(Some(Failure::invalid_signature(
                 "Signed device key does not match the target key.",
@@ -137,7 +137,7 @@ async fn validate_target_key(
     }
 
     if let Ok(cross_signing_key) = serde_json::from_value::<CrossSigningKey>(key_value.clone()) {
-        if &cross_signing_key.user_id != target_user_id
+        if cross_signing_key.user_id != target_user_id
             || !cross_signing_key_contains_key_name(&cross_signing_key, target_key_id)
         {
             return Ok(Some(Failure::invalid_signature(

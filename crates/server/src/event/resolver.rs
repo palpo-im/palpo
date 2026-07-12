@@ -115,7 +115,8 @@ pub async fn resolve_state(
     let mut new_room_state = BTreeSet::new();
     let mut guards = Vec::new();
     for ((event_type, state_key), event_id) in state {
-        let state_key_id = state::ensure_field_id(&event_type.to_string().into(), &state_key).await?;
+        let state_key_id =
+            state::ensure_field_id(&event_type.to_string().into(), &state_key).await?;
         let (event_sn, guard) = crate::event::ensure_event_sn(room_id, &event_id).await?;
         if let Some(guard) = guard {
             guards.push(guard);

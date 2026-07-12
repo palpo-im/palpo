@@ -24,12 +24,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Typos check with custom config file
+        uses: crate-ci/typos@master
+
+  lint:
+    name: Rustfmt and Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # rustfmt.toml enables unstable options (unstable_features = true),
+      # which only nightly rustfmt honors.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          components: rustfmt, clippy
-      - name: Typos check with custom config file
-        uses: crate-ci/typos@master
+          components: clippy
+
+      - name: Install dependencies
+        run: "sudo apt update && sudo apt install -y --no-install-recommends libclang-dev libpq-dev cmake"
+
+      - name: Check formatting
+        run: cargo +nightly fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     strategy:

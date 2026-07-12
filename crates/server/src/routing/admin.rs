@@ -46,8 +46,8 @@ pub async fn auth_by_mas_secret(aa: crate::AuthArgs) -> AppResult<()> {
     // information about how many leading bytes of the secret matched.
     let token_bytes = token.as_bytes();
     let secret_bytes = mas_secret.as_bytes();
-    let matches: bool = token_bytes.len() == secret_bytes.len()
-        && token_bytes.ct_eq(secret_bytes).into();
+    let matches: bool =
+        token_bytes.len() == secret_bytes.len() && token_bytes.ct_eq(secret_bytes).into();
     if !matches {
         return Err(MatrixError::forbidden("Invalid MAS secret", None).into());
     }

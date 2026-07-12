@@ -112,7 +112,9 @@ async fn allowed_to_send_state_event(
                         .into());
                     }
 
-                    if !crate::room::resolve_local_alias(&alias).await.is_ok_and(|room| room == room_id)
+                    if !crate::room::resolve_local_alias(&alias)
+                        .await
+                        .is_ok_and(|room| room == room_id)
                     // Make sure it's the right room
                     {
                         return Err(MatrixError::bad_alias(

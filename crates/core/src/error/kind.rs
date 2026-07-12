@@ -396,8 +396,8 @@ pub enum ErrorKind {
     /// their allocated storage quota, reached a maximum number of allowed rooms, devices, or other
     /// account-scoped resources, or exceeded usage limits for specific features.
     UserLimitExceeded {
-        /// A URI that the client can present to the user to provide more context on the encountered
-        /// limit and, if applicable, guidance on how to increase the limit.
+        /// A URI that the client can present to the user to provide more context on the
+        /// encountered limit and, if applicable, guidance on how to increase the limit.
         ///
         /// The homeserver MAY return different values depending on the type of limit reached.
         info_uri: String,

@@ -164,12 +164,18 @@ pub(crate) async fn user_can_perform_restricted_join(
         return Ok(false);
     }
 
-    if room::user::is_joined(user_id, room_id).await.unwrap_or(false) {
+    if room::user::is_joined(user_id, room_id)
+        .await
+        .unwrap_or(false)
+    {
         // joining user is already joined, there is nothing we need to do
         return Ok(false);
     }
 
-    if room::user::is_invited(user_id, room_id).await.unwrap_or(false) {
+    if room::user::is_invited(user_id, room_id)
+        .await
+        .unwrap_or(false)
+    {
         return Ok(true);
     }
 
@@ -201,8 +207,12 @@ pub(crate) async fn user_can_perform_restricted_join(
             None
         }
     }) {
-        if room::is_server_joined(&config::get().server_name, &m.room_id).await.unwrap_or(false)
-            && room::user::is_joined(user_id, &m.room_id).await.unwrap_or(false)
+        if room::is_server_joined(&config::get().server_name, &m.room_id)
+            .await
+            .unwrap_or(false)
+            && room::user::is_joined(user_id, &m.room_id)
+                .await
+                .unwrap_or(false)
         {
             authorized = true;
             break;

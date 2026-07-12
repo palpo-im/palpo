@@ -51,37 +51,36 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     // When this request is authenticated by a delegated OIDC token, UIA is not
     // used. Local password/appservice sessions still follow the legacy UIA
     // path even when delegated auth is enabled globally.
-    let uia_required = if config::get().enabled_delegated_auth().is_some()
-        && authed.is_delegated_auth()
-    {
-        false
-    } else if let Ok(body) = &body {
-        let exist_master_key = crate::user::key::get_master_key(sender_id).await?;
-        let exist_self_signing_key = crate::user::key::get_self_signing_key(sender_id).await?;
-        let exist_user_signing_key = crate::user::key::get_user_signing_key(sender_id).await?;
-        if exist_master_key.is_none()
-            && exist_self_signing_key.is_none()
-            && exist_user_signing_key.is_none()
-        {
+    let uia_required =
+        if config::get().enabled_delegated_auth().is_some() && authed.is_delegated_auth() {
             false
-        } else if let Some(expires_ts) =
-            data::user::key::get_cross_signing_replacement_allowed(sender_id).await?
-        {
-            let now_ms = crate::core::UnixMillis::now().get() as i64;
-            // Bypass still valid — skip UIA
-            now_ms >= expires_ts
+        } else if let Ok(body) = &body {
+            let exist_master_key = crate::user::key::get_master_key(sender_id).await?;
+            let exist_self_signing_key = crate::user::key::get_self_signing_key(sender_id).await?;
+            let exist_user_signing_key = crate::user::key::get_user_signing_key(sender_id).await?;
+            if exist_master_key.is_none()
+                && exist_self_signing_key.is_none()
+                && exist_user_signing_key.is_none()
+            {
+                false
+            } else if let Some(expires_ts) =
+                data::user::key::get_cross_signing_replacement_allowed(sender_id).await?
+            {
+                let now_ms = crate::core::UnixMillis::now().get() as i64;
+                // Bypass still valid — skip UIA
+                now_ms >= expires_ts
+            } else {
+                let body = signing_key_payload_for_uia(body, challenged_body.as_ref());
+                signing_key_payload_changed(
+                    body,
+                    exist_master_key.as_ref(),
+                    exist_self_signing_key.as_ref(),
+                    exist_user_signing_key.as_ref(),
+                )
+            }
         } else {
-            let body = signing_key_payload_for_uia(body, challenged_body.as_ref());
-            signing_key_payload_changed(
-                body,
-                exist_master_key.as_ref(),
-                exist_self_signing_key.as_ref(),
-                exist_user_signing_key.as_ref(),
-            )
-        }
-    } else {
-        true
-    };
+            true
+        };
 
     if body.is_err()
         || body

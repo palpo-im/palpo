@@ -154,7 +154,7 @@ pub mod configuration {
         DB: Backend,
     {
         fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-            out.push_sql(&format!("'{}'", &self.0));
+            out.push_sql(&format!("'{}'", self.0));
             Ok(())
         }
     }

@@ -117,39 +117,6 @@ impl FromStr for BatchToken {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_live_and_historic_tokens() {
-        assert_eq!(
-            "s2633508".parse::<BatchToken>().unwrap(),
-            BatchToken::Live { stream_ordering: 2633508 }
-        );
-        assert_eq!(
-            "t426-2633508".parse::<BatchToken>().unwrap(),
-            BatchToken::Historic { stream_ordering: 2633508, topological_ordering: 426 }
-        );
-    }
-
-    #[test]
-    fn accepts_bare_numeric_token_for_backward_compat() {
-        // Tokens minted by pre-#69 builds (and replayed from client storage)
-        // have no 's' prefix; they must still resolve to a live token.
-        assert_eq!(
-            "128".parse::<BatchToken>().unwrap(),
-            BatchToken::Live { stream_ordering: 128 }
-        );
-    }
-
-    #[test]
-    fn rejects_non_numeric_garbage() {
-        assert!("garbage".parse::<BatchToken>().is_err());
-        assert!("".parse::<BatchToken>().is_err());
-    }
-}
-
 impl std::fmt::Display for BatchToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -159,5 +126,45 @@ impl std::fmt::Display for BatchToken {
                 topological_ordering,
             } => write!(f, "t{}-{}", topological_ordering, stream_ordering),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_live_and_historic_tokens() {
+        assert_eq!(
+            "s2633508".parse::<BatchToken>().unwrap(),
+            BatchToken::Live {
+                stream_ordering: 2633508
+            }
+        );
+        assert_eq!(
+            "t426-2633508".parse::<BatchToken>().unwrap(),
+            BatchToken::Historic {
+                stream_ordering: 2633508,
+                topological_ordering: 426
+            }
+        );
+    }
+
+    #[test]
+    fn accepts_bare_numeric_token_for_backward_compat() {
+        // Tokens minted by pre-#69 builds (and replayed from client storage)
+        // have no 's' prefix; they must still resolve to a live token.
+        assert_eq!(
+            "128".parse::<BatchToken>().unwrap(),
+            BatchToken::Live {
+                stream_ordering: 128
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_garbage() {
+        assert!("garbage".parse::<BatchToken>().is_err());
+        assert!("".parse::<BatchToken>().is_err());
     }
 }

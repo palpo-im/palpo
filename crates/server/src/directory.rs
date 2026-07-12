@@ -78,10 +78,12 @@ async fn get_local_public_rooms(
             let chunk = PublicRoomsChunk {
                 canonical_alias: room::get_canonical_alias(&room_id).await.ok().flatten(),
                 name: room::get_name(&room_id).await.ok(),
-                num_joined_members: room::joined_member_count(&room_id).await.unwrap_or_else(|_| {
-                    warn!("Room {} has no member count", room_id);
-                    0
-                }),
+                num_joined_members: room::joined_member_count(&room_id).await.unwrap_or_else(
+                    |_| {
+                        warn!("Room {} has no member count", room_id);
+                        0
+                    },
+                ),
                 topic: room::get_topic(&room_id).await.ok(),
                 world_readable: room::is_world_readable(&room_id).await,
                 guest_can_join: room::guest_can_join(&room_id).await,
@@ -92,7 +94,8 @@ async fn get_local_public_rooms(
                     "",
                     None,
                 )
-                .await.map(|c| match c.join_rule {
+                .await
+                .map(|c| match c.join_rule {
                     JoinRule::Public => Some(PublicRoomJoinRule::Public),
                     JoinRule::Knock => Some(PublicRoomJoinRule::Knock),
                     JoinRule::KnockRestricted(..) => Some(PublicRoomJoinRule::KnockRestricted),
@@ -120,12 +123,15 @@ async fn get_local_public_rooms(
             {
                 true
             } else {
-                chunk.canonical_alias.as_ref().is_some_and(|canonical_alias| {
-                    canonical_alias
-                        .as_str()
-                        .to_lowercase()
-                        .contains(search_term)
-                })
+                chunk
+                    .canonical_alias
+                    .as_ref()
+                    .is_some_and(|canonical_alias| {
+                        canonical_alias
+                            .as_str()
+                            .to_lowercase()
+                            .contains(search_term)
+                    })
             }
         } else {
             // No search term
@@ -138,7 +144,7 @@ async fn get_local_public_rooms(
         }
     }
 
-    all_rooms.sort_by(|l, r| r.num_joined_members.cmp(&l.num_joined_members));
+    all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
 
     let total_room_count_estimate = (all_rooms.len() as u32).into();
 

@@ -105,10 +105,11 @@ pub async fn server_request(target: &ServerName) -> AppResult<ServerSigningKeys>
     // DNS-name targets that resolve to denylisted IPs are blocked at
     // connect time by the federation client's safe DNS resolver.
     if target.is_ip_literal() {
-        return Err(
-            MatrixError::forbidden("federation requests to IP-literal server names are not allowed", None)
-                .into(),
-        );
+        return Err(MatrixError::forbidden(
+            "federation requests to IP-literal server names are not allowed",
+            None,
+        )
+        .into());
     }
 
     let request = server_keys_request(&target.origin().await)?.into_inner();

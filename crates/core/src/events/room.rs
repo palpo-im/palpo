@@ -2,20 +2,16 @@
 //!
 //! This module also contains types shared by events in its child namespaces.
 
-use std::{
-    collections::{BTreeMap, btree_map},
-    fmt,
-    ops::Deref,
-};
+use std::collections::{BTreeMap, btree_map};
+use std::fmt;
+use std::ops::Deref;
 
 use as_variant::as_variant;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize, de};
 
-use crate::serde::{
-    Base64, JsonObject, StringEnum,
-    base64::{Standard, UrlSafe},
-};
+use crate::serde::base64::{Standard, UrlSafe};
+use crate::serde::{Base64, JsonObject, StringEnum};
 use crate::{OwnedMxcUri, PrivOwnedStr};
 
 pub mod aliases;

@@ -120,8 +120,9 @@ pub async fn get_thumbnail(
 
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) = crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)
-        .await?
+    }) =
+        crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)
+            .await?
     {
         // Using saved thumbnail
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
@@ -241,7 +242,7 @@ pub async fn get_thumbnail(
 
             // Save to storage backend
             let thumb_key =
-                media_storage_key(server_name, &format!("{}.{width}x{height}", &args.media_id));
+                media_storage_key(server_name, &format!("{}.{width}x{height}", args.media_id));
             storage::write(&thumb_key, &thumbnail_bytes).await?;
 
             let content_disposition = make_content_disposition(

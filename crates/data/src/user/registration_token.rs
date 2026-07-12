@@ -70,7 +70,9 @@ impl From<DbRegistrationToken> for RegistrationTokenInfo {
 /// and have uses remaining) are returned.
 /// If `valid` is Some(false), only invalid tokens are returned.
 /// If `valid` is None, all tokens are returned.
-pub async fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<RegistrationTokenInfo>> {
+pub async fn list_registration_tokens(
+    valid: Option<bool>,
+) -> DataResult<Vec<RegistrationTokenInfo>> {
     let mut query = user_registration_tokens::table.into_boxed();
 
     if let Some(is_valid) = valid {
@@ -108,7 +110,8 @@ pub async fn list_registration_tokens(valid: Option<bool>) -> DataResult<Vec<Reg
 
     let tokens = query
         .order(user_registration_tokens::created_at.desc())
-        .load::<DbRegistrationToken>(&mut connect().await?).await?;
+        .load::<DbRegistrationToken>(&mut connect().await?)
+        .await?;
 
     Ok(tokens.into_iter().map(Into::into).collect())
 }
@@ -138,7 +141,8 @@ pub async fn create_registration_token(
         .values(&new_token)
         .on_conflict(user_registration_tokens::token)
         .do_nothing()
-        .execute(&mut connect().await?).await?;
+        .execute(&mut connect().await?)
+        .await?;
 
     Ok(result > 0)
 }
@@ -170,7 +174,8 @@ pub async fn update_registration_token(
             user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
         )
         .set(user_registration_tokens::uses_allowed.eq(new_uses_allowed))
-        .execute(&mut conn).await?;
+        .execute(&mut conn)
+        .await?;
     }
 
     if let Some(new_expires_at) = expires_at {
@@ -178,7 +183,8 @@ pub async fn update_registration_token(
             user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
         )
         .set(user_registration_tokens::expires_at.eq(new_expires_at))
-        .execute(&mut conn).await?;
+        .execute(&mut conn)
+        .await?;
     }
 
     // Release the connection before the nested read below, which checks out its
@@ -196,7 +202,8 @@ pub async fn delete_registration_token(token: &str) -> DataResult<bool> {
     let result = diesel::delete(
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
 
     Ok(result > 0)
 }
@@ -267,7 +274,8 @@ pub async fn increment_pending(token: &str) -> DataResult<bool> {
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
     .set(user_registration_tokens::pending.eq(user_registration_tokens::pending + 1))
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
 
     Ok(result > 0)
 }
@@ -293,7 +301,8 @@ pub async fn complete_registration(token: &str) -> DataResult<bool> {
         user_registration_tokens::pending.eq(new_pending),
         user_registration_tokens::completed.eq(user_registration_tokens::completed + 1),
     ))
-    .execute(&mut conn).await?;
+    .execute(&mut conn)
+    .await?;
 
     Ok(result > 0)
 }
@@ -316,7 +325,8 @@ pub async fn cancel_registration(token: &str) -> DataResult<bool> {
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
     .set(user_registration_tokens::pending.eq(new_pending))
-    .execute(&mut conn).await?;
+    .execute(&mut conn)
+    .await?;
 
     Ok(result > 0)
 }

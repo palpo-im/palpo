@@ -5,7 +5,8 @@ use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
-use serde_json::{from_value as from_json_value, value::to_raw_value};
+use serde_json::from_value as from_json_value;
+use serde_json::value::to_raw_value;
 
 use crate::core::client::membership::{
     BanUserReqBody, InvitationRecipient, InviteUserReqBody, JoinRoomReqBody, JoinRoomResBody,
@@ -308,7 +309,11 @@ pub(super) async fn join_room_by_id(
     if let Ok(server) = room_id.server_name() {
         servers.push(server.to_owned());
     } else {
-        servers.extend(crate::room::lookup_servers(&room_id).await.unwrap_or_default());
+        servers.extend(
+            crate::room::lookup_servers(&room_id)
+                .await
+                .unwrap_or_default(),
+        );
     }
     servers.sort_unstable();
     servers.dedup();
@@ -512,7 +517,8 @@ pub(super) async fn ban_user(
         body.user_id.as_ref(),
         None,
     )
-    .await.ok();
+    .await
+    .ok();
 
     let event = if let Some(room_state) = room_state {
         let event = room_state
@@ -602,7 +608,8 @@ pub(super) async fn ban_user(
         &room_id,
         &crate::room::get_version(&room_id).await?,
         &state_lock,
-    ).await?;
+    )
+    .await?;
     if let Err(e) = sending::send_pdu_room(
         &room_id,
         &pdu.event_id,
@@ -694,7 +701,9 @@ pub(super) async fn kick_user(
         &StateEventType::RoomMember,
         body.user_id.as_str(),
         None,
-    ).await else {
+    )
+    .await
+    else {
         return Err(MatrixError::forbidden(
             "users cannot kick users from a room they are not in",
             None,
@@ -776,7 +785,11 @@ pub(crate) async fn knock_room(
             .await?;
 
             let mut servers = body.via.clone();
-            servers.extend(crate::room::lookup_servers(&room_id).await.unwrap_or_default());
+            servers.extend(
+                crate::room::lookup_servers(&room_id)
+                    .await
+                    .unwrap_or_default(),
+            );
             servers.extend(
                 state::get_user_state(sender_id, &room_id)
                     .await

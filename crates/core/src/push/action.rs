@@ -2,7 +2,8 @@ use std::borrow::Cow;
 
 use as_variant::as_variant;
 use salvo::prelude::*;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::PrivOwnedStr;
 use crate::macros::StringEnum;
@@ -198,9 +199,10 @@ impl Tweak {
 
         match self {
             Tweak::Sound(s) => Some(Cow::Owned(serialize(s))),
-            Tweak::Highlight(h) => {
-                Some(Cow::Owned(serialize(&matches!(h, HighlightTweakValue::Yes))))
-            }
+            Tweak::Highlight(h) => Some(Cow::Owned(serialize(&matches!(
+                h,
+                HighlightTweakValue::Yes
+            )))),
             Tweak::_Custom(c) => c.value.as_deref().map(Cow::Borrowed),
         }
     }

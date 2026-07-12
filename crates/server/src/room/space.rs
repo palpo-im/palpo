@@ -232,7 +232,8 @@ async fn get_room_summary(
         "",
         None,
     )
-    .await.map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule);
+    .await
+    .map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule);
 
     let allowed_room_ids = state::allowed_room_ids(join_rule.clone());
 
@@ -300,8 +301,11 @@ pub async fn get_room_hierarchy(
     let room_sns = pagination_token.map(|p| p.room_sns).unwrap_or_default();
     let room_id = &args.room_id;
     let suggested_only = args.suggested_only;
-    let mut queue: RoomDeque =
-        [(room_id.to_owned(), vec![crate::room::server_name(room_id).await?])].into();
+    let mut queue: RoomDeque = [(
+        room_id.to_owned(),
+        vec![crate::room::server_name(room_id).await?],
+    )]
+    .into();
 
     let mut rooms = Vec::with_capacity(limit);
     let mut parents = BTreeSet::new();
@@ -414,8 +418,12 @@ async fn is_accessible_child(
     }
 
     if let Identifier::UserId(user_id) = identifier
-        && (crate::room::user::is_joined(user_id, current_room).await.unwrap_or(false)
-            || crate::room::user::is_invited(user_id, current_room).await.unwrap_or(false))
+        && (crate::room::user::is_joined(user_id, current_room)
+            .await
+            .unwrap_or(false)
+            || crate::room::user::is_invited(user_id, current_room)
+                .await
+                .unwrap_or(false))
     {
         return true;
     }
@@ -427,12 +435,12 @@ async fn is_accessible_child(
         SpaceRoomJoinRule::Restricted => {
             for room in allowed_room_ids.iter() {
                 let accessible = match identifier {
-                    Identifier::UserId(user) => {
-                        crate::room::user::is_joined(user, room).await.unwrap_or(false)
-                    }
-                    Identifier::ServerName(server) => {
-                        crate::room::is_server_joined(server, room).await.unwrap_or(false)
-                    }
+                    Identifier::UserId(user) => crate::room::user::is_joined(user, room)
+                        .await
+                        .unwrap_or(false),
+                    Identifier::ServerName(server) => crate::room::is_server_joined(server, room)
+                        .await
+                        .unwrap_or(false),
                 };
                 if accessible {
                     return true;

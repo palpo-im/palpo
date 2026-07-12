@@ -510,7 +510,7 @@ pub async fn append_pdu(
 
             if let Some(body) = content.body
                 && let Ok(admin_room) = super::resolve_local_alias(
-                    <&RoomAliasId>::try_from(format!("#admins:{}", &conf.server_name).as_str())
+                    <&RoomAliasId>::try_from(format!("#admins:{}", conf.server_name).as_str())
                         .expect("#admins:server_name is a valid room alias"),
                 )
                 .await
@@ -697,12 +697,11 @@ pub async fn append_pdu(
                 allowed.push(server);
             }
         }
-        if !allowed.is_empty() {
-            if let Err(e) =
+        if !allowed.is_empty()
+            && let Err(e) =
                 crate::sending::send_pdu_servers(allowed.into_iter(), &pdu.event_id).await
-            {
-                error!("failed to forward pdu to peeking servers: {e}");
-            }
+        {
+            error!("failed to forward pdu to peeking servers: {e}");
         }
     }
 
@@ -809,7 +808,8 @@ pub async fn build_and_append_pdu(
             &pdu_builder.event_type.to_string().into(),
             state_key,
             None,
-        ).await
+        )
+        .await
         && curr_state.content.get() == pdu_builder.content.get()
     {
         return Ok(curr_state);
@@ -889,10 +889,9 @@ mod tests {
     use serde_json::value::RawValue;
     use tracing_test::traced_test;
 
+    use super::canonicalize_prev_content;
     use crate::core::identifiers::{EventId, OwnedEventId, OwnedRoomId, RoomId};
     use crate::core::serde::to_canonical_object;
-
-    use super::canonicalize_prev_content;
 
     fn ids() -> (OwnedEventId, OwnedRoomId, OwnedEventId) {
         (

@@ -228,7 +228,10 @@ async fn respond_to_room(
     room_id: &RoomId,
     user_id: &UserId,
 ) -> AppResult<()> {
-    assert!(crate::room::is_admin_room(room_id).await?, "sender is not admin");
+    assert!(
+        crate::room::is_admin_room(room_id).await?,
+        "sender is not admin"
+    );
 
     let state_lock = crate::room::lock_state(room_id).await;
 

@@ -156,7 +156,7 @@ pub(super) async fn delete_account_data_msc3391(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let user_id = user_id.into_inner();
-    if &user_id != authed.user_id() {
+    if user_id != authed.user_id() {
         return Err(
             MatrixError::forbidden("Cannot delete account data for another user.", None).into(),
         );

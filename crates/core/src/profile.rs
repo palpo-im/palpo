@@ -2,9 +2,8 @@ use std::borrow::Cow;
 use std::fmt;
 
 use salvo::prelude::*;
-use serde::de;
 use serde::ser::SerializeMap;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer, de};
 use serde_json::{from_value as from_json_value, to_value as to_json_value};
 
 use crate::serde::{JsonValue, StringEnum};

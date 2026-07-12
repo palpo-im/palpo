@@ -477,16 +477,17 @@ async fn send_events(
                 if pdu.unsigned.contains_key("redacted_because") {
                     continue;
                 }
-                let pusher =
-                    match data::user::pusher::get_pusher(user_id, pushkey).await.map_err(|e| {
+                let pusher = match data::user::pusher::get_pusher(user_id, pushkey)
+                    .await
+                    .map_err(|e| {
                         (
                             OutgoingKind::Push(user_id.clone(), pushkey.clone()),
                             e.into(),
                         )
                     })? {
-                        Some(pusher) => pusher,
-                        None => continue,
-                    };
+                    Some(pusher) => pusher,
+                    None => continue,
+                };
 
                 let rules_for_user = data::user::get_global_data::<PushRulesEventContent>(
                     user_id,
@@ -681,10 +682,8 @@ async fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType
             };
             let event = if let Some(value) = item.edu_json {
                 SendingEventType::Edu(value)
-            } else if let Some(pdu_id) = item.pdu_id {
-                SendingEventType::Pdu(pdu_id)
             } else {
-                return None;
+                SendingEventType::Pdu(item.pdu_id?)
             };
             Some((item.id, kind, event))
         })

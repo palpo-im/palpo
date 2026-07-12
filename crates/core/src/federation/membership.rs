@@ -365,7 +365,7 @@ pub fn send_join_request(
 ) -> SendResult<SendRequest> {
     let url = Url::parse(&format!(
         "{origin}/_matrix/federation/v2/send_join/{}/{}?omit_members={}",
-        &args.room_id, &args.event_id, args.omit_members
+        args.room_id, args.event_id, args.omit_members
     ))?;
     crate::sending::put(url).stuff(body)
 }

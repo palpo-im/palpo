@@ -1,9 +1,8 @@
 use std::{fmt, mem};
 
+use super::{CanonicalJsonObject, CanonicalJsonValue};
 use crate::room_version_rules::RedactionRules;
 use crate::serde::RawJson;
-
-use super::{CanonicalJsonObject, CanonicalJsonValue};
 
 /// Errors that can happen in redaction.
 #[derive(Debug)]

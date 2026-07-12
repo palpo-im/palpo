@@ -8,7 +8,8 @@ pub mod presence;
 // mod ldap;
 // pub use ldap::*;
 pub mod session;
-use std::{collections::BTreeSet, mem};
+use std::collections::BTreeSet;
+use std::mem;
 
 pub use presence::*;
 use serde::de::DeserializeOwned;
@@ -19,8 +20,8 @@ use crate::core::events::ignored_user_list::IgnoredUserListEvent;
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
-use crate::data::user::{DbUser, DbUserData, NewDbUser};
 use crate::data::DataResult;
+use crate::data::user::{DbUser, DbUserData, NewDbUser};
 use crate::room::timeline;
 use crate::{AppError, AppResult, IsRemoteOrLocal, MatrixError, PduBuilder, config, data, room};
 
@@ -183,7 +184,9 @@ pub async fn full_user_deactivate(
         });
 
         let user_can_demote_self = user_can_change_self
-            || room::get_create(room_id).await.is_ok_and(|event| event.sender == user_id);
+            || room::get_create(room_id)
+                .await
+                .is_ok_and(|event| event.sender == user_id);
 
         if user_can_demote_self {
             let mut power_levels_content: RoomPowerLevelsEventContent = room_power_levels
@@ -280,8 +283,7 @@ pub async fn create_login_token(user_id: &UserId, token: &str) -> AppResult<u64>
 /// Find out which user a login token belongs to.
 /// Removes the token to prevent double-use attacks.
 pub async fn take_login_token(token: &str) -> AppResult<OwnedUserId> {
-    let Some((user_id, expires_at)) = data::user::login_token::get_login_token(token).await?
-    else {
+    let Some((user_id, expires_at)) = data::user::login_token::get_login_token(token).await? else {
         return Err(MatrixError::forbidden("Login token is unrecognised.", None).into());
     };
 

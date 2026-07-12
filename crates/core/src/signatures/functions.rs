@@ -165,8 +165,7 @@ where
 /// }"#;
 ///
 /// let object = serde_json::from_str(input).unwrap();
-/// let canonical =
-///     palpo_core::signatures::to_canonical_json_string_for_signing(&object).unwrap();
+/// let canonical = palpo_core::signatures::to_canonical_json_string_for_signing(&object).unwrap();
 ///
 /// assert_eq!(canonical, r#"{"日":1,"本":2}"#);
 /// ```

@@ -401,7 +401,10 @@ impl<'de> Deserialize<'de> for AllowRule {
                 )
                 .expect("type was already deserialized as a string");
 
-                Ok(Self::_Custom(Box::new(CustomAllowRule { rule_type, extra })))
+                Ok(Self::_Custom(Box::new(CustomAllowRule {
+                    rule_type,
+                    extra,
+                })))
             }
         }
     }

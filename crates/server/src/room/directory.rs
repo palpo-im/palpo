@@ -1,7 +1,6 @@
-use crate::AppResult;
 use crate::core::RoomId;
 use crate::core::room::Visibility;
-use crate::data;
+use crate::{AppResult, data};
 
 #[tracing::instrument]
 pub async fn set_public(room_id: &RoomId, value: bool) -> AppResult<()> {

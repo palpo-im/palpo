@@ -1,16 +1,16 @@
 //! Persistence for MSC2444 federated peeking.
 //!
 //! Two independent concerns:
-//! - `room_peeking_servers`: remote servers peeking one of *our* rooms (resident
-//!   side). New events are delivered to them until their peek expires/cancels.
-//! - `room_peeks`: outbound peeks *we* hold on remote rooms (peeking side),
-//!   renewed before `renew_at`.
+//! - `room_peeking_servers`: remote servers peeking one of *our* rooms (resident side). New events
+//!   are delivered to them until their peek expires/cancels.
+//! - `room_peeks`: outbound peeks *we* hold on remote rooms (peeking side), renewed before
+//!   `renew_at`.
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
-use crate::core::identifiers::*;
 use crate::core::UnixMillis;
+use crate::core::identifiers::*;
 use crate::schema::*;
 use crate::{DataResult, connect};
 

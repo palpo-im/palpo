@@ -147,7 +147,8 @@ pub async fn delete_media(
         .await?
         .ok_or_else(|| MatrixError::not_found("Unknown media"))?;
 
-    let (deleted_media, total) = data::media::delete_media_by_ids(&server_name, &[media_id]).await?;
+    let (deleted_media, total) =
+        data::media::delete_media_by_ids(&server_name, &[media_id]).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,

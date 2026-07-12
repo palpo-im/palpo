@@ -26,8 +26,9 @@ pub struct FetchEventResponse {
 pub async fn fetch_event(event_id: PathParam<OwnedEventId>) -> JsonResult<FetchEventResponse> {
     let event_id = event_id.into_inner();
 
-    let pdu =
-        timeline::get_pdu(&event_id).await.map_err(|_| MatrixError::not_found("Event not found"))?;
+    let pdu = timeline::get_pdu(&event_id)
+        .await
+        .map_err(|_| MatrixError::not_found("Event not found"))?;
 
     let event = serde_json::to_value(&pdu).unwrap_or_default();
 

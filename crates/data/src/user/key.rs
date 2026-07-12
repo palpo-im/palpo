@@ -148,7 +148,8 @@ pub async fn count_one_time_keys(
         .filter(e2e_one_time_keys::device_id.eq(device_id))
         .group_by(e2e_one_time_keys::algorithm)
         .select((e2e_one_time_keys::algorithm, diesel::dsl::count_star()))
-        .load::<(String, i64)>(&mut connect().await?).await?;
+        .load::<(String, i64)>(&mut connect().await?)
+        .await?;
     Ok(BTreeMap::from_iter(
         list.into_iter()
             .map(|(k, v)| (DeviceKeyAlgorithm::from(k), v as u64)),
@@ -173,11 +174,15 @@ pub async fn add_device_keys(
         .on_conflict((e2e_device_keys::user_id, e2e_device_keys::device_id))
         .do_update()
         .set(&new_device_key)
-        .execute(&mut connect().await?).await?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
-pub async fn get_device_keys(user_id: &UserId, device_id: &DeviceId) -> DataResult<Option<DeviceKeys>> {
+pub async fn get_device_keys(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Option<DeviceKeys>> {
     e2e_device_keys::table
         .filter(e2e_device_keys::user_id.eq(user_id))
         .filter(e2e_device_keys::device_id.eq(device_id))
@@ -209,7 +214,8 @@ pub async fn get_device_keys_and_sigs(
         .filter(e2e_cross_signing_sigs::origin_user_id.eq(user_id))
         .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
         .filter(e2e_cross_signing_sigs::target_device_id.eq(device_id))
-        .load::<DbCrossSignature>(&mut connect().await?).await?;
+        .load::<DbCrossSignature>(&mut connect().await?)
+        .await?;
     for DbCrossSignature {
         origin_key_id,
         signature,
@@ -334,12 +340,16 @@ pub async fn has_master_cross_signing_key(user_id: &UserId) -> DataResult<bool> 
         .filter(e2e_cross_signing_keys::user_id.eq(user_id))
         .filter(e2e_cross_signing_keys::key_type.eq("master"))
         .count()
-        .get_result::<i64>(&mut connect().await?).await?;
+        .get_result::<i64>(&mut connect().await?)
+        .await?;
     Ok(count > 0)
 }
 
 /// Set the timestamp until which cross-signing key replacement is allowed without UIA
-pub async fn set_cross_signing_replacement_allowed(user_id: &UserId, expires_ts: i64) -> DataResult<()> {
+pub async fn set_cross_signing_replacement_allowed(
+    user_id: &UserId,
+    expires_ts: i64,
+) -> DataResult<()> {
     diesel::insert_into(e2e_cross_signing_uia_bypass::table)
         .values((
             e2e_cross_signing_uia_bypass::user_id.eq(user_id),
@@ -348,7 +358,8 @@ pub async fn set_cross_signing_replacement_allowed(user_id: &UserId, expires_ts:
         .on_conflict(e2e_cross_signing_uia_bypass::user_id)
         .do_update()
         .set(e2e_cross_signing_uia_bypass::updatable_before_ts.eq(expires_ts))
-        .execute(&mut connect().await?).await?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
@@ -532,7 +543,10 @@ pub async fn claim_one_time_key(
         diesel::delete(e2e_one_time_keys::table.find(id))
             .execute(&mut connect().await?)
             .await?;
-        Ok(Some((key_id, serde_json::from_value::<OneTimeKey>(key_data)?)))
+        Ok(Some((
+            key_id,
+            serde_json::from_value::<OneTimeKey>(key_data)?,
+        )))
     } else if let Some(DbFallbackKey {
         id,
         key_id,

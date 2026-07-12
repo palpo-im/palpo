@@ -41,7 +41,10 @@ pub async fn create_profile(profile: &NewDbProfile) -> DataResult<()> {
     Ok(())
 }
 
-pub async fn get_profile(user_id: &UserId, room_id: Option<&RoomId>) -> DataResult<Option<DbProfile>> {
+pub async fn get_profile(
+    user_id: &UserId,
+    room_id: Option<&RoomId>,
+) -> DataResult<Option<DbProfile>> {
     let profile = if let Some(room_id) = room_id {
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))

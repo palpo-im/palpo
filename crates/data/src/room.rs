@@ -693,10 +693,7 @@ pub async fn get_state_field_id(event_ty: &StateEventType, state_key: &str) -> D
 }
 
 /// Id of the `(event_ty, state_key)` state field, creating it if missing.
-pub async fn ensure_state_field_id(
-    event_ty: &StateEventType,
-    state_key: &str,
-) -> DataResult<i64> {
+pub async fn ensure_state_field_id(event_ty: &StateEventType, state_key: &str) -> DataResult<i64> {
     let id = diesel::insert_into(room_state_fields::table)
         .values((
             room_state_fields::event_ty.eq(event_ty),

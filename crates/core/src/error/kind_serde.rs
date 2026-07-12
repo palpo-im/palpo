@@ -731,10 +731,10 @@ impl Serialize for ErrorKind {
             Self::ResourceLimitExceeded { admin_contact } => {
                 st.serialize_entry("admin_contact", admin_contact)?;
             }
-            Self::SenderIgnored { sender } => {
-                if let Some(sender) = sender {
-                    st.serialize_entry("sender", sender)?;
-                }
+            Self::SenderIgnored {
+                sender: Some(sender),
+            } => {
+                st.serialize_entry("sender", sender)?;
             }
             Self::UserLimitExceeded {
                 info_uri,

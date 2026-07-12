@@ -1,16 +1,15 @@
 use palpo_core::Seqnum;
 use serde::Deserialize;
 
-use crate::AppResult;
 use crate::core::Direction;
 use crate::core::client::relation::RelationEventsResBody;
 use crate::core::events::TimelineEventType;
 use crate::core::events::relation::RelationType;
 use crate::core::identifiers::*;
-use crate::data;
 use crate::data::room::NewDbEventRelation;
 use crate::event::{BatchToken, SnPduEvent};
 use crate::room::timeline;
+use crate::{AppResult, data};
 
 #[derive(Clone, Debug, Deserialize)]
 struct ExtractRelType {

@@ -17,8 +17,8 @@ pub mod stream;
 pub mod string;
 pub use stream::*;
 pub mod content_disposition;
-pub mod url_guard;
 mod mutex_map;
+pub mod url_guard;
 pub use mutex_map::{MutexMap, MutexMapGuard};
 mod sequm_queue;
 pub use sequm_queue::*;
@@ -84,7 +84,7 @@ pub fn increment(old: Option<&[u8]>) -> Option<Vec<u8>> {
 pub fn generate_keypair() -> Ed25519KeyPair {
     let key_content = Ed25519KeyPair::generate().unwrap();
     Ed25519KeyPair::from_der(&key_content, random_string(8))
-        .unwrap_or_else(|_| panic!("{:?}", &key_content))
+        .unwrap_or_else(|_| panic!("{:?}", key_content))
 }
 
 /// Parses the bytes into an u64.
