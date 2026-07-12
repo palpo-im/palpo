@@ -117,7 +117,7 @@ strum_macros = "0.28.0"
 subslice = "0.2.3"
 syn = "2.0.117"
 tempfile = "3.27.0"
-termimad = { version = "0.34.1", default-features = false }
+termimad = { version = "0.35.1", default-features = false }
 textnonce = "1.0.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["macros", "parking_lot", "process", "rt-multi-thread"] }
