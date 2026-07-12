@@ -71,7 +71,7 @@ use salvo::catcher::Catcher;
 use salvo::compression::{Compression, CompressionLevel};
 use salvo::conn::rustls::{Keycert, RustlsConfig};
 use salvo::conn::tcp::DynTcpAcceptors;
-use salvo::cors::{self, AllowHeaders, Cors};
+use salvo::cors::{AllowHeaders, AllowOrigin, Cors, CorsHandler};
 use salvo::http::Method;
 use salvo::logging::Logger;
 use salvo::prelude::*;
@@ -93,6 +93,36 @@ pub fn cjson_ok<T>(data: T) -> CjsonResult<T> {
 }
 pub fn empty_ok() -> JsonResult<EmptyObject> {
     Ok(Json(EmptyObject {}))
+}
+
+fn cors_handler(allowed_origins: &[String]) -> CorsHandler {
+    let allow_origin = if allowed_origins.is_empty() {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(
+            allowed_origins
+                .iter()
+                .map(|origin| origin.parse().expect("allowed CORS origin was validated")),
+        )
+    };
+
+    Cors::new()
+        .allow_origin(allow_origin)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(AllowHeaders::list([
+            salvo::http::header::ACCEPT,
+            salvo::http::header::CONTENT_TYPE,
+            salvo::http::header::AUTHORIZATION,
+            salvo::http::header::RANGE,
+        ]))
+        .max_age(Duration::from_secs(86400))
+        .into_handler()
 }
 
 pub trait OptionalExtension<T> {
@@ -230,25 +260,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .catcher(catcher)
         .hoop(hoops::default_accept_json)
         .hoop(Logger::new())
-        .hoop(
-            Cors::new()
-                .allow_origin(cors::Any)
-                .allow_methods([
-                    Method::GET,
-                    Method::POST,
-                    Method::PUT,
-                    Method::DELETE,
-                    Method::OPTIONS,
-                ])
-                .allow_headers(AllowHeaders::list([
-                    salvo::http::header::ACCEPT,
-                    salvo::http::header::CONTENT_TYPE,
-                    salvo::http::header::AUTHORIZATION,
-                    salvo::http::header::RANGE,
-                ]))
-                .max_age(Duration::from_secs(86400))
-                .into_handler(),
-        )
+        .hoop(cors_handler(&conf.allowed_origins))
         .hoop(hoops::remove_json_utf8);
     let service = if conf.compression.is_enabled() {
         let mut compression = Compression::new();
@@ -301,4 +313,60 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .instrument(tracing::info_span!("server.serve"))
         .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use salvo::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, ORIGIN};
+    use salvo::test::TestClient;
+
+    use super::*;
+
+    #[handler]
+    async fn test_handler(res: &mut Response) {
+        res.render(Text::Plain("ok"));
+    }
+
+    fn service(allowed_origins: &[String]) -> Service {
+        Service::new(Router::new().get(test_handler)).hoop(cors_handler(allowed_origins))
+    }
+
+    #[tokio::test]
+    async fn cors_allows_any_origin_when_list_is_empty() {
+        let response = TestClient::get("http://localhost/")
+            .add_header(ORIGIN, "https://client.example", true)
+            .send(&service(&[]))
+            .await;
+
+        assert_eq!(
+            response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "*"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_only_echoes_configured_origins() {
+        let allowed_origins = vec!["https://client.example".to_owned()];
+        let service = service(&allowed_origins);
+
+        let allowed = TestClient::get("http://localhost/")
+            .add_header(ORIGIN, "https://client.example", true)
+            .send(&service)
+            .await;
+        assert_eq!(
+            allowed.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "https://client.example"
+        );
+
+        let rejected = TestClient::get("http://localhost/")
+            .add_header(ORIGIN, "https://other.example", true)
+            .send(&service)
+            .await;
+        assert!(
+            rejected
+                .headers()
+                .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
+    }
 }

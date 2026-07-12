@@ -1051,6 +1051,19 @@ impl ServerConfig {
             );
         }
 
+        for origin in &self.allowed_origins {
+            if origin == "*" {
+                return Err(AppError::internal(
+                    "allowed_origins must be empty to allow every CORS origin; '*' cannot be mixed with an origin list",
+                ));
+            }
+            if origin.is_empty() || origin.parse::<HeaderValue>().is_err() {
+                return Err(AppError::internal(format!(
+                    "Invalid CORS origin in allowed_origins: {origin:?}",
+                )));
+            }
+        }
+
         // check if user specified valid IP CIDR ranges on startup
         for cidr in &self.ip_range_denylist {
             if let Err(_e) = ipaddress::IPAddress::parse(cidr) {
