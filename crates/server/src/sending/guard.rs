@@ -105,6 +105,17 @@ async fn process() -> AppResult<()> {
                             }
 
                             futures.push(super::send_events(outgoing_kind.clone(), events));
+                        } else if let OutgoingKind::Normal(server_name) = &outgoing_kind
+                            && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+                            && !select_edus.is_empty()
+                        {
+                            // No queued PDUs, but the EDU window is not empty
+                            // (e.g. a previous send failed and dropped it):
+                            // deliver the EDUs on their own instead of leaving
+                            // them until unrelated traffic shows up.
+                            let events = select_edus.into_iter().map(SendingEventType::Edu).collect::<Vec<_>>();
+                            pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                            futures.push(super::send_events(outgoing_kind.clone(), events));
                         } else {
                             current_transaction_status.remove(&outgoing_kind);
                         }
@@ -179,17 +190,27 @@ async fn process() -> AppResult<()> {
                         }
                     };
 
-                    if active_events.is_empty() {
+                    let mut events = active_events.into_iter().map(|(_, event)| event).collect::<Vec<_>>();
+                    // Also retry the EDU window whose delivery failed: it was
+                    // dropped from pending_edu_cursors without advancing the
+                    // cursor, so it is re-selected here instead of waiting for
+                    // unrelated future traffic to this destination.
+                    if let OutgoingKind::Normal(server_name) = &outgoing_kind
+                        && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+                        && !select_edus.is_empty()
+                    {
+                        events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+                        pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                    }
+
+                    if events.is_empty() {
                         current_transaction_status.remove(&outgoing_kind);
                         continue;
                     }
 
                     current_transaction_status
                         .insert(outgoing_kind.clone(), TransactionStatus::Retrying(tries));
-                    futures.push(super::send_events(
-                        outgoing_kind,
-                        active_events.into_iter().map(|(_, event)| event).collect(),
-                    ));
+                    futures.push(super::send_events(outgoing_kind, events));
                 }
             }
         }
@@ -265,16 +286,16 @@ async fn select_events(
         for (_, e) in new_events {
             events.push(e);
         }
+    }
 
-        if let OutgoingKind::Normal(server_name) = outgoing_kind
-            && let Ok((select_edus, last_sn)) = select_edus(server_name).await
-        {
-            events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-            // Remember the window we selected; the cursor is only persisted
-            // once the transaction succeeds, so a failed send re-selects the
-            // same EDUs on the next attempt.
-            pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
-        }
+    // Piggyback pending EDUs on fresh and retry transactions alike. The
+    // cursor only advances once a transaction succeeds, so a retry simply
+    // re-selects the same window.
+    if let OutgoingKind::Normal(server_name) = outgoing_kind
+        && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+    {
+        events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+        pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
     }
 
     Ok(Some(events))
