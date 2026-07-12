@@ -45,6 +45,42 @@ pub struct NewDbOutgoingRequest {
     pub edu_json: Option<Vec<u8>>,
 }
 
+/// Last sequence number whose EDUs were successfully delivered to `server`,
+/// if a transaction containing EDUs has ever completed for it.
+pub async fn get_edu_cursor(server: &ServerName) -> DataResult<Option<i64>> {
+    outgoing_edu_cursors::table
+        .filter(outgoing_edu_cursors::server_id.eq(server))
+        .select(outgoing_edu_cursors::edu_sn)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Record that EDUs up to `edu_sn` have been delivered to `server`. The
+/// cursor never moves backwards, so concurrent instances cannot rewind each
+/// other and cause duplicate selection windows.
+pub async fn advance_edu_cursor(server: &ServerName, edu_sn: i64) -> DataResult<()> {
+    let now = UnixMillis::now().get() as i64;
+    diesel::insert_into(outgoing_edu_cursors::table)
+        .values((
+            outgoing_edu_cursors::server_id.eq(server),
+            outgoing_edu_cursors::edu_sn.eq(edu_sn),
+            outgoing_edu_cursors::updated_at.eq(now),
+        ))
+        .on_conflict(outgoing_edu_cursors::server_id)
+        .do_update()
+        .set((
+            outgoing_edu_cursors::edu_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "GREATEST(outgoing_edu_cursors.edu_sn, excluded.edu_sn)",
+            )),
+            outgoing_edu_cursors::updated_at.eq(now),
+        ))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 /// Get all known federation destinations
 pub async fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
     let servers: Vec<OwnedServerName> = outgoing_requests::table

@@ -504,6 +504,17 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    outgoing_edu_cursors (server_id) {
+        server_id -> Text,
+        edu_sn -> Int8,
+        updated_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     outgoing_requests (id) {
         id -> Int8,
         kind -> Text,
@@ -1180,6 +1191,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     media_metadatas,
     media_thumbnails,
     media_url_previews,
+    outgoing_edu_cursors,
     outgoing_requests,
     room_aliases,
     room_joined_servers,
