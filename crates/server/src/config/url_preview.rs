@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::macros::config_example;
 
 #[config_example(filename = "palpo-example.toml", section = "url_preview")]
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UrlPreviewConfig {
     /// Optional IP address or network interface-name to bind as the source of
     /// URL preview requests. If not set, it will not bind to a specific
@@ -82,6 +82,14 @@ pub struct UrlPreviewConfig {
     #[serde(default = "default_max_spider_size")]
     pub max_spider_size: usize,
 
+    /// Maximum number of bytes accepted for an image fetched while building a
+    /// URL preview. `Content-Length` is checked early and the response stream
+    /// is also counted so chunked responses cannot bypass this limit.
+    ///
+    /// default: 10000000
+    #[serde(default = "default_max_image_size")]
+    pub max_image_size: usize,
+
     /// Option to decide whether you would like to run the domain allowlist
     /// checks (contains and explicit) on the root domain or not. Does not apply
     /// to URL contains allowlist. Defaults to false.
@@ -94,6 +102,21 @@ pub struct UrlPreviewConfig {
     /// subdomains under a root domain.
     #[serde(default)]
     pub check_root_domain: bool,
+}
+
+impl Default for UrlPreviewConfig {
+    fn default() -> Self {
+        Self {
+            bound_interface: None,
+            domain_contains_allowlist: Vec::new(),
+            domain_explicit_allowlist: Vec::new(),
+            domain_explicit_denylist: Vec::new(),
+            url_contains_allowlist: Vec::new(),
+            max_spider_size: default_max_spider_size(),
+            max_image_size: default_max_image_size(),
+            check_root_domain: false,
+        }
+    }
 }
 
 impl UrlPreviewConfig {
@@ -126,4 +149,20 @@ impl UrlPreviewConfig {
 
 fn default_max_spider_size() -> usize {
     256_000 // 256KB
+}
+
+fn default_max_image_size() -> usize {
+    10_000_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_size_limits_are_nonzero() {
+        let config = UrlPreviewConfig::default();
+        assert_eq!(config.max_spider_size, 256_000);
+        assert_eq!(config.max_image_size, 10_000_000);
+    }
 }

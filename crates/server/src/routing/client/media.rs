@@ -330,7 +330,9 @@ pub async fn get_thumbnail(
         let response =
             crate::sending::send_federation_request(&args.server_name, request, None).await?;
         *res.headers_mut() = response.headers().clone();
-        let bytes = response.bytes().await?;
+        let bytes =
+            utils::read_response_limited(response, config::get().media.max_remote_thumbnail_size)
+                .await?;
 
         // Cache the remote thumbnail via storage backend
         let cache_key = media_storage_key(
