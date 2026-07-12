@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 use std::string::FromUtf8Error;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use salvo::http::{Method, StatusCode, StatusError};
@@ -117,6 +118,36 @@ impl AppError {
     }
 }
 
+/// Best-effort removal of `access_token` values from text destined for logs.
+/// Reqwest errors embed the full request URL, which for appservice requests
+/// carries the homeserver token as a query parameter.
+fn redact_access_tokens(text: &str) -> Cow<'_, str> {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r#"(?i)(access_token=)[^&\s'"]+"#).expect("static regex is valid")
+    });
+    re.replace_all(text, "${1}[redacted]")
+}
+
+/// The message returned to clients for errors without a specific Matrix
+/// mapping. Debug builds return the underlying error text for diagnosability;
+/// release builds return a stable category message so internal paths, object
+/// store errors and upstream details stay in the server log only.
+fn unhandled_client_message(e: &AppError, debug: bool) -> String {
+    if debug {
+        // Redact token-bearing URLs (reqwest Display embeds the request URL)
+        // even in debug builds.
+        return redact_access_tokens(&e.to_string()).into_owned();
+    }
+    match e {
+        AppError::Reqwest(_) | AppError::ReqwestMiddleware(_) | AppError::Send(_) => {
+            "failed to reach remote server".to_owned()
+        }
+        AppError::Pool(_) | AppError::OpenDal(_) => "internal storage error".to_owned(),
+        _ => "internal server error".to_owned(),
+    }
+}
+
 fn expose_diesel_not_found(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::DELETE)
 }
@@ -153,7 +184,13 @@ impl Writer for AppError {
             Self::Public(msg) => MatrixError::unknown(msg),
             Self::Internal(msg) => {
                 error!(error = %msg, "internal error");
-                MatrixError::unknown(format!("internal error: {msg}"))
+                if cfg!(debug_assertions) {
+                    MatrixError::unknown(format!("internal error: {msg}"))
+                } else {
+                    // Internal messages may carry paths, queries or upstream
+                    // details; production clients get a stable message.
+                    MatrixError::unknown("internal server error")
+                }
             }
             // Self::LocalUnableProcess(msg) => MatrixError::unrecognized(msg),
             Self::Matrix(e) => e,
@@ -216,10 +253,15 @@ impl Writer for AppError {
             }
             e => {
                 // These are unexpected errors that aren't mapped to a specific Matrix
-                // error. Log the full detail at error level and surface the underlying
-                // message to the caller instead of an opaque "unknown error happened",
-                // so federation/transport/internal failures are actually diagnosable.
-                tracing::error!(error = ?e, error_display = %e, "unhandled application error");
+                // error. Log the full detail at error level (with token-bearing URLs
+                // redacted); what reaches the client is decided by
+                // `unhandled_client_message` — full text in debug builds, a stable
+                // category message in release builds.
+                tracing::error!(
+                    error = %redact_access_tokens(&format!("{e:?}")),
+                    error_display = %redact_access_tokens(&e.to_string()),
+                    "unhandled application error"
+                );
                 let is_upstream = matches!(
                     e,
                     Self::Reqwest(_)
@@ -228,14 +270,7 @@ impl Writer for AppError {
                         | Self::Send(_)
                         | Self::OpenDal(_)
                 );
-                // A reqwest error's Display embeds the request URL, which for appservice
-                // requests carries the homeserver `access_token` query parameter. Strip
-                // the URL before it can reach a client; the full value is still logged
-                // above via `tracing::error!`.
-                let message = match e {
-                    Self::Reqwest(err) => format!("reqwest error: {}", err.without_url()),
-                    other => other.to_string(),
-                };
+                let message = unhandled_client_message(&e, cfg!(debug_assertions));
                 let mut matrix = MatrixError::unknown(message);
                 if is_upstream {
                     // Failures talking to an upstream (federation peer, object store,
@@ -274,6 +309,34 @@ mod tests {
     use salvo::http::Method;
 
     use super::*;
+
+    #[test]
+    fn access_tokens_are_redacted_from_log_text() {
+        assert_eq!(
+            redact_access_tokens(
+                "error sending request for url \
+                 (https://as.example/txn/1?access_token=secret123&ts=5): timed out"
+            ),
+            "error sending request for url \
+             (https://as.example/txn/1?access_token=[redacted]&ts=5): timed out"
+        );
+        assert_eq!(
+            redact_access_tokens("Access_Token=AbC.123-x\" and more"),
+            "Access_Token=[redacted]\" and more"
+        );
+        assert_eq!(redact_access_tokens("no tokens here"), "no tokens here");
+    }
+
+    #[test]
+    fn release_client_message_is_generic() {
+        let io_error = AppError::Io(io::Error::other("/var/lib/palpo/secret-path: boom"));
+        assert_eq!(
+            unhandled_client_message(&io_error, false),
+            "internal server error"
+        );
+        // Debug builds keep the underlying detail for diagnosability.
+        assert!(unhandled_client_message(&io_error, true).contains("secret-path"));
+    }
 
     #[tokio::test]
     async fn get_not_found_stays_404() {
