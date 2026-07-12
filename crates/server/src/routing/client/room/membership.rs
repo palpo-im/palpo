@@ -33,6 +33,17 @@ use crate::{
     json_ok, room, sending, utils,
 };
 
+fn insert_joined_member(
+    joined: &mut BTreeMap<OwnedUserId, RoomMember>,
+    user_id: OwnedUserId,
+    profile: Option<DbProfile>,
+) {
+    let member = profile
+        .map(|profile| RoomMember::new(profile.display_name, profile.avatar_url))
+        .unwrap_or_default();
+    joined.insert(user_id, member);
+}
+
 /// #POST /_matrix/client/r0/rooms/{room_id}/members
 /// Lists all joined users in a room.
 ///
@@ -185,17 +196,28 @@ pub(super) async fn joined_members(
 
     let mut joined = BTreeMap::new();
     for user_id in crate::room::joined_users(&room_id, None).await? {
-        if let Some(DbProfile {
-            display_name,
-            avatar_url,
-            ..
-        }) = data::user::get_profile(&user_id, None).await?
-        {
-            joined.insert(user_id, RoomMember::new(display_name, avatar_url));
-        }
+        let profile = data::user::get_profile(&user_id, None).await?;
+        insert_joined_member(&mut joined, user_id, profile);
     }
 
     json_ok(JoinedMembersResBody { joined })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joined_member_without_profile_is_not_omitted() {
+        let user_id = UserId::parse("@bot:example.org").unwrap();
+        let mut joined = BTreeMap::new();
+
+        insert_joined_member(&mut joined, user_id.clone(), None);
+
+        let member = joined.get(&user_id).expect("joined user must be present");
+        assert_eq!(member.display_name, None);
+        assert_eq!(member.avatar_url, None);
+    }
 }
 
 /// #POST /_matrix/client/r0/joined_rooms
@@ -580,8 +602,7 @@ pub(super) async fn ban_user(
         &room_id,
         &crate::room::get_version(&room_id).await?,
         &state_lock,
-    )
-    .await?;
+    ).await?;
     if let Err(e) = sending::send_pdu_room(
         &room_id,
         &pdu.event_id,
@@ -614,7 +635,8 @@ pub(super) async fn unban_user(
         &StateEventType::RoomMember,
         body.user_id.as_ref(),
         None,
-    ).await?;
+    )
+    .await?;
 
     if event.membership != MembershipState::Ban {
         return Err(MatrixError::bad_state(format!(
