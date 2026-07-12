@@ -37,6 +37,9 @@ async fn process() -> AppResult<()> {
         .await;
     let mut futures = FuturesUnordered::new();
     let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
+    // EDU selection windows of in-flight transactions; persisted as the
+    // destination's cursor once the transaction succeeds.
+    let mut pending_edu_cursors = HashMap::<OutgoingKind, Seqnum>::new();
 
     // Retry requests we could not finish yet
     let mut initial_transactions = HashMap::<OutgoingKind, Vec<SendingEventType>>::new();
@@ -74,6 +77,15 @@ async fn process() -> AppResult<()> {
                     Ok(outgoing_kind) => {
                         super::delete_all_active_requests_for(&outgoing_kind).await?;
 
+                        // The transaction reached the destination; persist its EDU
+                        // window so the next selection resumes after it.
+                        if let Some(edu_sn) = pending_edu_cursors.remove(&outgoing_kind)
+                            && let OutgoingKind::Normal(server_name) = &outgoing_kind
+                            && let Err(e) = data::sending::advance_edu_cursor(server_name, edu_sn).await
+                        {
+                            error!(?server_name, error = ?e, "failed to advance edu cursor");
+                        }
+
                         // Find events that have been added since starting the last request
                         let new_events = super::queued_requests(&outgoing_kind).await.unwrap_or_default().into_iter().take(30).collect::<Vec<_>>();
 
@@ -81,18 +93,27 @@ async fn process() -> AppResult<()> {
                             // Insert pdus we found
                             super::mark_as_active(&new_events).await?;
 
-                            futures.push(
-                                super::send_events(
-                                    outgoing_kind.clone(),
-                                    new_events.into_iter().map(|(_, event)| event).collect(),
-                                )
-                            );
+                            let mut events = new_events.into_iter().map(|(_, event)| event).collect::<Vec<_>>();
+                            // Piggyback EDUs that accumulated while the previous
+                            // transaction was in flight, so a busy destination
+                            // does not starve presence/receipt/device-list updates.
+                            if let OutgoingKind::Normal(server_name) = &outgoing_kind
+                                && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+                            {
+                                events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+                                pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                            }
+
+                            futures.push(super::send_events(outgoing_kind.clone(), events));
                         } else {
                             current_transaction_status.remove(&outgoing_kind);
                         }
                     }
                     Err((outgoing_kind, event)) => {
                         error!("failed to send event: {event:?}  outgoing_kind:{outgoing_kind:?}");
+                        // Do not advance the cursor: the same EDU window is
+                        // re-selected once the destination is reachable again.
+                        pending_edu_cursors.remove(&outgoing_kind);
                         current_transaction_status.entry(outgoing_kind.clone()).and_modify(|e| *e = match e {
                             TransactionStatus::Running => {
                                 TransactionStatus::Failed(1, Instant::now())
@@ -117,6 +138,7 @@ async fn process() -> AppResult<()> {
                     &outgoing_kind,
                     vec![(id, event)],
                     &mut current_transaction_status,
+                    &mut pending_edu_cursors,
                 ).await {
                     futures.push(super::send_events(outgoing_kind, events));
                 }
@@ -201,6 +223,7 @@ async fn select_events(
     outgoing_kind: &OutgoingKind,
     new_events: Vec<(i64, SendingEventType)>, // Events we want to send: event and full key
     current_transaction_status: &mut HashMap<OutgoingKind, TransactionStatus>,
+    pending_edu_cursors: &mut HashMap<OutgoingKind, Seqnum>,
 ) -> AppResult<Option<Vec<SendingEventType>>> {
     let mut retry = false;
     let mut allow = true;
@@ -244,9 +267,13 @@ async fn select_events(
         }
 
         if let OutgoingKind::Normal(server_name) = outgoing_kind
-            && let Ok((select_edus, _last_count)) = select_edus(server_name).await
+            && let Ok((select_edus, last_sn)) = select_edus(server_name).await
         {
             events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+            // Remember the window we selected; the cursor is only persisted
+            // once the transaction succeeds, so a failed send re-selects the
+            // same EDUs on the next attempt.
+            pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
         }
     }
 
@@ -468,12 +495,22 @@ async fn select_edus_presence(
     Ok(Some(buf))
 }
 
+/// The lower bound (inclusive) of the next EDU selection window.
+///
+/// A destination with a persisted cursor resumes right after it; a
+/// destination we have never completed an EDU transaction for starts at the
+/// current sequence number so it is not flooded with historical updates.
+fn edu_since_sn(cursor: Option<Seqnum>, max_edu_sn: Seqnum) -> Seqnum {
+    cursor.map_or(max_edu_sn, |c| c + 1)
+}
+
 #[tracing::instrument(skip(server_name))]
 pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
     let max_edu_sn = data::curr_sn().await?;
     let conf = crate::config::get();
 
-    let since_sn = data::curr_sn().await?;
+    let cursor = data::sending::get_edu_cursor(server_name).await?;
+    let since_sn = edu_since_sn(cursor, max_edu_sn);
 
     let events_len = AtomicUsize::default();
     let device_changes =
@@ -498,6 +535,16 @@ pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edu_selection_resumes_after_cursor_and_starts_fresh_without_one() {
+        // Selection queries are `occur_sn >= since_sn`, so resuming right
+        // after the cursor neither re-sends nor skips updates.
+        assert_eq!(edu_since_sn(Some(41), 100), 42);
+        // No cursor yet: start at the current sequence number instead of
+        // replaying history to a destination we have never sent EDUs to.
+        assert_eq!(edu_since_sn(None, 100), 100);
+    }
 
     #[test]
     fn retry_backoff_grows_quadratically_and_caps_at_one_day() {
