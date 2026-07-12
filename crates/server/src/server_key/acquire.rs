@@ -177,7 +177,9 @@ async fn acquire_origin(
                 "received server_keys"
             );
 
-            let _ = add_signing_keys(server_keys.clone());
+            if let Err(e) = add_signing_keys(server_keys.clone()).await {
+                error!(?origin, "failed to persist fetched signing keys: {e}");
+            }
             key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
         }
     }
@@ -217,7 +219,9 @@ where
 
 async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKeys) {
     let server = &server_keys.server_name;
-    let _ = add_signing_keys(server_keys.clone());
+    if let Err(e) = add_signing_keys(server_keys.clone()).await {
+        error!(?server, "failed to persist notary signing keys: {e}");
+    }
 
     if let Some(key_ids) = missing.get_mut(server) {
         key_ids.retain(|key_id| key_exists(&server_keys, key_id));
@@ -228,7 +232,7 @@ async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKe
 }
 
 fn keys_count(batch: &Batch) -> usize {
-    batch.iter().flat_map(|(_, key_ids)| key_ids.iter()).count()
+    batch.values().flat_map(|key_ids| key_ids.iter()).count()
 }
 
 #[cfg(test)]

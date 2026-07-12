@@ -18,10 +18,12 @@ use crate::{
 
 // Make a user leave all their joined rooms
 pub async fn leave_all_rooms(user_id: &UserId) -> AppResult<()> {
-    let all_room_ids = data::user::joined_rooms(user_id).await?
+    let all_room_ids = data::user::joined_rooms(user_id)
+        .await?
         .into_iter()
         .chain(
-            data::user::invited_rooms(user_id, 0).await?
+            data::user::invited_rooms(user_id, 0)
+                .await?
                 .into_iter()
                 .map(|t| t.0),
         )
@@ -61,7 +63,8 @@ pub async fn leave_room(
                 MembershipState::Leave,
                 user_id,
                 last_state,
-            ).await?;
+            )
+            .await?;
             Ok(())
         }
         Err(e) => {
@@ -105,15 +108,18 @@ async fn leave_room_local(
         &room::lock_state(room_id).await,
     )
     .await?;
-    if just_invited && member_event.sender.server_name() != config::server_name() {
-        let _ = crate::sending::send_pdu_room(
-            room_id,
+    // `build_and_append_pdu` already delivered the leave event to all
+    // participating servers. For a rejected invite the inviting server may
+    // not be among them (e.g. an out-of-band invite), so notify it explicitly.
+    if just_invited
+        && member_event.sender.server_name() != config::server_name()
+        && let Err(e) = crate::sending::send_pdu_servers(
+            std::iter::once(member_event.sender.server_name().to_owned()),
             &pdu.event_id,
-            &[member_event.sender.server_name().to_owned()],
-            &[],
-        );
-    } else {
-        let _ = crate::sending::send_pdu_room(room_id, &pdu.event_id, &[], &[]);
+        )
+        .await
+    {
+        warn!("failed to send leave event to inviting server: {e}");
     }
     Ok((pdu.event_id.clone(), pdu.event_sn))
 }
@@ -124,7 +130,8 @@ async fn leave_room_remote(
 ) -> AppResult<(OwnedEventId, Seqnum)> {
     let mut make_leave_response_and_server =
         Err(AppError::public("no server available to assist in leaving"));
-    let invite_state = state::get_user_state(user_id, room_id).await?
+    let invite_state = state::get_user_state(user_id, room_id)
+        .await?
         .ok_or(MatrixError::bad_state("user is not invited"))?;
 
     let servers: HashSet<_> = invite_state
@@ -224,7 +231,8 @@ async fn leave_room_remote(
         is_rejected: false,
         rejection_reason: None,
     }
-    .save().await?;
+    .save()
+    .await?;
 
     DbEventData {
         event_id: event_id.clone(),
@@ -234,7 +242,8 @@ async fn leave_room_remote(
         json_data: serde_json::to_value(&leave_event_stub)?,
         format_version: None,
     }
-    .save().await?;
+    .save()
+    .await?;
     let parsed_leave_pdu =
         PduEvent::from_canonical_object(room_id, &event_id, leave_event_stub.clone()).map_err(
             |e| {
@@ -265,9 +274,9 @@ async fn leave_room_remote(
             room_id: room_id.to_owned(),
             event_id: event_id.clone(),
         },
-        SendLeaveReqBody(crate::sending::convert_to_outgoing_federation_event(
-            leave_event.clone(),
-        ).await),
+        SendLeaveReqBody(
+            crate::sending::convert_to_outgoing_federation_event(leave_event.clone()).await,
+        ),
     )?
     .into_inner();
     crate::sending::send_federation_request(&remote_server, request, None).await?;

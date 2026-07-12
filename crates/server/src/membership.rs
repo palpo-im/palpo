@@ -115,8 +115,7 @@ pub async fn update_membership(
 ) -> AppResult<()> {
     let conf = crate::config::get();
     // Keep track what remote users exist by adding them as "deactivated" users
-    if user_id.server_name() != conf.server_name
-        && !crate::data::user::user_exists(user_id).await?
+    if user_id.server_name() != conf.server_name && !crate::data::user::user_exists(user_id).await?
     {
         crate::user::create_user(user_id, None).await?;
         // TODO: display_name, avatar url
@@ -257,11 +256,11 @@ pub async fn update_membership(
             if let Some(last_state) = &last_state {
                 for event in last_state {
                     if let Ok(event) = event.deserialize() {
-                        let _ = ensure_field(&event.event_type(), event.state_key());
+                        let _ = ensure_field(&event.event_type(), event.state_key()).await;
                     }
                 }
             }
-            let _ = ensure_field(&StateEventType::RoomMember, user_id.as_str());
+            let _ = ensure_field(&StateEventType::RoomMember, user_id.as_str()).await;
             connect()
                 .await?
                 .transaction::<_, AppError, _>(async |conn| {

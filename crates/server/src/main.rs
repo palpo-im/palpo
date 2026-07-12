@@ -207,7 +207,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     crate::storage::init(&conf.storage).expect("Failed to initialize storage backend");
     // Force-load appservice registrations during startup so database rows
     // are up-to-date with the configured registration directory.
-    let _ = crate::appservices();
+    let _ = crate::appservices().await;
 
     if args.console {
         tracing::info!("starting admin console...");
