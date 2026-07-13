@@ -51,7 +51,8 @@ pub(super) async fn get_relation_by_rel_type(
         args.limit,
         args.recurse,
         args.dir,
-    ).await?;
+    )
+    .await?;
 
     json_ok(body)
 }
@@ -76,7 +77,8 @@ pub(super) async fn get_relation_by_rel_type_and_event_type(
         args.limit,
         args.recurse,
         args.dir,
-    ).await?;
+    )
+    .await?;
 
     json_ok(body)
 }

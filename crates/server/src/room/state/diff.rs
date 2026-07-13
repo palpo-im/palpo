@@ -5,9 +5,8 @@ use std::sync::Arc;
 
 use super::FrameInfo;
 use crate::core::{OwnedEventId, RoomId, Seqnum};
-use crate::data;
 use crate::data::room::DbRoomStateDelta;
-use crate::{AppResult, utils};
+use crate::{AppResult, data, utils};
 
 pub struct StateDiff {
     pub parent_id: Option<i64>,

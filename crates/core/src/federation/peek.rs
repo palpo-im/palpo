@@ -21,7 +21,10 @@ use crate::serde::RawJsonValue;
 
 /// Build the outgoing request for a federated room peek.
 pub fn peek_request(origin: &str, args: PeekReqArgs) -> SendResult<SendRequest> {
-    let mut url = Url::parse(&format!("{origin}/_matrix/federation/v1/peek/{}", args.room_id))?;
+    let mut url = Url::parse(&format!(
+        "{origin}/_matrix/federation/v1/peek/{}",
+        args.room_id
+    ))?;
     url.query_pairs_mut()
         .append_pair("limit", &args.limit.to_string());
     Ok(crate::sending::get(url))
@@ -143,4 +146,3 @@ pub struct PeekStartResBody {
     /// resident server will drop the subscription.
     pub renewal_interval: u64,
 }
-

@@ -1,7 +1,6 @@
-use crate::AppResult;
 use crate::core::events::StateEventType;
-use crate::data;
 pub use crate::data::room::DbRoomStateField;
+use crate::{AppResult, data};
 
 pub async fn get_field(field_id: i64) -> AppResult<DbRoomStateField> {
     Ok(data::room::get_state_field(field_id).await?)

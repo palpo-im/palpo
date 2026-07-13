@@ -76,61 +76,55 @@ pub async fn purge_room_history(room_id: &RoomId, before_ts: i64) -> DataResult<
     conn.transaction::<_, DieselError, _>(async |conn| {
         // Delete from related tables (no foreign key constraints, order doesn't matter)
         for chunk in event_ids.chunks(500) {
-                diesel::delete(event_datas::table.filter(event_datas::event_id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-                diesel::delete(event_edges::table.filter(event_edges::event_id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-                diesel::delete(
-                    event_forward_extremities::table
-                        .filter(event_forward_extremities::event_id.eq_any(chunk)),
-                )
+            diesel::delete(event_datas::table.filter(event_datas::event_id.eq_any(chunk)))
                 .execute(conn)
                 .await?;
-                diesel::delete(
-                    event_backward_extremities::table
-                        .filter(event_backward_extremities::event_id.eq_any(chunk)),
-                )
+            diesel::delete(event_edges::table.filter(event_edges::event_id.eq_any(chunk)))
                 .execute(conn)
                 .await?;
-                diesel::delete(
-                    event_relations::table.filter(event_relations::event_id.eq_any(chunk)),
-                )
+            diesel::delete(
+                event_forward_extremities::table
+                    .filter(event_forward_extremities::event_id.eq_any(chunk)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::delete(
+                event_backward_extremities::table
+                    .filter(event_backward_extremities::event_id.eq_any(chunk)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::delete(event_relations::table.filter(event_relations::event_id.eq_any(chunk)))
                 .execute(conn)
                 .await?;
-                diesel::delete(
-                    event_receipts::table.filter(event_receipts::event_id.eq_any(chunk)),
-                )
+            diesel::delete(event_receipts::table.filter(event_receipts::event_id.eq_any(chunk)))
                 .execute(conn)
                 .await?;
-                diesel::delete(
-                    event_searches::table.filter(event_searches::event_id.eq_any(chunk)),
-                )
+            diesel::delete(event_searches::table.filter(event_searches::event_id.eq_any(chunk)))
                 .execute(conn)
                 .await?;
-                diesel::delete(
-                    event_push_actions::table.filter(event_push_actions::event_id.eq_any(chunk)),
-                )
+            diesel::delete(
+                event_push_actions::table.filter(event_push_actions::event_id.eq_any(chunk)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::delete(event_points::table.filter(event_points::event_id.eq_any(chunk)))
                 .execute(conn)
                 .await?;
-                diesel::delete(event_points::table.filter(event_points::event_id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-                diesel::delete(event_missings::table.filter(event_missings::event_id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-                diesel::delete(threads::table.filter(threads::event_id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-                diesel::delete(timeline_gaps::table.filter(timeline_gaps::event_id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-                // Delete the events themselves
-                diesel::delete(events::table.filter(events::id.eq_any(chunk)))
-                    .execute(conn)
-                    .await?;
-            }
+            diesel::delete(event_missings::table.filter(event_missings::event_id.eq_any(chunk)))
+                .execute(conn)
+                .await?;
+            diesel::delete(threads::table.filter(threads::event_id.eq_any(chunk)))
+                .execute(conn)
+                .await?;
+            diesel::delete(timeline_gaps::table.filter(timeline_gaps::event_id.eq_any(chunk)))
+                .execute(conn)
+                .await?;
+            // Delete the events themselves
+            diesel::delete(events::table.filter(events::id.eq_any(chunk)))
+                .execute(conn)
+                .await?;
+        }
         Ok(())
     })
     .await?;

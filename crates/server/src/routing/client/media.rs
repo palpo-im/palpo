@@ -52,7 +52,9 @@ pub async fn get_content(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
-    if let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id).await? {
+    if let Some(metadata) =
+        crate::data::media::get_metadata(&args.server_name, &args.media_id).await?
+    {
         let content_type = metadata
             .content_type
             .as_deref()
@@ -104,7 +106,8 @@ pub async fn get_content_with_filename(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
-    let Some(metadata) = crate::data::media::get_metadata(&args.server_name, &args.media_id).await?
+    let Some(metadata) =
+        crate::data::media::get_metadata(&args.server_name, &args.media_id).await?
     else {
         return Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into());
     };

@@ -235,7 +235,9 @@ pub fn server_user_id() -> &'static UserId {
 }
 
 pub async fn server_user() -> crate::data::user::DbUser {
-    crate::data::user::get_user(server_user_id()).await.expect("server user should exist in the database")
+    crate::data::user::get_user(server_user_id())
+        .await
+        .expect("server user should exist in the database")
 }
 
 pub fn server_name() -> &'static ServerName {

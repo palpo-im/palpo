@@ -7,7 +7,9 @@ use salvo::prelude::*;
 use crate::core::federation::query::{EduTypesResBody, ProfileResBody, RoomInfoResBody};
 use crate::core::identifiers::*;
 use crate::core::profile::ProfileFieldValue;
-use crate::{AuthArgs, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, config, data, json_ok};
+use crate::{
+    AuthArgs, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, config, data, json_ok,
+};
 
 pub fn router() -> Router {
     Router::with_path("query")

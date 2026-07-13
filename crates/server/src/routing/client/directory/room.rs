@@ -52,10 +52,7 @@ pub(super) async fn set_visibility(
         .await?;
 
     let visibility_is_public = body.visibility == Visibility::Public;
-    if visibility_is_public
-        && config::get().lockdown_public_room_directory
-        && !authed.is_admin()
-    {
+    if visibility_is_public && config::get().lockdown_public_room_directory && !authed.is_admin() {
         return Err(MatrixError::forbidden(
             "Only server admins can publish rooms to the room directory.",
             None,

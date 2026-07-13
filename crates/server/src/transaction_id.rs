@@ -1,7 +1,6 @@
-use crate::AppResult;
 use crate::core::identifiers::*;
 use crate::core::{DeviceId, TransactionId, UserId};
-use crate::data;
+use crate::{AppResult, data};
 
 pub async fn add_txn_id(
     txn_id: &TransactionId,

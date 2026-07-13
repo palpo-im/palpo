@@ -49,7 +49,8 @@ pub async fn invite_user(
                     inviter_id,
                     room_id,
                     crate::room::get_version(room_id)
-                        .await.as_ref()
+                        .await
+                        .as_ref()
                         .unwrap_or(&conf.default_room_version),
                     &state_lock,
                 )
@@ -70,7 +71,8 @@ pub async fn invite_user(
             MembershipState::Invite,
             inviter_id,
             Some(invite_room_state.clone()),
-        ).await?;
+        )
+        .await?;
 
         let invite_request = crate::core::federation::membership::invite_user_request_v2(
             &invitee_id.server_name().origin().await,
@@ -144,7 +146,8 @@ pub async fn invite_user(
             &event_id,
             &[invitee_id.server_name().to_owned()],
             &[],
-        ).await;
+        )
+        .await;
     }
 
     timeline::build_and_append_pdu(

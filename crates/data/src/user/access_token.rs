@@ -153,10 +153,7 @@ pub fn invalidate_user(user_id: &UserId) {
 ///
 /// Returns `Ok(None)` when `token` is not a known user access token, so the
 /// caller can fall through to other schemes (e.g. appservice tokens).
-pub async fn authenticate_token(
-    token: &str,
-    cache_ttl: Duration,
-) -> DataResult<Option<TokenAuth>> {
+pub async fn authenticate_token(token: &str, cache_ttl: Duration) -> DataResult<Option<TokenAuth>> {
     let caching = !cache_ttl.is_zero();
     if caching && let Some(hit) = cache_get(token, cache_ttl) {
         return Ok(Some(hit));

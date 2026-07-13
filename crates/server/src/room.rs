@@ -68,10 +68,7 @@ pub async fn create_room(new_room: NewDbRoom) -> AppResult<OwnedRoomId> {
     Ok(new_room.id)
 }
 
-pub async fn ensure_room(
-    id: &RoomId,
-    room_version_id: &RoomVersionId,
-) -> AppResult<OwnedRoomId> {
+pub async fn ensure_room(id: &RoomId, room_version_id: &RoomVersionId) -> AppResult<OwnedRoomId> {
     if room_exists(id).await? {
         Ok(id.to_owned())
     } else {
@@ -89,8 +86,11 @@ pub async fn ensure_room(
 
 /// Checks if a room exists.
 pub async fn room_exists(room_id: &RoomId) -> AppResult<bool> {
-    diesel_exists!(rooms::table.filter(rooms::id.eq(room_id)), &mut connect().await?)
-        .map_err(Into::into)
+    diesel_exists!(
+        rooms::table.filter(rooms::id.eq(room_id)),
+        &mut connect().await?
+    )
+    .map_err(Into::into)
 }
 
 pub async fn get_room_sn(room_id: &RoomId) -> AppResult<Seqnum> {
@@ -113,12 +113,9 @@ pub async fn get_version(room_id: &RoomId) -> AppResult<RoomVersionId> {
     {
         return Ok(RoomVersionId::try_from(&*room_version)?);
     }
-    let create_event_content = get_state_content::<RoomCreateEventContent>(
-        room_id,
-        &StateEventType::RoomCreate,
-        "",
-        None,
-    ).await?;
+    let create_event_content =
+        get_state_content::<RoomCreateEventContent>(room_id, &StateEventType::RoomCreate, "", None)
+            .await?;
     Ok(create_event_content.room_version)
 }
 
@@ -413,16 +410,10 @@ pub async fn invited_member_count(room_id: &RoomId) -> AppResult<u64> {
         .map_err(Into::into)
 }
 
-pub async fn joined_users(
-    room_id: &RoomId,
-    until_sn: Option<i64>,
-) -> AppResult<Vec<OwnedUserId>> {
+pub async fn joined_users(room_id: &RoomId, until_sn: Option<i64>) -> AppResult<Vec<OwnedUserId>> {
     get_state_users(room_id, &MembershipState::Join, until_sn).await
 }
-pub async fn invited_users(
-    room_id: &RoomId,
-    until_sn: Option<i64>,
-) -> AppResult<Vec<OwnedUserId>> {
+pub async fn invited_users(room_id: &RoomId, until_sn: Option<i64>) -> AppResult<Vec<OwnedUserId>> {
     get_state_users(room_id, &MembershipState::Invite, until_sn).await
 }
 pub async fn active_local_users_in_room(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {

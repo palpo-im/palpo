@@ -5,10 +5,9 @@ use std::collections::BTreeMap;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::PrivOwnedStr;
 use crate::encryption::{DeviceKeys, OneTimeKey};
 use crate::serde::StringEnum;
-use crate::{OwnedDeviceId, OwnedDeviceKeyId};
+use crate::{OwnedDeviceId, OwnedDeviceKeyId, PrivOwnedStr};
 
 /// Data for a dehydrated device.
 #[derive(Clone, Debug, Deserialize, Serialize)]

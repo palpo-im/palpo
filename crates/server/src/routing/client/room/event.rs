@@ -276,7 +276,9 @@ pub(super) async fn get_context(
             .await
             .unwrap_or_default(),
     };
-    let state_ids = state::get_full_state_ids(frame_id).await.unwrap_or_default();
+    let state_ids = state::get_full_state_ids(frame_id)
+        .await
+        .unwrap_or_default();
     let end_token = events_after
         .last()
         .map(|(_, e)| e.live_token())

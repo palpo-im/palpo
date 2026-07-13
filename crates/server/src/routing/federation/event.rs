@@ -41,10 +41,12 @@ async fn get_event(
         return Err(MatrixError::not_found("event not found").into());
     }
 
-    let event_json = timeline::get_pdu_json(&args.event_id).await?.ok_or_else(|| {
-        warn!("event not found, event id: {:?}", &args.event_id);
-        MatrixError::not_found("event not found")
-    })?;
+    let event_json = timeline::get_pdu_json(&args.event_id)
+        .await?
+        .ok_or_else(|| {
+            warn!("event not found, event id: {:?}", &args.event_id);
+            MatrixError::not_found("event not found")
+        })?;
 
     // Look up the room_id from the events table column rather than from the
     // event JSON. v12 events do not include `room_id` in their JSON content
@@ -71,10 +73,12 @@ async fn auth_chain(
     let origin = depot.origin()?;
     crate::federation::access_check(origin, &args.room_id, None).await?;
 
-    let event = timeline::get_pdu_json(&args.event_id).await?.ok_or_else(|| {
-        warn!("event not found, event id: {:?}", &args.event_id);
-        MatrixError::not_found("event not found")
-    })?;
+    let event = timeline::get_pdu_json(&args.event_id)
+        .await?
+        .ok_or_else(|| {
+            warn!("event not found, event id: {:?}", &args.event_id);
+            MatrixError::not_found("event not found")
+        })?;
 
     // For v12 rooms, the event JSON does not contain `room_id`. Fall back to
     // the events table column when the JSON field is missing.

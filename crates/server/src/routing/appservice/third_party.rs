@@ -26,7 +26,8 @@ async fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
     let appservices = crate::appservices();
     // Constant-time comparison; mirrors `routing/appservice.rs::verify_hs_token`.
     if appservices
-        .await.iter()
+        .await
+        .iter()
         .any(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
     {
         Ok(())

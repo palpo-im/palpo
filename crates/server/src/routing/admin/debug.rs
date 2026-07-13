@@ -69,7 +69,7 @@ pub struct TimeResponse {
 pub fn time() -> JsonResult<TimeResponse> {
     json_ok(TimeResponse {
         time: utils::time::format(SystemTime::now(), "%+"),
-        unix_millis: UnixMillis::now().get().into(),
+        unix_millis: UnixMillis::now().get(),
     })
 }
 
@@ -109,11 +109,7 @@ pub fn list_dependencies(names_only: QueryParam<bool, false>) -> JsonResult<Depe
             version: dep
                 .try_req()
                 .map_or_else(|_| "*".to_owned(), |req| req.to_string()),
-            features: dep
-                .req_features()
-                .into_iter()
-                .map(ToOwned::to_owned)
-                .collect(),
+            features: dep.req_features().iter().map(ToOwned::to_owned).collect(),
         })
         .collect();
 
@@ -387,12 +383,14 @@ pub struct PingResponse {
 pub async fn ping(server_name: PathParam<OwnedServerName>) -> JsonResult<PingResponse> {
     let server_name = server_name.into_inner();
     if config::get().enabled_federation().is_none() {
-        return Err(AppError::public("Federation is disabled on this homeserver").into());
+        return Err(AppError::public(
+            "Federation is disabled on this homeserver",
+        ));
     }
     if server_name == config::server_name() {
-        return Err(
-            AppError::public("Not allowed to send federation requests to ourselves").into(),
-        );
+        return Err(AppError::public(
+            "Not allowed to send federation requests to ourselves",
+        ));
     }
     reject_ip_literal(&server_name)?;
 
@@ -531,7 +529,8 @@ pub async fn force_device_list_updates() -> JsonResult<ForceDeviceListUpdatesRes
             let devices = crate::data::user::all_device_ids(user_id).await?;
             devices_seen = devices_seen.saturating_add(devices.len());
 
-            if let Some(device_id) = devices.get(0) {
+            // `as_slice()` avoids resolving to diesel's `RunQueryDsl::first`.
+            if let Some(device_id) = devices.as_slice().first() {
                 crate::user::mark_device_key_update(user_id, device_id).await
             } else {
                 crate::user::mark_signing_key_update(user_id).await

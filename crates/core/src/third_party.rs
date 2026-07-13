@@ -378,8 +378,8 @@ mod tests {
         let third_party_id = ThirdPartyIdentifier {
             address: "monkey@banana.island".into(),
             medium: Medium::Email,
-            validated_at: UnixMillis(1_535_176_800_000_u64.try_into().unwrap()),
-            added_at: UnixMillis(1_535_336_848_756_u64.try_into().unwrap()),
+            validated_at: UnixMillis(1_535_176_800_000_u64),
+            added_at: UnixMillis(1_535_336_848_756_u64),
         };
 
         let third_party_id_serialized = json!({

@@ -105,7 +105,9 @@ pub async fn list_destinations(
 ///
 /// Get details of a specific destination
 #[endpoint]
-pub async fn get_destination(destination: PathParam<OwnedServerName>) -> JsonResult<DestinationInfo> {
+pub async fn get_destination(
+    destination: PathParam<OwnedServerName>,
+) -> JsonResult<DestinationInfo> {
     let destination = destination.into_inner();
 
     // Check if destination is known

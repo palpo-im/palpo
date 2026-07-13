@@ -3,14 +3,13 @@ use std::collections::BTreeMap;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
-use crate::config;
 use crate::core::client::admin::{
     IsUserLockedResBody, IsUserSuspendedResBody, LockUserReqBody, LockUserResBody,
     SuspendUserReqBody, SuspendUserResBody,
 };
 use crate::core::client::server::{ConnectionInfo, DeviceInfo, SessionInfo, UserInfoResBody};
 use crate::core::identifiers::*;
-use crate::{AppResult, AuthArgs, DepotExt, JsonResult, MatrixError, data, json_ok};
+use crate::{AppResult, AuthArgs, DepotExt, JsonResult, MatrixError, config, data, json_ok};
 
 pub fn authed_router() -> Router {
     Router::new()
@@ -41,7 +40,9 @@ async fn whois(
     let target_user_id = user_id.into_inner();
 
     // Check if the user is an admin or requesting their own info
-    let is_admin = data::user::is_admin(authed.user_id()).await.unwrap_or(false);
+    let is_admin = data::user::is_admin(authed.user_id())
+        .await
+        .unwrap_or(false);
     if !is_admin && authed.user_id() != target_user_id {
         return Err(MatrixError::forbidden(
             "Only admins can query other users' information.",

@@ -26,7 +26,7 @@ use crate::{OwnedEventId, OwnedRoomId, OwnedServerName, UnixMillis};
 pub fn backfill_request(origin: &str, args: BackfillReqArgs) -> SendResult<SendRequest> {
     let mut url = Url::parse(&format!(
         "{origin}/_matrix/federation/v1/backfill/{}",
-        &args.room_id,
+        args.room_id,
     ))?;
     url.query_pairs_mut()
         .append_pair("limit", &args.limit.to_string());

@@ -73,17 +73,14 @@ async fn compute_active_rooms<'a>(
     }
 
     // Apply is_encrypted filter
-    match list.filters.as_ref().and_then(|f| f.is_encrypted) {
-        Some(want_encrypted) => {
-            let mut retained: Vec<&'a RoomId> = Vec::with_capacity(active_rooms.len());
-            for r in active_rooms {
-                if room::is_encrypted(r).await == want_encrypted {
-                    retained.push(r);
-                }
+    if let Some(want_encrypted) = list.filters.as_ref().and_then(|f| f.is_encrypted) {
+        let mut retained: Vec<&'a RoomId> = Vec::with_capacity(active_rooms.len());
+        for r in active_rooms {
+            if room::is_encrypted(r).await == want_encrypted {
+                retained.push(r);
             }
-            active_rooms = retained;
         }
-        None => {}
+        active_rooms = retained;
     }
 
     active_rooms
@@ -643,7 +640,9 @@ async fn process_rooms(
 
         let timeline = if all_invited_rooms.contains(&new_room_id) {
             // Invited rooms have empty timeline, only stripped state
-            invite_state = crate::room::user::invite_state(sender_id, room_id).await.ok();
+            invite_state = crate::room::user::invite_state(sender_id, room_id)
+                .await
+                .ok();
             TimelineData {
                 events: Default::default(),
                 limited: false,
@@ -696,7 +695,9 @@ async fn process_rooms(
                     > *room_since_sn;
 
             let private_read_event = if last_private_read_update {
-                crate::room::receipt::last_private_read(sender_id, room_id).await.ok()
+                crate::room::receipt::last_private_read(sender_id, room_id)
+                    .await
+                    .ok()
             } else {
                 None
             };
@@ -751,7 +752,7 @@ async fn process_rooms(
         let room_events: Vec<_> = timeline
             .events
             .iter()
-            .filter(|item| ignored_filter_with_ignored_users(*item, &ignored_users))
+            .filter(|item| ignored_filter_with_ignored_users(*item, ignored_users))
             .map(|(_, pdu)| pdu.to_sync_room_event())
             .collect();
 
@@ -788,13 +789,15 @@ async fn process_rooms(
                             &StateEventType::RoomMember,
                             sender.as_str(),
                             None,
-                        ).await && !is_required_state_send(
-                            sender_id.to_owned(),
-                            device_id.to_owned(),
-                            req_body.conn_id.clone(),
-                            pdu.event_sn,
                         )
                         .await
+                            && !is_required_state_send(
+                                sender_id.to_owned(),
+                                device_id.to_owned(),
+                                req_body.conn_id.clone(),
+                                pdu.event_sn,
+                            )
+                            .await
                         {
                             mark_required_state_sent(
                                 sender_id.to_owned(),
@@ -836,7 +839,8 @@ async fn process_rooms(
                 }
                 // $ME: substitute with the requester's user_id
                 (ref event_type, "$ME") => {
-                    if let Ok(pdu) = room::get_state(room_id, event_type, sender_id.as_str(), None).await
+                    if let Ok(pdu) =
+                        room::get_state(room_id, event_type, sender_id.as_str(), None).await
                         && !is_required_state_send(
                             sender_id.to_owned(),
                             device_id.to_owned(),
@@ -885,7 +889,8 @@ async fn process_rooms(
         let room_name = room::get_name(room_id).await.ok();
         let (heroes, hero_name, heroes_avatar) = if *include_heroes || room_name.is_none() {
             let mut heroes: Vec<sync_events::v5::SyncRoomHero> = Vec::new();
-            for user_id in room::get_members_limit(room_id, 6).await?
+            for user_id in room::get_members_limit(room_id, 6)
+                .await?
                 .into_iter()
                 .filter(|member| *member != sender_id)
                 .take(5)
@@ -958,13 +963,15 @@ async fn process_rooms(
                 limited: timeline.limited,
                 joined_count: Some(
                     crate::room::joined_member_count(room_id)
-                        .await.unwrap_or(0)
+                        .await
+                        .unwrap_or(0)
                         .try_into()
                         .unwrap_or(0),
                 ),
                 invited_count: Some(
                     crate::room::invited_member_count(room_id)
-                        .await.unwrap_or(0)
+                        .await
+                        .unwrap_or(0)
                         .try_into()
                         .unwrap_or(0),
                 ),
@@ -1046,10 +1053,14 @@ async fn collect_e2ee(
             error!("Room {room_id} has no state");
             continue;
         };
-        let since_frame_id = crate::event::get_last_frame_id(room_id, Some(since_sn)).await.ok();
+        let since_frame_id = crate::event::get_last_frame_id(room_id, Some(since_sn))
+            .await
+            .ok();
 
         let encrypted_room =
-            state::get_state(current_frame_id, &StateEventType::RoomEncryption, "").await.is_ok();
+            state::get_state(current_frame_id, &StateEventType::RoomEncryption, "")
+                .await
+                .is_ok();
 
         if let Some(since_frame_id) = since_frame_id {
             // // Skip if there are only timeline changes
@@ -1058,7 +1069,9 @@ async fn collect_e2ee(
             // }
 
             let since_encryption =
-                state::get_state(since_frame_id, &StateEventType::RoomEncryption, "").await.ok();
+                state::get_state(since_frame_id, &StateEventType::RoomEncryption, "")
+                    .await
+                    .ok();
 
             let joined_since_last_sync = room::user::join_sn(sender_id, room_id).await? >= since_sn;
 
@@ -1294,102 +1307,102 @@ pub async fn update_sync_request_with_cache(
         let mut guard = entry.lock().unwrap();
         let cached = &mut *guard;
 
-    for (list_id, list) in &mut req_body.lists {
-        if let Some(cached_list) = cached.lists.get(list_id) {
-            list_or_sticky(
-                &mut list.room_details.required_state,
-                &cached_list.room_details.required_state,
-            );
-            // some_or_sticky(&mut list.include_heroes, cached_list.include_heroes);
+        for (list_id, list) in &mut req_body.lists {
+            if let Some(cached_list) = cached.lists.get(list_id) {
+                list_or_sticky(
+                    &mut list.room_details.required_state,
+                    &cached_list.room_details.required_state,
+                );
+                // some_or_sticky(&mut list.include_heroes, cached_list.include_heroes);
 
-            match (&mut list.filters, cached_list.filters.clone()) {
-                (Some(filters), Some(cached_filters)) => {
-                    some_or_sticky(&mut filters.is_invite, cached_filters.is_invite);
-                    some_or_sticky(&mut filters.is_dm, cached_filters.is_dm);
-                    some_or_sticky(&mut filters.is_encrypted, cached_filters.is_encrypted);
-                    list_or_sticky(&mut filters.room_types, &cached_filters.room_types);
-                    list_or_sticky(&mut filters.not_room_types, &cached_filters.not_room_types);
+                match (&mut list.filters, cached_list.filters.clone()) {
+                    (Some(filters), Some(cached_filters)) => {
+                        some_or_sticky(&mut filters.is_invite, cached_filters.is_invite);
+                        some_or_sticky(&mut filters.is_dm, cached_filters.is_dm);
+                        some_or_sticky(&mut filters.is_encrypted, cached_filters.is_encrypted);
+                        list_or_sticky(&mut filters.room_types, &cached_filters.room_types);
+                        list_or_sticky(&mut filters.not_room_types, &cached_filters.not_room_types);
+                    }
+                    (_, Some(cached_filters)) => list.filters = Some(cached_filters),
+                    (Some(list_filters), _) => list.filters = Some(list_filters.clone()),
+                    (..) => {}
                 }
-                (_, Some(cached_filters)) => list.filters = Some(cached_filters),
-                (Some(list_filters), _) => list.filters = Some(list_filters.clone()),
-                (..) => {}
             }
+            cached.lists.insert(list_id.clone(), list.clone());
         }
-        cached.lists.insert(list_id.clone(), list.clone());
-    }
 
-    // Remove unsubscribed rooms from cache
-    for room_id in &req_body.unsubscribe_rooms {
-        cached.subscriptions.remove(room_id);
-    }
+        // Remove unsubscribed rooms from cache
+        for room_id in &req_body.unsubscribe_rooms {
+            cached.subscriptions.remove(room_id);
+        }
 
-    cached
-        .subscriptions
-        .extend(req_body.room_subscriptions.clone());
-    req_body
-        .room_subscriptions
-        .extend(cached.subscriptions.clone());
+        cached
+            .subscriptions
+            .extend(req_body.room_subscriptions.clone());
+        req_body
+            .room_subscriptions
+            .extend(cached.subscriptions.clone());
 
-    req_body.extensions.e2ee.enabled = req_body
-        .extensions
-        .e2ee
-        .enabled
-        .or(cached.extensions.e2ee.enabled);
+        req_body.extensions.e2ee.enabled = req_body
+            .extensions
+            .e2ee
+            .enabled
+            .or(cached.extensions.e2ee.enabled);
 
-    req_body.extensions.to_device.enabled = req_body
-        .extensions
-        .to_device
-        .enabled
-        .or(cached.extensions.to_device.enabled);
+        req_body.extensions.to_device.enabled = req_body
+            .extensions
+            .to_device
+            .enabled
+            .or(cached.extensions.to_device.enabled);
 
-    req_body.extensions.account_data.enabled = req_body
-        .extensions
-        .account_data
-        .enabled
-        .or(cached.extensions.account_data.enabled);
-    req_body.extensions.account_data.lists = req_body
-        .extensions
-        .account_data
-        .lists
-        .clone()
-        .or(cached.extensions.account_data.lists.clone());
-    req_body.extensions.account_data.rooms = req_body
-        .extensions
-        .account_data
-        .rooms
-        .clone()
-        .or(cached.extensions.account_data.rooms.clone());
+        req_body.extensions.account_data.enabled = req_body
+            .extensions
+            .account_data
+            .enabled
+            .or(cached.extensions.account_data.enabled);
+        req_body.extensions.account_data.lists = req_body
+            .extensions
+            .account_data
+            .lists
+            .clone()
+            .or(cached.extensions.account_data.lists.clone());
+        req_body.extensions.account_data.rooms = req_body
+            .extensions
+            .account_data
+            .rooms
+            .clone()
+            .or(cached.extensions.account_data.rooms.clone());
 
-    some_or_sticky(
-        &mut req_body.extensions.typing.enabled,
-        cached.extensions.typing.enabled,
-    );
-    some_or_sticky(
-        &mut req_body.extensions.typing.rooms,
-        cached.extensions.typing.rooms.clone(),
-    );
-    some_or_sticky(
-        &mut req_body.extensions.typing.lists,
-        cached.extensions.typing.lists.clone(),
-    );
-    some_or_sticky(
-        &mut req_body.extensions.receipts.enabled,
-        cached.extensions.receipts.enabled,
-    );
-    some_or_sticky(
-        &mut req_body.extensions.receipts.rooms,
-        cached.extensions.receipts.rooms.clone(),
-    );
-    some_or_sticky(
-        &mut req_body.extensions.receipts.lists,
-        cached.extensions.receipts.lists.clone(),
-    );
+        some_or_sticky(
+            &mut req_body.extensions.typing.enabled,
+            cached.extensions.typing.enabled,
+        );
+        some_or_sticky(
+            &mut req_body.extensions.typing.rooms,
+            cached.extensions.typing.rooms.clone(),
+        );
+        some_or_sticky(
+            &mut req_body.extensions.typing.lists,
+            cached.extensions.typing.lists.clone(),
+        );
+        some_or_sticky(
+            &mut req_body.extensions.receipts.enabled,
+            cached.extensions.receipts.enabled,
+        );
+        some_or_sticky(
+            &mut req_body.extensions.receipts.rooms,
+            cached.extensions.receipts.rooms.clone(),
+        );
+        some_or_sticky(
+            &mut req_body.extensions.receipts.lists,
+            cached.extensions.receipts.lists.clone(),
+        );
 
-    cached.extensions = req_body.extensions.clone();
-    let known = cached.known_rooms.clone();
-    let list_counts = cached.list_counts.clone();
-    // Persist to DB for cross-instance availability
-    let cache_snapshot = cached.clone();
+        cached.extensions = req_body.extensions.clone();
+        let known = cached.known_rooms.clone();
+        let list_counts = cached.list_counts.clone();
+        // Persist to DB for cross-instance availability
+        let cache_snapshot = cached.clone();
         (known, list_counts, cache_snapshot)
     };
     persist_connection(&user_id, &device_id, &req_body.conn_id, &cache_snapshot).await;
@@ -1518,8 +1531,7 @@ mod tests {
             .collect();
         let dms = HashSet::new();
 
-        let active =
-            compute_active_rooms(&ReqList::default(), &invited, &joined, &all, &dms).await;
+        let active = compute_active_rooms(&ReqList::default(), &invited, &joined, &all, &dms).await;
 
         assert_eq!(active.len(), 3);
     }

@@ -304,12 +304,13 @@ async fn select_events(
 /// Persist retry state to the database so other instances can respect backoff.
 async fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()> {
     let dest = match outgoing_kind {
-        OutgoingKind::Normal(server_name) => data::sending::OutgoingDestination::Normal(server_name),
+        OutgoingKind::Normal(server_name) => {
+            data::sending::OutgoingDestination::Normal(server_name)
+        }
         OutgoingKind::Appservice(id) => data::sending::OutgoingDestination::Appservice(id),
-        OutgoingKind::Push(user_id, pushkey) => data::sending::OutgoingDestination::Push {
-            user_id,
-            pushkey,
-        },
+        OutgoingKind::Push(user_id, pushkey) => {
+            data::sending::OutgoingDestination::Push { user_id, pushkey }
+        }
     };
     data::sending::persist_retry_state(dest, tries).await?;
     Ok(())

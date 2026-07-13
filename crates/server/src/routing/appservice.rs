@@ -27,7 +27,8 @@ async fn verify_hs_token(aa: &AuthArgs) -> Result<(), crate::AppError> {
     let appservices = crate::appservices();
     // Use constant-time comparison to prevent timing attacks
     if appservices
-        .await.iter()
+        .await
+        .iter()
         .any(|a| a.hs_token.as_bytes().ct_eq(token.as_bytes()).into())
     {
         Ok(())

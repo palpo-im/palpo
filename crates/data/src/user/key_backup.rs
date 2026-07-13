@@ -116,7 +116,8 @@ pub async fn update_backup(
         e2e_room_keys_versions::algorithm.eq(serde_json::to_value(algorithm)?),
         e2e_room_keys_versions::etag.eq(UnixMillis::now().get() as i64),
     ))
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(affected > 0)
 }
 
@@ -145,7 +146,9 @@ pub async fn get_room_key(
         .map_err(Into::into)
 }
 
-pub async fn get_latest_room_keys_version(user_id: &UserId) -> DataResult<Option<DbRoomKeysVersion>> {
+pub async fn get_latest_room_keys_version(
+    user_id: &UserId,
+) -> DataResult<Option<DbRoomKeysVersion>> {
     e2e_room_keys_versions::table
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::is_trashed.eq(false))
@@ -213,7 +216,8 @@ pub async fn add_key(
             ))
             .do_update()
             .set(&new_key)
-            .execute(&mut connect().await?).await?;
+            .execute(&mut connect().await?)
+            .await?;
     }
     Ok(())
 }
@@ -264,7 +268,8 @@ pub async fn delete_backup(user_id: &UserId, version: i64) -> DataResult<()> {
             .filter(e2e_room_keys_versions::version.eq(version)),
     )
     .set(e2e_room_keys_versions::is_trashed.eq(true))
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
@@ -274,7 +279,8 @@ pub async fn delete_all_keys(user_id: &UserId, version: i64) -> DataResult<()> {
             .filter(e2e_room_keys::user_id.eq(user_id))
             .filter(e2e_room_keys::version.eq(version)),
     )
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
@@ -285,7 +291,8 @@ pub async fn delete_room_keys(user_id: &UserId, version: i64, room_id: &RoomId) 
             .filter(e2e_room_keys::version.eq(version))
             .filter(e2e_room_keys::room_id.eq(room_id)),
     )
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
@@ -302,6 +309,7 @@ pub async fn delete_room_key(
             .filter(e2e_room_keys::room_id.eq(room_id))
             .filter(e2e_room_keys::session_id.eq(session_id)),
     )
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }

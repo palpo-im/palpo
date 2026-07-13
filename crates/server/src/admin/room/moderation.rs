@@ -216,8 +216,9 @@ async fn ban_list_of_rooms(ctx: &Context<'_>) -> AppResult<()> {
                 if room_alias_or_id.is_room_alias_id() {
                     match RoomAliasId::parse(room_alias_or_id) {
                         Ok(room_alias) => {
-                            let room_id =
-                                match crate::room::alias::resolve_local_alias(&room_alias).await {
+                            let room_id = match crate::room::alias::resolve_local_alias(&room_alias)
+                                .await
+                            {
                                 Ok(room_id) => room_id,
                                 _ => {
                                     debug!(

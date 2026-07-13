@@ -109,7 +109,8 @@ pub async fn create_device(
 
     let token = utils::random_string(64);
 
-    data::user::device::create_device(&user_id, &device_id, &token, body.display_name, None).await?;
+    data::user::device::create_device(&user_id, &device_id, &token, body.display_name, None)
+        .await?;
 
     empty_ok()
 }

@@ -193,7 +193,8 @@ pub async fn send_join_v1(
         }
     }
 
-    if let Err(e) = sending::send_pdu_room(room_id, &event_id, &[], &[origin.to_owned()]).await {
+    let ignore_servers = [origin.to_owned()];
+    if let Err(e) = sending::send_pdu_room(room_id, &event_id, &[], &ignore_servers).await {
         error!("failed to notify user joined to servers: {e}");
     }
 

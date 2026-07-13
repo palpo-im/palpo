@@ -18,7 +18,8 @@ pub(super) async fn get_mutual_rooms(
     let authed = depot.authed_info()?;
 
     // Get the authenticated user's joined rooms
-    let our_rooms: HashSet<_> = data::user::joined_rooms(authed.user_id()).await?
+    let our_rooms: HashSet<_> = data::user::joined_rooms(authed.user_id())
+        .await?
         .into_iter()
         .collect();
 

@@ -723,7 +723,11 @@ pub async fn set_user_type(user_id: &UserId, user_type: Option<&str>) -> DataRes
 }
 
 /// Set locked status for a user
-pub async fn set_locked(user_id: &UserId, locked: bool, locker_id: Option<&UserId>) -> DataResult<()> {
+pub async fn set_locked(
+    user_id: &UserId,
+    locked: bool,
+    locker_id: Option<&UserId>,
+) -> DataResult<()> {
     // Evict before changing account usability so cached user state cannot
     // authenticate after the update commits but before the post-update scan runs.
     access_token::invalidate_user(user_id);
@@ -836,7 +840,10 @@ pub async fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i6
     }
 
     // Get total count with filters applied
-    let total: i64 = count_query.count().get_result(&mut connect().await?).await?;
+    let total: i64 = count_query
+        .count()
+        .get_result(&mut connect().await?)
+        .await?;
 
     // Apply ordering
     let dir_asc = filter.dir.as_ref().map(|d| d == "f").unwrap_or(true);

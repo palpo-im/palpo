@@ -612,51 +612,6 @@ impl PushConditionPowerLevelsCtx {
     }
 }
 
-#[cfg(test)]
-mod serde_tests {
-    use serde_json::{
-        Value as JsonValue, from_value as from_json_value, json, to_value as to_json_value,
-    };
-
-    use super::{EventMatchConditionData, PushCondition};
-
-    #[test]
-    fn known_push_condition_roundtrips() {
-        let condition = PushCondition::EventMatch(EventMatchConditionData::new(
-            "type".into(),
-            "m.room.message".into(),
-        ));
-        let json = json!({
-            "kind": "event_match",
-            "key": "type",
-            "pattern": "m.room.message",
-        });
-
-        assert_eq!(to_json_value(&condition).unwrap(), json);
-        assert_eq!(
-            from_json_value::<PushCondition>(json).unwrap().kind(),
-            "event_match"
-        );
-    }
-
-    #[test]
-    fn custom_push_condition_roundtrips() {
-        let json = json!({
-            "kind": "dev.palpo.custom",
-            "field": "value",
-        });
-
-        let condition = from_json_value::<PushCondition>(json.clone()).unwrap();
-
-        assert_eq!(condition.kind(), "dev.palpo.custom");
-        assert_eq!(
-            condition.data().get("field"),
-            Some(&JsonValue::String("value".to_owned()))
-        );
-        assert_eq!(to_json_value(condition).unwrap(), json);
-    }
-}
-
 /// Additional functions for character matching.
 trait CharExt {
     /// Whether or not this char can be part of a word.
@@ -857,6 +812,51 @@ type HasThreadSubscriptionFuture<'a> = Pin<Box<dyn Future<Output = bool> + 'a>>;
 #[cfg(not(target_family = "wasm"))]
 type HasThreadSubscriptionFn =
     dyn for<'a> Fn(&'a EventId) -> HasThreadSubscriptionFuture<'a> + Send + Sync;
+
+#[cfg(test)]
+mod serde_tests {
+    use serde_json::{
+        Value as JsonValue, from_value as from_json_value, json, to_value as to_json_value,
+    };
+
+    use super::{EventMatchConditionData, PushCondition};
+
+    #[test]
+    fn known_push_condition_roundtrips() {
+        let condition = PushCondition::EventMatch(EventMatchConditionData::new(
+            "type".into(),
+            "m.room.message".into(),
+        ));
+        let json = json!({
+            "kind": "event_match",
+            "key": "type",
+            "pattern": "m.room.message",
+        });
+
+        assert_eq!(to_json_value(&condition).unwrap(), json);
+        assert_eq!(
+            from_json_value::<PushCondition>(json).unwrap().kind(),
+            "event_match"
+        );
+    }
+
+    #[test]
+    fn custom_push_condition_roundtrips() {
+        let json = json!({
+            "kind": "dev.palpo.custom",
+            "field": "value",
+        });
+
+        let condition = from_json_value::<PushCondition>(json.clone()).unwrap();
+
+        assert_eq!(condition.kind(), "dev.palpo.custom");
+        assert_eq!(
+            condition.data().get("field"),
+            Some(&JsonValue::String("value".to_owned()))
+        );
+        assert_eq!(to_json_value(condition).unwrap(), json);
+    }
+}
 
 #[cfg(target_family = "wasm")]
 type HasThreadSubscriptionFn = dyn for<'a> Fn(&'a EventId) -> HasThreadSubscriptionFuture<'a>;

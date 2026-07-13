@@ -57,7 +57,12 @@ pub fn migrate(config: &DbConfig) {
 }
 
 pub async fn connect() -> Result<PgPooledConnection, PoolError> {
-    match DIESEL_POOL.get().expect("diesel pool should set").get().await {
+    match DIESEL_POOL
+        .get()
+        .expect("diesel pool should set")
+        .get()
+        .await
+    {
         Ok(conn) => Ok(conn),
         Err(e) => {
             tracing::error!("db connect error: {e}");

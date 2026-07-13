@@ -15,9 +15,7 @@ use crate::core::federation::event::{
 use crate::core::federation::knock::{
     MakeKnockReqArgs, MakeKnockResBody, SendKnockReqArgs, SendKnockReqBody, SendKnockResBody,
 };
-use crate::core::federation::peek::{
-    PeekReqArgs, PeekResBody, PeekStartResBody, PeekSubReqArgs,
-};
+use crate::core::federation::peek::{PeekReqArgs, PeekResBody, PeekStartResBody, PeekSubReqArgs};
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonObject, RawJsonValue};
 use crate::event::{gen_event_id_canonical_json, handler};
@@ -68,7 +66,11 @@ async fn peek(_aa: AuthArgs, args: PeekReqArgs, depot: &mut Depot) -> JsonResult
     // Only world-readable rooms may be peeked without membership; otherwise the
     // requesting server has no business reading the state.
     if !room::is_world_readable(room_id).await {
-        return Err(MatrixError::forbidden("Room is not world-readable; peeking is not permitted.", None).into());
+        return Err(MatrixError::forbidden(
+            "Room is not world-readable; peeking is not permitted.",
+            None,
+        )
+        .into());
     }
 
     let room_version = room::get_version(room_id).await?;
@@ -315,8 +317,7 @@ async fn get_state(
     for id in auth_chain_ids.into_iter() {
         match timeline::get_pdu_json(&id).await {
             Ok(Some(json)) => {
-                auth_chain
-                    .push(crate::sending::convert_to_outgoing_federation_event(json).await);
+                auth_chain.push(crate::sending::convert_to_outgoing_federation_event(json).await);
             }
             Ok(None) => {
                 error!("Could not find event json for {id} in db::");

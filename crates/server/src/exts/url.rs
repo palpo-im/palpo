@@ -377,14 +377,19 @@ async fn query_given_srv_record(record: &str) -> Option<(FedDest, Instant)> {
                 .iter()
                 .find_map(|record| record.try_borrow::<SRV>())
                 .map(|result| {
-                (
-                    FedDest::Named(
-                        result.data().target.to_string().trim_end_matches('.').to_owned(),
-                        format!(":{}", result.data().port),
-                    ),
-                    srv.valid_until(),
-                )
-            })
+                    (
+                        FedDest::Named(
+                            result
+                                .data()
+                                .target
+                                .to_string()
+                                .trim_end_matches('.')
+                                .to_owned(),
+                            format!(":{}", result.data().port),
+                        ),
+                        srv.valid_until(),
+                    )
+                })
         })
         .unwrap_or(None)
 }

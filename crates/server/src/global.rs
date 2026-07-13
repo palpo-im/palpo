@@ -115,151 +115,153 @@ pub fn dns_resolver() -> &'static HickoryResolver<TokioRuntimeProvider> {
 pub async fn appservices() -> &'static Vec<Registration> {
     use figment::Figment;
     use figment::providers::{Format, Toml, Yaml};
-    static APPSERVICES: tokio::sync::OnceCell<Vec<Registration>> = tokio::sync::OnceCell::const_new();
+    static APPSERVICES: tokio::sync::OnceCell<Vec<Registration>> =
+        tokio::sync::OnceCell::const_new();
 
-    APPSERVICES.get_or_init(|| async {
-        let mut appservices = vec![];
-        let Some(registration_dir) = crate::config::appservice_registration_dir() else {
-            return appservices;
-        };
-        tracing::info!("Appservice registration dir: {}", registration_dir);
-        let mut exist_ids = HashSet::new();
-        let Ok(entries) = std::fs::read_dir(registration_dir) else {
-            return appservices;
-        };
-
-        for entry in entries {
-            let Ok(entry) = entry else {
-                continue;
+    APPSERVICES
+        .get_or_init(|| async {
+            let mut appservices = vec![];
+            let Some(registration_dir) = crate::config::appservice_registration_dir() else {
+                return appservices;
             };
-            let path = entry.path();
-
-            if path.is_dir() {
-                continue;
-            }
-            let Some(ext) = path.extension() else {
-                continue;
+            tracing::info!("Appservice registration dir: {}", registration_dir);
+            let mut exist_ids = HashSet::new();
+            let Ok(entries) = std::fs::read_dir(registration_dir) else {
+                return appservices;
             };
-            let registration = match ext.to_str() {
-                Some("yaml") | Some("yml") => match Figment::new()
-                    .merge(Yaml::file(&path))
-                    .extract::<Registration>()
-                {
-                    Ok(registration) => registration,
-                    Err(e) => {
-                        tracing::error!(
-                            "It looks like your config `{}` is invalid. Error occurred: {e}",
-                            path.display()
-                        );
-                        continue;
-                    }
-                },
-                Some("toml") => match Figment::new()
-                    .merge(Toml::file(&path))
-                    .extract::<Registration>()
-                {
-                    Ok(registration) => registration,
-                    Err(e) => {
-                        tracing::error!(
-                            "It looks like your config `{}` is invalid. Error occurred: {e}",
-                            path.display()
-                        );
-                        continue;
-                    }
-                },
-                _ => {
+
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let path = entry.path();
+
+                if path.is_dir() {
                     continue;
                 }
-            };
+                let Some(ext) = path.extension() else {
+                    continue;
+                };
+                let registration = match ext.to_str() {
+                    Some("yaml") | Some("yml") => match Figment::new()
+                        .merge(Yaml::file(&path))
+                        .extract::<Registration>()
+                    {
+                        Ok(registration) => registration,
+                        Err(e) => {
+                            tracing::error!(
+                                "It looks like your config `{}` is invalid. Error occurred: {e}",
+                                path.display()
+                            );
+                            continue;
+                        }
+                    },
+                    Some("toml") => match Figment::new()
+                        .merge(Toml::file(&path))
+                        .extract::<Registration>()
+                    {
+                        Ok(registration) => registration,
+                        Err(e) => {
+                            tracing::error!(
+                                "It looks like your config `{}` is invalid. Error occurred: {e}",
+                                path.display()
+                            );
+                            continue;
+                        }
+                    },
+                    _ => {
+                        continue;
+                    }
+                };
 
-            if exist_ids.contains(&registration.id) {
-                tracing::error!("Duplicate appservice registration id: {}", registration.id);
-                continue;
-            }
-            exist_ids.insert(registration.id.clone());
-            appservices.push(registration.clone());
+                if exist_ids.contains(&registration.id) {
+                    tracing::error!("Duplicate appservice registration id: {}", registration.id);
+                    continue;
+                }
+                exist_ids.insert(registration.id.clone());
+                appservices.push(registration.clone());
 
-            // Ensure the appservice registration is in the database so that
-            // event forwarding (via appservice::all()) can find it.
-            let db_registration: DbRegistration = registration.clone().into();
-            let mut conn = connect().await.expect("db connect failed");
-            if let Err(e) = diesel::insert_into(appservice_registrations::table)
-                .values(&db_registration)
-                .on_conflict(appservice_registrations::id)
-                .do_update()
-                .set((
-                    appservice_registrations::url.eq(&db_registration.url),
-                    appservice_registrations::as_token.eq(&db_registration.as_token),
-                    appservice_registrations::hs_token.eq(&db_registration.hs_token),
-                    appservice_registrations::sender_localpart
-                        .eq(&db_registration.sender_localpart),
-                    appservice_registrations::namespaces.eq(&db_registration.namespaces),
-                    appservice_registrations::rate_limited.eq(&db_registration.rate_limited),
-                    appservice_registrations::protocols.eq(&db_registration.protocols),
-                    appservice_registrations::receive_ephemeral
-                        .eq(&db_registration.receive_ephemeral),
-                    appservice_registrations::device_management
-                        .eq(&db_registration.device_management),
+                // Ensure the appservice registration is in the database so that
+                // event forwarding (via appservice::all()) can find it.
+                let db_registration: DbRegistration = registration.clone().into();
+                let mut conn = connect().await.expect("db connect failed");
+                if let Err(e) = diesel::insert_into(appservice_registrations::table)
+                    .values(&db_registration)
+                    .on_conflict(appservice_registrations::id)
+                    .do_update()
+                    .set((
+                        appservice_registrations::url.eq(&db_registration.url),
+                        appservice_registrations::as_token.eq(&db_registration.as_token),
+                        appservice_registrations::hs_token.eq(&db_registration.hs_token),
+                        appservice_registrations::sender_localpart
+                            .eq(&db_registration.sender_localpart),
+                        appservice_registrations::namespaces.eq(&db_registration.namespaces),
+                        appservice_registrations::rate_limited.eq(&db_registration.rate_limited),
+                        appservice_registrations::protocols.eq(&db_registration.protocols),
+                        appservice_registrations::receive_ephemeral
+                            .eq(&db_registration.receive_ephemeral),
+                        appservice_registrations::device_management
+                            .eq(&db_registration.device_management),
+                    ))
+                    .execute(&mut conn)
+                    .await
+                {
+                    tracing::error!("Failed to save appservice registration to database: {e}");
+                }
+                drop(conn);
+
+                let user_id = OwnedUserId::try_from(format!(
+                    "@{}:{}",
+                    registration.sender_localpart,
+                    crate::config::get().server_name
                 ))
-                .execute(&mut conn)
-                .await
-            {
-                tracing::error!("Failed to save appservice registration to database: {e}");
-            }
-            drop(conn);
+                .unwrap();
+                let mut conn = connect().await.expect("db connect failed");
+                if !diesel_exists!(users::table.filter(users::id.eq(&user_id)), &mut conn)
+                    .expect("db query failed")
+                {
+                    diesel::insert_into(users::table)
+                        .values(NewDbUser {
+                            id: user_id.to_owned(),
+                            ty: None,
+                            is_admin: false,
+                            is_guest: false,
+                            is_local: true,
+                            localpart: user_id.localpart().to_owned(),
+                            server_name: user_id.server_name().to_owned(),
+                            appservice_id: Some(registration.id.clone()),
+                            created_at: UnixMillis::now(),
+                        })
+                        .execute(&mut conn)
+                        .await
+                        .expect("db query failed");
+                }
 
-            let user_id = OwnedUserId::try_from(format!(
-                "@{}:{}",
-                registration.sender_localpart,
-                crate::config::get().server_name
-            ))
-            .unwrap();
-            let mut conn = connect().await.expect("db connect failed");
-            if !diesel_exists!(users::table.filter(users::id.eq(&user_id)), &mut conn)
+                if !diesel_exists!(
+                    user_devices::table.filter(user_devices::user_id.eq(&user_id)),
+                    &mut conn
+                )
                 .expect("db query failed")
-            {
-                diesel::insert_into(users::table)
-                    .values(NewDbUser {
-                        id: user_id.to_owned(),
-                        ty: None,
-                        is_admin: false,
-                        is_guest: false,
-                        is_local: true,
-                        localpart: user_id.localpart().to_owned(),
-                        server_name: user_id.server_name().to_owned(),
-                        appservice_id: Some(registration.id.clone()),
-                        created_at: UnixMillis::now(),
-                    })
-                    .execute(&mut conn)
-                    .await
-                    .expect("db query failed");
+                {
+                    diesel::insert_into(user_devices::table)
+                        .values(NewDbUserDevice {
+                            user_id,
+                            device_id: OwnedDeviceId::from("_"),
+                            display_name: Some("[Default]".to_string()),
+                            user_agent: None,
+                            is_hidden: true,
+                            last_seen_ip: None,
+                            last_seen_at: None,
+                            created_at: UnixMillis::now(),
+                        })
+                        .execute(&mut conn)
+                        .await
+                        .expect("db query failed");
+                }
             }
-
-            if !diesel_exists!(
-                user_devices::table.filter(user_devices::user_id.eq(&user_id)),
-                &mut conn
-            )
-            .expect("db query failed")
-            {
-                diesel::insert_into(user_devices::table)
-                    .values(NewDbUserDevice {
-                        user_id,
-                        device_id: OwnedDeviceId::from("_"),
-                        display_name: Some("[Default]".to_string()),
-                        user_agent: None,
-                        is_hidden: true,
-                        last_seen_ip: None,
-                        last_seen_at: None,
-                        created_at: UnixMillis::now(),
-                    })
-                    .execute(&mut conn)
-                    .await
-                    .expect("db query failed");
-            }
-        }
-        appservices
-    })
-    .await
+            appservices
+        })
+        .await
 }
 
 pub async fn add_signing_key_from_trusted_server(

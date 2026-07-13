@@ -211,7 +211,9 @@ pub(super) async fn get_messages(
             &StateEventType::RoomMember,
             ll_id.as_str(),
             None,
-        ).await {
+        )
+        .await
+        {
             resp.state.push(member_event.to_state_event());
         }
     }

@@ -223,9 +223,8 @@ pub async fn join_room(
     // up the room version — this room isn't in our DB yet during a federation join.
     let mut outgoing = join_event.clone();
     maybe_strip_event_id(&mut outgoing, &room_version);
-    let body = SendJoinReqBody(
-        crate::sending::convert_to_outgoing_federation_event(outgoing).await,
-    );
+    let body =
+        SendJoinReqBody(crate::sending::convert_to_outgoing_federation_event(outgoing).await);
     info!("asking {remote_server} for send_join");
     let send_join_request = crate::core::federation::membership::send_join_request(
         &remote_server.origin().await,
@@ -612,7 +611,9 @@ async fn make_join_request(
     room_id: &RoomId,
     servers: &[OwnedServerName],
 ) -> AppResult<(MakeJoinResBody, OwnedServerName)> {
-    let invited_locally = room::user::is_invited(user_id, room_id).await.unwrap_or(false);
+    let invited_locally = room::user::is_invited(user_id, room_id)
+        .await
+        .unwrap_or(false);
     let mut last_join_error = Err(StatusError::bad_request()
         .brief("no server available to assist in joining")
         .into());

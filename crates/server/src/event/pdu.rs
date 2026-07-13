@@ -159,7 +159,8 @@ impl SnPduEvent {
             self.get_content::<ExtractMemebership>()
                 .map(|m| m.membership)
                 .ok()
-        } else if let Ok(frame_id) = crate::event::get_frame_id(&self.room_id, self.event_sn).await {
+        } else if let Ok(frame_id) = crate::event::get_frame_id(&self.room_id, self.event_sn).await
+        {
             state::user_membership(frame_id, user_id)
                 .await
                 .ok()

@@ -58,7 +58,10 @@ pub async fn knock_room(
     }
 
     let conf = config::get();
-    if room::is_server_joined(&conf.server_name, room_id).await.unwrap_or(false) {
+    if room::is_server_joined(&conf.server_name, room_id)
+        .await
+        .unwrap_or(false)
+    {
         use RoomVersionId::*;
         info!("we can knock locally");
         let room_version = room::get_version(room_id).await?;
@@ -79,8 +82,14 @@ pub async fn knock_room(
         }
 
         let content = RoomMemberEventContent {
-            display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
-            avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
+            display_name: crate::data::user::display_name(sender_id)
+                .await
+                .ok()
+                .flatten(),
+            avatar_url: crate::data::user::avatar_url(sender_id)
+                .await
+                .ok()
+                .flatten(),
             blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
             reason: reason.clone(),
             ..RoomMemberEventContent::new(MembershipState::Knock)
@@ -102,7 +111,9 @@ pub async fn knock_room(
                     &pdu.event_id,
                     &[sender_id.server_name().to_owned()],
                     &[],
-                ).await {
+                )
+                .await
+                {
                     error!("failed to notify banned user server: {e}");
                 }
                 return Ok(Some(pdu));
@@ -145,8 +156,14 @@ pub async fn knock_room(
     knock_event_stub.insert(
         "content".to_owned(),
         to_canonical_value(RoomMemberEventContent {
-            display_name: crate::data::user::display_name(sender_id).await.ok().flatten(),
-            avatar_url: crate::data::user::avatar_url(sender_id).await.ok().flatten(),
+            display_name: crate::data::user::display_name(sender_id)
+                .await
+                .ok()
+                .flatten(),
+            avatar_url: crate::data::user::avatar_url(sender_id)
+                .await
+                .ok()
+                .flatten(),
             blurhash: crate::data::user::blurhash(sender_id).await.ok().flatten(),
             reason,
             ..RoomMemberEventContent::new(MembershipState::Knock)
@@ -177,9 +194,9 @@ pub async fn knock_room(
             room_id: room_id.to_owned(),
             event_id: event_id.to_owned(),
         },
-        SendKnockReqBody::new(crate::sending::convert_to_outgoing_federation_event(
-            knock_event.clone(),
-        ).await),
+        SendKnockReqBody::new(
+            crate::sending::convert_to_outgoing_federation_event(knock_event.clone()).await,
+        ),
     )?
     .into_inner();
 
@@ -221,7 +238,8 @@ pub async fn knock_room(
         is_rejected: false,
         rejection_reason: None,
     }
-    .save().await?;
+    .save()
+    .await?;
     let knock_pdu = SnPduEvent {
         pdu: parsed_knock_pdu,
         event_sn,

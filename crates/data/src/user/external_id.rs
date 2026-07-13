@@ -62,7 +62,8 @@ pub async fn record_external_id(
             user_id: user_id.to_owned(),
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect().await?).await?;
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 
@@ -75,7 +76,8 @@ pub async fn replace_external_ids(
 
     // Delete existing external IDs for this user
     diesel::delete(user_external_ids::table.filter(user_external_ids::user_id.eq(user_id)))
-        .execute(&mut conn).await?;
+        .execute(&mut conn)
+        .await?;
 
     // Insert new external IDs
     let now = UnixMillis::now();
@@ -87,7 +89,8 @@ pub async fn replace_external_ids(
                 user_id: user_id.to_owned(),
                 created_at: now,
             })
-            .execute(&mut conn).await?;
+            .execute(&mut conn)
+            .await?;
     }
 
     Ok(())
@@ -100,6 +103,7 @@ pub async fn delete_external_id(auth_provider: &str, external_id: &str) -> DataR
             .filter(user_external_ids::auth_provider.eq(auth_provider))
             .filter(user_external_ids::external_id.eq(external_id)),
     )
-    .execute(&mut connect().await?).await?;
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }

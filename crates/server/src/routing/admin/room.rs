@@ -169,7 +169,10 @@ async fn get_detailed_room_info(room_id: &RoomId) -> RoomInfoResponse {
         .flatten()
         .map(|a| a.to_string());
 
-    let encryption = room::get_encryption(room_id).await.ok().map(|e| e.to_string());
+    let encryption = room::get_encryption(room_id)
+        .await
+        .ok()
+        .map(|e| e.to_string());
 
     let join_rules = room::get_join_rule(room_id)
         .await
@@ -438,7 +441,9 @@ pub async fn get_room_messages(
 #[endpoint]
 pub async fn get_room_block(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomBlockStatus> {
     let room_id = room_id.into_inner();
-    let blocked = crate::data::room::is_banned(&room_id).await.unwrap_or(false);
+    let blocked = crate::data::room::is_banned(&room_id)
+        .await
+        .unwrap_or(false);
 
     json_ok(RoomBlockStatus {
         block: blocked,

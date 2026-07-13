@@ -56,7 +56,8 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
             }
             if let Some((device_id, _)) = data::user::get_dehydrated_device(user_id).await?
                 && !container.contains_key(&device_id)
-                && let Some(keys) = data::user::get_device_keys_and_sigs(user_id, &device_id).await?
+                && let Some(keys) =
+                    data::user::get_device_keys_and_sigs(user_id, &device_id).await?
             {
                 container.insert(device_id, keys);
             }
@@ -483,7 +484,7 @@ fn validate_cross_signing_key(
     kind: CrossSigningKeyKind,
     key: &CrossSigningKey,
 ) -> AppResult<()> {
-    if &key.user_id != user_id {
+    if key.user_id != user_id {
         return Err(MatrixError::invalid_param(format!(
             "{} key user_id does not match the authenticated user.",
             kind.display_name()

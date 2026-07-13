@@ -247,9 +247,7 @@ pub async fn append_to_state(new_pdu: &SnPduEvent) -> AppResult<i64> {
     }
 }
 
-pub async fn summary_stripped(
-    event: &PduEvent,
-) -> AppResult<Vec<RawJson<AnyStrippedStateEvent>>> {
+pub async fn summary_stripped(event: &PduEvent) -> AppResult<Vec<RawJson<AnyStrippedStateEvent>>> {
     let cells: [(&StateEventType, &str); 8] = [
         (&StateEventType::RoomCreate, ""),
         (&StateEventType::RoomJoinRules, ""),
@@ -776,13 +774,13 @@ pub async fn save_state(
 
     let hash_data = utils::hash_keys(new_compressed_events.iter().map(|bytes| &bytes[..]));
 
-    let (new_frame_id, frame_existed) = if let Ok(frame_id) = get_frame_id(room_id, &hash_data).await
-    {
-        (frame_id, true)
-    } else {
-        let frame_id = ensure_frame(room_id, hash_data).await?;
-        (frame_id, false)
-    };
+    let (new_frame_id, frame_existed) =
+        if let Ok(frame_id) = get_frame_id(room_id, &hash_data).await {
+            (frame_id, true)
+        } else {
+            let frame_id = ensure_frame(room_id, hash_data).await?;
+            (frame_id, false)
+        };
 
     if Some(new_frame_id) == prev_frame_id {
         return Ok(DeltaInfo {
@@ -863,7 +861,8 @@ pub async fn get_user_state(
 /// See <https://spec.matrix.org/latest/appendices/#routing>
 #[tracing::instrument(level = "trace")]
 pub async fn servers_route_via(room_id: &RoomId) -> AppResult<Vec<OwnedServerName>> {
-    let Ok(pdu) = super::get_state(room_id, &StateEventType::RoomPowerLevels, "", None).await else {
+    let Ok(pdu) = super::get_state(room_id, &StateEventType::RoomPowerLevels, "", None).await
+    else {
         return Ok(Vec::new());
     };
 

@@ -272,9 +272,7 @@ pub fn parse_fetched_pdu(
         Err(e) => {
             // Event could not be converted to canonical json
             error!(value = ?value, "error generating event id for fetched pdu: {:?}", e);
-            return Err(
-                MatrixError::bad_json("could not convert event to canonical json").into(),
-            );
+            return Err(MatrixError::bad_json("could not convert event to canonical json").into());
         }
     };
     Ok((event_id, value))
