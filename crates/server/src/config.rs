@@ -139,9 +139,18 @@ fn kdl_node_to_json(node: &KdlNode) -> serde_json::Value {
         .collect();
 
     if let Some(children) = node.children() {
+        // An empty child block is the KDL representation of an explicitly
+        // empty list. This is distinct from omitting the node, which allows
+        // serde defaults to apply.
+        if children.nodes().is_empty() && args.is_empty() && props.is_empty() {
+            return serde_json::Value::Array(Vec::new());
+        }
+
         // Check if all children are dash nodes (KDL array convention)
-        let all_dashes = !children.nodes().is_empty()
-            && children.nodes().iter().all(|n| n.name().to_string() == "-");
+        let all_dashes = children
+            .nodes()
+            .iter()
+            .all(|n| n.name().to_string() == "-");
         if all_dashes {
             let arr: Vec<serde_json::Value> =
                 children.nodes().iter().map(kdl_node_to_json).collect();
@@ -193,6 +202,26 @@ fn kdl_value_to_json(value: &KdlValue) -> serde_json::Value {
         serde_json::Value::Bool(b)
     } else {
         serde_json::Value::Null
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kdl::KdlDocument;
+    use serde_json::json;
+
+    use super::kdl_doc_to_json;
+
+    #[test]
+    fn empty_kdl_block_is_an_explicit_empty_list() {
+        let doc: KdlDocument = "ip_range_denylist {\n}"
+            .parse()
+            .expect("empty KDL list should parse");
+
+        assert_eq!(
+            kdl_doc_to_json(&doc),
+            json!({ "ip_range_denylist": [] })
+        );
     }
 }
 
