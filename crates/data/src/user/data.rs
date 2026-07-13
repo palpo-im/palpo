@@ -239,6 +239,50 @@ pub async fn delete_global_data(user_id: &UserId, kind: &str) -> DataResult<()> 
     Ok(())
 }
 
+/// Delete a room-scoped account-data entry, keeping a tombstone row so the
+/// deletion propagates through sync (MSC3391), mirroring `delete_global_data`.
+pub async fn delete_room_data(user_id: &UserId, room_id: &RoomId, kind: &str) -> DataResult<()> {
+    let mut conn = connect().await?;
+    let existing = user_datas::table
+        .filter(user_datas::user_id.eq(user_id))
+        .filter(user_datas::room_id.eq(room_id))
+        .filter(user_datas::data_type.eq(kind))
+        .order_by(user_datas::id.desc())
+        .first::<DbUserData>(&mut conn)
+        .await
+        .optional()?;
+
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+
+    diesel::delete(
+        user_datas::table
+            .filter(user_datas::user_id.eq(user_id))
+            .filter(user_datas::room_id.eq(room_id))
+            .filter(user_datas::data_type.eq(kind))
+            .filter(user_datas::id.ne(existing.id)),
+    )
+    .execute(&mut conn)
+    .await?;
+
+    if existing.is_deleted {
+        return Ok(());
+    }
+
+    diesel::update(user_datas::table.find(existing.id))
+        .set((
+            user_datas::json_data.eq(json!({})),
+            user_datas::is_deleted.eq(true),
+            user_datas::occur_sn.eq(crate::next_sn().await?),
+            user_datas::created_at.eq(UnixMillis::now()),
+        ))
+        .execute(&mut conn)
+        .await?;
+
+    Ok(())
+}
+
 /// Load all global account-data rows for a user.
 pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
     user_datas::table

@@ -170,3 +170,29 @@ pub(super) async fn delete_account_data_msc3391(
     data::user::delete_global_data(authed.user_id(), &account_type).await?;
     empty_ok()
 }
+
+// msc3391
+#[handler]
+pub(super) async fn delete_room_account_data_msc3391(
+    _aa: AuthArgs,
+    user_id: PathParam<OwnedUserId>,
+    room_id: PathParam<OwnedRoomId>,
+    account_type: PathParam<String>,
+    depot: &mut Depot,
+) -> EmptyResult {
+    let authed = depot.authed_info()?;
+    let user_id = user_id.into_inner();
+    if user_id != authed.user_id() {
+        return Err(
+            MatrixError::forbidden("Cannot delete account data for another user.", None).into(),
+        );
+    }
+
+    data::user::delete_room_data(
+        authed.user_id(),
+        &room_id.into_inner(),
+        &account_type.into_inner(),
+    )
+    .await?;
+    empty_ok()
+}
