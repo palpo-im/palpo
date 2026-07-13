@@ -202,35 +202,6 @@ fn kdl_value_to_json(value: &KdlValue) -> serde_json::Value {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use kdl::KdlDocument;
-    use serde_json::json;
-
-    use super::{ServerConfig, figment_from_path, kdl_doc_to_json};
-
-    #[test]
-    fn empty_kdl_block_is_an_explicit_empty_list() {
-        let doc: KdlDocument = "ip_range_denylist {\n}"
-            .parse()
-            .expect("empty KDL list should parse");
-
-        assert_eq!(kdl_doc_to_json(&doc), json!({ "ip_range_denylist": [] }));
-    }
-
-    #[test]
-    fn complement_toml_preserves_empty_denylist_opt_out() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/complement/palpo.toml");
-        let config = figment_from_path(path)
-            .extract::<ServerConfig>()
-            .expect("Complement TOML should deserialize");
-
-        assert!(config.ip_range_denylist.is_empty());
-    }
-}
-
 pub fn init(config_path: impl AsRef<Path>) {
     let config_path = config_path.as_ref();
     if !config_path.exists() {
@@ -368,4 +339,33 @@ pub fn available_room_versions() -> impl Iterator<Item = RoomVersion> {
 #[inline]
 fn supported_stability(stability: &RoomVersionStability) -> bool {
     get().allow_unstable_room_versions || *stability == RoomVersionStability::Stable
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use kdl::KdlDocument;
+    use serde_json::json;
+
+    use super::{ServerConfig, figment_from_path, kdl_doc_to_json};
+
+    #[test]
+    fn empty_kdl_block_is_an_explicit_empty_list() {
+        let doc: KdlDocument = "ip_range_denylist {\n}"
+            .parse()
+            .expect("empty KDL list should parse");
+
+        assert_eq!(kdl_doc_to_json(&doc), json!({ "ip_range_denylist": [] }));
+    }
+
+    #[test]
+    fn complement_toml_preserves_empty_denylist_opt_out() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/complement/palpo.toml");
+        let config = figment_from_path(path)
+            .extract::<ServerConfig>()
+            .expect("Complement TOML should deserialize");
+
+        assert!(config.ip_range_denylist.is_empty());
+    }
 }
