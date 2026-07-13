@@ -20,8 +20,13 @@ use crate::exts::*;
 use crate::room::state;
 use crate::{AppResult, data, room};
 
+/// How often the guard scans the database for queued requests whose wakeup
+/// was dropped (full wakeup queue) or that were left over by a previous
+/// process.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
 pub fn start() {
-    let (sender, receiver) = mpsc::unbounded_channel();
+    let (sender, receiver) = mpsc::channel(super::WAKEUP_QUEUE_CAPACITY);
     let _ = MPSC_SENDER.set(sender);
     let _ = MPSC_RECEIVER.set(Mutex::new(receiver));
     tokio::spawn(async move {
@@ -67,6 +72,9 @@ async fn process() -> AppResult<()> {
         current_transaction_status.insert(outgoing_kind.clone(), TransactionStatus::Running);
         futures.push(super::send_events(outgoing_kind.clone(), events));
     }
+
+    let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         let retry_delay = next_retry_delay(&current_transaction_status);
@@ -152,6 +160,43 @@ async fn process() -> AppResult<()> {
                     &mut pending_edu_cursors,
                 ).await {
                     futures.push(super::send_events(outgoing_kind, events));
+                }
+            }
+            _ = sweep.tick() => {
+                // Recover destinations whose wakeup was dropped because the
+                // wakeup queue was full, and requests left queued by a
+                // previous process.
+                let kinds = match super::queued_kinds().await {
+                    Ok(kinds) => kinds,
+                    Err(e) => {
+                        error!(error = ?e, "failed to load queued destinations for sweep");
+                        continue;
+                    }
+                };
+                for outgoing_kind in kinds {
+                    if current_transaction_status.contains_key(&outgoing_kind) {
+                        // Running, retrying, or backing off: the existing flow
+                        // picks queued requests up when the transaction settles.
+                        continue;
+                    }
+                    let new_events = match super::queued_requests(&outgoing_kind).await {
+                        Ok(events) => events.into_iter().take(30).collect::<Vec<_>>(),
+                        Err(e) => {
+                            error!(?outgoing_kind, error = ?e, "failed to load queued requests for sweep");
+                            continue;
+                        }
+                    };
+                    if new_events.is_empty() {
+                        continue;
+                    }
+                    if let Ok(Some(events)) = select_events(
+                        &outgoing_kind,
+                        new_events,
+                        &mut current_transaction_status,
+                        &mut pending_edu_cursors,
+                    ).await {
+                        futures.push(super::send_events(outgoing_kind, events));
+                    }
                 }
             }
             _ = async {
