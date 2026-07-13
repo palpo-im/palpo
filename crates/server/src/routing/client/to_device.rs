@@ -44,7 +44,7 @@ async fn send_to_device(
                 let mut messages = BTreeMap::new();
                 messages.insert(target_user_id.clone(), map);
 
-                let message_id = Ulid::new();
+                let message_id = Ulid::r#gen();
                 crate::sending::send_reliable_edu(
                     target_user_id.server_name(),
                     &Edu::DirectToDevice(DirectDeviceContent {
