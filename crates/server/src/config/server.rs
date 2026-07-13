@@ -754,13 +754,6 @@ pub struct ServerConfig {
     #[serde(default)]
     pub http_client: HttpClientConfig,
 
-    /// Enables configuration reload when the server receives SIGUSR1 on
-    /// supporting platforms.
-    ///
-    /// default: true
-    #[serde(default = "default_true")]
-    pub config_reload_signal: bool,
-
     /// Toggles ignore checking/validating TLS certificates
     ///
     /// This applies to everything, including URL previews, federation requests,
