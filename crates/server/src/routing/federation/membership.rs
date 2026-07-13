@@ -7,11 +7,13 @@ use serde_json::value::to_raw_value;
 
 use crate::core::UnixMillis;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
-use crate::core::events::{StateEventType, TimelineEventType};
+use crate::core::events::{AnyStrippedStateEvent, StateEventType, TimelineEventType};
 use crate::core::federation::membership::*;
 use crate::core::identifiers::*;
 use crate::core::room::{JoinRule, RoomEventReqArgs};
-use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, to_canonical_object};
+use crate::core::serde::{
+    CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, to_canonical_object,
+};
 use crate::data::connect;
 use crate::data::room::NewDbEvent;
 use crate::data::schema::*;
@@ -202,7 +204,11 @@ async fn invite_user(
         return Err(MatrixError::forbidden("this server does not allow room invites", None).into());
     }
 
-    let mut invite_state = body.invite_room_state.clone();
+    let mut invite_state = body
+        .invite_room_state
+        .iter()
+        .map(|event| stripped_invite_state_event(event))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // If we are active in the room, the remote server will notify us about the join via /send.
     // If we are not in the room, we need to manually
@@ -284,6 +290,35 @@ async fn invite_user(
     json_ok(InviteUserResBodyV2 {
         event: crate::sending::convert_to_outgoing_federation_event(signed_event).await,
     })
+}
+
+/// Convert federation invite state to the stripped form exposed to clients.
+///
+/// Current senders provide full PDUs, while pre-v1.16 senders may still send
+/// stripped state. Both forms contain these four common fields.
+fn stripped_invite_state_event(
+    event: &RawJsonValue,
+) -> Result<RawJson<AnyStrippedStateEvent>, MatrixError> {
+    let event: JsonValue = serde_json::from_str(event.get())
+        .map_err(|_| MatrixError::invalid_param("invite state event is invalid JSON"))?;
+    let event = event
+        .as_object()
+        .ok_or_else(|| MatrixError::invalid_param("invite state event is not an object"))?;
+
+    let field = |name| {
+        event.get(name).cloned().ok_or_else(|| {
+            MatrixError::invalid_param(format!("invite state event is missing {name}"))
+        })
+    };
+    let stripped = json!({
+        "content": field("content")?,
+        "sender": field("sender")?,
+        "state_key": field("state_key")?,
+        "type": field("type")?,
+    });
+
+    RawJson::from_value(&stripped)
+        .map_err(|_| MatrixError::invalid_param("invite state event is invalid"))
 }
 
 /// # `GET /_matrix/federation/v1/make_leave/{roomId}/userId}`
@@ -478,4 +513,67 @@ async fn send_leave(
         error!("failed to notify leave event: {e}");
     }
     empty_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::value::to_raw_value;
+    use serde_json::{Value, json};
+
+    use super::stripped_invite_state_event;
+
+    #[test]
+    fn strips_full_federation_pdu_for_client_state() {
+        let pdu = to_raw_value(&json!({
+            "auth_events": ["$auth"],
+            "content": { "name": "Federated room" },
+            "depth": 7,
+            "hashes": { "sha256": "hash" },
+            "origin_server_ts": 1,
+            "prev_events": ["$prev"],
+            "room_id": "!room:example.org",
+            "sender": "@alice:example.org",
+            "signatures": { "example.org": { "ed25519:key": "sig" } },
+            "state_key": "",
+            "type": "m.room.name"
+        }))
+        .unwrap();
+
+        let stripped = stripped_invite_state_event(&pdu).unwrap();
+        let value: Value = serde_json::from_str(stripped.as_str()).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "content": { "name": "Federated room" },
+                "sender": "@alice:example.org",
+                "state_key": "",
+                "type": "m.room.name"
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_legacy_stripped_invite_state() {
+        let event = to_raw_value(&json!({
+            "content": { "join_rule": "invite" },
+            "sender": "@alice:example.org",
+            "state_key": "",
+            "type": "m.room.join_rules"
+        }))
+        .unwrap();
+
+        assert!(stripped_invite_state_event(&event).is_ok());
+    }
+
+    #[test]
+    fn rejects_invite_state_without_required_common_fields() {
+        let event = to_raw_value(&json!({
+            "content": {},
+            "type": "m.room.name"
+        }))
+        .unwrap();
+
+        assert!(stripped_invite_state_event(&event).is_err());
+    }
 }
