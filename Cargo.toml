@@ -53,7 +53,7 @@ diesel-async = { version = "0.9.1" }
 # diesel_full_text_search = { version = "2.2.0" }
 diesel_migrations = "2.3.2"
 dotenvy = "0.15.7"
-ed25519-dalek = "2.2.0"
+ed25519-dalek = "3.0.0"
 either = { version = "1.16.0", default-features = false }
 fast32 = "1.0.3"
 figment = "0.10.19"
