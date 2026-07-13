@@ -116,7 +116,7 @@ impl Console {
         }
 
         debug!("session ending");
-        // Drop the command channel sender so that admin::start()'s event loop
+        // Drop the command channel sender so that the AdminService event loop
         // will receive None from receiver.recv() and exit.
         if let Ok(mut channel) = crate::admin::executor().channel.write() {
             channel.take();
