@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 
 use super::{
-    EduBuf, EduVec, MPSC_RECEIVER, MPSC_SENDER, OutgoingKind, SELECT_EDU_LIMIT,
-    SELECT_PRESENCE_LIMIT, SELECT_RECEIPT_LIMIT, SendingEventType, TransactionStatus,
+    EduBuf, EduVec, MPSC_SENDER, OutgoingKind, SELECT_EDU_LIMIT, SELECT_PRESENCE_LIMIT,
+    SELECT_RECEIPT_LIMIT, SendingEventType, TransactionStatus,
 };
 use crate::core::device::DeviceListUpdateContent;
 use crate::core::events::receipt::{ReceiptContent, ReceiptData, ReceiptMap, ReceiptType};
@@ -20,21 +20,38 @@ use crate::exts::*;
 use crate::room::state;
 use crate::{AppResult, data, room};
 
-pub fn start() {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let _ = MPSC_SENDER.set(sender);
-    let _ = MPSC_RECEIVER.set(Mutex::new(receiver));
-    tokio::spawn(async move {
-        process().await.unwrap();
-    });
+/// A configured sending guard whose worker has not been started yet.
+///
+/// Keeping initialization separate from `start` lets startup admin commands
+/// enqueue durable requests without dispatching network traffic in
+/// `--server false` mode.
+#[must_use = "call Guard::start when the server is enabled"]
+pub struct Guard {
+    receiver: mpsc::UnboundedReceiver<(OutgoingKind, SendingEventType, i64)>,
 }
 
-async fn process() -> AppResult<()> {
-    let mut receiver = MPSC_RECEIVER
-        .get()
-        .expect("receiver should exist")
-        .lock()
-        .await;
+pub fn init() -> Guard {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    assert!(
+        MPSC_SENDER.set(sender).is_ok(),
+        "sending guard is already initialized"
+    );
+    Guard { receiver }
+}
+
+impl Guard {
+    pub fn start(self) {
+        tokio::spawn(async move {
+            if let Err(error) = process(self.receiver).await {
+                error!(?error, "sending guard stopped");
+            }
+        });
+    }
+}
+
+async fn process(
+    mut receiver: mpsc::UnboundedReceiver<(OutgoingKind, SendingEventType, i64)>,
+) -> AppResult<()> {
     let mut futures = FuturesUnordered::new();
     let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
     // EDU selection windows of in-flight transactions; persisted as the

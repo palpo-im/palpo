@@ -213,9 +213,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // are up-to-date with the configured registration directory.
     let _ = crate::appservices().await;
 
-    // Startup admin commands can enqueue federation, appservice, or push work.
-    // Initialize the sending worker before executing them.
-    crate::sending::guard::start();
+    // Startup admin commands can enqueue federation, appservice, or push work,
+    // so prepare the wakeup queue for those durable requests before executing
+    // them. The network worker starts only after the no-server exit below.
+    let sending_guard = crate::sending::guard::init();
 
     let console = args.console || conf.admin.console_automatic;
     let admin = crate::admin::init(args.execute).await?;
@@ -233,6 +234,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         return Ok(());
     }
+
+    sending_guard.start();
 
     tokio::spawn(async move {
         if let Err(error) = admin.run(console).await {

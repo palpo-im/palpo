@@ -11,7 +11,7 @@ use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
 use serde::Deserialize;
 use serde_json::value::to_raw_value;
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::core::appservice::Registration;
 use crate::core::appservice::event::{PushEventsReqBody, push_events_request};
@@ -55,9 +55,6 @@ pub const EDU_LIMIT: usize = 100;
 // pub(super) type Key = Vec<u8>;
 pub static MPSC_SENDER: OnceLock<mpsc::UnboundedSender<(OutgoingKind, SendingEventType, i64)>> =
     OnceLock::new();
-pub static MPSC_RECEIVER: OnceLock<
-    Mutex<mpsc::UnboundedReceiver<(OutgoingKind, SendingEventType, i64)>>,
-> = OnceLock::new();
 
 pub fn sender() -> mpsc::UnboundedSender<(OutgoingKind, SendingEventType, i64)> {
     MPSC_SENDER.get().expect("sender should set").clone()
