@@ -26,6 +26,12 @@ pub(super) fn router() -> Router {
                     .delete(super::account::delete_account_data_msc3391),
                 )
                 .push(
+                    Router::with_path(
+                        "org.matrix.msc3391/user/{user_id}/rooms/{room_id}/account_data/{account_type}",
+                    )
+                    .delete(super::account::delete_room_account_data_msc3391),
+                )
+                .push(
                     Router::with_path("org.matrix.simplified_msc3575/sync")
                         .post(super::sync_msc4186::sync_events_v5),
                 )
