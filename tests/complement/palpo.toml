@@ -41,6 +41,9 @@ trusted_servers = []
 
 appservice_registration_dir = "/complement/appservice"
 
+# Complement homeservers communicate over private Docker networks.
+ip_range_denylist = []
+
 # Disable rate limiting for Complement tests
 [rc_login]
 per_second = 9999.0
@@ -57,8 +60,6 @@ burst = 9999
 [rc_message]
 per_second = 9999.0
 burst = 9999
-
-ip_range_denylist = []
 
 [db]
 url = "postgres://postgres:postgres@127.0.0.1:5432/palpo"
@@ -89,4 +90,3 @@ ansi_colors = false
 # [keypair]
 # document = "MFECAQEwBQYDK2VwBCIEIJXK7IX/PTIr/9VrBwkdwJw+aeXjcNSSnAOetAY0Hfl/gSEAELqWFgDu6Ap47RzE1ehee2XCvGamRzu6u0N66lsgOJ0="
 # version = "1"
-
