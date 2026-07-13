@@ -11,7 +11,7 @@ use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
 use serde::Deserialize;
 use serde_json::value::to_raw_value;
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::core::appservice::Registration;
 use crate::core::appservice::event::{PushEventsReqBody, push_events_request};
@@ -68,39 +68,32 @@ pub(crate) const WAKEUP_QUEUE_CAPACITY: usize = 4096;
 type WakeupMessage = (OutgoingKind, SendingEventType, i64);
 
 pub static MPSC_SENDER: OnceLock<mpsc::Sender<WakeupMessage>> = OnceLock::new();
-pub static MPSC_RECEIVER: OnceLock<Mutex<mpsc::Receiver<WakeupMessage>>> = OnceLock::new();
 
-enum NotifyOutcome {
-    Queued,
-    DroppedFull,
-    Closed,
-}
-
-fn try_notify(sender: &mpsc::Sender<WakeupMessage>, message: WakeupMessage) -> NotifyOutcome {
+fn notify_sender(sender: &mpsc::Sender<WakeupMessage>, message: WakeupMessage) -> AppResult<()> {
     use tokio::sync::mpsc::error::TrySendError;
 
     match sender.try_send(message) {
-        Ok(()) => NotifyOutcome::Queued,
-        Err(TrySendError::Full(_)) => NotifyOutcome::DroppedFull,
-        Err(TrySendError::Closed(_)) => NotifyOutcome::Closed,
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            warn_wakeup_queue_full();
+            Ok(())
+        }
+        Err(TrySendError::Closed(_)) => Err(AppError::internal("sending wakeup queue is closed")),
     }
 }
 
 /// Wake the sending guard for a request that was just persisted.
 ///
-/// Dropping the wakeup is safe: the request row already exists in the
-/// database, and the guard's periodic sweep starts transactions for
-/// destinations whose wakeups were lost.
-fn notify(outgoing_kind: OutgoingKind, event: SendingEventType, id: i64) {
-    let Some(sender) = MPSC_SENDER.get() else {
-        error!("sending wakeup queue is not initialized");
-        return;
-    };
-    match try_notify(sender, (outgoing_kind, event, id)) {
-        NotifyOutcome::Queued => {}
-        NotifyOutcome::DroppedFull => warn_wakeup_queue_full(),
-        NotifyOutcome::Closed => error!("sending wakeup queue is closed"),
-    }
+/// Dropping a wakeup because the queue is full is safe: the request row
+/// already exists in the database, and the guard's periodic sweep starts
+/// transactions for destinations whose wakeups were lost. A missing or closed
+/// queue means there is no guard to perform that recovery, so it is returned
+/// to the caller as an error.
+fn notify(outgoing_kind: OutgoingKind, event: SendingEventType, id: i64) -> AppResult<()> {
+    let sender = MPSC_SENDER
+        .get()
+        .ok_or_else(|| AppError::internal("sending wakeup queue is not initialized"))?;
+    notify_sender(sender, (outgoing_kind, event, id))
 }
 
 /// Warn about a full wakeup queue at most once per second, since the queue
@@ -250,7 +243,7 @@ pub async fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> 
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
     if let Some(key) = keys.into_iter().next() {
-        notify(outgoing_kind, event, key);
+        notify(outgoing_kind, event, key)?;
     }
 
     Ok(())
@@ -312,7 +305,7 @@ pub async fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
     )
     .await?;
     for ((outgoing_kind, event_type), key) in requests.into_iter().zip(keys) {
-        notify(outgoing_kind, event_type, key);
+        notify(outgoing_kind, event_type, key)?;
     }
 
     Ok(())
@@ -363,7 +356,7 @@ pub async fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
     )
     .await?;
     for ((outgoing_kind, event), key) in requests.into_iter().zip(keys) {
-        notify(outgoing_kind, event, key);
+        notify(outgoing_kind, event, key)?;
     }
 
     Ok(())
@@ -389,7 +382,7 @@ pub async fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
     let key = queue_request(&outgoing_kind, &event).await?;
-    notify(outgoing_kind, event, key);
+    notify(outgoing_kind, event, key)?;
 
     Ok(())
 }
@@ -416,7 +409,7 @@ pub async fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppR
     let event = SendingEventType::Edu(serialized);
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
     if let Some(key) = keys.into_iter().next() {
-        notify(outgoing_kind, event, key);
+        notify(outgoing_kind, event, key)?;
     }
 
     Ok(())
@@ -428,7 +421,7 @@ pub async fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> App
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
     if let Some(key) = keys.into_iter().next() {
-        notify(outgoing_kind, event, key);
+        notify(outgoing_kind, event, key)?;
     }
 
     Ok(())
@@ -1098,31 +1091,19 @@ mod tests {
     use crate::config::FederationConfig;
 
     #[tokio::test]
-    async fn full_wakeup_queue_drops_wakeups_without_failing() {
+    async fn full_wakeup_queue_drops_wakeups_but_closed_queue_fails() {
         let (sender, mut receiver) = mpsc::channel(1);
         let kind = OutgoingKind::Appservice("test".to_owned());
         let event = SendingEventType::Flush;
 
-        assert!(matches!(
-            try_notify(&sender, (kind.clone(), event.clone(), 1)),
-            NotifyOutcome::Queued
-        ));
-        assert!(matches!(
-            try_notify(&sender, (kind.clone(), event.clone(), 2)),
-            NotifyOutcome::DroppedFull
-        ));
+        notify_sender(&sender, (kind.clone(), event.clone(), 1)).unwrap();
+        notify_sender(&sender, (kind.clone(), event.clone(), 2)).unwrap();
 
         receiver.recv().await.expect("first wakeup stays queued");
-        assert!(matches!(
-            try_notify(&sender, (kind.clone(), event.clone(), 3)),
-            NotifyOutcome::Queued
-        ));
+        notify_sender(&sender, (kind.clone(), event.clone(), 3)).unwrap();
 
         drop(receiver);
-        assert!(matches!(
-            try_notify(&sender, (kind, event, 4)),
-            NotifyOutcome::Closed
-        ));
+        assert!(notify_sender(&sender, (kind, event, 4)).is_err());
     }
 
     #[test]

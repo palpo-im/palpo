@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 
 use super::{
-    EduBuf, EduVec, MPSC_RECEIVER, MPSC_SENDER, OutgoingKind, SELECT_EDU_LIMIT,
-    SELECT_PRESENCE_LIMIT, SELECT_RECEIPT_LIMIT, SendingEventType, TransactionStatus,
+    EduBuf, EduVec, MPSC_SENDER, OutgoingKind, SELECT_EDU_LIMIT, SELECT_PRESENCE_LIMIT,
+    SELECT_RECEIPT_LIMIT, SendingEventType, TransactionStatus,
 };
 use crate::core::device::DeviceListUpdateContent;
 use crate::core::events::receipt::{ReceiptContent, ReceiptData, ReceiptMap, ReceiptType};
@@ -27,19 +27,18 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn start() {
     let (sender, receiver) = mpsc::channel(super::WAKEUP_QUEUE_CAPACITY);
-    let _ = MPSC_SENDER.set(sender);
-    let _ = MPSC_RECEIVER.set(Mutex::new(receiver));
+    if MPSC_SENDER.set(sender).is_err() {
+        error!("sending guard is already started");
+        return;
+    }
     tokio::spawn(async move {
-        process().await.unwrap();
+        if let Err(error) = process(receiver).await {
+            error!(?error, "sending guard stopped");
+        }
     });
 }
 
-async fn process() -> AppResult<()> {
-    let mut receiver = MPSC_RECEIVER
-        .get()
-        .expect("receiver should exist")
-        .lock()
-        .await;
+async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResult<()> {
     let mut futures = FuturesUnordered::new();
     let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
     // EDU selection windows of in-flight transactions; persisted as the
