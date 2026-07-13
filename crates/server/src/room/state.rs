@@ -24,7 +24,7 @@ use crate::core::events::{AnyStrippedStateEvent, StateEventType, TimelineEventTy
 use crate::core::identifiers::*;
 use crate::core::room::{AllowRule, JoinRule, RoomMembership};
 use crate::core::room_version_rules::AuthorizationRules;
-use crate::core::serde::{JsonValue, RawJson};
+use crate::core::serde::{JsonValue, RawJson, RawJsonValue};
 use crate::core::state::StateMap;
 use crate::core::{EventId, OwnedEventId, RoomId, UserId};
 use crate::data::connect;
@@ -33,7 +33,7 @@ use crate::data::schema::*;
 use crate::event::{PduEvent, update_frame_id, update_frame_id_by_sn};
 use crate::room::timeline;
 use crate::{
-    AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, membership, room, utils,
+    AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, membership, room, sending, utils,
 };
 
 pub static SERVER_VISIBILITY_CACHE: LazyLock<Mutex<LruCache<(OwnedServerName, i64), bool>>> =
@@ -269,6 +269,55 @@ pub async fn summary_stripped(event: &PduEvent) -> AppResult<Vec<RawJson<AnyStri
 
     state.push(event.to_stripped_state_event().await);
     Ok(state)
+}
+
+/// Build the room-state summary used by federation invites.
+///
+/// Matrix v1.16 requires every entry to be a full PDU in the room version's
+/// wire format and requires the room's create event to be present.
+pub async fn summary_pdus(event: &PduEvent) -> AppResult<Vec<Box<RawJsonValue>>> {
+    let cells: [(&StateEventType, &str); 8] = [
+        (&StateEventType::RoomCreate, ""),
+        (&StateEventType::RoomJoinRules, ""),
+        (&StateEventType::RoomCanonicalAlias, ""),
+        (&StateEventType::RoomName, ""),
+        (&StateEventType::RoomAvatar, ""),
+        (&StateEventType::RoomMember, event.sender.as_str()),
+        (&StateEventType::RoomEncryption, ""),
+        (&StateEventType::RoomTopic, ""),
+    ];
+
+    let create = super::get_state(&event.room_id, &StateEventType::RoomCreate, "", None)
+        .await
+        .map_err(|_| AppError::internal("room create event is missing from invite state"))?;
+
+    let mut events = vec![create];
+    for (event_type, state_key) in cells.into_iter().skip(1) {
+        if let Ok(state_event) = super::get_state(&event.room_id, event_type, state_key, None).await
+        {
+            events.push(state_event);
+        }
+    }
+
+    let mut pdus = Vec::with_capacity(events.len() + 1);
+    for state_event in events {
+        let json = timeline::get_pdu_json(&state_event.event_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::internal(format!(
+                    "state event {} is missing its JSON data",
+                    state_event.event_id
+                ))
+            })?;
+        pdus.push(sending::convert_to_outgoing_federation_event(json).await);
+    }
+
+    let invite_json = timeline::get_pdu_json(&event.event_id)
+        .await?
+        .ok_or_else(|| AppError::internal("invite event is missing its JSON data"))?;
+    pdus.push(sending::convert_to_outgoing_federation_event(invite_json).await);
+
+    Ok(pdus)
 }
 
 pub async fn get_forward_extremities(room_id: &RoomId) -> AppResult<Vec<OwnedEventId>> {
