@@ -111,7 +111,7 @@ cookie = { workspace = true }
 date_header = { workspace = true }
 diesel = { workspace = true, features = ["postgres", "serde_json", "chrono", "numeric", "r2d2"]}
 dotenvy = { workspace = true }
-ed25519-dalek = { workspace = true, features = ["pkcs8", "rand_core"] }
+ed25519-dalek = { workspace = true, features = ["alloc", "pkcs8", "rand_core"] }
 form_urlencoded = { workspace = true }
 futures-util = { workspace = true, features = ["io"] }
 globwalk = { workspace = true }
