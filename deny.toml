@@ -10,12 +10,6 @@ ignore = [
     # `paste` is unmaintained; pulled in by rav1e (via ravif <- image).
     # No fixed release exists. Drop this once rav1e replaces paste.
     { id = "RUSTSEC-2024-0436", reason = "rav1e depends on the unmaintained paste crate; no upgrade path yet" },
-    # quick-xml < 0.41 DoS advisories. reqsign-aws-v4 3.0.0 (via opendal's S3
-    # service) requires quick-xml ^0.39, so the fixed 0.41 cannot be selected.
-    # Drop these once reqsign-aws-v4 moves to quick-xml >= 0.41. The exposure
-    # is limited to parsing S3 API responses from the configured object store.
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 pinned by reqsign-aws-v4 3.0.0; only reachable parsing responses from the configured S3 endpoint" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39 pinned by reqsign-aws-v4 3.0.0; only reachable parsing responses from the configured S3 endpoint" },
 ]
 
 [licenses]
