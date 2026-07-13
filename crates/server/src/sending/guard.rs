@@ -95,7 +95,7 @@ async fn process() -> AppResult<()> {
                         }
 
                         // Find events that have been added since starting the last request
-                        let new_events = super::queued_requests(&outgoing_kind).await.unwrap_or_default().into_iter().take(30).collect::<Vec<_>>();
+                        let new_events = super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await.unwrap_or_default();
 
                         if !new_events.is_empty() {
                             // Insert pdus we found
@@ -179,8 +179,8 @@ async fn process() -> AppResult<()> {
                         // picks queued requests up when the transaction settles.
                         continue;
                     }
-                    let new_events = match super::queued_requests(&outgoing_kind).await {
-                        Ok(events) => events.into_iter().take(30).collect::<Vec<_>>(),
+                    let new_events = match super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await {
+                        Ok(events) => events,
                         Err(e) => {
                             error!(?outgoing_kind, error = ?e, "failed to load queued requests for sweep");
                             continue;

@@ -40,6 +40,11 @@ const SELECT_RECEIPT_LIMIT: usize = 256;
 const SELECT_EDU_LIMIT: usize = EDU_LIMIT - 2;
 const DEQUEUE_LIMIT: usize = 48;
 
+/// Maximum number of queued requests pulled into one transaction per
+/// destination. Bounds the per-destination memory the sending guard can use
+/// when draining a backlog.
+const QUEUED_REQUEST_LIMIT: usize = 30;
+
 const EDU_BUF_CAP: usize = 128;
 const EDU_VEC_CAP: usize = 1;
 
@@ -938,11 +943,19 @@ async fn queued_kinds() -> AppResult<Vec<OutgoingKind>> {
         .collect())
 }
 
-async fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
+/// Load up to `limit` queued (not yet active) requests for a destination,
+/// oldest first. The limit is applied in SQL so a large backlog for one
+/// destination is never fully materialized into memory.
+async fn queued_requests(
+    outgoing_kind: &OutgoingKind,
+    limit: usize,
+) -> AppResult<Vec<(i64, SendingEventType)>> {
     let mut query = outgoing_requests::table
         .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
         // Exclude already active requests (state="pending" means being processed)
         .filter(outgoing_requests::state.ne("pending"))
+        .order_by(outgoing_requests::id.asc())
+        .limit(limit as i64)
         .into_boxed();
 
     // Add specific filters based on OutgoingKind
