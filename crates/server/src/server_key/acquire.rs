@@ -180,7 +180,7 @@ async fn acquire_origin(
             if let Err(e) = add_signing_keys(server_keys.clone()).await {
                 error!(?origin, "failed to persist fetched signing keys: {e}");
             }
-            key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
+            retain_missing_key_ids(&mut key_ids, &server_keys);
         }
     }
 
@@ -224,11 +224,18 @@ async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKe
     }
 
     if let Some(key_ids) = missing.get_mut(server) {
-        key_ids.retain(|key_id| key_exists(&server_keys, key_id));
+        retain_missing_key_ids(key_ids, &server_keys);
         if key_ids.is_empty() {
             missing.remove(server);
         }
     }
+}
+
+fn retain_missing_key_ids(
+    key_ids: &mut Vec<OwnedServerSigningKeyId>,
+    server_keys: &ServerSigningKeys,
+) {
+    key_ids.retain(|key_id| !key_exists(server_keys, key_id));
 }
 
 fn keys_count(batch: &Batch) -> usize {
@@ -239,10 +246,10 @@ fn keys_count(batch: &Batch) -> usize {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::missing_local_key_ids;
-    use crate::core::OwnedServerSigningKeyId;
-    use crate::core::federation::discovery::VerifyKey;
+    use super::{missing_local_key_ids, retain_missing_key_ids};
+    use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
     use crate::core::serde::Base64;
+    use crate::core::{OwnedServerSigningKeyId, UnixMillis};
 
     #[test]
     fn acquire_locals_treats_our_configured_signing_key_as_available() {
@@ -263,5 +270,32 @@ mod tests {
             missing.is_empty(),
             "the local configured signing key should not be marked missing"
         );
+    }
+
+    #[test]
+    fn notary_results_remove_keys_that_are_no_longer_missing() {
+        let returned_key_id: OwnedServerSigningKeyId = "ed25519:returned"
+            .try_into()
+            .expect("returned key id should be valid");
+        let still_missing_key_id: OwnedServerSigningKeyId = "ed25519:missing"
+            .try_into()
+            .expect("missing key id should be valid");
+        let mut server_keys = ServerSigningKeys::new(
+            "notary.example.org"
+                .try_into()
+                .expect("server name should be valid"),
+            UnixMillis(0),
+        );
+        server_keys.verify_keys.insert(
+            returned_key_id.clone(),
+            VerifyKey {
+                key: Base64::new(vec![1, 2, 3]),
+            },
+        );
+        let mut missing = vec![returned_key_id, still_missing_key_id.clone()];
+
+        retain_missing_key_ids(&mut missing, &server_keys);
+
+        assert_eq!(missing, vec![still_missing_key_id]);
     }
 }
