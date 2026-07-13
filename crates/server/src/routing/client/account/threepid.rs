@@ -52,16 +52,18 @@ async fn bind(_aa: AuthArgs) -> EmptyResult {
 
 /// #POST /_matrix/client/v3/account/3pid/unbind
 ///
-/// - 404: this server stores no third-party identifiers, so there is nothing to unbind.
+/// - `M_THREEPID_NOT_FOUND`: this server stores no third-party identifiers, so there is nothing to
+///   unbind.
 #[endpoint]
 async fn unbind(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::not_found("User has no third-party identifiers.").into())
+    Err(MatrixError::threepid_not_found("User has no third-party identifiers.").into())
 }
 
 /// #POST /_matrix/client/v3/account/3pid/delete
 ///
-/// - 404: this server stores no third-party identifiers, so there is nothing to delete.
+/// - `M_THREEPID_NOT_FOUND`: this server stores no third-party identifiers, so there is nothing to
+///   delete.
 #[endpoint]
 async fn delete(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::not_found("User has no third-party identifiers.").into())
+    Err(MatrixError::threepid_not_found("User has no third-party identifiers.").into())
 }
