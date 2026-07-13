@@ -96,11 +96,16 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                         // Find events that have been added since starting the last request
                         let new_events = super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await.unwrap_or_default();
 
-                        if !new_events.is_empty() {
-                            // Insert pdus we found
-                            super::mark_as_active(&new_events).await?;
+                        let mut events = if new_events.is_empty() {
+                            Vec::new()
+                        } else {
+                            // Claim only rows that are still queued. Another
+                            // process may have claimed or completed them since
+                            // the select above.
+                            super::claim_queued_requests(&new_events).await?
+                        };
 
-                            let mut events = new_events.into_iter().map(|(_, event)| event).collect::<Vec<_>>();
+                        if !events.is_empty() {
                             // Piggyback EDUs that accumulated while the previous
                             // transaction was in flight, so a busy destination
                             // does not starve presence/receipt/device-list updates.
@@ -151,14 +156,39 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                     }
                 };
             },
-            Some((outgoing_kind, event, id)) = receiver.recv() => {
-                if let Ok(Some(events)) = select_events(
+            Some(outgoing_kind) = receiver.recv() => {
+                if current_transaction_status.contains_key(&outgoing_kind) {
+                    // A running or backing-off transaction will load queued
+                    // rows when it settles or retries.
+                    continue;
+                }
+                let new_events = match super::queued_requests(
                     &outgoing_kind,
-                    vec![(id, event)],
+                    super::QUEUED_REQUEST_LIMIT,
+                ).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        error!(?outgoing_kind, error = ?e, "failed to load queued requests for wakeup");
+                        continue;
+                    }
+                };
+                if new_events.is_empty() {
+                    // The periodic sweep already handled this wakeup.
+                    continue;
+                }
+                match select_events(
+                    &outgoing_kind,
+                    new_events,
                     &mut current_transaction_status,
                     &mut pending_edu_cursors,
                 ).await {
-                    futures.push(super::send_events(outgoing_kind, events));
+                    Ok(Some(events)) => {
+                        futures.push(super::send_events(outgoing_kind, events));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        error!(?outgoing_kind, error = ?e, "failed to select queued requests for wakeup");
+                    }
                 }
             }
             _ = sweep.tick() => {
@@ -188,13 +218,19 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                     if new_events.is_empty() {
                         continue;
                     }
-                    if let Ok(Some(events)) = select_events(
+                    match select_events(
                         &outgoing_kind,
                         new_events,
                         &mut current_transaction_status,
                         &mut pending_edu_cursors,
                     ).await {
-                        futures.push(super::send_events(outgoing_kind, events));
+                        Ok(Some(events)) => {
+                            futures.push(super::send_events(outgoing_kind, events));
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            error!(?outgoing_kind, error = ?e, "failed to select queued requests for sweep");
+                        }
                     }
                 }
             }
@@ -326,9 +362,19 @@ async fn select_events(
             events.push(e);
         }
     } else {
-        super::mark_as_active(&new_events).await?;
-        for (_, e) in new_events {
-            events.push(e);
+        events = match super::claim_queued_requests(&new_events).await {
+            Ok(events) => events,
+            Err(error) => {
+                current_transaction_status.remove(outgoing_kind);
+                return Err(error);
+            }
+        };
+        if events.is_empty() {
+            // The wakeup was stale: its row was already claimed or deleted by
+            // the periodic sweep (or another process). Undo the Running state
+            // inserted above and do not start an empty transaction.
+            current_transaction_status.remove(outgoing_kind);
+            return Ok(None);
         }
     }
 

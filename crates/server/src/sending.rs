@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
@@ -65,7 +65,7 @@ pub const EDU_LIMIT: usize = 100;
 /// guard's periodic sweep picks the request up from the database instead.
 pub(crate) const WAKEUP_QUEUE_CAPACITY: usize = 4096;
 
-type WakeupMessage = (OutgoingKind, SendingEventType, i64);
+type WakeupMessage = OutgoingKind;
 
 pub static MPSC_SENDER: OnceLock<mpsc::Sender<WakeupMessage>> = OnceLock::new();
 
@@ -89,11 +89,11 @@ fn notify_sender(sender: &mpsc::Sender<WakeupMessage>, message: WakeupMessage) -
 /// transactions for destinations whose wakeups were lost. A missing or closed
 /// queue means there is no guard to perform that recovery, so it is returned
 /// to the caller as an error.
-fn notify(outgoing_kind: OutgoingKind, event: SendingEventType, id: i64) -> AppResult<()> {
+fn notify(outgoing_kind: OutgoingKind) -> AppResult<()> {
     let sender = MPSC_SENDER
         .get()
         .ok_or_else(|| AppError::internal("sending wakeup queue is not initialized"))?;
-    notify_sender(sender, (outgoing_kind, event, id))
+    notify_sender(sender, outgoing_kind)
 }
 
 /// Warn about a full wakeup queue at most once per second, since the queue
@@ -242,8 +242,8 @@ pub async fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> 
     let outgoing_kind = OutgoingKind::Push(user.to_owned(), pushkey);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
-    if let Some(key) = keys.into_iter().next() {
-        notify(outgoing_kind, event, key)?;
+    if keys.into_iter().next().is_some() {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -304,8 +304,8 @@ pub async fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
             .collect::<Vec<_>>(),
     )
     .await?;
-    for ((outgoing_kind, event_type), key) in requests.into_iter().zip(keys) {
-        notify(outgoing_kind, event_type, key)?;
+    for ((outgoing_kind, _), _) in requests.into_iter().zip(keys) {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -355,8 +355,8 @@ pub async fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
             .collect::<Vec<_>>(),
     )
     .await?;
-    for ((outgoing_kind, event), key) in requests.into_iter().zip(keys) {
-        notify(outgoing_kind, event, key)?;
+    for ((outgoing_kind, _), _) in requests.into_iter().zip(keys) {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -381,8 +381,8 @@ pub async fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
-    let key = queue_request(&outgoing_kind, &event).await?;
-    notify(outgoing_kind, event, key)?;
+    queue_request(&outgoing_kind, &event).await?;
+    notify(outgoing_kind)?;
 
     Ok(())
 }
@@ -408,8 +408,8 @@ pub async fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppR
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized);
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
-    if let Some(key) = keys.into_iter().next() {
-        notify(outgoing_kind, event, key)?;
+    if keys.into_iter().next().is_some() {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -420,8 +420,8 @@ pub async fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> App
     let outgoing_kind = OutgoingKind::Appservice(appservice_id);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
-    if let Some(key) = keys.into_iter().next() {
-        notify(outgoing_kind, event, key)?;
+    if keys.into_iter().next().is_some() {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -981,23 +981,43 @@ async fn queued_requests(
         })
         .collect())
 }
-async fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
-    for (id, e) in events {
-        let value = if let SendingEventType::Edu(value) = &e {
-            &**value
-        } else {
-            &[]
-        };
-        diesel::update(outgoing_requests::table.find(id))
-            .set((
-                outgoing_requests::data.eq(value),
-                outgoing_requests::state.eq("pending"),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
-    }
+/// Atomically claim queued requests for one sending transaction.
+///
+/// A request may be claimed or deleted after it is selected. Only return
+/// events whose queued row still existed and transitioned to `pending`, so
+/// concurrent recovery cannot send an already-completed request.
+async fn claim_queued_requests(
+    events: &[(i64, SendingEventType)],
+) -> AppResult<Vec<SendingEventType>> {
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            let mut claimed = Vec::with_capacity(events.len());
+            for (id, event) in events {
+                let value = if let SendingEventType::Edu(value) = event {
+                    &**value
+                } else {
+                    &[]
+                };
+                let updated = diesel::update(
+                    outgoing_requests::table
+                        .find(id)
+                        .filter(outgoing_requests::state.ne("pending")),
+                )
+                .set((
+                    outgoing_requests::data.eq(value),
+                    outgoing_requests::state.eq("pending"),
+                ))
+                .execute(conn)
+                .await?;
+                if updated == 1 {
+                    claimed.push(event.clone());
+                }
+            }
 
-    Ok(())
+            Ok(claimed)
+        })
+        .await
 }
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
@@ -1094,16 +1114,18 @@ mod tests {
     async fn full_wakeup_queue_drops_wakeups_but_closed_queue_fails() {
         let (sender, mut receiver) = mpsc::channel(1);
         let kind = OutgoingKind::Appservice("test".to_owned());
-        let event = SendingEventType::Flush;
 
-        notify_sender(&sender, (kind.clone(), event.clone(), 1)).unwrap();
-        notify_sender(&sender, (kind.clone(), event.clone(), 2)).unwrap();
+        notify_sender(&sender, kind.clone()).unwrap();
+        notify_sender(&sender, kind.clone()).unwrap();
 
-        receiver.recv().await.expect("first wakeup stays queued");
-        notify_sender(&sender, (kind.clone(), event.clone(), 3)).unwrap();
+        assert_eq!(
+            receiver.recv().await.expect("first wakeup stays queued"),
+            kind
+        );
+        notify_sender(&sender, kind.clone()).unwrap();
 
         drop(receiver);
-        assert!(notify_sender(&sender, (kind, event, 4)).is_err());
+        assert!(notify_sender(&sender, kind).is_err());
     }
 
     #[test]
