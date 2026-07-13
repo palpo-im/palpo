@@ -147,10 +147,7 @@ fn kdl_node_to_json(node: &KdlNode) -> serde_json::Value {
         }
 
         // Check if all children are dash nodes (KDL array convention)
-        let all_dashes = children
-            .nodes()
-            .iter()
-            .all(|n| n.name().to_string() == "-");
+        let all_dashes = children.nodes().iter().all(|n| n.name().to_string() == "-");
         if all_dashes {
             let arr: Vec<serde_json::Value> =
                 children.nodes().iter().map(kdl_node_to_json).collect();
@@ -220,16 +217,12 @@ mod tests {
             .parse()
             .expect("empty KDL list should parse");
 
-        assert_eq!(
-            kdl_doc_to_json(&doc),
-            json!({ "ip_range_denylist": [] })
-        );
+        assert_eq!(kdl_doc_to_json(&doc), json!({ "ip_range_denylist": [] }));
     }
 
     #[test]
     fn complement_toml_preserves_empty_denylist_opt_out() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/complement/palpo.toml");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/complement/palpo.toml");
         let config = figment_from_path(path)
             .extract::<ServerConfig>()
             .expect("Complement TOML should deserialize");
