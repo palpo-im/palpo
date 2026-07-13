@@ -548,11 +548,6 @@
 #
 # http_client =
 
-# Enables configuration reload when the server receives SIGUSR1 on
-# supporting platforms.
-#
-# config_reload_signal = true
-
 # Toggles ignore checking/validating TLS certificates
 #
 # This applies to everything, including URL previews, federation requests,
