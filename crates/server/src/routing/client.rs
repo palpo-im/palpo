@@ -177,7 +177,7 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
             change_password: ChangePasswordCapability {
                 enabled: change_password_enabled,
             },
-            thirdparty_id_changes: ThirdPartyIdChangesCapability { enabled: true },
+            thirdparty_id_changes: ThirdPartyIdChangesCapability::new(false),
             profile_fields: Some(ProfileFieldsCapability::new(true)),
             account_moderation,
             ..Default::default()
