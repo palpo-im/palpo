@@ -69,7 +69,7 @@ http-auth = { version = "0.1.10", default-features = false }
 html5ever = "0.39.0"
 http = "1.4.1"
 image = "0.25.10"
-opendal = { version = "0.57.0", default-features = false }
+opendal = { version = "0.58.0", default-features = false }
 indexmap = "2.14.0"
 itertools = "0.15.0"
 jsonwebtoken = { version = "10.4.0", default-features = false, features = [
