@@ -962,8 +962,7 @@ impl PduBuilder {
             );
         }
 
-        let temp_event_id =
-            OwnedEventId::try_from(format!("$backfill_{}", Ulid::r#gen())).unwrap();
+        let temp_event_id = OwnedEventId::try_from(format!("$backfill_{}", Ulid::r#gen())).unwrap();
 
         let mut pdu = PduEvent {
             event_id: temp_event_id.clone(),
