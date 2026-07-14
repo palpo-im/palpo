@@ -432,8 +432,8 @@ mod tests {
     #[test]
     fn detects_unknown_key_inside_known_section() {
         assert_eq!(
-            unknown_toml_keys("[logger]\nlevle = 'debug'"),
-            ["logger.levle"]
+            unknown_toml_keys("[logger]\nunknown_level = 'debug'"),
+            ["logger.unknown_level"]
         );
     }
 
