@@ -52,9 +52,12 @@ pub struct InviteUserReqBodyV2 {
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub event: Box<RawJsonValue>,
 
-    /// An optional list of simplified events to help the receiver of the invite
-    /// identify the room.
-    pub invite_room_state: Vec<RawJson<AnyStrippedStateEvent>>,
+    /// State events to help the receiver of the invite identify the room.
+    ///
+    /// Since Matrix v1.16 these are full PDUs, formatted according to the room
+    /// version, rather than stripped state events.
+    #[salvo(schema(value_type = Vec<Object>))]
+    pub invite_room_state: Vec<Box<RawJsonValue>>,
 
     /// An optional list of servers the invited homeserver should attempt to
     /// join or leave via, according to [MSC4125](https://github.com/matrix-org/matrix-spec-proposals/pull/4125).

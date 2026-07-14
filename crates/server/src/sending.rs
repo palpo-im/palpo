@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
@@ -40,6 +40,11 @@ const SELECT_RECEIPT_LIMIT: usize = 256;
 const SELECT_EDU_LIMIT: usize = EDU_LIMIT - 2;
 const DEQUEUE_LIMIT: usize = 48;
 
+/// Maximum number of queued requests pulled into one transaction per
+/// destination. Bounds the per-destination memory the sending guard can use
+/// when draining a backlog.
+const QUEUED_REQUEST_LIMIT: usize = 30;
+
 const EDU_BUF_CAP: usize = 128;
 const EDU_VEC_CAP: usize = 1;
 
@@ -53,11 +58,62 @@ pub const EDU_LIMIT: usize = 100;
 // pub(super) type SendingItem = (Key, SendingEvent);
 // pub(super) type QueueItem = (Key, SendingEvent);
 // pub(super) type Key = Vec<u8>;
-pub static MPSC_SENDER: OnceLock<mpsc::UnboundedSender<(OutgoingKind, SendingEventType, i64)>> =
-    OnceLock::new();
 
-pub fn sender() -> mpsc::UnboundedSender<(OutgoingKind, SendingEventType, i64)> {
-    MPSC_SENDER.get().expect("sender should set").clone()
+/// Capacity of the in-memory wakeup queue between the enqueue paths and the
+/// sending guard. Requests are persisted in `outgoing_requests` before a
+/// wakeup is queued, so when this queue is full the wakeup is dropped and the
+/// guard's periodic sweep picks the request up from the database instead.
+pub(crate) const WAKEUP_QUEUE_CAPACITY: usize = 4096;
+
+type WakeupMessage = OutgoingKind;
+
+pub static MPSC_SENDER: OnceLock<mpsc::Sender<WakeupMessage>> = OnceLock::new();
+
+fn notify_sender(sender: &mpsc::Sender<WakeupMessage>, message: WakeupMessage) -> AppResult<()> {
+    use tokio::sync::mpsc::error::TrySendError;
+
+    match sender.try_send(message) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            warn_wakeup_queue_full();
+            Ok(())
+        }
+        Err(TrySendError::Closed(_)) => Err(AppError::internal("sending wakeup queue is closed")),
+    }
+}
+
+/// Wake the sending guard for a request that was just persisted.
+///
+/// Dropping a wakeup because the queue is full is safe: the request row
+/// already exists in the database, and the guard's periodic sweep starts
+/// transactions for destinations whose wakeups were lost. A missing or closed
+/// queue means there is no guard to perform that recovery, so it is returned
+/// to the caller as an error.
+fn notify(outgoing_kind: OutgoingKind) -> AppResult<()> {
+    let sender = MPSC_SENDER
+        .get()
+        .ok_or_else(|| AppError::internal("sending wakeup queue is not initialized"))?;
+    notify_sender(sender, outgoing_kind)
+}
+
+/// Warn about a full wakeup queue at most once per second, since the queue
+/// only fills up during bursts of thousands of events.
+fn warn_wakeup_queue_full() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static LAST_WARN_SECS: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // fetch_max returns the previous value, so exactly the caller that moves
+    // the timestamp forward emits the warning for this second.
+    if LAST_WARN_SECS.fetch_max(now, Ordering::Relaxed) < now {
+        warn!(
+            "sending wakeup queue is full; queued requests will be recovered by the periodic sweep"
+        );
+    }
 }
 
 fn should_send_federation_target(
@@ -186,10 +242,8 @@ pub async fn send_push_pdu(pdu_id: &EventId, user: &UserId, pushkey: String) -> 
     let outgoing_kind = OutgoingKind::Push(user.to_owned(), pushkey);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
-    if let Some(key) = keys.into_iter().next() {
-        sender()
-            .send((outgoing_kind, event, key))
-            .map_err(|e| AppError::internal(format!("failed to send push pdu: {e}")))?;
+    if keys.into_iter().next().is_some() {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -250,10 +304,8 @@ pub async fn send_pdu_servers<S: Iterator<Item = OwnedServerName>>(
             .collect::<Vec<_>>(),
     )
     .await?;
-    for ((outgoing_kind, event_type), key) in requests.into_iter().zip(keys) {
-        if let Err(e) = sender().send((outgoing_kind.to_owned(), event_type, key)) {
-            error!("failed to send pdu: {}", e);
-        }
+    for ((outgoing_kind, _), _) in requests.into_iter().zip(keys) {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -303,10 +355,8 @@ pub async fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
             .collect::<Vec<_>>(),
     )
     .await?;
-    for ((outgoing_kind, event), key) in requests.into_iter().zip(keys) {
-        sender()
-            .send((outgoing_kind.to_owned(), event, key))
-            .map_err(|e| AppError::internal(e.to_string()))?;
+    for ((outgoing_kind, _), _) in requests.into_iter().zip(keys) {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -331,10 +381,8 @@ pub async fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
 
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized.to_owned());
-    let key = queue_request(&outgoing_kind, &event).await?;
-    sender()
-        .send((outgoing_kind, event, key))
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    queue_request(&outgoing_kind, &event).await?;
+    notify(outgoing_kind)?;
 
     Ok(())
 }
@@ -360,10 +408,8 @@ pub async fn send_reliable_edu(server: &ServerName, edu: &Edu, id: &str) -> AppR
     let outgoing_kind = OutgoingKind::Normal(server.to_owned());
     let event = SendingEventType::Edu(serialized);
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
-    if let Some(key) = keys.into_iter().next() {
-        sender()
-            .send((outgoing_kind, event, key))
-            .map_err(|e| AppError::internal(format!("failed to send reliable edu: {e}")))?;
+    if keys.into_iter().next().is_some() {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -374,10 +420,8 @@ pub async fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> App
     let outgoing_kind = OutgoingKind::Appservice(appservice_id);
     let event = SendingEventType::Pdu(pdu_id.to_owned());
     let keys = queue_requests(&[(&outgoing_kind, event.clone())]).await?;
-    if let Some(key) = keys.into_iter().next() {
-        sender()
-            .send((outgoing_kind, event, key))
-            .map_err(|e| AppError::internal(format!("failed to send pdu to appservice: {e}")))?;
+    if keys.into_iter().next().is_some() {
+        notify(outgoing_kind)?;
     }
 
     Ok(())
@@ -852,11 +896,59 @@ async fn active_requests_for(
     Ok(list)
 }
 
-async fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, SendingEventType)>> {
+/// Distinct destinations that still have queued (not yet active) requests.
+///
+/// The periodic sweep in the sending guard uses this to recover requests
+/// whose wakeup was dropped because the wakeup queue was full, as well as
+/// requests left queued by a previous process.
+async fn queued_kinds() -> AppResult<Vec<OutgoingKind>> {
+    type Row = (
+        String,
+        Option<String>,
+        Option<OwnedUserId>,
+        Option<String>,
+        Option<OwnedServerName>,
+    );
+    let rows = outgoing_requests::table
+        .filter(outgoing_requests::state.ne("pending"))
+        .select((
+            outgoing_requests::kind,
+            outgoing_requests::appservice_id,
+            outgoing_requests::user_id,
+            outgoing_requests::pushkey,
+            outgoing_requests::server_id,
+        ))
+        .distinct()
+        .load::<Row>(&mut connect().await?)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(
+            |(kind, appservice_id, user_id, pushkey, server_id)| match kind.as_str() {
+                "appservice" => appservice_id.map(OutgoingKind::Appservice),
+                "push" => user_id
+                    .zip(pushkey)
+                    .map(|(user_id, pushkey)| OutgoingKind::Push(user_id, pushkey)),
+                "normal" => server_id.map(OutgoingKind::Normal),
+                _ => None,
+            },
+        )
+        .collect())
+}
+
+/// Load up to `limit` queued (not yet active) requests for a destination,
+/// oldest first. The limit is applied in SQL so a large backlog for one
+/// destination is never fully materialized into memory.
+async fn queued_requests(
+    outgoing_kind: &OutgoingKind,
+    limit: usize,
+) -> AppResult<Vec<(i64, SendingEventType)>> {
     let mut query = outgoing_requests::table
         .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
         // Exclude already active requests (state="pending" means being processed)
         .filter(outgoing_requests::state.ne("pending"))
+        .order_by(outgoing_requests::id.asc())
+        .limit(limit as i64)
         .into_boxed();
 
     // Add specific filters based on OutgoingKind
@@ -889,23 +981,43 @@ async fn queued_requests(outgoing_kind: &OutgoingKind) -> AppResult<Vec<(i64, Se
         })
         .collect())
 }
-async fn mark_as_active(events: &[(i64, SendingEventType)]) -> AppResult<()> {
-    for (id, e) in events {
-        let value = if let SendingEventType::Edu(value) = &e {
-            &**value
-        } else {
-            &[]
-        };
-        diesel::update(outgoing_requests::table.find(id))
-            .set((
-                outgoing_requests::data.eq(value),
-                outgoing_requests::state.eq("pending"),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
-    }
+/// Atomically claim queued requests for one sending transaction.
+///
+/// A request may be claimed or deleted after it is selected. Only return
+/// events whose queued row still existed and transitioned to `pending`, so
+/// concurrent recovery cannot send an already-completed request.
+async fn claim_queued_requests(
+    events: &[(i64, SendingEventType)],
+) -> AppResult<Vec<SendingEventType>> {
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            let mut claimed = Vec::with_capacity(events.len());
+            for (id, event) in events {
+                let value = if let SendingEventType::Edu(value) = event {
+                    &**value
+                } else {
+                    &[]
+                };
+                let updated = diesel::update(
+                    outgoing_requests::table
+                        .find(id)
+                        .filter(outgoing_requests::state.ne("pending")),
+                )
+                .set((
+                    outgoing_requests::data.eq(value),
+                    outgoing_requests::state.eq("pending"),
+                ))
+                .execute(conn)
+                .await?;
+                if updated == 1 {
+                    claimed.push(event.clone());
+                }
+            }
 
-    Ok(())
+            Ok(claimed)
+        })
+        .await
 }
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
@@ -997,6 +1109,24 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
 mod tests {
     use super::*;
     use crate::config::FederationConfig;
+
+    #[tokio::test]
+    async fn full_wakeup_queue_drops_wakeups_but_closed_queue_fails() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let kind = OutgoingKind::Appservice("test".to_owned());
+
+        notify_sender(&sender, kind.clone()).unwrap();
+        notify_sender(&sender, kind.clone()).unwrap();
+
+        assert_eq!(
+            receiver.recv().await.expect("first wakeup stays queued"),
+            kind
+        );
+        notify_sender(&sender, kind.clone()).unwrap();
+
+        drop(receiver);
+        assert!(notify_sender(&sender, kind).is_err());
+    }
 
     #[test]
     fn outbound_federation_target_respects_self_allow_and_deny_rules() {

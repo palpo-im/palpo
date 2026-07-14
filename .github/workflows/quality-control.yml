@@ -9,6 +9,8 @@ on:
     paths:
       - '**.rs'                 # only execute on changes to go files
       - '**/Cargo.toml'         # or dependency updates
+      - 'Cargo.lock'            # or lockfile updates
+      - 'deny.toml'             # or supply-chain policy changes
       - '.github/workflows/**'  # or workflow changes
   push:
     branches:
@@ -16,6 +18,8 @@ on:
     paths:
       - '**.rs'                 # only execute on changes to go files
       - '**/Cargo.toml'         # or dependency updates
+      - 'Cargo.lock'            # or lockfile updates
+      - 'deny.toml'             # or supply-chain policy changes
       - '.github/workflows/**'  # or workflow changes
 
 jobs:
@@ -26,6 +30,17 @@ jobs:
       - uses: actions/checkout@v7
       - name: Typos check with custom config file
         uses: crate-ci/typos@master
+
+  deny:
+    name: Cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Feature unification is configured in deny.toml ([graph] all-features).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: ""
 
   lint:
     name: Rustfmt and Clippy

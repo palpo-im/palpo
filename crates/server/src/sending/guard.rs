@@ -20,6 +20,11 @@ use crate::exts::*;
 use crate::room::state;
 use crate::{AppResult, data, room};
 
+/// How often the guard scans the database for queued requests whose wakeup
+/// was dropped (full wakeup queue) or that were left over by a previous
+/// process.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
 /// A configured sending guard whose worker has not been started yet.
 ///
 /// Keeping initialization separate from `start` lets startup admin commands
@@ -27,11 +32,11 @@ use crate::{AppResult, data, room};
 /// `--server false` mode.
 #[must_use = "call Guard::start when the server is enabled"]
 pub struct Guard {
-    receiver: mpsc::UnboundedReceiver<(OutgoingKind, SendingEventType, i64)>,
+    receiver: mpsc::Receiver<super::WakeupMessage>,
 }
 
 pub fn init() -> Guard {
-    let (sender, receiver) = mpsc::unbounded_channel();
+    let (sender, receiver) = mpsc::channel(super::WAKEUP_QUEUE_CAPACITY);
     assert!(
         MPSC_SENDER.set(sender).is_ok(),
         "sending guard is already initialized"
@@ -49,9 +54,7 @@ impl Guard {
     }
 }
 
-async fn process(
-    mut receiver: mpsc::UnboundedReceiver<(OutgoingKind, SendingEventType, i64)>,
-) -> AppResult<()> {
+async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResult<()> {
     let mut futures = FuturesUnordered::new();
     let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
     // EDU selection windows of in-flight transactions; persisted as the
@@ -85,6 +88,9 @@ async fn process(
         futures.push(super::send_events(outgoing_kind.clone(), events));
     }
 
+    let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         let retry_delay = next_retry_delay(&current_transaction_status);
 
@@ -104,13 +110,18 @@ async fn process(
                         }
 
                         // Find events that have been added since starting the last request
-                        let new_events = super::queued_requests(&outgoing_kind).await.unwrap_or_default().into_iter().take(30).collect::<Vec<_>>();
+                        let new_events = super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await.unwrap_or_default();
 
-                        if !new_events.is_empty() {
-                            // Insert pdus we found
-                            super::mark_as_active(&new_events).await?;
+                        let mut events = if new_events.is_empty() {
+                            Vec::new()
+                        } else {
+                            // Claim only rows that are still queued. Another
+                            // process may have claimed or completed them since
+                            // the select above.
+                            super::claim_queued_requests(&new_events).await?
+                        };
 
-                            let mut events = new_events.into_iter().map(|(_, event)| event).collect::<Vec<_>>();
+                        if !events.is_empty() {
                             // Piggyback EDUs that accumulated while the previous
                             // transaction was in flight, so a busy destination
                             // does not starve presence/receipt/device-list updates.
@@ -161,14 +172,82 @@ async fn process(
                     }
                 };
             },
-            Some((outgoing_kind, event, id)) = receiver.recv() => {
-                if let Ok(Some(events)) = select_events(
+            Some(outgoing_kind) = receiver.recv() => {
+                if current_transaction_status.contains_key(&outgoing_kind) {
+                    // A running or backing-off transaction will load queued
+                    // rows when it settles or retries.
+                    continue;
+                }
+                let new_events = match super::queued_requests(
                     &outgoing_kind,
-                    vec![(id, event)],
+                    super::QUEUED_REQUEST_LIMIT,
+                ).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        error!(?outgoing_kind, error = ?e, "failed to load queued requests for wakeup");
+                        continue;
+                    }
+                };
+                if new_events.is_empty() {
+                    // The periodic sweep already handled this wakeup.
+                    continue;
+                }
+                match select_events(
+                    &outgoing_kind,
+                    new_events,
                     &mut current_transaction_status,
                     &mut pending_edu_cursors,
                 ).await {
-                    futures.push(super::send_events(outgoing_kind, events));
+                    Ok(Some(events)) => {
+                        futures.push(super::send_events(outgoing_kind, events));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        error!(?outgoing_kind, error = ?e, "failed to select queued requests for wakeup");
+                    }
+                }
+            }
+            _ = sweep.tick() => {
+                // Recover destinations whose wakeup was dropped because the
+                // wakeup queue was full, and requests left queued by a
+                // previous process.
+                let kinds = match super::queued_kinds().await {
+                    Ok(kinds) => kinds,
+                    Err(e) => {
+                        error!(error = ?e, "failed to load queued destinations for sweep");
+                        continue;
+                    }
+                };
+                for outgoing_kind in kinds {
+                    if current_transaction_status.contains_key(&outgoing_kind) {
+                        // Running, retrying, or backing off: the existing flow
+                        // picks queued requests up when the transaction settles.
+                        continue;
+                    }
+                    let new_events = match super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await {
+                        Ok(events) => events,
+                        Err(e) => {
+                            error!(?outgoing_kind, error = ?e, "failed to load queued requests for sweep");
+                            continue;
+                        }
+                    };
+                    if new_events.is_empty() {
+                        continue;
+                    }
+                    match select_events(
+                        &outgoing_kind,
+                        new_events,
+                        &mut current_transaction_status,
+                        &mut pending_edu_cursors,
+                    ).await {
+                        Ok(Some(events)) => {
+                            futures.push(super::send_events(outgoing_kind, events));
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            error!(?outgoing_kind, error = ?e, "failed to select queued requests for sweep");
+                        }
+                    }
                 }
             }
             _ = async {
@@ -299,9 +378,19 @@ async fn select_events(
             events.push(e);
         }
     } else {
-        super::mark_as_active(&new_events).await?;
-        for (_, e) in new_events {
-            events.push(e);
+        events = match super::claim_queued_requests(&new_events).await {
+            Ok(events) => events,
+            Err(error) => {
+                current_transaction_status.remove(outgoing_kind);
+                return Err(error);
+            }
+        };
+        if events.is_empty() {
+            // The wakeup was stale: its row was already claimed or deleted by
+            // the periodic sweep (or another process). Undo the Running state
+            // inserted above and do not start an empty transaction.
+            current_transaction_status.remove(outgoing_kind);
+            return Ok(None);
         }
     }
 
