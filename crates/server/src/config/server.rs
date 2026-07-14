@@ -780,10 +780,10 @@ pub struct ServerConfig {
     // // external structure; separate section
     // #[serde(default)]
     // pub appservice: BTreeMap<String, AppService>,
-    // NOTE: #[serde(flatten)] with a catchall map is intentionally removed because
-    // it causes serde to incorrectly apply default values to fields like
-    // `ip_range_denylist` even when explicitly set in the config file.
-    // Unknown/deprecated key warnings are handled separately.
+    // NOTE: A #[serde(flatten)] catchall map is intentionally not used because it
+    // causes serde to incorrectly apply default values to fields like
+    // `ip_range_denylist` even when explicitly set in the config file. Unknown
+    // keys are detected without modifying this structure in config::init().
 }
 
 impl ServerConfig {
@@ -919,7 +919,6 @@ impl ServerConfig {
         }
 
         self.warn_deprecated();
-        self.warn_unknown_key();
 
         // if self.sentry && self.sentry_endpoint.is_none() {
         //     return Err(AppError::internal(
@@ -1130,14 +1129,6 @@ impl ServerConfig {
     fn warn_deprecated(&self) {
         debug!("Checking for deprecated config keys");
         // No deprecated keys currently defined
-    }
-
-    /// iterates over all the catchall keys (unknown config options) and warns
-    /// if there are any.
-    fn warn_unknown_key(&self) {
-        debug!("Checking for unknown config keys");
-        // Unknown key detection is not available without serde(flatten) catchall.
-        // This is intentional - the catchall caused issues with default values.
     }
 }
 

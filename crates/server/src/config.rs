@@ -208,7 +208,9 @@ pub fn init(config_path: impl AsRef<Path>) {
         panic!("config file not found: `{}`", config_path.display());
     }
 
-    let raw_conf = figment_from_path(config_path)
+    let file_conf = figment_from_path(config_path);
+    let raw_conf = file_conf
+        .clone()
         .merge(Env::prefixed("PALPO_").global())
         .merge(Env::prefixed("PALPO_").split("__").global());
     let conf = match raw_conf.extract::<ServerConfig>() {
@@ -218,9 +220,37 @@ pub fn init(config_path: impl AsRef<Path>) {
             std::process::exit(1);
         }
     };
+    let unknown_keys = match unknown_config_keys(&file_conf, &raw_conf) {
+        Ok(keys) => keys,
+        Err(e) => {
+            eprintln!("failed to check for unknown configuration keys: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    for key in unknown_keys {
+        eprintln!(
+            "WARNING: unknown configuration key `{key}` in `{}`; this key is ignored",
+            config_path.display()
+        );
+    }
 
     CONFIG.set(conf).expect("config should be set once");
 }
+
+fn unknown_config_keys(file_conf: &Figment, merged_conf: &Figment) -> figment::Result<Vec<String>> {
+    let value = merged_conf.extract::<figment::value::Value>()?;
+    let mut ignored_paths = Vec::new();
+    let _: ServerConfig = serde_ignored::deserialize(&value, |path| {
+        ignored_paths.push(path.to_string());
+    })?;
+
+    ignored_paths.retain(|path| file_conf.find_value(path).is_ok());
+    ignored_paths.sort_unstable();
+    ignored_paths.dedup();
+    Ok(ignored_paths)
+}
+
 pub fn reload(_path: impl AsRef<Path>) -> AppResult<()> {
     Err(AppError::public(
         "configuration reload is not implemented yet.",
@@ -345,10 +375,17 @@ fn supported_stability(stability: &RoomVersionStability) -> bool {
 mod tests {
     use std::path::Path;
 
+    use figment::Figment;
+    use figment::providers::{Format, Json, Serialized, Toml};
     use kdl::KdlDocument;
     use serde_json::json;
 
-    use super::{ServerConfig, figment_from_path, kdl_doc_to_json};
+    use super::{ServerConfig, figment_from_path, kdl_doc_to_json, unknown_config_keys};
+
+    fn unknown_toml_keys(toml: &str) -> Vec<String> {
+        let file_conf = Figment::new().merge(Toml::string(toml));
+        unknown_config_keys(&file_conf, &file_conf).expect("config should deserialize")
+    }
 
     #[test]
     fn empty_kdl_block_is_an_explicit_empty_list() {
@@ -367,5 +404,80 @@ mod tests {
             .expect("Complement TOML should deserialize");
 
         assert!(config.ip_range_denylist.is_empty());
+    }
+
+    #[test]
+    fn detects_unknown_top_level_key() {
+        assert_eq!(
+            unknown_toml_keys("alow_registration = false"),
+            ["alow_registration"]
+        );
+    }
+
+    #[test]
+    fn detects_unknown_kdl_key() {
+        let doc: KdlDocument = "alow_registration #false"
+            .parse()
+            .expect("KDL config should parse");
+        let json = serde_json::to_string(&kdl_doc_to_json(&doc))
+            .expect("KDL config should convert to JSON");
+        let file_conf = Figment::new().merge(Json::string(&json));
+
+        assert_eq!(
+            unknown_config_keys(&file_conf, &file_conf).expect("config should deserialize"),
+            ["alow_registration"]
+        );
+    }
+
+    #[test]
+    fn detects_unknown_key_inside_known_section() {
+        assert_eq!(
+            unknown_toml_keys("[logger]\nlevle = 'debug'"),
+            ["logger.levle"]
+        );
+    }
+
+    #[test]
+    fn detects_misnested_key() {
+        let keys = unknown_toml_keys(
+            "[rc_message]\nper_second = 10.0\nburst = 50\nip_range_denylist = []",
+        );
+
+        assert_eq!(keys, ["rc_message.ip_range_denylist"]);
+    }
+
+    #[test]
+    fn does_not_flag_env_only_key() {
+        let file_conf = Figment::new().merge(Toml::string("allow_registration = false"));
+        let merged_conf = file_conf
+            .clone()
+            .merge(Serialized::default("env_only_key", true));
+
+        assert!(
+            unknown_config_keys(&file_conf, &merged_conf)
+                .expect("config should deserialize")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn permits_free_form_map_keys() {
+        let keys = unknown_toml_keys(
+            r#"
+                [oidc]
+                enable = true
+
+                [oidc.providers.example]
+                issuer = "https://issuer.example"
+                client_id = "client"
+                client_secret = "secret"
+                redirect_uri = "https://palpo.example/callback"
+
+                [oidc.providers.example.additional_params]
+                prompt = "login"
+            "#,
+        );
+
+        assert!(keys.is_empty());
     }
 }
