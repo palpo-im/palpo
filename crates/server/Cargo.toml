@@ -164,6 +164,7 @@ sanitize-filename = { workspace = true }
 scheduled-thread-pool = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
+serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 serde_regex = { workspace = true }
 serde-saphyr = { workspace = true }
