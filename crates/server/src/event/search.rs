@@ -19,6 +19,23 @@ use crate::event::BatchToken;
 use crate::room::{state, timeline};
 use crate::{AppResult, MatrixError, SnPduEvent};
 
+fn searchable_events<'a>(
+    room_ids: &'a [OwnedRoomId],
+    search_term: &'a str,
+) -> event_searches::BoxedQuery<'a, diesel::pg::Pg> {
+    event_searches::table
+        .filter(event_searches::room_id.eq_any(room_ids))
+        .filter(
+            event_searches::event_id.eq_any(
+                events::table
+                    .filter(events::is_redacted.eq(false))
+                    .select(events::id),
+            ),
+        )
+        .filter(event_searches::vector.matches(websearch_to_tsquery(search_term)))
+        .into_boxed()
+}
+
 pub async fn search_pdus(
     user_id: &UserId,
     criteria: &Criteria,
@@ -44,10 +61,7 @@ pub async fn search_pdus(
         }
     }
 
-    let base_query = event_searches::table
-        .filter(event_searches::room_id.eq_any(&room_ids))
-        .filter(event_searches::vector.matches(websearch_to_tsquery(&criteria.search_term)));
-    let mut data_query = base_query.clone().into_boxed();
+    let mut data_query = searchable_events(&room_ids, &criteria.search_term);
     if let Some(mut next_batch) = next_batch.map(|nb| nb.split('-')) {
         let server_ts: i64 = next_batch.next().map(str::parse).transpose()?.unwrap_or(0);
         let event_sn: i64 = next_batch.next().map(str::parse).transpose()?.unwrap_or(0);
@@ -83,7 +97,10 @@ pub async fn search_pdus(
     // let _ids: Vec<i64> = event_searches::table
     //     .select(event_searches::id)
     //     .load(&mut connect()?)?;
-    let count: i64 = base_query.count().first(&mut connect().await?).await?;
+    let count: i64 = searchable_events(&room_ids, &criteria.search_term)
+        .count()
+        .first(&mut connect().await?)
+        .await?;
     let next_batch = if items.len() < limit {
         None
     } else if let Some(last) = items.last() {
@@ -212,10 +229,9 @@ pub async fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppRe
             .get("body")
             .and_then(|v| v.as_str())
             .map(|v| ("content.message", v)),
-        TimelineEventType::RoomRedaction => {
-            // TODO: Redaction
-            return Ok(());
-        }
+        // Redaction events themselves have no searchable content. Applying a
+        // redaction removes the target from the index in `timeline::redact_pdu`.
+        TimelineEventType::RoomRedaction => return Ok(()),
         _ => {
             return Ok(());
         }
@@ -236,4 +252,26 @@ pub async fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppRe
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use diesel::debug_query;
+    use diesel::pg::Pg;
+
+    use super::searchable_events;
+    use crate::core::identifiers::RoomId;
+
+    #[test]
+    fn search_query_excludes_redacted_events() {
+        let room_ids = vec![RoomId::parse("!room:example.org").unwrap().to_owned()];
+        let query = searchable_events(&room_ids, "needle");
+        let sql = debug_query::<Pg, _>(&query).to_string();
+
+        assert!(sql.contains("\"events\".\"is_redacted\" ="), "{sql}");
+        assert!(
+            sql.contains("\"event_searches\".\"event_id\" = ANY(SELECT \"events\".\"id\""),
+            "{sql}"
+        );
+    }
 }

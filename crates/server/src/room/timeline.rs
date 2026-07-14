@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashSet};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde::Deserialize;
 
 use crate::core::Seqnum;
@@ -856,19 +856,31 @@ pub async fn build_and_append_pdu(
 #[tracing::instrument(skip(reason))]
 pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> {
     // TODO: Don't reserialize, keep original json
-    if let Ok(mut pdu) = get_pdu(event_id).await {
-        pdu.redact(reason)?;
-        replace_pdu(event_id, &to_canonical_object(&pdu)?).await?;
-        diesel::update(events::table.filter(events::id.eq(event_id)))
-            .set(events::is_redacted.eq(true))
-            .execute(&mut connect().await?)
-            .await?;
-        diesel::delete(event_searches::table.filter(event_searches::event_id.eq(event_id)))
-            .execute(&mut connect().await?)
-            .await?;
-    }
-    // If event does not exist, just noop
-    Ok(())
+    let mut pdu = match get_pdu(event_id).await {
+        Ok(pdu) => pdu,
+        Err(e) if e.is_not_found() => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    pdu.redact(reason)?;
+    let redacted_json = serde_json::to_value(to_canonical_object(&pdu)?)?;
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            diesel::update(event_datas::table.filter(event_datas::event_id.eq(event_id)))
+                .set(event_datas::json_data.eq(&redacted_json))
+                .execute(conn)
+                .await?;
+            diesel::update(events::table.filter(events::id.eq(event_id)))
+                .set(events::is_redacted.eq(true))
+                .execute(conn)
+                .await?;
+            diesel::delete(event_searches::table.filter(event_searches::event_id.eq(event_id)))
+                .execute(conn)
+                .await?;
+
+            Ok(())
+        })
+        .await
 }
 
 pub async fn is_event_next_to_backward_gap(event: &PduEvent) -> AppResult<bool> {
