@@ -329,6 +329,8 @@ pub async fn update_membership(
         _ => {}
     }
     crate::room::update_joined_servers(room_id).await?;
-    crate::room::update_currents(room_id).await?;
+    if let Err(e) = crate::room::update_currents(room_id).await {
+        error!("failed to update statistics for room {room_id}: {e}");
+    }
     Ok(())
 }

@@ -114,6 +114,9 @@ pub async fn force_state(
     }
 
     set_room_state(room_id, frame_id).await?;
+    if let Err(e) = room::update_currents(room_id).await {
+        error!("failed to update statistics for room {room_id}: {e}");
+    }
 
     Ok(())
 }
