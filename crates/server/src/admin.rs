@@ -21,7 +21,7 @@ use futures_util::io::{AsyncWriteExt, BufWriter};
 use futures_util::lock::Mutex;
 use futures_util::{Future, FutureExt, TryFutureExt};
 use regex::Regex;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use self::appservice::AppserviceCommand;
 use self::federation::FederationCommand;
@@ -160,37 +160,56 @@ pub(super) async fn process(command: AdminCommand, context: &Context<'_>) -> App
 /// Maximum number of commands which can be queued for dispatch.
 const COMMAND_QUEUE_LIMIT: usize = 512;
 
-pub async fn start() -> AppResult<()> {
+pub(crate) struct AdminService {
+    receiver: mpsc::Receiver<CommandInput>,
+    signals: broadcast::Receiver<&'static str>,
+}
+
+/// Initialize admin command processing and run configured startup commands.
+///
+/// Initialization finishes before the HTTP server starts, so a failed startup
+/// command can prevent the server from accepting traffic.
+pub(crate) async fn init(additional_startup_commands: Vec<String>) -> AppResult<AdminService> {
     executor::init().await;
 
     let exec = executor();
-    let mut signals = exec.signal.subscribe();
-    let (sender, mut receiver) = mpsc::channel(COMMAND_QUEUE_LIMIT);
+    let signals = exec.signal.subscribe();
+    let (sender, receiver) = mpsc::channel(COMMAND_QUEUE_LIMIT);
     _ = exec
         .channel
         .write()
         .expect("locked for writing")
         .insert(sender);
 
-    tokio::task::yield_now().await;
-    exec.console.start().await;
+    exec.startup_execute(additional_startup_commands).await?;
 
-    loop {
-        tokio::select! {
-            command = receiver.recv() => match command {
-                Some(command) => exec.handle_command(command).await,
-                None => break,
-            },
-            sig = signals.recv() => match sig {
-                Ok(sig) => exec.handle_signal(sig).await,
-                Err(_) => continue,
-            },
+    Ok(AdminService { receiver, signals })
+}
+
+impl AdminService {
+    pub(crate) async fn run(mut self, console: bool) -> AppResult<()> {
+        let exec = executor();
+        if console {
+            exec.console.start().await;
         }
+
+        loop {
+            tokio::select! {
+                command = self.receiver.recv() => match command {
+                    Some(command) => exec.handle_command(command).await,
+                    None => break,
+                },
+                sig = self.signals.recv() => match sig {
+                    Ok(sig) => exec.handle_signal(sig).await,
+                    Err(_) => continue,
+                },
+            }
+        }
+
+        exec.interrupt().await;
+
+        Ok(())
     }
-
-    exec.interrupt().await;
-
-    Ok(())
 }
 
 // Utility to turn clap's `--help` text to HTML.

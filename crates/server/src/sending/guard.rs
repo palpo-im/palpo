@@ -25,17 +25,33 @@ use crate::{AppResult, data, room};
 /// process.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-pub fn start() {
+/// A configured sending guard whose worker has not been started yet.
+///
+/// Keeping initialization separate from `start` lets startup admin commands
+/// enqueue durable requests without dispatching network traffic in
+/// `--server false` mode.
+#[must_use = "call Guard::start when the server is enabled"]
+pub struct Guard {
+    receiver: mpsc::Receiver<super::WakeupMessage>,
+}
+
+pub fn init() -> Guard {
     let (sender, receiver) = mpsc::channel(super::WAKEUP_QUEUE_CAPACITY);
-    if MPSC_SENDER.set(sender).is_err() {
-        error!("sending guard is already started");
-        return;
+    assert!(
+        MPSC_SENDER.set(sender).is_ok(),
+        "sending guard is already initialized"
+    );
+    Guard { receiver }
+}
+
+impl Guard {
+    pub fn start(self) {
+        tokio::spawn(async move {
+            if let Err(error) = process(self.receiver).await {
+                error!(?error, "sending guard stopped");
+            }
+        });
     }
-    tokio::spawn(async move {
-        if let Err(error) = process(receiver).await {
-            error!(?error, "sending guard stopped");
-        }
-    });
 }
 
 async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResult<()> {

@@ -16,7 +16,7 @@ pub fn executor() -> &'static Executor {
     EXECUTOR.get().expect("executor not initialized")
 }
 
-pub async fn init() {
+pub(super) async fn init() {
     let exec = Executor {
         signal: broadcast::channel::<&'static str>(1).0,
         channel: StdRwLock::new(None),
@@ -56,12 +56,21 @@ impl Executor {
 
     pub(super) async fn signal_execute(&self) -> AppResult<()> {
         let conf = config::get();
-        // List of commands to execute
         let commands = conf.admin.signal_execute.clone();
-
-        // When true, errors are ignored and execution continues.
         let ignore_errors = conf.admin.execute_errors_ignore;
 
+        self.execute_commands(commands, ignore_errors).await
+    }
+
+    pub(super) async fn startup_execute(&self, additional_commands: Vec<String>) -> AppResult<()> {
+        let conf = config::get();
+        let commands = merge_startup_commands(&conf.admin.startup_execute, additional_commands);
+        let ignore_errors = conf.admin.execute_errors_ignore;
+
+        self.execute_commands(commands, ignore_errors).await
+    }
+
+    async fn execute_commands(&self, commands: Vec<String>, ignore_errors: bool) -> AppResult<()> {
         for (i, command) in commands.iter().enumerate() {
             if let Err(e) = self.execute_command(i, command.clone()).await
                 && !ignore_errors
@@ -180,6 +189,14 @@ impl Executor {
     }
 }
 
+fn merge_startup_commands(configured: &[String], additional_commands: Vec<String>) -> Vec<String> {
+    configured
+        .iter()
+        .cloned()
+        .chain(additional_commands)
+        .collect()
+}
+
 /// Sends markdown notice to the admin room as the admin user.
 pub async fn send_notice(body: &str) -> AppResult<()> {
     send_message(RoomMessageEventContent::notice_markdown(body)).await
@@ -272,4 +289,66 @@ async fn handle_response_error(
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    static COMMAND_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn failing_processor(_command: CommandInput) -> crate::admin::ProcessorFuture {
+        COMMAND_CALLS.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async {
+            Err(RoomMessageEventContent::text_plain(
+                "intentional test failure",
+            ))
+        })
+    }
+
+    fn test_executor(processor: Processor) -> Executor {
+        Executor {
+            signal: broadcast::channel(1).0,
+            channel: StdRwLock::new(None),
+            handle: RwLock::new(Some(processor)),
+            complete: StdRwLock::new(None),
+            console: Console::new(),
+        }
+    }
+
+    #[test]
+    fn startup_commands_keep_config_then_cli_order() {
+        let configured = vec!["server show-version".to_owned()];
+        let cli = vec!["server show-config".to_owned(), "user list".to_owned()];
+
+        assert_eq!(
+            merge_startup_commands(&configured, cli),
+            ["server show-version", "server show-config", "user list"]
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_command_execution_honors_error_policy() {
+        COMMAND_CALLS.store(0, Ordering::Relaxed);
+        let executor = test_executor(failing_processor);
+
+        let result = executor
+            .execute_commands(vec!["first".to_owned(), "second".to_owned()], false)
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(COMMAND_CALLS.load(Ordering::Relaxed), 1);
+
+        COMMAND_CALLS.store(0, Ordering::Relaxed);
+        let executor = test_executor(failing_processor);
+
+        let result = executor
+            .execute_commands(vec!["first".to_owned(), "second".to_owned()], true)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(COMMAND_CALLS.load(Ordering::Relaxed), 2);
+    }
 }

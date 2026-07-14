@@ -37,7 +37,7 @@ pub struct AdminConfig {
     /// For example: `./palpo --execute "server admin-notice palpo has
     /// started up at $(date)"`
     ///
-    /// example: admin_execute = ["server admin-notice palpo started"]`
+    /// example: startup_execute = ["server admin-notice palpo started"]`
     ///
     /// default: []
     #[serde(default)]
@@ -46,7 +46,7 @@ pub struct AdminConfig {
     /// Ignore errors in startup commands.
     ///
     /// If false, palpo will error and fail to start if an admin execute
-    /// command (`--execute` / `admin_execute`) fails.
+    /// command (`--execute` / `startup_execute`) fails.
     #[serde(default)]
     pub execute_errors_ignore: bool,
 
