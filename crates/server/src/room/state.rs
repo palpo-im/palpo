@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
-use lru_cache::LruCache;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -17,7 +16,9 @@ pub use frame::*;
 mod graph;
 pub use graph::*;
 
-use crate::core::events::room::history_visibility::HistoryVisibility;
+use crate::core::events::room::history_visibility::{
+    HistoryVisibility, RoomHistoryVisibilityEventContent,
+};
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::events::{AnyStrippedStateEvent, StateEventType, TimelineEventType};
@@ -28,6 +29,7 @@ use crate::core::serde::{JsonValue, RawJson, RawJsonValue};
 use crate::core::state::StateMap;
 use crate::core::{EventId, OwnedEventId, RoomId, UserId};
 use crate::data::connect;
+pub use crate::data::room::DbRoomStateDelta;
 use crate::data::room::{NewDbEventMissing, NewDbTimelineGap};
 use crate::data::schema::*;
 use crate::event::{PduEvent, update_frame_id, update_frame_id_by_sn};
@@ -35,13 +37,6 @@ use crate::room::timeline;
 use crate::{
     AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, membership, room, sending, utils,
 };
-
-pub static SERVER_VISIBILITY_CACHE: LazyLock<Mutex<LruCache<(OwnedServerName, i64), bool>>> =
-    LazyLock::new(|| Mutex::new(LruCache::new(100)));
-pub static USER_VISIBILITY_CACHE: LazyLock<Mutex<LruCache<(OwnedUserId, i64), bool>>> =
-    LazyLock::new(|| Mutex::new(LruCache::new(100)));
-
-pub use crate::data::room::DbRoomStateDelta;
 
 pub async fn server_joined_rooms(server_name: &ServerName) -> AppResult<Vec<OwnedRoomId>> {
     room_joined_servers::table
@@ -621,6 +616,175 @@ pub async fn user_membership(frame_id: i64, user_id: &UserId) -> AppResult<Membe
     .map(|c: RoomMemberEventContent| c.membership)
 }
 
+pub(crate) fn uses_shared_history_visibility(visibility: &HistoryVisibility) -> bool {
+    !matches!(
+        visibility,
+        HistoryVisibility::WorldReadable | HistoryVisibility::Invited | HistoryVisibility::Joined
+    )
+}
+
+pub(crate) fn history_visibility_allows(
+    visibility: &HistoryVisibility,
+    membership: Option<&MembershipState>,
+    joined_after: bool,
+) -> bool {
+    if visibility == &HistoryVisibility::WorldReadable || membership == Some(&MembershipState::Join)
+    {
+        return true;
+    }
+
+    if uses_shared_history_visibility(visibility) {
+        return joined_after;
+    }
+
+    visibility == &HistoryVisibility::Invited && membership == Some(&MembershipState::Invite)
+}
+
+async fn state_event_before(
+    event: &SnPduEvent,
+    frame_id: i64,
+    event_ty: &StateEventType,
+    state_key: &str,
+) -> AppResult<Option<SnPduEvent>> {
+    let state_event = match get_state(frame_id, event_ty, state_key).await {
+        Ok(state_event) => Some(state_event),
+        Err(e) if e.is_not_found() => None,
+        Err(e) => return Err(e),
+    };
+
+    if state_event
+        .as_ref()
+        .is_none_or(|state_event| state_event.event_id != event.event_id)
+    {
+        return Ok(state_event);
+    }
+
+    let room_version = room::get_version(&event.room_id).await?;
+    let version_rules = room::get_version_rules(&room_version)?;
+    let state_ids = crate::event::resolver::resolve_state_at_incoming(event, &version_rules)
+        .await?
+        .ok_or_else(|| AppError::internal("cannot resolve state before event"))?;
+    let field_id = match get_field_id(event_ty, state_key).await {
+        Ok(field_id) => field_id,
+        Err(e) if e.is_not_found() => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    match state_ids.get(&field_id) {
+        Some(event_id) => timeline::get_pdu(event_id).await.map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(crate) async fn history_visibility_before(
+    event: &SnPduEvent,
+    frame_id: i64,
+) -> AppResult<HistoryVisibility> {
+    Ok(
+        state_event_before(event, frame_id, &StateEventType::RoomHistoryVisibility, "")
+            .await?
+            .and_then(|event| {
+                event
+                    .get_content::<RoomHistoryVisibilityEventContent>()
+                    .ok()
+            })
+            .map(|content| content.history_visibility)
+            .unwrap_or(HistoryVisibility::Shared),
+    )
+}
+
+pub(crate) async fn user_membership_before(
+    event: &SnPduEvent,
+    frame_id: i64,
+    user_id: &UserId,
+) -> AppResult<Option<MembershipState>> {
+    Ok(state_event_before(
+        event,
+        frame_id,
+        &StateEventType::RoomMember,
+        user_id.as_str(),
+    )
+    .await?
+    .map(|event| {
+        event
+            .get_content::<RoomMemberEventContent>()
+            .map(|content| content.membership)
+    })
+    .transpose()?)
+}
+
+async fn server_memberships_at(
+    event: &SnPduEvent,
+    frame_id: i64,
+    server_name: &ServerName,
+) -> AppResult<Vec<MembershipState>> {
+    let mut state_ids = get_full_state_ids(frame_id).await?;
+    if event.event_ty == TimelineEventType::RoomMember
+        && let Some(state_key) = event.state_key.as_deref()
+        && UserId::parse(state_key).is_ok_and(|user_id| user_id.server_name() == server_name)
+    {
+        let field_id = match get_field_id(&StateEventType::RoomMember, state_key).await {
+            Ok(field_id) => Some(field_id),
+            Err(e) if e.is_not_found() => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(field_id) = field_id
+            && state_ids.get(&field_id) == Some(&event.event_id)
+        {
+            match state_event_before(event, frame_id, &StateEventType::RoomMember, state_key)
+                .await?
+            {
+                Some(previous_event) => {
+                    state_ids.insert(field_id, previous_event.event_id.clone());
+                }
+                None => {
+                    state_ids.shift_remove(&field_id);
+                }
+            }
+        }
+    }
+    let field_ids = state_ids.keys().copied().collect::<Vec<_>>();
+    let member_fields = room_state_fields::table
+        .filter(room_state_fields::id.eq_any(field_ids))
+        .filter(room_state_fields::event_ty.eq(StateEventType::RoomMember))
+        .select((room_state_fields::id, room_state_fields::state_key))
+        .load::<(i64, String)>(&mut connect().await?)
+        .await?;
+    let event_ids = member_fields
+        .into_iter()
+        .filter_map(|(field_id, state_key)| {
+            UserId::parse(state_key)
+                .ok()
+                .filter(|user_id| user_id.server_name() == server_name)
+                .and_then(|_| state_ids.get(&field_id).cloned())
+        })
+        .collect::<Vec<_>>();
+
+    #[derive(Deserialize)]
+    struct MembershipEvent {
+        content: MembershipEventContent,
+    }
+
+    #[derive(Deserialize)]
+    struct MembershipEventContent {
+        membership: MembershipState,
+    }
+
+    event_datas::table
+        .filter(event_datas::event_id.eq_any(event_ids))
+        .select(event_datas::json_data)
+        .load::<JsonValue>(&mut connect().await?)
+        .await
+        .map(|events| {
+            events
+                .into_iter()
+                .filter_map(|event| serde_json::from_value::<MembershipEvent>(event).ok())
+                .map(|event| event.content.membership)
+                .collect()
+        })
+        .map_err(Into::into)
+}
+
 /// The user was a joined member at this state (potentially in the past)
 pub async fn user_was_joined(frame_id: i64, user_id: &UserId) -> bool {
     user_membership(frame_id, user_id)
@@ -710,68 +874,58 @@ pub async fn server_can_see_event(
     room_id: &RoomId,
     event_id: &EventId,
 ) -> AppResult<bool> {
+    let pdu = timeline::get_pdu(event_id).await?;
+    if pdu.room_id != room_id {
+        return Ok(false);
+    }
     let frame_id = match get_pdu_frame_id(event_id).await {
         Ok(frame_id) => frame_id,
-        Err(_) => return Ok(true),
+        Err(e) if e.is_not_found() => return Ok(false),
+        Err(e) => return Err(e),
     };
-    let history_visibility = super::get_history_visibility(room_id).await?;
+    let history_visibility = history_visibility_before(&pdu, frame_id).await?;
+    let after_history_visibility =
+        (pdu.event_ty == TimelineEventType::RoomHistoryVisibility).then(|| {
+            pdu.get_content::<RoomHistoryVisibilityEventContent>()
+                .map(|content| content.history_visibility)
+                .unwrap_or(HistoryVisibility::Shared)
+        });
+    if history_visibility == HistoryVisibility::WorldReadable
+        || after_history_visibility == Some(HistoryVisibility::WorldReadable)
+    {
+        return Ok(true);
+    }
+    let uses_shared_visibility = uses_shared_history_visibility(&history_visibility)
+        || after_history_visibility
+            .as_ref()
+            .is_some_and(uses_shared_history_visibility);
+    let joined_after = uses_shared_visibility
+        && room::user::server_user_joined_after(origin, room_id, pdu.depth).await?;
+    let memberships = server_memberships_at(&pdu, frame_id, origin).await?;
 
-    let visibility = match history_visibility {
-        HistoryVisibility::WorldReadable | HistoryVisibility::Shared => true,
-        HistoryVisibility::Invited => {
-            // Allow if any member on requesting server was AT LEAST invited, else deny
-            let mut allowed = false;
-            for member in room::invited_users(room_id, None)
-                .await?
-                .into_iter()
-                .filter(|member| member.server_name() == origin)
-            {
-                if user_was_invited(frame_id, &member).await {
-                    allowed = true;
-                    break;
-                }
-            }
-            if !allowed {
-                for member in room::joined_users(room_id, None)
-                    .await?
-                    .into_iter()
-                    .filter(|member| member.server_name() == origin)
-                {
-                    if user_was_joined(frame_id, &member).await {
-                        allowed = true;
-                        break;
-                    }
-                }
-            }
-            allowed
-        }
-        HistoryVisibility::Joined => {
-            // Allow if any member on requested server was joined, else deny
-            let mut allowed = false;
-            for member in room::joined_users(room_id, None)
-                .await?
-                .into_iter()
-                .filter(|member| member.server_name() == origin)
-            {
-                if user_was_joined(frame_id, &member).await {
-                    allowed = true;
-                    break;
-                }
-            }
-            allowed
-        }
-        _ => {
-            error!("Unknown history visibility {history_visibility}");
-            false
-        }
-    };
+    let mut visible = history_visibility_allows(&history_visibility, None, joined_after)
+        || memberships.iter().any(|membership| {
+            history_visibility_allows(&history_visibility, Some(membership), joined_after)
+        });
 
-    // SERVER_VISIBILITY_CACHE
-    //     .lock()
-    //     .unwrap()
-    //     .insert((origin.to_owned(), frame_id), visibility);
+    if let Some(after_history_visibility) = after_history_visibility {
+        visible |= history_visibility_allows(&after_history_visibility, None, joined_after)
+            || memberships.iter().any(|membership| {
+                history_visibility_allows(&after_history_visibility, Some(membership), joined_after)
+            });
+    }
 
-    Ok(visibility)
+    if pdu.event_ty == TimelineEventType::RoomMember
+        && let Some(state_key) = &pdu.state_key
+        && let Ok(user_id) = UserId::parse(state_key)
+        && user_id.server_name() == origin
+        && let Ok(content) = pdu.get_content::<RoomMemberEventContent>()
+    {
+        visible |=
+            history_visibility_allows(&history_visibility, Some(&content.membership), joined_after);
+    }
+
+    Ok(visible)
 }
 
 #[tracing::instrument(skip(origin, user_id))]
@@ -954,4 +1108,81 @@ pub fn allowed_room_ids(join_rule: JoinRule) -> Vec<OwnedRoomId> {
         }
     }
     room_ids
+}
+
+#[cfg(test)]
+mod history_visibility_tests {
+    use super::{history_visibility_allows, uses_shared_history_visibility};
+    use crate::core::events::room::history_visibility::HistoryVisibility;
+    use crate::core::events::room::member::MembershipState;
+
+    #[test]
+    fn world_readable_allows_non_members() {
+        assert!(history_visibility_allows(
+            &HistoryVisibility::WorldReadable,
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn shared_requires_a_join_at_or_after_the_event() {
+        assert!(history_visibility_allows(
+            &HistoryVisibility::Shared,
+            Some(&MembershipState::Join),
+            false
+        ));
+        assert!(history_visibility_allows(
+            &HistoryVisibility::Shared,
+            None,
+            true
+        ));
+        assert!(!history_visibility_allows(
+            &HistoryVisibility::Shared,
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn invited_requires_invite_or_join_membership_at_the_event() {
+        assert!(history_visibility_allows(
+            &HistoryVisibility::Invited,
+            Some(&MembershipState::Invite),
+            false
+        ));
+        assert!(history_visibility_allows(
+            &HistoryVisibility::Invited,
+            Some(&MembershipState::Join),
+            false
+        ));
+        assert!(!history_visibility_allows(
+            &HistoryVisibility::Invited,
+            Some(&MembershipState::Leave),
+            true
+        ));
+    }
+
+    #[test]
+    fn joined_requires_join_membership_at_the_event() {
+        assert!(history_visibility_allows(
+            &HistoryVisibility::Joined,
+            Some(&MembershipState::Join),
+            false
+        ));
+        assert!(!history_visibility_allows(
+            &HistoryVisibility::Joined,
+            Some(&MembershipState::Invite),
+            true
+        ));
+    }
+
+    #[test]
+    fn unknown_visibility_uses_shared_semantics() {
+        let visibility: HistoryVisibility = serde_json::from_str("\"future_visibility\"").unwrap();
+
+        assert!(uses_shared_history_visibility(&visibility));
+        assert!(history_visibility_allows(&visibility, None, true));
+        assert!(!history_visibility_allows(&visibility, None, false));
+    }
 }

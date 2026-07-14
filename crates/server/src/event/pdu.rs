@@ -13,7 +13,7 @@ use crate::core::client::filter::RoomEventFilter;
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
-use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
+use crate::core::events::room::member::RoomMemberEventContent;
 use crate::core::events::room::redaction::RoomRedactionEventContent;
 use crate::core::events::space::child::HierarchySpaceChildEvent;
 use crate::core::events::{
@@ -76,76 +76,54 @@ impl SnPduEvent {
     }
 
     pub async fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
-        if self.event_ty == TimelineEventType::RoomMember
-            && self.state_key.as_deref() == Some(user_id.as_str())
+        let frame_id = match state::get_pdu_frame_id(&self.event_id).await {
+            Ok(frame_id) => frame_id,
+            Err(e) if e.is_not_found() => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let history_visibility = state::history_visibility_before(self, frame_id).await?;
+        let after_history_visibility = (self.event_ty == TimelineEventType::RoomHistoryVisibility)
+            .then(|| {
+                self.get_content::<RoomHistoryVisibilityEventContent>()
+                    .map(|content| content.history_visibility)
+                    .unwrap_or(HistoryVisibility::Shared)
+            });
+        if history_visibility == HistoryVisibility::WorldReadable
+            || after_history_visibility == Some(HistoryVisibility::WorldReadable)
         {
             return Ok(true);
         }
-        if self.is_room_state() {
-            if room::is_world_readable(&self.room_id).await {
-                return Ok(!room::user::is_banned(user_id, &self.room_id).await?);
-            } else if room::user::is_joined(user_id, &self.room_id).await? {
-                return Ok(true);
-            }
-        }
-        let frame_id = match state::get_pdu_frame_id(&self.event_id).await {
-            Ok(frame_id) => frame_id,
-            Err(_) => match state::get_room_frame_id(&self.room_id, None).await {
-                Ok(frame_id) => frame_id,
-                Err(_) => {
-                    return Ok(false);
-                }
-            },
-        };
+        let after_membership = (self.event_ty == TimelineEventType::RoomMember
+            && self.state_key.as_deref() == Some(user_id.as_str()))
+        .then(|| {
+            self.get_content::<RoomMemberEventContent>()
+                .ok()
+                .map(|content| content.membership)
+        })
+        .flatten();
+        let uses_shared_visibility = state::uses_shared_history_visibility(&history_visibility)
+            || after_history_visibility
+                .as_ref()
+                .is_some_and(state::uses_shared_history_visibility);
+        let joined_after = uses_shared_visibility
+            && room::user::joined_after(user_id, &self.room_id, self.depth).await?;
+        let membership = state::user_membership_before(self, frame_id, user_id).await?;
 
-        if let Some(visibility) = state::USER_VISIBILITY_CACHE
-            .lock()
-            .unwrap()
-            .get_mut(&(user_id.to_owned(), frame_id))
-        {
-            return Ok(*visibility);
-        }
-
-        let history_visibility = state::get_state_content::<RoomHistoryVisibilityEventContent>(
-            frame_id,
-            &StateEventType::RoomHistoryVisibility,
-            "",
+        Ok(
+            state::history_visibility_allows(
+                &history_visibility,
+                membership.as_ref(),
+                joined_after,
+            ) || after_history_visibility.as_ref().is_some_and(|visibility| {
+                state::history_visibility_allows(visibility, membership.as_ref(), joined_after)
+            }) || after_membership.as_ref().is_some_and(|membership| {
+                state::history_visibility_allows(
+                    &history_visibility,
+                    Some(membership),
+                    joined_after,
+                )
+            }),
         )
-        .await
-        .map_or(
-            HistoryVisibility::Shared,
-            |c: RoomHistoryVisibilityEventContent| c.history_visibility,
-        );
-
-        let visibility = match history_visibility {
-            HistoryVisibility::WorldReadable => true,
-            HistoryVisibility::Shared => {
-                let Ok(membership) = state::user_membership(frame_id, user_id).await else {
-                    return crate::room::user::is_joined(user_id, &self.room_id).await;
-                };
-                membership == MembershipState::Join
-                    || crate::room::user::is_joined(user_id, &self.room_id).await?
-            }
-            HistoryVisibility::Invited => {
-                // Allow if any member on requesting server was AT LEAST invited, else deny
-                state::user_was_invited(frame_id, user_id).await
-            }
-            HistoryVisibility::Joined => {
-                // Allow if any member on requested server was joined, else deny
-                state::user_was_joined(frame_id, user_id).await
-                    || state::user_was_joined(frame_id - 1, user_id).await
-            }
-            _ => {
-                error!("unknown history visibility {history_visibility}");
-                false
-            }
-        };
-
-        state::USER_VISIBILITY_CACHE
-            .lock()
-            .expect("should locked")
-            .insert((user_id.to_owned(), frame_id), visibility);
-        Ok(visibility)
     }
 
     pub async fn add_unsigned_membership(&mut self, user_id: &UserId) -> AppResult<()> {
