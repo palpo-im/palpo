@@ -161,34 +161,38 @@ pub async fn update_currents(room_id: &RoomId) -> AppResult<()> {
     let mut conn = connect().await?;
     let membership_counts = room_users::table
         .filter(room_users::room_id.eq(room_id))
-        .group_by(room_users::membership)
-        .select((room_users::membership, diesel::dsl::count_star()))
-        .load::<(String, i64)>(&mut conn)
+        .group_by((room_users::membership, room_users::user_server_id))
+        .select((
+            room_users::membership,
+            room_users::user_server_id,
+            diesel::dsl::count_star(),
+        ))
+        .load::<(String, OwnedServerName, i64)>(&mut conn)
         .await?;
     let membership_count = |membership: &str| {
         membership_counts
             .iter()
-            .find_map(|(state, count)| (state == membership).then_some(*count))
-            .unwrap_or_default()
+            .filter_map(|(state, _, count)| (state == membership).then_some(*count))
+            .sum()
     };
 
-    let local_users_in_room = room_users::table
-        .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq("join"))
-        .filter(room_users::user_server_id.eq(&config::get().server_name))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await?;
+    let local_users_in_room = membership_counts
+        .iter()
+        .find_map(|(state, server_name, count)| {
+            (state == MembershipState::Join.as_str() && server_name == &config::get().server_name)
+                .then_some(*count)
+        })
+        .unwrap_or_default();
     let completed_delta_stream_id = data::curr_sn().await?;
 
     let current = DbRoomCurrent {
         room_id: room_id.to_owned(),
         state_events,
-        joined_members: membership_count("join"),
-        invited_members: membership_count("invite"),
-        left_members: membership_count("leave"),
-        banned_members: membership_count("ban"),
-        knocked_members: membership_count("knock"),
+        joined_members: membership_count(MembershipState::Join.as_str()),
+        invited_members: membership_count(MembershipState::Invite.as_str()),
+        left_members: membership_count(MembershipState::Leave.as_str()),
+        banned_members: membership_count(MembershipState::Ban.as_str()),
+        knocked_members: membership_count(MembershipState::Knock.as_str()),
         local_users_in_room,
         completed_delta_stream_id,
     };
@@ -786,7 +790,7 @@ pub async fn is_admin_room(room_id: &RoomId) -> AppResult<bool> {
 pub async fn local_users_in_room(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq("join"))
+        .filter(room_users::membership.eq(MembershipState::Join.as_str()))
         .filter(room_users::user_server_id.eq(&config::get().server_name))
         .select(room_users::user_id)
         .load::<OwnedUserId>(&mut connect().await?)

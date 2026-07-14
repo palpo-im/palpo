@@ -605,8 +605,10 @@ pub async fn append_pdu(
     // We set the room state after inserting the pdu, so that we never have a moment in time
     // where events in the current room state do not exist
     state::set_room_state(&pdu.room_id, frame_id).await?;
-    if pdu.state_key.is_some() {
-        crate::room::update_currents(&pdu.room_id).await?;
+    if pdu.state_key.is_some()
+        && let Err(e) = crate::room::update_currents(&pdu.room_id).await
+    {
+        error!("failed to update statistics for room {}: {e}", pdu.room_id);
     }
 
     if let Err(e) =
