@@ -114,6 +114,7 @@ pub async fn force_state(
     }
 
     set_room_state(room_id, frame_id).await?;
+    room::update_currents(room_id).await?;
 
     Ok(())
 }

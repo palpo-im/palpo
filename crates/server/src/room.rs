@@ -149,54 +149,55 @@ pub async fn disable_room(room_id: &RoomId, disabled: bool) -> AppResult<()> {
 }
 
 pub async fn update_currents(room_id: &RoomId) -> AppResult<()> {
-    let joined_members = room_users::table
+    let state_events = match get_current_frame_id(room_id).await? {
+        Some(frame_id) => state::load_frame_info(frame_id)
+            .await?
+            .last()
+            .map(|info| utils::usize_to_i64(info.full_state.len()))
+            .unwrap_or_default(),
+        None => 0,
+    };
+
+    let mut conn = connect().await?;
+    let membership_counts = room_users::table
+        .filter(room_users::room_id.eq(room_id))
+        .group_by(room_users::membership)
+        .select((room_users::membership, diesel::dsl::count_star()))
+        .load::<(String, i64)>(&mut conn)
+        .await?;
+    let membership_count = |membership: &str| {
+        membership_counts
+            .iter()
+            .find_map(|(state, count)| (state == membership).then_some(*count))
+            .unwrap_or_default()
+    };
+
+    let local_users_in_room = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq("join"))
+        .filter(room_users::user_server_id.eq(&config::get().server_name))
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut conn)
         .await?;
-    let invited_members = room_users::table
-        .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq("invite"))
-        .count()
-        .get_result::<i64>(&mut connect().await?)
-        .await?;
-    let left_members = room_users::table
-        .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq("leave"))
-        .count()
-        .get_result::<i64>(&mut connect().await?)
-        .await?;
-    let banned_members = room_users::table
-        .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq("banned"))
-        .count()
-        .get_result::<i64>(&mut connect().await?)
-        .await?;
-    let knocked_members = room_users::table
-        .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq("knocked"))
-        .count()
-        .get_result::<i64>(&mut connect().await?)
-        .await?;
+    let completed_delta_stream_id = data::curr_sn().await?;
 
     let current = DbRoomCurrent {
         room_id: room_id.to_owned(),
-        state_events: 0, // TODO: fixme
-        joined_members,
-        invited_members,
-        left_members,
-        banned_members,
-        knocked_members,
-        local_users_in_room: 0,       // TODO: fixme
-        completed_delta_stream_id: 0, // TODO: fixme
+        state_events,
+        joined_members: membership_count("join"),
+        invited_members: membership_count("invite"),
+        left_members: membership_count("leave"),
+        banned_members: membership_count("ban"),
+        knocked_members: membership_count("knock"),
+        local_users_in_room,
+        completed_delta_stream_id,
     };
     diesel::insert_into(stats_room_currents::table)
         .values(&current)
         .on_conflict(stats_room_currents::room_id)
         .do_update()
         .set(&current)
-        .execute(&mut connect().await?)
+        .execute(&mut conn)
         .await?;
 
     Ok(())
@@ -780,13 +781,12 @@ pub async fn is_admin_room(room_id: &RoomId) -> AppResult<bool> {
     }
 }
 
-/// Returns an iterator of all our local users in the room, even if they're
-/// deactivated/guests
+/// Returns all joined local users in the room, including deactivated users and guests.
 #[tracing::instrument(level = "debug")]
-// TODO: local?
 pub async fn local_users_in_room(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
+        .filter(room_users::membership.eq("join"))
         .filter(room_users::user_server_id.eq(&config::get().server_name))
         .select(room_users::user_id)
         .load::<OwnedUserId>(&mut connect().await?)
