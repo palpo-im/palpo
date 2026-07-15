@@ -412,7 +412,8 @@ pub async fn sync_events(
             to_device: collect_to_device(sync_info, next_batch).await,
             receipts: collect_receipts(sync_info),
             typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
-            ..Default::default()
+            #[cfg(feature = "unstable-msc4262")]
+            profiles: Default::default(),
         },
     };
 
