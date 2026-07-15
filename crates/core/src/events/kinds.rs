@@ -14,6 +14,8 @@ use super::{
     StaticStateEventContent, ToDeviceEventContent,
 };
 use crate::events::receipt::ReceiptEventContent;
+#[cfg(feature = "unstable-msc4354")]
+use crate::events::sticky::StickyObject;
 use crate::events::{AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent};
 use crate::macros::Event;
 use crate::room_version_rules::RedactionRules;
@@ -152,6 +154,11 @@ pub struct OriginalMessageLikeEvent<C: MessageLikeEventContent> {
     /// TODO???
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub unsigned: MessageLikeUnsigned<C>,
+
+    /// Delivery-guarantee configuration for a sticky event.
+    #[cfg(feature = "unstable-msc4354")]
+    #[palpo_event(default, default_on_error, rename = "msc4354_sticky")]
+    pub sticky: Option<StickyObject>,
 }
 
 /// An unredacted message-like event without a `room_id`.
@@ -178,6 +185,11 @@ pub struct OriginalSyncMessageLikeEvent<C: MessageLikeEventContent> {
     /// TODO???
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub unsigned: MessageLikeUnsigned<C>,
+
+    /// Delivery-guarantee configuration for a sticky event.
+    #[cfg(feature = "unstable-msc4354")]
+    #[palpo_event(default, default_on_error, rename = "msc4354_sticky")]
+    pub sticky: Option<StickyObject>,
 }
 
 impl<C: MessageLikeEventContent + RedactContent> OriginalSyncMessageLikeEvent<C>
@@ -320,6 +332,11 @@ pub struct OriginalStateEvent<C: StaticStateEventContent> {
     /// Additional key-value pairs not signed by the homeserver.
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub unsigned: C::Unsigned,
+
+    /// Delivery-guarantee configuration for a sticky event.
+    #[cfg(feature = "unstable-msc4354")]
+    #[palpo_event(default, default_on_error, rename = "msc4354_sticky")]
+    pub sticky: Option<StickyObject>,
 }
 
 /// An unredacted state event without a `room_id`.
@@ -353,6 +370,11 @@ pub struct OriginalSyncStateEvent<C: StaticStateEventContent> {
     /// Additional key-value pairs not signed by the homeserver.
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub unsigned: C::Unsigned,
+
+    /// Delivery-guarantee configuration for a sticky event.
+    #[cfg(feature = "unstable-msc4354")]
+    #[palpo_event(default, default_on_error, rename = "msc4354_sticky")]
+    pub sticky: Option<StickyObject>,
 }
 
 /// A stripped-down state event, used for previews of rooms the user has been

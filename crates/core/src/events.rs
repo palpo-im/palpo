@@ -172,6 +172,8 @@ pub mod space;
 #[cfg(feature = "unstable-msc3230")]
 pub mod space_order;
 pub mod sticker;
+#[cfg(feature = "unstable-msc4354")]
+pub mod sticky;
 pub mod tag;
 pub mod typing;
 #[cfg(feature = "unstable-msc3553")]
