@@ -44,7 +44,7 @@ impl ToDeviceKeyVerificationAcceptEventContent {
     }
 }
 
-/// The content of a in-room `m.key.verification.accept` event.
+/// The content of an in-room `m.key.verification.accept` event.
 ///
 /// Accepts a previously sent `m.key.verification.start` message.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug, EventContent)]
@@ -60,14 +60,14 @@ pub struct KeyVerificationAcceptEventContent {
 }
 
 impl KeyVerificationAcceptEventContent {
-    /// Creates a new `ToDeviceKeyVerificationAcceptEventContent` with the given
+    /// Creates a new `KeyVerificationAcceptEventContent` with the given
     /// method-specific content and reference.
     pub fn new(method: AcceptMethod, relates_to: Reference) -> Self {
         Self { method, relates_to }
     }
 }
 
-/// An enum representing the different method specific
+/// An enum representing the different method-specific
 /// `m.key.verification.accept` content.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 #[serde(untagged)]
@@ -81,15 +81,12 @@ pub enum AcceptMethod {
     _Custom(_CustomContent),
 }
 
-/// Method specific content of a unknown key verification method.
+/// Method-specific content of an unknown key verification method.
 #[doc(hidden)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[allow(clippy::exhaustive_structs)]
 pub struct _CustomContent {
-    /// The name of the method.
-    pub method: String,
-
-    /// The additional fields that the method contains.
+    /// The fields supplied by the unknown method.
     #[serde(flatten)]
     pub data: BTreeMap<String, JsonValue>,
 }
@@ -97,7 +94,6 @@ pub struct _CustomContent {
 /// The payload of an `m.key.verification.accept` event using the `m.sas.v1`
 /// method.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename = "m.sas.v1", tag = "method")]
 pub struct SasV1Content {
     /// The key agreement protocol the device is choosing to use, out of the
     /// options in the `m.key.verification.start` message.
@@ -107,34 +103,6 @@ pub struct SasV1Content {
     /// `m.key.verification.start` message.
     pub hash: HashAlgorithm,
 
-    // #[cfg(test)]
-    // mod tests {
-    //     use std::collections::BTreeMap;
-
-    //     use crate::{event_id, serde::Base64};
-    //     use assert_matches2::assert_matches;
-    //     use serde_json::{from_value as from_json_value, json, to_value as
-    // to_json_value, Value as JsonValue};
-
-    //     use super::{
-    //         AcceptMethod, HashAlgorithm, KeyAgreementProtocol,
-    // KeyVerificationAcceptEventContent,         MessageAuthenticationCode,
-    // SasV1Content, ShortAuthenticationString,
-    // ToDeviceKeyVerificationAcceptEventContent,         _CustomContent,
-    //     };
-    //     use crate::events::{relation::Reference, ToDeviceEvent};
-
-    //     #[test]
-    //     fn serialization() {
-    //         let key_verification_accept_content =
-    // ToDeviceKeyVerificationAcceptEventContent {             transaction_id:
-    // "456".into(),             method: AcceptMethod::SasV1(SasV1Content {
-    //                 hash: HashAlgorithm::Sha256,
-    //                 key_agreement_protocol: KeyAgreementProtocol::Curve25519,
-    //                 message_authentication_code:
-    // MessageAuthenticationCode::HkdfHmacSha256V2,
-    // short_authentication_string: vec![ShortAuthenticationString::Decimal],
-    //                 commitment: Base64::new(b"hello".to_vec()),
     /// The message authentication code the device is choosing to use, out of
     /// the options in the `m.key.verification.start` message.
     pub message_authentication_code: MessageAuthenticationCode,
@@ -152,218 +120,63 @@ pub struct SasV1Content {
     pub commitment: Base64,
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use std::collections::BTreeMap;
+#[cfg(test)]
+mod tests {
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
-//     use crate::{event_id, serde::Base64};
-//     use assert_matches2::assert_matches;
-//     use serde_json::{from_value as from_json_value, json, to_value as
-// to_json_value, Value as JsonValue};
+    use super::{
+        AcceptMethod, KeyVerificationAcceptEventContent, ToDeviceKeyVerificationAcceptEventContent,
+    };
 
-//     use super::{
-//         AcceptMethod, HashAlgorithm, KeyAgreementProtocol,
-// KeyVerificationAcceptEventContent,         MessageAuthenticationCode,
-// SasV1Content, ShortAuthenticationString,
-// ToDeviceKeyVerificationAcceptEventContent,         _CustomContent,
-//     };
-//     use crate::events::{relation::Reference, ToDeviceEvent};
+    #[test]
+    fn to_device_sas_v1_round_trips_without_method() {
+        let json = json!({
+            "transaction_id": "456",
+            "commitment": "aGVsbG8",
+            "key_agreement_protocol": "curve25519",
+            "hash": "sha256",
+            "message_authentication_code": "hkdf-hmac-sha256.v2",
+            "short_authentication_string": ["decimal"]
+        });
 
-//     #[test]
-//     fn serialization() {
-//         let key_verification_accept_content =
-// ToDeviceKeyVerificationAcceptEventContent {             transaction_id:
-// "456".into(),             method: AcceptMethod::SasV1(SasV1Content {
-//                 hash: HashAlgorithm::Sha256,
-//                 key_agreement_protocol: KeyAgreementProtocol::Curve25519,
-//                 message_authentication_code:
-// MessageAuthenticationCode::HkdfHmacSha256V2,
-// short_authentication_string: vec![ShortAuthenticationString::Decimal],
-//                 commitment: Base64::new(b"hello".to_vec()),
-//             }),
-//         };
+        let content: ToDeviceKeyVerificationAcceptEventContent =
+            from_json_value(json.clone()).unwrap();
 
-//         let json_data = json!({
-//             "transaction_id": "456",
-//             "method": "m.sas.v1",
-//             "commitment": "aGVsbG8",
-//             "key_agreement_protocol": "curve25519",
-//             "hash": "sha256",
-//             "message_authentication_code": "hkdf-hmac-sha256.v2",
-//             "short_authentication_string": ["decimal"]
-//         });
+        assert!(matches!(&content.method, AcceptMethod::SasV1(_)));
+        assert_eq!(to_json_value(content).unwrap(), json);
+    }
 
-//         assert_eq!(to_json_value(&key_verification_accept_content).unwrap(),
-// json_data);
+    #[test]
+    fn in_room_sas_v1_round_trips_without_method() {
+        let json = json!({
+            "commitment": "aGVsbG8",
+            "key_agreement_protocol": "curve25519",
+            "hash": "sha256",
+            "message_authentication_code": "hkdf-hmac-sha256.v2",
+            "short_authentication_string": ["decimal"],
+            "m.relates_to": {
+                "rel_type": "m.reference",
+                "event_id": "$1598361704261elfgc:localhost"
+            }
+        });
 
-//         let json_data = json!({
-//             "transaction_id": "456",
-//             "method": "m.sas.custom",
-//             "test": "field",
-//         });
+        let content: KeyVerificationAcceptEventContent = from_json_value(json.clone()).unwrap();
 
-//         let key_verification_accept_content =
-// ToDeviceKeyVerificationAcceptEventContent {             transaction_id:
-// "456".into(),             method: AcceptMethod::_Custom(_CustomContent {
-//                 method: "m.sas.custom".to_owned(),
-//                 data: vec![("test".to_owned(), JsonValue::from("field"))]
-//                     .into_iter()
-//                     .collect::<BTreeMap<String, JsonValue>>(),
-//             }),
-//         };
+        assert!(matches!(&content.method, AcceptMethod::SasV1(_)));
+        assert_eq!(to_json_value(content).unwrap(), json);
+    }
 
-//         assert_eq!(to_json_value(&key_verification_accept_content).unwrap(),
-// json_data);     }
+    #[test]
+    fn unknown_accept_content_round_trips_without_method() {
+        let json = json!({
+            "transaction_id": "456",
+            "com.example.custom": "field"
+        });
 
-//     #[test]
-//     fn in_room_serialization() {
-//         let event_id = event_id!("$1598361704261elfgc:localhost");
+        let content: ToDeviceKeyVerificationAcceptEventContent =
+            from_json_value(json.clone()).unwrap();
 
-//         let key_verification_accept_content =
-// KeyVerificationAcceptEventContent {             relates_to: Reference {
-//                 event_id: event_id.to_owned(),
-//             },
-//             method: AcceptMethod::SasV1(SasV1Content {
-//                 hash: HashAlgorithm::Sha256,
-//                 key_agreement_protocol: KeyAgreementProtocol::Curve25519,
-//                 message_authentication_code:
-// MessageAuthenticationCode::HkdfHmacSha256V2,
-// short_authentication_string: vec![ShortAuthenticationString::Decimal],
-//                 commitment: Base64::new(b"hello".to_vec()),
-//             }),
-//         };
-
-//         let json_data = json!({
-//             "method": "m.sas.v1",
-//             "commitment": "aGVsbG8",
-//             "key_agreement_protocol": "curve25519",
-//             "hash": "sha256",
-//             "message_authentication_code": "hkdf-hmac-sha256.v2",
-//             "short_authentication_string": ["decimal"],
-//             "m.relates_to": {
-//                 "rel_type": "m.reference",
-//                 "event_id": event_id,
-//             }
-//         });
-
-//         assert_eq!(to_json_value(&key_verification_accept_content).unwrap(),
-// json_data);     }
-
-//     #[test]
-//     fn deserialization() {
-//         let json = json!({
-//             "transaction_id": "456",
-//             "commitment": "aGVsbG8",
-//             "method": "m.sas.v1",
-//             "hash": "sha256",
-//             "key_agreement_protocol": "curve25519",
-//             "message_authentication_code": "hkdf-hmac-sha256.v2",
-//             "short_authentication_string": ["decimal"]
-//         });
-
-//         // Deserialize the content struct separately to verify `TryFromRaw`
-// is implemented for it.         let content =
-// from_json_value::<ToDeviceKeyVerificationAcceptEventContent>(json).unwrap();
-//         assert_eq!(content.transaction_id, "456");
-
-//         assert_matches!(content.method, AcceptMethod::SasV1(sas));
-//         assert_eq!(sas.commitment.encode(), "aGVsbG8");
-//         assert_eq!(sas.hash, HashAlgorithm::Sha256);
-//         assert_eq!(sas.key_agreement_protocol,
-// KeyAgreementProtocol::Curve25519);         assert_eq!(
-//             sas.message_authentication_code,
-//             MessageAuthenticationCode::HkdfHmacSha256V2
-//         );
-//         assert_eq!(
-//             sas.short_authentication_string,
-//             vec![ShortAuthenticationString::Decimal]
-//         );
-
-//         let json = json!({
-//             "content": {
-//                 "commitment": "aGVsbG8",
-//                 "transaction_id": "456",
-//                 "method": "m.sas.v1",
-//                 "key_agreement_protocol": "curve25519",
-//                 "hash": "sha256",
-//                 "message_authentication_code": "hkdf-hmac-sha256.v2",
-//                 "short_authentication_string": ["decimal"]
-//             },
-//             "type": "m.key.verification.accept",
-//             "sender": "@example:localhost",
-//         });
-
-//         let ev =
-// from_json_value::<ToDeviceEvent<ToDeviceKeyVerificationAcceptEventContent>>(json).
-// unwrap();         assert_eq!(ev.content.transaction_id, "456");
-//         assert_eq!(ev.sender, "@example:localhost");
-
-//         assert_matches!(ev.content.method, AcceptMethod::SasV1(sas));
-//         assert_eq!(sas.commitment.encode(), "aGVsbG8");
-//         assert_eq!(sas.hash, HashAlgorithm::Sha256);
-//         assert_eq!(sas.key_agreement_protocol,
-// KeyAgreementProtocol::Curve25519);         assert_eq!(
-//             sas.message_authentication_code,
-//             MessageAuthenticationCode::HkdfHmacSha256V2
-//         );
-//         assert_eq!(
-//             sas.short_authentication_string,
-//             vec![ShortAuthenticationString::Decimal]
-//         );
-
-//         let json = json!({
-//             "content": {
-//                 "from_device": "123",
-//                 "transaction_id": "456",
-//                 "method": "m.sas.custom",
-//                 "test": "field",
-//             },
-//             "type": "m.key.verification.accept",
-//             "sender": "@example:localhost",
-//         });
-
-//         let ev =
-// from_json_value::<ToDeviceEvent<ToDeviceKeyVerificationAcceptEventContent>>(json).
-// unwrap();         assert_eq!(ev.content.transaction_id, "456");
-//         assert_eq!(ev.sender, "@example:localhost");
-
-//         assert_matches!(ev.content.method, AcceptMethod::_Custom(custom));
-//         assert_eq!(custom.method, "m.sas.custom");
-//         assert_eq!(custom.data.get("test"), Some(&JsonValue::from("field")));
-//     }
-
-//     #[test]
-//     fn in_room_deserialization() {
-//         let json = json!({
-//             "commitment": "aGVsbG8",
-//             "method": "m.sas.v1",
-//             "hash": "sha256",
-//             "key_agreement_protocol": "curve25519",
-//             "message_authentication_code": "hkdf-hmac-sha256.v2",
-//             "short_authentication_string": ["decimal"],
-//             "m.relates_to": {
-//                 "rel_type": "m.reference",
-//                 "event_id": "$1598361704261elfgc:localhost",
-//             }
-//         });
-
-//         // Deserialize the content struct separately to verify `TryFromRaw`
-// is implemented for it.         let content =
-// from_json_value::<KeyVerificationAcceptEventContent>(json).unwrap();
-//         assert_eq!(content.relates_to.event_id,
-// "$1598361704261elfgc:localhost");
-
-//         assert_matches!(content.method, AcceptMethod::SasV1(sas));
-//         assert_eq!(sas.commitment.encode(), "aGVsbG8");
-//         assert_eq!(sas.hash, HashAlgorithm::Sha256);
-//         assert_eq!(sas.key_agreement_protocol,
-// KeyAgreementProtocol::Curve25519);         assert_eq!(
-//             sas.message_authentication_code,
-//             MessageAuthenticationCode::HkdfHmacSha256V2
-//         );
-//         assert_eq!(
-//             sas.short_authentication_string,
-//             vec![ShortAuthenticationString::Decimal]
-//         );
-//     }
-// }
+        assert!(matches!(&content.method, AcceptMethod::_Custom(_)));
+        assert_eq!(to_json_value(content).unwrap(), json);
+    }
+}
