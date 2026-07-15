@@ -17,8 +17,10 @@ use serde::de::DeserializeOwned;
 use crate::core::UnixMillis;
 use crate::core::events::GlobalAccountDataEventType;
 use crate::core::events::ignored_user_list::IgnoredUserListEvent;
+use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::identifiers::*;
+use crate::core::push::Ruleset;
 use crate::core::serde::JsonValue;
 use crate::data::DataResult;
 use crate::data::user::{DbUser, DbUserData, NewDbUser};
@@ -338,6 +340,26 @@ pub async fn get_data<E: DeserializeOwned>(
 ) -> DataResult<E> {
     let data = data::user::get_data::<E>(user_id, room_id, kind).await?;
     Ok(data)
+}
+
+/// Loads a user's push rules and merges in the current server defaults.
+///
+/// The stored enabled state and actions for existing default rules are kept,
+/// as are all user-defined rules. This makes newly added defaults effective
+/// for existing accounts without resetting their preferences.
+pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent> {
+    let mut content = data::user::get_global_data::<PushRulesEventContent>(
+        user_id,
+        &GlobalAccountDataEventType::PushRules.to_string(),
+    )
+    .await?
+    .unwrap_or_else(|| PushRulesEventContent::new(Ruleset::server_default(user_id)));
+
+    content
+        .global
+        .update_with_server_default(Ruleset::server_default(user_id));
+
+    Ok(content)
 }
 
 pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {

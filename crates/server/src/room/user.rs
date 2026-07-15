@@ -5,7 +5,6 @@ use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::Seqnum;
-use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::member::MembershipState;
 use crate::core::events::{AnyStrippedStateEvent, AnySyncStateEvent, GlobalAccountDataEventType};
 use crate::core::identifiers::*;
@@ -447,13 +446,7 @@ pub async fn copy_push_rules_from_room_to_room(
     _old_room_id: &RoomId,
     new_room_id: &RoomId,
 ) -> AppResult<()> {
-    let Ok(mut user_data_content) = crate::data::user::get_data::<PushRulesEventContent>(
-        user_id,
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    else {
+    let Ok(mut user_data_content) = crate::user::get_push_rules(user_id).await else {
         return Ok(());
     };
 
