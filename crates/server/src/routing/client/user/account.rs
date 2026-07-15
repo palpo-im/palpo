@@ -3,7 +3,7 @@ use salvo::prelude::*;
 use serde::Deserialize;
 
 use crate::core::client::account::data::{GlobalAccountDataResBody, RoomAccountDataResBody};
-use crate::core::events::AnyGlobalAccountDataEventContent;
+use crate::core::events::{AnyGlobalAccountDataEventContent, GlobalAccountDataEventType};
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonValue, RawJson};
 use crate::core::user::{UserEventTypeReqArgs, UserRoomEventTypeReqArgs};
@@ -24,10 +24,14 @@ pub(super) async fn get_global_data(
 ) -> JsonResult<GlobalAccountDataResBody> {
     let authed = depot.authed_info()?;
 
-    let content =
-        data::user::get_data::<JsonValue>(authed.user_id(), None, &args.event_type.to_string())
+    let event_type = args.event_type.to_string();
+    let content = if event_type == GlobalAccountDataEventType::PushRules.to_string() {
+        serde_json::to_value(crate::user::get_push_rules(authed.user_id()).await?)?
+    } else {
+        data::user::get_data::<JsonValue>(authed.user_id(), None, &event_type)
             .await
-            .map_err(|_| MatrixError::not_found("user data not found"))?;
+            .map_err(|_| MatrixError::not_found("user data not found"))?
+    };
 
     json_ok(GlobalAccountDataResBody(RawJson::from_value(&content)?))
 }
