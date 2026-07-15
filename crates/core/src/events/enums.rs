@@ -56,12 +56,10 @@ event_enum! {
         #[cfg(feature = "unstable-msc4278")]
         #[palpo_enum(ident = UnstableMediaPreviewConfig)]
         "io.element.msc4278.media_preview_config" => super::media_preview_config,
-        #[cfg(feature = "unstable-msc2545")]
-        #[palpo_enum(ident = AccountImagePack, alias = "m.image_pack")]
+        #[palpo_enum(ident = AccountImagePack)]
         "im.ponies.user_emotes" => super::image_pack,
-        #[cfg(feature = "unstable-msc2545")]
-        #[palpo_enum(ident = ImagePackRooms, alias = "m.image_pack.rooms")]
-        "im.ponies.emote_rooms" => super::image_pack,
+        #[palpo_enum(alias = "im.ponies.emote_rooms")]
+        "m.image_pack.rooms" => super::image_pack,
     }
 
     /// Any room account data event.
@@ -192,9 +190,8 @@ event_enum! {
         "m.room.topic" => super::room::topic,
         "m.space.child" => super::space::child,
         "m.space.parent" => super::space::parent,
-        #[cfg(feature = "unstable-msc2545")]
-        #[palpo_enum(ident = RoomImagePack, alias = "m.image_pack")]
-        "im.ponies.room_emotes" => super::image_pack,
+        #[palpo_enum(alias = "m.image_pack", alias = "im.ponies.room_emotes")]
+        "m.room.image_pack" => super::image_pack,
         #[cfg(feature = "unstable-msc3489")]
         #[palpo_enum(alias = "m.beacon_info")]
         "org.matrix.msc3672.beacon_info" => super::beacon_info,
