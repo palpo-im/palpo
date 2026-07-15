@@ -5,7 +5,8 @@
 use std::fmt::Formatter;
 
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize, de::Error};
+use serde::de::Error;
+use serde::{Deserialize, Serialize};
 
 /// Sticky duration in milliseconds.
 ///
