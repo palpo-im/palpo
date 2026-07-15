@@ -54,7 +54,6 @@ pub fn root() -> Router {
             Router::with_path("_matrix")
                 .push(client::router())
                 .push(media::router())
-                .push(federation::public_router())
                 .push(federation::router())
                 .push(federation::key::router())
                 .push(policy::router())
