@@ -348,18 +348,41 @@ pub async fn get_data<E: DeserializeOwned>(
 /// as are all user-defined rules. This makes newly added defaults effective
 /// for existing accounts without resetting their preferences.
 pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent> {
-    let mut content = data::user::get_global_data::<PushRulesEventContent>(
+    let stored = data::user::get_global_data::<PushRulesEventContent>(
         user_id,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
-    .await?
-    .unwrap_or_else(|| PushRulesEventContent::new(Ruleset::server_default(user_id)));
+    .await?;
+    let (content, refreshed_json) = refresh_push_rules_content(user_id, stored)?;
+
+    if let Some(refreshed_json) = refreshed_json {
+        data::user::set_data(
+            user_id,
+            None,
+            &GlobalAccountDataEventType::PushRules.to_string(),
+            refreshed_json,
+        )
+        .await?;
+    }
+
+    Ok(content)
+}
+
+fn refresh_push_rules_content(
+    user_id: &UserId,
+    stored: Option<PushRulesEventContent>,
+) -> AppResult<(PushRulesEventContent, Option<JsonValue>)> {
+    let stored_json = stored.as_ref().map(serde_json::to_value).transpose()?;
+    let mut content =
+        stored.unwrap_or_else(|| PushRulesEventContent::new(Ruleset::server_default(user_id)));
 
     content
         .global
         .update_with_server_default(Ruleset::server_default(user_id));
+    let refreshed_json = serde_json::to_value(&content)?;
 
-    Ok(content)
+    let changed = stored_json.as_ref() != Some(&refreshed_json);
+    Ok((content, changed.then_some(refreshed_json)))
 }
 
 pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
@@ -380,4 +403,44 @@ pub async fn delete_all_media(user_id: &UserId) -> AppResult<i64> {
 pub async fn deactivate_account(user_id: &UserId) -> AppResult<()> {
     data::user::mark_deactivated(user_id).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod push_rules_tests {
+    use super::refresh_push_rules_content;
+    use crate::core::events::push_rules::PushRulesEventContent;
+    use crate::core::push::{ConditionalPushRule, Ruleset};
+    use crate::core::user_id;
+
+    #[test]
+    fn refresh_is_persisted_only_when_defaults_change() {
+        let user_id = user_id!("@user:example.org");
+        let stale_default = ConditionalPushRule {
+            actions: vec![],
+            default: true,
+            enabled: true,
+            rule_id: ".stale.default".to_owned(),
+            conditions: vec![],
+        };
+        let stored = PushRulesEventContent::new(Ruleset {
+            override_: [stale_default].into(),
+            ..Default::default()
+        });
+
+        let (refreshed, changed_json) = refresh_push_rules_content(user_id, Some(stored)).unwrap();
+        assert!(changed_json.is_some());
+        assert!(!refreshed.global.override_.contains(".stale.default"));
+
+        let (_, unchanged_json) = refresh_push_rules_content(user_id, Some(refreshed)).unwrap();
+        assert!(unchanged_json.is_none());
+    }
+
+    #[test]
+    fn missing_push_rules_are_created_for_sync_delivery() {
+        let user_id = user_id!("@user:example.org");
+        let (content, changed_json) = refresh_push_rules_content(user_id, None).unwrap();
+
+        assert!(changed_json.is_some());
+        assert!(!content.global.override_.is_empty());
+    }
 }

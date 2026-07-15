@@ -856,10 +856,8 @@ mod tests {
     use super::PredefinedOverrideRuleId;
     #[cfg(feature = "unstable-msc4306")]
     use super::PredefinedUnderrideRuleId;
-    use crate::{
-        push::{Action, ConditionalPushRule, Ruleset},
-        user_id,
-    };
+    use crate::push::{Action, ConditionalPushRule, Ruleset};
+    use crate::user_id;
 
     #[test]
     fn update_with_server_default() {
