@@ -231,6 +231,7 @@ fn supported_versions_body() -> VersionsResBody {
             ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
             ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
             ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
+            ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
         ]),
         server: Some(Server::new(
             "Palpo".to_owned(),
@@ -260,10 +261,11 @@ mod supported_versions_tests {
     }
 
     #[test]
-    fn includes_msc4383_server_metadata() {
+    fn includes_msc4383_server_metadata_and_feature_flag() {
         let body = supported_versions_body();
         let server = body.server.as_ref().unwrap();
 
+        assert_eq!(body.unstable_features.get("net.zemos.msc4383"), Some(&true));
         assert_eq!(server.name, "Palpo");
         assert!(!server.version.is_empty());
         assert_eq!(
