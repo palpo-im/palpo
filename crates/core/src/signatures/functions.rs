@@ -12,10 +12,8 @@ use sha2::digest::Digest;
 #[cfg(test)]
 mod tests;
 
-use crate::events::{
-    StaticEventContent,
-    room::policy::{POLICY_SERVER_ED25519_SIGNING_KEY_ID, RoomPolicyEventContent},
-};
+use crate::events::StaticEventContent;
+use crate::events::room::policy::{POLICY_SERVER_ED25519_SIGNING_KEY_ID, RoomPolicyEventContent};
 use crate::room_version_rules::{
     EventIdFormatVersion, RedactionRules, RoomVersionRules, SignaturesRules,
 };
