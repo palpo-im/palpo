@@ -13,17 +13,15 @@ use serde::Deserialize;
 use serde_json::value::to_raw_value;
 use tokio::sync::{Semaphore, mpsc};
 
+use crate::core::UnixMillis;
 use crate::core::appservice::Registration;
 use crate::core::appservice::event::{PushEventsReqBody, push_events_request};
-use crate::core::events::GlobalAccountDataEventType;
-use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::federation::transaction::{
     Edu, SendMessageReqBody, SendMessageResBody, send_message_request,
 };
 use crate::core::identifiers::*;
 pub use crate::core::sending::*;
 use crate::core::serde::{CanonicalJsonObject, RawJsonValue};
-use crate::core::{UnixMillis, push};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::sending::{DbOutgoingRequest, NewDbOutgoingRequest};
@@ -530,14 +528,10 @@ async fn send_events(
                     None => continue,
                 };
 
-                let rules_for_user = data::user::get_global_data::<PushRulesEventContent>(
-                    user_id,
-                    &GlobalAccountDataEventType::PushRules.to_string(),
-                )
-                .await
-                .unwrap_or_default()
-                .map(|content: PushRulesEventContent| content.global)
-                .unwrap_or_else(|| push::Ruleset::server_default(user_id));
+                let rules_for_user = crate::user::get_push_rules(user_id)
+                    .await
+                    .map_err(|e| (kind.clone(), e))?
+                    .global;
 
                 let notify_summary = crate::room::user::notify_summary(user_id, &pdu.room_id)
                     .await

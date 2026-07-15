@@ -105,6 +105,8 @@ impl Ruleset {
             };
         }
         copy_rules_state!(new_server_default, self, @fields override_, content, room, sender, underride);
+        #[cfg(feature = "unstable-msc4306")]
+        copy_rules_state!(new_server_default, self, @fields postcontent);
 
         // Remove the remaining server-default rules from the old rules.
         macro_rules! remove_remaining_default_rules {
@@ -115,6 +117,8 @@ impl Ruleset {
             };
         }
         remove_remaining_default_rules!(self, @fields override_, content, room, sender, underride);
+        #[cfg(feature = "unstable-msc4306")]
+        remove_remaining_default_rules!(self, @fields postcontent);
 
         // `.m.rule.master` comes before all other push rules, while the other
         // server-default push rules come after.
@@ -135,6 +139,8 @@ impl Ruleset {
             };
         }
         merge_rules!(self, new_server_default, @fields override_, content, room, sender, underride);
+        #[cfg(feature = "unstable-msc4306")]
+        merge_rules!(self, new_server_default, @fields postcontent);
     }
 }
 
@@ -843,80 +849,115 @@ impl PredefinedContentRuleId {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use assert_matches2::assert_matches;
-//     use assign::assign;
+#[cfg(test)]
+mod tests {
+    use assert_matches2::assert_matches;
 
-//     use super::PredefinedOverrideRuleId;
-//     use crate::{
-//         push::{Action, ConditionalPushRule, ConditionalPushRuleInit,
-// Ruleset},         user_id,
-//     };
+    use super::PredefinedOverrideRuleId;
+    #[cfg(feature = "unstable-msc4306")]
+    use super::PredefinedUnderrideRuleId;
+    use crate::{
+        push::{Action, ConditionalPushRule, Ruleset},
+        user_id,
+    };
 
-//     #[test]
-//     fn update_with_server_default() {
-//         let user_rule_id = "user_always_true";
-//         let default_rule_id = ".default_always_true";
+    #[test]
+    fn update_with_server_default() {
+        let user_rule_id = "user_always_true";
+        let default_rule_id = ".default_always_true";
 
-//         let override_ = [
-//             // Default `.m.rule.master` push rule with non-default state.
-//             assign!(ConditionalPushRule::master(), { enabled: true, actions:
-// vec![Action::Notify]}),             // User-defined push rule.
-//             ConditionalPushRuleInit {
-//                 actions: vec![],
-//                 default: false,
-//                 enabled: false,
-//                 rule_id: user_rule_id.to_owned(),
-//                 conditions: vec![],
-//             }
-//             .into(),
-//             // Old server-default push rule.
-//             ConditionalPushRuleInit {
-//                 actions: vec![],
-//                 default: true,
-//                 enabled: true,
-//                 rule_id: default_rule_id.to_owned(),
-//                 conditions: vec![],
-//             }
-//             .into(),
-//         ]
-//         .into_iter()
-//         .collect();
-//         let mut ruleset = Ruleset {
-//             override_,
-//             ..Default::default()
-//         };
+        let mut master_rule = ConditionalPushRule::master();
+        master_rule.enabled = true;
+        master_rule.actions = vec![Action::Notify];
 
-//         let new_server_default =
-// Ruleset::server_default(user_id!("@user:localhost"));
+        let override_ = [
+            master_rule,
+            ConditionalPushRule {
+                actions: vec![],
+                default: false,
+                enabled: false,
+                rule_id: user_rule_id.to_owned(),
+                conditions: vec![],
+            },
+            ConditionalPushRule {
+                actions: vec![],
+                default: true,
+                enabled: true,
+                rule_id: default_rule_id.to_owned(),
+                conditions: vec![],
+            },
+        ]
+        .into();
+        let mut ruleset = Ruleset {
+            override_,
+            ..Default::default()
+        };
 
-//         ruleset.update_with_server_default(new_server_default);
+        ruleset.update_with_server_default(Ruleset::server_default(user_id!("@user:localhost")));
 
-//         // Master rule is in first position.
-//         let master_rule = &ruleset.override_[0];
-//         assert_eq!(master_rule.rule_id,
-// PredefinedOverrideRuleId::Master.as_str());
+        let master_rule = &ruleset.override_[0];
+        assert_eq!(
+            master_rule.rule_id,
+            PredefinedOverrideRuleId::Master.as_str()
+        );
+        assert!(master_rule.enabled);
+        assert_eq!(master_rule.actions.len(), 1);
+        assert_matches!(&master_rule.actions[0], Action::Notify);
 
-//         // `enabled` and `actions` have been copied from the old rules.
-//         assert!(master_rule.enabled);
-//         assert_eq!(master_rule.actions.len(), 1);
-//         assert_matches!(&master_rule.actions[0], Action::Notify);
+        let user_rule = ruleset.override_.get(user_rule_id).unwrap();
+        assert!(!user_rule.enabled);
+        assert!(user_rule.actions.is_empty());
 
-//         // Non-server-default rule is still present and hasn't changed.
-//         let user_rule = ruleset.override_.get(user_rule_id).unwrap();
-//         assert!(!user_rule.enabled);
-//         assert_eq!(user_rule.actions.len(), 0);
+        assert_matches!(ruleset.override_.get(default_rule_id), None);
 
-//         // Old server-default rule is gone.
-//         assert_matches!(ruleset.override_.get(default_rule_id), None);
+        let member_event_rule = ruleset
+            .override_
+            .get(PredefinedOverrideRuleId::MemberEvent.as_str())
+            .unwrap();
+        assert!(member_event_rule.enabled);
+        assert!(member_event_rule.actions.is_empty());
+    }
 
-//         // New server-default rule is present and hasn't changed.
-//         let member_event_rule = ruleset
-//             .override_
-//             .get(PredefinedOverrideRuleId::MemberEvent.as_str())
-//             .unwrap();
-//         assert!(member_event_rule.enabled);
-//         assert_eq!(member_event_rule.actions.len(), 0);
-//     }
-// }
+    #[cfg(feature = "unstable-msc4306")]
+    #[test]
+    fn update_with_server_default_refreshes_postcontent_rules() {
+        let user_rule_id = "user_postcontent";
+        let mut subscribed_thread = ConditionalPushRule::subscribed_thread();
+        subscribed_thread.enabled = false;
+        subscribed_thread.actions.clear();
+
+        let mut ruleset = Ruleset {
+            postcontent: [
+                subscribed_thread,
+                ConditionalPushRule {
+                    actions: vec![Action::Notify],
+                    default: false,
+                    enabled: true,
+                    rule_id: user_rule_id.to_owned(),
+                    conditions: vec![],
+                },
+            ]
+            .into(),
+            ..Default::default()
+        };
+
+        ruleset.update_with_server_default(Ruleset::server_default(user_id!("@user:localhost")));
+
+        let subscribed_thread = ruleset
+            .postcontent
+            .get(PredefinedUnderrideRuleId::SubscribedThread.as_str())
+            .unwrap();
+        assert!(!subscribed_thread.enabled);
+        assert!(subscribed_thread.actions.is_empty());
+        assert!(
+            ruleset
+                .postcontent
+                .contains(PredefinedUnderrideRuleId::UnsubscribedThread.as_str())
+        );
+
+        let user_rule = ruleset.postcontent.get(user_rule_id).unwrap();
+        assert!(user_rule.enabled);
+        assert_eq!(user_rule.actions.len(), 1);
+        assert_matches!(&user_rule.actions[0], Action::Notify);
+    }
+}
