@@ -76,6 +76,15 @@ impl SnPduEvent {
     }
 
     pub async fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
+        // A user's own membership transitions must remain visible to that user.
+        // In particular, clients rely on seeing their own leave event in sync;
+        // hiding it can leave the client stuck in a stale membership state.
+        if self.event_ty == TimelineEventType::RoomMember
+            && self.state_key.as_deref() == Some(user_id.as_str())
+        {
+            return Ok(true);
+        }
+
         let frame_id = match state::get_pdu_frame_id(&self.event_id).await {
             Ok(frame_id) => frame_id,
             Err(e) if e.is_not_found() => return Ok(false),
