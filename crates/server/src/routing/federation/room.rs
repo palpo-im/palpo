@@ -260,7 +260,9 @@ async fn event_world_readable(event_id: &EventId) -> bool {
     let Ok(frame_id) = state::get_pdu_frame_id(event_id).await else {
         return false;
     };
-    let Ok(before_visibility) = state::history_visibility_before(&pdu, frame_id).await else {
+    let Ok(state::StateBefore::Resolved(before_visibility)) =
+        state::history_visibility_before(&pdu, frame_id).await
+    else {
         return false;
     };
     let after_visibility = (pdu.event_ty == TimelineEventType::RoomHistoryVisibility)

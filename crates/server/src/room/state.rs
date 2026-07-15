@@ -640,12 +640,17 @@ pub(crate) fn history_visibility_allows(
     visibility == &HistoryVisibility::Invited && membership == Some(&MembershipState::Invite)
 }
 
+pub(crate) enum StateBefore<T> {
+    Resolved(T),
+    Unavailable,
+}
+
 async fn state_event_before(
     event: &SnPduEvent,
     frame_id: i64,
     event_ty: &StateEventType,
     state_key: &str,
-) -> AppResult<Option<SnPduEvent>> {
+) -> AppResult<StateBefore<Option<SnPduEvent>>> {
     let state_event = match get_state(frame_id, event_ty, state_key).await {
         Ok(state_event) => Some(state_event),
         Err(e) if e.is_not_found() => None,
@@ -656,40 +661,51 @@ async fn state_event_before(
         .as_ref()
         .is_none_or(|state_event| state_event.event_id != event.event_id)
     {
-        return Ok(state_event);
+        return Ok(StateBefore::Resolved(state_event));
     }
 
     let room_version = room::get_version(&event.room_id).await?;
     let version_rules = room::get_version_rules(&room_version)?;
-    let state_ids = crate::event::resolver::resolve_state_at_incoming(event, &version_rules)
-        .await?
-        .ok_or_else(|| AppError::internal("cannot resolve state before event"))?;
+    let Some(state_ids) =
+        crate::event::resolver::resolve_state_at_incoming(event, &version_rules).await?
+    else {
+        return Ok(StateBefore::Unavailable);
+    };
     let field_id = match get_field_id(event_ty, state_key).await {
         Ok(field_id) => field_id,
-        Err(e) if e.is_not_found() => return Ok(None),
+        Err(e) if e.is_not_found() => return Ok(StateBefore::Resolved(None)),
         Err(e) => return Err(e),
     };
 
     match state_ids.get(&field_id) {
-        Some(event_id) => timeline::get_pdu(event_id).await.map(Some),
-        None => Ok(None),
+        Some(event_id) => timeline::get_pdu(event_id)
+            .await
+            .map(Some)
+            .map(StateBefore::Resolved),
+        None => Ok(StateBefore::Resolved(None)),
     }
 }
 
 pub(crate) async fn history_visibility_before(
     event: &SnPduEvent,
     frame_id: i64,
-) -> AppResult<HistoryVisibility> {
+) -> AppResult<StateBefore<HistoryVisibility>> {
     Ok(
-        state_event_before(event, frame_id, &StateEventType::RoomHistoryVisibility, "")
+        match state_event_before(event, frame_id, &StateEventType::RoomHistoryVisibility, "")
             .await?
-            .and_then(|event| {
+        {
+            StateBefore::Resolved(event) => StateBefore::Resolved(
                 event
-                    .get_content::<RoomHistoryVisibilityEventContent>()
-                    .ok()
-            })
-            .map(|content| content.history_visibility)
-            .unwrap_or(HistoryVisibility::Shared),
+                    .and_then(|event| {
+                        event
+                            .get_content::<RoomHistoryVisibilityEventContent>()
+                            .ok()
+                    })
+                    .map(|content| content.history_visibility)
+                    .unwrap_or(HistoryVisibility::Shared),
+            ),
+            StateBefore::Unavailable => StateBefore::Unavailable,
+        },
     )
 }
 
@@ -697,27 +713,35 @@ pub(crate) async fn user_membership_before(
     event: &SnPduEvent,
     frame_id: i64,
     user_id: &UserId,
-) -> AppResult<Option<MembershipState>> {
-    Ok(state_event_before(
-        event,
-        frame_id,
-        &StateEventType::RoomMember,
-        user_id.as_str(),
+) -> AppResult<StateBefore<Option<MembershipState>>> {
+    Ok(
+        match state_event_before(
+            event,
+            frame_id,
+            &StateEventType::RoomMember,
+            user_id.as_str(),
+        )
+        .await?
+        {
+            StateBefore::Resolved(event) => StateBefore::Resolved(
+                event
+                    .map(|event| {
+                        event
+                            .get_content::<RoomMemberEventContent>()
+                            .map(|content| content.membership)
+                    })
+                    .transpose()?,
+            ),
+            StateBefore::Unavailable => StateBefore::Unavailable,
+        },
     )
-    .await?
-    .map(|event| {
-        event
-            .get_content::<RoomMemberEventContent>()
-            .map(|content| content.membership)
-    })
-    .transpose()?)
 }
 
 async fn server_memberships_at(
     event: &SnPduEvent,
     frame_id: i64,
     server_name: &ServerName,
-) -> AppResult<Vec<MembershipState>> {
+) -> AppResult<StateBefore<Vec<MembershipState>>> {
     let mut state_ids = get_full_state_ids(frame_id).await?;
     if event.event_ty == TimelineEventType::RoomMember
         && let Some(state_key) = event.state_key.as_deref()
@@ -734,12 +758,13 @@ async fn server_memberships_at(
             match state_event_before(event, frame_id, &StateEventType::RoomMember, state_key)
                 .await?
             {
-                Some(previous_event) => {
+                StateBefore::Resolved(Some(previous_event)) => {
                     state_ids.insert(field_id, previous_event.event_id.clone());
                 }
-                None => {
+                StateBefore::Resolved(None) => {
                     state_ids.shift_remove(&field_id);
                 }
+                StateBefore::Unavailable => return Ok(StateBefore::Unavailable),
             }
         }
     }
@@ -776,11 +801,13 @@ async fn server_memberships_at(
         .load::<JsonValue>(&mut connect().await?)
         .await
         .map(|events| {
-            events
-                .into_iter()
-                .filter_map(|event| serde_json::from_value::<MembershipEvent>(event).ok())
-                .map(|event| event.content.membership)
-                .collect()
+            StateBefore::Resolved(
+                events
+                    .into_iter()
+                    .filter_map(|event| serde_json::from_value::<MembershipEvent>(event).ok())
+                    .map(|event| event.content.membership)
+                    .collect(),
+            )
         })
         .map_err(Into::into)
 }
@@ -883,7 +910,11 @@ pub async fn server_can_see_event(
         Err(e) if e.is_not_found() => return Ok(false),
         Err(e) => return Err(e),
     };
-    let history_visibility = history_visibility_before(&pdu, frame_id).await?;
+    let StateBefore::Resolved(history_visibility) =
+        history_visibility_before(&pdu, frame_id).await?
+    else {
+        return Ok(false);
+    };
     let after_history_visibility =
         (pdu.event_ty == TimelineEventType::RoomHistoryVisibility).then(|| {
             pdu.get_content::<RoomHistoryVisibilityEventContent>()
@@ -901,7 +932,10 @@ pub async fn server_can_see_event(
             .is_some_and(uses_shared_history_visibility);
     let joined_after = uses_shared_visibility
         && room::user::server_user_joined_after(origin, room_id, pdu.depth).await?;
-    let memberships = server_memberships_at(&pdu, frame_id, origin).await?;
+    let StateBefore::Resolved(memberships) = server_memberships_at(&pdu, frame_id, origin).await?
+    else {
+        return Ok(false);
+    };
 
     let mut visible = history_visibility_allows(&history_visibility, None, joined_after)
         || memberships.iter().any(|membership| {

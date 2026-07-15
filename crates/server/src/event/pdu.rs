@@ -81,7 +81,11 @@ impl SnPduEvent {
             Err(e) if e.is_not_found() => return Ok(false),
             Err(e) => return Err(e),
         };
-        let history_visibility = state::history_visibility_before(self, frame_id).await?;
+        let state::StateBefore::Resolved(history_visibility) =
+            state::history_visibility_before(self, frame_id).await?
+        else {
+            return Ok(false);
+        };
         let after_history_visibility = (self.event_ty == TimelineEventType::RoomHistoryVisibility)
             .then(|| {
                 self.get_content::<RoomHistoryVisibilityEventContent>()
@@ -107,7 +111,11 @@ impl SnPduEvent {
                 .is_some_and(state::uses_shared_history_visibility);
         let joined_after = uses_shared_visibility
             && room::user::joined_after(user_id, &self.room_id, self.depth).await?;
-        let membership = state::user_membership_before(self, frame_id, user_id).await?;
+        let state::StateBefore::Resolved(membership) =
+            state::user_membership_before(self, frame_id, user_id).await?
+        else {
+            return Ok(false);
+        };
 
         Ok(
             state::history_visibility_allows(
