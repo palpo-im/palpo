@@ -52,6 +52,7 @@ pub use self::functions::canonical_json;
 pub use self::functions::{
     content_hash, hash_and_sign_event, reference_hash, required_keys, sign_json,
     to_canonical_json_string_for_signing, verify_canonical_json_bytes, verify_event, verify_json,
+    verify_policy_server_signature,
 };
 pub use self::keys::{Ed25519KeyPair, KeyPair, PublicKeyMap, PublicKeySet};
 pub use self::verification::Verified;

@@ -12,6 +12,10 @@ use sha2::digest::Digest;
 #[cfg(test)]
 mod tests;
 
+use crate::events::{
+    StaticEventContent,
+    room::policy::{POLICY_SERVER_ED25519_SIGNING_KEY_ID, RoomPolicyEventContent},
+};
 use crate::room_version_rules::{
     EventIdFormatVersion, RedactionRules, RoomVersionRules, SignaturesRules,
 };
@@ -732,6 +736,56 @@ pub fn verify_event(
     }
 
     Ok(Verified::Signatures)
+}
+
+/// Verify that an event has a valid signature from the room's Policy Server.
+///
+/// An `m.room.policy` state event with an empty state key is exempt because it configures the
+/// Policy Server whose signature would otherwise be required.
+pub fn verify_policy_server_signature(
+    room_policy: &RoomPolicyEventContent,
+    object: &CanonicalJsonObject,
+    rules: &RoomVersionRules,
+) -> Result<(), Error> {
+    let event_type = match object.get("type") {
+        Some(CanonicalJsonValue::String(event_type)) => event_type,
+        Some(_) => return Err(JsonError::not_of_type("type", JsonType::String)),
+        None => return Err(JsonError::field_missing_from_object("type")),
+    };
+
+    if event_type == RoomPolicyEventContent::TYPE
+        && matches!(object.get("state_key"), Some(CanonicalJsonValue::String(state_key)) if state_key.is_empty())
+    {
+        return Ok(());
+    }
+
+    let redacted = redact(object.clone(), &rules.redaction, None)?;
+    let canonical_json = to_canonical_json_string_for_signing(&redacted)?;
+    let signature_map = match object.get("signatures") {
+        Some(CanonicalJsonValue::Object(signatures)) => signatures,
+        Some(_) => return Err(JsonError::not_of_type("signatures", JsonType::Object)),
+        None => return Err(JsonError::field_missing_from_object("signatures")),
+    };
+
+    let Some(public_key) = room_policy.public_keys.get(&SigningKeyAlgorithm::Ed25519) else {
+        return Err(
+            VerificationError::NoSupportedSignatureForEntity(room_policy.via.to_string()).into(),
+        );
+    };
+    let public_key_map = BTreeMap::from([(
+        room_policy.via.to_string(),
+        BTreeMap::from([(
+            POLICY_SERVER_ED25519_SIGNING_KEY_ID.to_owned(),
+            public_key.clone(),
+        )]),
+    )]);
+
+    verify_canonical_json_for_entity(
+        room_policy.via.as_str(),
+        &public_key_map,
+        signature_map,
+        canonical_json.as_bytes(),
+    )
 }
 
 /// Internal implementation detail of the canonical JSON algorithm.
