@@ -3694,7 +3694,7 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "tracing-test",
- "ulid",
+ "ulid 3.0.0",
  "url",
  "uuid",
  "webpage",
@@ -3759,7 +3759,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
- "ulid",
+ "ulid 3.0.0",
  "url",
  "uuid",
  "web-time",
@@ -3844,7 +3844,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
- "ulid",
+ "ulid 3.0.0",
  "url",
  "uuid",
 ]
@@ -5258,7 +5258,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
- "ulid",
+ "ulid 2.0.1",
  "url",
  "uuid",
 ]
@@ -5398,7 +5398,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower",
  "tracing",
- "ulid",
+ "ulid 2.0.1",
 ]
 
 [[package]]
@@ -6695,6 +6695,16 @@ name = "ulid"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39493d572b98fe1d142e132e7a726c50c68121bce84429216a5ec20e1ad7fec5"
+dependencies = [
+ "rand 0.10.2",
+ "web-time",
+]
+
+[[package]]
+name = "ulid"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
 dependencies = [
  "rand 0.10.2",
  "web-time",
