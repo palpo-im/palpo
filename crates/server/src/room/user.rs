@@ -16,7 +16,7 @@ use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
 use crate::exts::*;
-use crate::{AppResult, MatrixError};
+use crate::{AppResult, MatrixError, utils};
 
 #[derive(Debug, Clone)]
 pub struct UserNotifySummary {
@@ -176,6 +176,47 @@ pub async fn join_count(room_id: &RoomId) -> AppResult<i64> {
         .get_result(&mut connect().await?)
         .await?;
     Ok(count)
+}
+
+pub async fn joined_after(user_id: &UserId, room_id: &RoomId, event_depth: u64) -> AppResult<bool> {
+    let query = events::table
+        .inner_join(event_datas::table.on(event_datas::event_id.eq(events::id)))
+        .filter(events::room_id.eq(room_id))
+        .filter(events::ty.eq("m.room.member"))
+        .filter(events::state_key.eq(user_id.as_str()))
+        .filter(events::depth.gt(utils::u64_to_i64(event_depth)))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "event_datas.json_data -> 'content' ->> 'membership' = 'join'",
+        ));
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+}
+
+pub async fn server_user_joined_after(
+    server_name: &ServerName,
+    room_id: &RoomId,
+    event_depth: u64,
+) -> AppResult<bool> {
+    let query = events::table
+        .inner_join(event_datas::table.on(event_datas::event_id.eq(events::id)))
+        .filter(events::room_id.eq(room_id))
+        .filter(events::ty.eq("m.room.member"))
+        .filter(
+            diesel::dsl::sql::<diesel::sql_types::Bool>(
+                "substring(events.state_key from position(':' in events.state_key) + 1) = ",
+            )
+            .bind::<diesel::sql_types::Text, _>(server_name.as_str()),
+        )
+        .filter(events::depth.gt(utils::u64_to_i64(event_depth)))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "event_datas.json_data -> 'content' ->> 'membership' = 'join'",
+        ));
+    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 
 pub async fn knock_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {

@@ -156,7 +156,7 @@ pub async fn resolve_state(
 //     Ok(state)
 // }
 
-pub(super) async fn resolve_state_at_incoming(
+pub(crate) async fn resolve_state_at_incoming(
     incoming_pdu: &PduEvent,
     version_rules: &RoomVersionRules,
 ) -> AppResult<Option<IndexMap<i64, OwnedEventId>>> {

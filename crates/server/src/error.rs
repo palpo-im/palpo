@@ -112,6 +112,8 @@ impl AppError {
     pub fn is_not_found(&self) -> bool {
         match self {
             Self::Diesel(diesel::result::Error::NotFound) => true,
+            Self::Data(crate::data::DataError::Diesel(diesel::result::Error::NotFound)) => true,
+            Self::Data(crate::data::DataError::Matrix(e)) => e.is_not_found(),
             Self::Matrix(e) => e.is_not_found(),
             _ => false,
         }
@@ -350,6 +352,13 @@ mod tests {
             .await;
 
         assert_eq!(res.status_code, Some(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn nested_data_not_found_is_recognized() {
+        let error = AppError::Data(crate::data::DataError::Diesel(DieselError::NotFound));
+
+        assert!(error.is_not_found());
     }
 
     #[tokio::test]

@@ -6,7 +6,6 @@ use indexmap::IndexMap;
 use salvo::prelude::*;
 
 use crate::core::UnixMillis;
-use crate::core::events::room::history_visibility::HistoryVisibility;
 use crate::core::federation::backfill::{BackfillReqArgs, BackfillResBody};
 use crate::data::connect;
 use crate::data::schema::*;
@@ -47,15 +46,6 @@ async fn get_backfill(
     }
 
     let limit = args.limit;
-    let can_see_all_events = crate::room::get_history_visibility(&args.room_id)
-        .await
-        .is_ok_and(|visibility| {
-            matches!(
-                visibility,
-                HistoryVisibility::WorldReadable | HistoryVisibility::Shared
-            )
-        });
-
     let mut events = IndexMap::with_capacity(limit);
     while !queue.is_empty() && events.len() < limit {
         let Some((_depth, event_id)) = queue.pop_last() else {
@@ -69,8 +59,7 @@ async fn get_backfill(
         prev_ids.retain(|p| !events.contains_key(p));
         if !events.contains_key(&event_id)
             && let Ok((pdu, data)) = timeline::get_pdu_and_data(&event_id).await
-            && (can_see_all_events
-                || state::server_can_see_event(origin, &args.room_id, &pdu.event_id).await?)
+            && state::server_can_see_event(origin, &args.room_id, &pdu.event_id).await?
         {
             events.insert(
                 event_id.clone(),
