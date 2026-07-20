@@ -345,5 +345,5 @@ pub async fn run_maintenance() {
 
 /// Generate an opaque peek id.
 fn new_peek_id() -> String {
-    format!("peek_{}", ulid::Ulid::r#gen())
+    format!("peek_{}", ulid::Ulid::generate())
 }
