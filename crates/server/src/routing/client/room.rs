@@ -515,7 +515,7 @@ async fn upgrade(
 
     // Create a replacement room
     let new_room_id = if version_rules.authorization.room_create_event_id_as_room_id {
-        OwnedRoomId::try_from(format!("!placehold_{}", Ulid::r#gen()))
+        OwnedRoomId::try_from(format!("!placehold_{}", Ulid::generate()))
             .expect("room id should be valid")
     } else {
         RoomId::new_v1(&conf.server_name)
