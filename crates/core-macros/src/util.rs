@@ -75,12 +75,15 @@ impl ToTokens for PrivateField<'_> {
         let Field {
             attrs,
             vis: _,
-            mutability,
+            modifiers,
             ident,
             colon_token,
             ty,
+            default,
         } = self.0;
-        assert_eq!(*mutability, syn::FieldMutability::None);
+        modifiers
+            .require_empty()
+            .expect("unsupported field modifiers");
 
         for attr in attrs {
             attr.to_tokens(tokens);
@@ -88,6 +91,10 @@ impl ToTokens for PrivateField<'_> {
         ident.to_tokens(tokens);
         colon_token.to_tokens(tokens);
         ty.to_tokens(tokens);
+        if let Some((eq_token, default)) = default {
+            eq_token.to_tokens(tokens);
+            default.to_tokens(tokens);
+        }
     }
 }
 
