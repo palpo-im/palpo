@@ -116,7 +116,7 @@ sha1 = "0.11.0"
 strum = "0.28.0"
 strum_macros = "0.28.0"
 subslice = "0.2.3"
-syn = "2.0.117"
+syn = "3.0.0"
 tempfile = "3.27.0"
 termimad = { version = "0.35.1", default-features = false }
 textnonce = "1.0.0"
