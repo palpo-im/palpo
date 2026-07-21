@@ -12,6 +12,9 @@ use crate::macros::EventContent;
 use crate::serde::Base64;
 use crate::{OwnedServerName, SigningKeyAlgorithm};
 
+/// The signing key ID used for Ed25519 signatures from Policy Servers.
+pub const POLICY_SERVER_ED25519_SIGNING_KEY_ID: &str = "ed25519:policy_server";
+
 /// The content of an [`m.room.policy`] event.
 ///
 /// A Policy Server configuration.
