@@ -36,7 +36,7 @@ use crate::core::client::discovery::capabilities::{
     ProfileFieldsCapability, RoomVersionStability, RoomVersionsCapability,
     ThirdPartyIdChangesCapability,
 };
-use crate::core::client::discovery::versions::VersionsResBody;
+use crate::core::client::discovery::versions::{Server, VersionsResBody};
 use crate::core::client::search::{ResultCategories, SearchReqArgs, SearchReqBody, SearchResBody};
 use crate::routing::prelude::*;
 
@@ -196,23 +196,25 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 /// unstable features in their stable releases
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
-    json_ok(VersionsResBody {
-        versions: vec![
-            "r0.5.0".to_owned(),
-            "r0.6.0".to_owned(),
-            "v1.1".to_owned(),
-            "v1.2".to_owned(),
-            "v1.3".to_owned(),
-            "v1.4".to_owned(),
-            "v1.5".to_owned(),
-            "v1.6".to_owned(),
-            "v1.7".to_owned(),
-            "v1.8".to_owned(),
-            "v1.9".to_owned(),
-            "v1.10".to_owned(),
-            "v1.11".to_owned(),
-            "v1.12".to_owned(),
-        ],
+    json_ok(supported_versions_body())
+}
+
+/// Client-Server specification versions whose behavior has been reviewed for
+/// Palpo's `/versions` advertisement.
+///
+/// Keep this declaration independent from `MatrixVersion`: understanding a
+/// protocol version for outgoing requests does not imply full server support.
+const SUPPORTED_MATRIX_VERSIONS: &[&str] = &[
+    "r0.5.0", "r0.6.0", "v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9",
+    "v1.10", "v1.11", "v1.12",
+];
+
+fn supported_versions_body() -> VersionsResBody {
+    VersionsResBody {
+        versions: SUPPORTED_MATRIX_VERSIONS
+            .iter()
+            .map(|version| (*version).to_owned())
+            .collect(),
         unstable_features: BTreeMap::from_iter([
             ("org.matrix.e2e_cross_signing".to_owned(), true),
             ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
@@ -229,8 +231,48 @@ fn supported_versions() -> JsonResult<VersionsResBody> {
             ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
             ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
             ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
+            ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
         ]),
-    })
+        server: Some(Server::new(
+            "Palpo".to_owned(),
+            crate::info::version().to_owned(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod supported_versions_tests {
+    use serde_json::{json, to_value as to_json_value};
+
+    use super::{SUPPORTED_MATRIX_VERSIONS, supported_versions_body};
+
+    #[test]
+    fn advertised_versions_are_explicitly_reviewed() {
+        let body = supported_versions_body();
+
+        assert_eq!(
+            body.versions,
+            SUPPORTED_MATRIX_VERSIONS
+                .iter()
+                .map(|version| (*version).to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(!body.versions.iter().any(|version| version == "v1.19"));
+    }
+
+    #[test]
+    fn includes_msc4383_server_metadata_and_feature_flag() {
+        let body = supported_versions_body();
+        let server = body.server.as_ref().unwrap();
+
+        assert_eq!(body.unstable_features.get("net.zemos.msc4383"), Some(&true));
+        assert_eq!(server.name, "Palpo");
+        assert!(!server.version.is_empty());
+        assert_eq!(
+            to_json_value(server).unwrap(),
+            json!({ "name": "Palpo", "version": server.version })
+        );
+    }
 }
 
 #[endpoint]
