@@ -1,4 +1,3 @@
-use palpo_core::events::push_rules::PushRulesEventContent;
 use salvo::oapi::extract::JsonBody;
 use salvo::prelude::*;
 
@@ -44,13 +43,7 @@ pub fn authed_router() -> Router {
 async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
     let authed = depot.authed_info()?;
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     json_ok(RulesResBody {
         global: user_data_content.global,
@@ -63,12 +56,7 @@ async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
 async fn get_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<RuleResBody> {
     let authed = depot.authed_info()?;
 
-    let user_data_content = crate::data::user::get_global_data::<PushRulesEventContent>(
-        authed.user_id(),
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?
-    .ok_or(MatrixError::not_found("push rule event not found."))?;
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     let rule = user_data_content
         .global
@@ -140,13 +128,7 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         );
     }
 
-    let mut user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     if let Err(error) =
         user_data_content
@@ -198,12 +180,7 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
         );
     }
 
-    let mut user_data_content = crate::data::user::get_global_data::<PushRulesEventContent>(
-        authed.user_id(),
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?
-    .ok_or(MatrixError::not_found("PushRules event not found."))?;
+    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     if let Err(error) = user_data_content
         .global
@@ -236,13 +213,7 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
 async fn list_rules(depot: &mut Depot) -> JsonResult<RulesResBody> {
     let authed = depot.authed_info()?;
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     json_ok(RulesResBody {
         global: user_data_content.global,
@@ -264,13 +235,7 @@ async fn get_actions(
         );
     }
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     let actions = user_data_content
         .global
@@ -297,13 +262,7 @@ async fn set_actions(
         );
     }
 
-    let mut user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .map_err(|_| MatrixError::not_found("push rules event not found"))?;
+    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     if user_data_content
         .global
@@ -339,12 +298,7 @@ async fn get_enabled(
         );
     }
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?;
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     let enabled = user_data_content
         .global
@@ -371,12 +325,7 @@ async fn set_enabled(
         );
     }
 
-    let mut user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?;
+    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     if user_data_content
         .global
