@@ -11,6 +11,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
+unstable-msc4262 = ["palpo-core/unstable-msc4262"]
 unstable-msc4293 = ["palpo-core/unstable-msc4293"]
 unstable-msc4466 = ["palpo-core/unstable-msc4466"]
 

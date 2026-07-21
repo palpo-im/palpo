@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::{BTreeMap, btree_map};
 use std::fmt;
 
 use salvo::prelude::*;
@@ -102,6 +103,152 @@ impl ProfileFieldValue {
             }
             Self::_Custom(c) => Cow::Borrowed(&c.value),
         }
+    }
+}
+
+/// All profile information currently known for a user.
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct UserProfile(BTreeMap<String, JsonValue>);
+
+impl UserProfile {
+    /// Creates an empty profile.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the value of a profile field.
+    pub fn get(&self, field: &str) -> Option<&JsonValue> {
+        self.0.get(field)
+    }
+
+    /// Iterates over the fields in this profile.
+    pub fn iter(&self) -> btree_map::Iter<'_, String, JsonValue> {
+        self.0.iter()
+    }
+
+    /// Sets a profile field.
+    pub fn set(&mut self, field: String, value: JsonValue) {
+        self.0.insert(field, value);
+    }
+
+    /// Applies an incremental profile update.
+    ///
+    /// Omitted fields are preserved and fields explicitly set to JSON `null` are removed.
+    #[cfg(feature = "unstable-msc4262")]
+    pub fn merge(&mut self, profile_update: UserProfileUpdate) {
+        for (field, value) in profile_update {
+            if value.is_null() {
+                self.0.remove(&field);
+            } else {
+                self.0.insert(field, value);
+            }
+        }
+    }
+}
+
+impl FromIterator<(String, JsonValue)> for UserProfile {
+    fn from_iter<T: IntoIterator<Item = (String, JsonValue)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl FromIterator<(ProfileFieldName, JsonValue)> for UserProfile {
+    fn from_iter<T: IntoIterator<Item = (ProfileFieldName, JsonValue)>>(iter: T) -> Self {
+        iter.into_iter()
+            .map(|(field, value)| (field.as_str().to_owned(), value))
+            .collect()
+    }
+}
+
+impl FromIterator<ProfileFieldValue> for UserProfile {
+    fn from_iter<T: IntoIterator<Item = ProfileFieldValue>>(iter: T) -> Self {
+        iter.into_iter()
+            .map(|value| (value.field_name(), value.value().into_owned()))
+            .collect()
+    }
+}
+
+impl IntoIterator for UserProfile {
+    type Item = (String, JsonValue);
+    type IntoIter = btree_map::IntoIter<String, JsonValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+/// An incremental update to the profile information for a user.
+///
+/// JSON `null` values represent fields that should be removed when this update is merged into a
+/// [`UserProfile`].
+#[cfg(feature = "unstable-msc4262")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct UserProfileUpdate(BTreeMap<String, JsonValue>);
+
+#[cfg(feature = "unstable-msc4262")]
+impl UserProfileUpdate {
+    /// Creates an empty profile update.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the value of a profile field in this update.
+    pub fn get(&self, field: &str) -> Option<&JsonValue> {
+        self.0.get(field)
+    }
+
+    /// Iterates over the fields in this update.
+    pub fn iter(&self) -> btree_map::Iter<'_, String, JsonValue> {
+        self.0.iter()
+    }
+
+    /// Sets a profile field in this update.
+    pub fn set(&mut self, field: String, value: JsonValue) {
+        self.0.insert(field, value);
+    }
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl FromIterator<(String, JsonValue)> for UserProfileUpdate {
+    fn from_iter<T: IntoIterator<Item = (String, JsonValue)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl FromIterator<(ProfileFieldName, JsonValue)> for UserProfileUpdate {
+    fn from_iter<T: IntoIterator<Item = (ProfileFieldName, JsonValue)>>(iter: T) -> Self {
+        iter.into_iter()
+            .map(|(field, value)| (field.as_str().to_owned(), value))
+            .collect()
+    }
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl FromIterator<ProfileFieldValue> for UserProfileUpdate {
+    fn from_iter<T: IntoIterator<Item = ProfileFieldValue>>(iter: T) -> Self {
+        iter.into_iter()
+            .map(|value| (value.field_name(), value.value().into_owned()))
+            .collect()
+    }
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl Extend<(String, JsonValue)> for UserProfileUpdate {
+    fn extend<T: IntoIterator<Item = (String, JsonValue)>>(&mut self, iter: T) {
+        self.0.extend(iter);
+    }
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl IntoIterator for UserProfileUpdate {
+    type Item = (String, JsonValue);
+    type IntoIter = btree_map::IntoIter<String, JsonValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
@@ -212,6 +359,8 @@ mod tests {
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::ProfileFieldValue;
+    #[cfg(feature = "unstable-msc4262")]
+    use super::{UserProfile, UserProfileUpdate};
     use crate::owned_mxc_uri;
 
     #[test]
@@ -239,6 +388,25 @@ mod tests {
             to_json_value(value).unwrap(),
             json!({ "custom_field": "value" })
         );
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn merge_profile_update_preserves_omitted_and_removes_null_fields() {
+        let mut profile = UserProfile::from_iter([
+            ("displayname".to_owned(), json!("Alice")),
+            ("avatar_url".to_owned(), json!("mxc://example.org/avatar")),
+        ]);
+        let update = UserProfileUpdate::from_iter([
+            ("avatar_url".to_owned(), json!(null)),
+            ("m.tz".to_owned(), json!("Europe/Berlin")),
+        ]);
+
+        profile.merge(update);
+
+        assert_eq!(profile.get("displayname"), Some(&json!("Alice")));
+        assert_eq!(profile.get("avatar_url"), None);
+        assert_eq!(profile.get("m.tz"), Some(&json!("Europe/Berlin")));
     }
 
     #[test]

@@ -22,6 +22,8 @@ use crate::events::{
     AnySyncTimelineEvent, AnyToDeviceEvent, StateEventType,
 };
 use crate::identifiers::*;
+#[cfg(feature = "unstable-msc4262")]
+use crate::profile::{ProfileFieldName, UserProfileUpdate};
 use crate::serde::duration::opt_ms;
 use crate::serde::{RawJson, deserialize_cow_str};
 use crate::state::TypeStateKey;
@@ -492,8 +494,13 @@ pub struct ExtensionsConfig {
     pub receipts: ReceiptsConfig,
 
     /// Request to typing information with the given config.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "TypingConfig::is_empty")]
     pub typing: TypingConfig,
+
+    /// Configure the profile updates extension.
+    #[cfg(feature = "unstable-msc4262")]
+    #[serde(default, skip_serializing_if = "ProfilesConfig::is_empty")]
+    pub profiles: ProfilesConfig,
 
     /// Extensions may add further fields to the list.
     #[serde(flatten)]
@@ -504,12 +511,17 @@ pub struct ExtensionsConfig {
 impl ExtensionsConfig {
     /// Whether all fields are empty or `None`.
     pub fn is_empty(&self) -> bool {
-        self.to_device.is_empty()
+        let empty = self.to_device.is_empty()
             && self.e2ee.is_empty()
             && self.account_data.is_empty()
             && self.receipts.is_empty()
             && self.typing.is_empty()
-            && self.other.is_empty()
+            && self.other.is_empty();
+
+        #[cfg(feature = "unstable-msc4262")]
+        let empty = empty && self.profiles.is_empty();
+
+        empty
     }
 }
 
@@ -535,6 +547,12 @@ pub struct Extensions {
     /// Typing data extension in response.
     #[serde(default, skip_serializing_if = "Typing::is_empty")]
     pub typing: Typing,
+
+    /// Profile updates keyed by user ID.
+    #[cfg(feature = "unstable-msc4262")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "users")]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub profiles: BTreeMap<OwnedUserId, UserProfileUpdate>,
 }
 
 impl Extensions {
@@ -542,24 +560,108 @@ impl Extensions {
     ///
     /// True if neither to-device, e2ee nor account data are to be found.
     pub fn is_empty(&self) -> bool {
-        self.to_device
+        let empty = self
+            .to_device
             .as_ref()
             .is_none_or(|to| to.events.is_empty())
             && self.e2ee.is_empty()
             && self.account_data.is_empty()
             && self.receipts.is_empty()
-            && self.typing.is_empty()
+            && self.typing.is_empty();
+
+        #[cfg(feature = "unstable-msc4262")]
+        let empty = empty && self.profiles.is_empty();
+
+        empty
     }
 
     /// Whether the extension carries meaningful incremental updates for long-polling.
     pub fn is_empty_for_long_poll(&self) -> bool {
-        self.to_device
+        let empty = self
+            .to_device
             .as_ref()
             .is_none_or(|to| to.events.is_empty())
             && self.e2ee.is_empty_for_long_poll()
             && self.account_data.is_empty()
             && self.receipts.is_empty()
-            && self.typing.is_empty()
+            && self.typing.is_empty();
+
+        #[cfg(feature = "unstable-msc4262")]
+        let empty = empty && self.profiles.is_empty();
+
+        empty
+    }
+}
+
+/// A room selector used by room-scoped extension configuration.
+#[cfg(feature = "unstable-msc4262")]
+#[derive(ToSchema, Clone, Debug, PartialEq)]
+pub enum ExtensionRoomConfig {
+    /// Apply the extension to all global room subscriptions.
+    AllSubscribed,
+
+    /// Additionally apply the extension to this room.
+    Room(OwnedRoomId),
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl Serialize for ExtensionRoomConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::AllSubscribed => serializer.serialize_str("*"),
+            Self::Room(room_id) => room_id.serialize(serializer),
+        }
+    }
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl<'de> Deserialize<'de> for ExtensionRoomConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match deserialize_cow_str(deserializer)?.as_ref() {
+            "*" => Ok(Self::AllSubscribed),
+            room_id => Ok(Self::Room(
+                RoomId::parse(room_id).map_err(D::Error::custom)?.to_owned(),
+            )),
+        }
+    }
+}
+
+/// Profile updates extension configuration from MSC4262.
+#[cfg(feature = "unstable-msc4262")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProfilesConfig {
+    /// Activate or deactivate the extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// List names for which profile updates should be enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lists: Option<Vec<String>>,
+
+    /// Rooms for which profile updates should be enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Vec<ExtensionRoomConfig>>,
+
+    /// Profile fields to include. If omitted, all fields are included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<ProfileFieldName>>,
+
+    /// Whether an initial sync may include recent historical profile changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_history: Option<bool>,
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl ProfilesConfig {
+    /// Whether the extension configuration is disabled by omission.
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
     }
 }
 
@@ -899,8 +1001,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{E2ee, Extensions, SyncEventsResBody, Typing};
+    #[cfg(feature = "unstable-msc4262")]
+    use super::{ExtensionRoomConfig, ExtensionsConfig, ProfilesConfig};
     use crate::events::typing::{SyncTypingEvent, TypingEventContent};
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::profile::{ProfileFieldName, UserProfileUpdate};
     use crate::{DeviceKeyAlgorithm, RoomId};
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::{owned_room_id, owned_user_id};
 
     #[test]
     fn long_poll_ignores_list_counts_and_static_extension_metadata() {
@@ -1015,5 +1123,66 @@ mod tests {
         };
 
         assert!(typing.is_empty());
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_extension_request_uses_msc4262_shape() {
+        let extensions = ExtensionsConfig {
+            profiles: ProfilesConfig {
+                enabled: Some(true),
+                lists: Some(vec!["all".to_owned()]),
+                rooms: Some(vec![
+                    ExtensionRoomConfig::AllSubscribed,
+                    ExtensionRoomConfig::Room(owned_room_id!("!room:example.org")),
+                ]),
+                fields: Some(vec![ProfileFieldName::DisplayName]),
+                include_history: Some(true),
+            },
+            ..Default::default()
+        };
+
+        assert!(!extensions.is_empty());
+        assert_eq!(
+            serde_json::to_value(extensions).unwrap(),
+            serde_json::json!({
+                "profiles": {
+                    "enabled": true,
+                    "lists": ["all"],
+                    "rooms": ["*", "!room:example.org"],
+                    "fields": ["displayname"],
+                    "include_history": true
+                }
+            })
+        );
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_extension_response_serializes_updates_as_users() {
+        let extensions = Extensions {
+            profiles: BTreeMap::from([(
+                owned_user_id!("@alice:example.org"),
+                UserProfileUpdate::from_iter([
+                    ("displayname".to_owned(), serde_json::json!("Alice")),
+                    ("avatar_url".to_owned(), serde_json::Value::Null),
+                ]),
+            )]),
+            ..Default::default()
+        };
+
+        assert!(!extensions.is_empty());
+        assert!(!extensions.is_empty_for_long_poll());
+        assert_eq!(
+            serde_json::to_value(extensions).unwrap(),
+            serde_json::json!({
+                "users": {
+                    "@alice:example.org": {
+                        "avatar_url": null,
+                        "displayname": "Alice"
+                    }
+                }
+            })
+        );
     }
 }
