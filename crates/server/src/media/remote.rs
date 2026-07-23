@@ -103,7 +103,7 @@ fn parse_multipart_federation_response(
         .find_map(|part| {
             let part = part.trim();
             part.strip_prefix("boundary=")
-                .map(|b| b.trim().to_owned())
+                .map(|b| b.trim().trim_matches('"').to_owned())
         })?;
 
     let delimiter = format!("\r\n--{boundary}\r\n").into_bytes();
@@ -149,7 +149,7 @@ fn parse_multipart_federation_response(
                     let binary = Bytes::copy_from_slice(&data[content_start..content_start + end_pos]);
                     return Some((content_type, content_disposition, binary));
                 } else if let Some(end_pos) =
-                    find_subsequence(&data[content_start..], format!("--{boundary}--").as_bytes())
+                    find_subsequence(&data[content_start..], format!("\r\n--{boundary}--").as_bytes())
                 {
                     let binary = Bytes::copy_from_slice(&data[content_start..content_start + end_pos]);
                     return Some((content_type, content_disposition, binary));
