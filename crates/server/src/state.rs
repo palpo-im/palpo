@@ -40,7 +40,7 @@ pub async fn send_state_event_for_key(
     Ok(pdu.event_id)
 }
 
-async fn allowed_to_send_state_event(
+pub(crate) async fn allowed_to_send_state_event(
     room_id: &RoomId,
     event_type: &StateEventType,
     state_key: &str,

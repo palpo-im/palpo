@@ -48,13 +48,13 @@
 # Seconds to cache native (non-delegated) access-token authentications in
 # memory, avoiding a per-request database lookup on the auth hot path.
 #
-# The cache is process-local and is only invalidated within the process that
-# performs a logout / token rotation / account-state change. In a multi-instance
-# deployment sharing one database, another instance could keep accepting a
-# just-revoked token for up to this many seconds. Leave at 0 (disabled) unless
-# you run a single instance.
+# The cache is process-local and only invalidated within the process that
+# performs a logout / token rotation / account-state change. In a
+# multi-instance deployment sharing one database, another instance could
+# keep accepting a just-revoked token for up to this many seconds. Leave at
+# 0 (disabled) unless you run a single instance.
 #
-# native_token_cache_ttl = 0
+# native_token_cache_ttl = 0 (disabled)
 
 # Text which will be added to the end of the user's displayname upon
 # registration with a space before the text. In Conduit, this was the
@@ -453,8 +453,8 @@
 #
 # Currently this does not account for proxies in use like Synapse does.
 #
-# To disable, set this to be an empty vector (`[]`) or omit the field.
-# If omitted, no IP range filtering is performed (use a firewall instead).
+# To disable, set this to be an empty vector (`[]`). If omitted, the
+# default denylist below is used.
 #
 # A safer recommended set is:
 # ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
@@ -463,7 +463,7 @@
 # "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
 # "2001:db8::/32", "ff00::/8", "fec0::/10"]
 #
-# ip_range_denylist = []
+# ip_range_denylist =
 
 # Whether to query the servers listed in trusted_servers first or query
 # the origin server first. For best security, querying the origin server
@@ -798,6 +798,35 @@
 #
 # enforce_tls =
 
+# [delayed_events]
+
+# Allow scheduling MSC4140 delayed events.
+#
+# Delayed events let clients schedule message or state events that the
+# server sends into a room after a delay, e.g. reliable MatrixRTC
+# "hang up" events. When disabled the endpoints are not registered and
+# the feature is not advertised.
+#
+# enable =
+
+# The maximum delay in milliseconds a client may request for a delayed
+# event. Requests above this limit are rejected with `M_FORBIDDEN`.
+# Defaults to 24 hours.
+#
+# max_delay_ms = 86400_000
+
+# How many delayed events a user may have scheduled at once. Requests
+# above this limit are rejected with `M_LIMIT_EXCEEDED`.
+# Defaults to 100.
+#
+# max_scheduled = 100
+
+# How long finalized (sent, cancelled, or errored) delayed events are
+# retained for lookup before they are pruned, in milliseconds.
+# Defaults to 7 days.
+#
+# retention_ms = 604800_000
+
 # [federation]
 
 # Controls whether federation is allowed or not. It is not recommended to
@@ -931,9 +960,18 @@
 #
 # allow_legacy =
 
-# This item is undocumented. Please contribute documentation for it.
+# Withhold the outbound-fetching legacy `preview_url` endpoint. When
+# enabled, download, thumbnail, config, create, and upload stay available
+# (upload is the only media upload path on this server); only the legacy
+# `preview_url` endpoint is not mounted.
 #
 # freeze_legacy =
+
+# Maximum number of bytes accepted when fetching a thumbnail from a
+# remote homeserver. Both authenticated and legacy thumbnail responses
+# are subject to this streamed hard limit.
+#
+# max_remote_thumbnail_size = 20000000
 
 # Check consistency of the media directory at startup:
 # 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
@@ -1183,6 +1221,12 @@
 #
 # max_spider_size = 256000
 
+# Maximum number of bytes accepted for an image fetched while building a
+# URL preview. `Content-Length` is checked early and the response stream
+# is also counted so chunked responses cannot bypass this limit.
+#
+# max_image_size = 10000000
+
 # Option to decide whether you would like to run the domain allowlist
 # checks (contains and explicit) on the root domain or not. Does not apply
 # to URL contains allowlist. Defaults to false.
@@ -1404,17 +1448,17 @@
 #
 # introspection_endpoint =
 
+# The OAuth2 client_id that Palpo uses when redirecting users to the
+# authorization server for SSO login.
+#
+# client_id =
+
 # Internal endpoint that accepts a Matrix password login exchange.
 # Palpo authenticates with `admin.mas_secret` as a Bearer token and expects
 # a delegated access token in response. When unset, `m.login.password` is
 # not advertised while delegated auth is enabled.
 #
-# password_login_endpoint = "http://localhost:8080/api/internal/matrix/password-login"
-
-# The OAuth2 client_id that Palpo uses when redirecting users to the
-# authorization server for SSO login.
-#
-# client_id =
+# password_login_endpoint =
 
 # Optional URL for account management UI.
 # Included in the well-known client response under m.authentication.
