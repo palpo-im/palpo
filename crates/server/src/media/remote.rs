@@ -1,7 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
+use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use salvo::Response;
 
 use super::{Dimension, FileMeta};
@@ -46,11 +48,129 @@ pub async fn fetch_remote_content(
         crate::sending::send_federation_request(server_name, content_req, None).await?
     };
 
-    *res.headers_mut() = content_response.headers().to_owned();
-    res.status_code(content_response.status());
-    res.stream(content_response.bytes_stream());
+    let content_type_header = content_response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
+    if let Some(ct) = &content_type_header
+        && ct.contains("multipart/mixed")
+    {
+        let body = content_response
+            .bytes()
+            .await
+            .map_err(|e| AppError::public(format!("failed to read remote media body: {e}")))?;
+
+        if let Some((content_type, content_disposition, binary)) =
+            parse_multipart_federation_response(ct, &body)
+        {
+            res.add_header(CONTENT_TYPE, &content_type, true)?;
+            res.add_header(
+                "Cross-Origin-Resource-Policy",
+                "cross-origin",
+                true,
+            )?;
+            if let Some(disp) = &content_disposition {
+                res.add_header(CONTENT_DISPOSITION, disp, true)?;
+            }
+            res.status_code(salvo::http::StatusCode::OK);
+            res.body = salvo::http::ResBody::Once(binary.into());
+        } else {
+            res.status_code(salvo::http::StatusCode::BAD_GATEWAY);
+            res.body = salvo::http::ResBody::Once(
+                r#"{"errcode":"M_UNKNOWN","error":"Failed to parse remote media response"}"#
+                    .into(),
+            );
+        }
+    } else {
+        for (key, value) in content_response.headers().iter() {
+            res.headers_mut().insert(key.clone(), value.clone());
+        }
+        res.status_code(content_response.status());
+        res.stream(content_response.bytes_stream());
+    }
 
     Ok(())
+}
+
+fn parse_multipart_federation_response(
+    content_type: &str,
+    body: &Bytes,
+) -> Option<(String, Option<String>, Bytes)> {
+    let boundary = content_type
+        .split(';')
+        .find_map(|part| {
+            let part = part.trim();
+            part.strip_prefix("boundary=")
+                .map(|b| b.trim().to_owned())
+        })?;
+
+    let delimiter = format!("\r\n--{boundary}\r\n").into_bytes();
+    let data = body.as_ref();
+
+    let mut offset = 0;
+    let mut content_type = String::new();
+    let mut content_disposition = None;
+
+    loop {
+        let start = if offset == 0 {
+            if let Some(pos) = find_subsequence(data, &delimiter) {
+                pos + delimiter.len()
+            } else {
+                break;
+            }
+        } else {
+            offset
+        };
+
+        if let Some(header_end) = find_subsequence(&data[start..], b"\r\n\r\n") {
+            let header_bytes = &data[start..start + header_end];
+            if let Ok(header_str) = std::str::from_utf8(header_bytes) {
+                let is_json = header_str
+                    .lines()
+                    .any(|l| l.eq_ignore_ascii_case("Content-Type: application/json"));
+
+                if is_json {
+                    offset = start + header_end + 4;
+                    continue;
+                }
+
+                for header in header_str.lines() {
+                    if let Some(ct) = header.strip_prefix("Content-Type:") {
+                        content_type = ct.trim().to_owned();
+                    } else if let Some(cd) = header.strip_prefix("Content-Disposition:") {
+                        content_disposition = Some(cd.trim().to_owned());
+                    }
+                }
+
+                let content_start = start + header_end + 4;
+                if let Some(end_pos) = find_subsequence(&data[content_start..], &delimiter) {
+                    let binary = Bytes::copy_from_slice(&data[content_start..content_start + end_pos]);
+                    return Some((content_type, content_disposition, binary));
+                } else if let Some(end_pos) =
+                    find_subsequence(&data[content_start..], format!("--{boundary}--").as_bytes())
+                {
+                    let binary = Bytes::copy_from_slice(&data[content_start..content_start + end_pos]);
+                    return Some((content_type, content_disposition, binary));
+                } else {
+                    let binary = Bytes::copy_from_slice(&data[content_start..]);
+                    return Some((content_type, content_disposition, binary));
+                }
+            }
+            offset = start + header_end + 4;
+        } else {
+            break;
+        }
+    }
+
+    None
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 pub async fn fetch_remote_thumbnail(
