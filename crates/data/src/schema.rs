@@ -35,6 +35,31 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    delayed_events (id) {
+        id -> Int8,
+        delay_id -> Text,
+        user_id -> Text,
+        device_id -> Nullable<Text>,
+        room_id -> Text,
+        event_type -> Text,
+        state_key -> Nullable<Text>,
+        content -> Jsonb,
+        delay_ms -> Int8,
+        txn_id -> Text,
+        origin_server_ts -> Nullable<Int8>,
+        running_since -> Int8,
+        send_at -> Int8,
+        event_id -> Nullable<Text>,
+        error -> Nullable<Jsonb>,
+        finalized_at -> Nullable<Int8>,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     device_inboxes (id) {
         id -> Int8,
         user_id -> Text,
@@ -1160,6 +1185,7 @@ diesel::joinable!(user_ratelimit_override -> users (user_id));
 diesel::allow_tables_to_appear_in_same_query!(
     appservice_registrations,
     banned_rooms,
+    delayed_events,
     device_inboxes,
     device_streams,
     e2e_cross_signing_keys,

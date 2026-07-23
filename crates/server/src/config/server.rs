@@ -5,10 +5,10 @@ use salvo::http::HeaderValue;
 use serde::Deserialize;
 
 use super::{
-    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelegatedAuthConfig,
-    FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig, OidcConfig,
-    PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig, TypingConfig,
-    UrlPreviewConfig, WellKnownConfig,
+    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelayedEventsConfig,
+    DelegatedAuthConfig, FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig,
+    OidcConfig, PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig,
+    TypingConfig, UrlPreviewConfig, WellKnownConfig,
 };
 use crate::core::serde::{default_false, default_true};
 use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
@@ -75,7 +75,8 @@ impl ListenerConfig {
 ### https://palpo.im/guide/configuration.html
 "#,
     ignore = "federation well_known compression typing read_receipt presence \
-        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice"
+        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice \
+        delayed_events"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
@@ -724,6 +725,10 @@ pub struct ServerConfig {
     // external structure; separate section
     #[serde(default)]
     pub admin: AdminConfig,
+
+    // external structure; separate section
+    #[serde(default)]
+    pub delayed_events: DelayedEventsConfig,
 
     // external structure; separate section
     #[serde(default)]

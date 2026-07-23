@@ -5,6 +5,12 @@ use crate::core::client::discovery::rendezvous::DiscoverRendezvousResBody;
 use crate::{JsonResult, config, hoops, json_ok};
 
 pub(super) fn router() -> Router {
+    let mut authed = Router::new()
+        .hoop(hoops::limit_rate)
+        .hoop(hoops::auth_by_access_token);
+    if config::get().delayed_events.enable {
+        authed = authed.push(super::delayed_event::authed_router());
+    }
     Router::with_path("unstable")
         // Public routes (no auth required) — MSC2965 OIDC discovery
         .push(
@@ -16,9 +22,7 @@ pub(super) fn router() -> Router {
         .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
         // Authed routes
         .push(
-            Router::new()
-                .hoop(hoops::limit_rate)
-                .hoop(hoops::auth_by_access_token)
+            authed
                 .push(
                     Router::with_path(
                         "org.matrix.msc3391/user/{user_id}/account_data/{account_type}",
