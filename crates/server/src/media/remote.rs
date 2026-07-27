@@ -13,6 +13,7 @@ use crate::core::{Mxc, ServerName, UserId};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::exts::*;
+use crate::utils::read_response_limited;
 use crate::{AppError, AppResult, config};
 
 pub async fn fetch_remote_content(
@@ -57,10 +58,11 @@ pub async fn fetch_remote_content(
     if let Some(ct) = &content_type_header
         && ct.contains("multipart/mixed")
     {
-        let body = content_response
-            .bytes()
-            .await
-            .map_err(|e| AppError::public(format!("failed to read remote media body: {e}")))?;
+        let body = read_response_limited(
+            content_response,
+            config::get().media.max_remote_media_size,
+        )
+        .await?;
 
         if let Some((content_type, content_disposition, binary)) =
             parse_multipart_federation_response(ct, &body)
@@ -106,65 +108,57 @@ fn parse_multipart_federation_response(
                 .map(|b| b.trim().trim_matches('"').to_owned())
         })?;
 
+    let start_boundary = format!("--{boundary}\r\n").into_bytes();
     let delimiter = format!("\r\n--{boundary}\r\n").into_bytes();
+    let closing_delimiter = format!("\r\n--{boundary}--").into_bytes();
     let data = body.as_ref();
 
-    let mut offset = 0;
-    let mut content_type = String::new();
-    let mut content_disposition = None;
+    // Advance past the first boundary (which may or may not have a leading CRLF)
+    let after_first_boundary = if data.starts_with(&start_boundary) {
+        start_boundary.len()
+    } else if let Some(pos) = find_subsequence(data, &delimiter) {
+        pos + delimiter.len()
+    } else {
+        return None;
+    };
 
-    loop {
-        let start = if offset == 0 {
-            if let Some(pos) = find_subsequence(data, &delimiter) {
-                pos + delimiter.len()
-            } else {
-                break;
+    // Skip the first part entirely (it is always JSON metadata in Matrix federation)
+    let part1_header_end = find_subsequence(&data[after_first_boundary..], b"\r\n\r\n")?;
+    let part2_boundary =
+        find_subsequence(&data[after_first_boundary + part1_header_end + 4..], &delimiter)?;
+    let after_part2_boundary =
+        after_first_boundary + part1_header_end + 4 + part2_boundary + delimiter.len();
+
+    // Parse the second part (actual file content)
+    let part2_header_end = find_subsequence(&data[after_part2_boundary..], b"\r\n\r\n")?;
+    let part2_header_bytes =
+        &data[after_part2_boundary..after_part2_boundary + part2_header_end];
+    let part2_header_str = std::str::from_utf8(part2_header_bytes).ok()?;
+
+    let mut ct = String::new();
+    let mut cd = None;
+
+    for header in part2_header_str.lines() {
+        if let Some(idx) = header.find(':') {
+            let field_name = &header[..idx].trim();
+            let field_value = header[idx + 1..].trim();
+            if field_name.eq_ignore_ascii_case("Content-Type") {
+                ct = field_value.to_owned();
+            } else if field_name.eq_ignore_ascii_case("Content-Disposition") {
+                cd = Some(field_value.to_owned());
             }
-        } else {
-            offset
-        };
-
-        if let Some(header_end) = find_subsequence(&data[start..], b"\r\n\r\n") {
-            let header_bytes = &data[start..start + header_end];
-            if let Ok(header_str) = std::str::from_utf8(header_bytes) {
-                let is_json = header_str
-                    .lines()
-                    .any(|l| l.eq_ignore_ascii_case("Content-Type: application/json"));
-
-                if is_json {
-                    offset = start + header_end + 4;
-                    continue;
-                }
-
-                for header in header_str.lines() {
-                    if let Some(ct) = header.strip_prefix("Content-Type:") {
-                        content_type = ct.trim().to_owned();
-                    } else if let Some(cd) = header.strip_prefix("Content-Disposition:") {
-                        content_disposition = Some(cd.trim().to_owned());
-                    }
-                }
-
-                let content_start = start + header_end + 4;
-                if let Some(end_pos) = find_subsequence(&data[content_start..], &delimiter) {
-                    let binary = Bytes::copy_from_slice(&data[content_start..content_start + end_pos]);
-                    return Some((content_type, content_disposition, binary));
-                } else if let Some(end_pos) =
-                    find_subsequence(&data[content_start..], format!("\r\n--{boundary}--").as_bytes())
-                {
-                    let binary = Bytes::copy_from_slice(&data[content_start..content_start + end_pos]);
-                    return Some((content_type, content_disposition, binary));
-                } else {
-                    let binary = Bytes::copy_from_slice(&data[content_start..]);
-                    return Some((content_type, content_disposition, binary));
-                }
-            }
-            offset = start + header_end + 4;
-        } else {
-            break;
         }
     }
 
-    None
+    let binary_start = after_part2_boundary + part2_header_end + 4;
+
+    if let Some(end_pos) = find_subsequence(&data[binary_start..], &delimiter) {
+        Some((ct, cd, Bytes::copy_from_slice(&data[binary_start..binary_start + end_pos])))
+    } else if let Some(end_pos) = find_subsequence(&data[binary_start..], &closing_delimiter) {
+        Some((ct, cd, Bytes::copy_from_slice(&data[binary_start..binary_start + end_pos])))
+    } else {
+        Some((ct, cd, Bytes::copy_from_slice(&data[binary_start..])))
+    }
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
