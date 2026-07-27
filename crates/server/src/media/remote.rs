@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use salvo::Response;
+use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 
 use super::{Dimension, FileMeta};
 use crate::core::federation::media::ContentReqArgs;
@@ -58,21 +58,15 @@ pub async fn fetch_remote_content(
     if let Some(ct) = &content_type_header
         && ct.contains("multipart/mixed")
     {
-        let body = read_response_limited(
-            content_response,
-            config::get().media.max_remote_media_size,
-        )
-        .await?;
+        let body =
+            read_response_limited(content_response, config::get().media.max_remote_media_size)
+                .await?;
 
         if let Some((content_type, content_disposition, binary)) =
             parse_multipart_federation_response(ct, &body)
         {
             res.add_header(CONTENT_TYPE, &content_type, true)?;
-            res.add_header(
-                "Cross-Origin-Resource-Policy",
-                "cross-origin",
-                true,
-            )?;
+            res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
             if let Some(disp) = &content_disposition {
                 res.add_header(CONTENT_DISPOSITION, disp, true)?;
             }
@@ -81,8 +75,7 @@ pub async fn fetch_remote_content(
         } else {
             res.status_code(salvo::http::StatusCode::BAD_GATEWAY);
             res.body = salvo::http::ResBody::Once(
-                r#"{"errcode":"M_UNKNOWN","error":"Failed to parse remote media response"}"#
-                    .into(),
+                r#"{"errcode":"M_UNKNOWN","error":"Failed to parse remote media response"}"#.into(),
             );
         }
     } else {
@@ -100,13 +93,11 @@ fn parse_multipart_federation_response(
     content_type: &str,
     body: &Bytes,
 ) -> Option<(String, Option<String>, Bytes)> {
-    let boundary = content_type
-        .split(';')
-        .find_map(|part| {
-            let part = part.trim();
-            part.strip_prefix("boundary=")
-                .map(|b| b.trim().trim_matches('"').to_owned())
-        })?;
+    let boundary = content_type.split(';').find_map(|part| {
+        let part = part.trim();
+        part.strip_prefix("boundary=")
+            .map(|b| b.trim().trim_matches('"').to_owned())
+    })?;
 
     let start_boundary = format!("--{boundary}\r\n").into_bytes();
     let delimiter = format!("\r\n--{boundary}\r\n").into_bytes();
@@ -124,15 +115,16 @@ fn parse_multipart_federation_response(
 
     // Skip the first part entirely (it is always JSON metadata in Matrix federation)
     let part1_header_end = find_subsequence(&data[after_first_boundary..], b"\r\n\r\n")?;
-    let part2_boundary =
-        find_subsequence(&data[after_first_boundary + part1_header_end + 4..], &delimiter)?;
+    let part2_boundary = find_subsequence(
+        &data[after_first_boundary + part1_header_end + 4..],
+        &delimiter,
+    )?;
     let after_part2_boundary =
         after_first_boundary + part1_header_end + 4 + part2_boundary + delimiter.len();
 
     // Parse the second part (actual file content)
     let part2_header_end = find_subsequence(&data[after_part2_boundary..], b"\r\n\r\n")?;
-    let part2_header_bytes =
-        &data[after_part2_boundary..after_part2_boundary + part2_header_end];
+    let part2_header_bytes = &data[after_part2_boundary..after_part2_boundary + part2_header_end];
     let part2_header_str = std::str::from_utf8(part2_header_bytes).ok()?;
 
     let mut ct = String::new();
@@ -153,9 +145,17 @@ fn parse_multipart_federation_response(
     let binary_start = after_part2_boundary + part2_header_end + 4;
 
     if let Some(end_pos) = find_subsequence(&data[binary_start..], &delimiter) {
-        Some((ct, cd, Bytes::copy_from_slice(&data[binary_start..binary_start + end_pos])))
+        Some((
+            ct,
+            cd,
+            Bytes::copy_from_slice(&data[binary_start..binary_start + end_pos]),
+        ))
     } else if let Some(end_pos) = find_subsequence(&data[binary_start..], &closing_delimiter) {
-        Some((ct, cd, Bytes::copy_from_slice(&data[binary_start..binary_start + end_pos])))
+        Some((
+            ct,
+            cd,
+            Bytes::copy_from_slice(&data[binary_start..binary_start + end_pos]),
+        ))
     } else {
         Some((ct, cd, Bytes::copy_from_slice(&data[binary_start..])))
     }
