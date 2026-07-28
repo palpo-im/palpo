@@ -21,7 +21,8 @@ COPY --from=builder /work/palpo /var/palpo/palpo
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl libpq5 && \
-    mkdir -p /var/palpo/media /var/palpo/certs /var/palpo/acme
+    mkdir -p /var/palpo/media /var/palpo/certs /var/palpo/acme && \
+    rm -rf /var/lib/apt/lists/* /var/cache/debconf/*
 
 RUN groupadd -r palpo && useradd -r -g palpo palpo && \
     chown -R palpo:palpo /var/palpo
