@@ -2,9 +2,9 @@
 //!
 //! A delayed event is stored when scheduled and stays in the table after it is
 //! finalized (sent, cancelled, or errored) so clients can look up the outcome.
-//! The scheduler claims due rows by setting `finalized_at` first, then records
-//! the send outcome; this keeps the claim atomic under concurrent workers and
-//! management requests.
+//! The scheduler leases a due row in `claimed_at` and only sets `finalized_at`
+//! once it knows the outcome, so a worker that dies mid-send leaves a row that
+//! is still scheduled and can be reclaimed after [`CLAIM_LEASE_MS`].
 
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -77,10 +77,9 @@ pub enum Scheduled {
 /// transactions.
 ///
 /// Two concurrent retries of the *same* transaction are a different race: both
-/// pass the caller's [`get_by_txn_id`] lookup, and the unique index lets
-/// exactly one insert win. The loser resolves to the winner's row instead of
-/// surfacing a database error, so scheduling stays idempotent rather than
-/// returning a 500.
+/// pass the caller's [`get_by_txn_id`] lookup before either commits. The
+/// transaction id is therefore re-resolved under the lock, so the loser is
+/// answered with the winner's row and scheduling stays idempotent.
 pub async fn create(new: NewDbDelayedEvent, max_scheduled: i64) -> DataResult<Scheduled> {
     let user_id = new.user_id.clone();
     let device_id = new.device_id.clone();
@@ -289,6 +288,9 @@ pub async fn restart(
     .set((
         delayed_events::running_since.eq(now),
         delayed_events::send_at.eq(delayed_events::delay_ms + now),
+        // Invalidate any expired lease, so a worker that outlived it cannot
+        // still record an outcome against the row this restart just rescheduled.
+        delayed_events::claimed_at.eq(None::<i64>),
     ))
     .get_result::<DbDelayedEvent>(&mut connect().await?)
     .await
@@ -428,7 +430,11 @@ pub async fn cancel(user_id: &UserId, delay_id: &str, now: i64) -> DataResult<bo
                     .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
             ),
     )
-    .set(delayed_events::finalized_at.eq(now))
+    .set((
+        delayed_events::finalized_at.eq(now),
+        // As in restart: drop the expired lease so its worker is fenced out.
+        delayed_events::claimed_at.eq(None::<i64>),
+    ))
     .execute(&mut connect().await?)
     .await?;
     Ok(count > 0)

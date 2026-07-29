@@ -90,8 +90,13 @@ pub fn start() {
 /// send times. Failures are recorded on the event instead of being retried,
 /// per the MSC.
 async fn process_due_events() -> AppResult<()> {
-    let now = UnixMillis::now().get() as i64;
-    for event in delayed_event::list_due(now).await? {
+    let scan_at = UnixMillis::now().get() as i64;
+    for event in delayed_event::list_due(scan_at).await? {
+        // Re-read the clock per row: working through a backlog can take longer
+        // than CLAIM_LEASE_MS, and claiming with the scan-start timestamp
+        // would stamp a lease that is already expired, so a management request
+        // could report a successful cancel while the event is being appended.
+        let now = UnixMillis::now().get() as i64;
         let Some(claimed) = delayed_event::claim_due(event.id, now).await? else {
             // Finalized, restarted, or claimed concurrently since `list_due`.
             continue;
@@ -186,6 +191,10 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     // Still under the room lock, so the mapping is visible to any worker that
     // is waiting on it before that worker can reach its own append. Recorded
     // before the lock is released for the same reason.
+    // Not `.ok()`: this mapping is what makes lease recovery idempotent. If it
+    // is missing and recording the outcome then fails, recovery would find
+    // neither and append the event a second time, so a failure here has to
+    // surface rather than be reported as a clean send.
     crate::transaction_id::add_txn_id(
         &event.txn_id,
         &event.user_id,
@@ -193,8 +202,7 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
         Some(&event.room_id),
         Some(&event_id),
     )
-    .await
-    .ok();
+    .await?;
     drop(state_lock);
 
     Ok((*event_id).to_owned())
