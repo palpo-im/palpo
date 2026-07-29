@@ -95,6 +95,30 @@ pub async fn create(new: NewDbDelayedEvent, max_scheduled: i64) -> DataResult<Sc
             .execute(&mut *conn)
             .await?;
 
+        // Re-resolve the transaction now that this request holds the lock. The
+        // caller's lookup ran before it, so a concurrent retry of the same
+        // request may have committed in between. Doing this first means the
+        // insert can no longer hit the unique index -- which matters because a
+        // unique violation aborts the surrounding transaction in Postgres, and
+        // every statement after it would fail with 25P02 -- and it means an
+        // idempotent retry is answered with its delay id rather than being
+        // rejected by the limit check below when it took the last slot.
+        let mut existing = delayed_events::table
+            .filter(delayed_events::user_id.eq(&user_id))
+            .filter(delayed_events::txn_id.eq(&txn_id))
+            .into_boxed();
+        existing = match device_id.as_deref() {
+            Some(device_id) => existing.filter(delayed_events::device_id.eq(device_id)),
+            None => existing.filter(delayed_events::device_id.is_null()),
+        };
+        if let Some(row) = existing
+            .first::<DbDelayedEvent>(&mut *conn)
+            .await
+            .optional()?
+        {
+            return Ok(Scheduled::AlreadyScheduled(row));
+        }
+
         let scheduled: i64 = delayed_events::table
             .filter(delayed_events::user_id.eq(&user_id))
             .filter(delayed_events::finalized_at.is_null())
@@ -105,31 +129,11 @@ pub async fn create(new: NewDbDelayedEvent, max_scheduled: i64) -> DataResult<Sc
             return Ok(Scheduled::LimitReached);
         }
 
-        match diesel::insert_into(delayed_events::table)
+        diesel::insert_into(delayed_events::table)
             .values(&new)
             .get_result::<DbDelayedEvent>(&mut *conn)
             .await
-        {
-            Ok(row) => Ok(Scheduled::Created(row)),
-            Err(diesel::result::Error::DatabaseError(
-                diesel::result::DatabaseErrorKind::UniqueViolation,
-                _,
-            )) => {
-                let mut query = delayed_events::table
-                    .filter(delayed_events::user_id.eq(&user_id))
-                    .filter(delayed_events::txn_id.eq(&txn_id))
-                    .into_boxed();
-                query = match device_id.as_deref() {
-                    Some(device_id) => query.filter(delayed_events::device_id.eq(device_id)),
-                    None => query.filter(delayed_events::device_id.is_null()),
-                };
-                query
-                    .first::<DbDelayedEvent>(&mut *conn)
-                    .await
-                    .map(Scheduled::AlreadyScheduled)
-            }
-            Err(e) => Err(e),
-        }
+            .map(Scheduled::Created)
     })
     .await
     .map_err(Into::into)
@@ -354,37 +358,55 @@ pub async fn claim_due(row_id: i64, now: i64) -> DataResult<Option<DbDelayedEven
 }
 
 /// Record the event id of a claimed delayed event that was sent successfully.
-pub async fn set_sent(row_id: i64, event_id: &EventId, now: i64) -> DataResult<()> {
-    diesel::update(delayed_events::table.filter(delayed_events::id.eq(row_id)))
-        .set((
-            delayed_events::event_id.eq(event_id),
-            delayed_events::finalized_at.eq(now),
-        ))
-        .execute(&mut connect().await?)
-        .await?;
+///
+/// Fenced on `lease`, the `claimed_at` value this worker set: a worker whose
+/// lease was reclaimed while it was still running must not overwrite the
+/// outcome the worker that superseded it recorded.
+pub async fn set_sent(row_id: i64, lease: i64, event_id: &EventId, now: i64) -> DataResult<()> {
+    diesel::update(
+        delayed_events::table
+            .filter(delayed_events::id.eq(row_id))
+            .filter(delayed_events::claimed_at.eq(lease)),
+    )
+    .set((
+        delayed_events::event_id.eq(event_id),
+        delayed_events::finalized_at.eq(now),
+    ))
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
-/// Record the error of a claimed delayed event that failed to send.
-pub async fn set_error(row_id: i64, error: &JsonValue, now: i64) -> DataResult<()> {
-    diesel::update(delayed_events::table.filter(delayed_events::id.eq(row_id)))
-        .set((
-            delayed_events::error.eq(error),
-            delayed_events::finalized_at.eq(now),
-        ))
-        .execute(&mut connect().await?)
-        .await?;
+/// Record the error of a claimed delayed event that failed to send. Fenced on
+/// the lease, as [`set_sent`] is.
+pub async fn set_error(row_id: i64, lease: i64, error: &JsonValue, now: i64) -> DataResult<()> {
+    diesel::update(
+        delayed_events::table
+            .filter(delayed_events::id.eq(row_id))
+            .filter(delayed_events::claimed_at.eq(lease)),
+    )
+    .set((
+        delayed_events::error.eq(error),
+        delayed_events::finalized_at.eq(now),
+    ))
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 
 /// Release a lease so the delayed event stays scheduled (used when a manual
 /// `send` action fails before the event could reach the timeline; the MSC
-/// requires the event to remain scheduled then).
-pub async fn unclaim(row_id: i64) -> DataResult<()> {
-    diesel::update(delayed_events::table.filter(delayed_events::id.eq(row_id)))
-        .set(delayed_events::claimed_at.eq(None::<i64>))
-        .execute(&mut connect().await?)
-        .await?;
+/// requires the event to remain scheduled then). Fenced on the lease so a
+/// superseded worker cannot release the lease its successor now holds.
+pub async fn unclaim(row_id: i64, lease: i64) -> DataResult<()> {
+    diesel::update(
+        delayed_events::table
+            .filter(delayed_events::id.eq(row_id))
+            .filter(delayed_events::claimed_at.eq(lease)),
+    )
+    .set(delayed_events::claimed_at.eq(None::<i64>))
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
 

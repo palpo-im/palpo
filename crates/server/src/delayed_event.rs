@@ -96,9 +96,10 @@ async fn process_due_events() -> AppResult<()> {
             // Finalized, restarted, or claimed concurrently since `list_due`.
             continue;
         };
+        let lease = claimed.claimed_at.unwrap_or(now);
         match send_delayed_pdu(&claimed).await {
             Ok(event_id) => {
-                delayed_event::set_sent(claimed.id, &event_id, now).await?;
+                delayed_event::set_sent(claimed.id, lease, &event_id, now).await?;
             }
             Err(error) => {
                 tracing::debug!(
@@ -109,7 +110,7 @@ async fn process_due_events() -> AppResult<()> {
                 );
                 // The MSC says a scheduled send is not retried either way, so
                 // both failure kinds finalize with the error here.
-                delayed_event::set_error(claimed.id, &error_body(error), now).await?;
+                delayed_event::set_error(claimed.id, lease, &error_body(error), now).await?;
             }
         }
     }
@@ -119,25 +120,14 @@ async fn process_due_events() -> AppResult<()> {
 /// Build and append the PDU for a claimed delayed event through the normal
 /// event authorization and federation paths.
 ///
-/// A send that is interrupted after the append but before the outcome is
-/// recorded leaves a row that the lease sweep later reclaims. Appending again
-/// would duplicate the event, so this first resolves the transaction id the
-/// same way `/send` does: the mapping is written right after the append, so a
-/// hit means the event already reached the room and the caller only has to
-/// record it. The remaining window -- a crash between the append and that
-/// mapping -- is the one palpo's ordinary `/send` idempotency already has.
+/// A send interrupted after the append but before the outcome is recorded
+/// leaves a row the lease sweep later reclaims, and appending again would
+/// duplicate the event. To make that recovery idempotent this resolves the
+/// transaction id the same way `/send` does, and both that lookup and the
+/// `add_txn_id` that satisfies it happen under the room lock, so a worker that
+/// reclaimed an over-running lease cannot slip past the check while the
+/// original worker is mid-append.
 async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
-    if let Some(event_id) = crate::transaction_id::get_event_id(
-        &event.txn_id,
-        &event.user_id,
-        event.device_id.as_deref(),
-        Some(&event.room_id),
-    )
-    .await?
-    {
-        return Ok(event_id);
-    }
-
     let event_type: TimelineEventType = event.event_type.clone().into();
     if let Some(state_key) = &event.state_key {
         let state_event_type: StateEventType = event.event_type.clone().into();
@@ -158,6 +148,23 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     unsigned.insert("transaction_id".to_owned(), to_raw_value(&event.txn_id)?);
 
     let state_lock = room::lock_state(&event.room_id).await;
+
+    // Inside the room lock, so a worker that reclaimed an over-running lease
+    // cannot pass this check while the original worker is still between its
+    // append and its `add_txn_id` -- both of which happen under this same
+    // lock. Checking before taking it would let both reach the append and
+    // duplicate the event.
+    if let Some(event_id) = crate::transaction_id::get_event_id(
+        &event.txn_id,
+        &event.user_id,
+        event.device_id.as_deref(),
+        Some(&event.room_id),
+    )
+    .await?
+    {
+        return Ok(event_id);
+    }
+
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type,
@@ -175,8 +182,10 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     .await?
     .pdu
     .event_id;
-    drop(state_lock);
 
+    // Still under the room lock, so the mapping is visible to any worker that
+    // is waiting on it before that worker can reach its own append. Recorded
+    // before the lock is released for the same reason.
     crate::transaction_id::add_txn_id(
         &event.txn_id,
         &event.user_id,
@@ -186,6 +195,7 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     )
     .await
     .ok();
+    drop(state_lock);
 
     Ok((*event_id).to_owned())
 }
@@ -326,9 +336,10 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 }
                 return Err(finalized_conflict(&refreshed, "send"));
             };
+            let lease = claimed.claimed_at.unwrap_or(now);
             match send_delayed_pdu(&claimed).await {
                 Ok(event_id) => {
-                    delayed_event::set_sent(claimed.id, &event_id, now).await?;
+                    delayed_event::set_sent(claimed.id, lease, &event_id, now).await?;
                     Ok(())
                 }
                 // The MSC requires the event to stay scheduled so the client
@@ -337,7 +348,7 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 // `send_delayed_pdu` resolves the transaction id first and
                 // will not append a second time.
                 Err(error) => {
-                    delayed_event::unclaim(claimed.id).await?;
+                    delayed_event::unclaim(claimed.id, lease).await?;
                     Err(error)
                 }
             }
