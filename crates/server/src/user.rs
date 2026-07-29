@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use crate::core::UnixMillis;
 use crate::core::events::GlobalAccountDataEventType;
 use crate::core::events::ignored_user_list::IgnoredUserListEvent;
-use crate::core::events::push_rules::PushRulesEventContent;
+use crate::core::events::push_rules::{PushRulesEvent, PushRulesEventContent};
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::identifiers::*;
 use crate::core::push::Ruleset;
@@ -348,11 +348,12 @@ pub async fn get_data<E: DeserializeOwned>(
 /// as are all user-defined rules. This makes newly added defaults effective
 /// for existing accounts without resetting their preferences.
 pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent> {
-    let stored = data::user::get_global_data::<PushRulesEventContent>(
+    let stored = data::user::get_global_data::<JsonValue>(
         user_id,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
-    .await?;
+    .await?
+    .and_then(parse_stored_push_rules);
     let (content, refreshed_json) = refresh_push_rules_content(user_id, stored)?;
 
     if let Some(refreshed_json) = refreshed_json {
@@ -378,6 +379,23 @@ pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent
     }
 
     Ok(content)
+}
+
+/// Reads a stored `m.push_rules` record in either shape it may have been
+/// written in.
+///
+/// The registration path stores the bare content, but accounts provisioned
+/// through the admin command used to store a whole `PushRulesEvent`, with the
+/// ruleset nested under `content`. Insisting on the bare shape would make
+/// every load -- and so every v3 sync -- fail for those accounts. Reading both
+/// lets the refresh rewrite them in the canonical shape on first load.
+fn parse_stored_push_rules(stored: JsonValue) -> Option<PushRulesEventContent> {
+    if let Ok(content) = serde_json::from_value::<PushRulesEventContent>(stored.clone()) {
+        return Some(content);
+    }
+    serde_json::from_value::<PushRulesEvent>(stored)
+        .ok()
+        .map(|event| event.content)
 }
 
 fn refresh_push_rules_content(
@@ -445,6 +463,29 @@ mod push_rules_tests {
 
         let (_, unchanged_json) = refresh_push_rules_content(user_id, Some(refreshed)).unwrap();
         assert!(unchanged_json.is_none());
+    }
+
+    /// Accounts provisioned by the admin command stored a whole
+    /// `PushRulesEvent`; reading only the bare shape made every sync for them
+    /// fail.
+    #[test]
+    fn wrapped_push_rules_records_are_still_readable() {
+        let user_id = user_id!("@user:example.org");
+        let wrapped = serde_json::json!({
+            "type": "m.push_rules",
+            "content": { "global": { "override": [], "content": [], "room": [],
+                                     "sender": [], "underride": [] } }
+        });
+
+        let parsed = super::parse_stored_push_rules(wrapped).expect("wrapped record parses");
+        let (content, changed_json) =
+            super::refresh_push_rules_content(user_id, Some(parsed)).unwrap();
+
+        // Defaults are merged in, and the record is rewritten in the bare shape.
+        assert!(!content.global.override_.is_empty());
+        let rewritten = changed_json.expect("record is normalized");
+        assert!(rewritten.get("global").is_some());
+        assert!(rewritten.get("content").is_none());
     }
 
     #[test]
