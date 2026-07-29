@@ -89,6 +89,14 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "uk.half-shot.msc2666.query_mutual_rooms")]
     Msc2666,
 
+    /// `uk.half-shot.msc2666.query_mutual_rooms.stable` ([MSC])
+    ///
+    /// Stable version of the rooms-in-common endpoint.
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/2666
+    #[palpo_enum(rename = "uk.half-shot.msc2666.query_mutual_rooms.stable")]
+    Msc2666Stable,
+
     /// `org.matrix.msc3030` ([MSC])
     ///
     /// Jump to date API endpoint.

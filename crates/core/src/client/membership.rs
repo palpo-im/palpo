@@ -383,7 +383,9 @@ impl MutualRoomsV1ResBody {
 mod mutual_rooms_tests {
     use serde_json::json;
 
-    use super::{MutualRoomsV1ReqArgs, MutualRoomsV1ResBody};
+    use super::{
+        MutualRoomsReqArgs, MutualRoomsResBody, MutualRoomsV1ReqArgs, MutualRoomsV1ResBody,
+    };
     use crate::{owned_room_id, owned_user_id};
 
     #[test]
@@ -410,6 +412,29 @@ mod mutual_rooms_tests {
                 "count": 2,
                 "joined": ["!one:example.org", "!two:example.org"],
                 "next_batch": "next"
+            })
+        );
+    }
+
+    #[test]
+    fn unstable_request_and_response_keep_legacy_field_names() {
+        let request: MutualRoomsReqArgs = serde_json::from_value(json!({
+            "user_id": "@alice:example.org",
+            "batch_token": "legacy-next"
+        }))
+        .unwrap();
+        assert_eq!(request.user_id, owned_user_id!("@alice:example.org"));
+        assert_eq!(request.batch_token.as_deref(), Some("legacy-next"));
+
+        let response = MutualRoomsResBody::with_token(
+            vec![owned_room_id!("!one:example.org")],
+            "legacy-next".to_owned(),
+        );
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "joined": ["!one:example.org"],
+                "next_batch_token": "legacy-next"
             })
         );
     }

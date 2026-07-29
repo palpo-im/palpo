@@ -133,6 +133,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_and_single_page_results_do_not_return_a_cursor() {
+        let (count, page, next_batch) = paginate_mutual_rooms(Vec::new(), None).unwrap();
+        assert_eq!(count, 0);
+        assert!(page.is_empty());
+        assert!(next_batch.is_none());
+
+        let (count, page, next_batch) =
+            paginate_mutual_rooms(vec![room(0), room(0)], None).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(page, vec![room(0)]);
+        assert!(next_batch.is_none());
+    }
+
+    #[test]
     fn cursor_survives_membership_changes_without_repeating_rooms() {
         let cursor = encode_cursor(&room(2));
         let rooms = vec![room(0), room(1), room(3), room(4)];
