@@ -50,8 +50,14 @@ impl RoomImagePackEventContent {
 ///
 /// MSC2545 no longer defines a stable personal image-pack account data event,
 /// but this type remains available so existing stored events can still be read.
+/// `m.image_pack` is accepted on ingress because it was the personal pack's
+/// identifier in an earlier revision of the proposal; it is never serialized.
 #[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize, EventContent)]
-#[palpo_event(type = "im.ponies.user_emotes", kind = GlobalAccountData)]
+#[palpo_event(
+    type = "im.ponies.user_emotes",
+    kind = GlobalAccountData,
+    alias = "m.image_pack"
+)]
 pub struct AccountImagePackEventContent {
     /// A list of images available in this image pack.
     ///
@@ -89,6 +95,15 @@ pub struct ImagePackImage {
     /// The [ImageInfo] object used for the `info` block of `m.sticker` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<ImageInfo>,
+
+    /// The usages for this individual image.
+    ///
+    /// Removed before MSC2545 stabilized: usage is a pack-level field in Matrix 1.19 and this
+    /// is empty for spec-conformant packs. It is kept so that a legacy `im.ponies.*` pack that
+    /// still carries per-image usages survives a deserialize/serialize round-trip instead of
+    /// silently losing whether an image was sticker-only or emoticon-only.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub usage: BTreeSet<PackUsage>,
 }
 
 impl ImagePackImage {
@@ -98,6 +113,7 @@ impl ImagePackImage {
             url,
             body: None,
             info: None,
+            usage: BTreeSet::new(),
         }
     }
 }
@@ -260,6 +276,36 @@ mod tests {
             GlobalAccountDataEventType::from("im.ponies.user_emotes"),
             GlobalAccountDataEventType::AccountImagePack
         );
+    }
+
+    #[test]
+    fn legacy_personal_pack_alias_remains_readable() {
+        assert_eq!(
+            GlobalAccountDataEventType::from("m.image_pack"),
+            GlobalAccountDataEventType::AccountImagePack
+        );
+        assert_eq!(
+            GlobalAccountDataEventType::from("m.image_pack").to_string(),
+            "im.ponies.user_emotes"
+        );
+    }
+
+    /// Per-image `usage` predates stabilization, so it must survive a round-trip of a legacy
+    /// pack rather than being silently dropped.
+    #[test]
+    fn legacy_per_image_usage_round_trips() {
+        let json = json!({
+            "images": {
+                "mysticker": {
+                    "url": "mxc://example.org/sticker",
+                    "usage": ["sticker"]
+                }
+            }
+        });
+
+        let content: RoomImagePackEventContent = from_json_value(json.clone()).unwrap();
+
+        assert_eq!(to_json_value(content).unwrap(), json);
     }
 
     /// The bottom-level object is reserved for future use and unrecognised properties MUST

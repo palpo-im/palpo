@@ -56,7 +56,7 @@ event_enum! {
         #[cfg(feature = "unstable-msc4278")]
         #[palpo_enum(ident = UnstableMediaPreviewConfig)]
         "io.element.msc4278.media_preview_config" => super::media_preview_config,
-        #[palpo_enum(ident = AccountImagePack)]
+        #[palpo_enum(ident = AccountImagePack, alias = "m.image_pack")]
         "im.ponies.user_emotes" => super::image_pack,
         #[palpo_enum(alias = "im.ponies.emote_rooms")]
         "m.image_pack.rooms" => super::image_pack,
