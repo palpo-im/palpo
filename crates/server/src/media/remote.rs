@@ -71,7 +71,7 @@ pub async fn fetch_remote_content(
                 res.add_header(CONTENT_DISPOSITION, disp, true)?;
             }
             res.status_code(salvo::http::StatusCode::OK);
-            res.body = salvo::http::ResBody::Once(binary.into());
+            res.body = salvo::http::ResBody::Once(binary);
         } else {
             res.status_code(salvo::http::StatusCode::BAD_GATEWAY);
             res.body = salvo::http::ResBody::Once(
@@ -107,10 +107,9 @@ fn parse_multipart_federation_response(
     // Advance past the first boundary (which may or may not have a leading CRLF)
     let after_first_boundary = if data.starts_with(&start_boundary) {
         start_boundary.len()
-    } else if let Some(pos) = find_subsequence(data, &delimiter) {
-        pos + delimiter.len()
     } else {
-        return None;
+        let pos = find_subsequence(data, &delimiter)?;
+        pos + delimiter.len()
     };
 
     // Skip the first part entirely (it is always JSON metadata in Matrix federation)
