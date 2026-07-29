@@ -72,8 +72,11 @@ image = "0.25.10"
 opendal = { version = "0.58.0", default-features = false }
 indexmap = "2.14.0"
 itertools = "0.15.0"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = [
+# 11.0 made the crypto backend an explicit feature; aws_lc_rs is what 10.x
+# already resolved to via rustls, so this keeps the dependency tree unchanged.
+jsonwebtoken = { version = "11.0.0", default-features = false, features = [
     "use_pem",
+    "aws_lc_rs",
 ] }
 js_option = "0.2.0"
 konst = "0.4.3"
@@ -99,7 +102,7 @@ rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.95.0", features = ["rustls"]}
+salvo = { version = "0.95.1", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
