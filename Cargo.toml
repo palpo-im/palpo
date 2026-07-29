@@ -72,7 +72,7 @@ image = "0.25.10"
 opendal = { version = "0.58.0", default-features = false }
 indexmap = "2.14.0"
 itertools = "0.15.0"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = [
+jsonwebtoken = { version = "11.0.0", default-features = false, features = [
     "use_pem",
 ] }
 js_option = "0.2.0"
