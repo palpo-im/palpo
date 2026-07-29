@@ -1,5 +1,6 @@
-//! Types for image packs in Matrix ([MSC2545]).
+//! Types for [image packs], stabilized from [MSC2545] in Matrix 1.19.
 //!
+//! [image packs]: https://spec.matrix.org/v1.19/client-server-api/#image-packs
 //! [MSC2545]: https://github.com/matrix-org/matrix-spec-proposals/pull/2545
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::room::ImageInfo;
 use crate::macros::EventContent;
-use crate::serde::StringEnum;
+use crate::serde::{JsonValue, StringEnum};
 use crate::{OwnedMxcUri, OwnedRoomId, PrivOwnedStr};
 
 /// The content of an `m.room.image_pack` event.
@@ -137,7 +138,8 @@ impl ImagePackMeta {
         Self::default()
     }
 
-    fn is_empty(&self) -> bool {
+    /// Whether none of the metadata fields are set.
+    pub fn is_empty(&self) -> bool {
         self.display_name.is_none()
             && self.avatar_url.is_none()
             && self.usage.is_empty()
@@ -149,16 +151,16 @@ impl ImagePackMeta {
 #[deprecated = "use ImagePackMeta"]
 pub type PackInfo = ImagePackMeta;
 
-/// Usages for either an image pack or an individual image.
+/// The intended usages for an image pack.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
 #[derive(ToSchema, Clone, StringEnum)]
 #[palpo_enum(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PackUsage {
-    /// Pack or image is usable as a emoticon.
+    /// The pack is usable as a source of emoticons.
     Emoticon,
 
-    /// Pack or image is usable as a sticker.
+    /// The pack is usable as a source of stickers.
     Sticker,
 
     #[doc(hidden)]
@@ -186,14 +188,21 @@ impl ImagePackRoomsEventContent {
 
 /// Additional metadata for a globally enabled room image pack.
 ///
-/// This is currently empty.
+/// The spec defines no fields yet and reserves this object for future use. Unrecognised
+/// properties are captured so they survive a deserialize/serialize round-trip, as the spec
+/// requires them to be preserved when the event is modified.
 #[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
-pub struct RoomImagePackMeta {}
+pub struct RoomImagePackMeta {
+    /// Properties not defined by the current spec version.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub extra: BTreeMap<String, JsonValue>,
+}
 
 impl RoomImagePackMeta {
     /// Creates empty room image-pack metadata.
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
 
@@ -205,9 +214,9 @@ pub type ImagePackRoomContent = RoomImagePackMeta;
 mod tests {
     use std::collections::BTreeMap;
 
-    use serde_json::{json, to_value as to_json_value};
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
-    use super::RoomImagePackEventContent;
+    use super::{ImagePackRoomsEventContent, RoomImagePackEventContent};
     use crate::events::{GlobalAccountDataEventType, StateEventType};
 
     #[test]
@@ -251,5 +260,22 @@ mod tests {
             GlobalAccountDataEventType::from("im.ponies.user_emotes"),
             GlobalAccountDataEventType::AccountImagePack
         );
+    }
+
+    /// The bottom-level object is reserved for future use and unrecognised properties MUST
+    /// survive a modification of the event.
+    #[test]
+    fn enabled_pack_metadata_preserves_unknown_properties() {
+        let json = json!({
+            "rooms": {
+                "!someroom:example.org": {
+                    "": { "com.example.future": { "nested": true } }
+                }
+            }
+        });
+
+        let content: ImagePackRoomsEventContent = from_json_value(json.clone()).unwrap();
+
+        assert_eq!(to_json_value(content).unwrap(), json);
     }
 }
