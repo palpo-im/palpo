@@ -20,6 +20,11 @@ CREATE TABLE delayed_events (
     send_at BIGINT NOT NULL,
     event_id TEXT,
     error JSONB,
+    -- Lease taken by the worker that is currently sending this event. Kept
+    -- separate from finalized_at so a crash mid-send leaves a row that is
+    -- still scheduled and can be reclaimed, rather than one that looks
+    -- finalized with no outcome.
+    claimed_at BIGINT,
     finalized_at BIGINT,
     created_at BIGINT NOT NULL,
     UNIQUE (delay_id)

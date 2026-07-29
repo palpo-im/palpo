@@ -84,55 +84,88 @@ pub fn start() {
 async fn process_due_events() -> AppResult<()> {
     let now = UnixMillis::now().get() as i64;
     for event in delayed_event::list_due(now).await? {
-        let Some(claimed) = delayed_event::claim(event.id, now).await? else {
-            // Finalized concurrently (cancelled or manually sent).
+        let Some(claimed) = delayed_event::claim_due(event.id, now).await? else {
+            // Finalized, restarted, or claimed concurrently since `list_due`.
             continue;
         };
         match send_delayed_pdu(&claimed).await {
             Ok(event_id) => {
-                delayed_event::set_sent(claimed.id, &event_id).await?;
+                delayed_event::set_sent(claimed.id, &event_id, now).await?;
             }
-            Err(error) => {
+            Err(failure) => {
+                let error = failure.into_error();
                 tracing::debug!(
                     delay_id = %claimed.delay_id,
                     room_id = %claimed.room_id,
                     ?error,
                     "delayed event failed to send at its scheduled time"
                 );
-                delayed_event::set_error(claimed.id, &error_body(error)).await?;
+                // The MSC says a scheduled send is not retried either way, so
+                // both failure kinds finalize with the error here.
+                delayed_event::set_error(claimed.id, &error_body(error), now).await?;
             }
         }
     }
     Ok(())
 }
 
+/// Why a delayed event failed to send, split by whether a PDU can already
+/// exist in the room.
+enum SendFailure {
+    /// Refused before anything was written. Retrying is safe.
+    Rejected(AppError),
+    /// Failed at or after `build_and_append_pdu`, which persists the event
+    /// before its later push and federation steps. A retry could duplicate it.
+    Appending(AppError),
+}
+
+impl SendFailure {
+    fn into_error(self) -> AppError {
+        match self {
+            Self::Rejected(e) | Self::Appending(e) => e,
+        }
+    }
+}
+
 /// Build and append the PDU for a claimed delayed event through the normal
 /// event authorization and federation paths.
-async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
+async fn send_delayed_pdu(event: &DbDelayedEvent) -> Result<OwnedEventId, SendFailure> {
     let event_type: TimelineEventType = event.event_type.clone().into();
     if let Some(state_key) = &event.state_key {
         let state_event_type: StateEventType = event.event_type.clone().into();
+        let content = serde_json::from_value(event.content.clone())
+            .map_err(|e| SendFailure::Rejected(AppError::from(e)))?;
         crate::state::allowed_to_send_state_event(
             &event.room_id,
             &state_event_type,
             state_key,
-            &serde_json::from_value(event.content.clone())?,
+            &content,
         )
-        .await?;
+        .await
+        .map_err(SendFailure::Rejected)?;
     }
 
     let mut unsigned = BTreeMap::new();
     unsigned.insert(
         "org.matrix.msc4140.delay_id".to_owned(),
-        to_raw_value(&event.delay_id)?,
+        to_raw_value(&event.delay_id).map_err(|e| SendFailure::Rejected(AppError::from(e)))?,
     );
-    unsigned.insert("transaction_id".to_owned(), to_raw_value(&event.txn_id)?);
+    unsigned.insert(
+        "transaction_id".to_owned(),
+        to_raw_value(&event.txn_id).map_err(|e| SendFailure::Rejected(AppError::from(e)))?,
+    );
+    let content =
+        to_raw_value(&event.content).map_err(|e| SendFailure::Rejected(AppError::from(e)))?;
+    let room_version = crate::room::get_version(&event.room_id)
+        .await
+        .map_err(SendFailure::Rejected)?;
 
+    // Everything past this point may have written the event to the timeline.
     let state_lock = room::lock_state(&event.room_id).await;
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type,
-            content: to_raw_value(&event.content)?,
+            content,
             unsigned,
             state_key: event.state_key.clone(),
             redacts: None,
@@ -140,10 +173,11 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
         },
         &event.user_id,
         &event.room_id,
-        &crate::room::get_version(&event.room_id).await?,
+        &room_version,
         &state_lock,
     )
-    .await?
+    .await
+    .map_err(SendFailure::Appending)?
     .pdu
     .event_id;
     drop(state_lock);
@@ -269,16 +303,25 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
                     .await?
                     .unwrap_or(event);
-                Err(finalized_conflict(&refreshed, "restart"))
+                if send_in_flight(&refreshed, now) {
+                    Err(in_flight_conflict("restart"))
+                } else {
+                    Err(finalized_conflict(&refreshed, "restart"))
+                }
             }
         }
         UpdateAction::Send => {
             let Some(claimed) = delayed_event::claim(event.id, now).await? else {
-                // Already finalized: sending is idempotent if it was sent,
-                // conflicting otherwise.
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
                     .await?
                     .unwrap_or(event);
+                // Another worker is already sending it, which is the outcome
+                // this request wanted.
+                if send_in_flight(&refreshed, now) {
+                    return Ok(());
+                }
+                // Already finalized: sending is idempotent if it was sent,
+                // conflicting otherwise.
                 if refreshed.event_id.is_some() {
                     return Ok(());
                 }
@@ -286,14 +329,26 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
             };
             match send_delayed_pdu(&claimed).await {
                 Ok(event_id) => {
-                    delayed_event::set_sent(claimed.id, &event_id).await?;
+                    delayed_event::set_sent(claimed.id, &event_id, now).await?;
                     Ok(())
                 }
-                Err(error) => {
-                    // The MSC requires the event to stay scheduled so the
-                    // client can retry until the scheduled send time.
+                // Rejected before anything was written, so the MSC's rule that
+                // the event stays scheduled applies: release the lease and
+                // report the error to the client.
+                Err(SendFailure::Rejected(error)) => {
                     delayed_event::unclaim(claimed.id).await?;
                     Err(error)
+                }
+                // The append may already have reached the timeline, so the row
+                // must not become sendable again or a retry would duplicate
+                // the event. Finalize it with the error instead.
+                Err(SendFailure::Appending(error)) => {
+                    let body = error_body(error);
+                    delayed_event::set_error(claimed.id, &body, now).await?;
+                    Err(MatrixError::unknown(
+                        "the delayed event could not be completed and is no longer scheduled",
+                    )
+                    .into())
                 }
             }
         }
@@ -304,10 +359,14 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
                     .await?
                     .unwrap_or(event);
-                if refreshed.event_id.is_some() {
+                if send_in_flight(&refreshed, now) {
+                    Err(in_flight_conflict("cancel"))
+                } else if refreshed.event_id.is_some() {
                     Err(finalized_conflict(&refreshed, "cancel"))
                 } else {
-                    // Already cancelled, either by user action or an error.
+                    // The MSC treats cancelling an event that was already
+                    // cancelled -- "either due to user action or an error" --
+                    // as an idempotent success.
                     Ok(())
                 }
             }
@@ -350,6 +409,25 @@ fn to_event_data(event: DbDelayedEvent) -> DelayedEventData {
         event_id: event.event_id,
         finalized_ts: event.finalized_at.map(|ts| UnixMillis(ts as u64)),
     }
+}
+
+/// Whether a worker currently holds the send lease on this row, meaning the
+/// event is on its way into the room and no management action can stop it.
+fn send_in_flight(event: &DbDelayedEvent, now: i64) -> bool {
+    event.finalized_at.is_none()
+        && event
+            .claimed_at
+            .is_some_and(|claimed| claimed >= now - delayed_event::CLAIM_LEASE_MS)
+}
+
+/// HTTP 409 for a management action that arrived while the event was already
+/// being sent.
+fn in_flight_conflict(action: &str) -> AppError {
+    let mut error = MatrixError::unknown(format!(
+        "cannot {action} a delayed event that is currently being sent"
+    ));
+    error.status_code = Some(StatusCode::CONFLICT);
+    error.into()
 }
 
 /// HTTP 409 for a management action that conflicts with the outcome the

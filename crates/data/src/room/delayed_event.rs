@@ -33,6 +33,7 @@ pub struct DbDelayedEvent {
     pub send_at: i64,
     pub event_id: Option<OwnedEventId>,
     pub error: Option<JsonValue>,
+    pub claimed_at: Option<i64>,
     pub finalized_at: Option<i64>,
     pub created_at: i64,
 }
@@ -56,12 +57,32 @@ pub struct NewDbDelayedEvent {
 }
 
 /// Store a newly scheduled delayed event and return the stored row.
+///
+/// Two concurrent retries of the same request both pass the caller's
+/// [`get_by_txn_id`] lookup and race to insert. The unique transaction index
+/// lets exactly one win; the loser resolves to the winner's row instead of
+/// surfacing a database error, so scheduling stays idempotent under
+/// concurrency rather than returning a 500.
 pub async fn create(new: NewDbDelayedEvent) -> DataResult<DbDelayedEvent> {
-    diesel::insert_into(delayed_events::table)
+    let user_id = new.user_id.clone();
+    let device_id = new.device_id.clone();
+    let txn_id = new.txn_id.clone();
+
+    match diesel::insert_into(delayed_events::table)
         .values(&new)
         .get_result::<DbDelayedEvent>(&mut connect().await?)
         .await
-        .map_err(Into::into)
+    {
+        Ok(row) => Ok(row),
+        Err(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => get_by_txn_id(&user_id, device_id.as_deref(), &txn_id)
+            .await?
+            .ok_or(diesel::result::Error::NotFound)
+            .map_err(Into::into),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Look up a delayed event previously scheduled with the same transaction id
@@ -150,10 +171,18 @@ pub async fn next_send_at() -> DataResult<Option<i64>> {
 /// List all delayed events that are due at `now`, in chronological order of
 /// their scheduled send times (restart-recovery sends overdue events in this
 /// order too).
+/// Rows leased by a worker that has not reported an outcome within
+/// [`CLAIM_LEASE_MS`] are included again, so a send interrupted by a crash is
+/// retried after the server comes back up.
 pub async fn list_due(now: i64) -> DataResult<Vec<DbDelayedEvent>> {
     delayed_events::table
         .filter(delayed_events::finalized_at.is_null())
         .filter(delayed_events::send_at.le(now))
+        .filter(
+            delayed_events::claimed_at
+                .is_null()
+                .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
+        )
         .order(delayed_events::send_at.asc())
         .load::<DbDelayedEvent>(&mut connect().await?)
         .await
@@ -172,7 +201,15 @@ pub async fn restart(
         delayed_events::table
             .filter(delayed_events::user_id.eq(user_id))
             .filter(delayed_events::delay_id.eq(delay_id))
-            .filter(delayed_events::finalized_at.is_null()),
+            .filter(delayed_events::finalized_at.is_null())
+            // A worker already sending this event cannot be called back, so
+            // the restart must fail rather than report a new send time the
+            // event will not honour.
+            .filter(
+                delayed_events::claimed_at
+                    .is_null()
+                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
+            ),
     )
     .set((
         delayed_events::running_since.eq(now),
@@ -184,19 +221,61 @@ pub async fn restart(
     .map_err(Into::into)
 }
 
-/// Atomically claim a scheduled delayed event for sending by finalizing it.
-/// Returns the claimed row, or `None` if it was already finalized (sent,
-/// cancelled, errored, or claimed by a concurrent worker).
+/// How long a send lease is honoured before another worker may reclaim the
+/// row. Only reached when the process died mid-send, so it just has to be
+/// comfortably longer than a send takes.
+pub const CLAIM_LEASE_MS: i64 = 5 * 60 * 1000;
+
+/// Atomically lease a delayed event for sending.
 ///
-/// After a successful claim the caller must record the outcome with
-/// [`set_sent`] or [`set_error`], or roll the claim back with [`unclaim`].
+/// Returns the claimed row, or `None` if it was finalized (sent, cancelled or
+/// errored) or is already leased by a live worker.
+///
+/// The lease is recorded in `claimed_at`, leaving `finalized_at` null, so a
+/// row whose worker died is still scheduled rather than looking finalized with
+/// no outcome. After a successful claim the caller records the outcome with
+/// [`set_sent`] or [`set_error`], or releases the lease with [`unclaim`].
+///
+/// This is the manual `send` action's claim, which deliberately ignores
+/// `send_at` — sending ahead of the scheduled time is the point. The scheduler
+/// uses [`claim_due`] instead.
 pub async fn claim(row_id: i64, now: i64) -> DataResult<Option<DbDelayedEvent>> {
     diesel::update(
         delayed_events::table
             .filter(delayed_events::id.eq(row_id))
-            .filter(delayed_events::finalized_at.is_null()),
+            .filter(delayed_events::finalized_at.is_null())
+            .filter(
+                delayed_events::claimed_at
+                    .is_null()
+                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
+            ),
     )
-    .set(delayed_events::finalized_at.eq(now))
+    .set(delayed_events::claimed_at.eq(now))
+    .get_result::<DbDelayedEvent>(&mut connect().await?)
+    .await
+    .optional()
+    .map_err(Into::into)
+}
+
+/// [`claim`] for the scheduler, additionally requiring the event to still be
+/// due at `now`.
+///
+/// That predicate is what lets a `restart` arriving after `list_due` win the
+/// race: it pushes `send_at` into the future, so the scheduler's now-stale
+/// entry no longer claims and the event is not sent early.
+pub async fn claim_due(row_id: i64, now: i64) -> DataResult<Option<DbDelayedEvent>> {
+    diesel::update(
+        delayed_events::table
+            .filter(delayed_events::id.eq(row_id))
+            .filter(delayed_events::finalized_at.is_null())
+            .filter(delayed_events::send_at.le(now))
+            .filter(
+                delayed_events::claimed_at
+                    .is_null()
+                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
+            ),
+    )
+    .set(delayed_events::claimed_at.eq(now))
     .get_result::<DbDelayedEvent>(&mut connect().await?)
     .await
     .optional()
@@ -204,28 +283,35 @@ pub async fn claim(row_id: i64, now: i64) -> DataResult<Option<DbDelayedEvent>> 
 }
 
 /// Record the event id of a claimed delayed event that was sent successfully.
-pub async fn set_sent(row_id: i64, event_id: &EventId) -> DataResult<()> {
+pub async fn set_sent(row_id: i64, event_id: &EventId, now: i64) -> DataResult<()> {
     diesel::update(delayed_events::table.filter(delayed_events::id.eq(row_id)))
-        .set(delayed_events::event_id.eq(event_id))
+        .set((
+            delayed_events::event_id.eq(event_id),
+            delayed_events::finalized_at.eq(now),
+        ))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
 }
 
 /// Record the error of a claimed delayed event that failed to send.
-pub async fn set_error(row_id: i64, error: &JsonValue) -> DataResult<()> {
+pub async fn set_error(row_id: i64, error: &JsonValue, now: i64) -> DataResult<()> {
     diesel::update(delayed_events::table.filter(delayed_events::id.eq(row_id)))
-        .set(delayed_events::error.eq(error))
+        .set((
+            delayed_events::error.eq(error),
+            delayed_events::finalized_at.eq(now),
+        ))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
 }
 
-/// Roll back a claim so the delayed event stays scheduled (used when a manual
-/// `send` action fails; the MSC requires the event to remain scheduled then).
+/// Release a lease so the delayed event stays scheduled (used when a manual
+/// `send` action fails before the event could reach the timeline; the MSC
+/// requires the event to remain scheduled then).
 pub async fn unclaim(row_id: i64) -> DataResult<()> {
     diesel::update(delayed_events::table.filter(delayed_events::id.eq(row_id)))
-        .set(delayed_events::finalized_at.eq(None::<i64>))
+        .set(delayed_events::claimed_at.eq(None::<i64>))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
@@ -239,7 +325,15 @@ pub async fn cancel(user_id: &UserId, delay_id: &str, now: i64) -> DataResult<bo
         delayed_events::table
             .filter(delayed_events::user_id.eq(user_id))
             .filter(delayed_events::delay_id.eq(delay_id))
-            .filter(delayed_events::finalized_at.is_null()),
+            .filter(delayed_events::finalized_at.is_null())
+            // A row a worker is actively sending must not be cancelled out from
+            // under it, or the caller is told the event was cancelled while it
+            // is on its way into the room.
+            .filter(
+                delayed_events::claimed_at
+                    .is_null()
+                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
+            ),
     )
     .set(delayed_events::finalized_at.eq(now))
     .execute(&mut connect().await?)
