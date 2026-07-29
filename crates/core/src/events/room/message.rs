@@ -678,7 +678,7 @@ mod replacement_tests {
 
     use super::{
         MessageType, Relation, ReplacementMetadata, RoomMessageEventContent,
-        TextMessageEventContent,
+        RoomMessageEventContentWithoutRelation, TextMessageEventContent,
     };
     use crate::owned_event_id;
 
@@ -744,6 +744,41 @@ mod replacement_tests {
                 .map(|formatted| formatted.body.as_str()),
             Some("<strong>This is an edited message.</strong>")
         );
+    }
+
+    #[test]
+    fn plain_notice_and_emote_replacements_do_not_gain_formatted_bodies() {
+        for content in [
+            RoomMessageEventContent::notice_plain("Edited notice"),
+            RoomMessageEventContent::emote_plain("Edited emote"),
+        ] {
+            let content = content.make_replacement(ReplacementMetadata::new(
+                owned_event_id!("$original:example.org"),
+                None,
+            ));
+            let json = serde_json::to_value(content).unwrap();
+
+            assert!(json.get("format").is_none());
+            assert!(json.get("formatted_body").is_none());
+        }
+    }
+
+    #[test]
+    fn without_relation_plain_replacements_do_not_gain_formatted_bodies() {
+        for content in [
+            RoomMessageEventContentWithoutRelation::text_plain("Edited text"),
+            RoomMessageEventContentWithoutRelation::notice_plain("Edited notice"),
+            RoomMessageEventContentWithoutRelation::emote_plain("Edited emote"),
+        ] {
+            let content = content.make_replacement(ReplacementMetadata::new(
+                owned_event_id!("$original:example.org"),
+                None,
+            ));
+            let json = serde_json::to_value(content).unwrap();
+
+            assert!(json.get("format").is_none());
+            assert!(json.get("formatted_body").is_none());
+        }
     }
 }
 
