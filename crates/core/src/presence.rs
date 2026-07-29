@@ -118,11 +118,9 @@ impl PresenceUpdate {
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug, Default)]
 pub struct PresenceRecipientListUpdates {
     /// Users added to the recipient list.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add: Vec<OwnedUserId>,
 
     /// Users removed from the recipient list.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete: Vec<OwnedUserId>,
 }
 
@@ -198,5 +196,19 @@ mod msc4495_tests {
         assert!(json.get("recipients").is_none());
         assert!(json.get("stream_id").is_none());
         assert!(json.get("prev_id").is_none());
+    }
+
+    #[test]
+    fn recipient_delta_keeps_both_update_arrays() {
+        let recipients =
+            PresenceRecipientListUpdates::new(vec![owned_user_id!("@bob:example.org")], Vec::new());
+
+        assert_eq!(
+            serde_json::to_value(recipients).unwrap(),
+            json!({
+                "add": ["@bob:example.org"],
+                "delete": []
+            })
+        );
     }
 }
