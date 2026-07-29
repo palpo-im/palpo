@@ -52,16 +52,24 @@ pub fn start() {
             }
 
             let now = UnixMillis::now().get() as i64;
-            let sleep = match delayed_event::next_send_at().await {
-                Ok(Some(send_at)) => {
-                    Duration::from_millis(send_at.saturating_sub(now) as u64).min(MAX_IDLE)
-                }
-                Ok(None) => MAX_IDLE,
-                Err(error) => {
-                    tracing::warn!(?error, "failed to load next delayed event send time");
-                    MAX_IDLE
+            // Wake for whichever comes first: the next claimable event, or the
+            // expiry of a lease we may then have to reclaim.
+            let next_wake = match (
+                delayed_event::next_send_at(now).await,
+                delayed_event::next_lease_expiry(now).await,
+            ) {
+                (Ok(send_at), Ok(expiry)) => match (send_at, expiry) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                },
+                (Err(error), _) | (_, Err(error)) => {
+                    tracing::warn!(?error, "failed to load next delayed event wake-up time");
+                    None
                 }
             };
+            let sleep = next_wake
+                .map(|at| Duration::from_millis(at.saturating_sub(now) as u64).min(MAX_IDLE))
+                .unwrap_or(MAX_IDLE);
             tokio::select! {
                 _ = wakeup().notified() => {},
                 _ = tokio::time::sleep(sleep) => {},
@@ -92,8 +100,7 @@ async fn process_due_events() -> AppResult<()> {
             Ok(event_id) => {
                 delayed_event::set_sent(claimed.id, &event_id, now).await?;
             }
-            Err(failure) => {
-                let error = failure.into_error();
+            Err(error) => {
                 tracing::debug!(
                     delay_id = %claimed.delay_id,
                     room_id = %claimed.room_id,
@@ -109,63 +116,52 @@ async fn process_due_events() -> AppResult<()> {
     Ok(())
 }
 
-/// Why a delayed event failed to send, split by whether a PDU can already
-/// exist in the room.
-enum SendFailure {
-    /// Refused before anything was written. Retrying is safe.
-    Rejected(AppError),
-    /// Failed at or after `build_and_append_pdu`, which persists the event
-    /// before its later push and federation steps. A retry could duplicate it.
-    Appending(AppError),
-}
-
-impl SendFailure {
-    fn into_error(self) -> AppError {
-        match self {
-            Self::Rejected(e) | Self::Appending(e) => e,
-        }
-    }
-}
-
 /// Build and append the PDU for a claimed delayed event through the normal
 /// event authorization and federation paths.
-async fn send_delayed_pdu(event: &DbDelayedEvent) -> Result<OwnedEventId, SendFailure> {
+///
+/// A send that is interrupted after the append but before the outcome is
+/// recorded leaves a row that the lease sweep later reclaims. Appending again
+/// would duplicate the event, so this first resolves the transaction id the
+/// same way `/send` does: the mapping is written right after the append, so a
+/// hit means the event already reached the room and the caller only has to
+/// record it. The remaining window -- a crash between the append and that
+/// mapping -- is the one palpo's ordinary `/send` idempotency already has.
+async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
+    if let Some(event_id) = crate::transaction_id::get_event_id(
+        &event.txn_id,
+        &event.user_id,
+        event.device_id.as_deref(),
+        Some(&event.room_id),
+    )
+    .await?
+    {
+        return Ok(event_id);
+    }
+
     let event_type: TimelineEventType = event.event_type.clone().into();
     if let Some(state_key) = &event.state_key {
         let state_event_type: StateEventType = event.event_type.clone().into();
-        let content = serde_json::from_value(event.content.clone())
-            .map_err(|e| SendFailure::Rejected(AppError::from(e)))?;
         crate::state::allowed_to_send_state_event(
             &event.room_id,
             &state_event_type,
             state_key,
-            &content,
+            &serde_json::from_value(event.content.clone())?,
         )
-        .await
-        .map_err(SendFailure::Rejected)?;
+        .await?;
     }
 
     let mut unsigned = BTreeMap::new();
     unsigned.insert(
         "org.matrix.msc4140.delay_id".to_owned(),
-        to_raw_value(&event.delay_id).map_err(|e| SendFailure::Rejected(AppError::from(e)))?,
+        to_raw_value(&event.delay_id)?,
     );
-    unsigned.insert(
-        "transaction_id".to_owned(),
-        to_raw_value(&event.txn_id).map_err(|e| SendFailure::Rejected(AppError::from(e)))?,
-    );
-    let content =
-        to_raw_value(&event.content).map_err(|e| SendFailure::Rejected(AppError::from(e)))?;
-    let room_version = crate::room::get_version(&event.room_id)
-        .await
-        .map_err(SendFailure::Rejected)?;
+    unsigned.insert("transaction_id".to_owned(), to_raw_value(&event.txn_id)?);
 
-    // Everything past this point may have written the event to the timeline.
     let state_lock = room::lock_state(&event.room_id).await;
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type,
-            content,
+            content: to_raw_value(&event.content)?,
             unsigned,
             state_key: event.state_key.clone(),
             redacts: None,
@@ -173,11 +169,10 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> Result<OwnedEventId, SendFa
         },
         &event.user_id,
         &event.room_id,
-        &room_version,
+        &crate::room::get_version(&event.room_id).await?,
         &state_lock,
     )
-    .await
-    .map_err(SendFailure::Appending)?
+    .await?
     .pdu
     .event_id;
     drop(state_lock);
@@ -244,21 +239,6 @@ pub async fn schedule(
         return Ok(existing.delay_id);
     }
 
-    let scheduled = delayed_event::count_scheduled(user_id).await?;
-    if scheduled >= conf.delayed_events.max_scheduled as i64 {
-        let retry_after = delayed_event::next_send_at_of_user(user_id)
-            .await?
-            .map(|send_at| {
-                let now = UnixMillis::now().get() as i64;
-                RetryAfter::Delay(Duration::from_millis(send_at.saturating_sub(now) as u64))
-            });
-        return Err(MatrixError::limit_exceeded(
-            "The maximum number of delayed events has been reached.",
-            retry_after,
-        )
-        .into());
-    }
-
     let now = UnixMillis::now().get() as i64;
     let new = NewDbDelayedEvent {
         delay_id: utils::random_string(18),
@@ -279,9 +259,28 @@ pub async fn schedule(
         send_at: now + delay_ms as i64,
         created_at: now,
     };
-    let row = delayed_event::create(new).await?;
-    wakeup().notify_one();
-    Ok(row.delay_id)
+    // The limit is enforced inside the same transaction as the insert, so
+    // concurrent requests cannot each observe a count below it and all succeed.
+    match delayed_event::create(new, conf.delayed_events.max_scheduled as i64).await? {
+        delayed_event::Scheduled::Created(row) => {
+            wakeup().notify_one();
+            Ok(row.delay_id)
+        }
+        // A concurrent retry of this same transaction already scheduled it.
+        delayed_event::Scheduled::AlreadyScheduled(row) => Ok(row.delay_id),
+        delayed_event::Scheduled::LimitReached => {
+            let retry_after = delayed_event::next_send_at_of_user(user_id)
+                .await?
+                .map(|send_at| {
+                    RetryAfter::Delay(Duration::from_millis(send_at.saturating_sub(now) as u64))
+                });
+            Err(MatrixError::limit_exceeded(
+                "The maximum number of delayed events has been reached.",
+                retry_after,
+            )
+            .into())
+        }
+    }
 }
 
 /// Apply a management action (`restart`/`send`/`cancel`) to a delayed event.
@@ -332,23 +331,14 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                     delayed_event::set_sent(claimed.id, &event_id, now).await?;
                     Ok(())
                 }
-                // Rejected before anything was written, so the MSC's rule that
-                // the event stays scheduled applies: release the lease and
-                // report the error to the client.
-                Err(SendFailure::Rejected(error)) => {
+                // The MSC requires the event to stay scheduled so the client
+                // can retry until the scheduled send time. Releasing the lease
+                // is safe even for an error raised after the append, because
+                // `send_delayed_pdu` resolves the transaction id first and
+                // will not append a second time.
+                Err(error) => {
                     delayed_event::unclaim(claimed.id).await?;
                     Err(error)
-                }
-                // The append may already have reached the timeline, so the row
-                // must not become sendable again or a retry would duplicate
-                // the event. Finalize it with the error instead.
-                Err(SendFailure::Appending(error)) => {
-                    let body = error_body(error);
-                    delayed_event::set_error(claimed.id, &body, now).await?;
-                    Err(MatrixError::unknown(
-                        "the delayed event could not be completed and is no longer scheduled",
-                    )
-                    .into())
                 }
             }
         }

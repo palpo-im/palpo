@@ -7,7 +7,7 @@
 //! management requests.
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
@@ -56,33 +56,83 @@ pub struct NewDbDelayedEvent {
     pub created_at: i64,
 }
 
-/// Store a newly scheduled delayed event and return the stored row.
+/// Outcome of trying to schedule a delayed event.
+pub enum Scheduled {
+    /// The event was stored.
+    Created(DbDelayedEvent),
+    /// A concurrent retry of the same transaction won the race; this is its
+    /// row.
+    AlreadyScheduled(DbDelayedEvent),
+    /// The user is already at `max_scheduled`.
+    LimitReached,
+}
+
+/// Store a newly scheduled delayed event, enforcing the per-user limit.
 ///
-/// Two concurrent retries of the same request both pass the caller's
-/// [`get_by_txn_id`] lookup and race to insert. The unique transaction index
-/// lets exactly one win; the loser resolves to the winner's row instead of
-/// surfacing a database error, so scheduling stays idempotent under
-/// concurrency rather than returning a 500.
-pub async fn create(new: NewDbDelayedEvent) -> DataResult<DbDelayedEvent> {
+/// The count and the insert run under a transaction-scoped advisory lock keyed
+/// on the user. Checking the count in the caller and inserting here separately
+/// let concurrent requests with distinct transaction ids all observe a count
+/// below the limit and all succeed, so a limit of 100 could be pushed well
+/// past it; the unique transaction index does not serialize distinct
+/// transactions.
+///
+/// Two concurrent retries of the *same* transaction are a different race: both
+/// pass the caller's [`get_by_txn_id`] lookup, and the unique index lets
+/// exactly one insert win. The loser resolves to the winner's row instead of
+/// surfacing a database error, so scheduling stays idempotent rather than
+/// returning a 500.
+pub async fn create(new: NewDbDelayedEvent, max_scheduled: i64) -> DataResult<Scheduled> {
     let user_id = new.user_id.clone();
     let device_id = new.device_id.clone();
     let txn_id = new.txn_id.clone();
 
-    match diesel::insert_into(delayed_events::table)
-        .values(&new)
-        .get_result::<DbDelayedEvent>(&mut connect().await?)
-        .await
-    {
-        Ok(row) => Ok(row),
-        Err(diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::UniqueViolation,
-            _,
-        )) => get_by_txn_id(&user_id, device_id.as_deref(), &txn_id)
-            .await?
-            .ok_or(diesel::result::Error::NotFound)
-            .map_err(Into::into),
-        Err(e) => Err(e.into()),
-    }
+    let mut conn = connect().await?;
+    conn.transaction::<_, diesel::result::Error, _>(async |conn| {
+        // Serialize scheduling per user for the rest of this transaction;
+        // released automatically on commit or rollback.
+        diesel::sql_query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+            .execute(&mut *conn)
+            .await?;
+
+        let scheduled: i64 = delayed_events::table
+            .filter(delayed_events::user_id.eq(&user_id))
+            .filter(delayed_events::finalized_at.is_null())
+            .count()
+            .get_result(&mut *conn)
+            .await?;
+        if scheduled >= max_scheduled {
+            return Ok(Scheduled::LimitReached);
+        }
+
+        match diesel::insert_into(delayed_events::table)
+            .values(&new)
+            .get_result::<DbDelayedEvent>(&mut *conn)
+            .await
+        {
+            Ok(row) => Ok(Scheduled::Created(row)),
+            Err(diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _,
+            )) => {
+                let mut query = delayed_events::table
+                    .filter(delayed_events::user_id.eq(&user_id))
+                    .filter(delayed_events::txn_id.eq(&txn_id))
+                    .into_boxed();
+                query = match device_id.as_deref() {
+                    Some(device_id) => query.filter(delayed_events::device_id.eq(device_id)),
+                    None => query.filter(delayed_events::device_id.is_null()),
+                };
+                query
+                    .first::<DbDelayedEvent>(&mut *conn)
+                    .await
+                    .map(Scheduled::AlreadyScheduled)
+            }
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    .map_err(Into::into)
 }
 
 /// Look up a delayed event previously scheduled with the same transaction id
@@ -159,12 +209,33 @@ pub async fn next_send_at_of_user(user_id: &UserId) -> DataResult<Option<i64>> {
 
 /// The soonest scheduled send time across all users, used by the scheduler to
 /// compute how long to sleep.
-pub async fn next_send_at() -> DataResult<Option<i64>> {
+/// Rows under a live lease are skipped, since the scheduler cannot act on them
+/// until the lease expires. Including their already-past `send_at` would make
+/// it compute a zero sleep and spin on the database for the whole lease.
+pub async fn next_send_at(now: i64) -> DataResult<Option<i64>> {
     delayed_events::table
         .filter(delayed_events::finalized_at.is_null())
+        .filter(
+            delayed_events::claimed_at
+                .is_null()
+                .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
+        )
         .select(diesel::dsl::min(delayed_events::send_at))
         .get_result::<Option<i64>>(&mut connect().await?)
         .await
+        .map_err(Into::into)
+}
+
+/// When the earliest live lease expires, so the scheduler can wake up to
+/// reclaim it rather than sleeping through it.
+pub async fn next_lease_expiry(now: i64) -> DataResult<Option<i64>> {
+    delayed_events::table
+        .filter(delayed_events::finalized_at.is_null())
+        .filter(delayed_events::claimed_at.ge(now - CLAIM_LEASE_MS))
+        .select(diesel::dsl::min(delayed_events::claimed_at))
+        .get_result::<Option<i64>>(&mut connect().await?)
+        .await
+        .map(|claimed| claimed.map(|c| c + CLAIM_LEASE_MS))
         .map_err(Into::into)
 }
 
