@@ -2,6 +2,8 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::client::filter::RoomEventFilter;
+#[cfg(feature = "unstable-msc4354")]
+use crate::events::sticky::StickyDurationMs;
 use crate::events::{AnyStateEvent, AnyTimelineEvent, MessageLikeEventType};
 use crate::serde::RawJson;
 use crate::{Direction, OwnedEventId, OwnedRoomId, OwnedTransactionId, UnixMillis};
@@ -158,6 +160,17 @@ pub struct CreateMessageWithTxnReqArgs {
     #[salvo(parameter(parameter_in = Query))]
     #[serde(skip_serializing_if = "Option::is_none", rename = "ts")]
     pub timestamp: Option<UnixMillis>,
+
+    /// The duration for which the event should receive sticky delivery guarantees.
+    #[cfg(feature = "unstable-msc4354")]
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        deserialize_with = "crate::events::sticky::deserialize_query_duration",
+        skip_serializing_if = "Option::is_none",
+        rename = "org.matrix.msc4354.sticky_duration_ms"
+    )]
+    pub sticky_duration_ms: Option<StickyDurationMs>,
 }
 
 /// Request type for the `create_message_event` endpoint.
@@ -186,6 +199,17 @@ pub struct CreateMessageReqArgs {
     #[salvo(parameter(parameter_in = Query))]
     #[serde(skip_serializing_if = "Option::is_none", rename = "ts")]
     pub timestamp: Option<UnixMillis>,
+
+    /// The duration for which the event should receive sticky delivery guarantees.
+    #[cfg(feature = "unstable-msc4354")]
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        deserialize_with = "crate::events::sticky::deserialize_query_duration",
+        skip_serializing_if = "Option::is_none",
+        rename = "org.matrix.msc4354.sticky_duration_ms"
+    )]
+    pub sticky_duration_ms: Option<StickyDurationMs>,
 }
 
 /// Response type for the `create_message_event` endpoint.
@@ -198,5 +222,24 @@ impl SendMessageResBody {
     /// Creates a new `Response` with the given event id.
     pub fn new(event_id: OwnedEventId) -> Self {
         Self { event_id }
+    }
+}
+
+#[cfg(all(test, feature = "unstable-msc4354"))]
+mod sticky_tests {
+    use super::CreateMessageWithTxnReqArgs;
+
+    #[test]
+    fn sticky_duration_uses_msc4354_query_name() {
+        let args: CreateMessageWithTxnReqArgs = serde_html_form::from_str(
+            "room_id=%21room%3Aexample.org&event_type=m.room.message&txn_id=0000&\
+             org.matrix.msc4354.sticky_duration_ms=123456",
+        )
+        .unwrap();
+
+        assert_eq!(
+            args.sticky_duration_ms.map(|duration| duration.get()),
+            Some(123_456)
+        );
     }
 }
