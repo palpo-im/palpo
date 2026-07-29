@@ -5,14 +5,15 @@ use serde_json::json;
 
 use super::{
     servers_to_check_signatures, sign_json, to_canonical_json_string_for_signing,
-    verify_canonical_json_bytes, verify_event,
+    verify_canonical_json_bytes, verify_event, verify_policy_server_signature,
 };
+use crate::events::room::policy::RoomPolicyEventContent;
 use crate::room_version_rules::{RoomVersionRules, SignaturesRules};
-use crate::serde::{Base64, CanonicalJsonValue};
+use crate::serde::{Base64, CanonicalJsonObject, CanonicalJsonValue};
 use crate::signatures::{
     Ed25519KeyPair, Error, KeyPair, PublicKeyMap, PublicKeySet, VerificationError, Verified,
 };
-use crate::{ServerSigningKeyId, SigningKeyAlgorithm, server_name};
+use crate::{ServerSigningKeyId, SigningKeyAlgorithm, owned_server_name, server_name};
 
 fn generate_key_pair(name: &str) -> Ed25519KeyPair {
     let key_content = Ed25519KeyPair::generate().unwrap();
@@ -785,4 +786,105 @@ fn verify_canonical_json_bytes_wrong_key() {
     )
     .unwrap_err();
     assert_matches!(err, Error::Verification(VerificationError::Signature(_)));
+}
+
+fn policy_signature_test_event() -> CanonicalJsonObject {
+    serde_json::from_str(
+        r#"{
+            "auth_events": [],
+            "content": {},
+            "depth": 3,
+            "hashes": {
+                "sha256": "5jM4wQpv6lnBo7CLIghJuHdW+s2CMBJPUOGOC89ncos"
+            },
+            "origin": "domain",
+            "origin_server_ts": 1000000,
+            "prev_events": [],
+            "room_id": "!x:domain",
+            "sender": "@name:domain-sender",
+            "type": "X",
+            "unsigned": {
+                "age_ts": 1000000
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn verify_policy_server_signature_succeeds_with_policy_server_signature() {
+    let key_pair = generate_key_pair("policy_server");
+    let mut signed_event = policy_signature_test_event();
+    sign_json("domain-policy-server", &key_pair, &mut signed_event).unwrap();
+
+    let room_policy = RoomPolicyEventContent::new(
+        owned_server_name!("domain-policy-server"),
+        Base64::new(key_pair.public_key().to_vec()),
+    );
+
+    assert_matches!(
+        verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6),
+        Ok(())
+    );
+}
+
+#[test]
+fn verify_policy_server_signature_fails_with_invalid_policy_server_signature() {
+    let signing_key_pair = generate_key_pair("policy_server");
+    let configured_key_pair = generate_key_pair("policy_server");
+    let mut signed_event = policy_signature_test_event();
+    sign_json("domain-policy-server", &signing_key_pair, &mut signed_event).unwrap();
+
+    let room_policy = RoomPolicyEventContent::new(
+        owned_server_name!("domain-policy-server"),
+        Base64::new(configured_key_pair.public_key().to_vec()),
+    );
+
+    assert_matches!(
+        verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6),
+        Err(Error::Verification(VerificationError::Signature(_)))
+    );
+}
+
+#[test]
+fn verify_policy_server_signature_fails_when_signature_is_missing() {
+    let key_pair = generate_key_pair("policy_server");
+    let sender_key_pair = generate_key_pair("1");
+    let mut signed_event = policy_signature_test_event();
+    sign_json("domain-sender", &sender_key_pair, &mut signed_event).unwrap();
+    let room_policy = RoomPolicyEventContent::new(
+        owned_server_name!("domain-policy-server"),
+        Base64::new(key_pair.public_key().to_vec()),
+    );
+
+    let err = verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6)
+        .unwrap_err();
+    assert_matches!(
+        err,
+        Error::Verification(VerificationError::NoSignaturesForEntity(entity))
+    );
+    assert_eq!(entity, "domain-policy-server");
+}
+
+#[test]
+fn verify_policy_server_signature_allows_policy_configuration_event() {
+    let key_pair = generate_key_pair("policy_server");
+    let mut event = policy_signature_test_event();
+    event.insert(
+        "type".to_owned(),
+        CanonicalJsonValue::String("m.room.policy".to_owned()),
+    );
+    event.insert(
+        "state_key".to_owned(),
+        CanonicalJsonValue::String(String::new()),
+    );
+    let room_policy = RoomPolicyEventContent::new(
+        owned_server_name!("domain-policy-server"),
+        Base64::new(key_pair.public_key().to_vec()),
+    );
+
+    assert_matches!(
+        verify_policy_server_signature(&room_policy, &event, &RoomVersionRules::V6),
+        Ok(())
+    );
 }
