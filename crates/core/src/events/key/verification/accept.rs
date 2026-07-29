@@ -118,6 +118,16 @@ pub struct SasV1Content {
     /// device's ephemeral public key (encoded as unpadded base64) and the
     /// canonical JSON representation of the `m.key.verification.start` message.
     pub commitment: Base64,
+
+    /// Fields not defined for this method.
+    ///
+    /// Palpo forwards these events rather than consuming them, so anything it does not model has
+    /// to survive the round-trip. In particular clients written against the older spec example
+    /// still send a `method` of `m.sas.v1`, which would otherwise be dropped on the way to the
+    /// other device and break verification for them.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub extra: BTreeMap<String, JsonValue>,
 }
 
 #[cfg(test)]
@@ -161,6 +171,27 @@ mod tests {
         });
 
         let content: KeyVerificationAcceptEventContent = from_json_value(json.clone()).unwrap();
+
+        assert!(matches!(&content.method, AcceptMethod::SasV1(_)));
+        assert_eq!(to_json_value(content).unwrap(), json);
+    }
+
+    /// Clients written against the older spec example still send `method`. Palpo forwards these
+    /// events to the other device, so the field has to come back out unchanged.
+    #[test]
+    fn legacy_sas_v1_method_survives_the_round_trip() {
+        let json = json!({
+            "transaction_id": "456",
+            "method": "m.sas.v1",
+            "commitment": "aGVsbG8",
+            "key_agreement_protocol": "curve25519",
+            "hash": "sha256",
+            "message_authentication_code": "hkdf-hmac-sha256.v2",
+            "short_authentication_string": ["decimal"]
+        });
+
+        let content: ToDeviceKeyVerificationAcceptEventContent =
+            from_json_value(json.clone()).unwrap();
 
         assert!(matches!(&content.method, AcceptMethod::SasV1(_)));
         assert_eq!(to_json_value(content).unwrap(), json);
