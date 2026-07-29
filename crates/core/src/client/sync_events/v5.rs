@@ -666,9 +666,15 @@ pub struct ProfilesConfig {
 
 #[cfg(feature = "unstable-msc4262")]
 impl ProfilesConfig {
-    /// Whether the extension configuration is disabled by omission.
+    /// Whether the extension configuration carries nothing at all.
+    ///
+    /// Every field is sticky and independently meaningful, so an update that only narrows
+    /// `fields` or the room selectors is not empty even without `enabled`.
     pub fn is_empty(&self) -> bool {
         self.enabled.is_none()
+            && self.lists.is_none()
+            && self.rooms.is_none()
+            && self.fields.is_none()
     }
 }
 
@@ -996,8 +1002,11 @@ pub struct TypingConfig {
 
 impl TypingConfig {
     /// Whether all fields are empty or `None`.
+    ///
+    /// Every field is sticky and independently meaningful, so a selector-only update — one that
+    /// changes `lists` or `rooms` without repeating `enabled` — is not empty.
     pub fn is_empty(&self) -> bool {
-        self.enabled.is_none()
+        self.enabled.is_none() && self.lists.is_none() && self.rooms.is_none()
     }
 }
 
@@ -1030,9 +1039,9 @@ impl Typing {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{E2ee, Extensions, SyncEventsResBody, Typing};
+    use super::{E2ee, Extensions, ExtensionsConfig, SyncEventsResBody, Typing, TypingConfig};
     #[cfg(feature = "unstable-msc4262")]
-    use super::{ExtensionRoomConfig, ExtensionsConfig, Profiles, ProfilesConfig};
+    use super::{ExtensionRoomConfig, Profiles, ProfilesConfig};
     use crate::events::typing::{SyncTypingEvent, TypingEventContent};
     #[cfg(feature = "unstable-msc4262")]
     use crate::profile::{ProfileFieldName, UserProfileUpdate};
@@ -1183,6 +1192,48 @@ mod tests {
                 }
             })
         );
+    }
+
+    /// Extension params are sticky, so an update that only changes selectors must still be sent.
+    #[test]
+    fn selector_only_typing_config_is_not_empty() {
+        let extensions = ExtensionsConfig {
+            typing: TypingConfig {
+                enabled: None,
+                lists: Some(vec!["all".to_owned()]),
+                rooms: None,
+            },
+            ..Default::default()
+        };
+
+        assert!(!extensions.typing.is_empty());
+        assert_eq!(
+            serde_json::to_value(extensions).unwrap(),
+            serde_json::json!({ "typing": { "lists": ["all"] } })
+        );
+    }
+
+    #[test]
+    fn default_typing_config_is_omitted() {
+        assert!(TypingConfig::default().is_empty());
+        assert_eq!(
+            serde_json::to_value(ExtensionsConfig::default()).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn selector_only_profiles_config_is_not_empty() {
+        let config = ProfilesConfig {
+            enabled: None,
+            lists: None,
+            rooms: None,
+            fields: Some(vec![ProfileFieldName::DisplayName]),
+        };
+
+        assert!(!config.is_empty());
+        assert!(ProfilesConfig::default().is_empty());
     }
 
     #[cfg(feature = "unstable-msc4262")]
