@@ -207,7 +207,7 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 /// unstable features in their stable releases
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
-    json_ok(supported_versions_body())
+    json_ok(supported_versions_body(config::get().delayed_events.enable))
 }
 
 /// Client-Server specification versions whose behavior has been reviewed for
@@ -220,7 +220,11 @@ const SUPPORTED_MATRIX_VERSIONS: &[&str] = &[
     "v1.10", "v1.11", "v1.12",
 ];
 
-fn supported_versions_body() -> VersionsResBody {
+/// Builds the `/versions` body.
+///
+/// `delayed_events` is passed in rather than read from the global config so this stays a pure
+/// function that unit tests can drive both ways.
+fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
     let mut unstable_features = BTreeMap::from_iter([
         ("org.matrix.e2e_cross_signing".to_owned(), true),
         ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
@@ -240,7 +244,7 @@ fn supported_versions_body() -> VersionsResBody {
         ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
     ]);
 
-    if config::get().delayed_events.enable {
+    if delayed_events {
         // delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140)
         unstable_features.insert("org.matrix.msc4140".to_owned(), true);
     }
@@ -266,7 +270,7 @@ mod supported_versions_tests {
 
     #[test]
     fn advertised_versions_are_explicitly_reviewed() {
-        let body = supported_versions_body();
+        let body = supported_versions_body(false);
 
         assert_eq!(
             body.versions,
@@ -280,7 +284,7 @@ mod supported_versions_tests {
 
     #[test]
     fn includes_msc4383_server_metadata_and_feature_flag() {
-        let body = supported_versions_body();
+        let body = supported_versions_body(false);
         let server = body.server.as_ref().unwrap();
 
         assert_eq!(body.unstable_features.get("net.zemos.msc4383"), Some(&true));
@@ -289,6 +293,23 @@ mod supported_versions_tests {
         assert_eq!(
             to_json_value(server).unwrap(),
             json!({ "name": "Palpo", "version": server.version })
+        );
+    }
+
+    /// MSC4140 is only advertised when delayed events are actually enabled.
+    #[test]
+    fn msc4140_flag_tracks_the_delayed_events_setting() {
+        assert_eq!(
+            supported_versions_body(false)
+                .unstable_features
+                .get("org.matrix.msc4140"),
+            None
+        );
+        assert_eq!(
+            supported_versions_body(true)
+                .unstable_features
+                .get("org.matrix.msc4140"),
+            Some(&true)
         );
     }
 }

@@ -445,8 +445,14 @@ impl PduEvent {
         }
     }
 
-    pub fn remove_transaction_id(&mut self) -> AppResult<()> {
+    /// Strips the `unsigned` fields that only the event's own sender may see.
+    ///
+    /// `transaction_id` is sender-only per the spec, and MSC4140 requires the same of a delayed
+    /// event's `delay_id`: it is included "if, and only if, the client being given the event is
+    /// authenticated as the event's sender".
+    pub fn remove_sender_only_unsigned(&mut self) -> AppResult<()> {
         self.unsigned.remove("transaction_id");
+        self.unsigned.remove("org.matrix.msc4140.delay_id");
         Ok(())
     }
 

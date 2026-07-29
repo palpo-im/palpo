@@ -1022,9 +1022,10 @@ async fn claim_queued_requests(
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
 ///
-/// Strips internal fields (`event_sn`, `transaction_id`) and conditionally removes
-/// `event_id` based on the room version. Room versions V1/V2 require `event_id` in
-/// the federation format; V3+ derive it from the event hash.
+/// Strips internal and sender-only fields (`event_sn`, `transaction_id`, MSC4140's
+/// `delay_id`) and conditionally removes `event_id` based on the room version. Room
+/// versions V1/V2 require `event_id` in the federation format; V3+ derive it from the
+/// event hash.
 #[tracing::instrument]
 pub async fn convert_to_outgoing_federation_event(
     mut pdu_json: CanonicalJsonObject,
@@ -1034,6 +1035,9 @@ pub async fn convert_to_outgoing_federation_event(
         .and_then(|val| val.as_object_mut())
     {
         unsigned.remove("transaction_id");
+        // MSC4140: the delay_id is only ever shown to the event's own sender, so it must
+        // never cross a federation boundary.
+        unsigned.remove("org.matrix.msc4140.delay_id");
     }
 
     // Determine room version to decide whether to strip event_id.
