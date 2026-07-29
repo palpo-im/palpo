@@ -498,8 +498,14 @@ pub struct ExtensionsConfig {
     pub typing: TypingConfig,
 
     /// Configure the profile updates extension.
+    ///
+    /// Uses the unstable field name until MSC4262 is accepted.
     #[cfg(feature = "unstable-msc4262")]
-    #[serde(default, skip_serializing_if = "ProfilesConfig::is_empty")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4262.profiles",
+        skip_serializing_if = "ProfilesConfig::is_empty"
+    )]
     pub profiles: ProfilesConfig,
 
     /// Extensions may add further fields to the list.
@@ -548,11 +554,16 @@ pub struct Extensions {
     #[serde(default, skip_serializing_if = "Typing::is_empty")]
     pub typing: Typing,
 
-    /// Profile updates keyed by user ID.
+    /// Profile updates extension in response.
+    ///
+    /// Uses the unstable field name until MSC4262 is accepted.
     #[cfg(feature = "unstable-msc4262")]
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "users")]
-    #[salvo(schema(value_type = Object, additional_properties = true))]
-    pub profiles: BTreeMap<OwnedUserId, UserProfileUpdate>,
+    #[serde(
+        default,
+        rename = "org.matrix.msc4262.profiles",
+        skip_serializing_if = "Profiles::is_empty"
+    )]
+    pub profiles: Profiles,
 }
 
 impl Extensions {
@@ -651,10 +662,6 @@ pub struct ProfilesConfig {
     /// Profile fields to include. If omitted, all fields are included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<ProfileFieldName>>,
-
-    /// Whether an initial sync may include recent historical profile changes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_history: Option<bool>,
 }
 
 #[cfg(feature = "unstable-msc4262")]
@@ -662,6 +669,29 @@ impl ProfilesConfig {
     /// Whether the extension configuration is disabled by omission.
     pub fn is_empty(&self) -> bool {
         self.enabled.is_none()
+    }
+}
+
+/// Profile updates extension response data.
+///
+/// According to [MSC4262](https://github.com/matrix-org/matrix-spec-proposals/pull/4262).
+#[cfg(feature = "unstable-msc4262")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Profiles {
+    /// Profile updates keyed by user ID.
+    ///
+    /// A `None` value signals that the syncing user no longer shares a room with that user and
+    /// may stop tracking them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub users: BTreeMap<OwnedUserId, Option<UserProfileUpdate>>,
+}
+
+#[cfg(feature = "unstable-msc4262")]
+impl Profiles {
+    /// Whether the extension carries no profile updates.
+    pub fn is_empty(&self) -> bool {
+        self.users.is_empty()
     }
 }
 
@@ -1002,7 +1032,7 @@ mod tests {
 
     use super::{E2ee, Extensions, SyncEventsResBody, Typing};
     #[cfg(feature = "unstable-msc4262")]
-    use super::{ExtensionRoomConfig, ExtensionsConfig, ProfilesConfig};
+    use super::{ExtensionRoomConfig, ExtensionsConfig, Profiles, ProfilesConfig};
     use crate::events::typing::{SyncTypingEvent, TypingEventContent};
     #[cfg(feature = "unstable-msc4262")]
     use crate::profile::{ProfileFieldName, UserProfileUpdate};
@@ -1137,7 +1167,6 @@ mod tests {
                     ExtensionRoomConfig::Room(owned_room_id!("!room:example.org")),
                 ]),
                 fields: Some(vec![ProfileFieldName::DisplayName]),
-                include_history: Some(true),
             },
             ..Default::default()
         };
@@ -1146,12 +1175,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(extensions).unwrap(),
             serde_json::json!({
-                "profiles": {
+                "org.matrix.msc4262.profiles": {
                     "enabled": true,
                     "lists": ["all"],
                     "rooms": ["*", "!room:example.org"],
-                    "fields": ["displayname"],
-                    "include_history": true
+                    "fields": ["displayname"]
                 }
             })
         );
@@ -1159,15 +1187,24 @@ mod tests {
 
     #[cfg(feature = "unstable-msc4262")]
     #[test]
-    fn profile_extension_response_serializes_updates_as_users() {
+    fn profile_extension_response_uses_msc4262_shape() {
         let extensions = Extensions {
-            profiles: BTreeMap::from([(
-                owned_user_id!("@alice:example.org"),
-                UserProfileUpdate::from_iter([
-                    ("displayname".to_owned(), serde_json::json!("Alice")),
-                    ("avatar_url".to_owned(), serde_json::Value::Null),
+            profiles: Profiles {
+                users: BTreeMap::from([
+                    (
+                        owned_user_id!("@alice:example.org"),
+                        Some(UserProfileUpdate {
+                            updated: BTreeMap::from([
+                                ("displayname".to_owned(), serde_json::json!("Alice")),
+                                ("org.example.language".to_owned(), serde_json::Value::Null),
+                            ]),
+                            removed: vec!["avatar_url".to_owned()],
+                        }),
+                    ),
+                    // Alice's peer left every shared room.
+                    (owned_user_id!("@bob:remote.example.org"), None),
                 ]),
-            )]),
+            },
             ..Default::default()
         };
 
@@ -1176,13 +1213,39 @@ mod tests {
         assert_eq!(
             serde_json::to_value(extensions).unwrap(),
             serde_json::json!({
-                "users": {
-                    "@alice:example.org": {
-                        "avatar_url": null,
-                        "displayname": "Alice"
+                "org.matrix.msc4262.profiles": {
+                    "users": {
+                        "@alice:example.org": {
+                            "updated": {
+                                "displayname": "Alice",
+                                "org.example.language": null
+                            },
+                            "removed": ["avatar_url"]
+                        },
+                        "@bob:remote.example.org": null
                     }
                 }
             })
+        );
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_update_omits_absent_sections() {
+        let update =
+            UserProfileUpdate::from_iter([("displayname".to_owned(), serde_json::json!("Alice"))]);
+
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({ "updated": { "displayname": "Alice" } })
+        );
+
+        let mut update = UserProfileUpdate::new();
+        update.remove("avatar_url".to_owned());
+
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({ "removed": ["avatar_url"] })
         );
     }
 }
