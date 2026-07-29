@@ -640,22 +640,11 @@ impl MessageType {
     }
 
     fn make_replacement_body(&mut self) {
-        let empty_formatted_body = || FormattedBody::html(String::new());
-
         let (body, formatted) = {
             match self {
-                MessageType::Emote(m) => (
-                    &mut m.body,
-                    Some(m.formatted.get_or_insert_with(empty_formatted_body)),
-                ),
-                MessageType::Notice(m) => (
-                    &mut m.body,
-                    Some(m.formatted.get_or_insert_with(empty_formatted_body)),
-                ),
-                MessageType::Text(m) => (
-                    &mut m.body,
-                    Some(m.formatted.get_or_insert_with(empty_formatted_body)),
-                ),
+                MessageType::Emote(m) => (&mut m.body, m.formatted.as_mut()),
+                MessageType::Notice(m) => (&mut m.body, m.formatted.as_mut()),
+                MessageType::Text(m) => (&mut m.body, m.formatted.as_mut()),
                 MessageType::Audio(m) => (&mut m.body, None),
                 MessageType::File(m) => (&mut m.body, None),
                 MessageType::Image(m) => (&mut m.body, None),
@@ -679,6 +668,82 @@ impl MessageType {
 
             f.body = format!("* {}", f.body);
         }
+    }
+}
+
+#[cfg(test)]
+mod replacement_tests {
+    use assert_matches2::assert_let;
+    use serde_json::json;
+
+    use super::{
+        MessageType, Relation, ReplacementMetadata, RoomMessageEventContent,
+        TextMessageEventContent,
+    };
+    use crate::owned_event_id;
+
+    #[test]
+    fn plain_text_replacement_does_not_gain_formatted_body() {
+        let content =
+            RoomMessageEventContent::text_plain("This is an edited message.").make_replacement(
+                ReplacementMetadata::new(owned_event_id!("$original:example.org"), None),
+            );
+
+        assert_let!(
+            MessageType::Text(TextMessageEventContent {
+                body,
+                formatted,
+                ..
+            }) = &content.msgtype
+        );
+        assert_eq!(body, "* This is an edited message.");
+        assert!(formatted.is_none());
+
+        let json = serde_json::to_value(&content).unwrap();
+        assert_eq!(
+            json.get("body"),
+            Some(&json!("* This is an edited message."))
+        );
+        assert!(json.get("format").is_none());
+        assert!(json.get("formatted_body").is_none());
+
+        assert_let!(Some(Relation::Replacement(replacement)) = &content.relates_to);
+        assert_let!(MessageType::Text(new_content) = &replacement.new_content.msgtype);
+        assert_eq!(new_content.body, "This is an edited message.");
+        assert!(new_content.formatted.is_none());
+    }
+
+    #[test]
+    fn html_replacement_keeps_both_fallbacks() {
+        let content = RoomMessageEventContent::text_html(
+            "This is an edited message.",
+            "<strong>This is an edited message.</strong>",
+        )
+        .make_replacement(ReplacementMetadata::new(
+            owned_event_id!("$original:example.org"),
+            None,
+        ));
+
+        assert_let!(MessageType::Text(message) = &content.msgtype);
+        assert_eq!(message.body, "* This is an edited message.");
+        assert_eq!(
+            message
+                .formatted
+                .as_ref()
+                .map(|formatted| formatted.body.as_str()),
+            Some("* <strong>This is an edited message.</strong>")
+        );
+
+        assert_let!(Some(Relation::Replacement(replacement)) = &content.relates_to);
+        assert_let!(MessageType::Text(new_content) = &replacement.new_content.msgtype);
+        assert_eq!(new_content.body, "This is an edited message.");
+        assert_eq!(
+            new_content
+                .formatted
+                .as_ref()
+                .map(|formatted| formatted.body.as_str()),
+            Some("<strong>This is an edited message.</strong>")
+        );
     }
 }
 
