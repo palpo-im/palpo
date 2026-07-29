@@ -356,13 +356,25 @@ pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent
     let (content, refreshed_json) = refresh_push_rules_content(user_id, stored)?;
 
     if let Some(refreshed_json) = refreshed_json {
-        data::user::set_data(
+        // Persisting the refresh is a cache update, not part of the caller's
+        // result: `content` is already correct either way, and the next load
+        // retries. This runs inside `append_pdu`'s per-recipient loop, so a
+        // transient write failure must not fail the event append -- it would
+        // turn a push-rule bookkeeping problem into a dropped message.
+        if let Err(error) = data::user::set_data(
             user_id,
             None,
             &GlobalAccountDataEventType::PushRules.to_string(),
             refreshed_json,
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                %user_id,
+                ?error,
+                "failed to persist refreshed push rules; continuing with the merged rules"
+            );
+        }
     }
 
     Ok(content)
