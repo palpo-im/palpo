@@ -348,17 +348,33 @@ pub async fn get_data<E: DeserializeOwned>(
 /// as are all user-defined rules. This makes newly added defaults effective
 /// for existing accounts without resetting their preferences.
 pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent> {
-    let stored = data::user::get_global_data::<JsonValue>(
+    let raw = data::user::get_global_data::<JsonValue>(
         user_id,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
-    .await?
-    .and_then(parse_stored_push_rules);
+    .await?;
+    let stored = raw.clone().and_then(parse_stored_push_rules);
+
+    // A record that is present but matches neither shape must not be confused
+    // with an absent one. The generic account-data PUT accepts arbitrary
+    // content for `m.push_rules`, so this can be a user's own value or a shape
+    // from a future version; overwriting it with defaults would destroy their
+    // preferences. Serve the defaults so evaluation and sync keep working, but
+    // leave the stored value alone.
+    let unparseable = raw.is_some() && stored.is_none();
+    if unparseable {
+        tracing::warn!(
+            %user_id,
+            "stored m.push_rules could not be parsed; using server defaults without \
+             overwriting the stored value"
+        );
+    }
+
     let was_wrapped = matches!(stored, Some((_, StoredShape::Wrapped)));
     let (content, refreshed_json) =
         refresh_push_rules_content(user_id, stored.map(|(content, _)| content), was_wrapped)?;
 
-    if let Some(refreshed_json) = refreshed_json {
+    if let Some(refreshed_json) = refreshed_json.filter(|_| !unparseable) {
         // Persisting the refresh is a cache update, not part of the caller's
         // result: `content` is already correct either way, and the next load
         // retries. This runs inside `append_pdu`'s per-recipient loop, so a
@@ -536,6 +552,25 @@ mod push_rules_tests {
         let rewritten = changed_json.expect("wrapped record is rewritten even when rules match");
         assert!(rewritten.get("global").is_some());
         assert!(rewritten.get("content").is_none());
+    }
+
+    /// A stored value matching neither shape must not be mistaken for a
+    /// missing one, or the refresh would overwrite it with defaults.
+    #[test]
+    fn unparseable_push_rules_are_distinguished_from_missing() {
+        let junk = serde_json::json!({ "something": "a client stored this" });
+        assert!(super::parse_stored_push_rules(junk).is_none());
+
+        // Missing and unparseable both parse to `None`; only the presence of
+        // the raw value tells them apart, which is what `get_push_rules` uses
+        // to decide whether persisting is safe.
+        let (content, changed_json) =
+            refresh_push_rules_content(user_id!("@user:example.org"), None, false).unwrap();
+        assert!(!content.global.override_.is_empty());
+        assert!(
+            changed_json.is_some(),
+            "a genuinely missing record is still created"
+        );
     }
 
     #[test]
