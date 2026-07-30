@@ -354,7 +354,9 @@ pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent
     )
     .await?
     .and_then(parse_stored_push_rules);
-    let (content, refreshed_json) = refresh_push_rules_content(user_id, stored)?;
+    let was_wrapped = matches!(stored, Some((_, StoredShape::Wrapped)));
+    let (content, refreshed_json) =
+        refresh_push_rules_content(user_id, stored.map(|(content, _)| content), was_wrapped)?;
 
     if let Some(refreshed_json) = refreshed_json {
         // Persisting the refresh is a cache update, not part of the caller's
@@ -389,18 +391,41 @@ pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent
 /// ruleset nested under `content`. Insisting on the bare shape would make
 /// every load -- and so every v3 sync -- fail for those accounts. Reading both
 /// lets the refresh rewrite them in the canonical shape on first load.
-fn parse_stored_push_rules(stored: JsonValue) -> Option<PushRulesEventContent> {
+///
+/// The shape is reported alongside the content because the refresh compares
+/// bare content against bare content: a wrapped record whose rules already
+/// match the current defaults would compare equal and never be rewritten,
+/// leaving the database value wrapped and sync emitting a double-wrapped
+/// `m.push_rules` event forever.
+fn parse_stored_push_rules(stored: JsonValue) -> Option<(PushRulesEventContent, StoredShape)> {
     if let Ok(content) = serde_json::from_value::<PushRulesEventContent>(stored.clone()) {
-        return Some(content);
+        return Some((content, StoredShape::Bare));
     }
     serde_json::from_value::<PushRulesEvent>(stored)
         .ok()
-        .map(|event| event.content)
+        .map(|event| (event.content, StoredShape::Wrapped))
 }
 
+/// Which of the two historical shapes a stored `m.push_rules` record used.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StoredShape {
+    /// The canonical bare `PushRulesEventContent`.
+    Bare,
+    /// A whole `PushRulesEvent`, as the admin command used to write.
+    Wrapped,
+}
+
+/// Merges the current defaults into `stored`, returning the result and the
+/// JSON to persist when the record needs rewriting.
+///
+/// `rewrite_shape` forces the rewrite for a record that parsed out of the
+/// legacy wrapped shape. Its content may already equal the current defaults,
+/// in which case the comparison below sees two identical bare values and would
+/// leave the wrapped record in place.
 fn refresh_push_rules_content(
     user_id: &UserId,
     stored: Option<PushRulesEventContent>,
+    rewrite_shape: bool,
 ) -> AppResult<(PushRulesEventContent, Option<JsonValue>)> {
     let stored_json = stored.as_ref().map(serde_json::to_value).transpose()?;
     let mut content =
@@ -411,7 +436,7 @@ fn refresh_push_rules_content(
         .update_with_server_default(Ruleset::server_default(user_id));
     let refreshed_json = serde_json::to_value(&content)?;
 
-    let changed = stored_json.as_ref() != Some(&refreshed_json);
+    let changed = rewrite_shape || stored_json.as_ref() != Some(&refreshed_json);
     Ok((content, changed.then_some(refreshed_json)))
 }
 
@@ -457,11 +482,13 @@ mod push_rules_tests {
             ..Default::default()
         });
 
-        let (refreshed, changed_json) = refresh_push_rules_content(user_id, Some(stored)).unwrap();
+        let (refreshed, changed_json) =
+            refresh_push_rules_content(user_id, Some(stored), false).unwrap();
         assert!(changed_json.is_some());
         assert!(!refreshed.global.override_.contains(".stale.default"));
 
-        let (_, unchanged_json) = refresh_push_rules_content(user_id, Some(refreshed)).unwrap();
+        let (_, unchanged_json) =
+            refresh_push_rules_content(user_id, Some(refreshed), false).unwrap();
         assert!(unchanged_json.is_none());
     }
 
@@ -479,7 +506,7 @@ mod push_rules_tests {
 
         let parsed = super::parse_stored_push_rules(wrapped).expect("wrapped record parses");
         let (content, changed_json) =
-            super::refresh_push_rules_content(user_id, Some(parsed)).unwrap();
+            super::refresh_push_rules_content(user_id, Some(parsed.0), true).unwrap();
 
         // Defaults are merged in, and the record is rewritten in the bare shape.
         assert!(!content.global.override_.is_empty());
@@ -488,10 +515,33 @@ mod push_rules_tests {
         assert!(rewritten.get("content").is_none());
     }
 
+    /// A wrapped record whose rules already match the current defaults still
+    /// has to be rewritten: comparing the parsed bare content finds no change,
+    /// so without forcing it the database keeps the wrapped value and sync
+    /// keeps emitting a double-wrapped `m.push_rules` event.
+    #[test]
+    fn wrapped_record_matching_defaults_is_still_normalized() {
+        let user_id = user_id!("@user:example.org");
+        let defaults = PushRulesEventContent::new(Ruleset::server_default(user_id));
+        let wrapped = serde_json::json!({
+            "type": "m.push_rules",
+            "content": serde_json::to_value(&defaults).unwrap(),
+        });
+
+        let (parsed, shape) = super::parse_stored_push_rules(wrapped).expect("parses");
+        assert_eq!(shape, super::StoredShape::Wrapped);
+
+        let (_, changed_json) =
+            super::refresh_push_rules_content(user_id, Some(parsed), true).unwrap();
+        let rewritten = changed_json.expect("wrapped record is rewritten even when rules match");
+        assert!(rewritten.get("global").is_some());
+        assert!(rewritten.get("content").is_none());
+    }
+
     #[test]
     fn missing_push_rules_are_created_for_sync_delivery() {
         let user_id = user_id!("@user:example.org");
-        let (content, changed_json) = refresh_push_rules_content(user_id, None).unwrap();
+        let (content, changed_json) = refresh_push_rules_content(user_id, None, false).unwrap();
 
         assert!(changed_json.is_some());
         assert!(!content.global.override_.is_empty());
