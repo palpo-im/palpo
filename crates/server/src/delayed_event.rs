@@ -134,6 +134,29 @@ async fn process_due_events() -> AppResult<()> {
 /// original worker is mid-append.
 async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     let event_type: TimelineEventType = event.event_type.clone().into();
+    let state_lock = room::lock_state(&event.room_id).await;
+
+    // Taken under the room lock, so a worker that reclaimed an over-running
+    // lease cannot pass this check while the original worker is still between
+    // its append and its `add_txn_id` -- both of which happen under this same
+    // lock. Checking before taking it would let both reach the append and
+    // duplicate the event.
+    //
+    // It also runs before the state check below: recovering a state event that
+    // already reached the room must not re-run authorization, because the
+    // event it just sent may itself have changed the state that check reads,
+    // which would turn a completed send into a permanent failure.
+    if let Some(event_id) = crate::transaction_id::get_event_id(
+        &event.txn_id,
+        &event.user_id,
+        event.device_id.as_deref(),
+        Some(&event.room_id),
+    )
+    .await?
+    {
+        return Ok(event_id);
+    }
+
     if let Some(state_key) = &event.state_key {
         let state_event_type: StateEventType = event.event_type.clone().into();
         crate::state::allowed_to_send_state_event(
@@ -151,24 +174,6 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
         to_raw_value(&event.delay_id)?,
     );
     unsigned.insert("transaction_id".to_owned(), to_raw_value(&event.txn_id)?);
-
-    let state_lock = room::lock_state(&event.room_id).await;
-
-    // Inside the room lock, so a worker that reclaimed an over-running lease
-    // cannot pass this check while the original worker is still between its
-    // append and its `add_txn_id` -- both of which happen under this same
-    // lock. Checking before taking it would let both reach the append and
-    // duplicate the event.
-    if let Some(event_id) = crate::transaction_id::get_event_id(
-        &event.txn_id,
-        &event.user_id,
-        event.device_id.as_deref(),
-        Some(&event.room_id),
-    )
-    .await?
-    {
-        return Ok(event_id);
-    }
 
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
@@ -332,10 +337,13 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
                     .await?
                     .unwrap_or(event);
-                // Another worker is already sending it, which is the outcome
-                // this request wanted.
+                // Another worker holds the lease. Reporting success here would
+                // be a guess: that send can still fail a pre-append check and
+                // release the lease, leaving this caller told the event was
+                // sent when it never was. Report the conflict so a retry gets
+                // a definitive answer.
                 if send_in_flight(&refreshed, now) {
-                    return Ok(());
+                    return Err(in_flight_conflict("send"));
                 }
                 // Already finalized: sending is idempotent if it was sent,
                 // conflicting otherwise.
