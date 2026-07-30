@@ -95,95 +95,95 @@ pub struct ThumbnailResBody {
 }
 
 impl Scribe for ThumbnailResBody {
-    /// Serialize the given metadata and content into a `http::Response`
-    /// `multipart/mixed` body.
-    ///
-    /// Returns a tuple containing the boundary used
     fn render(self, res: &mut Response) {
-        use rand::RngExt as _;
+        render_multipart_mixed(&self.metadata, self.content, res);
+    }
+}
 
-        let mut rng = rand::rng();
-        let boundary = (&mut rng)
-            .sample_iter(rand::distr::Alphanumeric)
-            .map(char::from)
-            .take(GENERATED_BOUNDARY_LENGTH)
-            .collect::<String>();
+/// Serialize the given metadata and content into a `multipart/mixed` response
+/// body, as the authenticated media endpoints answer with.
+fn render_multipart_mixed(metadata: &ContentMetadata, content: FileOrLocation, res: &mut Response) {
+    use rand::RngExt as _;
 
-        let mut body_writer = BytesMut::new();
+    let mut rng = rand::rng();
+    let boundary = (&mut rng)
+        .sample_iter(rand::distr::Alphanumeric)
+        .map(char::from)
+        .take(GENERATED_BOUNDARY_LENGTH)
+        .collect::<String>();
 
-        // Add first boundary separator and header for the metadata.
-        let _ = write!(
-            body_writer,
-            "\r\n--{boundary}\r\n{}: {}\r\n\r\n",
-            http::header::CONTENT_TYPE,
-            mime::APPLICATION_JSON
-        );
+    let mut body_writer = BytesMut::new();
 
-        // Add serialized metadata.
-        match serde_json::to_vec(&self.metadata) {
-            Ok(bytes) => {
-                body_writer.extend_from_slice(&bytes);
-            }
-            Err(e) => {
-                error!("Failed to serialize metadata: {}", e);
-                res.render(
-                    StatusError::internal_server_error().brief("Failed to serialize metadata"),
-                );
-                return;
-            }
+    // Add first boundary separator and header for the metadata.
+    let _ = write!(
+        body_writer,
+        "\r\n--{boundary}\r\n{}: {}\r\n\r\n",
+        http::header::CONTENT_TYPE,
+        mime::APPLICATION_JSON
+    );
+
+    // Add serialized metadata.
+    match serde_json::to_vec(metadata) {
+        Ok(bytes) => {
+            body_writer.extend_from_slice(&bytes);
         }
+        Err(e) => {
+            error!("Failed to serialize metadata: {}", e);
+            res.render(StatusError::internal_server_error().brief("Failed to serialize metadata"));
+            return;
+        }
+    }
 
-        // Add second boundary separator.
-        let _ = write!(body_writer, "\r\n--{boundary}\r\n");
+    // Add second boundary separator.
+    let _ = write!(body_writer, "\r\n--{boundary}\r\n");
 
-        // Add content.
-        match self.content {
-            FileOrLocation::File(content) => {
-                // Add headers.
-                let content_type = content
-                    .content_type
-                    .as_deref()
-                    .unwrap_or(mime::APPLICATION_OCTET_STREAM.as_ref());
+    // Add content.
+    match content {
+        FileOrLocation::File(content) => {
+            // Add headers.
+            let content_type = content
+                .content_type
+                .as_deref()
+                .unwrap_or(mime::APPLICATION_OCTET_STREAM.as_ref());
+            let _ = write!(
+                body_writer,
+                "{}: {content_type}\r\n",
+                http::header::CONTENT_TYPE
+            );
+
+            if let Some(content_disposition) = &content.content_disposition {
                 let _ = write!(
                     body_writer,
-                    "{}: {content_type}\r\n",
-                    http::header::CONTENT_TYPE
-                );
-
-                if let Some(content_disposition) = &content.content_disposition {
-                    let _ = write!(
-                        body_writer,
-                        "{}: {content_disposition}\r\n",
-                        http::header::CONTENT_DISPOSITION
-                    );
-                }
-
-                // Add empty line separator after headers.
-                body_writer.extend_from_slice(b"\r\n");
-
-                // Add bytes.
-                body_writer.extend_from_slice(&content.file);
-            }
-            FileOrLocation::Location(location) => {
-                // Only add location header and empty line separator.
-                let _ = write!(
-                    body_writer,
-                    "{}: {location}\r\n\r\n",
-                    http::header::LOCATION
+                    "{}: {content_disposition}\r\n",
+                    http::header::CONTENT_DISPOSITION
                 );
             }
+
+            // Add empty line separator after headers.
+            body_writer.extend_from_slice(b"\r\n");
+
+            // Add bytes.
+            body_writer.extend_from_slice(&content.file);
         }
-
-        // Add final boundary.
-        let _ = write!(body_writer, "\r\n--{boundary}--");
-
-        let content_type = format!("{MULTIPART_MIXED}; boundary={boundary}");
-
-        let _ = res.add_header(http::header::CONTENT_TYPE, content_type, true);
-        if let Err(e) = res.write_body(body_writer) {
-            res.render(StatusError::internal_server_error().brief("Failed to set response body"));
-            error!("Failed to set response body: {}", e);
+        FileOrLocation::Location(location) => {
+            // Only add location header and empty line separator.
+            let _ = write!(
+                body_writer,
+                "{}: {location}\r\n\r\n",
+                http::header::LOCATION
+            );
         }
+    }
+
+    // Add final boundary.
+    let _ = write!(body_writer, "\r\n--{boundary}--");
+
+    let content_type = format!("{MULTIPART_MIXED}; boundary={boundary}");
+
+    let _ = res.add_header(http::header::CONTENT_TYPE, content_type, true);
+    if let Err(e) = res.write_body(body_writer) {
+        res.render(StatusError::internal_server_error().brief("Failed to set response body"));
+        error!("Failed to set response body: {}", e);
     }
 }
 
@@ -238,6 +238,12 @@ pub struct ContentResBody {
 
     /// The content of the media.
     pub content: FileOrLocation,
+}
+
+impl Scribe for ContentResBody {
+    fn render(self, res: &mut Response) {
+        render_multipart_mixed(&self.metadata, self.content, res);
+    }
 }
 
 /// A file from the content repository or the location where it can be found.
