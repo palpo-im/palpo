@@ -347,6 +347,24 @@ pub async fn get_data<E: DeserializeOwned>(
 /// The stored enabled state and actions for existing default rules are kept,
 /// as are all user-defined rules. This makes newly added defaults effective
 /// for existing accounts without resetting their preferences.
+/// Like [`get_push_rules`], but returns `None` instead of the server-default
+/// fallback when the stored record is present and unparseable.
+///
+/// Callers that read the rules can use the fallback safely. Callers that write
+/// them back cannot: persisting the fallback would replace the very value the
+/// fallback exists to preserve.
+pub async fn get_writable_push_rules(user_id: &UserId) -> AppResult<Option<PushRulesEventContent>> {
+    let raw = data::user::get_global_data::<JsonValue>(
+        user_id,
+        &GlobalAccountDataEventType::PushRules.to_string(),
+    )
+    .await?;
+    if raw.is_some() && raw.clone().and_then(parse_stored_push_rules).is_none() {
+        return Ok(None);
+    }
+    get_push_rules(user_id).await.map(Some)
+}
+
 pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent> {
     let raw = data::user::get_global_data::<JsonValue>(
         user_id,

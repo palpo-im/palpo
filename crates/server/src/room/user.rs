@@ -446,7 +446,12 @@ pub async fn copy_push_rules_from_room_to_room(
     _old_room_id: &RoomId,
     new_room_id: &RoomId,
 ) -> AppResult<()> {
-    let Ok(mut user_data_content) = crate::user::get_push_rules(user_id).await else {
+    // `get_push_rules` falls back to server defaults for a record it cannot
+    // parse, which is fine for evaluation but not here: this path writes back,
+    // and writing the fallback would replace the raw value that fallback
+    // exists to preserve.
+    let Ok(Some(mut user_data_content)) = crate::user::get_writable_push_rules(user_id).await
+    else {
         return Ok(());
     };
 
@@ -470,6 +475,10 @@ pub async fn copy_push_rules_from_room_to_room(
             _ => {}
         }
     }
+    if new_rules.is_empty() {
+        return Ok(());
+    }
+
     for new_rule in new_rules {
         if let Err(e) = user_data_content.global.insert(new_rule, None, None) {
             error!("failed to insert copied push rule: {}", e);
