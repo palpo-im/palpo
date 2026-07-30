@@ -27,6 +27,9 @@ use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
 
+#[cfg(feature = "unstable-msc4262")]
+mod profiles;
+
 /// Apply a sliding-sync list's filter pipeline to the candidate room sets.
 ///
 /// Returns the rooms (in input order) that survive the `is_invite`,
@@ -430,6 +433,21 @@ pub async fn sync_events(
     .await?;
 
     fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms).await?;
+
+    // MSC4262 profile updates need the finished room subset, so they are collected after
+    // the lists and subscriptions have been resolved rather than alongside the other
+    // extensions.
+    #[cfg(feature = "unstable-msc4262")]
+    {
+        res_body.extensions.profiles = profiles::collect(
+            sync_info,
+            &all_joined_rooms,
+            &todo_rooms,
+            known_rooms,
+            curr_sn,
+        )
+        .await?;
+    }
 
     res_body.rooms = process_rooms(
         sync_info,
@@ -1399,6 +1417,25 @@ pub async fn update_sync_request_with_cache(
             &mut req_body.extensions.receipts.lists,
             cached.extensions.receipts.lists.clone(),
         );
+        #[cfg(feature = "unstable-msc4262")]
+        {
+            some_or_sticky(
+                &mut req_body.extensions.profiles.enabled,
+                cached.extensions.profiles.enabled,
+            );
+            some_or_sticky(
+                &mut req_body.extensions.profiles.lists,
+                cached.extensions.profiles.lists.clone(),
+            );
+            some_or_sticky(
+                &mut req_body.extensions.profiles.rooms,
+                cached.extensions.profiles.rooms.clone(),
+            );
+            some_or_sticky(
+                &mut req_body.extensions.profiles.fields,
+                cached.extensions.profiles.fields.clone(),
+            );
+        }
 
         cached.extensions = req_body.extensions.clone();
         let known = cached.known_rooms.clone();

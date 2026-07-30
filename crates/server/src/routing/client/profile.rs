@@ -317,6 +317,14 @@ async fn set_avatar_url(
             .set(updata_params)
             .execute(&mut connect().await?)
             .await?;
+        // MSC4262: this handler writes the column directly rather than going through
+        // `data::user::set_avatar_url`, so the change stream has to be fed here too.
+        data::user::record_profile_change(
+            &user_id,
+            "avatar_url",
+            avatar_url.as_ref().map(|url| url.as_str().into()),
+        )
+        .await?;
     } else {
         return Err(StatusError::not_found().brief("Profile not found.").into());
     }

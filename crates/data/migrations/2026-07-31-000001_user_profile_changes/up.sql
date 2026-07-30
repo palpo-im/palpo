@@ -1,0 +1,24 @@
+-- Profile change stream (MSC4262).
+--
+-- Sliding sync needs to answer "which profile fields changed since sync
+-- position N", which the profile itself cannot answer: `user_profiles` only
+-- holds current values. Every profile write appends a row here, stamped with a
+-- position from the same `occur_sn_seq` sequence that orders events, so a sync
+-- can select exactly the changes a client has not seen.
+--
+-- `removed` distinguishes a cleared field from a field whose stored value is
+-- JSON `null`; the spec allows servers to store `null` as a value, so the two
+-- cases cannot be told apart from `value` alone.
+CREATE TABLE user_profile_changes (
+    id BIGSERIAL PRIMARY KEY,
+    occur_sn BIGINT NOT NULL,
+    user_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    value JSONB,
+    removed BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+-- Selecting the changes past a sync position, optionally narrowed to the users
+-- a syncing client shares a room with.
+CREATE INDEX user_profile_changes_sn_idx ON user_profile_changes (occur_sn);
+CREATE INDEX user_profile_changes_user_sn_idx ON user_profile_changes (user_id, occur_sn);

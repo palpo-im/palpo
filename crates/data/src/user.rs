@@ -299,9 +299,8 @@ pub async fn set_display_name(user_id: &UserId, display_name: &str) -> DataResul
     )
     .set(user_profiles::display_name.eq(display_name))
     .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    .await?;
+    profile::record_profile_change(user_id, "displayname", Some(display_name.into())).await
 }
 pub async fn remove_display_name(user_id: &UserId) -> DataResult<()> {
     diesel::update(
@@ -311,9 +310,8 @@ pub async fn remove_display_name(user_id: &UserId) -> DataResult<()> {
     )
     .set(user_profiles::display_name.eq::<Option<String>>(None))
     .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    .await?;
+    profile::record_profile_change(user_id, "displayname", None).await
 }
 
 /// Get the avatar_url of a user.
@@ -337,7 +335,7 @@ pub async fn set_avatar_url(user_id: &UserId, avatar_url: &MxcUri) -> DataResult
     .set(user_profiles::avatar_url.eq(avatar_url.as_str()))
     .execute(&mut connect().await?)
     .await?;
-    Ok(())
+    profile::record_profile_change(user_id, "avatar_url", Some(avatar_url.as_str().into())).await
 }
 pub async fn remove_avatar_url(user_id: &UserId) -> DataResult<()> {
     diesel::update(
@@ -347,9 +345,8 @@ pub async fn remove_avatar_url(user_id: &UserId) -> DataResult<()> {
     )
     .set(user_profiles::avatar_url.eq::<Option<String>>(None))
     .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    .await?;
+    profile::record_profile_change(user_id, "avatar_url", None).await
 }
 
 pub async fn delete_profile(user_id: &UserId) -> DataResult<()> {
