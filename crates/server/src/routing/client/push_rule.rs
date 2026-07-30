@@ -128,7 +128,13 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         );
     }
 
-    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
+    let mut user_data_content = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
     if let Err(error) =
         user_data_content
@@ -180,7 +186,13 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
         );
     }
 
-    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
+    let mut user_data_content = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
     if let Err(error) = user_data_content
         .global
@@ -262,7 +274,13 @@ async fn set_actions(
         );
     }
 
-    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
+    let mut user_data_content = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
     if user_data_content
         .global
@@ -325,7 +343,13 @@ async fn set_enabled(
         );
     }
 
-    let mut user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
+    let mut user_data_content = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
     if user_data_content
         .global
