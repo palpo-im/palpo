@@ -336,6 +336,56 @@ pub async fn get_to_device_events(
         .collect::<DataResult<Vec<_>>>()
 }
 
+/// Reads a device's to-device messages in stream order, starting after `since_sn`.
+///
+/// Returns each message with its stream position so the caller can hand the client a
+/// resume token. Unlike `/sync`, reading does not consume: MSC3814 requires that a
+/// dehydrated device's messages survive being read, so that an interrupted rehydration can
+/// be restarted by another device.
+pub async fn to_device_events_from(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    since_sn: Option<Seqnum>,
+    limit: usize,
+) -> DataResult<Vec<(Seqnum, RawJson<AnyToDeviceEvent>)>> {
+    let mut query = device_inboxes::table
+        .filter(device_inboxes::user_id.eq(user_id))
+        .filter(device_inboxes::device_id.eq(device_id))
+        .into_boxed();
+    if let Some(since_sn) = since_sn {
+        query = query.filter(device_inboxes::occur_sn.gt(since_sn));
+    }
+
+    query
+        .order(device_inboxes::occur_sn.asc())
+        .limit(limit as i64)
+        .load::<DbDeviceInbox>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value(event.json_data)
+                .map(|json| (event.occur_sn, json))
+                .map_err(|_| DataError::public("Invalid JSON in device inbox"))
+        })
+        .collect()
+}
+
+/// Whether the device has any to-device message after `since_sn`.
+///
+/// Used to decide whether a batch is the last one, which is what tells a rehydrating client
+/// it can stop calling and delete the dehydrated device.
+pub async fn has_to_device_events_after(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    since_sn: Seqnum,
+) -> DataResult<bool> {
+    let query = device_inboxes::table
+        .filter(device_inboxes::user_id.eq(user_id))
+        .filter(device_inboxes::device_id.eq(device_id))
+        .filter(device_inboxes::occur_sn.gt(since_sn));
+    crate::diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+}
+
 pub async fn add_to_device_event(
     sender: &UserId,
     target_user_id: &UserId,

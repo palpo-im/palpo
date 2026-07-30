@@ -96,7 +96,8 @@ pub fn router() -> Router {
                             .delete(device::delete_dehydrated)
                             .push(
                                 Router::with_path("{device_id}/events")
-                                    .post(to_device::for_dehydrated),
+                                    .get(to_device::for_dehydrated)
+                                    .post(to_device::for_dehydrated_legacy),
                             ),
                     ),
             )

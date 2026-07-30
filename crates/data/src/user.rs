@@ -436,6 +436,24 @@ pub async fn all_device_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> 
         .map_err(Into::into)
 }
 
+/// Every device that can receive a to-device message, including the dehydrated device.
+///
+/// A dehydrated device is not in `user_devices`, but it is a device of the user as far as
+/// senders are concerned: it appears in `/keys/query` and is meant to collect room keys
+/// while the user has nothing else logged in. Leaving it out of a `*` fan-out would lose
+/// exactly the messages dehydration exists to preserve ([MSC3814]).
+///
+/// [MSC3814]: https://github.com/matrix-org/matrix-spec-proposals/pull/3814
+pub async fn all_to_device_target_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> {
+    let mut device_ids = all_device_ids(user_id).await?;
+    if let Some((dehydrated_id, _)) = get_dehydrated_device(user_id).await?
+        && !device_ids.contains(&dehydrated_id)
+    {
+        device_ids.push(dehydrated_id);
+    }
+    Ok(device_ids)
+}
+
 pub async fn delete_access_tokens(user_id: &UserId) -> DataResult<()> {
     // Evict before the bulk revocation so cached tokens cannot keep
     // authenticating in the window before the post-delete scan runs.
@@ -474,6 +492,9 @@ pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
 
     for device_id in device_ids {
         key::delete_device_key_material(user_id, &device_id).await?;
+        // The device is gone, so nothing will ever rehydrate it and read its inbox.
+        // Without this the messages sit there for the lifetime of the account.
+        device::remove_all_to_device_events(user_id, &device_id).await?;
     }
 
     diesel::delete(
@@ -518,6 +539,11 @@ pub async fn upsert_dehydrated_device(
 
     if let Some(current_device_id) = current_device_id {
         key::delete_device_key_material(user_id, &current_device_id).await?;
+        if current_device_id != device_id {
+            // Replacing the dehydrated device abandons the old one; its undelivered
+            // messages can no longer be decrypted by anything and would leak.
+            device::remove_all_to_device_events(user_id, &current_device_id).await?;
+        }
     }
 
     let new_device = NewDbUserDehydratedDevice {
