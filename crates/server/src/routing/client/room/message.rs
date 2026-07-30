@@ -287,6 +287,7 @@ pub(super) async fn send_message(
             } else {
                 None
             },
+            sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
         },
         authed.user_id(),
@@ -342,6 +343,7 @@ pub(super) async fn post_message(
             event_type: args.event_type.to_string().into(),
             content,
             unsigned: BTreeMap::new(),
+            sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
         },
         authed.user_id(),

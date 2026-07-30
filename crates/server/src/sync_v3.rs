@@ -8,8 +8,8 @@ use crate::core::client::filter::{FilterDefinition, LazyLoadOptions, RoomEventFi
 use crate::core::client::sync_events::UnreadNotificationsCount;
 use crate::core::client::sync_events::v3::{
     Ephemeral, Filter, GlobalAccountData, InviteState, InvitedRoom, JoinedRoom, KnockState,
-    KnockedRoom, LeftRoom, Presence, RoomAccountData, RoomSummary, Rooms, State, SyncEventsReqArgs,
-    SyncEventsResBody, Timeline, ToDevice,
+    KnockedRoom, LeftRoom, Presence, RoomAccountData, RoomSummary, Rooms, State, Sticky,
+    SyncEventsReqArgs, SyncEventsResBody, Timeline, ToDevice,
 };
 use crate::core::device::DeviceLists;
 use crate::core::events::receipt::SyncReceiptEvent;
@@ -479,6 +479,27 @@ async fn load_joined_room(
         }
     }
 
+    // MSC4354: sticky events must reach the client even when the room's timeline was
+    // truncated to `timeline_limit`, so they get their own section. Delivery is
+    // stream-like -- a client sees each sticky event once -- except that a user who has
+    // just joined, or is syncing for the first time, gets every unexpired sticky event in
+    // the room.
+    let sticky = load_sticky(
+        room_id,
+        if joined_since_incremental {
+            None
+        } else {
+            since_tk.map(|since_tk| since_tk.event_sn())
+        },
+        next_batch.event_sn(),
+        &timeline,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        warn!(room_id = %room_id, error = ?e, "failed to load sticky events");
+        Sticky::default()
+    });
+
     let since_tk = if let Some(since_tk) = since_tk {
         since_tk
     } else {
@@ -928,6 +949,7 @@ async fn load_joined_room(
                 .into(),
         ),
         ephemeral: Ephemeral { events: edus },
+        sticky,
         unread_thread_notifications: if filter.room.timeline.unread_thread_notifications {
             notify_summary
                 .threads
@@ -1110,6 +1132,45 @@ pub struct TimelineData {
     pub limited: bool,
     pub prev_batch: Option<BatchToken>,
     pub next_batch: Option<BatchToken>,
+}
+
+/// Collects the room's unexpired sticky events for one sync response ([MSC4354]).
+///
+/// `since_sn` is `None` for a sync that must carry the room's full sticky state: an initial
+/// sync, or the sync in which the user joined. Otherwise only sticky events past that
+/// position are returned, so each one reaches the client exactly once.
+///
+/// Sticky events already present in `timeline.events` are skipped -- they are the same
+/// events, and repeating them would only bloat the response. The timeline filter has
+/// already been applied at this point, so an event the filter removed from the timeline is
+/// still delivered here.
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+async fn load_sticky(
+    room_id: &RoomId,
+    since_sn: Option<Seqnum>,
+    until_sn: Seqnum,
+    timeline: &TimelineData,
+) -> AppResult<Sticky> {
+    let now = UnixMillis::now();
+    let entries = crate::event::sticky::unexpired(room_id, since_sn, until_sn, now).await?;
+    if entries.is_empty() {
+        return Ok(Sticky::default());
+    }
+
+    let mut events = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if timeline.events.contains_key(&entry.event_sn) {
+            continue;
+        }
+        let Ok(pdu) = timeline::get_pdu(&entry.event_id).await else {
+            continue;
+        };
+        events
+            .push(crate::event::sticky::with_ttl(pdu, entry.expires_at, now).to_sync_room_event());
+    }
+
+    Ok(Sticky { events })
 }
 
 fn timeline_contains_own_join(timeline: &TimelineData, user_id: &UserId) -> bool {

@@ -5,7 +5,6 @@ use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde::Deserialize;
 
-use crate::core::Seqnum;
 use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::encrypted::Relation;
@@ -16,6 +15,7 @@ use crate::core::presence::PresenceState;
 use crate::core::push::{Action, HighlightTweakValue, Ruleset, Tweak};
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, to_canonical_object};
 use crate::core::state::Event;
+use crate::core::{Seqnum, UnixMillis};
 use crate::data::room::{DbEvent, DbEventData, NewDbEventEdge};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
@@ -579,6 +579,10 @@ pub async fn append_pdu(
         .execute(&mut connect().await?)
         .await?;
 
+    // MSC4354: index the sticky window now that the event has a sequence number, so that
+    // syncs can find it without reading event JSON.
+    crate::event::sticky::record(pdu, UnixMillis::now()).await?;
+
     for prev_id in &pdu.prev_events {
         let new_edge = NewDbEventEdge {
             room_id: pdu.room_id.clone(),
@@ -875,6 +879,11 @@ pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> 
                 .execute(conn)
                 .await?;
             diesel::delete(event_searches::table.filter(event_searches::event_id.eq(event_id)))
+                .execute(conn)
+                .await?;
+            // The redacted event no longer carries a sticky object, so stop delivering it
+            // outside the timeline.
+            diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
                 .execute(conn)
                 .await?;
 

@@ -408,6 +408,18 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    event_stickies (event_id) {
+        event_id -> Text,
+        event_sn -> Int8,
+        room_id -> Text,
+        expires_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     events (id) {
         id -> Text,
         sn -> Int8,
@@ -1186,6 +1198,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     event_receipts,
     event_relations,
     event_searches,
+    event_stickies,
     events,
     lazy_load_deliveries,
     media_metadatas,
