@@ -347,6 +347,13 @@ pub async fn process_to_outlier_pdu(
         "event_id".to_owned(),
         CanonicalJsonValue::String(event_id.as_str().to_owned()),
     );
+
+    // The room may require a Policy Server signature (MSC4284). Do this before building
+    // the PDU so that a signature we had to fetch ourselves ends up in both the parsed
+    // event and the stored JSON, and is therefore passed on transitively.
+    let policy_allowed =
+        crate::room::policy::is_event_allowed(room_id, &mut val, &version_rules).await;
+
     let mut incoming_pdu = PduEvent::from_json_value(
         room_id,
         event_id,
@@ -379,7 +386,9 @@ pub async fn process_to_outlier_pdu(
         return Ok(None);
     }
 
-    let mut soft_failed = false;
+    // Events the Policy Server declined are kept (so admins can inspect them) but never
+    // reach the timeline, and are not used as prev_events.
+    let mut soft_failed = !policy_allowed;
     let (prev_events, missing_prev_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.prev_events).await?;
     if !missing_prev_event_ids.is_empty() {

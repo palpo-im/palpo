@@ -820,11 +820,18 @@ pub async fn build_and_append_pdu(
         return Ok(curr_state);
     }
 
-    let (pdu, pdu_json, _event_guard) = pdu_builder
+    let (pdu, mut pdu_json, _event_guard) = pdu_builder
         .hash_sign_save(sender, room_id, room_version, state_lock)
         .await?;
     let room_id = &pdu.room_id;
     crate::room::ensure_room(room_id, room_version).await?;
+
+    // Ask the room's Policy Server (MSC4284) to vouch for the event before it goes
+    // anywhere. A refusal means the policy server considers the event spam, so the client
+    // request fails rather than the event being sent out unsigned. `append_pdu` persists
+    // the signature we obtained, so it travels with the event over federation.
+    let version_rules = crate::room::get_version_rules(room_version)?;
+    crate::room::policy::check_event(room_id, &mut pdu_json, &version_rules).await?;
 
     // let conf = crate::config::get();
     // let admin_room = super::resolve_local_alias(
