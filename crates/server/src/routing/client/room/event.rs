@@ -66,6 +66,13 @@ pub(super) async fn get_room_event(
     }
 
     let mut event = event.clone();
+    // The timeline and relation loaders scrub sender-only `unsigned` fields,
+    // but this endpoint serves a directly fetched PDU and did not, so
+    // `transaction_id` -- and now MSC4140's `delay_id` -- reached any room
+    // member who asked for the event by id.
+    if event.sender != authed.user_id() {
+        event.remove_sender_only_unsigned()?;
+    }
     event.add_age()?;
 
     json_ok(RoomEventResBody::new(event.to_room_event()))
