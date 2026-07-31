@@ -494,11 +494,10 @@ async fn load_joined_room(
         next_batch.event_sn(),
         &timeline,
     )
-    .await
-    .unwrap_or_else(|e| {
-        warn!(room_id = %room_id, error = ?e, "failed to load sticky events");
-        (Sticky::default(), BTreeMap::new())
-    });
+    // Deliberately not swallowed: returning a successful sync with an advanced token would
+    // move the client past sticky events it never received, and nothing would ever send
+    // them again. Failing here makes the client retry from the same token.
+    .await?;
 
     let since_tk = if let Some(since_tk) = since_tk {
         since_tk

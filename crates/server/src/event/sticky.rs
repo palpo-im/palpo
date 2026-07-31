@@ -62,6 +62,27 @@ pub async fn record(pdu: &PduEvent, event_sn: Seqnum, received_at: UnixMillis) -
     Ok(())
 }
 
+/// Assigns the sync position an event is delivered at, once it reaches the timeline.
+///
+/// A federated event can be stored as an outlier and promoted much later. By then clients
+/// have synced past the position it was given on arrival, so delivering it there would
+/// mean never delivering it. Taking a fresh position at promotion puts it back in front of
+/// every client, which is what the delivery guarantee requires.
+///
+/// The expiry is untouched: it still runs from first receipt.
+pub async fn mark_deliverable(event_id: &EventId) -> AppResult<()> {
+    let deliver_sn = crate::data::next_sn().await?;
+    diesel::update(
+        event_stickies::table
+            .filter(event_stickies::event_id.eq(event_id))
+            .filter(event_stickies::deliver_sn.is_null()),
+    )
+    .set(event_stickies::deliver_sn.eq(deliver_sn))
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
 /// The room's sticky events that have not expired at `now`.
 ///
 /// `since_sn` restricts the result to events the client has not been told about yet, giving
@@ -74,29 +95,24 @@ pub async fn unexpired(
     until_sn: Seqnum,
     now: UnixMillis,
 ) -> AppResult<Vec<StickyEntry>> {
-    // Recorded on first storage, so an event that never made it out of the outlier stage,
-    // was soft failed, or was rejected still has a row here and must not be delivered.
-    let deliverable = events::table
-        .filter(events::is_outlier.eq(false))
-        .filter(events::soft_failed.eq(false))
-        .filter(events::is_rejected.eq(false))
-        .select(events::id);
-
+    // Rows are written on first storage, so an event still sitting as an outlier -- or one
+    // that was soft failed or rejected -- has a row but no delivery position, and must not
+    // be delivered.
+    //
     // Sync positions are half-open: the `since` token is the first position a client has
     // not seen, and the token handed back is the first it will not see this time.
     let mut query = event_stickies::table
         .filter(event_stickies::room_id.eq(room_id))
         .filter(event_stickies::expires_at.gt(now.0 as i64))
-        .filter(event_stickies::event_sn.lt(until_sn))
-        .filter(event_stickies::event_id.eq_any(deliverable))
+        .filter(event_stickies::deliver_sn.lt(until_sn))
         .into_boxed();
 
     if let Some(since_sn) = since_sn {
-        query = query.filter(event_stickies::event_sn.ge(since_sn));
+        query = query.filter(event_stickies::deliver_sn.ge(since_sn));
     }
 
     let rows = query
-        .order(event_stickies::event_sn.asc())
+        .order(event_stickies::deliver_sn.asc())
         .select((
             event_stickies::event_id,
             event_stickies::event_sn,
@@ -239,24 +255,33 @@ mod tests {
 
     #[test]
     fn client_events_carry_the_sticky_object() {
-        let sticky = pdu(1_000_000, Some(json!({ "duration_ms": 300_000 })));
+        let mut sticky = pdu(1_000_000, Some(json!({ "duration_ms": 300_000 })));
+        sticky.state_key = Some(String::new());
 
+        // Every client-facing shape, not just the timeline one: a client that meets the
+        // event through state or a bundled relation still has to see how long it sticks.
         for serialized in [
             serde_json::to_value(sticky.to_sync_room_event()).unwrap(),
             serde_json::to_value(sticky.to_room_event()).unwrap(),
+            serde_json::to_value(sticky.to_message_like_event()).unwrap(),
+            serde_json::to_value(sticky.to_sync_state_event()).unwrap(),
+            sticky.to_state_event_value(),
         ] {
             assert_eq!(serialized[STICKY_KEY], json!({ "duration_ms": 300_000 }));
         }
 
         // An out-of-range annotation is not a sticky event, so it is not echoed back to
-        // clients as one.
-        let invalid = pdu(1_000_000, Some(json!({ "duration_ms": 3_600_001 })));
+        // clients as one -- including through the state shape, which otherwise copies
+        // unknown top-level keys verbatim.
+        let mut invalid = pdu(1_000_000, Some(json!({ "duration_ms": 3_600_001 })));
+        invalid.state_key = Some(String::new());
         assert_eq!(
             serde_json::to_value(invalid.to_sync_room_event())
                 .unwrap()
                 .get(STICKY_KEY),
             None
         );
+        assert_eq!(invalid.to_state_event_value().get(STICKY_KEY), None);
 
         // An ordinary event is untouched.
         let ordinary = pdu(1_000_000, None);

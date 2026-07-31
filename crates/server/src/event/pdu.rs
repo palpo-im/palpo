@@ -493,8 +493,8 @@ impl PduEvent {
         if let Some(redacts) = &self.redacts {
             json["redacts"] = json!(redacts);
         }
-        if let Some(duration) = self.sticky_duration_ms() {
-            json[STICKY_KEY] = json!({ "duration_ms": duration.get() });
+        if let Some(sticky) = self.sticky_object() {
+            json[STICKY_KEY] = sticky;
         }
 
         serde_json::from_value(json).expect("RawJson::from_value always works")
@@ -527,8 +527,8 @@ impl PduEvent {
         if let Some(redacts) = &self.redacts {
             data["redacts"] = json!(redacts);
         }
-        if let Some(duration) = self.sticky_duration_ms() {
-            data[STICKY_KEY] = json!({ "duration_ms": duration.get() });
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -553,6 +553,9 @@ impl PduEvent {
         }
         if let Some(redacts) = &self.redacts {
             data["redacts"] = json!(redacts);
+        }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -582,9 +585,14 @@ impl PduEvent {
         }
 
         for (key, value) in &self.extra_data {
-            if !data.contains_key(key) {
+            // The sticky object goes through validation below rather than being copied
+            // verbatim, so a malformed annotation is not echoed back to clients.
+            if key != STICKY_KEY && !data.contains_key(key) {
                 data.insert(key.clone(), value.clone());
             }
+        }
+        if let Some(sticky) = self.sticky_object() {
+            data.insert(STICKY_KEY.to_owned(), sticky);
         }
 
         JsonValue::Object(data)
@@ -603,6 +611,9 @@ impl PduEvent {
 
         if !self.unsigned.is_empty() {
             data["unsigned"] = json!(self.unsigned);
+        }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -715,6 +726,16 @@ impl PduEvent {
             return None;
         }
         Some(StickyDurationMs::new_clamped(duration))
+    }
+
+    /// The `msc4354_sticky` object to expose to clients, if the event is sticky.
+    ///
+    /// Built from the validated duration rather than copied from `extra_data`, so an
+    /// out-of-range or malformed annotation is not echoed back as if the server had
+    /// accepted it.
+    pub fn sticky_object(&self) -> Option<JsonValue> {
+        self.sticky_duration_ms()
+            .map(|duration| json!({ "duration_ms": duration.get() }))
     }
 
     /// The instant at which this event stops being sticky.

@@ -579,6 +579,10 @@ pub async fn append_pdu(
         .execute(&mut connect().await?)
         .await?;
 
+    // MSC4354: the event is on the timeline now, so give it a delivery position clients
+    // have not synced past yet.
+    crate::event::sticky::mark_deliverable(&pdu.event_id).await?;
+
     for prev_id in &pdu.prev_events {
         let new_edge = NewDbEventEdge {
             room_id: pdu.room_id.clone(),

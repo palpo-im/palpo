@@ -411,6 +411,7 @@ diesel::table! {
     event_stickies (event_id) {
         event_id -> Text,
         event_sn -> Int8,
+        deliver_sn -> Nullable<Int8>,
         room_id -> Text,
         expires_at -> Int8,
     }

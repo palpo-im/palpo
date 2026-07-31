@@ -11,9 +11,14 @@
 -- is persisted. Storing the absolute instant rather than the duration is what
 -- makes expiry survive a restart: nothing is recomputed from process uptime, so
 -- an event that expired while the server was down stays expired.
+-- `deliver_sn` is the sync position the event is delivered at, assigned when it
+-- reaches the timeline. It is not `event_sn`: a federated event can be stored as
+-- an outlier and promoted much later, by which time clients have synced well past
+-- the position it was given on arrival and would never see it.
 CREATE TABLE event_stickies (
     event_id TEXT NOT NULL PRIMARY KEY,
     event_sn BIGINT NOT NULL,
+    deliver_sn BIGINT,
     room_id TEXT NOT NULL,
     expires_at BIGINT NOT NULL
 );
@@ -21,7 +26,7 @@ CREATE TABLE event_stickies (
 -- Finding the unexpired sticky events of a room, either in full (a user who
 -- just joined) or since a sync position (an incremental sync).
 CREATE INDEX event_stickies_room_expires_idx ON event_stickies (room_id, expires_at);
-CREATE INDEX event_stickies_room_sn_idx ON event_stickies (room_id, event_sn);
+CREATE INDEX event_stickies_room_sn_idx ON event_stickies (room_id, deliver_sn);
 
 -- Reaping expired rows across all rooms.
 CREATE INDEX event_stickies_expires_idx ON event_stickies (expires_at);
