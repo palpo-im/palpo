@@ -87,10 +87,17 @@ pub async fn set_presence(
     #[cfg_attr(feature = "unstable-msc4495", allow(unused_variables))]
     let state_changed = data::user::set_presence(db_presence, force).await?;
     // With selective presence the recipient scoping lives in the sending guard's EDU
-    // selection, which runs off the presence row we just wrote. Broadcasting here as well
-    // would put an update with no `stream_id` on the wire, and a peer implementing
-    // MSC4495 reads that as a legacy sender and shows it to everyone -- exactly what an
-    // absent or empty sharing policy is supposed to prevent.
+    // selection, which runs off the presence row just written. Broadcasting here as well
+    // would put an update with no `stream_id` on the wire, and a peer implementing MSC4495
+    // reads that as a legacy sender and shows it to everyone -- exactly what an absent or
+    // empty sharing policy is supposed to prevent. The destinations still have to be woken,
+    // or a quiet room would never get the update at all.
+    #[cfg(feature = "unstable-msc4495")]
+    if state_changed {
+        let joined_rooms = data::user::joined_rooms(sender_id).await?;
+        let remote_servers = data::room::joined_servers_for_rooms(&joined_rooms).await?;
+        sending::wake_servers(remote_servers.into_iter())?;
+    }
     #[cfg(feature = "unstable-msc4495")]
     let state_changed = false;
     if state_changed {

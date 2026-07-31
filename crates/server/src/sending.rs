@@ -361,6 +361,24 @@ pub async fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
 
     Ok(())
 }
+/// Wakes destinations so the sending guard builds and sends whatever EDUs are due.
+///
+/// Used where the EDU cannot simply be queued because its contents depend on the
+/// destination -- MSC4495 presence, where each server gets a different recipient delta.
+/// Without a wakeup those updates would sit until unrelated traffic happened to that
+/// destination.
+pub fn wake_servers<S: Iterator<Item = OwnedServerName>>(servers: S) -> AppResult<()> {
+    let conf = config::get();
+    for server in servers {
+        if !should_send_federation_target(&server, &conf.server_name, &conf.federation) {
+            debug!("not waking denied server: {server}");
+            continue;
+        }
+        notify(OutgoingKind::Normal(server))?;
+    }
+    Ok(())
+}
+
 #[tracing::instrument(skip(server, edu), level = "debug")]
 pub async fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
     let mut serialized = EduBuf::new();

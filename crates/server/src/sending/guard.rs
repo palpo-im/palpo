@@ -196,7 +196,23 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                     }
                 };
                 if new_events.is_empty() {
-                    // The periodic sweep already handled this wakeup.
+                    // A wakeup can also mean "there are EDUs to send" with nothing queued
+                    // behind them. EDUs are built at selection time rather than stored as
+                    // rows, so if this returned here they would wait for unrelated traffic
+                    // -- which in a quiet room may never come.
+                    if let OutgoingKind::Normal(server_name) = &outgoing_kind
+                        && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+                        && !select_edus.is_empty()
+                    {
+                        current_transaction_status
+                            .insert(outgoing_kind.clone(), TransactionStatus::Running);
+                        pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                        let events = select_edus
+                            .into_iter()
+                            .map(SendingEventType::Edu)
+                            .collect::<Vec<_>>();
+                        futures.push(super::send_events(outgoing_kind, events));
+                    }
                     continue;
                 }
                 match select_events(

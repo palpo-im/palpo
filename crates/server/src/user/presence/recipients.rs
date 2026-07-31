@@ -311,6 +311,43 @@ pub async fn mark_recipients_changed(user_id: &UserId) -> AppResult<()> {
     Ok(())
 }
 
+/// Users whose recipient snapshot is currently being fetched.
+///
+/// A peer can name any of its own users with a `prev_id` we do not hold, so the number of
+/// resyncs it can provoke is bounded only by the number of users it has. Collapsing
+/// concurrent requests for the same user keeps that from turning into an outbound request
+/// per inbound EDU.
+static RESYNCING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<OwnedUserId>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Fetches a recipient snapshot in the background.
+///
+/// Deliberately not awaited by the caller: this runs while handling an inbound federation
+/// transaction, which carries up to a hundred EDUs, and a peer whose snapshot endpoint
+/// stalls would otherwise hold that transaction open for the timeout multiplied by the
+/// number of EDUs it chose to send. The set stays empty until the fetch lands, which is
+/// what the proposal asks for.
+pub fn schedule_resync(origin: &ServerName, user_id: &UserId) {
+    {
+        let mut resyncing = RESYNCING.lock().expect("resync set is not poisoned");
+        if !resyncing.insert(user_id.to_owned()) {
+            return;
+        }
+    }
+
+    let origin = origin.to_owned();
+    let user_id = user_id.to_owned();
+    tokio::spawn(async move {
+        if let Err(e) = fetch_remote_set(&origin, &user_id).await {
+            warn!(%user_id, %origin, error = %e, "failed to re-fetch presence recipients");
+        }
+        RESYNCING
+            .lock()
+            .expect("resync set is not poisoned")
+            .remove(&user_id);
+    });
+}
+
 /// Asks the origin server for a snapshot of a user's recipient set.
 ///
 /// Used after a delta that does not fit our view. The proposal has the set treated as empty
