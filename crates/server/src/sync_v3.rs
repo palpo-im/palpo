@@ -484,7 +484,7 @@ async fn load_joined_room(
     // stream-like -- a client sees each sticky event once -- except that a user who has
     // just joined, or is syncing for the first time, gets every unexpired sticky event in
     // the room.
-    let sticky = load_sticky(
+    let (sticky, sticky_ttls) = load_sticky(
         room_id,
         if joined_since_incremental {
             None
@@ -497,7 +497,7 @@ async fn load_joined_room(
     .await
     .unwrap_or_else(|e| {
         warn!(room_id = %room_id, error = ?e, "failed to load sticky events");
-        Sticky::default()
+        (Sticky::default(), BTreeMap::new())
     });
 
     let since_tk = if let Some(since_tk) = since_tk {
@@ -938,7 +938,20 @@ async fn load_joined_room(
             events: timeline
                 .events
                 .iter()
-                .map(|(_, pdu)| pdu.to_sync_room_event())
+                .map(|(event_sn, pdu)| match sticky_ttls.get(event_sn) {
+                    // A sticky event that made it into the timeline is not repeated in the
+                    // sticky section, so this is the only copy the client gets -- it has to
+                    // be the one carrying the remaining stickiness.
+                    Some(ttl) => {
+                        let mut pdu = pdu.clone();
+                        pdu.pdu.unsigned.insert(
+                            crate::event::STICKY_TTL_KEY.to_owned(),
+                            serde_json::value::to_raw_value(ttl).expect("u64 is valid json"),
+                        );
+                        pdu.to_sync_room_event()
+                    }
+                    None => pdu.to_sync_room_event(),
+                })
                 .collect(),
         },
         state: State::Before(
@@ -1140,10 +1153,12 @@ pub struct TimelineData {
 /// sync, or the sync in which the user joined. Otherwise only sticky events past that
 /// position are returned, so each one reaches the client exactly once.
 ///
-/// Sticky events already present in `timeline.events` are skipped -- they are the same
-/// events, and repeating them would only bloat the response. The timeline filter has
-/// already been applied at this point, so an event the filter removed from the timeline is
-/// still delivered here.
+/// Sticky events already present in `timeline.events` are not repeated here -- they are the
+/// same events, and duplicating them would only bloat the response. Their remaining TTLs
+/// come back in the second value, keyed by sequence number, so the caller can annotate the
+/// timeline copy: it is the only copy the client sees and still has to carry the remaining
+/// stickiness. The timeline filter has already been applied at this point, so an event the
+/// filter removed from the timeline is delivered in the sticky section as normal.
 ///
 /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
 async fn load_sticky(
@@ -1151,16 +1166,23 @@ async fn load_sticky(
     since_sn: Option<Seqnum>,
     until_sn: Seqnum,
     timeline: &TimelineData,
-) -> AppResult<Sticky> {
+) -> AppResult<(Sticky, BTreeMap<Seqnum, u64>)> {
     let now = UnixMillis::now();
     let entries = crate::event::sticky::unexpired(room_id, since_sn, until_sn, now).await?;
     if entries.is_empty() {
-        return Ok(Sticky::default());
+        return Ok((Sticky::default(), BTreeMap::new()));
     }
 
     let mut events = Vec::with_capacity(entries.len());
+    let mut timeline_ttls = BTreeMap::new();
     for entry in entries {
         if timeline.events.contains_key(&entry.event_sn) {
+            // Not repeated in the sticky section; the caller annotates the timeline copy
+            // instead, since that is the only copy the client will see.
+            timeline_ttls.insert(
+                entry.event_sn,
+                crate::event::sticky::ttl_ms(entry.expires_at, now),
+            );
             continue;
         }
         let Ok(pdu) = timeline::get_pdu(&entry.event_id).await else {
@@ -1170,7 +1192,7 @@ async fn load_sticky(
             .push(crate::event::sticky::with_ttl(pdu, entry.expires_at, now).to_sync_room_event());
     }
 
-    Ok(Sticky { events })
+    Ok((Sticky { events }, timeline_ttls))
 }
 
 fn timeline_contains_own_join(timeline: &TimelineData, user_id: &UserId) -> bool {

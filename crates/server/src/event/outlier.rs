@@ -156,6 +156,10 @@ impl OutlierPdu {
         }
         .save()
         .await?;
+        // MSC4354: measure the sticky window from first receipt. An event can sit as an
+        // outlier for a while before its DAG is filled in, and starting the clock at
+        // promotion would hand that delay to the sender as extra stickiness.
+        crate::event::sticky::record(&pdu, event_sn, UnixMillis::now()).await?;
         let pdu = SnPduEvent {
             pdu,
             event_sn,

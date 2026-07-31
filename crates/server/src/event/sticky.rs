@@ -28,20 +28,25 @@ pub struct StickyEntry {
 
 /// Records the event's sticky window, if it has one.
 ///
-/// Called for every persisted event; events without a valid `msc4354_sticky` object are
-/// ordinary events and are not recorded. An event that is already expired by the time it
-/// reaches us -- an old sticky event arriving over federation -- is not recorded either,
-/// since it can never be delivered.
-pub async fn record(pdu: &PduEvent, received_at: UnixMillis) -> AppResult<()> {
+/// Called when the event is first persisted, not when it is promoted to the timeline. A
+/// federated event can sit as an outlier for a while before its DAG is filled in, and
+/// measuring the window from the promotion instead of the receipt would hand a sender with
+/// a clock set in the future the whole outlier-processing delay as extra stickiness --
+/// exactly the skew `sticky_expires_at` exists to bound.
+///
+/// Events without a valid `msc4354_sticky` object are ordinary events and are not recorded.
+/// Neither is one that is already expired on arrival -- an old sticky event coming in over
+/// federation -- since it can never be delivered.
+///
+/// `do_nothing` on conflict is what keeps the first receipt authoritative if the same event
+/// is stored again.
+pub async fn record(pdu: &PduEvent, event_sn: Seqnum, received_at: UnixMillis) -> AppResult<()> {
     let Some(expires_at) = pdu.sticky_expires_at(received_at) else {
         return Ok(());
     };
     if expires_at <= UnixMillis::now() {
         return Ok(());
     }
-    let Ok(event_sn) = crate::event::get_event_sn(&pdu.event_id).await else {
-        return Ok(());
-    };
 
     diesel::insert_into(event_stickies::table)
         .values((
@@ -69,14 +74,25 @@ pub async fn unexpired(
     until_sn: Seqnum,
     now: UnixMillis,
 ) -> AppResult<Vec<StickyEntry>> {
+    // Recorded on first storage, so an event that never made it out of the outlier stage,
+    // was soft failed, or was rejected still has a row here and must not be delivered.
+    let deliverable = events::table
+        .filter(events::is_outlier.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .select(events::id);
+
+    // Sync positions are half-open: the `since` token is the first position a client has
+    // not seen, and the token handed back is the first it will not see this time.
     let mut query = event_stickies::table
         .filter(event_stickies::room_id.eq(room_id))
         .filter(event_stickies::expires_at.gt(now.0 as i64))
-        .filter(event_stickies::event_sn.le(until_sn))
+        .filter(event_stickies::event_sn.lt(until_sn))
+        .filter(event_stickies::event_id.eq_any(deliverable))
         .into_boxed();
 
     if let Some(since_sn) = since_sn {
-        query = query.filter(event_stickies::event_sn.gt(since_sn));
+        query = query.filter(event_stickies::event_sn.ge(since_sn));
     }
 
     let rows = query

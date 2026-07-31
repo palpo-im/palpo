@@ -930,6 +930,10 @@ impl PduBuilder {
         .save()
         .await?;
 
+        // MSC4354: the sticky window is measured from when the event was first stored, so
+        // it is recorded here rather than when the event reaches the timeline.
+        crate::event::sticky::record(&pdu, event_sn, UnixMillis::now()).await?;
+
         Ok((
             SnPduEvent {
                 pdu,
