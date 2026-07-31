@@ -117,7 +117,10 @@ pub(crate) async fn process_incoming_pdu(
         .process_incoming(remote_server, is_backfill)
         .await?;
 
-    if incoming_pdu.rejected() {
+    // A soft-failed event is kept for inspection but must not reach the timeline. This
+    // matches `process_pulled_pdu`, and it is what keeps an event the room's Policy Server
+    // refused (MSC4284) from being promoted by the DAG-recovery paths.
+    if incoming_pdu.rejected() || incoming_pdu.soft_failed {
         return Ok(());
     }
 
@@ -237,6 +240,7 @@ pub(crate) async fn process_pulled_pdu(
                     if let Ok(pdu) = timeline::get_pdu(&next_id).await
                         && pdu.is_outlier
                         && !pdu.rejected()
+                        && !pdu.soft_failed
                     {
                         let content = pdu.get_content()?;
                         if let Err(e) =
@@ -287,6 +291,7 @@ pub async fn process_to_outlier_pdu(
             pdu: pdu.into_inner(),
             json_data: val,
             soft_failed: false,
+            policy_refused: false,
             remote_server: remote_server.to_owned(),
             room_id: room_id.to_owned(),
             room_version: room_version.to_owned(),
@@ -375,6 +380,7 @@ pub async fn process_to_outlier_pdu(
                 pdu: incoming_pdu,
                 json_data: val,
                 soft_failed: false,
+                policy_refused: false,
                 remote_server: remote_server.to_owned(),
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
@@ -386,9 +392,7 @@ pub async fn process_to_outlier_pdu(
         return Ok(None);
     }
 
-    // Events the Policy Server declined are kept (so admins can inspect them) but never
-    // reach the timeline, and are not used as prev_events.
-    let mut soft_failed = !policy_allowed;
+    let mut soft_failed = false;
     let (prev_events, missing_prev_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.prev_events).await?;
     if !missing_prev_event_ids.is_empty() {
@@ -487,6 +491,7 @@ pub async fn process_to_outlier_pdu(
     Ok(Some(OutlierPdu {
         pdu: incoming_pdu,
         soft_failed,
+        policy_refused: !policy_allowed,
         json_data: val,
         remote_server: remote_server.to_owned(),
         room_id: room_id.to_owned(),
