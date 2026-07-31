@@ -17,11 +17,15 @@ use crate::utils::read_response_limited;
 use crate::{AppError, AppResult, config};
 
 pub async fn fetch_remote_content(
-    _mxc: &str,
     server_name: &ServerName,
     media_id: &str,
     res: &mut Response,
 ) -> AppResult<()> {
+    check_fetch_authorized(&Mxc {
+        server_name,
+        media_id,
+    })?;
+
     let content_req = crate::core::media::content_request(
         &server_name.origin().await,
         crate::core::media::ContentReqArgs {
