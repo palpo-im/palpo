@@ -15,6 +15,8 @@ use crate::core::federation::transaction::{
 };
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceContent;
+#[cfg(feature = "unstable-msc4495")]
+use crate::core::presence::PresenceUpdate;
 use crate::core::serde::RawJsonValue;
 use crate::core::to_device::DeviceIdOrAllDevices;
 use crate::data::user::NewDbPresence;
@@ -151,6 +153,11 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
             continue;
         }
 
+        // MSC4495: keep our view of who this user shares presence with up to date before
+        // recording the transition, since that set is what limits who is shown it.
+        #[cfg(feature = "unstable-msc4495")]
+        track_presence_recipients(origin, &update).await;
+
         crate::data::user::set_presence(
             NewDbPresence {
                 user_id: update.user_id.clone(),
@@ -167,6 +174,63 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
         )
         .await
         .ok();
+    }
+}
+
+/// Applies an incoming update's recipient-set information ([MSC4495] inbound rules).
+///
+/// When the delta does not fit the view we hold, the set is emptied and a snapshot is
+/// requested from the origin. Emptying first is the conservative direction: a stale wide
+/// set would keep showing the user's presence to people they may have just denied, whereas
+/// a stale empty set only delays presence until the snapshot arrives.
+///
+/// [MSC4495]: https://github.com/matrix-org/matrix-spec-proposals/pull/4495
+#[cfg(feature = "unstable-msc4495")]
+async fn track_presence_recipients(origin: &ServerName, update: &PresenceUpdate) {
+    use crate::user::presence::recipients::{self, Inbound};
+
+    let user_id = &update.user_id;
+    let known = match recipients::remote_set(user_id).await {
+        Ok(known) => known,
+        Err(e) => {
+            warn!(%user_id, error = %e, "failed to read stored presence recipients");
+            return;
+        }
+    };
+    let known_stream_id = known.as_ref().map(|(stream_id, _)| *stream_id);
+
+    match recipients::classify(
+        known_stream_id,
+        update.stream_id,
+        update.prev_id,
+        &update.recipients,
+    ) {
+        // A sender that does not implement the proposal gets the legacy treatment, which
+        // is what our stored-set-absent path already does.
+        Inbound::Legacy | Inbound::Unchanged => {}
+        Inbound::Apply { stream_id, updates } => {
+            let mut set = known.map(|(_, set)| set).unwrap_or_default();
+            recipients::apply(&mut set, &updates);
+            if let Err(e) = recipients::store_remote_set(user_id, stream_id, &set).await {
+                warn!(%user_id, error = %e, "failed to store presence recipients");
+            }
+        }
+        Inbound::Resync => {
+            if let Err(e) = recipients::store_remote_set(
+                user_id,
+                update.stream_id.unwrap_or(0),
+                &Default::default(),
+            )
+            .await
+            {
+                warn!(%user_id, error = %e, "failed to clear presence recipients");
+            }
+            if let Err(e) =
+                crate::user::presence::recipients::fetch_remote_set(origin, user_id).await
+            {
+                warn!(%user_id, %origin, error = %e, "failed to re-fetch presence recipients");
+            }
+        }
     }
 }
 

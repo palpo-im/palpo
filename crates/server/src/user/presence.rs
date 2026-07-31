@@ -4,6 +4,11 @@ use crate::core::{UnixMillis, UserId};
 use crate::data::user::{NewDbPresence, last_presence};
 use crate::{AppResult, config, data, sending};
 
+#[cfg(feature = "unstable-msc4495")]
+pub mod recipients;
+#[cfg(feature = "unstable-msc4495")]
+pub mod sharing;
+
 /// Resets the presence timeout, so the user will stay in their current presence state.
 pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppResult<()> {
     if !config::get().presence.allow_local {

@@ -1016,6 +1016,38 @@ pub(super) async fn create_room(
     )
     .await?;
 
+    // 5.2b Presence sharing hint (MSC4495)
+    //
+    // Private rooms are where presence is actually wanted -- small groups, DMs -- so they
+    // invite clients to offer it; public rooms, whose size is the reason presence is
+    // expensive, do not. The event is written either way so a room's stance is explicit
+    // rather than resting on the "forbid by default" fallback.
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        use crate::core::events::StaticEventContent;
+        use crate::core::events::room::presence_sharing::{
+            PresenceSharingHint, RoomPresenceSharingEventContent,
+        };
+
+        timeline::build_and_append_pdu(
+            PduBuilder {
+                event_type: RoomPresenceSharingEventContent::TYPE.into(),
+                content: to_raw_value(&RoomPresenceSharingEventContent::new(match preset {
+                    RoomPreset::PublicChat => PresenceSharingHint::Forbid,
+                    _ => PresenceSharingHint::Suggest,
+                }))
+                .expect("event is valid, we just created it"),
+                state_key: Some("".to_owned()),
+                ..Default::default()
+            },
+            sender_id,
+            &room_id,
+            &room_version,
+            &state_lock,
+        )
+        .await?;
+    }
+
     // 5.3 Guest Access
     // timeline::build_and_append_pdu(
     //     PduBuilder {

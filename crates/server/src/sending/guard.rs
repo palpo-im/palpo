@@ -572,6 +572,63 @@ async fn select_edus_receipts_room(
     Ok(ReceiptMap { read })
 }
 
+/// What `server_name` must be told about `user_id`'s recipient set, or `None` when the
+/// user shares presence with nobody there and no update should be sent at all.
+///
+/// A user who has not written an `m.presence.sharing` configuration shares presence with
+/// nobody. MSC4495 is explicit that this must not fall back to legacy broadcasting:
+/// otherwise a client could opt out of selective presence simply by never writing the
+/// account data, which would defeat the point.
+///
+/// Recording what was sent happens here rather than after the transaction is acknowledged.
+/// That means a dropped transaction can leave the destination a step behind; it will notice
+/// from the `prev_id` on the next update and re-fetch the set. The opposite choice --
+/// recording only on success -- would resend a delta the destination had already applied.
+#[cfg(feature = "unstable-msc4495")]
+async fn selective_presence_delta(
+    server_name: &ServerName,
+    user_id: &UserId,
+) -> AppResult<Option<crate::user::presence::recipients::RecipientDelta>> {
+    use std::collections::BTreeSet;
+
+    use crate::user::presence::{recipients, sharing};
+
+    let current: BTreeSet<_> = sharing::recipients_of(user_id)
+        .await?
+        .into_iter()
+        .filter(|recipient| recipient.server_name() == server_name)
+        .collect();
+
+    let previous = recipients::last_sent(user_id, server_name).await?;
+    let (prev_id, previous_set) = match previous {
+        Some((prev_id, set)) => (Some(prev_id), set),
+        None => (None, BTreeSet::new()),
+    };
+
+    if current.is_empty() && previous_set.is_empty() {
+        return Ok(None);
+    }
+
+    let updates = recipients::diff(&previous_set, &current);
+    let stream_id = if updates.is_empty() {
+        // Nothing changed for this destination, so keep naming the position it already
+        // holds rather than inventing a new one it would have to resync against.
+        prev_id.unwrap_or(recipients::stream_id(user_id).await?)
+    } else {
+        recipients::advance_stream(user_id).await?
+    };
+
+    if !updates.is_empty() {
+        recipients::record_sent(user_id, server_name, stream_id, &current).await?;
+    }
+
+    Ok(Some(recipients::RecipientDelta {
+        stream_id,
+        prev_id: if updates.is_empty() { None } else { prev_id },
+        updates,
+    }))
+}
+
 /// Look for presence
 #[tracing::instrument(level = "trace", skip(server_name))]
 async fn select_edus_presence(
@@ -592,6 +649,14 @@ async fn select_edus_presence(
             continue;
         }
 
+        // MSC4495: what this destination is allowed to see, and how its view of the
+        // recipient set has to move to get there. `None` means the user shares presence
+        // with nobody on this server, so nothing is sent at all.
+        #[cfg(feature = "unstable-msc4495")]
+        let Some(delta) = selective_presence_delta(server_name, &user_id).await? else {
+            continue;
+        };
+
         let update = PresenceUpdate {
             user_id: user_id.clone(),
             presence: presence_event.content.presence,
@@ -599,11 +664,11 @@ async fn select_edus_presence(
             status_msg: presence_event.content.status_msg,
             last_active_ago: presence_event.content.last_active_ago.unwrap_or(0),
             #[cfg(feature = "unstable-msc4495")]
-            recipients: Default::default(),
+            recipients: delta.updates,
             #[cfg(feature = "unstable-msc4495")]
-            stream_id: None,
+            stream_id: Some(delta.stream_id),
             #[cfg(feature = "unstable-msc4495")]
-            prev_id: None,
+            prev_id: delta.prev_id,
         };
 
         presence_updates.insert(user_id, update);
