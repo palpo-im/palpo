@@ -489,6 +489,15 @@ pub async fn append_pdu(
                 )
                 .await?;
 
+                // MSC4262: a remote user has no row in `user_profiles`, so their name and
+                // avatar are only ever visible through this event. Feed the change into
+                // the profile stream so the sliding sync extension can deliver it like any
+                // other profile update, instead of remote members going stale forever.
+                #[cfg(feature = "unstable-msc4262")]
+                if crate::IsRemoteOrLocal::is_remote(&target_user_id) {
+                    record_remote_profile_change(pdu, &target_user_id).await;
+                }
+
                 // Invalidate appservice room cache when membership changes
                 // This ensures that when a bridge user joins a room, subsequent messages
                 // will correctly check if the appservice should receive them
@@ -899,6 +908,45 @@ pub async fn is_event_next_to_forward_gap(event: &PduEvent) -> AppResult<bool> {
         .filter(event_forward_extremities::room_id.eq(event.room_id()))
         .filter(event_forward_extremities::event_id.eq_any(event_ids));
     Ok(diesel_exists!(query, &mut connect().await?)?)
+}
+
+/// Records a remote user's membership-carried profile into the profile change stream.
+///
+/// Only for remote users: a local user's profile lives in `user_profiles` and is recorded
+/// by the write paths there, and a membership event only echoes it.
+///
+/// Values are compared against what the stream already reflects, so re-sending the same
+/// membership event -- which happens routinely -- does not produce a change.
+#[cfg(feature = "unstable-msc4262")]
+async fn record_remote_profile_change(pdu: &SnPduEvent, user_id: &UserId) {
+    use crate::core::events::room::member::RoomMemberEventContent;
+
+    let Ok(content) = pdu.get_content::<RoomMemberEventContent>() else {
+        return;
+    };
+
+    let previous = data::user::get_profile(user_id, None).await.ok().flatten();
+    let display_name_changed =
+        previous.as_ref().and_then(|p| p.display_name.clone()) != content.display_name;
+    let avatar_changed = previous
+        .as_ref()
+        .and_then(|p| p.avatar_url.clone())
+        .map(|url| url.to_string())
+        != content.avatar_url.as_ref().map(ToString::to_string);
+
+    if display_name_changed
+        && let Err(e) =
+            data::user::set_remote_profile_display_name(user_id, content.display_name.as_deref())
+                .await
+    {
+        warn!(%user_id, error = ?e, "failed to record remote display name");
+    }
+    if avatar_changed
+        && let Err(e) =
+            data::user::set_remote_profile_avatar_url(user_id, content.avatar_url.as_deref()).await
+    {
+        warn!(%user_id, error = ?e, "failed to record remote avatar url");
+    }
 }
 
 #[cfg(test)]

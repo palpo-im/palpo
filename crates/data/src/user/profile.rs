@@ -4,7 +4,7 @@ use diesel_async::RunQueryDsl;
 
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonObject, JsonValue};
-use crate::core::{MatrixError, OwnedMxcUri, Seqnum};
+use crate::core::{MatrixError, MxcUri, OwnedMxcUri, Seqnum};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
@@ -211,4 +211,64 @@ pub async fn profile_changes_since(
             },
         })
         .collect())
+}
+
+/// Mirrors a remote user's membership-carried display name into their profile row and the
+/// change stream (MSC4262).
+///
+/// Remote users get a profile row so that the one place sliding sync reads profiles from
+/// answers for them too; without it every remote member would be invisible to the
+/// extension.
+pub async fn set_remote_profile_display_name(
+    user_id: &UserId,
+    display_name: Option<&str>,
+) -> DataResult<()> {
+    upsert_remote_profile(user_id).await?;
+    diesel::update(
+        user_profiles::table
+            .filter(user_profiles::user_id.eq(user_id.as_str()))
+            .filter(user_profiles::room_id.is_null()),
+    )
+    .set(user_profiles::display_name.eq(display_name))
+    .execute(&mut connect().await?)
+    .await?;
+
+    record_profile_change(user_id, "displayname", display_name.map(|name| name.into())).await
+}
+
+/// Mirrors a remote user's membership-carried avatar into their profile row and the change
+/// stream (MSC4262).
+pub async fn set_remote_profile_avatar_url(
+    user_id: &UserId,
+    avatar_url: Option<&MxcUri>,
+) -> DataResult<()> {
+    upsert_remote_profile(user_id).await?;
+    diesel::update(
+        user_profiles::table
+            .filter(user_profiles::user_id.eq(user_id.as_str()))
+            .filter(user_profiles::room_id.is_null()),
+    )
+    .set(user_profiles::avatar_url.eq(avatar_url.map(|url| url.as_str())))
+    .execute(&mut connect().await?)
+    .await?;
+
+    record_profile_change(
+        user_id,
+        "avatar_url",
+        avatar_url.map(|url| url.as_str().into()),
+    )
+    .await
+}
+
+/// Ensures a remote user has a global profile row to write into.
+async fn upsert_remote_profile(user_id: &UserId) -> DataResult<()> {
+    diesel::insert_into(user_profiles::table)
+        .values((
+            user_profiles::user_id.eq(user_id.as_str()),
+            user_profiles::room_id.eq(None::<String>),
+        ))
+        .on_conflict_do_nothing()
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
 }

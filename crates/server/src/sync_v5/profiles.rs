@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::Seqnum;
 use crate::core::client::sync_events::v5::{ExtensionRoomConfig, Profiles, SyncInfo, TodoRooms};
+use crate::core::events::StateEventType;
+use crate::core::events::room::member::RoomMemberEventContent;
 use crate::core::identifiers::*;
 use crate::core::profile::UserProfileUpdate;
 use crate::core::serde::JsonValue;
@@ -35,9 +37,9 @@ pub(super) async fn collect(
 ) -> AppResult<Profiles> {
     let SyncInfo {
         sender_id,
+        device_id,
         since_sn,
         req_body,
-        ..
     } = sync_info;
     let config = &req_body.extensions.profiles;
     if !config.enabled.unwrap_or(false) {
@@ -53,9 +55,25 @@ pub(super) async fn collect(
 
     let mut users: BTreeMap<OwnedUserId, Option<UserProfileUpdate>> = BTreeMap::new();
 
-    // Rooms whose members need a full profile snapshot: those entering the response's room
-    // subset for the first time in this connection. On an initial sync that is all of them.
-    for room_id in snapshot_rooms(config_rooms(config, todo_rooms, listed_rooms), todo_rooms) {
+    // Rooms whose members need a full profile snapshot: those this connection has not been
+    // sent profiles for yet. Tracked per extension rather than reusing whether the room
+    // itself was delivered, because a client can enable the extension -- or widen a
+    // selector -- long after the room first appeared, and would otherwise get incremental
+    // changes with no base to apply them to.
+    let selected = config_rooms(
+        config,
+        todo_rooms,
+        listed_rooms,
+        &req_body.room_subscriptions,
+    );
+    let fresh = crate::sync_v5::take_unsnapshotted_profile_rooms(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        selected,
+    )
+    .await;
+    for room_id in fresh {
         // A room subscription is accepted on existence alone, so membership has to be
         // checked here: without it, anyone who knows a private room's ID could subscribe
         // to it and read back its member roster and profiles.
@@ -66,7 +84,7 @@ pub(super) async fn collect(
             if users.contains_key(&user_id) {
                 continue;
             }
-            if let Some(profile) = snapshot(&user_id, &fields).await? {
+            if let Some(profile) = snapshot(&user_id, &room_id, &fields).await? {
                 users.insert(user_id, Some(profile));
             }
         }
@@ -135,28 +153,56 @@ fn apply(update: &mut UserProfileUpdate, field: String, value: Option<JsonValue>
     }
 }
 
-/// The current profile of a user as a full update, or `None` if they have no profile.
-async fn snapshot(user_id: &UserId, fields: &FieldFilter) -> AppResult<Option<UserProfileUpdate>> {
-    let Some(profile) = data::user::get_profile(user_id, None).await? else {
-        return Ok(None);
-    };
-
+/// The current profile of a user as a full update, or `None` if nothing is known.
+///
+/// Only local users have a row in `user_profiles`. A remote member's name and avatar are
+/// only ever seen through their `m.room.member` event, so that is the fallback -- without
+/// it every remote member would be silently missing from the snapshot.
+async fn snapshot(
+    user_id: &UserId,
+    room_id: &RoomId,
+    fields: &FieldFilter,
+) -> AppResult<Option<UserProfileUpdate>> {
     let mut update = UserProfileUpdate::new();
-    if let Some(display_name) = profile.display_name
-        && wanted(fields, "displayname")
-    {
-        update.set("displayname".to_owned(), display_name.into());
-    }
-    if let Some(avatar_url) = profile.avatar_url
-        && wanted(fields, "avatar_url")
-    {
-        update.set("avatar_url".to_owned(), avatar_url.as_str().into());
-    }
-    if let Some(custom) = profile.fields.as_object() {
-        for (field, value) in custom {
-            if wanted(fields, field) {
-                update.set(field.clone(), value.clone());
+
+    if let Some(profile) = data::user::get_profile(user_id, None).await? {
+        if let Some(display_name) = profile.display_name
+            && wanted(fields, "displayname")
+        {
+            update.set("displayname".to_owned(), display_name.into());
+        }
+        if let Some(avatar_url) = profile.avatar_url
+            && wanted(fields, "avatar_url")
+        {
+            update.set("avatar_url".to_owned(), avatar_url.as_str().into());
+        }
+        if let Some(custom) = profile.fields.as_object() {
+            for (field, value) in custom {
+                if wanted(fields, field) {
+                    update.set(field.clone(), value.clone());
+                }
             }
+        }
+    }
+
+    if update.is_empty()
+        && let Ok(member) = crate::room::get_state_content::<RoomMemberEventContent>(
+            room_id,
+            &StateEventType::RoomMember,
+            user_id.as_str(),
+            None,
+        )
+        .await
+    {
+        if let Some(display_name) = member.display_name
+            && wanted(fields, "displayname")
+        {
+            update.set("displayname".to_owned(), display_name.into());
+        }
+        if let Some(avatar_url) = member.avatar_url
+            && wanted(fields, "avatar_url")
+        {
+            update.set("avatar_url".to_owned(), avatar_url.as_str().into());
         }
     }
 
@@ -174,6 +220,7 @@ fn config_rooms(
     config: &crate::core::client::sync_events::v5::ProfilesConfig,
     todo_rooms: &TodoRooms,
     listed_rooms: &BTreeMap<String, BTreeSet<OwnedRoomId>>,
+    subscriptions: &BTreeMap<OwnedRoomId, crate::core::client::sync_events::v5::RoomSubscription>,
 ) -> BTreeSet<OwnedRoomId> {
     if config.lists.is_none() && config.rooms.is_none() {
         return todo_rooms.keys().cloned().collect();
@@ -187,32 +234,16 @@ fn config_rooms(
     }
     for room in config.rooms.iter().flatten() {
         match room {
-            ExtensionRoomConfig::AllSubscribed => rooms.extend(todo_rooms.keys().cloned()),
+            // `*` is defined as the global room subscriptions, not the whole room subset
+            // of the response: a list the client did not select for this extension must
+            // not be pulled in by the wildcard.
+            ExtensionRoomConfig::AllSubscribed => rooms.extend(subscriptions.keys().cloned()),
             ExtensionRoomConfig::Room(room_id) => {
                 rooms.insert(room_id.clone());
             }
         }
     }
     rooms
-}
-
-/// Of the selected rooms, those entering the response's room subset for the first time.
-///
-/// `room_since_sn == 0` is how sliding sync marks a room the connection has not sent
-/// anything for yet, which is exactly MSC4262's "enters this subset for the first time".
-fn snapshot_rooms(
-    selected: BTreeSet<OwnedRoomId>,
-    todo_rooms: &TodoRooms,
-) -> impl Iterator<Item = OwnedRoomId> + use<> {
-    let initial: BTreeSet<OwnedRoomId> = todo_rooms
-        .iter()
-        .filter(|(_, todo)| todo.room_since_sn == 0)
-        .map(|(room_id, _)| room_id.clone())
-        .collect();
-
-    selected
-        .into_iter()
-        .filter(move |room_id| initial.contains(room_id))
 }
 
 /// Users who have stopped sharing a room with the syncing user.

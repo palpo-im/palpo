@@ -125,6 +125,13 @@ struct SlidingSyncCache {
     known_rooms: KnownRooms, // For every room, the room_since_sn number
     extensions: sync_events::v5::ExtensionsConfig,
     required_state: BTreeSet<Seqnum>,
+    /// Rooms whose member profiles have been sent in full on this connection (MSC4262).
+    ///
+    /// Tracked separately from `known_rooms` because a room can have been delivered long
+    /// before the profiles extension was switched on, or before a selector started
+    /// covering it -- and in both cases it still needs its snapshot.
+    #[serde(default)]
+    profile_rooms: BTreeSet<OwnedRoomId>,
 }
 
 /// In-memory cache backed by database for cross-instance persistence.
@@ -420,6 +427,7 @@ pub async fn sync_events(
         },
     };
 
+    #[cfg_attr(not(feature = "unstable-msc4262"), allow(unused_variables))]
     let listed_rooms = process_lists(
         sync_info,
         &all_invited_rooms,
@@ -1538,6 +1546,38 @@ pub async fn is_required_state_send(
     let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
     let cached = entry.lock().unwrap();
     cached.required_state.contains(&event_sn)
+}
+
+/// Of `rooms`, those whose profiles this connection has not been sent yet, marking them
+/// sent in the same step ([MSC4262]).
+///
+/// [MSC4262]: https://github.com/matrix-org/matrix-spec-proposals/pull/4262
+#[cfg(feature = "unstable-msc4262")]
+pub async fn take_unsnapshotted_profile_rooms(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    rooms: BTreeSet<OwnedRoomId>,
+) -> BTreeSet<OwnedRoomId> {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    let (fresh, cache_snapshot) = {
+        let cached = &mut entry.lock().unwrap();
+        let fresh: BTreeSet<OwnedRoomId> = rooms
+            .into_iter()
+            .filter(|room_id| !cached.profile_rooms.contains(room_id))
+            .collect();
+        cached.profile_rooms.extend(fresh.iter().cloned());
+        (fresh, cached.clone())
+    };
+    persist_connection(
+        &user_id.to_owned(),
+        &device_id.to_owned(),
+        conn_id,
+        &cache_snapshot,
+    )
+    .await;
+    fresh
 }
 
 #[cfg(test)]
