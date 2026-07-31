@@ -830,8 +830,16 @@ pub async fn build_and_append_pdu(
     // anywhere. A refusal means the policy server considers the event spam, so the client
     // request fails rather than the event being sent out unsigned. `append_pdu` persists
     // the signature we obtained, so it travels with the event over federation.
+    //
+    // `hash_sign_save` has already written the event as an outlier, and a refused event is
+    // never going to be promoted, so it is removed here. Leaving it would accumulate one
+    // dead row per rejected send -- the client retries with a new timestamp and gets a new
+    // event ID each time, since the transaction ID is only recorded on success.
     let version_rules = crate::room::get_version_rules(room_version)?;
-    crate::room::policy::check_event(room_id, &mut pdu_json, &version_rules).await?;
+    if let Err(e) = crate::room::policy::check_event(room_id, &mut pdu_json, &version_rules).await {
+        discard_unsent_event(&pdu.event_id).await;
+        return Err(e);
+    }
 
     // let conf = crate::config::get();
     // let admin_room = super::resolve_local_alias(
@@ -857,6 +865,30 @@ pub async fn build_and_append_pdu(
     crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
 
     Ok(pdu)
+}
+
+/// Removes an event that was persisted as an outlier but will never be appended.
+///
+/// Best-effort: failing to clean up must not mask the reason the event was rejected.
+async fn discard_unsent_event(event_id: &EventId) {
+    let Ok(mut conn) = connect().await else {
+        return;
+    };
+    for result in [
+        diesel::delete(event_datas::table.filter(event_datas::event_id.eq(event_id)))
+            .execute(&mut conn)
+            .await,
+        diesel::delete(event_points::table.filter(event_points::event_id.eq(event_id)))
+            .execute(&mut conn)
+            .await,
+        diesel::delete(events::table.filter(events::id.eq(event_id)))
+            .execute(&mut conn)
+            .await,
+    ] {
+        if let Err(e) = result {
+            warn!(%event_id, error = ?e, "failed to discard an unsent event");
+        }
+    }
 }
 
 /// Replace a PDU with the redacted form.
