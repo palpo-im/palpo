@@ -137,7 +137,7 @@ pub(super) async fn for_dehydrated(
     depot: &mut Depot,
 ) -> JsonResult<DehydratedDeviceEventsResBody> {
     let authed = depot.authed_info()?;
-    let body = collect_dehydrated_events(
+    let (body, _) = collect_dehydrated_events(
         authed.user_id(),
         &args.device_id,
         args.from.as_deref(),
@@ -152,8 +152,9 @@ pub(super) async fn for_dehydrated(
 ///
 /// The `POST` form comes from an earlier draft of the MSC and is kept for clients that
 /// still use it. It differs from `GET` in taking the resume token in the body and in
-/// always returning `next_batch`, so a client cannot use its absence to detect the last
-/// batch; those clients stop when a response comes back empty.
+/// always returning `next_batch`; those clients stop when a response comes back empty
+/// rather than when the token is absent, so the token must always move past what was
+/// just returned.
 ///
 /// [MSC3814]: https://github.com/matrix-org/matrix-spec-proposals/pull/3814
 #[endpoint]
@@ -164,20 +165,21 @@ pub(super) async fn for_dehydrated_legacy(
     depot: &mut Depot,
 ) -> JsonResult<DehydratedDeviceEventsResBody> {
     let authed = depot.authed_info()?;
-    let next_batch = body.into_inner().next_batch;
+    let requested_from = body.into_inner().next_batch;
 
-    let mut body = collect_dehydrated_events(
+    let (mut body, position) = collect_dehydrated_events(
         authed.user_id(),
         &args.device_id,
-        next_batch.as_deref(),
+        requested_from.as_deref(),
         args.limit,
     )
     .await?;
 
-    // Always present in this form, even for the final batch.
-    if body.next_batch.is_none() {
-        body.next_batch = Some(next_batch.unwrap_or_else(|| "0".to_owned()));
-    }
+    body.next_batch = Some(legacy_next_batch(
+        body.next_batch.take(),
+        position,
+        requested_from,
+    ));
 
     json_ok(body)
 }
@@ -187,7 +189,7 @@ async fn collect_dehydrated_events(
     device_id: &DeviceId,
     from: Option<&str>,
     limit: Option<usize>,
-) -> AppResult<DehydratedDeviceEventsResBody> {
+) -> AppResult<(DehydratedDeviceEventsResBody, Option<Seqnum>)> {
     // Only the user's current dehydrated device may be read this way; any other device ID
     // -- including one of the user's live devices -- is forbidden, per MSC3814.
     let dehydrated_device_id = data::user::get_dehydrated_device(user_id)
@@ -213,7 +215,8 @@ async fn collect_dehydrated_events(
     // The batch is the last one when nothing follows its final message. Deciding this from
     // the number of events returned would be wrong when the inbox happens to hold exactly
     // `limit` more.
-    let next_batch = match events.last().map(|(occur_sn, _)| *occur_sn) {
+    let position = events.last().map(|(occur_sn, _)| *occur_sn);
+    let next_batch = match position {
         Some(last_sn)
             if data::user::device::has_to_device_events_after(user_id, device_id, last_sn)
                 .await? =>
@@ -223,10 +226,30 @@ async fn collect_dehydrated_events(
         _ => None,
     };
 
-    Ok(DehydratedDeviceEventsResBody {
-        events: events.into_iter().map(|(_, event)| event).collect(),
-        next_batch,
-    })
+    Ok((
+        DehydratedDeviceEventsResBody {
+            events: events.into_iter().map(|(_, event)| event).collect(),
+            next_batch,
+        },
+        position,
+    ))
+}
+
+/// The token the deprecated `POST` form returns.
+///
+/// That form always returns a token, so a client cannot use its absence to detect the last
+/// batch and instead stops when a response comes back empty. The token must therefore still
+/// advance past whatever was just returned: handing back the request's own token on a final
+/// non-empty batch would return the same batch forever.
+fn legacy_next_batch(
+    computed: Option<String>,
+    position: Option<Seqnum>,
+    requested: Option<String>,
+) -> String {
+    computed
+        .or_else(|| position.map(|position| position.to_string()))
+        .or(requested)
+        .unwrap_or_else(|| "0".to_owned())
 }
 
 /// Parses a `next_batch` / `from` token into the stream position it names.
@@ -247,7 +270,9 @@ fn resolve_limit(limit: Option<usize>) -> usize {
 
 #[cfg(test)]
 mod dehydrated_tests {
-    use super::{DEFAULT_EVENT_LIMIT, MAX_EVENT_LIMIT, parse_batch_token, resolve_limit};
+    use super::{
+        DEFAULT_EVENT_LIMIT, MAX_EVENT_LIMIT, legacy_next_batch, parse_batch_token, resolve_limit,
+    };
 
     #[test]
     fn batch_tokens_are_stream_positions() {
@@ -259,6 +284,22 @@ mod dehydrated_tests {
         assert!(parse_batch_token(Some("")).is_err());
         assert!(parse_batch_token(Some("abc")).is_err());
         assert!(parse_batch_token(Some("1.5")).is_err());
+    }
+
+    #[test]
+    fn the_legacy_token_always_moves_forward() {
+        // More to come: use the token the batch itself produced.
+        assert_eq!(
+            legacy_next_batch(Some("9".to_owned()), Some(9), Some("4".to_owned())),
+            "9"
+        );
+        // Final non-empty batch: the GET form omits the token, but this form must still
+        // advance past the messages returned, or the client asks for them forever.
+        assert_eq!(legacy_next_batch(None, Some(9), Some("4".to_owned())), "9");
+        // Nothing returned: stay where the client already was.
+        assert_eq!(legacy_next_batch(None, None, Some("4".to_owned())), "4");
+        // Nothing returned and no prior token: the start of the stream.
+        assert_eq!(legacy_next_batch(None, None, None), "0");
     }
 
     #[test]
