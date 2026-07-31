@@ -70,11 +70,19 @@ pub async fn record(pdu: &PduEvent, event_sn: Seqnum, received_at: UnixMillis) -
 /// every client, which is what the delivery guarantee requires.
 ///
 /// The expiry is untouched: it still runs from first receipt.
-pub async fn mark_deliverable(event_id: &EventId) -> AppResult<()> {
+pub async fn mark_deliverable(pdu: &PduEvent) -> AppResult<()> {
+    // Every appended event reaches this, so nothing may touch the database -- let alone
+    // consume a stream position -- unless the event is actually sticky. `sticky_duration_ms`
+    // reads the already-parsed PDU and is the same predicate `record` used to decide
+    // whether there is a row at all.
+    if pdu.sticky_duration_ms().is_none() {
+        return Ok(());
+    }
+
     let deliver_sn = crate::data::next_sn().await?;
     diesel::update(
         event_stickies::table
-            .filter(event_stickies::event_id.eq(event_id))
+            .filter(event_stickies::event_id.eq(&pdu.event_id))
             .filter(event_stickies::deliver_sn.is_null()),
     )
     .set(event_stickies::deliver_sn.eq(deliver_sn))

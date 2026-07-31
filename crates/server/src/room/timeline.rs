@@ -581,7 +581,7 @@ pub async fn append_pdu(
 
     // MSC4354: the event is on the timeline now, so give it a delivery position clients
     // have not synced past yet.
-    crate::event::sticky::mark_deliverable(&pdu.event_id).await?;
+    crate::event::sticky::mark_deliverable(pdu).await?;
 
     for prev_id in &pdu.prev_events {
         let new_edge = NewDbEventEdge {
@@ -811,7 +811,11 @@ pub async fn build_and_append_pdu(
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<SnPduEvent> {
-    if let Some(state_key) = &pdu_builder.state_key
+    // Identical content is normally a no-op, but a sticky send is asking for a fresh
+    // sticky window even when the value has not moved -- refreshing an MSC4354 state event
+    // is the whole point of sending it again.
+    if pdu_builder.sticky_duration_ms.is_none()
+        && let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
             room_id,
             &pdu_builder.event_type.to_string().into(),
