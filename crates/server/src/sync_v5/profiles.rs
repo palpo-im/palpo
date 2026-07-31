@@ -16,9 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::Seqnum;
-use crate::core::client::sync_events::v5::{
-    ExtensionRoomConfig, KnownRooms, Profiles, SyncInfo, TodoRooms,
-};
+use crate::core::client::sync_events::v5::{ExtensionRoomConfig, Profiles, SyncInfo, TodoRooms};
 use crate::core::identifiers::*;
 use crate::core::profile::UserProfileUpdate;
 use crate::core::serde::JsonValue;
@@ -32,7 +30,7 @@ pub(super) async fn collect(
     sync_info: SyncInfo<'_>,
     all_joined_rooms: &[&RoomId],
     todo_rooms: &TodoRooms,
-    known_rooms: &KnownRooms,
+    listed_rooms: &BTreeMap<String, BTreeSet<OwnedRoomId>>,
     until_sn: Seqnum,
 ) -> AppResult<Profiles> {
     let SyncInfo {
@@ -57,7 +55,13 @@ pub(super) async fn collect(
 
     // Rooms whose members need a full profile snapshot: those entering the response's room
     // subset for the first time in this connection. On an initial sync that is all of them.
-    for room_id in snapshot_rooms(config_rooms(config, todo_rooms, known_rooms), todo_rooms) {
+    for room_id in snapshot_rooms(config_rooms(config, todo_rooms, listed_rooms), todo_rooms) {
+        // A room subscription is accepted on existence alone, so membership has to be
+        // checked here: without it, anyone who knows a private room's ID could subscribe
+        // to it and read back its member roster and profiles.
+        if !crate::room::user::is_joined(sender_id, &room_id).await? {
+            continue;
+        }
         for user_id in crate::room::joined_users(&room_id, None).await? {
             if users.contains_key(&user_id) {
                 continue;
@@ -95,7 +99,7 @@ pub(super) async fn collect(
 
     // A user who is no longer in any room with the syncing user gets a `null`, telling the
     // client it can stop tracking them.
-    for user_id in departed(all_joined_rooms, since_sn).await? {
+    for user_id in departed(all_joined_rooms, since_sn, until_sn).await? {
         if user_id == sender_id {
             continue;
         }
@@ -162,11 +166,14 @@ async fn snapshot(user_id: &UserId, fields: &FieldFilter) -> AppResult<Option<Us
 /// The rooms the extension applies to, honouring the `lists` and `rooms` selectors.
 ///
 /// With no selector the extension covers the whole room subset of the response, which is
-/// what a client that just sets `enabled` expects.
+/// what a client that just sets `enabled` expects. List selectors resolve against what the
+/// lists produced in *this* response, not the cache from the previous one -- the cache is
+/// empty on an initial sync and stale for exactly the rooms that have just entered a list,
+/// which are the ones that need a snapshot.
 fn config_rooms(
     config: &crate::core::client::sync_events::v5::ProfilesConfig,
     todo_rooms: &TodoRooms,
-    known_rooms: &KnownRooms,
+    listed_rooms: &BTreeMap<String, BTreeSet<OwnedRoomId>>,
 ) -> BTreeSet<OwnedRoomId> {
     if config.lists.is_none() && config.rooms.is_none() {
         return todo_rooms.keys().cloned().collect();
@@ -174,8 +181,8 @@ fn config_rooms(
 
     let mut rooms = BTreeSet::new();
     for list_id in config.lists.iter().flatten() {
-        if let Some(list_rooms) = known_rooms.get(list_id) {
-            rooms.extend(list_rooms.keys().cloned());
+        if let Some(list_rooms) = listed_rooms.get(list_id) {
+            rooms.extend(list_rooms.iter().cloned());
         }
     }
     for room in config.rooms.iter().flatten() {
@@ -208,23 +215,31 @@ fn snapshot_rooms(
         .filter(move |room_id| initial.contains(room_id))
 }
 
-/// Users who were in a room with the syncing user at `since_sn` but no longer are.
+/// Users who have stopped sharing a room with the syncing user.
+///
+/// Derived from membership rows that now say `leave` or `ban`, rather than from a
+/// reconstruction of who was joined at `since_sn`: membership updates replace the previous
+/// row, so the old joined state is not recoverable from the current table.
+///
+/// A user is only reported once they are gone from *every* room the syncing user is in --
+/// leaving one shared room while remaining in another is not a departure.
 async fn departed(
     all_joined_rooms: &[&RoomId],
     since_sn: Seqnum,
+    until_sn: Seqnum,
 ) -> AppResult<BTreeSet<OwnedUserId>> {
     if since_sn == 0 {
         return Ok(BTreeSet::new());
     }
 
-    let mut before = BTreeSet::new();
-    let mut now = BTreeSet::new();
+    let mut left = BTreeSet::new();
+    let mut still_joined = BTreeSet::new();
     for room_id in all_joined_rooms {
-        before.extend(crate::room::joined_users(room_id, Some(since_sn)).await?);
-        now.extend(crate::room::joined_users(room_id, None).await?);
+        left.extend(data::room::departed_users_since(room_id, since_sn, until_sn).await?);
+        still_joined.extend(crate::room::joined_users(room_id, None).await?);
     }
 
-    Ok(before.difference(&now).cloned().collect())
+    Ok(left.difference(&still_joined).cloned().collect())
 }
 
 #[cfg(test)]

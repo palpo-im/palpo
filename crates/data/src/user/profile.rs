@@ -140,15 +140,17 @@ pub struct ProfileChange {
 /// last sync position without the server having to diff whole profiles.
 ///
 /// [MSC4262]: https://github.com/matrix-org/matrix-spec-proposals/pull/4262
+/// The stream position is left to the column's sequence default, so it is consumed by the
+/// statement that writes the row. Taking it separately would publish a position before the
+/// row it names existed, and a sync landing in that window would step past the change and
+/// never deliver it.
 pub async fn record_profile_change(
     user_id: &UserId,
     field: &str,
     value: Option<JsonValue>,
 ) -> DataResult<()> {
-    let occur_sn = crate::next_sn().await?;
     diesel::insert_into(user_profile_changes::table)
         .values((
-            user_profile_changes::occur_sn.eq(occur_sn),
             user_profile_changes::user_id.eq(user_id.as_str()),
             user_profile_changes::field.eq(field),
             user_profile_changes::value.eq(&value),
@@ -159,7 +161,12 @@ pub async fn record_profile_change(
     Ok(())
 }
 
-/// Profile changes in `(since_sn, until_sn]`, oldest first.
+/// Profile changes in `[since_sn, until_sn)`, oldest first.
+///
+/// The bounds are half-open to match sync tokens: `since_sn` is the first position the
+/// client has not seen, and the token it gets back is the first position it will not see
+/// this time. An exclusive lower bound here would skip a change written at exactly the
+/// position the client was handed last time.
 ///
 /// Restricted to `users` when given, which is how sliding sync limits updates to the people
 /// the syncing user shares a room with. An empty `users` slice yields nothing rather than
@@ -174,8 +181,8 @@ pub async fn profile_changes_since(
     }
 
     let mut query = user_profile_changes::table
-        .filter(user_profile_changes::occur_sn.gt(since_sn))
-        .filter(user_profile_changes::occur_sn.le(until_sn))
+        .filter(user_profile_changes::occur_sn.ge(since_sn))
+        .filter(user_profile_changes::occur_sn.lt(until_sn))
         .into_boxed();
     if let Some(users) = users {
         query = query.filter(user_profile_changes::user_id.eq_any(users));

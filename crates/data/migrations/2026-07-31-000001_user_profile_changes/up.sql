@@ -6,12 +6,16 @@
 -- position from the same `occur_sn_seq` sequence that orders events, so a sync
 -- can select exactly the changes a client has not seen.
 --
+-- `occur_sn` is allocated by the same sequence default the other incremental
+-- sync streams use (`user_datas`, `device_inboxes`), so the position is consumed
+-- in the statement that writes the row rather than ahead of it.
+--
 -- `removed` distinguishes a cleared field from a field whose stored value is
 -- JSON `null`; the spec allows servers to store `null` as a value, so the two
 -- cases cannot be told apart from `value` alone.
 CREATE TABLE user_profile_changes (
     id BIGSERIAL PRIMARY KEY,
-    occur_sn BIGINT NOT NULL,
+    occur_sn BIGINT NOT NULL DEFAULT nextval('occur_sn_seq'),
     user_id TEXT NOT NULL,
     field TEXT NOT NULL,
     value JSONB,

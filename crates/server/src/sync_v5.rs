@@ -420,7 +420,7 @@ pub async fn sync_events(
         },
     };
 
-    process_lists(
+    let listed_rooms = process_lists(
         sync_info,
         &all_invited_rooms,
         &all_joined_rooms,
@@ -443,8 +443,8 @@ pub async fn sync_events(
             sync_info,
             &all_joined_rooms,
             &todo_rooms,
-            known_rooms,
-            curr_sn,
+            &listed_rooms,
+            next_batch,
         )
         .await?;
     }
@@ -477,7 +477,11 @@ async fn process_lists(
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
     res_body: &mut SyncEventsResBody,
-) -> AppResult<()> {
+) -> AppResult<BTreeMap<String, BTreeSet<OwnedRoomId>>> {
+    // What each list actually resolved to in this response. The cached `known_rooms` is
+    // the previous request's answer, so it is empty on an initial sync and stale for any
+    // room that has just entered a list.
+    let mut selected: BTreeMap<String, BTreeSet<OwnedRoomId>> = BTreeMap::new();
     for (list_id, list) in &req_body.lists {
         let active_rooms = compute_active_rooms(
             list,
@@ -554,6 +558,8 @@ async fn process_lists(
             .lists
             .insert(list_id.clone(), sync_events::v5::SyncList { count, ops });
 
+        selected.insert(list_id.clone(), new_known_rooms.clone());
+
         crate::sync_v5::update_sync_known_rooms(
             sender_id.to_owned(),
             device_id.to_owned(),
@@ -564,7 +570,7 @@ async fn process_lists(
         )
         .await;
     }
-    Ok(())
+    Ok(selected)
 }
 
 async fn fetch_subscriptions(
