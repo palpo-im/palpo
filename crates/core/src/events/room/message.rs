@@ -335,7 +335,7 @@ impl RoomMessageEventContent {
     }
 
     /// Get the thread relation from this content, if any.
-    fn thread(&self) -> Option<&Thread> {
+    pub fn thread(&self) -> Option<&Thread> {
         self.relates_to
             .as_ref()
             .and_then(|relates_to| as_variant!(relates_to, Relation::Thread))
