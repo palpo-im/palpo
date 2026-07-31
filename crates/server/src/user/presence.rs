@@ -84,7 +84,15 @@ pub async fn set_presence(
         occur_sn: None,
     };
 
+    #[cfg_attr(feature = "unstable-msc4495", allow(unused_variables))]
     let state_changed = data::user::set_presence(db_presence, force).await?;
+    // With selective presence the recipient scoping lives in the sending guard's EDU
+    // selection, which runs off the presence row we just wrote. Broadcasting here as well
+    // would put an update with no `stream_id` on the wire, and a peer implementing
+    // MSC4495 reads that as a legacy sender and shows it to everyone -- exactly what an
+    // absent or empty sharing policy is supposed to prevent.
+    #[cfg(feature = "unstable-msc4495")]
+    let state_changed = false;
     if state_changed {
         let edu = Edu::Presence(PresenceContent {
             push: vec![PresenceUpdate {

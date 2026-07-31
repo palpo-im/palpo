@@ -16,17 +16,26 @@ CREATE TABLE presence_recipient_streams (
     stream_id BIGINT NOT NULL
 );
 
--- What we last told each destination about each local user's recipient set.
+-- What each destination has been told about each local user's recipient set.
 --
 -- `recipients` holds only the destination's own users, which is what the delta
 -- for that destination is computed against, and what the recovery endpoint
 -- answers with. `stream_id` is the position that set corresponds to and becomes
 -- the `prev_id` of the next delta.
+--
+-- `pending_recipients` is a delta that has been put on the wire but not yet
+-- acknowledged; it is promoted into `recipients` when the destination's EDU
+-- cursor advances past the transaction carrying it. Writing straight into
+-- `recipients` instead would lose a removal whose transaction failed: the next
+-- pass would see nothing left to remove while the destination still held the
+-- recipient.
 CREATE TABLE presence_recipient_sets (
     user_id TEXT NOT NULL,
     server_id TEXT NOT NULL,
     stream_id BIGINT NOT NULL,
     recipients JSONB NOT NULL,
+    pending_stream_id BIGINT,
+    pending_recipients JSONB,
     PRIMARY KEY (user_id, server_id)
 );
 

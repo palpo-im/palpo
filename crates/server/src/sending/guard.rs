@@ -102,6 +102,13 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
 
                         // The transaction reached the destination; persist its EDU
                         // window so the next selection resumes after it.
+                        #[cfg(feature = "unstable-msc4495")]
+                        if let OutgoingKind::Normal(server_name) = &outgoing_kind
+                            && let Err(e) =
+                                crate::user::presence::recipients::confirm_sent(server_name).await
+                        {
+                            warn!(error = %e, "failed to confirm presence recipient deltas");
+                        }
                         if let Some(edu_sn) = pending_edu_cursors.remove(&outgoing_kind)
                             && let OutgoingKind::Normal(server_name) = &outgoing_kind
                             && let Err(e) = data::sending::advance_edu_cursor(server_name, edu_sn).await
@@ -580,10 +587,10 @@ async fn select_edus_receipts_room(
 /// otherwise a client could opt out of selective presence simply by never writing the
 /// account data, which would defeat the point.
 ///
-/// Recording what was sent happens here rather than after the transaction is acknowledged.
-/// That means a dropped transaction can leave the destination a step behind; it will notice
-/// from the `prev_id` on the next update and re-fetch the set. The opposite choice --
-/// recording only on success -- would resend a delta the destination had already applied.
+/// The delta is recorded as *pending*, not as sent. If the transaction carrying it fails
+/// the destination's EDU cursor does not advance, the same window is reselected, and this
+/// recomputes the identical delta from the same confirmed base -- which is what keeps a
+/// removal from being dropped on the floor when a send fails.
 #[cfg(feature = "unstable-msc4495")]
 async fn selective_presence_delta(
     server_name: &ServerName,
@@ -599,32 +606,39 @@ async fn selective_presence_delta(
         .filter(|recipient| recipient.server_name() == server_name)
         .collect();
 
-    let previous = recipients::last_sent(user_id, server_name).await?;
-    let (prev_id, previous_set) = match previous {
+    let sent = recipients::sent_state(user_id, server_name).await?;
+    let (prev_id, confirmed) = match sent.confirmed {
         Some((prev_id, set)) => (Some(prev_id), set),
         None => (None, BTreeSet::new()),
     };
 
-    if current.is_empty() && previous_set.is_empty() {
+    // Never told this destination anything and still have nothing to tell it.
+    if current.is_empty() && confirmed.is_empty() && sent.pending.is_none() {
         return Ok(None);
     }
 
-    let updates = recipients::diff(&previous_set, &current);
-    let stream_id = if updates.is_empty() {
+    let updates = recipients::diff(&confirmed, &current);
+    if updates.is_empty() && sent.pending.is_none() {
         // Nothing changed for this destination, so keep naming the position it already
-        // holds rather than inventing a new one it would have to resync against.
-        prev_id.unwrap_or(recipients::stream_id(user_id).await?)
-    } else {
-        recipients::advance_stream(user_id).await?
-    };
-
-    if !updates.is_empty() {
-        recipients::record_sent(user_id, server_name, stream_id, &current).await?;
+        // holds rather than inventing one it would have to resync against.
+        return Ok(Some(recipients::RecipientDelta {
+            stream_id: prev_id.unwrap_or(recipients::stream_id(user_id).await?),
+            prev_id: None,
+            updates,
+        }));
     }
+
+    // Reuse the position of an unacknowledged delta rather than burning a new one: the
+    // destination has not seen the old one, so a new position would only make it resync.
+    let stream_id = match sent.pending.as_ref() {
+        Some((stream_id, _)) => *stream_id,
+        None => recipients::advance_stream(user_id).await?,
+    };
+    recipients::record_pending(user_id, server_name, stream_id, &current).await?;
 
     Ok(Some(recipients::RecipientDelta {
         stream_id,
-        prev_id: if updates.is_empty() { None } else { prev_id },
+        prev_id,
         updates,
     }))
 }

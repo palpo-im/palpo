@@ -146,7 +146,7 @@ pub(super) async fn get_presence_recipients(
 
     // Record the snapshot so the next delta we send is computed against what the asking
     // server now holds, rather than against a view it has just discarded.
-    recipients::record_sent(
+    recipients::record_confirmed(
         &args.user_id,
         &origin,
         stream_id,

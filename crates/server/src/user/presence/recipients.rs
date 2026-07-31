@@ -74,59 +74,77 @@ pub async fn advance_stream(user_id: &UserId) -> AppResult<Seqnum> {
     Ok(stream_id)
 }
 
-/// What we last told `server_id` about `user_id`'s recipient set.
-pub async fn last_sent(
-    user_id: &UserId,
-    server_id: &ServerName,
-) -> AppResult<Option<(Seqnum, BTreeSet<OwnedUserId>)>> {
-    let Some((stream_id, recipients)) = presence_recipient_sets::table
-        .find((user_id, server_id))
-        .select((
-            presence_recipient_sets::stream_id,
-            presence_recipient_sets::recipients,
-        ))
-        .first::<(Seqnum, serde_json::Value)>(&mut connect().await?)
-        .await
-        .optional()?
-    else {
-        return Ok(None);
-    };
-
-    Ok(Some((
-        stream_id,
-        serde_json::from_value(recipients).unwrap_or_default(),
-    )))
+/// What a destination has been told about a user's recipient set.
+#[derive(Debug, Clone, Default)]
+pub struct SentState {
+    /// The last acknowledged position and set.
+    pub confirmed: Option<(Seqnum, BTreeSet<OwnedUserId>)>,
+    /// A delta that has been put on the wire but not acknowledged yet.
+    pub pending: Option<(Seqnum, BTreeSet<OwnedUserId>)>,
 }
 
-/// Records what a destination has now been told, so the next delta is computed from it.
+/// Reads what `server_id` has been told about `user_id`'s recipient set.
+pub async fn sent_state(user_id: &UserId, server_id: &ServerName) -> AppResult<SentState> {
+    let Some((stream_id, recipients, pending_stream_id, pending_recipients)) =
+        presence_recipient_sets::table
+            .find((user_id, server_id))
+            .select((
+                presence_recipient_sets::stream_id,
+                presence_recipient_sets::recipients,
+                presence_recipient_sets::pending_stream_id,
+                presence_recipient_sets::pending_recipients,
+            ))
+            .first::<(
+                Seqnum,
+                serde_json::Value,
+                Option<Seqnum>,
+                Option<serde_json::Value>,
+            )>(&mut connect().await?)
+            .await
+            .optional()?
+    else {
+        return Ok(SentState::default());
+    };
+
+    Ok(SentState {
+        confirmed: Some((
+            stream_id,
+            serde_json::from_value(recipients).unwrap_or_default(),
+        )),
+        pending: pending_stream_id
+            .zip(pending_recipients)
+            .map(|(stream_id, recipients)| {
+                (
+                    stream_id,
+                    serde_json::from_value(recipients).unwrap_or_default(),
+                )
+            }),
+    })
+}
+
+/// Records a delta that has been put on the wire but not acknowledged.
 ///
-/// A destination with no recipients left is forgotten rather than stored empty: the
-/// proposal has us stop sending to a destination once its last recipient is removed, and
-/// keeping the row would leave a `prev_id` the destination will never be asked about again.
-pub async fn record_sent(
+/// It is deliberately not written into the confirmed set yet: if the transaction carrying
+/// it fails, the next pass has to be able to compute the same delta again. Writing it
+/// straight through would lose a removal -- the next pass would find nothing left to
+/// remove while the destination still held the recipient.
+pub async fn record_pending(
     user_id: &UserId,
     server_id: &ServerName,
     stream_id: Seqnum,
     recipients: &BTreeSet<OwnedUserId>,
 ) -> AppResult<()> {
-    if recipients.is_empty() {
-        diesel::delete(
-            presence_recipient_sets::table
-                .filter(presence_recipient_sets::user_id.eq(user_id))
-                .filter(presence_recipient_sets::server_id.eq(server_id)),
-        )
-        .execute(&mut connect().await?)
-        .await?;
-        return Ok(());
-    }
-
     let recipients = serde_json::to_value(recipients)?;
     diesel::insert_into(presence_recipient_sets::table)
         .values((
             presence_recipient_sets::user_id.eq(user_id),
             presence_recipient_sets::server_id.eq(server_id),
-            presence_recipient_sets::stream_id.eq(stream_id),
-            presence_recipient_sets::recipients.eq(&recipients),
+            // A row that has never been confirmed starts from "told nothing", which is
+            // what the absent-confirmed case means to `delta_for`.
+            presence_recipient_sets::stream_id.eq(0),
+            presence_recipient_sets::recipients.eq(serde_json::json!([])),
+            presence_recipient_sets::pending_stream_id.eq(stream_id),
+            presence_recipient_sets::pending_recipients.eq(&recipients),
         ))
         .on_conflict((
             presence_recipient_sets::user_id,
@@ -134,11 +152,47 @@ pub async fn record_sent(
         ))
         .do_update()
         .set((
-            presence_recipient_sets::stream_id.eq(stream_id),
-            presence_recipient_sets::recipients.eq(&recipients),
+            presence_recipient_sets::pending_stream_id.eq(stream_id),
+            presence_recipient_sets::pending_recipients.eq(&recipients),
         ))
         .execute(&mut connect().await?)
         .await?;
+    Ok(())
+}
+
+/// Promotes every pending delta for `server_id` now that it has acknowledged a transaction.
+///
+/// Called when the destination's EDU cursor advances, which only happens on a successful
+/// transaction. A destination whose confirmed set has become empty is then forgotten
+/// entirely: the removal has landed, and MSC4495 says to stop sending to it.
+pub async fn confirm_sent(server_id: &ServerName) -> AppResult<()> {
+    let mut conn = connect().await?;
+    diesel::update(
+        presence_recipient_sets::table
+            .filter(presence_recipient_sets::server_id.eq(server_id))
+            .filter(presence_recipient_sets::pending_stream_id.is_not_null()),
+    )
+    .set((
+        presence_recipient_sets::stream_id.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            "COALESCE(pending_stream_id, stream_id)",
+        )),
+        presence_recipient_sets::recipients.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
+            "COALESCE(pending_recipients, recipients)",
+        )),
+        presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
+        presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+    ))
+    .execute(&mut conn)
+    .await?;
+
+    diesel::delete(
+        presence_recipient_sets::table
+            .filter(presence_recipient_sets::server_id.eq(server_id))
+            .filter(presence_recipient_sets::pending_stream_id.is_null())
+            .filter(presence_recipient_sets::recipients.eq(serde_json::json!([]))),
+    )
+    .execute(&mut conn)
+    .await?;
     Ok(())
 }
 
@@ -184,6 +238,76 @@ pub async fn store_remote_set(
         ))
         .execute(&mut connect().await?)
         .await?;
+    Ok(())
+}
+
+/// Records a set a destination is known to hold, bypassing the pending step.
+///
+/// Used by the recovery endpoint: once we have handed a destination a snapshot in a
+/// response it has received, that *is* its state, so there is nothing to confirm later.
+pub async fn record_confirmed(
+    user_id: &UserId,
+    server_id: &ServerName,
+    stream_id: Seqnum,
+    recipients: &BTreeSet<OwnedUserId>,
+) -> AppResult<()> {
+    let recipients = serde_json::to_value(recipients)?;
+    diesel::insert_into(presence_recipient_sets::table)
+        .values((
+            presence_recipient_sets::user_id.eq(user_id),
+            presence_recipient_sets::server_id.eq(server_id),
+            presence_recipient_sets::stream_id.eq(stream_id),
+            presence_recipient_sets::recipients.eq(&recipients),
+            presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
+            presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+        ))
+        .on_conflict((
+            presence_recipient_sets::user_id,
+            presence_recipient_sets::server_id,
+        ))
+        .do_update()
+        .set((
+            presence_recipient_sets::stream_id.eq(stream_id),
+            presence_recipient_sets::recipients.eq(&recipients),
+            presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
+            presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+        ))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Schedules a fresh recipient delta for a user whose sharing inputs changed.
+///
+/// Deltas ride along with presence updates, which are selected from the presence stream, so
+/// a change that does not touch presence -- editing `m.presence.sharing`, most obviously --
+/// would otherwise not reach anyone until the user's presence next moved. Re-stamping the
+/// presence row puts the user back in the selection window without inventing a state
+/// transition they did not make.
+pub async fn mark_recipients_changed(user_id: &UserId) -> AppResult<()> {
+    let Ok(presence) = crate::data::user::last_presence(user_id).await else {
+        // No presence to re-send; the next transition will carry the new set.
+        return Ok(());
+    };
+    let content = presence.content;
+
+    crate::data::user::set_presence(
+        crate::data::user::NewDbPresence {
+            user_id: user_id.to_owned(),
+            stream_id: None,
+            state: Some(content.presence.to_string()),
+            status_msg: content.status_msg,
+            last_active_at: content.last_active_ago.map(|ago| {
+                crate::core::UnixMillis(crate::core::UnixMillis::now().0.saturating_sub(ago))
+            }),
+            last_federation_update_at: None,
+            last_user_sync_at: None,
+            currently_active: content.currently_active,
+            occur_sn: None,
+        },
+        true,
+    )
+    .await?;
     Ok(())
 }
 
