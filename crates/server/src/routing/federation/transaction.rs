@@ -216,9 +216,13 @@ async fn track_presence_recipients(origin: &ServerName, update: &PresenceUpdate)
             }
         }
         Inbound::Resync => {
+            // Marked unknown rather than stored at the position the sender claimed: a
+            // later delta must not appear to apply cleanly on top of a set we know is
+            // wrong, and leaving it unknown makes every further update retry the fetch
+            // until one succeeds.
             if let Err(e) = recipients::store_remote_set(
                 user_id,
-                update.stream_id.unwrap_or(0),
+                recipients::UNKNOWN_STREAM_ID,
                 &Default::default(),
             )
             .await

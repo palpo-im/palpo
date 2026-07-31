@@ -282,6 +282,14 @@ pub fn classify(
     }
 }
 
+/// The position stored for a set we know is out of date.
+///
+/// Real positions come from the sequence and are positive, so this matches no `prev_id` a
+/// peer can send. That is the point: until a snapshot arrives, every further update from
+/// that user classifies as [`Inbound::Resync`] and retries the fetch, instead of a later
+/// delta appearing to apply cleanly on top of a set we know is wrong.
+pub const UNKNOWN_STREAM_ID: Seqnum = Seqnum::MIN;
+
 /// Applies a delta to a recipient set.
 pub fn apply(set: &mut BTreeSet<OwnedUserId>, updates: &PresenceRecipientListUpdates) {
     for user_id in &updates.delete {
@@ -294,7 +302,7 @@ pub fn apply(set: &mut BTreeSet<OwnedUserId>, updates: &PresenceRecipientListUpd
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{Inbound, apply, classify, diff};
+    use super::{Inbound, UNKNOWN_STREAM_ID, apply, classify, diff};
     use crate::core::identifiers::*;
     use crate::core::owned_user_id;
     use crate::core::presence::PresenceRecipientListUpdates;
@@ -366,6 +374,28 @@ mod tests {
         // We already hold a set; taking this as a fresh start would drop recipients we
         // were told about earlier.
         assert_eq!(classify(Some(3), Some(7), None, &updates), Inbound::Resync);
+    }
+
+    #[test]
+    fn a_set_marked_unknown_keeps_forcing_a_resync() {
+        let updates =
+            PresenceRecipientListUpdates::new(vec![owned_user_id!("@a:example.org")], Vec::new());
+
+        // Whatever the sender claims, a set we have marked unknown must not accept a
+        // delta: it would look applied while still missing everything we never fetched.
+        assert_eq!(
+            classify(Some(UNKNOWN_STREAM_ID), Some(7), Some(3), &updates),
+            Inbound::Resync
+        );
+        assert_eq!(
+            classify(
+                Some(UNKNOWN_STREAM_ID),
+                Some(7),
+                None,
+                &PresenceRecipientListUpdates::default()
+            ),
+            Inbound::Resync
+        );
     }
 
     #[test]
