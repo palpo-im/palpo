@@ -381,7 +381,16 @@ pub async fn sync_events(
     // SDK skip `update_request_generator_state`, which keeps `fully_loaded`
     // permanently false in `Running` mode and produces a `pos=N&timeout=0`
     // request flood.
-    if since_sn > curr_sn {
+    // MSC4262 snapshots are owed on the strength of the *request* changing, not on new
+    // events, so a connection that switches the extension on while idle must not be sent
+    // down this path -- it would never get the base profiles and would sit here until
+    // something unrelated moved the sequence.
+    #[cfg(feature = "unstable-msc4262")]
+    let profiles_owe_snapshot = req_body.extensions.profiles.enabled.unwrap_or(false);
+    #[cfg(not(feature = "unstable-msc4262"))]
+    let profiles_owe_snapshot = false;
+
+    if since_sn > curr_sn && !profiles_owe_snapshot {
         let mut res = SyncEventsResBody::new(next_batch.to_string());
         for (list_id, list) in &req_body.lists {
             let active_rooms = compute_active_rooms(

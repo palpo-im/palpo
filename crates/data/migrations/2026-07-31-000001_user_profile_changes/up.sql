@@ -26,3 +26,21 @@ CREATE TABLE user_profile_changes (
 -- a syncing client shares a room with.
 CREATE INDEX user_profile_changes_sn_idx ON user_profile_changes (occur_sn);
 CREATE INDEX user_profile_changes_user_sn_idx ON user_profile_changes (user_id, occur_sn);
+
+-- Remote users get a global profile row too, so that the one place sliding sync
+-- reads profiles from answers for them as well.
+--
+-- `user_profiles_udx` cannot keep those rows unique: it is `UNIQUE (user_id,
+-- room_id)` and PostgreSQL treats NULLs as distinct, so `(user, NULL)` never
+-- conflicts with itself and an upsert on it silently inserts duplicates. A
+-- partial index over the global rows is what actually constrains them.
+DELETE FROM user_profiles a
+    USING user_profiles b
+    WHERE a.room_id IS NULL
+      AND b.room_id IS NULL
+      AND a.user_id = b.user_id
+      AND a.id > b.id;
+
+CREATE UNIQUE INDEX user_profiles_global_udx
+    ON user_profiles (user_id)
+    WHERE room_id IS NULL;

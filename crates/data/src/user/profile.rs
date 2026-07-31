@@ -261,14 +261,17 @@ pub async fn set_remote_profile_avatar_url(
 }
 
 /// Ensures a remote user has a global profile row to write into.
+///
+/// The conflict target is the partial index over global rows, not the table's
+/// `UNIQUE (user_id, room_id)`: that constraint cannot deduplicate these, because
+/// PostgreSQL treats the NULL `room_id` as distinct from itself and every insert would
+/// simply add another row.
 async fn upsert_remote_profile(user_id: &UserId) -> DataResult<()> {
-    diesel::insert_into(user_profiles::table)
-        .values((
-            user_profiles::user_id.eq(user_id.as_str()),
-            user_profiles::room_id.eq(None::<String>),
-        ))
-        .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
-        .await?;
+    diesel::sql_query(
+        "INSERT INTO user_profiles (user_id, room_id) VALUES ($1, NULL)          ON CONFLICT (user_id) WHERE room_id IS NULL DO NOTHING",
+    )
+    .bind::<Text, _>(user_id.as_str())
+    .execute(&mut connect().await?)
+    .await?;
     Ok(())
 }
