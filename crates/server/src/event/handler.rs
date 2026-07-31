@@ -512,6 +512,14 @@ pub async fn process_to_timeline_pdu(
     if !incoming_pdu.is_outlier {
         return Ok(());
     }
+    // The single boundary every promotion path goes through, so the guard lives here
+    // rather than being repeated (and forgotten) in each caller -- backfill in particular
+    // promotes PDUs straight from `backfill_pdu`.
+    if incoming_pdu.soft_failed {
+        return Err(AppError::internal(
+            "cannot process soft-failed event to timeline",
+        ));
+    }
     if incoming_pdu.rejected() {
         return Err(AppError::internal(
             "cannot process rejected event to timeline",

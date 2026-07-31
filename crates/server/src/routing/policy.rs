@@ -4,8 +4,7 @@ use salvo::prelude::*;
 use crate::core::federation::policy::sign_event::{PolicySignEventReqBody, PolicySignEventResBody};
 use crate::core::identifiers::*;
 use crate::core::room_version_rules::{EventIdFormatVersion, RoomVersionRules};
-use crate::core::serde::{CanonicalJsonObject, canonical_json};
-use crate::core::signatures::{KeyPair, to_canonical_json_string_for_signing};
+use crate::core::serde::CanonicalJsonObject;
 use crate::{AppError, AppResult, AuthArgs, JsonResult, MatrixError, config, hoops, json_ok};
 
 pub fn router() -> Router {
@@ -81,12 +80,7 @@ fn sign_policy_event(
         object.remove("event_id");
     }
 
-    let redacted = canonical_json::redact(object, &rules.redaction, None)
-        .map_err(|e| MatrixError::bad_json(format!("event could not be redacted: {e}")))?;
-    let canonical_json = to_canonical_json_string_for_signing(&redacted)
-        .map_err(|e| MatrixError::bad_json(format!("event is not canonical JSON: {e}")))?;
-
-    Ok(config::keypair().sign(canonical_json.as_bytes()).base64())
+    crate::room::policy::sign_locally(&object, rules)
 }
 
 #[cfg(test)]

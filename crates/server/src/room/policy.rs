@@ -15,8 +15,12 @@ use crate::core::federation::policy::sign_event::{
 };
 use crate::core::identifiers::*;
 use crate::core::room_version_rules::{EventIdFormatVersion, RoomVersionRules};
-use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, to_raw_json_value};
-use crate::core::signatures::verify_policy_server_signature;
+use crate::core::serde::{
+    CanonicalJsonObject, CanonicalJsonValue, canonical_json, to_raw_json_value,
+};
+use crate::core::signatures::{
+    KeyPair, to_canonical_json_string_for_signing, verify_policy_server_signature,
+};
 use crate::exts::*;
 use crate::{AppResult, MatrixError, config};
 
@@ -39,41 +43,64 @@ pub fn is_policy_config_event(event_ty: &str, state_key: Option<&str>) -> bool {
 
 /// Reads the room's usable Policy Server configuration, if it has one.
 ///
-/// Returns `None` — meaning "this room does not use a Policy Server" — when the
-/// `m.room.policy` state event is absent or unusable, matching the MSC's requirement that
-/// an invalid configuration behaves as no configuration:
+/// `Ok(None)` means "this room does not use a Policy Server", which the MSC says is how an
+/// invalid configuration must behave:
 ///
 /// * no `m.room.policy` state event with an empty state key,
-/// * no `ed25519` entry in `public_keys`,
-/// * `via` points at this server (we cannot ask ourselves), or
+/// * content that does not parse, or that carries no `ed25519` public key,
 /// * `via` is not joined to the room.
-pub async fn policy_server(room_id: &RoomId) -> Option<RoomPolicyEventContent> {
-    let content = crate::room::get_state_content::<RoomPolicyEventContent>(
-        room_id,
-        &RoomPolicyEventContent::TYPE.into(),
-        "",
-        None,
-    )
-    .await
-    .ok()?;
+///
+/// An operational failure -- a database error, say -- comes back as an error rather than
+/// as `None`. Reading it as "no Policy Server" would let a transient fault switch off
+/// moderation for its duration, which is the one failure mode this must not have.
+pub async fn policy_server(room_id: &RoomId) -> AppResult<Option<RoomPolicyEventContent>> {
+    let event =
+        match crate::room::get_state(room_id, &RoomPolicyEventContent::TYPE.into(), "", None).await
+        {
+            Ok(event) => event,
+            Err(e) if e.is_not_found() => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+    let Ok(content) = event.get_content::<RoomPolicyEventContent>() else {
+        debug!(%room_id, "room policy event content is not usable");
+        return Ok(None);
+    };
 
     if !content
         .public_keys
         .contains_key(&SigningKeyAlgorithm::Ed25519)
     {
-        return None;
+        return Ok(None);
     }
-    if content.via == *config::server_name() {
-        return None;
-    }
-    if !crate::room::is_server_joined(&content.via, room_id)
-        .await
-        .ok()?
-    {
-        return None;
+    if !crate::room::is_server_joined(&content.via, room_id).await? {
+        return Ok(None);
     }
 
-    Some(content)
+    Ok(Some(content))
+}
+
+/// Whether this server is the room's Policy Server.
+///
+/// A room may legitimately name us in `via`: we advertise a policy key at
+/// `/.well-known/matrix/policy_server` and serve `/_matrix/policy/v1/sign`. Signing such an
+/// event is a local operation, so it neither needs nor should make a federation request to
+/// ourselves -- but it does still have to happen, or a room that named us would get no
+/// enforcement at all.
+fn is_local_policy_server(policy: &RoomPolicyEventContent) -> bool {
+    policy.via == *config::server_name()
+}
+
+/// Signs an event with this server's Policy Server key.
+///
+/// Shared with the `/_matrix/policy/v1/sign` endpoint, so a signature we produce for
+/// ourselves is byte-for-byte the one a peer would have been given.
+pub fn sign_locally(pdu_json: &CanonicalJsonObject, rules: &RoomVersionRules) -> AppResult<String> {
+    let redacted = canonical_json::redact(pdu_json.clone(), &rules.redaction, None)
+        .map_err(|e| MatrixError::bad_json(format!("event could not be redacted: {e}")))?;
+    let canonical = to_canonical_json_string_for_signing(&redacted)
+        .map_err(|e| MatrixError::bad_json(format!("event is not canonical JSON: {e}")))?;
+    Ok(config::keypair().sign(canonical.as_bytes()).base64())
 }
 
 /// The event JSON that a Policy Server signature covers.
@@ -118,16 +145,22 @@ async fn add_signature(
     pdu_json: &mut CanonicalJsonObject,
     rules: &RoomVersionRules,
 ) -> AppResult<()> {
-    let body = PolicySignEventReqBody::new(to_raw_json_value(&signable_pdu(pdu_json, rules))?);
-    let request = sign_event_request(&policy.via.origin().await, body)?.into_inner();
-    let res_body =
-        crate::sending::send_federation_request(&policy.via, request, Some(SIGN_TIMEOUT_SECS))
-            .await?
-            .json::<PolicySignEventResBody>()
-            .await?;
+    let signable = signable_pdu(pdu_json, rules);
+    let signature = if is_local_policy_server(policy) {
+        sign_locally(&signable, rules)?
+    } else {
+        let body = PolicySignEventReqBody::new(to_raw_json_value(&signable)?);
+        let request = sign_event_request(&policy.via.origin().await, body)?.into_inner();
+        let res_body =
+            crate::sending::send_federation_request(&policy.via, request, Some(SIGN_TIMEOUT_SECS))
+                .await?
+                .json::<PolicySignEventResBody>()
+                .await?;
 
-    let Some(signature) = res_body.ed25519_signature(&policy.via) else {
-        return Err(MatrixError::forbidden(SPAM_MESSAGE, None).into());
+        match res_body.ed25519_signature(&policy.via) {
+            Some(signature) => signature.to_owned(),
+            None => return Err(MatrixError::forbidden(SPAM_MESSAGE, None).into()),
+        }
     };
 
     // Merge rather than replace: the sender's own signature must survive, otherwise the
@@ -148,7 +181,7 @@ async fn add_signature(
     };
     entry.insert(
         PolicySignEventResBody::POLICY_SERVER_ED25519_SIGNING_KEY_ID.to_owned(),
-        CanonicalJsonValue::String(signature.to_owned()),
+        CanonicalJsonValue::String(signature),
     );
 
     if !has_valid_signature(policy, pdu_json, rules) {
@@ -188,7 +221,7 @@ pub async fn check_event(
         return Ok(());
     }
 
-    let Some(policy) = policy_server(room_id).await else {
+    let Some(policy) = policy_server(room_id).await? else {
         return Ok(());
     };
 
