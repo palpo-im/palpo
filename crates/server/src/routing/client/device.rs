@@ -23,20 +23,24 @@ use crate::{
 };
 
 pub fn authed_router() -> Router {
-    Router::with_path("devices")
-        .get(list_devices)
-        // .push(
-        //     Router::with_hoop(hoops::limit_rate)
-        //         .push(Router::new().post(register).push(Router::with_path("available").get(available)))
-        //         .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
-        // )
-        .push(Router::with_path("delete_devices").post(delete_devices))
+    Router::new()
         .push(
-            Router::with_path("{device_id}")
-                .get(get_device)
-                .delete(delete_device)
-                .put(update_device),
+            Router::with_path("devices")
+                .get(list_devices)
+                // .push(
+                //     Router::with_hoop(hoops::limit_rate)
+                //         .push(Router::new().post(register).push(Router::with_path("available").get(available)))
+                //         .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
+                // )
+                .push(
+                    Router::with_path("{device_id}")
+                        .get(get_device)
+                        .delete(delete_device)
+                        .put(update_device),
+                ),
         )
+        // `/delete_devices` is a sibling of `/devices`, not a child of it.
+        .push(Router::with_path("delete_devices").post(delete_devices))
 }
 
 /// #GET /_matrix/client/r0/devices/{device_id}
@@ -207,8 +211,8 @@ async fn delete_device(
     empty_ok()
 }
 
-/// #DELETE /_matrix/client/r0/devices/{deviceId}
-/// Deletes the given device.
+/// #POST /_matrix/client/r0/delete_devices
+/// Deletes the given list of devices.
 ///
 /// - Requires UIAA to verify user password
 ///

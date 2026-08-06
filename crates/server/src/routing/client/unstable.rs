@@ -14,6 +14,7 @@ pub(super) fn router() -> Router {
             Router::with_path("org.matrix.msc2965/auth_metadata").get(auth_metadata),
         )
         .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
+        .push(super::profile::msc4133_public_router())
         // Authed routes
         .push(
             Router::new()
@@ -58,7 +59,8 @@ pub(super) fn router() -> Router {
                     Router::with_path("uk.timedout.msc4323/admin/suspend/{user_id}")
                         .get(super::admin::is_user_suspended)
                         .put(super::admin::suspend_user),
-                ),
+                )
+                .push(super::profile::msc4133_authed_router()),
         )
 }
 
