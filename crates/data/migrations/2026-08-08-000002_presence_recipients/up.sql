@@ -39,6 +39,16 @@ CREATE TABLE presence_recipient_sets (
     pending_stream_id BIGINT,
     pending_recipients JSONB,
     pending_edu_sn BIGINT,
+    CONSTRAINT presence_recipient_sets_recipients_array
+        CHECK (jsonb_typeof(recipients) = 'array'),
+    CONSTRAINT presence_recipient_sets_pending_recipients_array
+        CHECK (pending_recipients IS NULL OR jsonb_typeof(pending_recipients) = 'array'),
+    CONSTRAINT presence_recipient_sets_pending_complete
+        CHECK (
+            (pending_stream_id IS NULL AND pending_recipients IS NULL AND pending_edu_sn IS NULL)
+            OR
+            (pending_stream_id IS NOT NULL AND pending_recipients IS NOT NULL AND pending_edu_sn IS NOT NULL)
+        ),
     PRIMARY KEY (user_id, server_id)
 );
 
@@ -52,6 +62,12 @@ CREATE INDEX presence_recipient_sets_server_idx ON presence_recipient_sets (serv
 -- means an update was missed and the set must be re-fetched.
 CREATE TABLE remote_presence_recipients (
     user_id TEXT NOT NULL PRIMARY KEY,
-    stream_id BIGINT NOT NULL,
-    recipients JSONB NOT NULL
+    -- NULL means selective presence is active but our view is unknown/empty while a
+    -- snapshot is being recovered. Absence of the row means a legacy sender.
+    stream_id BIGINT,
+    recipients JSONB NOT NULL,
+    CONSTRAINT remote_presence_recipients_recipients_array
+        CHECK (jsonb_typeof(recipients) = 'array'),
+    CONSTRAINT remote_presence_recipients_unknown_empty
+        CHECK (stream_id IS NOT NULL OR recipients = '[]'::jsonb)
 );

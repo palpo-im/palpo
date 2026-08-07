@@ -131,7 +131,6 @@ pub(super) async fn get_presence_recipients(
         return Err(MatrixError::invalid_param("User does not belong to this server.").into());
     }
 
-    let stream_id = recipients::stream_id(&args.user_id).await?;
     let recipients: Vec<_> = sharing::recipients_of(&args.user_id)
         .await?
         .into_iter()
@@ -143,6 +142,11 @@ pub(super) async fn get_presence_recipients(
         // "shares with nobody here" distinguishable from "set is momentarily empty".
         return Err(MatrixError::not_found("No presence recipients for this server.").into());
     }
+
+    // Allocate after computing the snapshot so this identifier cannot already have named
+    // a different set selected concurrently. Subsequent policy changes allocate another
+    // position and wake the destination with a delta from this recorded snapshot.
+    let stream_id = recipients::advance_stream(&args.user_id).await?;
 
     // Record the snapshot so the next delta we send is computed against what the asking
     // server now holds, rather than against a view it has just discarded.

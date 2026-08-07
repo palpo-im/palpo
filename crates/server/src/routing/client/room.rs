@@ -659,7 +659,8 @@ async fn upgrade(
     .await?;
 
     // Recommended transferable state events list from the specs
-    let transferable_state_events = vec![
+    #[allow(unused_mut)]
+    let mut transferable_state_events = vec![
         StateEventType::RoomServerAcl,
         StateEventType::RoomEncryption,
         StateEventType::RoomName,
@@ -670,6 +671,11 @@ async fn upgrade(
         StateEventType::RoomJoinRules,
         StateEventType::RoomPowerLevels,
     ];
+    // MSC4495 asks that a room's presence-sharing hint survive an upgrade. Losing it
+    // would make the replacement room fall back to `forbid`, silently changing every
+    // member's effective recipient set.
+    #[cfg(feature = "unstable-msc4495")]
+    transferable_state_events.push(StateEventType::RoomPresenceSharing);
 
     // Replicate transferable state events to the new room
     for event_ty in transferable_state_events {

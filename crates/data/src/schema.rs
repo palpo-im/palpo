@@ -542,7 +542,7 @@ diesel::table! {
 
     remote_presence_recipients (user_id) {
         user_id -> Text,
-        stream_id -> Int8,
+        stream_id -> Nullable<Int8>,
         recipients -> Jsonb,
     }
 }

@@ -754,7 +754,13 @@ async fn selective_presence_delta(
     {
         *stream_id
     } else {
-        recipients::stream_id(user_id).await?
+        // Bind a fresh identifier to the set we just computed. Reading the last global
+        // position here is racy with a concurrent policy update: two different sets could
+        // otherwise be emitted under the same stream_id, after which an unchanged update
+        // could make a stale wider set look current to the peer. A failed retry reuses its
+        // durable pending identifier above, while every genuinely different set gets a
+        // sequence value that has never named another state.
+        recipients::advance_stream(user_id).await?
     };
     Ok(Some((
         recipients::RecipientDelta {

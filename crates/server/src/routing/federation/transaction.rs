@@ -214,20 +214,14 @@ async fn track_presence_recipients(
         Inbound::Apply { stream_id, updates } => {
             let mut set = known.map(|(_, set)| set).unwrap_or_default();
             recipients::apply(&mut set, &updates);
-            recipients::store_remote_set(user_id, stream_id, &set).await?;
+            recipients::store_remote_set(user_id, Some(stream_id), &set).await?;
         }
         Inbound::Resync => {
             // Marked unknown rather than stored at the position the sender claimed: a
             // later delta must not appear to apply cleanly on top of a set we know is
             // wrong, and leaving it unknown makes every further update retry the fetch
             // until one succeeds.
-            recipients::store_remote_set(
-                user_id,
-                recipients::UNKNOWN_STREAM_ID,
-                &Default::default(),
-            )
-            .await?;
-            recipients::schedule_resync(origin, user_id);
+            recipients::schedule_resync(origin, user_id).await?;
         }
     }
     Ok(())
