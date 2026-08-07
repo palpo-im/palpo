@@ -13,7 +13,7 @@ use crate::core::client::filter::RoomEventFilter;
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
-use crate::core::events::room::member::RoomMemberEventContent;
+use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::redaction::RoomRedactionEventContent;
 use crate::core::events::space::child::HierarchySpaceChildEvent;
 use crate::core::events::{
@@ -118,13 +118,19 @@ impl SnPduEvent {
             || after_history_visibility
                 .as_ref()
                 .is_some_and(state::uses_shared_history_visibility);
-        let joined_after = uses_shared_visibility
-            && room::user::joined_after(user_id, &self.room_id, &self.event_id, self.depth).await?;
         let state::StateBefore::Resolved(membership) =
             state::user_membership_before(self, frame_id, user_id).await?
         else {
             return Ok(false);
         };
+        // A user joined at the event already satisfies every non-world-readable
+        // visibility rule. Avoid the considerably more expensive ancestry lookup on
+        // this overwhelmingly common path.
+        if membership.as_ref() == Some(&MembershipState::Join) {
+            return Ok(true);
+        }
+        let joined_after = uses_shared_visibility
+            && room::user::joined_after(user_id, &self.room_id, &self.event_id, self.depth).await?;
 
         Ok(
             state::history_visibility_allows(

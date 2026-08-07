@@ -930,12 +930,17 @@ pub async fn server_can_see_event(
         || after_history_visibility
             .as_ref()
             .is_some_and(uses_shared_history_visibility);
-    let joined_after = uses_shared_visibility
-        && room::user::server_user_joined_after(origin, room_id, &pdu.event_id, pdu.depth).await?;
     let StateBefore::Resolved(memberships) = server_memberships_at(&pdu, frame_id, origin).await?
     else {
         return Ok(false);
     };
+    // Most federation requests come from a server that was already represented by a
+    // joined member at this event. Do not walk the event DAG for that common case.
+    if memberships.contains(&MembershipState::Join) {
+        return Ok(true);
+    }
+    let joined_after = uses_shared_visibility
+        && room::user::server_user_joined_after(origin, room_id, &pdu.event_id, pdu.depth).await?;
 
     let mut visible = history_visibility_allows(&history_visibility, None, joined_after)
         || memberships.iter().any(|membership| {
