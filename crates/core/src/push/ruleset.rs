@@ -15,8 +15,7 @@ use super::{
     SimplePushRule, insert_and_move_rule,
 };
 use crate::push::RemovePushRuleError;
-use crate::serde::JsonValue;
-use crate::serde::RawJson;
+use crate::serde::{JsonValue, RawJson};
 use crate::{OwnedRoomId, OwnedUserId};
 
 /// A push ruleset scopes a set of rules according to some criteria.
