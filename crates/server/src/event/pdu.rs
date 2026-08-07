@@ -671,6 +671,9 @@ impl PduEvent {
         if !self.unsigned.is_empty() {
             data["unsigned"] = json!(self.unsigned);
         }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
+        }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
@@ -917,6 +920,7 @@ impl PduBuilder {
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let (pdu, pdu_json) = self.hash_sign(sender_id, room_id, room_version).await?;
         let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id).await?;
+        let received_at = UnixMillis::now();
         let content_value: JsonValue = serde_json::from_str(pdu.content.get())?;
         NewDbEvent {
             id: pdu.event_id.to_owned(),
@@ -928,7 +932,7 @@ impl PduBuilder {
             topological_ordering: pdu.depth as i64,
             stream_ordering: event_sn,
             origin_server_ts: pdu.origin_server_ts,
-            received_at: None,
+            received_at: Some(received_at.0 as i64),
             sender_id: Some(sender_id.to_owned()),
             contains_url: content_value.get("url").is_some(),
             worker_id: None,
@@ -953,7 +957,7 @@ impl PduBuilder {
 
         // MSC4354: the sticky window is measured from when the event was first stored, so
         // it is recorded here rather than when the event reaches the timeline.
-        crate::event::sticky::record(&pdu, event_sn, UnixMillis::now()).await?;
+        crate::event::sticky::record(&pdu, event_sn, received_at).await?;
 
         Ok((
             SnPduEvent {

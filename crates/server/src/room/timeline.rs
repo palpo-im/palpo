@@ -574,14 +574,9 @@ pub async fn append_pdu(
     }
     .save()
     .await?;
-    diesel::update(events::table.find(&*pdu.event_id))
-        .set(events::is_outlier.eq(false))
-        .execute(&mut connect().await?)
-        .await?;
-
-    // MSC4354: the event is on the timeline now, so give it a delivery position clients
-    // have not synced past yet.
-    crate::event::sticky::mark_deliverable(pdu).await?;
+    // MSC4354: publish timeline visibility and the sticky delivery position together. If
+    // this fails, the event remains an outlier and a federation retry can safely resume.
+    crate::event::sticky::promote_to_timeline(pdu).await?;
 
     for prev_id in &pdu.prev_events {
         let new_edge = NewDbEventEdge {

@@ -64,8 +64,8 @@ pub struct StickyEntry {
 /// Neither is one that is already expired on arrival -- an old sticky event coming in over
 /// federation -- since it can never be delivered.
 ///
-/// `do_nothing` on conflict is what keeps the first receipt authoritative if the same event
-/// is stored again.
+/// On conflict, only the storage position is refreshed. The expiry is deliberately left
+/// untouched so the first receipt remains authoritative if the same event is stored again.
 pub async fn record(pdu: &PduEvent, event_sn: Seqnum, received_at: UnixMillis) -> AppResult<()> {
     let Some(expires_at) = pdu.sticky_expires_at(received_at) else {
         return Ok(());
@@ -82,26 +82,39 @@ pub async fn record(pdu: &PduEvent, event_sn: Seqnum, received_at: UnixMillis) -
             event_stickies::expires_at.eq(expires_at.0 as i64),
         ))
         .on_conflict(event_stickies::event_id)
-        .do_nothing()
+        .do_update()
+        .set((
+            event_stickies::event_sn.eq(event_sn),
+            event_stickies::room_id.eq(&pdu.room_id),
+        ))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
 }
 
-/// Assigns the sync position an event is delivered at, once it reaches the timeline.
+/// Promotes an event to the timeline and assigns its sticky sync position atomically.
 ///
 /// A federated event can be stored as an outlier and promoted much later. By then clients
 /// have synced past the position it was given on arrival, so delivering it there would
 /// mean never delivering it. Taking a fresh position at promotion puts it back in front of
 /// every client, which is what the delivery guarantee requires.
 ///
-/// The expiry is untouched: it still runs from first receipt.
-pub async fn mark_deliverable(pdu: &PduEvent) -> AppResult<()> {
-    // Every appended event reaches this, so nothing may touch the database -- let alone
-    // consume a stream position -- unless the event is actually sticky. `sticky_duration_ms`
-    // reads the already-parsed PDU and is the same predicate `record` used to decide
-    // whether there is a row at all.
+/// The expiry still runs from first receipt. Promotion also recreates a missing sticky row
+/// from the receipt time stored with the event. This makes a retry self-healing if the
+/// process failed after persisting the event but before `record` completed. For sticky
+/// events the row, `is_outlier` transition, and delivery position share one transaction,
+/// so a crash or database error cannot publish the timeline event without making its
+/// sticky copy deliverable. The advisory transaction lock also prevents a sync on another
+/// node from publishing a token that includes the new sequence before the row update
+/// commits.
+pub async fn promote_to_timeline(pdu: &SnPduEvent) -> AppResult<()> {
+    // Ordinary events stay on the existing hot path: no sticky-table query, transaction,
+    // advisory lock, or extra sequence allocation.
     if pdu.sticky_duration_ms().is_none() {
+        diesel::update(events::table.find(&*pdu.event_id))
+            .set(events::is_outlier.eq(false))
+            .execute(&mut connect().await?)
+            .await?;
         return Ok(());
     }
 
@@ -109,18 +122,59 @@ pub async fn mark_deliverable(pdu: &PduEvent) -> AppResult<()> {
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
             lock_sticky_stream(conn).await?;
-            let deliver_sn =
-                diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
-                    .get_result::<Seqnum>(conn)
+
+            // `received_at` is persisted with newly stored events. The fallback covers
+            // events created by older code and direct membership paths which did not
+            // persist it; those reach promotion immediately, so `now` is their receipt
+            // time for practical purposes.
+            let stored_received_at = events::table
+                .find(&*pdu.event_id)
+                .select(events::received_at)
+                .first::<Option<i64>>(conn)
+                .await?;
+            let received_at = stored_received_at
+                .and_then(|value| u64::try_from(value).ok())
+                .map(UnixMillis)
+                .unwrap_or_else(UnixMillis::now);
+            let now = UnixMillis::now();
+            if let Some(expires_at) = pdu.sticky_expires_at(received_at)
+                && expires_at > now
+            {
+                diesel::insert_into(event_stickies::table)
+                    .values((
+                        event_stickies::event_id.eq(&pdu.event_id),
+                        event_stickies::event_sn.eq(pdu.event_sn),
+                        event_stickies::room_id.eq(&pdu.room_id),
+                        event_stickies::expires_at.eq(expires_at.0 as i64),
+                    ))
+                    .on_conflict(event_stickies::event_id)
+                    .do_update()
+                    .set((
+                        event_stickies::event_sn.eq(pdu.event_sn),
+                        event_stickies::room_id.eq(&pdu.room_id),
+                    ))
+                    .execute(conn)
                     .await?;
+            }
+
+            // `nextval` is evaluated only for a pending, unexpired row. An event that
+            // expired while it was an outlier consumes no delivery position.
             diesel::update(
                 event_stickies::table
                     .filter(event_stickies::event_id.eq(&pdu.event_id))
-                    .filter(event_stickies::deliver_sn.is_null()),
+                    .filter(event_stickies::deliver_sn.is_null())
+                    .filter(event_stickies::expires_at.gt(now.0 as i64)),
             )
-            .set(event_stickies::deliver_sn.eq(deliver_sn))
+            .set(event_stickies::deliver_sn.eq(diesel::dsl::sql::<
+                diesel::sql_types::Nullable<diesel::sql_types::BigInt>,
+            >("nextval('occur_sn_seq')")))
             .execute(conn)
             .await?;
+
+            diesel::update(events::table.find(&*pdu.event_id))
+                .set(events::is_outlier.eq(false))
+                .execute(conn)
+                .await?;
             Ok(())
         })
         .await?;
@@ -310,6 +364,7 @@ mod tests {
             serde_json::to_value(sticky.to_message_like_event()).unwrap(),
             serde_json::to_value(sticky.to_sync_state_event()).unwrap(),
             sticky.to_state_event_value(),
+            serde_json::to_value(sticky.to_member_event()).unwrap(),
         ] {
             assert_eq!(serialized[STICKY_KEY], json!({ "duration_ms": 300_000 }));
         }
