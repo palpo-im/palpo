@@ -74,9 +74,9 @@ pub(super) async fn create_user(
         &crate::core::events::GlobalAccountDataEventType::PushRules.to_string(),
         // Bare content, matching the registration path. Wrapping it in a
         // `PushRulesEvent` stored a shape the loader cannot read.
-        serde_json::to_value(crate::core::events::push_rules::PushRulesEventContent {
-            global: crate::core::push::Ruleset::server_default(&user_id),
-        })?,
+        serde_json::to_value(crate::core::events::push_rules::PushRulesEventContent::new(
+            crate::core::push::Ruleset::server_default(&user_id),
+        ))?,
     )
     .await?;
 

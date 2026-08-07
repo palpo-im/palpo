@@ -19,170 +19,131 @@ keywords = ["http", "async", "web", "framework", "server"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-
-# ----- Workspace crates -----
 palpo-core = { version = "0.4.0", path = "crates/core" }
 palpo-core-macros = { version = "0.4.0", path = "crates/core-macros" }
 palpo-data = { version = "0.4.0", path = "crates/data" }
 palpo-identifiers-validation = { version = "0.4.0", path = "crates/identifiers-validation" }
 palpo-server-macros = { version = "0.4.0", path = "crates/server-macros" }
 
-# ----- Error handling -----
+rust-argon2 = "3.0.0"
+ctor = "1.0.7"
+dtor = "1.0.5"
 anyhow = "1.0.102"
-thiserror = "2.0.18"
-
-# ----- Async runtime & concurrency -----
+assert_matches2 = "0.1.2"
 async-trait = "0.1.89"
-futures-util = { version = "0.3.32", features = ["io"] }
-scheduled-thread-pool = "0.2.7"
-tokio = { version = "1.52.3", features = [
-    "macros",
-    "parking_lot",
-    "process",
-    "rt-multi-thread",
-] }
-tokio-stream = { version = "0.1.18", features = ["sync"] }
-tokio-util = { version = "0.7.18", features = ["io"] }
-
-# ----- Web framework & HTTP -----
+as_variant = "1.3.0"
+base64 = "0.23"
+bcrypt = "0.19.1"
+blurhash = "0.2"
+bytes = "1.11.1"
+byteorder = "1.5.0"
+cargo_toml = "1.0.0"
+chksum = "0.4.0"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.1", default-features = false }
+config = "0.15.23"
 cookie = "0.18.1"
-form_urlencoded = "1"
-http = "1.4.1"
-http-auth = { version = "0.1.10", default-features = false }
-hyper-util = "0.1.20"
-mime = "0.3.17"
-mime-infer = "4.0.1"
-percent-encoding = "2"
-reqwest = { version = "0.13.4", features = ["json", "form"] }
-reqwest-middleware = "0.5.2"
-reqwest-retry = "0.9.1"
-salvo = { version = "0.95.0", features = ["rustls"] }
-tower-service = "0.3.3"
-url = { version = "2.5.8", default-features = false, features = ["serde"] }
-webpage = { version = "2.0.1", default-features = false }
-
-# ----- Networking -----
-hickory-resolver = "0.26.1"
-ipaddress = "0.1.3"
-# ldap3 = { git = "https://github.com/palpo-im/ldap3", branch = "main", default-features = false, features = ["sync", "tls-rustls"] }
-
-# ----- Database -----
+core_affinity = "0.8.3"
+cyborgtime = "2.1.1"
+data-encoding = "2.11.0"
+date_header = "1.0.5"
 deadpool = { version = "0.13" }
 diesel = { version = "2.3.10" }
 diesel-async = { version = "0.9.1" }
 # diesel_full_text_search = { version = "2.2.0" }
 diesel_migrations = "2.3.2"
-
-# ----- Serialization & data formats -----
+dotenvy = "0.15.7"
+ed25519-dalek = "3.0.0"
+either = { version = "1.16.0", default-features = false }
+fast32 = "1.0.3"
+figment = "0.10.19"
+kdl = "6.5.0"
+futures-util = { version = "0.3.32", features = ["io"] }
+form_urlencoded = "1"
+globwalk = "0.9.1"
+ipaddress = "0.1.3"
+hickory-resolver = "0.26.1"
+hyper-util = "0.1.20"
+hmac = "0.13.0"
+http-auth = { version = "0.1.10", default-features = false }
+html5ever = "0.39.0"
+http = "1.4.1"
+image = "0.25.10"
+opendal = { version = "0.58.0", default-features = false }
+indexmap = "2.14.0"
+itertools = "0.15.0"
+# 11.0 made the crypto backend an explicit feature; aws_lc_rs is what 10.x
+# already resolved to via rustls, so this keeps the dependency tree unchanged.
+jsonwebtoken = { version = "11.0.0", default-features = false, features = [
+    "use_pem",
+    "aws_lc_rs",
+] }
+js_option = "0.2.0"
+konst = "0.4.3"
+# ldap3 = { git = "https://github.com/palpo-im/ldap3", branch = "main", default-features = false, features = ["sync", "tls-rustls"] }
+language-tags = { version = "0.3.2", features = ["serde"] }
+lru-cache = "0.1.2"
+maplit = "1.0.2"
+mime = "0.3.17"
+mime-infer = "4.0.1"
+# nix = "0.26.1"
+path-slash = "0.2.1"
+percent-encoding = "2"
+phf = { version = "0.14.0", features = ["macros"] }
+pkcs8 = "0.11.0"
+proc-macro-crate = "3.5.0"
+proc-macro2 = "1.0.106"
+pulldown-cmark = { version = "0.13.4", default-features = false }
+quote = "1.0.45"
+rand = "0.10"
+reqwest-middleware = "0.5.2"
+reqwest-retry = "0.9.1"
+rustyline-async = { version = "0.4.9" }
+regex = "1.12.3"
+reqwest = { version = "0.13.4", features = ["json", "form"] }
+ring = "0.17.14"
+salvo = { version = "0.95.1", features = ["rustls"]}
+sanitize-filename = "0.6.0"
+scheduled-thread-pool = "0.2.7"
+secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
-serde-saphyr = { version = "0.0.29" }
+subtle = "2.6"
 serde_html_form = "0.4.0"
 serde_ignored = "0.1.14"
 serde_json = { version = "1.0.150" }
+serde-saphyr = { version = "0.0.29" }
 serde_regex = { version = "1.2.0" }
-toml = { version = "1.1.2", default-features = false }
-
-# ----- Configuration -----
-cargo_toml = "1.0.0"
-config = "0.15.23"
-dotenvy = "0.15.7"
-figment = "0.10.19"
-kdl = "6.5.0"
-
-# ----- Cryptography & security -----
-base64 = "0.23"
-bcrypt = "0.19.1"
-data-encoding = "2.11.0"
-ed25519-dalek = "3.0.0"
-hmac = "0.13.0"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = [
-    "use_pem",
-] }
-pkcs8 = "0.11.0"
-rand = "0.10"
-ring = "0.17.14"
-rust-argon2 = "3.0.0"
-secrecy = "0.10.3"
-sha1 = "0.11.0"
-sha2 = "0.11.0"
-subtle = "2.6"
-
-# ----- Identifiers & encoding -----
-fast32 = "1.0.3"
-textnonce = "1.0.0"
-ulid = "3.0.0"
-uuid = { version = "1.23.2", features = ["v4"] }
-
-# ----- Text, markup & i18n -----
-html5ever = "0.39.0"
-language-tags = { version = "0.3.2", features = ["serde"] }
-pulldown-cmark = { version = "0.13.4", default-features = false }
-regex = "1.12.3"
-wildmatch = "2.6.1"
-
-# ----- Media & files -----
-blurhash = "0.2"
-chksum = "0.4.0"
-globwalk = "0.9.1"
-image = "0.25.10"
-opendal = { version = "0.58.0", default-features = false }
-path-slash = "0.2.1"
-sanitize-filename = "0.6.0"
-tempfile = "3.27.0"
-
-# ----- Date & time -----
-chrono = { version = "0.4.45", features = ["serde"] }
-cyborgtime = "2.1.1"
-date_header = "1.0.5"
-web-time = "1.1.0"
-
-# ----- Collections & general utilities -----
-as_variant = "1.3.0"
-bytes = "1.11.1"
-byteorder = "1.5.0"
-either = { version = "1.16.0", default-features = false }
-indexmap = "2.14.0"
-itertools = "0.15.0"
-js_option = "0.2.0"
-konst = "0.4.3"
-lru-cache = "0.1.2"
-maplit = "1.0.2"
-phf = { version = "0.14.0", features = ["macros"] }
 smallvec = { version = "1.15.1" }
+sha2 = "0.11.0"
+sha1 = "0.11.0"
+strum = "0.28.0"
+strum_macros = "0.28.0"
 subslice = "0.2.3"
-
-# ----- Logging & tracing -----
+syn = "3.0.0"
+tempfile = "3.27.0"
+termimad = { version = "0.35.1", default-features = false }
+textnonce = "1.0.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["macros", "parking_lot", "process", "rt-multi-thread"] }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+tokio-util = { version = "0.7.18", features = ["io"] }
+toml = { version = "1.1.2", default-features = false }
+tower-service = "0.3.3"
 tracing = { version = "0.1.44", features = [
+    "release_max_level_debug",
     "attributes",
     "max_level_debug",
-    "release_max_level_debug",
 ] }
 tracing-core = { version = "0.1.36" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-
-# ----- Macros & codegen -----
-ctor = "1.0.7"
-dtor = "1.0.5"
-proc-macro-crate = "3.5.0"
-proc-macro2 = "1.0.106"
-quote = "1.0.45"
-strum = "0.28.0"
-strum_macros = "0.28.0"
-syn = "3.0.0"
-
-# ----- CLI & terminal -----
-clap = { version = "4.6.1", default-features = false }
-rustyline-async = { version = "0.4.9" }
-termimad = { version = "0.35.1", default-features = false }
-
-# ----- System & process -----
-core_affinity = "0.8.3"
-# nix = "0.26.1"
-
-# ----- Testing -----
-assert_matches2 = "0.1.2"
 tracing-test = "0.2.6"
+url = { version = "2.5.8", default-features = false, features = ["serde"] }
+uuid = { version = "1.23.2", features = ["v4"] }
+ulid = "3.0.0"
+web-time = "1.1.0"
+webpage = { version = "2.0.1", default-features = false }
+wildmatch = "2.6.1"
 
 [workspace.lints.clippy]
 result_large_err = "allow"

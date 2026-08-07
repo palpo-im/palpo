@@ -2,6 +2,8 @@
 //!
 //! [predefined push rules]: https://spec.matrix.org/latest/client-server-api/#predefined-rules
 
+use std::collections::BTreeMap;
+
 use indexmap::IndexSet;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,7 @@ use super::{
     SimplePushRule, insert_and_move_rule,
 };
 use crate::push::RemovePushRuleError;
+use crate::serde::JsonValue;
 use crate::serde::RawJson;
 use crate::{OwnedRoomId, OwnedUserId};
 
@@ -64,6 +67,11 @@ pub struct Ruleset {
     #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
     #[salvo(schema(value_type = HashSet<ConditionalPushRule>))]
     pub underride: IndexSet<ConditionalPushRule>,
+
+    /// Fields added by newer Matrix versions or custom extensions.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub extra: BTreeMap<String, JsonValue>,
 }
 impl Ruleset {
     /// Creates an empty `Ruleset`.

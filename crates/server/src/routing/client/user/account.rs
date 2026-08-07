@@ -26,16 +26,13 @@ pub(super) async fn get_global_data(
 
     let event_type = args.event_type.to_string();
     let content = if event_type == GlobalAccountDataEventType::PushRules.to_string() {
-        // Refreshed rules for a record palpo can read, but the stored value
-        // verbatim for one it cannot: this is the generic account-data GET, so
-        // a client that stored an unparseable or future-format value has to
-        // get back what it stored rather than synthesized defaults.
-        match crate::user::get_writable_push_rules(authed.user_id()).await? {
-            Some(rules) => serde_json::to_value(rules)?,
-            None => data::user::get_data::<JsonValue>(authed.user_id(), None, &event_type)
-                .await
-                .map_err(|_| MatrixError::not_found("user data not found"))?,
-        }
+        // Refresh parseable server defaults first, then return the actual
+        // stored record. This generic account-data endpoint must round-trip
+        // client extensions exactly, including fields newer than this server.
+        crate::user::get_push_rules(authed.user_id()).await?;
+        data::user::get_data::<JsonValue>(authed.user_id(), None, &event_type)
+            .await
+            .map_err(|_| MatrixError::not_found("user data not found"))?
     } else {
         data::user::get_data::<JsonValue>(authed.user_id(), None, &event_type)
             .await

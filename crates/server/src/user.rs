@@ -342,27 +342,53 @@ pub async fn get_data<E: DeserializeOwned>(
     Ok(data)
 }
 
-/// Loads a user's push rules and merges in the current server defaults.
+/// A writable push-rule snapshot paired with the raw value it was loaded from.
+pub struct WritablePushRules {
+    pub content: PushRulesEventContent,
+    expected: Option<JsonValue>,
+}
+
+impl WritablePushRules {
+    /// Persist the modified rules only if no other writer changed the record
+    /// since this snapshot was loaded.
+    pub async fn save(self, user_id: &UserId) -> AppResult<bool> {
+        let json = serde_json::to_value(self.content)?;
+        Ok(data::user::set_data_if_unchanged(
+            user_id,
+            None,
+            &GlobalAccountDataEventType::PushRules.to_string(),
+            self.expected.as_ref(),
+            json,
+        )
+        .await?)
+    }
+}
+
+/// Load current push rules for a writer, including refreshed server defaults.
 ///
-/// The stored enabled state and actions for existing default rules are kept,
-/// as are all user-defined rules. This makes newly added defaults effective
-/// for existing accounts without resetting their preferences.
-/// Like [`get_push_rules`], but returns `None` instead of the server-default
-/// fallback when the stored record is present and unparseable.
-///
-/// Callers that read the rules can use the fallback safely. Callers that write
-/// them back cannot: persisting the fallback would replace the very value the
-/// fallback exists to preserve.
-pub async fn get_writable_push_rules(user_id: &UserId) -> AppResult<Option<PushRulesEventContent>> {
+/// Unlike [`get_push_rules`], this returns `None` instead of server defaults
+/// when a stored record is unparseable. Writers cannot safely persist that
+/// fallback because doing so would replace the value it exists to preserve.
+pub async fn get_writable_push_rules(user_id: &UserId) -> AppResult<Option<WritablePushRules>> {
     let raw = data::user::get_global_data::<JsonValue>(
         user_id,
         &GlobalAccountDataEventType::PushRules.to_string(),
     )
     .await?;
-    if raw.is_some() && raw.clone().and_then(parse_stored_push_rules).is_none() {
-        return Ok(None);
-    }
-    get_push_rules(user_id).await.map(Some)
+    let (stored, rewrite_shape) = match raw.clone() {
+        Some(raw) => {
+            let Some((content, shape)) = parse_stored_push_rules(raw) else {
+                return Ok(None);
+            };
+            (Some(content), shape == StoredShape::Wrapped)
+        }
+        None => (None, false),
+    };
+    let (content, _) = refresh_push_rules_content(user_id, stored, rewrite_shape)?;
+    Ok(Some(WritablePushRules {
+        content,
+        expected: raw,
+    }))
 }
 
 pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent> {
@@ -398,19 +424,25 @@ pub async fn get_push_rules(user_id: &UserId) -> AppResult<PushRulesEventContent
         // retries. This runs inside `append_pdu`'s per-recipient loop, so a
         // transient write failure must not fail the event append -- it would
         // turn a push-rule bookkeeping problem into a dropped message.
-        if let Err(error) = data::user::set_data(
+        match data::user::set_data_if_unchanged(
             user_id,
             None,
             &GlobalAccountDataEventType::PushRules.to_string(),
+            raw.as_ref(),
             refreshed_json,
         )
         .await
         {
-            tracing::warn!(
+            Ok(true) => {}
+            Ok(false) => tracing::debug!(
+                %user_id,
+                "push rules changed concurrently; skipped persisting refreshed defaults"
+            ),
+            Err(error) => tracing::warn!(
                 %user_id,
                 ?error,
                 "failed to persist refreshed push rules; continuing with the merged rules"
-            );
+            ),
         }
     }
 
@@ -598,5 +630,33 @@ mod push_rules_tests {
 
         assert!(changed_json.is_some());
         assert!(!content.global.override_.is_empty());
+    }
+
+    #[test]
+    fn refresh_preserves_unknown_content_and_ruleset_fields() {
+        let raw = serde_json::json!({
+            "global": {
+                "org.example.ruleset_extension": {"enabled": true}
+            },
+            "org.example.content_extension": [1, 2, 3]
+        });
+        let (stored, shape) = super::parse_stored_push_rules(raw).expect("record parses");
+
+        let (_, changed_json) = refresh_push_rules_content(
+            user_id!("@user:example.org"),
+            Some(stored),
+            shape == super::StoredShape::Wrapped,
+        )
+        .unwrap();
+        let refreshed = changed_json.expect("missing defaults trigger a refresh");
+
+        assert_eq!(
+            refreshed["org.example.content_extension"],
+            serde_json::json!([1, 2, 3])
+        );
+        assert_eq!(
+            refreshed["global"]["org.example.ruleset_extension"],
+            serde_json::json!({"enabled": true})
+        );
     }
 }
