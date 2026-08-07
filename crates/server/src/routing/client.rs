@@ -225,7 +225,7 @@ fn supported_versions_body() -> VersionsResBody {
         ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
         ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
         ("uk.tcpip.msc4133.stable".to_owned(), true), /* the profile-field endpoints are
-                                                 * served on the stable `/v3` prefix too */
+                                                * served on the stable `/v3` prefix too */
         ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
         ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
         ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.

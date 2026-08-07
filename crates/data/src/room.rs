@@ -981,21 +981,15 @@ pub async fn get_timeline_gaps(
 //     Ok(())
 // }
 
-/// Users whose membership in `room_id` became `leave` or `ban` at a position in
-/// `[since_sn, until_sn)`.
-///
-/// Used to tell a syncing client that it can stop tracking someone's profile (MSC4262).
-/// It reads the membership rows directly rather than trying to reconstruct who was joined
-/// at `since_sn`: a membership update replaces the previous row, so the earlier state is
-/// not recoverable from the table.
-pub async fn departed_users_since(
+/// Users whose current membership became `join` in `[since_sn, until_sn)`.
+pub async fn joined_users_since(
     room_id: &RoomId,
     since_sn: Seqnum,
     until_sn: Seqnum,
 ) -> DataResult<Vec<OwnedUserId>> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
-        .filter(room_users::membership.eq_any(["leave", "ban"]))
+        .filter(room_users::membership.eq("join"))
         .filter(room_users::event_sn.ge(since_sn))
         .filter(room_users::event_sn.lt(until_sn))
         .select(room_users::user_id)

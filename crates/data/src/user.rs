@@ -292,26 +292,10 @@ pub async fn display_name(user_id: &UserId) -> DataResult<Option<String>> {
         .map_err(Into::into)
 }
 pub async fn set_display_name(user_id: &UserId, display_name: &str) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::display_name.eq(display_name))
-    .execute(&mut connect().await?)
-    .await?;
-    profile::record_profile_change(user_id, "displayname", Some(display_name.into())).await
+    profile::set_global_display_name(user_id, Some(display_name)).await
 }
 pub async fn remove_display_name(user_id: &UserId) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::display_name.eq::<Option<String>>(None))
-    .execute(&mut connect().await?)
-    .await?;
-    profile::record_profile_change(user_id, "displayname", None).await
+    profile::set_global_display_name(user_id, None).await
 }
 
 /// Get the avatar_url of a user.
@@ -327,37 +311,14 @@ pub async fn avatar_url(user_id: &UserId) -> DataResult<Option<OwnedMxcUri>> {
         .map_err(Into::into)
 }
 pub async fn set_avatar_url(user_id: &UserId, avatar_url: &MxcUri) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::avatar_url.eq(avatar_url.as_str()))
-    .execute(&mut connect().await?)
-    .await?;
-    profile::record_profile_change(user_id, "avatar_url", Some(avatar_url.as_str().into())).await
+    profile::set_global_avatar_url(user_id, Some(avatar_url)).await
 }
 pub async fn remove_avatar_url(user_id: &UserId) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::avatar_url.eq::<Option<String>>(None))
-    .execute(&mut connect().await?)
-    .await?;
-    profile::record_profile_change(user_id, "avatar_url", None).await
+    profile::set_global_avatar_url(user_id, None).await
 }
 
 pub async fn delete_profile(user_id: &UserId) -> DataResult<()> {
-    diesel::delete(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-    Ok(())
+    profile::delete_global_profile(user_id).await
 }
 
 /// Get the blurhash of a user.

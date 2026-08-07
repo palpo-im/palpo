@@ -34,7 +34,7 @@ pub(super) async fn collect(
     todo_rooms: &TodoRooms,
     listed_rooms: &BTreeMap<String, BTreeSet<OwnedRoomId>>,
     until_sn: Seqnum,
-) -> AppResult<Profiles> {
+) -> AppResult<(Profiles, BTreeSet<OwnedRoomId>)> {
     let SyncInfo {
         sender_id,
         device_id,
@@ -43,7 +43,7 @@ pub(super) async fn collect(
     } = sync_info;
     let config = &req_body.extensions.profiles;
     if !config.enabled.unwrap_or(false) {
-        return Ok(Profiles::default());
+        return Ok((Profiles::default(), BTreeSet::new()));
     }
 
     let fields: FieldFilter = config.fields.as_ref().map(|fields| {
@@ -60,19 +60,21 @@ pub(super) async fn collect(
     // itself was delivered, because a client can enable the extension -- or widen a
     // selector -- long after the room first appeared, and would otherwise get incremental
     // changes with no base to apply them to.
+    let room_subset = todo_rooms.keys().cloned().collect();
     let selected = config_rooms(
         config,
-        todo_rooms,
+        &room_subset,
         listed_rooms,
         &req_body.room_subscriptions,
     );
-    let fresh = crate::sync_v5::take_unsnapshotted_profile_rooms(
+    let fresh = crate::sync_v5::unsnapshotted_profile_rooms(
         sender_id,
         device_id,
         &req_body.conn_id,
         selected,
     )
     .await;
+    let mut snapshotted_rooms = BTreeSet::new();
     for room_id in fresh {
         // A room subscription is accepted on existence alone, so membership has to be
         // checked here: without it, anyone who knows a private room's ID could subscribe
@@ -88,22 +90,50 @@ pub(super) async fn collect(
                 users.insert(user_id, Some(profile));
             }
         }
+        snapshotted_rooms.insert(room_id);
+    }
+
+    // A previously departed user may be shared again without changing their global
+    // profile. Send a new base for joins in the window; when the syncing user joined the
+    // room, every current member is newly shared from this client's point of view.
+    if since_sn > 0 {
+        for room_id in all_joined_rooms {
+            let joined = data::room::joined_users_since(room_id, since_sn, until_sn).await?;
+            let candidates = if joined.iter().any(|user_id| user_id == sender_id) {
+                crate::room::joined_users(room_id, None).await?
+            } else {
+                joined
+            };
+            for user_id in candidates {
+                if users.contains_key(&user_id) {
+                    continue;
+                }
+                if let Some(profile) = snapshot(&user_id, room_id, &fields).await? {
+                    users.insert(user_id, Some(profile));
+                }
+            }
+        }
+    }
+    let mut shared = BTreeSet::new();
+    if since_sn > 0 {
+        for room_id in all_joined_rooms {
+            shared.extend(crate::room::joined_users(room_id, None).await?);
+        }
     }
 
     // Incremental changes go to every user the syncing user shares a room with, not just
     // those in the room subset: the subset can shrink and grow again, and the client must
     // not end up applying updates on top of a profile it never refreshed.
     if since_sn > 0 {
-        let mut shared: BTreeSet<OwnedUserId> = BTreeSet::new();
-        for room_id in all_joined_rooms {
-            shared.extend(crate::room::joined_users(room_id, None).await?);
-        }
         // The syncing user's own updates must always be delivered, so their other devices
         // see changes they made elsewhere.
-        shared.insert(sender_id.to_owned());
-
-        let shared: Vec<OwnedUserId> = shared.into_iter().collect();
-        for change in data::user::profile_changes_since(Some(&shared), since_sn, until_sn).await? {
+        let mut users_to_update: Vec<OwnedUserId> = shared.iter().cloned().collect();
+        if !shared.contains(sender_id) {
+            users_to_update.push(sender_id.to_owned());
+        }
+        for change in
+            data::user::profile_changes_since(Some(&users_to_update), since_sn, until_sn).await?
+        {
             if !wanted(&fields, &change.field) {
                 continue;
             }
@@ -115,18 +145,23 @@ pub(super) async fn collect(
         }
     }
 
-    // A user who is no longer in any room with the syncing user gets a `null`, telling the
-    // client it can stop tracking them.
-    for user_id in departed(all_joined_rooms, since_sn, until_sn).await? {
-        if user_id == sender_id {
-            continue;
+    // A user who is no longer shared gets a `null`, but only if this connection has
+    // acknowledged receiving that user's profile. Inferring historical sharing from the
+    // current membership table is incomplete (rows are overwritten) and can leak users
+    // who joined a private room only after the syncing user left it.
+    if since_sn > 0 {
+        let tracked =
+            crate::sync_v5::tracked_profile_users(sender_id, device_id, &req_body.conn_id).await;
+        for user_id in tracked.difference(&shared) {
+            if user_id != sender_id {
+                users.insert(user_id.clone(), None);
+            }
         }
-        users.insert(user_id, None);
     }
 
     users.retain(|_, update| update.as_ref().is_none_or(|update| !update.is_empty()));
 
-    Ok(Profiles { users })
+    Ok((Profiles { users }, snapshotted_rooms))
 }
 
 /// Whether the client asked for this field.
@@ -155,9 +190,9 @@ fn apply(update: &mut UserProfileUpdate, field: String, value: Option<JsonValue>
 
 /// The current profile of a user as a full update, or `None` if nothing is known.
 ///
-/// Only local users have a row in `user_profiles`. A remote member's name and avatar are
-/// only ever seen through their `m.room.member` event, so that is the fallback -- without
-/// it every remote member would be silently missing from the snapshot.
+/// Remote users gain a global row as new membership events arrive, but existing members
+/// may predate that mirror. Their current `m.room.member` event is therefore the fallback
+/// until a global profile row is available.
 async fn snapshot(
     user_id: &UserId,
     room_id: &RoomId,
@@ -175,6 +210,11 @@ async fn snapshot(
             && wanted(fields, "avatar_url")
         {
             update.set("avatar_url".to_owned(), avatar_url.as_str().into());
+        }
+        if let Some(blurhash) = profile.blurhash
+            && wanted(fields, "xyz.amorgan.blurhash")
+        {
+            update.set("xyz.amorgan.blurhash".to_owned(), blurhash.into());
         }
         if let Some(custom) = profile.fields.as_object() {
             for (field, value) in custom {
@@ -204,6 +244,11 @@ async fn snapshot(
         {
             update.set("avatar_url".to_owned(), avatar_url.as_str().into());
         }
+        if let Some(blurhash) = member.blurhash
+            && wanted(fields, "xyz.amorgan.blurhash")
+        {
+            update.set("xyz.amorgan.blurhash".to_owned(), blurhash.into());
+        }
     }
 
     Ok((!update.is_empty()).then_some(update))
@@ -216,14 +261,14 @@ async fn snapshot(
 /// lists produced in *this* response, not the cache from the previous one -- the cache is
 /// empty on an initial sync and stale for exactly the rooms that have just entered a list,
 /// which are the ones that need a snapshot.
-fn config_rooms(
+pub(super) fn config_rooms(
     config: &crate::core::client::sync_events::v5::ProfilesConfig,
-    todo_rooms: &TodoRooms,
+    room_subset: &BTreeSet<OwnedRoomId>,
     listed_rooms: &BTreeMap<String, BTreeSet<OwnedRoomId>>,
     subscriptions: &BTreeMap<OwnedRoomId, crate::core::client::sync_events::v5::RoomSubscription>,
 ) -> BTreeSet<OwnedRoomId> {
     if config.lists.is_none() && config.rooms.is_none() {
-        return todo_rooms.keys().cloned().collect();
+        return room_subset.clone();
     }
 
     let mut rooms = BTreeSet::new();
@@ -244,33 +289,6 @@ fn config_rooms(
         }
     }
     rooms
-}
-
-/// Users who have stopped sharing a room with the syncing user.
-///
-/// Derived from membership rows that now say `leave` or `ban`, rather than from a
-/// reconstruction of who was joined at `since_sn`: membership updates replace the previous
-/// row, so the old joined state is not recoverable from the current table.
-///
-/// A user is only reported once they are gone from *every* room the syncing user is in --
-/// leaving one shared room while remaining in another is not a departure.
-async fn departed(
-    all_joined_rooms: &[&RoomId],
-    since_sn: Seqnum,
-    until_sn: Seqnum,
-) -> AppResult<BTreeSet<OwnedUserId>> {
-    if since_sn == 0 {
-        return Ok(BTreeSet::new());
-    }
-
-    let mut left = BTreeSet::new();
-    let mut still_joined = BTreeSet::new();
-    for room_id in all_joined_rooms {
-        left.extend(data::room::departed_users_since(room_id, since_sn, until_sn).await?);
-        still_joined.extend(crate::room::joined_users(room_id, None).await?);
-    }
-
-    Ok(left.difference(&still_joined).cloned().collect())
 }
 
 #[cfg(test)]

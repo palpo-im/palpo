@@ -19,9 +19,9 @@ use crate::core::identifiers::*;
 use crate::core::profile::ProfileFieldName;
 use crate::core::serde::{JsonObject, JsonValue};
 use crate::core::user::ProfileResBody;
+use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::{DbProfile, NewDbPresence};
-use crate::data::{connect, diesel_exists};
 use crate::exts::*;
 use crate::room::timeline;
 use crate::{
@@ -320,36 +320,12 @@ async fn set_avatar_url(
         blurhash,
     } = body.into_inner();
 
-    let query = user_profiles::table
-        .filter(user_profiles::user_id.eq(&user_id))
-        .filter(user_profiles::room_id.is_null());
-    let profile_exists = diesel_exists!(query, &mut connect().await?)?;
-    if profile_exists {
-        #[derive(AsChangeset, Debug)]
-        #[diesel(table_name = user_profiles, treat_none_as_null = true)]
-        struct UpdateParams {
-            avatar_url: Option<OwnedMxcUri>,
-            blurhash: Option<String>,
-        }
-        let updata_params = UpdateParams {
-            avatar_url: avatar_url.clone(),
-            blurhash,
-        };
-        diesel::update(query)
-            .set(updata_params)
-            .execute(&mut connect().await?)
-            .await?;
-        // MSC4262: this handler writes the column directly rather than going through
-        // `data::user::set_avatar_url`, so the change stream has to be fed here too.
-        data::user::record_profile_change(
-            &user_id,
-            "avatar_url",
-            avatar_url.as_ref().map(|url| url.as_str().into()),
-        )
-        .await?;
-    } else {
-        return Err(StatusError::not_found().brief("Profile not found.").into());
-    }
+    data::user::set_global_avatar_and_blurhash(
+        &user_id,
+        avatar_url.as_deref(),
+        blurhash.as_deref(),
+    )
+    .await?;
 
     // Send a new membership event and presence update into all joined rooms
     let mut all_joined_rooms: Vec<_> = Vec::new();
@@ -360,6 +336,7 @@ async fn set_avatar_url(
                     event_type: TimelineEventType::RoomMember,
                     content: to_raw_value(&RoomMemberEventContent {
                         avatar_url: avatar_url.clone(),
+                        blurhash: blurhash.clone(),
                         ..room::get_state_content::<RoomMemberEventContent>(
                             &room_id,
                             &StateEventType::RoomMember,

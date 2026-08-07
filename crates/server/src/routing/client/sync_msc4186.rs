@@ -81,7 +81,11 @@ pub(super) async fn sync_events_v5(
             && !has_list_count_changes(&res_body, &previous_list_counts))
     {
         let duration = long_poll_timeout(args.timeout);
-        let watcher = crate::watcher::watch(sender_id, device_id);
+        #[cfg(feature = "unstable-msc4262")]
+        let profile_updates = req_body.extensions.profiles.enabled.unwrap_or(false);
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profile_updates = false;
+        let watcher = crate::watcher::watch(sender_id, device_id, profile_updates);
         _ = tokio::time::timeout(duration, watcher).await;
         res_body =
             crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)

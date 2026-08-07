@@ -489,8 +489,8 @@ pub async fn append_pdu(
                 )
                 .await?;
 
-                // MSC4262: a remote user has no row in `user_profiles`, so their name and
-                // avatar are only ever visible through this event. Feed the change into
+                // MSC4262: a remote user has no row in `user_profiles`, so their name,
+                // avatar, and blurhash are only visible through this event. Feed the change into
                 // the profile stream so the sliding sync extension can deliver it like any
                 // other profile update, instead of remote members going stale forever.
                 #[cfg(feature = "unstable-msc4262")]
@@ -918,12 +918,23 @@ pub async fn is_event_next_to_forward_gap(event: &PduEvent) -> AppResult<bool> {
 /// Values are compared against what the stream already reflects, so re-sending the same
 /// membership event -- which happens routinely -- does not produce a change.
 #[cfg(feature = "unstable-msc4262")]
+fn should_record_remote_profile(membership: &MembershipState) -> bool {
+    membership == &MembershipState::Join
+}
+
+#[cfg(feature = "unstable-msc4262")]
 async fn record_remote_profile_change(pdu: &SnPduEvent, user_id: &UserId) {
     use crate::core::events::room::member::RoomMemberEventContent;
 
     let Ok(content) = pdu.get_content::<RoomMemberEventContent>() else {
         return;
     };
+    // Leave/ban events and other membership transitions routinely omit profile fields and
+    // must not clear the remote user's profile. A join event, however, carries the current
+    // member profile: an omitted optional field means that field is no longer set.
+    if !should_record_remote_profile(&content.membership) {
+        return;
+    }
 
     let previous = data::user::get_profile(user_id, None).await.ok().flatten();
     let display_name_changed =
@@ -933,19 +944,16 @@ async fn record_remote_profile_change(pdu: &SnPduEvent, user_id: &UserId) {
         .and_then(|p| p.avatar_url.clone())
         .map(|url| url.to_string())
         != content.avatar_url.as_ref().map(ToString::to_string);
+    let blurhash_changed = previous.as_ref().and_then(|p| p.blurhash.clone()) != content.blurhash;
 
-    if display_name_changed
+    let display_name = display_name_changed.then_some(content.display_name.as_deref());
+    let avatar_url = avatar_changed.then_some(content.avatar_url.as_deref());
+    let blurhash = blurhash_changed.then_some(content.blurhash.as_deref());
+    if (display_name.is_some() || avatar_url.is_some() || blurhash.is_some())
         && let Err(e) =
-            data::user::set_remote_profile_display_name(user_id, content.display_name.as_deref())
-                .await
+            data::user::set_remote_profile_fields(user_id, display_name, avatar_url, blurhash).await
     {
-        warn!(%user_id, error = ?e, "failed to record remote display name");
-    }
-    if avatar_changed
-        && let Err(e) =
-            data::user::set_remote_profile_avatar_url(user_id, content.avatar_url.as_deref()).await
-    {
-        warn!(%user_id, error = ?e, "failed to record remote avatar url");
+        warn!(%user_id, error = ?e, "failed to record remote profile fields");
     }
 }
 
@@ -955,6 +963,10 @@ mod tests {
     use tracing_test::traced_test;
 
     use super::canonicalize_prev_content;
+    #[cfg(feature = "unstable-msc4262")]
+    use super::should_record_remote_profile;
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::core::events::room::member::MembershipState;
     use crate::core::identifiers::{EventId, OwnedEventId, OwnedRoomId, RoomId};
     use crate::core::serde::to_canonical_object;
 
@@ -964,6 +976,14 @@ mod tests {
             RoomId::parse("!room:example.org").unwrap().to_owned(),
             EventId::parse("$prev:example.org").unwrap().to_owned(),
         )
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn only_join_events_feed_the_remote_profile_stream() {
+        assert!(should_record_remote_profile(&MembershipState::Join));
+        assert!(!should_record_remote_profile(&MembershipState::Leave));
+        assert!(!should_record_remote_profile(&MembershipState::Ban));
     }
 
     fn raw(s: &str) -> Box<RawValue> {
