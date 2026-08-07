@@ -89,7 +89,7 @@ pub async fn sync_events(
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     for room_id in &all_joined_rooms {
-        let joined_room = match load_joined_room(
+        let (joined_room, _) = load_joined_room(
             sender_id,
             device_id,
             room_id,
@@ -103,14 +103,7 @@ pub async fn sync_events(
             &mut joined_users,
             &mut left_users,
         )
-        .await
-        {
-            Ok((joined_room, _)) => joined_room,
-            Err(e) => {
-                tracing::error!(error = ?e, "load joined room failed");
-                continue;
-            }
-        };
+        .await?;
         if since_tk.is_none() || !joined_room.is_empty() {
             joined_rooms.insert(room_id.to_owned(), joined_room);
         }
@@ -142,7 +135,7 @@ pub async fn sync_events(
             let _ = data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await;
             continue;
         }
-        match load_joined_room(
+        let (mut peeked_room, _) = load_joined_room(
             sender_id,
             device_id,
             &room_id,
@@ -156,21 +149,14 @@ pub async fn sync_events(
             &mut peek_joined_users,
             &mut peek_left_users,
         )
-        .await
-        {
-            Ok((mut peeked_room, _)) => {
-                // Strip joined-only ephemeral (read receipts, typing) and the
-                // user's own room account data: a peeker is not a member and
-                // shouldn't receive that activity for a room they only preview.
-                peeked_room.ephemeral = Default::default();
-                peeked_room.account_data = Default::default();
-                if since_tk.is_none() || !peeked_room.is_empty() {
-                    peeked_rooms.insert(room_id, peeked_room);
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "load peeked room failed");
-            }
+        .await?;
+        // Strip joined-only ephemeral (read receipts, typing) and the
+        // user's own room account data: a peeker is not a member and
+        // shouldn't receive that activity for a room they only preview.
+        peeked_room.ephemeral = Default::default();
+        peeked_room.account_data = Default::default();
+        if since_tk.is_none() || !peeked_room.is_empty() {
+            peeked_rooms.insert(room_id, peeked_room);
         }
     }
     // peek_device_updates / peek_joined_users / peek_left_users go out of scope
@@ -1184,8 +1170,10 @@ async fn load_sticky(
             );
             continue;
         }
-        let Ok(pdu) = timeline::get_pdu(&entry.event_id).await else {
-            continue;
+        let pdu = match timeline::get_pdu(&entry.event_id).await {
+            Ok(pdu) => pdu,
+            Err(error) if error.is_not_found() => continue,
+            Err(error) => return Err(error),
         };
         events
             .push(crate::event::sticky::with_ttl(pdu, entry.expires_at, now).to_sync_room_event());

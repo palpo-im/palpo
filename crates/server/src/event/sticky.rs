@@ -80,6 +80,7 @@ pub async fn mark_deliverable(pdu: &PduEvent) -> AppResult<()> {
     }
 
     let deliver_sn = crate::data::next_sn().await?;
+    let _sequence_guard = crate::queue_seqnum(deliver_sn);
     diesel::update(
         event_stickies::table
             .filter(event_stickies::event_id.eq(&pdu.event_id))

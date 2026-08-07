@@ -239,6 +239,11 @@ pub(super) async fn send_state_for_key(
         body.0,
         args.state_key.clone().unwrap_or_default(),
         args.sticky_duration_ms,
+        authed
+            .appservice()
+            .is_some()
+            .then_some(args.timestamp)
+            .flatten(),
     )
     .await?;
 
@@ -270,6 +275,11 @@ pub(super) async fn send_state_for_empty_key(
         body.0,
         "".into(),
         args.sticky_duration_ms,
+        authed
+            .appservice()
+            .is_some()
+            .then_some(args.timestamp)
+            .flatten(),
     )
     .await?;
 
