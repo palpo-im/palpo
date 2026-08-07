@@ -4,6 +4,8 @@ use serde::Deserialize;
 
 use crate::core::client::account::data::{GlobalAccountDataResBody, RoomAccountDataResBody};
 use crate::core::events::AnyGlobalAccountDataEventContent;
+#[cfg(feature = "unstable-msc4495")]
+use crate::core::events::StaticEventContent;
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonValue, RawJson};
 use crate::core::user::{UserEventTypeReqArgs, UserRoomEventTypeReqArgs};
@@ -61,6 +63,15 @@ pub(super) async fn set_global_data(
         data::user::delete_global_data(authed.user_id(), &event_type).await?;
     } else {
         data::user::set_data(authed.user_id(), None, &event_type, body).await?;
+    }
+
+    // MSC4495: the recipient set is derived from this event, and deltas are only computed
+    // when the user's presence row moves. Without this, removing a recipient would not
+    // reach their server until the user next changed presence, and until then that server
+    // would go on showing the presence it already had.
+    #[cfg(feature = "unstable-msc4495")]
+    if event_type == crate::core::events::presence::sharing::PresenceSharingEventContent::TYPE {
+        crate::user::presence::recipients::mark_recipients_changed(authed.user_id()).await?;
     }
 
     empty_ok()

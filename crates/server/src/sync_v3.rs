@@ -291,11 +291,11 @@ pub async fn sync_events(
 
     if config::get().presence.allow_local {
         // Take presence updates from this room
-        for (user_id, presence_event) in
+        for (user_id, (_, presence_event)) in
             crate::data::user::presences_since(since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn())
                 .await?
         {
-            if user_id == sender_id || !state::user_can_see_user(sender_id, &user_id).await? {
+            if user_id == sender_id || !presence_visible_to(&user_id, sender_id).await? {
                 continue;
             }
 
@@ -327,6 +327,7 @@ pub async fn sync_events(
         }
         for joined_user in &joined_users {
             if !presence_updates.contains_key(joined_user)
+                && presence_visible_to(joined_user, sender_id).await?
                 && let Ok(presence) = data::user::last_presence(joined_user).await
             {
                 presence_updates.insert(joined_user.to_owned(), presence);
@@ -1338,4 +1339,20 @@ pub(crate) async fn share_encrypted_room(
     }
 
     Ok(shared_rooms)
+}
+
+/// Whether `viewer_id` may be shown `sender_id`'s presence.
+///
+/// Without selective presence this is the historical rule: anyone you share a room with.
+/// With MSC4495 enabled, presence goes only to the sender's recipient set, so the
+/// shared-room test is not sufficient on its own.
+async fn presence_visible_to(sender_id: &UserId, viewer_id: &UserId) -> AppResult<bool> {
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        return crate::user::presence::sharing::may_see(sender_id, viewer_id).await;
+    }
+    #[cfg(not(feature = "unstable-msc4495"))]
+    {
+        state::user_can_see_user(viewer_id, sender_id).await
+    }
 }

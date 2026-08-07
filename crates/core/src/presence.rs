@@ -75,21 +75,36 @@ pub struct PresenceUpdate {
     pub currently_active: bool,
 
     /// Changes to the user's presence recipient list since the previous update.
+    ///
+    /// Uses the MSC4495 unstable name until the proposal is accepted.
     #[cfg(feature = "unstable-msc4495")]
     #[serde(
         default,
+        rename = "org.continuwuity.presence_v2.msc4495.recipients",
         skip_serializing_if = "PresenceRecipientListUpdates::is_empty"
     )]
     pub recipients: PresenceRecipientListUpdates,
 
     /// The stream ID of the user's current presence recipient list.
+    ///
+    /// Uses the MSC4495 unstable name until the proposal is accepted.
     #[cfg(feature = "unstable-msc4495")]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4495.stream_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stream_id: Option<i64>,
 
     /// The previous stream ID for this recipient-list delta.
+    ///
+    /// Uses the MSC4495 unstable name until the proposal is accepted.
     #[cfg(feature = "unstable-msc4495")]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4495.prev_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub prev_id: Option<i64>,
 }
 
@@ -115,7 +130,7 @@ impl PresenceUpdate {
 
 /// Added and removed users in a presence recipient list.
 #[cfg(feature = "unstable-msc4495")]
-#[derive(ToSchema, Deserialize, Serialize, Clone, Debug, Default)]
+#[derive(ToSchema, Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct PresenceRecipientListUpdates {
     /// Users added to the recipient list.
     pub add: Vec<OwnedUserId>,
@@ -168,12 +183,12 @@ mod msc4495_tests {
                 "presence": "online",
                 "last_active_ago": 1_000,
                 "currently_active": true,
-                "recipients": {
+                "org.continuwuity.presence_v2.msc4495.recipients": {
                     "add": ["@bob:example.org"],
                     "delete": ["@charlie:example.org"]
                 },
-                "stream_id": 321,
-                "prev_id": 123
+                "org.continuwuity.presence_v2.msc4495.stream_id": 321,
+                "org.continuwuity.presence_v2.msc4495.prev_id": 123
             })
         );
 
@@ -193,9 +208,18 @@ mod msc4495_tests {
         );
 
         let json = serde_json::to_value(update).unwrap();
-        assert!(json.get("recipients").is_none());
-        assert!(json.get("stream_id").is_none());
-        assert!(json.get("prev_id").is_none());
+        assert!(
+            json.get("org.continuwuity.presence_v2.msc4495.recipients")
+                .is_none()
+        );
+        assert!(
+            json.get("org.continuwuity.presence_v2.msc4495.stream_id")
+                .is_none()
+        );
+        assert!(
+            json.get("org.continuwuity.presence_v2.msc4495.prev_id")
+                .is_none()
+        );
     }
 
     #[test]
