@@ -32,6 +32,17 @@ fn encode_cursor(room_id: &RoomId) -> String {
     URL_SAFE_NO_PAD.encode(room_id.as_str())
 }
 
+fn validate_stable_target(authenticated_user: &UserId, target_user: &UserId) -> AppResult<()> {
+    if authenticated_user == target_user {
+        return Err(MatrixError::invalid_param(
+            "`user_id` must not be the authenticated user's ID",
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 fn decode_cursor(cursor: &str) -> AppResult<OwnedRoomId> {
     let bytes = URL_SAFE_NO_PAD
         .decode(cursor)
@@ -95,6 +106,7 @@ pub(super) async fn get_mutual_rooms_v1(
     depot: &mut Depot,
 ) -> JsonResult<MutualRoomsV1ResBody> {
     let authed = depot.authed_info()?;
+    validate_stable_target(authed.user_id(), &args.user_id)?;
     let joined = mutual_room_ids(authed.user_id(), &args.user_id).await?;
     let (count, joined, next_batch) = paginate_mutual_rooms(joined, args.from.as_deref())?;
 
@@ -106,8 +118,10 @@ pub(super) async fn get_mutual_rooms_v1(
 
 #[cfg(test)]
 mod tests {
-    use super::{MUTUAL_ROOMS_PAGE_SIZE, encode_cursor, paginate_mutual_rooms};
-    use crate::core::{OwnedRoomId, owned_room_id};
+    use super::{
+        MUTUAL_ROOMS_PAGE_SIZE, encode_cursor, paginate_mutual_rooms, validate_stable_target,
+    };
+    use crate::core::{OwnedRoomId, owned_room_id, owned_user_id};
 
     fn room(number: usize) -> OwnedRoomId {
         OwnedRoomId::try_from(format!("!room{number:03}:example.org")).unwrap()
@@ -161,5 +175,15 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("Invalid `from` token"));
+    }
+
+    #[test]
+    fn stable_endpoint_rejects_the_authenticated_user_as_target() {
+        let user_id = owned_user_id!("@alice:example.org");
+
+        assert!(validate_stable_target(&user_id, &user_id).is_err());
+        assert!(
+            validate_stable_target(&user_id, owned_user_id!("@bob:example.org").as_ref()).is_ok()
+        );
     }
 }
