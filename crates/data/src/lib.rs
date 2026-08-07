@@ -110,3 +110,28 @@ pub async fn curr_sn() -> DataResult<Seqnum> {
         .await
         .map_err(Into::into)
 }
+
+#[cfg(test)]
+mod migration_tests {
+    use diesel::migration::MigrationSource;
+    use diesel::pg::Pg;
+    use diesel_migrations::EmbeddedMigrations;
+
+    use super::MIGRATIONS;
+
+    #[test]
+    fn concurrent_membership_indexes_run_outside_a_transaction() {
+        let migration = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
+            .expect("embedded migrations should be readable")
+            .into_iter()
+            .find(|migration| {
+                migration.name().to_string() == "2026-08-07-000001_membership_event_lookup_indexes"
+            })
+            .expect("membership lookup migration should be embedded");
+
+        assert!(
+            !migration.metadata().run_in_transaction(),
+            "CREATE INDEX CONCURRENTLY cannot run inside a transaction"
+        );
+    }
+}

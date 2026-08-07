@@ -100,7 +100,7 @@ run_direction() {
         COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
         COMPLEMENT_SHARE_ENV_PREFIX=PASS_ \
         PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite \
-        go test "${go_test_args[@]}" -json "${test_packages[@]}" \
+        go test -p=1 "${go_test_args[@]}" -json "${test_packages[@]}" \
         | tee "$dir/results.jsonl"
     local status=${PIPESTATUS[0]}
     set -o pipefail
