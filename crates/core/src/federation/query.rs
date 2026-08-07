@@ -84,60 +84,6 @@ pub fn profile_request(origin: &str, args: ProfileReqArgs) -> SendResult<SendReq
     Ok(crate::sending::get(url))
 }
 
-/// `GET /_matrix/federation/unstable/io.fsky.vel/edutypes`
-///
-/// Determine what types of EDUs a server wishes to receive.
-pub fn edu_types_request(origin: &str) -> SendResult<SendRequest> {
-    let url = Url::parse(&format!(
-        "{origin}/_matrix/federation/unstable/io.fsky.vel/edutypes"
-    ))?;
-    Ok(crate::sending::get(url))
-}
-
-/// Request type for the `edutypes` endpoint.
-#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
-pub struct EduTypesReqBody {}
-
-impl EduTypesReqBody {
-    /// Creates a new `EduTypesReqBody`.
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-/// Response type for the `edutypes` endpoint.
-#[derive(ToSchema, Clone, Debug, Deserialize, Serialize)]
-pub struct EduTypesResBody {
-    /// Whether presence EDUs should be sent.
-    #[serde(rename = "m.presence", default = "crate::serde::default_true")]
-    pub presence: bool,
-
-    /// Whether read receipt EDUs should be sent.
-    #[serde(rename = "m.receipt", default = "crate::serde::default_true")]
-    pub receipt: bool,
-
-    /// Whether typing EDUs should be sent.
-    #[serde(rename = "m.typing", default = "crate::serde::default_true")]
-    pub typing: bool,
-}
-
-impl EduTypesResBody {
-    /// Creates a new `EduTypesResBody` with all EDU flags set to `true`.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl Default for EduTypesResBody {
-    fn default() -> Self {
-        Self {
-            presence: true,
-            receipt: true,
-            typing: true,
-        }
-    }
-}
-
 /// Request type for the `get_profile_information` endpoint.
 
 #[derive(ToParameters, Deserialize, Debug)]
@@ -232,6 +178,59 @@ impl Extend<ProfileFieldValue> for ProfileResBody {
     }
 }
 
+/// Request parameters for the MSC4495 presence recipients query.
+#[cfg(feature = "unstable-msc4495")]
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct PresenceRecipientsReqArgs {
+    /// The local user whose current recipients are requested.
+    #[salvo(parameter(parameter_in = Query))]
+    pub user_id: OwnedUserId,
+}
+
+#[cfg(feature = "unstable-msc4495")]
+impl PresenceRecipientsReqArgs {
+    /// Creates a presence recipients query.
+    pub fn new(user_id: OwnedUserId) -> Self {
+        Self { user_id }
+    }
+}
+
+/// Creates an MSC4495 presence recipients query request.
+#[cfg(feature = "unstable-msc4495")]
+pub fn presence_recipients_request(
+    origin: &str,
+    args: PresenceRecipientsReqArgs,
+) -> SendResult<SendRequest> {
+    let mut url = Url::parse(&format!(
+        "{origin}/_matrix/federation/unstable/org.continuwuity.presence_v2.msc4495/query/presence_recipients"
+    ))?;
+    url.query_pairs_mut()
+        .append_pair("user_id", args.user_id.as_str());
+    Ok(crate::sending::get(url))
+}
+
+/// Response body for the MSC4495 presence recipients query.
+#[cfg(feature = "unstable-msc4495")]
+#[derive(ToSchema, Serialize, Deserialize, Debug, Clone)]
+pub struct PresenceRecipientsResBody {
+    /// The stream ID of the current recipient set.
+    pub stream_id: i64,
+
+    /// Local users that should receive this user's presence.
+    pub recipients: Vec<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4495")]
+impl PresenceRecipientsResBody {
+    /// Creates a presence recipients response.
+    pub fn new(stream_id: i64, recipients: Vec<OwnedUserId>) -> Self {
+        Self {
+            stream_id,
+            recipients,
+        }
+    }
+}
+
 impl IntoIterator for ProfileResBody {
     type Item = (String, JsonValue);
     type IntoIter = btree_map::IntoIter<String, JsonValue>;
@@ -285,36 +284,23 @@ impl CustomResBody {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
-
-    use super::EduTypesResBody;
-
-    #[test]
-    fn edu_types_default_to_true_when_missing() {
-        let body: EduTypesResBody = from_json_value(json!({})).unwrap();
-
-        assert!(body.presence);
-        assert!(body.receipt);
-        assert!(body.typing);
-    }
+#[cfg(all(test, feature = "unstable-msc4495"))]
+mod msc4495_tests {
+    use super::{PresenceRecipientsReqArgs, presence_recipients_request};
+    use crate::owned_user_id;
 
     #[test]
-    fn edu_types_use_msc4373_field_names() {
-        let body = EduTypesResBody {
-            presence: true,
-            receipt: false,
-            typing: true,
-        };
+    fn presence_recipients_request_uses_unstable_endpoint() {
+        let request = presence_recipients_request(
+            "https://example.org",
+            PresenceRecipientsReqArgs::new(owned_user_id!("@alice:example.org")),
+        )
+        .unwrap()
+        .into_inner();
 
         assert_eq!(
-            to_json_value(body).unwrap(),
-            json!({
-                "m.presence": true,
-                "m.receipt": false,
-                "m.typing": true,
-            })
+            request.url().as_str(),
+            "https://example.org/_matrix/federation/unstable/org.continuwuity.presence_v2.msc4495/query/presence_recipients?user_id=%40alice%3Aexample.org"
         );
     }
 }

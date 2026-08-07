@@ -5,6 +5,7 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::events::room::policy::POLICY_SERVER_ED25519_SIGNING_KEY_ID;
 use crate::serde::RawJsonValue;
 use crate::{
     OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSignatures, ServerSigningKeyId,
@@ -35,7 +36,7 @@ pub struct PolicySignEventResBody {
 
 impl PolicySignEventResBody {
     /// The signing key ID that must be used by the Policy Server for the Ed25519 signature.
-    pub const POLICY_SERVER_ED25519_SIGNING_KEY_ID: &str = "ed25519:policy_server";
+    pub const POLICY_SERVER_ED25519_SIGNING_KEY_ID: &str = POLICY_SERVER_ED25519_SIGNING_KEY_ID;
 
     /// Creates a new `PolicySignEventResBody` with the given Policy Server name and signature.
     pub fn new(server_name: OwnedServerName, ed25519_signature: String) -> Self {

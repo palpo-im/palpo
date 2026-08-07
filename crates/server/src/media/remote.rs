@@ -1,24 +1,34 @@
+use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use salvo::Response;
+use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use salvo::http::{ResBody, StatusCode};
 
 use super::{Dimension, FileMeta};
-use crate::core::federation::media::ContentReqArgs;
+use crate::core::federation::media::{ContentReqArgs, FileOrLocation, try_from_multipart_mixed};
+use crate::core::http_headers::ContentDisposition;
 use crate::core::identifiers::*;
 use crate::core::{Mxc, ServerName, UserId};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::exts::*;
+use crate::utils::content_disposition::make_content_disposition;
+use crate::utils::read_response_limited;
 use crate::{AppError, AppResult, config};
 
 pub async fn fetch_remote_content(
-    _mxc: &str,
     server_name: &ServerName,
     media_id: &str,
     res: &mut Response,
 ) -> AppResult<()> {
+    check_fetch_authorized(&Mxc {
+        server_name,
+        media_id,
+    })?;
+
     let content_req = crate::core::media::content_request(
         &server_name.origin().await,
         crate::core::media::ContentReqArgs {
@@ -46,11 +56,129 @@ pub async fn fetch_remote_content(
         crate::sending::send_federation_request(server_name, content_req, None).await?
     };
 
-    *res.headers_mut() = content_response.headers().to_owned();
-    res.status_code(content_response.status());
-    res.stream(content_response.bytes_stream());
+    let Some(content_type_header) = response_content_type(&content_response)
+        .filter(|content_type| is_multipart_mixed(content_type))
+    else {
+        // The legacy endpoint answers with the file itself, so it can be
+        // forwarded as it is streamed in.
+        for (key, value) in content_response.headers().iter() {
+            res.headers_mut().insert(key.clone(), value.clone());
+        }
+        res.status_code(content_response.status());
+        res.stream(content_response.bytes_stream());
+        return Ok(());
+    };
+
+    let body =
+        read_response_limited(content_response, config::get().media.max_remote_media_size).await?;
+
+    let content = match try_from_multipart_mixed(&content_type_header, &body) {
+        Ok((_metadata, FileOrLocation::File(content))) => content,
+        Ok((_metadata, FileOrLocation::Location(location))) => {
+            // Following the location requires an outbound request to a server
+            // controlled URL, which needs its own protections before we can
+            // make it.
+            warn!("remote media {media_id} on {server_name} is served from {location}");
+            render_bad_gateway(
+                res,
+                "Remote media is served from an external location, which is not supported",
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            warn!("failed to parse media response from {server_name}: {e}");
+            render_bad_gateway(res, "Failed to parse remote media response");
+            return Ok(());
+        }
+    };
+
+    let content_type = content
+        .content_type
+        .filter(|content_type| !content_type.is_empty())
+        .unwrap_or_else(|| mime::APPLICATION_OCTET_STREAM.to_string());
+    // Keep the filename the remote server sent, but decide for ourselves
+    // whether the file may be displayed inline.
+    let content_disposition = make_content_disposition(
+        None,
+        Some(&content_type),
+        content
+            .content_disposition
+            .as_ref()
+            .and_then(|disposition| disposition.filename.as_deref()),
+    );
+
+    res.add_header(CONTENT_TYPE, &content_type, true)?;
+    res.add_header(CONTENT_DISPOSITION, content_disposition.to_string(), true)?;
+    res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
+    res.status_code(StatusCode::OK);
+    res.body = ResBody::Once(content.file.into());
 
     Ok(())
+}
+
+/// Read a federation media response, unwrapping the `multipart/mixed` body the
+/// authenticated endpoints answer with.
+async fn read_media_response(response: reqwest::Response, max_size: usize) -> AppResult<FileMeta> {
+    let content_type = response_content_type(&response);
+
+    let Some(content_type) = content_type
+        .clone()
+        .filter(|content_type| is_multipart_mixed(content_type))
+    else {
+        let content_disposition = response
+            .headers()
+            .get(CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| ContentDisposition::from_str(s).ok());
+        let file = read_response_limited(response, max_size).await?.to_vec();
+
+        return Ok(FileMeta {
+            content: Some(file),
+            content_type,
+            content_disposition,
+        });
+    };
+
+    let body = read_response_limited(response, max_size).await?;
+    let (_metadata, content) = try_from_multipart_mixed(&content_type, &body)
+        .map_err(|e| AppError::public(format!("Failed to parse remote media response: {e}")))?;
+
+    match content {
+        FileOrLocation::File(content) => Ok(FileMeta {
+            content: Some(content.file),
+            content_type: content.content_type,
+            content_disposition: content.content_disposition,
+        }),
+        FileOrLocation::Location(_) => Err(AppError::public(
+            "Remote media is served from an external location, which is not supported",
+        )),
+    }
+}
+
+fn response_content_type(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+fn is_multipart_mixed(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .eq_ignore_ascii_case("multipart/mixed")
+}
+
+fn render_bad_gateway(res: &mut Response, error: &str) {
+    res.status_code(StatusCode::BAD_GATEWAY);
+    res.body = ResBody::Once(
+        serde_json::json!({ "errcode": "M_UNKNOWN", "error": error })
+            .to_string()
+            .into(),
+    );
 }
 
 pub async fn fetch_remote_thumbnail(
@@ -95,12 +223,6 @@ async fn fetch_thumbnail_authenticated(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
-    use std::str::FromStr;
-
-    use reqwest::header;
-
-    use crate::core::http_headers::ContentDisposition;
-
     let target_server = server.unwrap_or(mxc.server_name);
     let origin = target_server.origin().await;
 
@@ -118,51 +240,15 @@ async fn fetch_thumbnail_authenticated(
     )?
     .into_inner();
 
-    // Send federation request
+    // Send federation request. The authenticated endpoint answers with a
+    // `multipart/mixed` body, which `read_media_response` unwraps for us.
     let response =
         crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
+    let meta = read_media_response(response, config::get().media.max_remote_thumbnail_size).await?;
 
-    // Extract content from response headers
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_owned());
+    save_fetched_thumbnail(mxc, user, dim, &meta).await;
 
-    let content_disposition = response
-        .headers()
-        .get(header::CONTENT_DISPOSITION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| ContentDisposition::from_str(s).ok());
-
-    // Get the file content
-    let file = crate::utils::read_response_limited(
-        response,
-        config::get().media.max_remote_thumbnail_size,
-    )
-    .await?
-    .to_vec();
-
-    // Save the thumbnail locally for caching
-    if !file.is_empty()
-        && let Err(e) = crate::media::save_thumbnail(
-            mxc,
-            user,
-            content_type.as_deref(),
-            content_disposition.as_ref(),
-            dim,
-            &file,
-        )
-        .await
-    {
-        warn!("Failed to save fetched thumbnail locally: {e}");
-    }
-
-    Ok(FileMeta {
-        content: Some(file),
-        content_type,
-        content_disposition,
-    })
+    Ok(meta)
 }
 
 // async fn fetch_content_authenticated(
@@ -195,12 +281,6 @@ async fn fetch_thumbnail_unauthenticated(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
-    use std::str::FromStr;
-
-    use reqwest::header;
-
-    use crate::core::http_headers::ContentDisposition;
-
     let target_server = server.unwrap_or(mxc.server_name);
     let origin = target_server.origin().await;
 
@@ -224,48 +304,36 @@ async fn fetch_thumbnail_unauthenticated(
     // Send federation request
     let response =
         crate::sending::send_federation_request(target_server, thumbnail_req, None).await?;
+    let meta = read_media_response(response, config::get().media.max_remote_thumbnail_size).await?;
 
-    // Extract content from response headers
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_owned());
+    save_fetched_thumbnail(mxc, user, dim, &meta).await;
 
-    let content_disposition = response
-        .headers()
-        .get(header::CONTENT_DISPOSITION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| ContentDisposition::from_str(s).ok());
+    Ok(meta)
+}
 
-    // Get the file content
-    let file = crate::utils::read_response_limited(
-        response,
-        config::get().media.max_remote_thumbnail_size,
+/// Save a thumbnail fetched from a remote server locally, for caching.
+async fn save_fetched_thumbnail(
+    mxc: &Mxc<'_>,
+    user: Option<&UserId>,
+    dim: &Dimension,
+    meta: &FileMeta,
+) {
+    let Some(file) = meta.content.as_deref().filter(|file| !file.is_empty()) else {
+        return;
+    };
+
+    if let Err(e) = crate::media::save_thumbnail(
+        mxc,
+        user,
+        meta.content_type.as_deref(),
+        meta.content_disposition.as_ref(),
+        dim,
+        file,
     )
-    .await?
-    .to_vec();
-
-    // Save the thumbnail locally for caching
-    if !file.is_empty()
-        && let Err(e) = crate::media::save_thumbnail(
-            mxc,
-            user,
-            content_type.as_deref(),
-            content_disposition.as_ref(),
-            dim,
-            &file,
-        )
-        .await
+    .await
     {
         warn!("Failed to save fetched thumbnail locally: {e}");
     }
-
-    Ok(FileMeta {
-        content: Some(file),
-        content_type,
-        content_disposition,
-    })
 }
 
 // async fn fetch_content_unauthenticated(

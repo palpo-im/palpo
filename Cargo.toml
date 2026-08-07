@@ -32,7 +32,7 @@ anyhow = "1.0.102"
 assert_matches2 = "0.1.2"
 async-trait = "0.1.89"
 as_variant = "1.3.0"
-base64 = "0.22"
+base64 = "0.23"
 bcrypt = "0.19.1"
 blurhash = "0.2"
 bytes = "1.11.1"
@@ -72,8 +72,11 @@ image = "0.25.10"
 opendal = { version = "0.58.0", default-features = false }
 indexmap = "2.14.0"
 itertools = "0.15.0"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = [
+# 11.0 made the crypto backend an explicit feature; aws_lc_rs is what 10.x
+# already resolved to via rustls, so this keeps the dependency tree unchanged.
+jsonwebtoken = { version = "11.0.0", default-features = false, features = [
     "use_pem",
+    "aws_lc_rs",
 ] }
 js_option = "0.2.0"
 konst = "0.4.3"
@@ -99,7 +102,7 @@ rustyline-async = { version = "0.4.9" }
 regex = "1.12.3"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.94.0", features = ["rustls"]}
+salvo = { version = "0.95.1", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
@@ -116,7 +119,7 @@ sha1 = "0.11.0"
 strum = "0.28.0"
 strum_macros = "0.28.0"
 subslice = "0.2.3"
-syn = "2.0.117"
+syn = "3.0.0"
 tempfile = "3.27.0"
 termimad = { version = "0.35.1", default-features = false }
 textnonce = "1.0.0"
@@ -137,7 +140,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tracing-test = "0.2.6"
 url = { version = "2.5.8", default-features = false, features = ["serde"] }
 uuid = { version = "1.23.2", features = ["v4"] }
-ulid = "2.0.1"
+ulid = "3.0.0"
 web-time = "1.1.0"
 webpage = { version = "2.0.1", default-features = false }
 wildmatch = "2.6.1"

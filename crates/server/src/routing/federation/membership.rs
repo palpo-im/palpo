@@ -218,7 +218,7 @@ async fn invite_user(
     let mut event: CanonicalJsonObject = serde_json::from_str(body.event.get())
         .map_err(|_| MatrixError::invalid_param("invalid invite event bytes"))?;
 
-    // let event_id: OwnedEventId = format!("$dummy_{}", Ulid::r#gen()).try_into()?;
+    // let event_id: OwnedEventId = format!("$dummy_{}", Ulid::generate()).try_into()?;
     event.insert("event_id".to_owned(), event_id.to_string().into());
 
     let (event_sn, event_guard) = crate::event::ensure_event_sn(&args.room_id, &event_id).await?;
