@@ -550,6 +550,16 @@ pub async fn process_to_timeline_pdu(
                 )?);
             }
             let compressed_state_ids = Arc::new(compressed_state_ids_set);
+            // Persist the exact event-time state while this PDU is still an outlier.
+            // `append_pdu` makes it queryable, so doing this afterwards would expose
+            // a provisional current-room frame to concurrent visibility checks.
+            state::set_event_state(
+                &incoming_pdu.event_id,
+                incoming_pdu.event_sn,
+                &incoming_pdu.room_id,
+                Arc::clone(&compressed_state_ids),
+            )
+            .await?;
             debug!("preparing for stateres to derive new room state");
 
             // We also add state after incoming event to the fork states
@@ -576,13 +586,6 @@ pub async fn process_to_timeline_pdu(
 
             debug!("appended incoming pdu");
             timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
-            state::set_event_state(
-                &incoming_pdu.event_id,
-                incoming_pdu.event_sn,
-                &incoming_pdu.room_id,
-                compressed_state_ids,
-            )
-            .await?;
             drop(state_lock);
         }
         return Ok(());
@@ -647,6 +650,16 @@ pub async fn process_to_timeline_pdu(
         )?);
     }
     let compressed_state_ids = Arc::new(compressed_state_ids_set);
+    // Store the resolved state before the event is promoted out of outlier storage.
+    // This prevents visibility readers from ever observing the room's later resolved
+    // state as a temporary event-time snapshot.
+    state::set_event_state(
+        &incoming_pdu.event_id,
+        incoming_pdu.event_sn,
+        &incoming_pdu.room_id,
+        Arc::clone(&compressed_state_ids),
+    )
+    .await?;
 
     let guards = if let Some(state_key) = &incoming_pdu.state_key {
         debug!("preparing for stateres to derive new room state");
@@ -707,13 +720,6 @@ pub async fn process_to_timeline_pdu(
     } else {
         debug!("appended incoming pdu");
         timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
-        state::set_event_state(
-            &incoming_pdu.event_id,
-            incoming_pdu.event_sn,
-            &incoming_pdu.room_id,
-            compressed_state_ids,
-        )
-        .await?;
     }
     drop(guards);
 

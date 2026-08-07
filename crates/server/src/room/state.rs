@@ -197,16 +197,22 @@ pub async fn append_to_state(new_pdu: &SnPduEvent) -> AppResult<i64> {
         .map(|info| Arc::clone(&info.full_state))
         .unwrap_or_default();
 
-    // `frame_id` is allowed to follow the room's resolved state for sync-delta
-    // queries, but visibility checks need a snapshot that future state changes can
-    // never rewrite. Record that immutable snapshot before applying this event.
-    set_event_state(
-        &new_pdu.event_id,
-        new_pdu.event_sn,
-        &new_pdu.room_id,
-        state_before,
-    )
-    .await?;
+    // Inbound federation records its exact resolved state before making the event
+    // queryable. Local events and older callers reach this fallback with no snapshot,
+    // in which case the locked current room state is the state before the event.
+    match get_pdu_before_frame_id(&new_pdu.event_id).await {
+        Ok(_) => {}
+        Err(e) if e.is_not_found() => {
+            set_event_state(
+                &new_pdu.event_id,
+                new_pdu.event_sn,
+                &new_pdu.room_id,
+                state_before,
+            )
+            .await?;
+        }
+        Err(e) => return Err(e),
+    }
 
     if let Some(state_key) = &new_pdu.state_key {
         let field_id = ensure_field(&new_pdu.event_ty.to_string().into(), state_key)

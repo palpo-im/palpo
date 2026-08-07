@@ -257,8 +257,18 @@ async fn event_world_readable(event_id: &EventId) -> bool {
     let Ok(pdu) = timeline::get_pdu(event_id).await else {
         return false;
     };
-    let Ok(frame_id) = state::get_pdu_frame_id(event_id).await else {
-        return false;
+    let frame_id = match state::get_pdu_before_frame_id(event_id).await {
+        Ok(frame_id) => frame_id,
+        // Before `before_frame_id` existed, a non-state event's frame was already
+        // immutable. Legacy state events must fail closed because their mutable
+        // frame may have been advanced to state from after the event.
+        Err(e) if e.is_not_found() && pdu.state_key.is_none() => {
+            let Ok(frame_id) = state::get_pdu_frame_id(event_id).await else {
+                return false;
+            };
+            frame_id
+        }
+        Err(_) => return false,
     };
     let Ok(state::StateBefore::Resolved(before_visibility)) =
         state::history_visibility_before(&pdu, frame_id).await
