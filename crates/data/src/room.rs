@@ -786,6 +786,18 @@ pub async fn get_pdu_frame_id(event_id: &EventId) -> DataResult<Option<i64>> {
         .map_err(Into::into)
 }
 
+/// Immutable state frame immediately before an event, if it was recorded.
+pub async fn get_pdu_before_frame_id(event_id: &EventId) -> DataResult<Option<i64>> {
+    event_points::table
+        .filter(event_points::event_id.eq(event_id))
+        .select(event_points::before_frame_id)
+        .first::<Option<i64>>(&mut connect().await?)
+        .await
+        .optional()
+        .map(Option::flatten)
+        .map_err(Into::into)
+}
+
 /// Insert a state frame for `(room_id, hash_data)` and return its id.
 pub async fn ensure_state_frame(room_id: &RoomId, hash_data: Vec<u8>) -> DataResult<i64> {
     diesel::insert_into(room_state_frames::table)
