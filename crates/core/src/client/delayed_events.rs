@@ -4,6 +4,7 @@
 //!
 //! [MSC4140]: https://github.com/matrix-org/matrix-spec-proposals/pull/4140
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use salvo::prelude::*;
@@ -23,6 +24,11 @@ pub struct DelayedEventError {
     /// A human-readable description of the failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// Additional fields carried by the Matrix standard error response.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub extra: BTreeMap<String, JsonValue>,
 }
 
 /// The structure of the data for returning a delayed event from a GET endpoint.
@@ -50,11 +56,12 @@ pub struct DelayedEventData {
     pub content: JsonValue,
 
     /// The duration that the server should wait before sending this event.
-    #[serde(with = "crate::serde::duration::ms")]
+    #[serde(rename = "delay_ms", with = "crate::serde::duration::ms")]
     #[salvo(schema(value_type = u64))]
     pub delay: Duration,
 
     /// The timestamp when the delayed event was scheduled or last restarted.
+    #[serde(rename = "scheduled_at")]
     pub running_since: UnixMillis,
 
     /// The error that prevented the delayed event from being sent.
@@ -187,7 +194,7 @@ pub struct SendDelayedEventReqArgs {
 #[derive(ToSchema, Serialize, Deserialize, Debug)]
 pub struct SendDelayedEventReqBody {
     /// The duration that the server should wait before sending this event.
-    #[serde(with = "crate::serde::duration::ms")]
+    #[serde(rename = "delay_ms", with = "crate::serde::duration::ms")]
     #[salvo(schema(value_type = u64))]
     pub delay: Duration,
 
@@ -330,7 +337,7 @@ mod tests {
     #[test]
     fn deserialize_send_delayed_event_req_body() {
         let body: SendDelayedEventReqBody = serde_json::from_value(json!({
-            "delay": 103,
+            "delay_ms": 103,
             "content": {"msgtype": "m.text", "body": "test"},
         }))
         .unwrap();
@@ -343,7 +350,7 @@ mod tests {
     #[test]
     fn deserialize_send_delayed_state_event_req_body() {
         let body: SendDelayedEventReqBody = serde_json::from_value(json!({
-            "delay": 9000,
+            "delay_ms": 9000,
             "state_key": "a_state_key",
             "content": {"topic": "test topic"},
         }))
@@ -373,12 +380,12 @@ mod tests {
             serde_json::to_value(&event).unwrap(),
             json!({
                 "content": {"topic": "test topic"},
-                "delay": 103,
+                "delay_ms": 103,
                 "delay_id": "a_delay_id",
                 "event_id": "$event:example.org",
                 "finalised_ts": 70103,
                 "room_id": "!roomid:example.org",
-                "running_since": 70000,
+                "scheduled_at": 70000,
                 "state_key": "a_state_key",
                 "type": "m.room.topic",
             })
@@ -421,11 +428,32 @@ mod tests {
             error: Some(DelayedEventError {
                 errcode: "M_FORBIDDEN".to_owned(),
                 error: Some("you shall not pass".to_owned()),
+                extra: BTreeMap::new(),
             }),
             event_id: None,
             finalized_ts: Some(crate::UnixMillis(70103)),
         };
         assert_eq!(event.status(), DelayedEventStatus::Error);
+    }
+
+    #[test]
+    fn delayed_event_error_preserves_standard_error_extensions() {
+        let error: DelayedEventError = serde_json::from_value(json!({
+            "errcode": "M_LIMIT_EXCEEDED",
+            "error": "slow down",
+            "retry_after_ms": 1500,
+        }))
+        .unwrap();
+
+        assert_eq!(error.extra.get("retry_after_ms"), Some(&json!(1500)));
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({
+                "errcode": "M_LIMIT_EXCEEDED",
+                "error": "slow down",
+                "retry_after_ms": 1500,
+            })
+        );
     }
 
     #[test]

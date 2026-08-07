@@ -18,7 +18,7 @@ pub struct DelayedEventsConfig {
     pub enable: bool,
 
     /// The maximum delay in milliseconds a client may request for a delayed
-    /// event. Requests above this limit are rejected with `M_FORBIDDEN`.
+    /// event. Requests above this limit are rejected with `M_DELAY_TOO_LARGE`.
     /// Defaults to 24 hours.
     ///
     /// default: 86400_000

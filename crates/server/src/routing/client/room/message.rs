@@ -5,13 +5,13 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::value::to_raw_value;
 
-use crate::core::Direction;
 use crate::core::client::delayed_events::SendEventResBody;
 use crate::core::client::message::{
     CreateMessageReqArgs, CreateMessageWithTxnReqArgs, MessagesReqArgs, MessagesResBody,
 };
 use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::serde::to_canonical_value;
+use crate::core::{Direction, UnixMillis};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
@@ -29,6 +29,17 @@ fn parse_event_content(payload: &[u8]) -> AppResult<JsonValue> {
         MatrixError::bad_json(format!("event content is not valid canonical JSON: {e}"))
     })?;
     Ok(content)
+}
+
+fn appservice_timestamp(
+    is_appservice: bool,
+    requested_timestamp: Option<UnixMillis>,
+) -> Option<UnixMillis> {
+    if is_appservice {
+        requested_timestamp
+    } else {
+        None
+    }
 }
 
 /// #GET /_matrix/client/r0/rooms/{room_id}/messages
@@ -146,7 +157,7 @@ pub(super) async fn get_messages(
 
             let events: Vec<_> = events
                 .into_iter()
-                .map(|(_, pdu)| pdu.to_room_event())
+                .map(|(_, pdu)| pdu.to_room_event_for(sender_id))
                 .collect();
 
             resp.start = from_tk.to_string();
@@ -201,7 +212,10 @@ pub(super) async fn get_messages(
             next_token = events.last().map(|(_, pdu)| pdu.prev_historic_token());
             resp.start = from_tk.to_string();
             resp.end = next_token.map(|tk| tk.to_string());
-            resp.chunk = events.values().map(|pdu| pdu.to_room_event()).collect();
+            resp.chunk = events
+                .values()
+                .map(|pdu| pdu.to_room_event_for(sender_id))
+                .collect();
         }
     }
 
@@ -215,7 +229,7 @@ pub(super) async fn get_messages(
         )
         .await
         {
-            resp.state.push(member_event.to_state_event());
+            resp.state.push(member_event.to_state_event_for(sender_id));
         }
     }
 
@@ -304,11 +318,7 @@ pub(super) async fn send_message(
             event_type: args.event_type.to_string().into(),
             content: to_raw_value(&content)?,
             unsigned,
-            timestamp: if authed.appservice().is_some() {
-                args.timestamp
-            } else {
-                None
-            },
+            timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             ..Default::default()
         },
         authed.user_id(),
@@ -386,6 +396,7 @@ pub(super) async fn post_message(
             event_type: args.event_type.to_string().into(),
             content: to_raw_value(&content)?,
             unsigned: BTreeMap::new(),
+            timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             ..Default::default()
         },
         authed.user_id(),
@@ -398,4 +409,18 @@ pub(super) async fn post_message(
     .event_id;
 
     json_ok(SendEventResBody::sent((*event_id).to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::appservice_timestamp;
+    use crate::core::UnixMillis;
+
+    #[test]
+    fn timestamp_massaging_is_limited_to_appservices() {
+        let timestamp = UnixMillis(123_456);
+
+        assert_eq!(appservice_timestamp(true, Some(timestamp)), Some(timestamp));
+        assert_eq!(appservice_timestamp(false, Some(timestamp)), None);
+    }
 }

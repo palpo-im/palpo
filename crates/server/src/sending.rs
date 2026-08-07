@@ -442,7 +442,7 @@ async fn send_events(
                             timeline::get_pdu(event_id)
                                 .await
                                 .map_err(|e| (kind.clone(), e))?
-                                .to_room_event(),
+                                .to_room_event_without_sender_only_unsigned(),
                         );
                     }
                     SendingEventType::Edu(_) => {

@@ -11,7 +11,7 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
-use crate::core::{DeviceId, TransactionId, UserId};
+use crate::core::{DeviceId, TransactionId, UnixMillis, UserId};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
@@ -293,25 +293,40 @@ pub async fn get_output(delay_id: &str) -> DataResult<Option<OwnedEventId>> {
 /// `None` if the event does not exist, is owned by another user, or was
 /// already finalized.
 pub async fn restart(
+    conn: &mut AsyncPgConnection,
     user_id: &UserId,
     delay_id: &str,
-    now: i64,
 ) -> DataResult<Option<DbDelayedEvent>> {
-    // If a sender holds this row, PostgreSQL waits and then re-checks
-    // `finalized_at` against the committed outcome.
-    diesel::update(
-        delayed_events::table
+    conn.transaction::<_, diesel::result::Error, _>(async |conn| {
+        // Take the row lock before reading the clock. If another process is
+        // sending this event, the restarted delay must begin after that wait,
+        // not when the HTTP request first arrived.
+        let Some(row) = delayed_events::table
             .filter(delayed_events::user_id.eq(user_id))
             .filter(delayed_events::delay_id.eq(delay_id))
-            .filter(delayed_events::finalized_at.is_null()),
-    )
-    .set((
-        delayed_events::running_since.eq(now),
-        delayed_events::send_at.eq(delayed_events::delay_ms + now),
-    ))
-    .get_result::<DbDelayedEvent>(&mut connect().await?)
+            .for_update()
+            .first::<DbDelayedEvent>(&mut *conn)
+            .await
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if row.finalized_at.is_some() {
+            return Ok(None);
+        }
+
+        let now = UnixMillis::now().get() as i64;
+        diesel::update(delayed_events::table.find(row.id))
+            .filter(delayed_events::finalized_at.is_null())
+            .set((
+                delayed_events::running_since.eq(now),
+                delayed_events::send_at.eq(delayed_events::delay_ms + now),
+            ))
+            .get_result::<DbDelayedEvent>(&mut *conn)
+            .await
+            .optional()
+    })
     .await
-    .optional()
     .map_err(Into::into)
 }
 
@@ -352,29 +367,73 @@ pub async fn set_error_locked(
 /// Cancel a scheduled delayed event. Returns `true` if the event was
 /// cancelled, `false` if it did not exist unfinalized (caller decides between
 /// idempotent success and conflict from the row's current state).
-pub async fn cancel(user_id: &UserId, delay_id: &str, now: i64) -> DataResult<bool> {
-    // If a sender holds this row, PostgreSQL waits and then re-checks
-    // `finalized_at` against the committed outcome.
-    let count = diesel::update(
-        delayed_events::table
+pub async fn cancel(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    delay_id: &str,
+) -> DataResult<bool> {
+    conn.transaction::<_, diesel::result::Error, _>(async |conn| {
+        // As with restart, wait for an in-flight sender before timestamping the
+        // outcome so `finalized_at` reflects when cancellation actually won.
+        let Some(row) = delayed_events::table
             .filter(delayed_events::user_id.eq(user_id))
             .filter(delayed_events::delay_id.eq(delay_id))
-            .filter(delayed_events::finalized_at.is_null()),
-    )
-    .set(delayed_events::finalized_at.eq(now))
-    .execute(&mut connect().await?)
-    .await?;
-    Ok(count > 0)
+            .for_update()
+            .first::<DbDelayedEvent>(&mut *conn)
+            .await
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        if row.finalized_at.is_some() {
+            return Ok(false);
+        }
+
+        let now = UnixMillis::now().get() as i64;
+        let count = diesel::update(delayed_events::table.find(row.id))
+            .filter(delayed_events::finalized_at.is_null())
+            .set(delayed_events::finalized_at.eq(now))
+            .execute(&mut *conn)
+            .await?;
+        Ok(count > 0)
+    })
+    .await
+    .map_err(Into::into)
 }
 
 /// Delete finalized delayed events whose retention period has passed.
 pub async fn prune_finalized(finalized_before: i64) -> DataResult<usize> {
-    diesel::delete(
-        delayed_events::table
-            .filter(delayed_events::finalized_at.is_not_null())
-            .filter(delayed_events::finalized_at.le(finalized_before)),
-    )
-    .execute(&mut connect().await?)
+    let mut conn = connect().await?;
+    conn.transaction::<_, diesel::result::Error, _>(async |conn| {
+        // The normal send endpoint also records the transaction in
+        // `event_idempotents`. Remove that mapping with the delayed row, but
+        // only when it points at this delayed event's actual output. Leaving a
+        // stale mapping would let a later retry schedule a new delayed event
+        // while ordinary transaction lookup still points at the old output.
+        diesel::sql_query(
+            "DELETE FROM event_idempotents AS idempotent \
+             USING delayed_events AS delayed \
+             WHERE delayed.finalized_at IS NOT NULL \
+               AND delayed.finalized_at <= $1 \
+               AND delayed.event_id IS NOT NULL \
+               AND idempotent.event_id = delayed.event_id \
+               AND idempotent.user_id = delayed.user_id \
+               AND idempotent.device_id IS NOT DISTINCT FROM delayed.device_id \
+               AND idempotent.room_id = delayed.room_id \
+               AND idempotent.txn_id = delayed.txn_id",
+        )
+        .bind::<diesel::sql_types::BigInt, _>(finalized_before)
+        .execute(&mut *conn)
+        .await?;
+
+        diesel::delete(
+            delayed_events::table
+                .filter(delayed_events::finalized_at.is_not_null())
+                .filter(delayed_events::finalized_at.le(finalized_before)),
+        )
+        .execute(&mut *conn)
+        .await
+    })
     .await
     .map_err(Into::into)
 }

@@ -162,6 +162,7 @@ pub struct CreateMessageWithTxnReqArgs {
     pub timestamp: Option<UnixMillis>,
 
     /// Delay this event by the given number of milliseconds (MSC4140).
+    #[cfg(feature = "unstable-msc4140")]
     #[salvo(parameter(parameter_in = Query))]
     #[serde(
         default,
@@ -210,6 +211,7 @@ pub struct CreateMessageReqArgs {
     pub timestamp: Option<UnixMillis>,
 
     /// Delay this event by the given number of milliseconds (MSC4140).
+    #[cfg(feature = "unstable-msc4140")]
     #[salvo(parameter(parameter_in = Query))]
     #[serde(
         default,
@@ -243,7 +245,7 @@ impl SendMessageResBody {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "unstable-msc4140"))]
 mod delayed_event_tests {
     use super::{CreateMessageReqArgs, CreateMessageWithTxnReqArgs};
 

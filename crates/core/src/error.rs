@@ -93,6 +93,7 @@ impl MatrixError {
         captcha_needed, CaptchaNeeded;
         connection_failed, ConnectionFailed;
         connection_timeout, ConnectionTimeout;
+        delay_too_large, DelayTooLarge;
         duplicate_annotation, DuplicateAnnotation;
         exclusive, Exclusive;
         guest_access_forbidden, GuestAccessForbidden;

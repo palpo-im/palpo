@@ -53,7 +53,7 @@ pub(super) async fn get_state(
         .await
         .unwrap_or_default()
         .values()
-        .map(|pdu| pdu.to_state_event())
+        .map(|pdu| pdu.to_state_event_for(sender_id))
         .collect();
     json_ok(StateEventsResBody::new(room_state))
 }
@@ -169,7 +169,7 @@ pub(super) async fn state_for_key(
     json_ok(StateEventsForKeyResBody {
         content: Some(event.get_content()?),
         event: if event_format {
-            Some(event.to_state_event_value())
+            Some(event.to_state_event_value_for(sender_id))
         } else {
             None
         },
@@ -210,7 +210,7 @@ pub(super) async fn state_for_empty_key(
     json_ok(StateEventsForKeyResBody {
         content: Some(event.get_content()?),
         event: if event_format {
-            Some(event.to_state_event_value())
+            Some(event.to_state_event_value_for(sender_id))
         } else {
             None
         },
@@ -264,6 +264,7 @@ pub(super) async fn send_state_for_key(
         &args.event_type,
         body.0,
         state_key,
+        appservice_timestamp(authed.appservice().is_some(), args.timestamp),
     )
     .await?;
 
@@ -314,10 +315,36 @@ pub(super) async fn send_state_for_empty_key(
         &args.event_type.to_string().into(),
         body.0,
         "".into(),
+        appservice_timestamp(authed.appservice().is_some(), args.timestamp),
     )
     .await?;
 
     json_ok(SendEventResBody::sent((*event_id).to_owned()))
+}
+
+fn appservice_timestamp(
+    is_appservice: bool,
+    requested_timestamp: Option<UnixMillis>,
+) -> Option<UnixMillis> {
+    if is_appservice {
+        requested_timestamp
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::appservice_timestamp;
+    use crate::core::UnixMillis;
+
+    #[test]
+    fn timestamp_massaging_is_limited_to_appservices() {
+        let timestamp = UnixMillis(123_456);
+
+        assert_eq!(appservice_timestamp(true, Some(timestamp)), Some(timestamp));
+        assert_eq!(appservice_timestamp(false, Some(timestamp)), None);
+    }
 }
 
 /// #PUT /_matrix/client/r0/rooms/{room_id}/typing/{user_id}

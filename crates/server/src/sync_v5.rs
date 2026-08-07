@@ -755,7 +755,7 @@ async fn process_rooms(
             .events
             .iter()
             .filter(|item| ignored_filter_with_ignored_users(*item, ignored_users))
-            .map(|(_, pdu)| pdu.to_sync_room_event())
+            .map(|(_, pdu)| pdu.to_sync_room_event_for(sender_id))
             .collect();
 
         for (_, pdu) in &timeline.events {
@@ -808,7 +808,7 @@ async fn process_rooms(
                                 pdu.event_sn,
                             )
                             .await;
-                            required_state_events.push(pdu.to_sync_state_event());
+                            required_state_events.push(pdu.to_sync_state_event_for(sender_id));
                         }
                     }
                 }
@@ -834,7 +834,7 @@ async fn process_rooms(
                                     pdu.event_sn,
                                 )
                                 .await;
-                                required_state_events.push(pdu.to_sync_state_event());
+                                required_state_events.push(pdu.to_sync_state_event_for(sender_id));
                             }
                         }
                     }
@@ -858,7 +858,7 @@ async fn process_rooms(
                             pdu.event_sn,
                         )
                         .await;
-                        required_state_events.push(pdu.to_sync_state_event());
+                        required_state_events.push(pdu.to_sync_state_event_for(sender_id));
                     }
                 }
                 // Specific state key
@@ -879,7 +879,7 @@ async fn process_rooms(
                             pdu.event_sn,
                         )
                         .await;
-                        required_state_events.push(pdu.to_sync_state_event());
+                        required_state_events.push(pdu.to_sync_state_event_for(sender_id));
                     }
                 }
             }

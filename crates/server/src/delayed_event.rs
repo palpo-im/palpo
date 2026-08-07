@@ -13,13 +13,13 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use diesel_async::AsyncConnection;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use salvo::http::StatusCode;
 use serde_json::value::to_raw_value;
 use tokio::sync::{Notify, Semaphore};
 
 use crate::core::client::delayed_events::{DelayedEventData, DelayedEventError, UpdateAction};
-use crate::core::error::RetryAfter;
+use crate::core::error::{ErrorKind, RetryAfter};
 use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonValue, to_canonical_value};
@@ -37,19 +37,38 @@ const MAX_IDLE: Duration = Duration::from_secs(60);
 const LOCK_RETRY: Duration = Duration::from_secs(1);
 
 static WAKEUP: OnceLock<Notify> = OnceLock::new();
-static SEND_GATE: OnceLock<Semaphore> = OnceLock::new();
+static OPERATION_GATE: OnceLock<Semaphore> = OnceLock::new();
 
 fn wakeup() -> &'static Notify {
     WAKEUP.get_or_init(Notify::new)
 }
 
-/// Limit row-locking send transactions so they cannot occupy every pooled
-/// connection while the timeline append is trying to obtain another one.
-fn send_gate() -> &'static Semaphore {
-    SEND_GATE.get_or_init(|| {
+/// Bound both delayed appends and row-locking management operations. Appends
+/// perform nested queries through the shared pool, while the same limit keeps
+/// management requests from opening an unbounded number of dedicated database
+/// connections when they wait for an in-flight sender's row lock.
+fn operation_gate() -> &'static Semaphore {
+    OPERATION_GATE.get_or_init(|| {
         let permits = config::get().db.pool_size.saturating_sub(1).max(1) as usize;
         Semaphore::new(permits)
     })
+}
+
+/// Open a connection outside the shared pool for a transaction that holds a
+/// delayed-event row lock while the timeline append uses pooled connections.
+/// Management actions use the same path, so waiting on that row can never
+/// consume the pool capacity needed by the sender that owns it.
+async fn dedicated_delayed_event_connection() -> AppResult<AsyncPgConnection> {
+    let db_config = config::get().db.clone().into_data_db_config();
+    let url = crate::data::connection_url(&db_config, &db_config.url);
+    let mut conn = AsyncPgConnection::establish(&url)
+        .await
+        .map_err(|error| AppError::internal(format!("failed to connect to database: {error}")))?;
+    let statement_timeout = db_config.statement_timeout.min(3_600_000);
+    diesel::sql_query(format!("SET statement_timeout = {statement_timeout}"))
+        .execute(&mut conn)
+        .await?;
+    Ok(conn)
 }
 
 /// Start the background scheduler that sends due delayed events.
@@ -106,11 +125,11 @@ async fn process_due_events() -> AppResult<()> {
 
 /// Lock, send, and finalize one due row in a single database transaction.
 async fn process_one_due_event() -> AppResult<bool> {
-    let _permit = send_gate()
+    let _permit = operation_gate()
         .acquire()
         .await
-        .expect("the delayed-event send semaphore is never closed");
-    let mut conn = crate::data::connect().await?;
+        .expect("the delayed-event operation semaphore is never closed");
+    let mut conn = dedicated_delayed_event_connection().await?;
     conn.transaction::<_, AppError, _>(async |conn| {
         let now = UnixMillis::now().get() as i64;
         let Some(event) = delayed_event::lock_next_due(conn, now).await? else {
@@ -214,6 +233,20 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
         }
         return Ok(event_id);
     }
+    // A delayed send does not pass through the access-token hoop again. Apply
+    // the same current account-usability policy explicitly so deactivated,
+    // locked, or suspended users cannot emit previously queued events.
+    let user = crate::data::user::get_user(&event.user_id).await?;
+    crate::user::ensure_account_usable(&user)?;
+
+    // Re-evaluate server-side send policy as well as room authorization. An
+    // event scheduled while encryption was enabled must not bypass a later
+    // administrator decision to disable encrypted messages. This belongs
+    // after output recovery so an event that already entered the timeline is
+    // still finalized correctly.
+    if event_type == TimelineEventType::RoomEncrypted && !config::get().allow_encryption {
+        return Err(MatrixError::forbidden("Encryption has been disabled", None).into());
+    }
     if let Some(state_key) = &event.state_key {
         let state_event_type: StateEventType = event.event_type.clone().into();
         crate::state::allowed_to_send_state_event(
@@ -293,6 +326,14 @@ pub async fn schedule(
     let conf = config::get();
     let now = UnixMillis::now().get() as i64;
 
+    // An already accepted transaction stays idempotent even if server limits,
+    // room state, or feature-related configuration changed since the original
+    // request. `create` repeats this lookup under its advisory lock to close
+    // the concurrent-first-request race.
+    if let Some(existing) = delayed_event::get_by_txn_id(user_id, device_id, txn_id).await? {
+        return Ok(existing.delay_id);
+    }
+
     let requested_delay_ms = delay.as_millis();
     if requested_delay_ms == 0 {
         return Err(
@@ -302,13 +343,10 @@ pub async fn schedule(
     let max_delay_ms =
         u128::from(conf.delayed_events.max_delay_ms).min(i64::MAX.saturating_sub(now) as u128);
     if requested_delay_ms > max_delay_ms {
-        return Err(MatrixError::forbidden(
-            format!(
-                "the requested delay exceeds the maximum allowed delay of {} ms",
-                max_delay_ms
-            ),
-            None,
-        )
+        return Err(MatrixError::delay_too_large(format!(
+            "the requested delay exceeds the maximum allowed delay of {} ms",
+            max_delay_ms
+        ))
         .into());
     }
     let delay_ms = i64::try_from(requested_delay_ms)
@@ -328,11 +366,6 @@ pub async fn schedule(
 
     // The room must be known; auth rules themselves are evaluated at send time.
     crate::room::get_version(room_id).await?;
-
-    // Idempotency: same session + transaction id returns the same delay id.
-    if let Some(existing) = delayed_event::get_by_txn_id(user_id, device_id, txn_id).await? {
-        return Ok(existing.delay_id);
-    }
 
     let origin_server_ts = if is_appservice {
         timestamp
@@ -389,11 +422,14 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
     let Some(event) = delayed_event::get_by_delay_id(user_id, delay_id).await? else {
         return Err(MatrixError::not_found("no delayed event with that delay_id was found").into());
     };
-    let now = UnixMillis::now().get() as i64;
-
     match action {
         UpdateAction::Restart => {
-            if delayed_event::restart(user_id, delay_id, now)
+            let _permit = operation_gate()
+                .acquire()
+                .await
+                .expect("the delayed-event operation semaphore is never closed");
+            let mut conn = dedicated_delayed_event_connection().await?;
+            if delayed_event::restart(&mut conn, user_id, delay_id)
                 .await?
                 .is_some()
             {
@@ -408,7 +444,12 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
         }
         UpdateAction::Send => send_now(user_id, delay_id).await,
         UpdateAction::Cancel => {
-            if delayed_event::cancel(user_id, delay_id, now).await? {
+            let _permit = operation_gate()
+                .acquire()
+                .await
+                .expect("the delayed-event operation semaphore is never closed");
+            let mut conn = dedicated_delayed_event_connection().await?;
+            if delayed_event::cancel(&mut conn, user_id, delay_id).await? {
                 Ok(())
             } else {
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
@@ -430,11 +471,11 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
 
 /// Manually send one row while holding its database lock through the append.
 async fn send_now(user_id: &UserId, delay_id: &str) -> AppResult<()> {
-    let _permit = send_gate()
+    let _permit = operation_gate()
         .acquire()
         .await
-        .expect("the delayed-event send semaphore is never closed");
-    let mut conn = crate::data::connect().await?;
+        .expect("the delayed-event operation semaphore is never closed");
+    let mut conn = dedicated_delayed_event_connection().await?;
     conn.transaction::<_, AppError, _>(async |conn| {
         let Some(event) = delayed_event::lock_for_send(conn, user_id, delay_id).await? else {
             return Err(
@@ -547,15 +588,59 @@ fn finalized_conflict(event: &DbDelayedEvent, action: &str) -> AppError {
 fn error_body(error: AppError) -> JsonValue {
     match error {
         AppError::Matrix(e) => {
+            let retry_after = match &e.kind {
+                ErrorKind::LimitExceeded {
+                    retry_after: Some(RetryAfter::Delay(duration)),
+                } => Some(*duration),
+                _ => None,
+            };
             let mut body = serde_json::to_value(&e).unwrap_or_default();
             if let Some(map) = body.as_object_mut() {
                 map.insert("errcode".to_owned(), e.kind.code().to_string().into());
+                if let Some(duration) = retry_after
+                    && let Ok(ms) = u64::try_from(duration.as_millis())
+                {
+                    map.insert("retry_after_ms".to_owned(), ms.into());
+                }
             }
             body
         }
-        other => serde_json::json!({
+        _ => serde_json::json!({
             "errcode": "M_UNKNOWN",
-            "error": other.to_string(),
+            "error": "internal server error",
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::error_body;
+    use crate::AppError;
+    use crate::core::MatrixError;
+    use crate::core::error::RetryAfter;
+
+    #[test]
+    fn delayed_event_internal_errors_do_not_expose_details() {
+        let body = error_body(AppError::internal("database secret path"));
+
+        assert_eq!(body["errcode"], "M_UNKNOWN");
+        assert_eq!(body["error"], "internal server error");
+        assert!(!body.to_string().contains("database secret path"));
+    }
+
+    #[test]
+    fn delayed_event_rate_limit_errors_keep_retry_delay() {
+        let body = error_body(
+            MatrixError::limit_exceeded(
+                "slow down",
+                Some(RetryAfter::Delay(Duration::from_millis(1500))),
+            )
+            .into(),
+        );
+
+        assert_eq!(body["errcode"], "M_LIMIT_EXCEEDED");
+        assert_eq!(body["retry_after_ms"], 1500);
     }
 }

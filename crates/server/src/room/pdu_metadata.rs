@@ -99,7 +99,7 @@ pub async fn paginate_relations_with_filter(
 
     let events: Vec<_> = events
         .into_iter()
-        .map(|(_, pdu)| pdu.to_message_like_event())
+        .map(|(_, pdu)| pdu.to_message_like_event_for(user_id))
         .collect();
 
     Ok(RelationEventsResBody {
