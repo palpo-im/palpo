@@ -238,6 +238,7 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
         ("org.matrix.msc3916.stable".to_owned(), true), /* authenticated media (https://github.com/matrix-org/matrix-spec-proposals/pull/3916) */
         ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
         ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
+        ("uk.tcpip.msc4133.stable".to_owned(), true), /* the profile-field endpoints are served on the stable `/v3` prefix too */
         ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
         ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
         ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
@@ -283,6 +284,17 @@ mod supported_versions_tests {
     }
 
     #[test]
+    fn advertises_msc4133_profile_fields_on_the_stable_prefix() {
+        let body = supported_versions_body(false);
+
+        assert_eq!(body.unstable_features.get("uk.tcpip.msc4133"), Some(&true));
+        assert_eq!(
+            body.unstable_features.get("uk.tcpip.msc4133.stable"),
+            Some(&true)
+        );
+    }
+
+    #[test]
     fn includes_msc4383_server_metadata_and_feature_flag() {
         let body = supported_versions_body(false);
         let server = body.server.as_ref().unwrap();
@@ -311,6 +323,55 @@ mod supported_versions_tests {
                 .get("org.matrix.msc4140"),
             Some(&true)
         );
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use salvo::http::{Method, Request};
+    use salvo::routing::PathState;
+
+    use super::router;
+
+    /// Resolve `path` against the client router without running any handler.
+    async fn is_routed(method: Method, path: &str) -> bool {
+        let router = router();
+        let mut req = Request::default();
+        *req.method_mut() = method;
+        let mut path_state = PathState::from_owned_path(path.to_owned());
+        router.detect(&mut req, &mut path_state).await.is_some()
+    }
+
+    #[tokio::test]
+    async fn delete_devices_is_a_sibling_of_devices() {
+        for version in ["v3", "r0"] {
+            assert!(is_routed(Method::POST, &format!("/client/{version}/delete_devices")).await);
+        }
+        assert!(!is_routed(Method::POST, "/client/v3/devices/delete_devices").await);
+    }
+
+    #[tokio::test]
+    async fn devices_endpoints_are_still_routed() {
+        assert!(is_routed(Method::GET, "/client/v3/devices").await);
+        assert!(is_routed(Method::GET, "/client/v3/devices/ABCDEF").await);
+        assert!(is_routed(Method::PUT, "/client/v3/devices/ABCDEF").await);
+        assert!(is_routed(Method::DELETE, "/client/v3/devices/ABCDEF").await);
+    }
+
+    #[tokio::test]
+    async fn msc4133_profile_fields_are_served_on_the_unstable_prefix() {
+        const FIELD: &str = "/client/unstable/uk.tcpip.msc4133/profile/@alice:example.org/chat.commet.profile_banner";
+
+        assert!(
+            is_routed(
+                Method::GET,
+                "/client/unstable/uk.tcpip.msc4133/profile/@alice:example.org"
+            )
+            .await
+        );
+        assert!(is_routed(Method::GET, FIELD).await);
+        assert!(is_routed(Method::PUT, FIELD).await);
+        assert!(is_routed(Method::DELETE, FIELD).await);
     }
 }
 

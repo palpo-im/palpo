@@ -178,6 +178,59 @@ impl Extend<ProfileFieldValue> for ProfileResBody {
     }
 }
 
+/// Request parameters for the MSC4495 presence recipients query.
+#[cfg(feature = "unstable-msc4495")]
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct PresenceRecipientsReqArgs {
+    /// The local user whose current recipients are requested.
+    #[salvo(parameter(parameter_in = Query))]
+    pub user_id: OwnedUserId,
+}
+
+#[cfg(feature = "unstable-msc4495")]
+impl PresenceRecipientsReqArgs {
+    /// Creates a presence recipients query.
+    pub fn new(user_id: OwnedUserId) -> Self {
+        Self { user_id }
+    }
+}
+
+/// Creates an MSC4495 presence recipients query request.
+#[cfg(feature = "unstable-msc4495")]
+pub fn presence_recipients_request(
+    origin: &str,
+    args: PresenceRecipientsReqArgs,
+) -> SendResult<SendRequest> {
+    let mut url = Url::parse(&format!(
+        "{origin}/_matrix/federation/unstable/org.continuwuity.presence_v2.msc4495/query/presence_recipients"
+    ))?;
+    url.query_pairs_mut()
+        .append_pair("user_id", args.user_id.as_str());
+    Ok(crate::sending::get(url))
+}
+
+/// Response body for the MSC4495 presence recipients query.
+#[cfg(feature = "unstable-msc4495")]
+#[derive(ToSchema, Serialize, Deserialize, Debug, Clone)]
+pub struct PresenceRecipientsResBody {
+    /// The stream ID of the current recipient set.
+    pub stream_id: i64,
+
+    /// Local users that should receive this user's presence.
+    pub recipients: Vec<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4495")]
+impl PresenceRecipientsResBody {
+    /// Creates a presence recipients response.
+    pub fn new(stream_id: i64, recipients: Vec<OwnedUserId>) -> Self {
+        Self {
+            stream_id,
+            recipients,
+        }
+    }
+}
+
 impl IntoIterator for ProfileResBody {
     type Item = (String, JsonValue);
     type IntoIter = btree_map::IntoIter<String, JsonValue>;
@@ -228,5 +281,26 @@ impl CustomResBody {
     /// Creates a new response with the given body.
     pub fn new(body: JsonValue) -> Self {
         Self(body)
+    }
+}
+
+#[cfg(all(test, feature = "unstable-msc4495"))]
+mod msc4495_tests {
+    use super::{PresenceRecipientsReqArgs, presence_recipients_request};
+    use crate::owned_user_id;
+
+    #[test]
+    fn presence_recipients_request_uses_unstable_endpoint() {
+        let request = presence_recipients_request(
+            "https://example.org",
+            PresenceRecipientsReqArgs::new(owned_user_id!("@alice:example.org")),
+        )
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://example.org/_matrix/federation/unstable/org.continuwuity.presence_v2.msc4495/query/presence_recipients?user_id=%40alice%3Aexample.org"
+        );
     }
 }

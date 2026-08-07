@@ -56,7 +56,7 @@ percent-encoding = "2"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 reqwest-middleware = "0.5.2"
 reqwest-retry = "0.9.1"
-salvo = { version = "0.95.0", features = ["rustls"] }
+salvo = { version = "0.95.1", features = ["rustls"] }
 tower-service = "0.3.3"
 url = { version = "2.5.8", default-features = false, features = ["serde"] }
 webpage = { version = "2.0.1", default-features = false }
@@ -95,8 +95,11 @@ bcrypt = "0.19.1"
 data-encoding = "2.11.0"
 ed25519-dalek = "3.0.0"
 hmac = "0.13.0"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = [
+# 11.0 made the crypto backend an explicit feature; aws_lc_rs is what 10.x
+# already resolved to via rustls, so this keeps the dependency tree unchanged.
+jsonwebtoken = { version = "11.0.0", default-features = false, features = [
     "use_pem",
+    "aws_lc_rs",
 ] }
 pkcs8 = "0.11.0"
 rand = "0.10"
