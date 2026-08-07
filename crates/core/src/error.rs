@@ -232,7 +232,11 @@ impl Scribe for MatrixError {
         {
             res.add_header(
                 header::RETRY_AFTER,
-                duration.as_secs().max(1).to_string(),
+                duration
+                    .as_secs()
+                    .saturating_add(u64::from(duration.subsec_nanos() != 0))
+                    .max(1)
+                    .to_string(),
                 true,
             )
             .ok();

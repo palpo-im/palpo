@@ -43,8 +43,13 @@ async fn send_delayed_event(
         authed.user_id(),
         Some(authed.device_id()),
         authed.appservice().is_some(),
-        &args,
-        &body,
+        &args.room_id,
+        &args.event_type,
+        &args.txn_id,
+        args.timestamp,
+        body.delay,
+        body.state_key.clone(),
+        body.content.clone(),
     )
     .await?;
     json_ok(SendDelayedEventResBody::new(delay_id))

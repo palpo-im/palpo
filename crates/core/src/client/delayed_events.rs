@@ -208,6 +208,36 @@ pub struct SendDelayedEventResBody {
     pub delay_id: String,
 }
 
+/// Response from a regular room send endpoint, which returns either an event
+/// id for an immediate send or a delay id when MSC4140 scheduling was
+/// requested.
+#[derive(ToSchema, Serialize, Debug)]
+pub struct SendEventResBody {
+    /// The event created by an immediate send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<OwnedEventId>,
+
+    /// The delayed event created by a scheduled send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_id: Option<String>,
+}
+
+impl SendEventResBody {
+    pub fn sent(event_id: OwnedEventId) -> Self {
+        Self {
+            event_id: Some(event_id),
+            delay_id: None,
+        }
+    }
+
+    pub fn delayed(delay_id: String) -> Self {
+        Self {
+            event_id: None,
+            delay_id: Some(delay_id),
+        }
+    }
+}
+
 impl SendDelayedEventResBody {
     /// Creates a new `SendDelayedEventResBody` with the given delay id.
     pub fn new(delay_id: String) -> Self {
@@ -424,5 +454,20 @@ mod tests {
             finalized_ts: Some(crate::UnixMillis(70103)),
         };
         assert_eq!(event.status(), DelayedEventStatus::Cancel);
+    }
+
+    #[test]
+    fn send_event_response_contains_exactly_one_identifier() {
+        let sent = SendEventResBody::sent("$event:example.org".try_into().unwrap());
+        assert_eq!(
+            serde_json::to_value(sent).unwrap(),
+            json!({"event_id": "$event:example.org"})
+        );
+
+        let delayed = SendEventResBody::delayed("a_delay_id".to_owned());
+        assert_eq!(
+            serde_json::to_value(delayed).unwrap(),
+            json!({"delay_id": "a_delay_id"})
+        );
     }
 }

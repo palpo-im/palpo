@@ -51,7 +51,6 @@ diesel::table! {
         send_at -> Int8,
         event_id -> Nullable<Text>,
         error -> Nullable<Jsonb>,
-        claimed_at -> Nullable<Int8>,
         finalized_at -> Nullable<Int8>,
         created_at -> Int8,
     }

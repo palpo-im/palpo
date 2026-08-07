@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, HashSet};
+use std::time::Duration;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::value::to_raw_value;
 
 use crate::core::Direction;
+use crate::core::client::delayed_events::SendEventResBody;
 use crate::core::client::message::{
     CreateMessageReqArgs, CreateMessageWithTxnReqArgs, MessagesReqArgs, MessagesResBody,
-    SendMessageResBody,
 };
 use crate::core::events::{StateEventType, TimelineEventType};
-use crate::core::serde::{RawJsonValue, to_canonical_value};
+use crate::core::serde::to_canonical_value;
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
@@ -18,7 +19,7 @@ use crate::room::timeline::{self, topolo};
 use crate::routing::prelude::*;
 use crate::{PduBuilder, room};
 
-fn parse_event_content(payload: &[u8]) -> AppResult<Box<RawJsonValue>> {
+fn parse_event_content(payload: &[u8]) -> AppResult<JsonValue> {
     let content: JsonValue =
         serde_json::from_slice(payload).map_err(|_| MatrixError::bad_json("invalid json body"))?;
     if !content.is_object() {
@@ -27,7 +28,7 @@ fn parse_event_content(payload: &[u8]) -> AppResult<Box<RawJsonValue>> {
     to_canonical_value(&content).map_err(|e| {
         MatrixError::bad_json(format!("event content is not valid canonical JSON: {e}"))
     })?;
-    Ok(to_raw_value(&content).expect("validated JSON content can be serialized as raw JSON"))
+    Ok(content)
 }
 
 /// #GET /_matrix/client/r0/rooms/{room_id}/messages
@@ -244,7 +245,7 @@ pub(super) async fn send_message(
     args: CreateMessageWithTxnReqArgs,
     req: &mut Request,
     depot: &mut Depot,
-) -> JsonResult<SendMessageResBody> {
+) -> JsonResult<SendEventResBody> {
     let authed = depot.authed_info()?;
 
     let conf = config::get();
@@ -258,6 +259,27 @@ pub(super) async fn send_message(
     let payload = req.payload().await?;
     let content = parse_event_content(payload)?;
 
+    if let Some(delay_ms) = args.delay {
+        if !conf.delayed_events.enable {
+            return Err(MatrixError::unrecognized("MSC4140 delayed events are disabled").into());
+        }
+        let event_type: TimelineEventType = args.event_type.to_string().into();
+        let delay_id = crate::delayed_event::schedule(
+            authed.user_id(),
+            Some(authed.device_id()),
+            authed.appservice().is_some(),
+            &args.room_id,
+            &event_type,
+            &args.txn_id,
+            args.timestamp,
+            Duration::from_millis(delay_ms),
+            None,
+            content,
+        )
+        .await?;
+        return json_ok(SendEventResBody::delayed(delay_id));
+    }
+
     let state_lock = room::lock_state(&args.room_id).await;
     // Check if this is a new transaction id
     if let Some(event_id) = crate::transaction_id::get_event_id(
@@ -268,7 +290,7 @@ pub(super) async fn send_message(
     )
     .await?
     {
-        return json_ok(SendMessageResBody::new(event_id));
+        return json_ok(SendEventResBody::sent(event_id));
     }
 
     let mut unsigned = BTreeMap::new();
@@ -280,7 +302,7 @@ pub(super) async fn send_message(
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: args.event_type.to_string().into(),
-            content,
+            content: to_raw_value(&content)?,
             unsigned,
             timestamp: if authed.appservice().is_some() {
                 args.timestamp
@@ -307,7 +329,7 @@ pub(super) async fn send_message(
     )
     .await?;
 
-    json_ok(SendMessageResBody::new((*event_id).to_owned()))
+    json_ok(SendEventResBody::sent((*event_id).to_owned()))
 }
 
 /// #POST /_matrix/client/r0/rooms/{room_id}/send/{event_type}
@@ -322,11 +344,10 @@ pub(super) async fn post_message(
     args: CreateMessageReqArgs,
     req: &mut Request,
     depot: &mut Depot,
-) -> JsonResult<SendMessageResBody> {
+) -> JsonResult<SendEventResBody> {
     let authed = depot.authed_info()?;
 
     let conf = config::get();
-    let state_lock = room::lock_state(&args.room_id).await;
     // Forbid m.room.encrypted if encryption is disabled
     if TimelineEventType::RoomEncrypted == args.event_type.to_string().into()
         && !conf.allow_encryption
@@ -337,10 +358,33 @@ pub(super) async fn post_message(
     let payload = req.payload().await?;
     let content = parse_event_content(payload)?;
 
+    if let Some(delay_ms) = args.delay {
+        if !conf.delayed_events.enable {
+            return Err(MatrixError::unrecognized("MSC4140 delayed events are disabled").into());
+        }
+        let txn_id: OwnedTransactionId = crate::utils::random_string(18).into();
+        let event_type: TimelineEventType = args.event_type.to_string().into();
+        let delay_id = crate::delayed_event::schedule(
+            authed.user_id(),
+            Some(authed.device_id()),
+            authed.appservice().is_some(),
+            &args.room_id,
+            &event_type,
+            &txn_id,
+            args.timestamp,
+            Duration::from_millis(delay_ms),
+            None,
+            content,
+        )
+        .await?;
+        return json_ok(SendEventResBody::delayed(delay_id));
+    }
+
+    let state_lock = room::lock_state(&args.room_id).await;
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: args.event_type.to_string().into(),
-            content,
+            content: to_raw_value(&content)?,
             unsigned: BTreeMap::new(),
             ..Default::default()
         },
@@ -353,5 +397,5 @@ pub(super) async fn post_message(
     .pdu
     .event_id;
 
-    json_ok(SendMessageResBody::new((*event_id).to_owned()))
+    json_ok(SendEventResBody::sent((*event_id).to_owned()))
 }

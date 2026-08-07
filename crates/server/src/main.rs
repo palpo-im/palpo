@@ -206,6 +206,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     crate::config::init(config_path);
     let conf = crate::config::get();
     conf.check().expect("config is not valid!");
+    if conf.delayed_events.enable && conf.db.pool_size < 2 {
+        return Err(
+            std::io::Error::other("delayed_events requires db.pool_size to be at least 2").into(),
+        );
+    }
 
     crate::logging::init()?;
     crate::data::init(&conf.db.clone().into_data_db_config());

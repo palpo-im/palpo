@@ -1,6 +1,5 @@
 use serde::Deserialize;
 
-use crate::core::serde::default_true;
 use crate::macros::config_example;
 
 #[config_example(filename = "palpo-example.toml", section = "delayed_events")]
@@ -11,8 +10,11 @@ pub struct DelayedEventsConfig {
     /// Delayed events let clients schedule message or state events that the
     /// server sends into a room after a delay, e.g. reliable MatrixRTC
     /// "hang up" events. When disabled the endpoints are not registered and
-    /// the feature is not advertised.
-    #[serde(default = "default_true")]
+    /// the feature is not advertised. Disabled by default while MSC4140 is
+    /// unstable.
+    ///
+    /// default: false
+    #[serde(default)]
     pub enable: bool,
 
     /// The maximum delay in milliseconds a client may request for a delayed
@@ -43,11 +45,21 @@ pub struct DelayedEventsConfig {
 impl Default for DelayedEventsConfig {
     fn default() -> Self {
         Self {
-            enable: true,
+            enable: false,
             max_delay_ms: default_max_delay_ms(),
             max_scheduled: default_max_scheduled(),
             retention_ms: default_retention_ms(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delayed_events_are_disabled_by_default() {
+        assert!(!DelayedEventsConfig::default().enable);
     }
 }
 

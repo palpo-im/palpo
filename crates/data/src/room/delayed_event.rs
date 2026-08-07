@@ -2,12 +2,12 @@
 //!
 //! A delayed event is stored when scheduled and stays in the table after it is
 //! finalized (sent, cancelled, or errored) so clients can look up the outcome.
-//! The scheduler leases a due row in `claimed_at` and only sets `finalized_at`
-//! once it knows the outcome, so a worker that dies mid-send leaves a row that
-//! is still scheduled and can be reclaimed after [`CLAIM_LEASE_MS`].
+//! A sender holds a PostgreSQL row lock from selection through the room append
+//! and outcome write. A worker crash rolls that transaction back, leaving the
+//! event scheduled for another worker without a time-based lease race.
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
@@ -33,7 +33,6 @@ pub struct DbDelayedEvent {
     pub send_at: i64,
     pub event_id: Option<OwnedEventId>,
     pub error: Option<JsonValue>,
-    pub claimed_at: Option<i64>,
     pub finalized_at: Option<i64>,
     pub created_at: i64,
 }
@@ -212,55 +211,82 @@ pub async fn next_send_at_of_user(user_id: &UserId) -> DataResult<Option<i64>> {
 
 /// The soonest scheduled send time across all users, used by the scheduler to
 /// compute how long to sleep.
-/// Rows under a live lease are skipped, since the scheduler cannot act on them
-/// until the lease expires. Including their already-past `send_at` would make
-/// it compute a zero sleep and spin on the database for the whole lease.
-pub async fn next_send_at(now: i64) -> DataResult<Option<i64>> {
+pub async fn next_send_at() -> DataResult<Option<i64>> {
     delayed_events::table
         .filter(delayed_events::finalized_at.is_null())
-        .filter(
-            delayed_events::claimed_at
-                .is_null()
-                .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
-        )
         .select(diesel::dsl::min(delayed_events::send_at))
         .get_result::<Option<i64>>(&mut connect().await?)
         .await
         .map_err(Into::into)
 }
 
-/// When the earliest live lease expires, so the scheduler can wake up to
-/// reclaim it rather than sleeping through it.
-pub async fn next_lease_expiry(now: i64) -> DataResult<Option<i64>> {
-    delayed_events::table
-        .filter(delayed_events::finalized_at.is_null())
-        .filter(delayed_events::claimed_at.ge(now - CLAIM_LEASE_MS))
-        .select(diesel::dsl::min(delayed_events::claimed_at))
-        .get_result::<Option<i64>>(&mut connect().await?)
-        .await
-        .map(|claimed| claimed.map(|c| c + CLAIM_LEASE_MS))
-        .map_err(Into::into)
-}
-
-/// List all delayed events that are due at `now`, in chronological order of
-/// their scheduled send times (restart-recovery sends overdue events in this
-/// order too).
-/// Rows leased by a worker that has not reported an outcome within
-/// [`CLAIM_LEASE_MS`] are included again, so a send interrupted by a crash is
-/// retried after the server comes back up.
-pub async fn list_due(now: i64) -> DataResult<Vec<DbDelayedEvent>> {
+/// Lock the next due event without waiting for another worker's row.
+///
+/// The caller owns the surrounding transaction and must keep it open through
+/// the append and outcome write. `SKIP LOCKED` lets multiple server processes
+/// work on different rows while guaranteeing that only one can append a given
+/// delayed event.
+pub async fn lock_next_due(
+    conn: &mut AsyncPgConnection,
+    now: i64,
+) -> DataResult<Option<DbDelayedEvent>> {
     delayed_events::table
         .filter(delayed_events::finalized_at.is_null())
         .filter(delayed_events::send_at.le(now))
-        .filter(
-            delayed_events::claimed_at
-                .is_null()
-                .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
-        )
-        .order(delayed_events::send_at.asc())
-        .load::<DbDelayedEvent>(&mut connect().await?)
+        .order((delayed_events::send_at.asc(), delayed_events::id.asc()))
+        .for_update()
+        .skip_locked()
+        .first::<DbDelayedEvent>(conn)
         .await
+        .optional()
         .map_err(Into::into)
+}
+
+/// Lock one user's delayed event for a manual send.
+///
+/// Unlike the scheduler this deliberately waits for an existing row holder:
+/// once the lock is acquired the caller can return the definitive sent/error
+/// result rather than guessing from an expiring lease.
+pub async fn lock_for_send(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    delay_id: &str,
+) -> DataResult<Option<DbDelayedEvent>> {
+    delayed_events::table
+        .filter(delayed_events::user_id.eq(user_id))
+        .filter(delayed_events::delay_id.eq(delay_id))
+        .for_update()
+        .first::<DbDelayedEvent>(conn)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+#[derive(QueryableByName)]
+struct DelayedEventOutput {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    event_id: String,
+}
+
+/// Find the event atomically recorded when an outlier enters the timeline.
+///
+/// This is the durable recovery fence for a process that dies after appending
+/// the room event but before finalizing the delayed-event row or recording its
+/// regular transaction-id mapping.
+pub async fn get_output(delay_id: &str) -> DataResult<Option<OwnedEventId>> {
+    let row = diesel::sql_query(
+        "SELECT output.event_id \
+         FROM delayed_event_outputs AS output \
+         INNER JOIN events ON events.id = output.event_id \
+         WHERE output.delay_id = $1 AND events.is_outlier = FALSE",
+    )
+    .bind::<diesel::sql_types::Text, _>(delay_id)
+    .get_result::<DelayedEventOutput>(&mut connect().await?)
+    .await
+    .optional()?;
+
+    row.map(|row| OwnedEventId::try_from(row.event_id).map_err(Into::into))
+        .transpose()
 }
 
 /// Restart a scheduled delayed event's timer. Returns the updated row, or
@@ -271,26 +297,17 @@ pub async fn restart(
     delay_id: &str,
     now: i64,
 ) -> DataResult<Option<DbDelayedEvent>> {
+    // If a sender holds this row, PostgreSQL waits and then re-checks
+    // `finalized_at` against the committed outcome.
     diesel::update(
         delayed_events::table
             .filter(delayed_events::user_id.eq(user_id))
             .filter(delayed_events::delay_id.eq(delay_id))
-            .filter(delayed_events::finalized_at.is_null())
-            // A worker already sending this event cannot be called back, so
-            // the restart must fail rather than report a new send time the
-            // event will not honour.
-            .filter(
-                delayed_events::claimed_at
-                    .is_null()
-                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
-            ),
+            .filter(delayed_events::finalized_at.is_null()),
     )
     .set((
         delayed_events::running_since.eq(now),
         delayed_events::send_at.eq(delayed_events::delay_ms + now),
-        // Invalidate any expired lease, so a worker that outlived it cannot
-        // still record an outcome against the row this restart just rescheduled.
-        delayed_events::claimed_at.eq(None::<i64>),
     ))
     .get_result::<DbDelayedEvent>(&mut connect().await?)
     .await
@@ -298,117 +315,37 @@ pub async fn restart(
     .map_err(Into::into)
 }
 
-/// How long a send lease is honoured before another worker may reclaim the
-/// row. Only reached when the process died mid-send, so it just has to be
-/// comfortably longer than a send takes.
-pub const CLAIM_LEASE_MS: i64 = 5 * 60 * 1000;
-
-/// Atomically lease a delayed event for sending.
-///
-/// Returns the claimed row, or `None` if it was finalized (sent, cancelled or
-/// errored) or is already leased by a live worker.
-///
-/// The lease is recorded in `claimed_at`, leaving `finalized_at` null, so a
-/// row whose worker died is still scheduled rather than looking finalized with
-/// no outcome. After a successful claim the caller records the outcome with
-/// [`set_sent`] or [`set_error`], or releases the lease with [`unclaim`].
-///
-/// This is the manual `send` action's claim, which deliberately ignores
-/// `send_at` — sending ahead of the scheduled time is the point. The scheduler
-/// uses [`claim_due`] instead.
-pub async fn claim(row_id: i64, now: i64) -> DataResult<Option<DbDelayedEvent>> {
-    diesel::update(
-        delayed_events::table
-            .filter(delayed_events::id.eq(row_id))
-            .filter(delayed_events::finalized_at.is_null())
-            .filter(
-                delayed_events::claimed_at
-                    .is_null()
-                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
-            ),
-    )
-    .set(delayed_events::claimed_at.eq(now))
-    .get_result::<DbDelayedEvent>(&mut connect().await?)
-    .await
-    .optional()
-    .map_err(Into::into)
-}
-
-/// [`claim`] for the scheduler, additionally requiring the event to still be
-/// due at `now`.
-///
-/// That predicate is what lets a `restart` arriving after `list_due` win the
-/// race: it pushes `send_at` into the future, so the scheduler's now-stale
-/// entry no longer claims and the event is not sent early.
-pub async fn claim_due(row_id: i64, now: i64) -> DataResult<Option<DbDelayedEvent>> {
-    diesel::update(
-        delayed_events::table
-            .filter(delayed_events::id.eq(row_id))
-            .filter(delayed_events::finalized_at.is_null())
-            .filter(delayed_events::send_at.le(now))
-            .filter(
-                delayed_events::claimed_at
-                    .is_null()
-                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
-            ),
-    )
-    .set(delayed_events::claimed_at.eq(now))
-    .get_result::<DbDelayedEvent>(&mut connect().await?)
-    .await
-    .optional()
-    .map_err(Into::into)
-}
-
-/// Record the event id of a claimed delayed event that was sent successfully.
-///
-/// Fenced on `lease`, the `claimed_at` value this worker set: a worker whose
-/// lease was reclaimed while it was still running must not overwrite the
-/// outcome the worker that superseded it recorded.
-pub async fn set_sent(row_id: i64, lease: i64, event_id: &EventId, now: i64) -> DataResult<()> {
-    diesel::update(
-        delayed_events::table
-            .filter(delayed_events::id.eq(row_id))
-            .filter(delayed_events::claimed_at.eq(lease)),
-    )
-    .set((
-        delayed_events::event_id.eq(event_id),
-        delayed_events::finalized_at.eq(now),
-    ))
-    .execute(&mut connect().await?)
-    .await?;
+/// Record the successful outcome while the caller still holds the row lock.
+pub async fn set_sent_locked(
+    conn: &mut AsyncPgConnection,
+    row_id: i64,
+    event_id: &EventId,
+    now: i64,
+) -> DataResult<()> {
+    diesel::update(delayed_events::table.find(row_id))
+        .set((
+            delayed_events::event_id.eq(event_id),
+            delayed_events::finalized_at.eq(now),
+        ))
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
-/// Record the error of a claimed delayed event that failed to send. Fenced on
-/// the lease, as [`set_sent`] is.
-pub async fn set_error(row_id: i64, lease: i64, error: &JsonValue, now: i64) -> DataResult<()> {
-    diesel::update(
-        delayed_events::table
-            .filter(delayed_events::id.eq(row_id))
-            .filter(delayed_events::claimed_at.eq(lease)),
-    )
-    .set((
-        delayed_events::error.eq(error),
-        delayed_events::finalized_at.eq(now),
-    ))
-    .execute(&mut connect().await?)
-    .await?;
-    Ok(())
-}
-
-/// Release a lease so the delayed event stays scheduled (used when a manual
-/// `send` action fails before the event could reach the timeline; the MSC
-/// requires the event to remain scheduled then). Fenced on the lease so a
-/// superseded worker cannot release the lease its successor now holds.
-pub async fn unclaim(row_id: i64, lease: i64) -> DataResult<()> {
-    diesel::update(
-        delayed_events::table
-            .filter(delayed_events::id.eq(row_id))
-            .filter(delayed_events::claimed_at.eq(lease)),
-    )
-    .set(delayed_events::claimed_at.eq(None::<i64>))
-    .execute(&mut connect().await?)
-    .await?;
+/// Record a scheduled-send failure while the caller still holds the row lock.
+pub async fn set_error_locked(
+    conn: &mut AsyncPgConnection,
+    row_id: i64,
+    error: &JsonValue,
+    now: i64,
+) -> DataResult<()> {
+    diesel::update(delayed_events::table.find(row_id))
+        .set((
+            delayed_events::error.eq(error),
+            delayed_events::finalized_at.eq(now),
+        ))
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -416,25 +353,15 @@ pub async fn unclaim(row_id: i64, lease: i64) -> DataResult<()> {
 /// cancelled, `false` if it did not exist unfinalized (caller decides between
 /// idempotent success and conflict from the row's current state).
 pub async fn cancel(user_id: &UserId, delay_id: &str, now: i64) -> DataResult<bool> {
+    // If a sender holds this row, PostgreSQL waits and then re-checks
+    // `finalized_at` against the committed outcome.
     let count = diesel::update(
         delayed_events::table
             .filter(delayed_events::user_id.eq(user_id))
             .filter(delayed_events::delay_id.eq(delay_id))
-            .filter(delayed_events::finalized_at.is_null())
-            // A row a worker is actively sending must not be cancelled out from
-            // under it, or the caller is told the event was cancelled while it
-            // is on its way into the room.
-            .filter(
-                delayed_events::claimed_at
-                    .is_null()
-                    .or(delayed_events::claimed_at.lt(now - CLAIM_LEASE_MS)),
-            ),
+            .filter(delayed_events::finalized_at.is_null()),
     )
-    .set((
-        delayed_events::finalized_at.eq(now),
-        // As in restart: drop the expired lease so its worker is fenced out.
-        delayed_events::claimed_at.eq(None::<i64>),
-    ))
+    .set(delayed_events::finalized_at.eq(now))
     .execute(&mut connect().await?)
     .await?;
     Ok(count > 0)

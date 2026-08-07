@@ -13,14 +13,12 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use diesel_async::AsyncConnection;
 use salvo::http::StatusCode;
 use serde_json::value::to_raw_value;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
-use crate::core::client::delayed_events::{
-    DelayedEventData, DelayedEventError, SendDelayedEventReqArgs, SendDelayedEventReqBody,
-    UpdateAction,
-};
+use crate::core::client::delayed_events::{DelayedEventData, DelayedEventError, UpdateAction};
 use crate::core::error::RetryAfter;
 use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
@@ -35,11 +33,23 @@ const PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// Upper bound on the scheduler's sleep so newly due work is never missed for
 /// long even if a wakeup signal is lost.
 const MAX_IDLE: Duration = Duration::from_secs(60);
+/// Avoid a hot loop when another server process holds the earliest due row.
+const LOCK_RETRY: Duration = Duration::from_secs(1);
 
 static WAKEUP: OnceLock<Notify> = OnceLock::new();
+static SEND_GATE: OnceLock<Semaphore> = OnceLock::new();
 
 fn wakeup() -> &'static Notify {
     WAKEUP.get_or_init(Notify::new)
+}
+
+/// Limit row-locking send transactions so they cannot occupy every pooled
+/// connection while the timeline append is trying to obtain another one.
+fn send_gate() -> &'static Semaphore {
+    SEND_GATE.get_or_init(|| {
+        let permits = config::get().db.pool_size.saturating_sub(1).max(1) as usize;
+        Semaphore::new(permits)
+    })
 }
 
 /// Start the background scheduler that sends due delayed events.
@@ -52,31 +62,31 @@ pub fn start() {
             }
 
             let now = UnixMillis::now().get() as i64;
-            // Wake for whichever comes first: the next claimable event, or the
-            // expiry of a lease we may then have to reclaim.
-            let next_wake = match (
-                delayed_event::next_send_at(now).await,
-                delayed_event::next_lease_expiry(now).await,
-            ) {
-                (Ok(send_at), Ok(expiry)) => match (send_at, expiry) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                },
-                (Err(error), _) | (_, Err(error)) => {
+            let next_wake = match delayed_event::next_send_at().await {
+                Ok(send_at) => send_at,
+                Err(error) => {
                     tracing::warn!(?error, "failed to load next delayed event wake-up time");
                     None
                 }
             };
             let sleep = next_wake
-                .map(|at| Duration::from_millis(at.saturating_sub(now) as u64).min(MAX_IDLE))
+                .map(|at| {
+                    let until = Duration::from_millis(at.saturating_sub(now) as u64);
+                    if until.is_zero() {
+                        LOCK_RETRY
+                    } else {
+                        until.min(MAX_IDLE)
+                    }
+                })
                 .unwrap_or(MAX_IDLE);
             tokio::select! {
                 _ = wakeup().notified() => {},
                 _ = tokio::time::sleep(sleep) => {},
                 _ = prune.tick() => {
                     let conf = config::get();
-                    let cutoff = UnixMillis::now().get() as i64
-                        - conf.delayed_events.retention_ms as i64;
+                    let retention_ms = i64::try_from(conf.delayed_events.retention_ms)
+                        .unwrap_or(i64::MAX);
+                    let cutoff = (UnixMillis::now().get() as i64).saturating_sub(retention_ms);
                     if let Err(error) = delayed_event::prune_finalized(cutoff).await {
                         tracing::warn!(?error, "failed to prune finalized delayed events");
                     }
@@ -90,73 +100,120 @@ pub fn start() {
 /// send times. Failures are recorded on the event instead of being retried,
 /// per the MSC.
 async fn process_due_events() -> AppResult<()> {
-    let scan_at = UnixMillis::now().get() as i64;
-    for event in delayed_event::list_due(scan_at).await? {
-        // Re-read the clock per row: working through a backlog can take longer
-        // than CLAIM_LEASE_MS, and claiming with the scan-start timestamp
-        // would stamp a lease that is already expired, so a management request
-        // could report a successful cancel while the event is being appended.
-        let now = UnixMillis::now().get() as i64;
-        let Some(claimed) = delayed_event::claim_due(event.id, now).await? else {
-            // Finalized, restarted, or claimed concurrently since `list_due`.
-            continue;
-        };
-        let lease = claimed.claimed_at.unwrap_or(now);
-        match send_delayed_pdu(&claimed).await {
-            Ok(event_id) => {
-                delayed_event::set_sent(claimed.id, lease, &event_id, now).await?;
-            }
-            Err(error) => {
-                tracing::debug!(
-                    delay_id = %claimed.delay_id,
-                    room_id = %claimed.room_id,
-                    ?error,
-                    "delayed event failed to send at its scheduled time"
-                );
-                // The MSC says a scheduled send is not retried either way, so
-                // both failure kinds finalize with the error here.
-                delayed_event::set_error(claimed.id, lease, &error_body(error), now).await?;
-            }
-        }
-    }
+    while process_one_due_event().await? {}
     Ok(())
 }
 
-/// Build and append the PDU for a claimed delayed event through the normal
+/// Lock, send, and finalize one due row in a single database transaction.
+async fn process_one_due_event() -> AppResult<bool> {
+    let _permit = send_gate()
+        .acquire()
+        .await
+        .expect("the delayed-event send semaphore is never closed");
+    let mut conn = crate::data::connect().await?;
+    conn.transaction::<_, AppError, _>(async |conn| {
+        let now = UnixMillis::now().get() as i64;
+        let Some(event) = delayed_event::lock_next_due(conn, now).await? else {
+            return Ok(false);
+        };
+
+        match send_delayed_pdu(&event).await {
+            Ok(event_id) => {
+                delayed_event::set_sent_locked(
+                    conn,
+                    event.id,
+                    &event_id,
+                    UnixMillis::now().get() as i64,
+                )
+                .await?;
+            }
+            Err(error) => {
+                // `build_and_append_pdu` can report a later delivery or
+                // bookkeeping failure after the event has already entered the
+                // timeline. The promotion trigger is the authoritative commit
+                // point, so do not misclassify that case as a failed send.
+                if let Some(event_id) = delayed_event::get_output(&event.delay_id).await? {
+                    tracing::warn!(
+                        delay_id = %event.delay_id,
+                        room_id = %event.room_id,
+                        %event_id,
+                        ?error,
+                        "delayed event entered the timeline before a later send step failed"
+                    );
+                    delayed_event::set_sent_locked(
+                        conn,
+                        event.id,
+                        &event_id,
+                        UnixMillis::now().get() as i64,
+                    )
+                    .await?;
+                } else {
+                    tracing::debug!(
+                        delay_id = %event.delay_id,
+                        room_id = %event.room_id,
+                        ?error,
+                        "delayed event failed to send at its scheduled time"
+                    );
+                    // The MSC says a scheduled send is not retried. The error
+                    // is committed under the same row lock that fenced the
+                    // append.
+                    delayed_event::set_error_locked(
+                        conn,
+                        event.id,
+                        &error_body(error),
+                        UnixMillis::now().get() as i64,
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(true)
+    })
+    .await
+}
+
+/// Build and append the PDU for a locked delayed event through the normal
 /// event authorization and federation paths.
 ///
 /// A send interrupted after the append but before the outcome is recorded
-/// leaves a row the lease sweep later reclaims, and appending again would
-/// duplicate the event. To make that recovery idempotent this resolves the
-/// transaction id the same way `/send` does, and both that lookup and the
-/// `add_txn_id` that satisfies it happen under the room lock, so a worker that
-/// reclaimed an over-running lease cannot slip past the check while the
-/// original worker is mid-append.
+/// leaves the delayed row scheduled. Database triggers track tentative
+/// outliers and atomically confirm the output when it enters the timeline, so
+/// recovery can replace an abandoned outlier but can never promote a second
+/// event for the same delay id.
 async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     let event_type: TimelineEventType = event.event_type.clone().into();
     let state_lock = room::lock_state(&event.room_id).await;
 
-    // Taken under the room lock, so a worker that reclaimed an over-running
-    // lease cannot pass this check while the original worker is still between
-    // its append and its `add_txn_id` -- both of which happen under this same
-    // lock. Checking before taking it would let both reach the append and
-    // duplicate the event.
-    //
-    // It also runs before the state check below: recovering a state event that
+    // This runs before the state check below: recovering a state event that
     // already reached the room must not re-run authorization, because the
     // event it just sent may itself have changed the state that check reads,
     // which would turn a completed send into a permanent failure.
-    if let Some(event_id) = crate::transaction_id::get_event_id(
-        &event.txn_id,
-        &event.user_id,
-        event.device_id.as_deref(),
-        Some(&event.room_id),
-    )
-    .await?
-    {
+    // Use the delay-specific mapping: a reused transaction id can point at
+    // an older ordinary send, while this marker identifies the exact delayed
+    // event that actually entered the timeline.
+    if let Some(event_id) = delayed_event::get_output(&event.delay_id).await? {
+        // Repair the conventional transaction-id lookup when possible. The
+        // trigger-backed output is already a sufficient idempotency fence, so
+        // failure to write this secondary mapping must not turn a completed
+        // room append into a failed delayed event.
+        if let Err(error) = crate::transaction_id::add_txn_id(
+            &event.txn_id,
+            &event.user_id,
+            event.device_id.as_deref(),
+            Some(&event.room_id),
+            Some(&event_id),
+        )
+        .await
+        {
+            tracing::warn!(
+                delay_id = %event.delay_id,
+                %event_id,
+                ?error,
+                "failed to repair delayed-event transaction-id mapping"
+            );
+        }
         return Ok(event_id);
     }
-
     if let Some(state_key) = &event.state_key {
         let state_event_type: StateEventType = event.event_type.clone().into();
         crate::state::allowed_to_send_state_event(
@@ -175,7 +232,7 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     );
     unsigned.insert("transaction_id".to_owned(), to_raw_value(&event.txn_id)?);
 
-    let event_id = timeline::build_and_append_pdu(
+    let event_id = timeline::build_and_append_pdu_force(
         PduBuilder {
             event_type,
             content: to_raw_value(&event.content)?,
@@ -193,21 +250,26 @@ async fn send_delayed_pdu(event: &DbDelayedEvent) -> AppResult<OwnedEventId> {
     .pdu
     .event_id;
 
-    // Still under the room lock, so the mapping is visible to any worker that
-    // is waiting on it before that worker can reach its own append. Recorded
-    // before the lock is released for the same reason.
-    // Not `.ok()`: this mapping is what makes lease recovery idempotent. If it
-    // is missing and recording the outcome then fails, recovery would find
-    // neither and append the event a second time, so a failure here has to
-    // surface rather than be reported as a clean send.
-    crate::transaction_id::add_txn_id(
+    // The database trigger has already recorded the authoritative output in
+    // the same transaction that promoted the event into the timeline. Keep the
+    // standard transaction-id mapping for normal idempotency lookups, but do
+    // not misreport a completed room append if this secondary write fails.
+    if let Err(error) = crate::transaction_id::add_txn_id(
         &event.txn_id,
         &event.user_id,
         event.device_id.as_deref(),
         Some(&event.room_id),
         Some(&event_id),
     )
-    .await?;
+    .await
+    {
+        tracing::warn!(
+            delay_id = %event.delay_id,
+            event_id = %event_id,
+            ?error,
+            "failed to record delayed-event transaction-id mapping"
+        );
+    }
     drop(state_lock);
 
     Ok((*event_id).to_owned())
@@ -220,71 +282,87 @@ pub async fn schedule(
     user_id: &UserId,
     device_id: Option<&DeviceId>,
     is_appservice: bool,
-    args: &SendDelayedEventReqArgs,
-    body: &SendDelayedEventReqBody,
+    room_id: &RoomId,
+    event_type: &TimelineEventType,
+    txn_id: &TransactionId,
+    timestamp: Option<UnixMillis>,
+    delay: Duration,
+    state_key: Option<String>,
+    content: JsonValue,
 ) -> AppResult<String> {
     let conf = config::get();
+    let now = UnixMillis::now().get() as i64;
 
-    let delay_ms = body.delay.as_millis();
-    if delay_ms == 0 {
+    let requested_delay_ms = delay.as_millis();
+    if requested_delay_ms == 0 {
         return Err(
             MatrixError::invalid_param("delay must be a positive number of milliseconds").into(),
         );
     }
-    if delay_ms > conf.delayed_events.max_delay_ms as u128 {
+    let max_delay_ms =
+        u128::from(conf.delayed_events.max_delay_ms).min(i64::MAX.saturating_sub(now) as u128);
+    if requested_delay_ms > max_delay_ms {
         return Err(MatrixError::forbidden(
             format!(
                 "the requested delay exceeds the maximum allowed delay of {} ms",
-                conf.delayed_events.max_delay_ms
+                max_delay_ms
             ),
             None,
         )
         .into());
     }
+    let delay_ms = i64::try_from(requested_delay_ms)
+        .map_err(|_| MatrixError::invalid_param("delay is too large"))?;
 
-    if !body.content.is_object() {
+    if !content.is_object() {
         return Err(MatrixError::bad_json("event content is not an object").into());
     }
-    to_canonical_value(&body.content).map_err(|e| {
+    to_canonical_value(&content).map_err(|e| {
         MatrixError::bad_json(format!("event content is not valid canonical JSON: {e}"))
     })?;
 
     // Forbid m.room.encrypted if encryption is disabled, matching /send.
-    if args.event_type == TimelineEventType::RoomEncrypted && !conf.allow_encryption {
+    if event_type == &TimelineEventType::RoomEncrypted && !conf.allow_encryption {
         return Err(MatrixError::forbidden("Encryption has been disabled", None).into());
     }
 
     // The room must be known; auth rules themselves are evaluated at send time.
-    crate::room::get_version(&args.room_id).await?;
+    crate::room::get_version(room_id).await?;
 
     // Idempotency: same session + transaction id returns the same delay id.
-    if let Some(existing) = delayed_event::get_by_txn_id(user_id, device_id, &args.txn_id).await? {
+    if let Some(existing) = delayed_event::get_by_txn_id(user_id, device_id, txn_id).await? {
         return Ok(existing.delay_id);
     }
 
-    let now = UnixMillis::now().get() as i64;
+    let origin_server_ts = if is_appservice {
+        timestamp
+            .map(|ts| {
+                i64::try_from(ts.get())
+                    .map_err(|_| MatrixError::invalid_param("timestamp is too large"))
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let new = NewDbDelayedEvent {
         delay_id: utils::random_string(18),
         user_id: user_id.to_owned(),
         device_id: device_id.map(|d| d.to_owned()),
-        room_id: args.room_id.clone(),
-        event_type: args.event_type.to_string(),
-        state_key: body.state_key.clone(),
-        content: body.content.clone(),
-        delay_ms: delay_ms as i64,
-        txn_id: args.txn_id.clone(),
-        origin_server_ts: if is_appservice {
-            args.timestamp.map(|ts| ts.get() as i64)
-        } else {
-            None
-        },
+        room_id: room_id.to_owned(),
+        event_type: event_type.to_string(),
+        state_key,
+        content,
+        delay_ms,
+        txn_id: txn_id.to_owned(),
+        origin_server_ts,
         running_since: now,
-        send_at: now + delay_ms as i64,
+        send_at: now + delay_ms,
         created_at: now,
     };
     // The limit is enforced inside the same transaction as the insert, so
     // concurrent requests cannot each observe a count below it and all succeed.
-    match delayed_event::create(new, conf.delayed_events.max_scheduled as i64).await? {
+    let max_scheduled = i64::try_from(conf.delayed_events.max_scheduled).unwrap_or(i64::MAX);
+    match delayed_event::create(new, max_scheduled).await? {
         delayed_event::Scheduled::Created(row) => {
             wakeup().notify_one();
             Ok(row.delay_id)
@@ -325,50 +403,10 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
                     .await?
                     .unwrap_or(event);
-                if send_in_flight(&refreshed, now) {
-                    Err(in_flight_conflict("restart"))
-                } else {
-                    Err(finalized_conflict(&refreshed, "restart"))
-                }
+                Err(finalized_conflict(&refreshed, "restart"))
             }
         }
-        UpdateAction::Send => {
-            let Some(claimed) = delayed_event::claim(event.id, now).await? else {
-                let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
-                    .await?
-                    .unwrap_or(event);
-                // Another worker holds the lease. Reporting success here would
-                // be a guess: that send can still fail a pre-append check and
-                // release the lease, leaving this caller told the event was
-                // sent when it never was. Report the conflict so a retry gets
-                // a definitive answer.
-                if send_in_flight(&refreshed, now) {
-                    return Err(in_flight_conflict("send"));
-                }
-                // Already finalized: sending is idempotent if it was sent,
-                // conflicting otherwise.
-                if refreshed.event_id.is_some() {
-                    return Ok(());
-                }
-                return Err(finalized_conflict(&refreshed, "send"));
-            };
-            let lease = claimed.claimed_at.unwrap_or(now);
-            match send_delayed_pdu(&claimed).await {
-                Ok(event_id) => {
-                    delayed_event::set_sent(claimed.id, lease, &event_id, now).await?;
-                    Ok(())
-                }
-                // The MSC requires the event to stay scheduled so the client
-                // can retry until the scheduled send time. Releasing the lease
-                // is safe even for an error raised after the append, because
-                // `send_delayed_pdu` resolves the transaction id first and
-                // will not append a second time.
-                Err(error) => {
-                    delayed_event::unclaim(claimed.id, lease).await?;
-                    Err(error)
-                }
-            }
-        }
+        UpdateAction::Send => send_now(user_id, delay_id).await,
         UpdateAction::Cancel => {
             if delayed_event::cancel(user_id, delay_id, now).await? {
                 Ok(())
@@ -376,9 +414,7 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 let refreshed = delayed_event::get_by_delay_id(user_id, delay_id)
                     .await?
                     .unwrap_or(event);
-                if send_in_flight(&refreshed, now) {
-                    Err(in_flight_conflict("cancel"))
-                } else if refreshed.event_id.is_some() {
+                if refreshed.event_id.is_some() {
                     Err(finalized_conflict(&refreshed, "cancel"))
                 } else {
                     // The MSC treats cancelling an event that was already
@@ -390,6 +426,68 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
         }
         _ => Err(MatrixError::invalid_param("unknown delayed event action").into()),
     }
+}
+
+/// Manually send one row while holding its database lock through the append.
+async fn send_now(user_id: &UserId, delay_id: &str) -> AppResult<()> {
+    let _permit = send_gate()
+        .acquire()
+        .await
+        .expect("the delayed-event send semaphore is never closed");
+    let mut conn = crate::data::connect().await?;
+    conn.transaction::<_, AppError, _>(async |conn| {
+        let Some(event) = delayed_event::lock_for_send(conn, user_id, delay_id).await? else {
+            return Err(
+                MatrixError::not_found("no delayed event with that delay_id was found").into(),
+            );
+        };
+
+        if event.finalized_at.is_some() {
+            return if event.event_id.is_some() {
+                Ok(())
+            } else {
+                Err(finalized_conflict(&event, "send"))
+            };
+        }
+
+        match send_delayed_pdu(&event).await {
+            Ok(event_id) => {
+                delayed_event::set_sent_locked(
+                    conn,
+                    event.id,
+                    &event_id,
+                    UnixMillis::now().get() as i64,
+                )
+                .await?;
+                Ok(())
+            }
+            Err(error) => {
+                // The room append may already have committed before a later
+                // delivery or bookkeeping step failed. The trigger-backed
+                // output is authoritative, just as it is for scheduled sends.
+                if let Some(event_id) = delayed_event::get_output(&event.delay_id).await? {
+                    tracing::warn!(
+                        delay_id = %event.delay_id,
+                        room_id = %event.room_id,
+                        %event_id,
+                        ?error,
+                        "manually sent delayed event entered the timeline before a later step failed"
+                    );
+                    delayed_event::set_sent_locked(
+                        conn,
+                        event.id,
+                        &event_id,
+                        UnixMillis::now().get() as i64,
+                    )
+                    .await?;
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    })
+    .await
 }
 
 /// List the user's scheduled delayed events in chronological send order.
@@ -426,25 +524,6 @@ fn to_event_data(event: DbDelayedEvent) -> DelayedEventData {
         event_id: event.event_id,
         finalized_ts: event.finalized_at.map(|ts| UnixMillis(ts as u64)),
     }
-}
-
-/// Whether a worker currently holds the send lease on this row, meaning the
-/// event is on its way into the room and no management action can stop it.
-fn send_in_flight(event: &DbDelayedEvent, now: i64) -> bool {
-    event.finalized_at.is_none()
-        && event
-            .claimed_at
-            .is_some_and(|claimed| claimed >= now - delayed_event::CLAIM_LEASE_MS)
-}
-
-/// HTTP 409 for a management action that arrived while the event was already
-/// being sent.
-fn in_flight_conflict(action: &str) -> AppError {
-    let mut error = MatrixError::unknown(format!(
-        "cannot {action} a delayed event that is currently being sent"
-    ));
-    error.status_code = Some(StatusCode::CONFLICT);
-    error.into()
 }
 
 /// HTTP 409 for a management action that conflicts with the outcome the
