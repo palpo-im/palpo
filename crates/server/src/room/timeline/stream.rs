@@ -203,7 +203,7 @@ pub async fn load_pdus(
                     }
                     if let Some(user_id) = user_id {
                         if pdu.sender != user_id {
-                            pdu.remove_transaction_id()?;
+                            pdu.remove_sender_only_unsigned()?;
                         }
                         let _ = pdu.add_unsigned_membership(user_id).await;
                     }

@@ -25,6 +25,7 @@ pub mod utils;
 pub use auth::{AuthArgs, AuthedInfo};
 pub mod admin;
 pub mod appservice;
+pub mod delayed_event;
 pub mod directory;
 pub mod event;
 pub mod exts;
@@ -250,6 +251,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tracing::error!("admin command processor stopped");
         }
     });
+
+    // MSC4140: send scheduled delayed events once their delay elapses; on
+    // startup this also recovers events that became due while the server was
+    // offline.
+    if config::get().delayed_events.enable {
+        crate::delayed_event::start();
+    }
 
     // MSC2444: periodically renew our outbound room peeks and drop lapsed inbound
     // peekers.

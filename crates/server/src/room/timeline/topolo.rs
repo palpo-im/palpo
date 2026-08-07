@@ -226,7 +226,7 @@ pub async fn load_pdus(
                         continue;
                     }
                     if pdu.sender != user_id {
-                        pdu.remove_transaction_id()?;
+                        pdu.remove_sender_only_unsigned()?;
                     }
                     pdu.add_unsigned_membership(user_id).await?;
                 }

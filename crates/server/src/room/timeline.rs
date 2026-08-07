@@ -807,7 +807,41 @@ pub async fn build_and_append_pdu(
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<SnPduEvent> {
-    if let Some(state_key) = &pdu_builder.state_key
+    build_and_append_pdu_inner(
+        pdu_builder,
+        sender,
+        room_id,
+        room_version,
+        state_lock,
+        false,
+    )
+    .await
+}
+
+/// Creates and appends a PDU even when an equivalent state event is already
+/// current. Delayed events need this so each successful delay id is observable
+/// on its own timeline event.
+#[tracing::instrument(skip_all)]
+pub async fn build_and_append_pdu_force(
+    pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+) -> AppResult<SnPduEvent> {
+    build_and_append_pdu_inner(pdu_builder, sender, room_id, room_version, state_lock, true).await
+}
+
+async fn build_and_append_pdu_inner(
+    pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+    force: bool,
+) -> AppResult<SnPduEvent> {
+    if !force
+        && let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
             room_id,
             &pdu_builder.event_type.to_string().into(),

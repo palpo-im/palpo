@@ -101,6 +101,11 @@ pub enum ErrorKind {
     /// The connection to the application service timed out.
     ConnectionTimeout,
 
+    /// `M_DELAY_TOO_LARGE`
+    ///
+    /// A delayed event requested a delay larger than the homeserver permits.
+    DelayTooLarge,
+
     /// `M_DUPLICATE_ANNOTATION`
     ///
     /// The request is an attempt to send a [duplicate annotation].
@@ -465,6 +470,7 @@ impl ErrorKind {
             ErrorKind::ConflictingUnsubscription => ErrorCode::ConflictingUnsubscription,
             ErrorKind::ConnectionFailed => ErrorCode::ConnectionFailed,
             ErrorKind::ConnectionTimeout => ErrorCode::ConnectionTimeout,
+            ErrorKind::DelayTooLarge => ErrorCode::DelayTooLarge,
             ErrorKind::DuplicateAnnotation => ErrorCode::DuplicateAnnotation,
             ErrorKind::Exclusive => ErrorCode::Exclusive,
             ErrorKind::Forbidden => ErrorCode::Forbidden,

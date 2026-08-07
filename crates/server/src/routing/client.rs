@@ -2,6 +2,7 @@ mod account;
 mod admin;
 mod appservice;
 mod auth;
+mod delayed_event;
 mod device;
 mod directory;
 mod key;
@@ -29,6 +30,7 @@ use std::collections::BTreeMap;
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde_json::json;
 
 use crate::config;
 use crate::core::client::discovery::capabilities::{
@@ -41,6 +43,10 @@ use crate::core::client::search::{ResultCategories, SearchReqArgs, SearchReqBody
 use crate::routing::prelude::*;
 
 pub fn router() -> Router {
+    router_with_delayed_events(config::get().delayed_events.enable)
+}
+
+fn router_with_delayed_events(delayed_events: bool) -> Router {
     let mut client = Router::with_path("client").oapi_tag("client");
     for v in ["v3", "v1", "r0"] {
         client = client
@@ -127,7 +133,7 @@ pub fn router() -> Router {
                 .push(Router::with_path("callback").get(oidc::oidc_callback))
                 .push(Router::with_path("login").post(oidc::oidc_login)),
         )
-        .push(unstable::router())
+        .push(unstable::router(delayed_events))
 }
 
 /// #POST /_matrix/client/r0/search
@@ -168,21 +174,30 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
         available.insert(room_version.clone(), RoomVersionStability::Stable);
     }
     let change_password_enabled = conf.enabled_delegated_auth().is_none();
-    json_ok(CapabilitiesResBody {
-        capabilities: Capabilities {
-            room_versions: RoomVersionsCapability {
-                default: conf.default_room_version.clone(),
-                available,
-            },
-            change_password: ChangePasswordCapability {
-                enabled: change_password_enabled,
-            },
-            thirdparty_id_changes: ThirdPartyIdChangesCapability::new(false),
-            profile_fields: Some(ProfileFieldsCapability::new(true)),
-            account_moderation,
-            ..Default::default()
+    let mut capabilities = Capabilities {
+        room_versions: RoomVersionsCapability {
+            default: conf.default_room_version.clone(),
+            available,
         },
-    })
+        change_password: ChangePasswordCapability {
+            enabled: change_password_enabled,
+        },
+        thirdparty_id_changes: ThirdPartyIdChangesCapability::new(false),
+        profile_fields: Some(ProfileFieldsCapability::new(true)),
+        account_moderation,
+        ..Default::default()
+    };
+    if conf.delayed_events.enable {
+        // MSC4140 limits capability, using the unstable-prefixed name.
+        capabilities.custom_capabilities.insert(
+            "org.matrix.msc4140.delayed_events".to_owned(),
+            json!({
+                "max_delay_ms": conf.delayed_events.max_delay_ms,
+                "max_scheduled": conf.delayed_events.max_scheduled,
+            }),
+        );
+    }
+    json_ok(CapabilitiesResBody { capabilities })
 }
 
 /// #GET /_matrix/client/versions
@@ -196,7 +211,7 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 /// unstable features in their stable releases
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
-    json_ok(supported_versions_body())
+    json_ok(supported_versions_body(config::get().delayed_events.enable))
 }
 
 /// Client-Server specification versions whose behavior has been reviewed for
@@ -209,33 +224,42 @@ const SUPPORTED_MATRIX_VERSIONS: &[&str] = &[
     "v1.10", "v1.11", "v1.12",
 ];
 
-fn supported_versions_body() -> VersionsResBody {
+/// Builds the `/versions` body.
+///
+/// `delayed_events` is passed in rather than read from the global config so this stays a pure
+/// function that unit tests can drive both ways.
+fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
+    let mut unstable_features = BTreeMap::from_iter([
+        ("org.matrix.e2e_cross_signing".to_owned(), true),
+        ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
+        ("uk.half-shot.msc2666.query_mutual_rooms".to_owned(), true), /* query mutual rooms (https://github.com/matrix-org/matrix-spec-proposals/pull/2666) */
+        ("org.matrix.msc2836".to_owned(), true), /* threading/threads (https://github.com/matrix-org/matrix-spec-proposals/pull/2836) */
+        ("org.matrix.msc2946".to_owned(), true), /* spaces/hierarchy summaries (https://github.com/matrix-org/matrix-spec-proposals/pull/2946) */
+        ("org.matrix.msc3026.busy_presence".to_owned(), true), /* busy presence status (https://github.com/matrix-org/matrix-spec-proposals/pull/3026) */
+        ("org.matrix.msc3827".to_owned(), true), /* filtering of /publicRooms by room type (https://github.com/matrix-org/matrix-spec-proposals/pull/3827) */
+        ("org.matrix.msc3952_intentional_mentions".to_owned(), true), /* intentional mentions (https://github.com/matrix-org/matrix-spec-proposals/pull/3952) */
+        ("org.matrix.msc3575".to_owned(), true), /* sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/3575/files#r1588877046) */
+        ("org.matrix.msc3916.stable".to_owned(), true), /* authenticated media (https://github.com/matrix-org/matrix-spec-proposals/pull/3916) */
+        ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
+        ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
+        ("uk.tcpip.msc4133.stable".to_owned(), true), // profile fields also use stable `/v3` routes
+        ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
+        ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
+        ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
+        ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
+    ]);
+
+    if delayed_events {
+        // delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140)
+        unstable_features.insert("org.matrix.msc4140".to_owned(), true);
+    }
+
     VersionsResBody {
         versions: SUPPORTED_MATRIX_VERSIONS
             .iter()
             .map(|version| (*version).to_owned())
             .collect(),
-        unstable_features: BTreeMap::from_iter([
-            ("org.matrix.e2e_cross_signing".to_owned(), true),
-            ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
-            ("uk.half-shot.msc2666.query_mutual_rooms".to_owned(), true), /* query mutual rooms (https://github.com/matrix-org/matrix-spec-proposals/pull/2666) */
-            ("org.matrix.msc2836".to_owned(), true), /* threading/threads (https://github.com/matrix-org/matrix-spec-proposals/pull/2836) */
-            ("org.matrix.msc2946".to_owned(), true), /* spaces/hierarchy summaries (https://github.com/matrix-org/matrix-spec-proposals/pull/2946) */
-            ("org.matrix.msc3026.busy_presence".to_owned(), true), /* busy presence status (https://github.com/matrix-org/matrix-spec-proposals/pull/3026) */
-            ("org.matrix.msc3827".to_owned(), true), /* filtering of /publicRooms by room type (https://github.com/matrix-org/matrix-spec-proposals/pull/3827) */
-            ("org.matrix.msc3952_intentional_mentions".to_owned(), true), /* intentional mentions (https://github.com/matrix-org/matrix-spec-proposals/pull/3952) */
-            ("org.matrix.msc3575".to_owned(), true), /* sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/3575/files#r1588877046) */
-            ("org.matrix.msc3916.stable".to_owned(), true), /* authenticated media (https://github.com/matrix-org/matrix-spec-proposals/pull/3916) */
-            ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
-            ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
-            ("uk.tcpip.msc4133.stable".to_owned(), true), /* the profile-field endpoints are
-                                                    * served on the stable `/v3` prefix
-                                                    * too */
-            ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
-            ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
-            ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
-            ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
-        ]),
+        unstable_features,
         server: Some(Server::new(
             "Palpo".to_owned(),
             crate::info::version().to_owned(),
@@ -251,7 +275,7 @@ mod supported_versions_tests {
 
     #[test]
     fn advertised_versions_are_explicitly_reviewed() {
-        let body = supported_versions_body();
+        let body = supported_versions_body(false);
 
         assert_eq!(
             body.versions,
@@ -265,7 +289,7 @@ mod supported_versions_tests {
 
     #[test]
     fn advertises_msc4133_profile_fields_on_the_stable_prefix() {
-        let body = supported_versions_body();
+        let body = supported_versions_body(false);
 
         assert_eq!(body.unstable_features.get("uk.tcpip.msc4133"), Some(&true));
         assert_eq!(
@@ -276,7 +300,7 @@ mod supported_versions_tests {
 
     #[test]
     fn includes_msc4383_server_metadata_and_feature_flag() {
-        let body = supported_versions_body();
+        let body = supported_versions_body(false);
         let server = body.server.as_ref().unwrap();
 
         assert_eq!(body.unstable_features.get("net.zemos.msc4383"), Some(&true));
@@ -287,6 +311,23 @@ mod supported_versions_tests {
             json!({ "name": "Palpo", "version": server.version })
         );
     }
+
+    /// MSC4140 is only advertised when delayed events are actually enabled.
+    #[test]
+    fn msc4140_flag_tracks_the_delayed_events_setting() {
+        assert_eq!(
+            supported_versions_body(false)
+                .unstable_features
+                .get("org.matrix.msc4140"),
+            None
+        );
+        assert_eq!(
+            supported_versions_body(true)
+                .unstable_features
+                .get("org.matrix.msc4140"),
+            Some(&true)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -294,15 +335,31 @@ mod router_tests {
     use salvo::http::{Method, Request};
     use salvo::routing::PathState;
 
-    use super::router;
+    use super::router_with_delayed_events;
 
     /// Resolve `path` against the client router without running any handler.
-    async fn is_routed(method: Method, path: &str) -> bool {
-        let router = router();
+    async fn is_routed_with_delayed_events(
+        method: Method,
+        path: &str,
+        delayed_events: bool,
+    ) -> bool {
+        let router = router_with_delayed_events(delayed_events);
         let mut req = Request::default();
         *req.method_mut() = method;
         let mut path_state = PathState::from_owned_path(path.to_owned());
         router.detect(&mut req, &mut path_state).await.is_some()
+    }
+
+    async fn is_routed(method: Method, path: &str) -> bool {
+        is_routed_with_delayed_events(method, path, false).await
+    }
+
+    #[tokio::test]
+    async fn delayed_event_routes_follow_config() {
+        let path = "/client/unstable/org.matrix.msc4140/delayed_events";
+
+        assert!(!is_routed_with_delayed_events(Method::GET, path, false).await);
+        assert!(is_routed_with_delayed_events(Method::GET, path, true).await);
     }
 
     #[tokio::test]
