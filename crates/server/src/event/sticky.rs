@@ -9,7 +9,8 @@
 //! [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel::result::Error as DieselError;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
@@ -17,6 +18,31 @@ use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::{PduEvent, STICKY_TTL_KEY};
 use crate::{AppResult, SnPduEvent};
+
+const STICKY_STREAM_LOCK_ID: i64 = 1_346_456_654;
+
+async fn lock_sticky_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
+        .bind::<diesel::sql_types::BigInt, _>(STICKY_STREAM_LOCK_ID)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Read the global stream position after every earlier sticky delivery update commits.
+pub async fn curr_sn_after_sticky_writes() -> AppResult<Seqnum> {
+    let curr_sn = connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_sticky_stream(conn).await?;
+            diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
+                .get_result::<Seqnum>(conn)
+                .await
+        })
+        .await?;
+
+    Ok(curr_sn)
+}
 
 /// A sticky event that is still within its sticky window.
 #[derive(Debug, Clone)]
@@ -79,16 +105,25 @@ pub async fn mark_deliverable(pdu: &PduEvent) -> AppResult<()> {
         return Ok(());
     }
 
-    let deliver_sn = crate::data::next_sn().await?;
-    let _sequence_guard = crate::queue_seqnum(deliver_sn);
-    diesel::update(
-        event_stickies::table
-            .filter(event_stickies::event_id.eq(&pdu.event_id))
-            .filter(event_stickies::deliver_sn.is_null()),
-    )
-    .set(event_stickies::deliver_sn.eq(deliver_sn))
-    .execute(&mut connect().await?)
-    .await?;
+    connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_sticky_stream(conn).await?;
+            let deliver_sn =
+                diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                    .get_result::<Seqnum>(conn)
+                    .await?;
+            diesel::update(
+                event_stickies::table
+                    .filter(event_stickies::event_id.eq(&pdu.event_id))
+                    .filter(event_stickies::deliver_sn.is_null()),
+            )
+            .set(event_stickies::deliver_sn.eq(deliver_sn))
+            .execute(conn)
+            .await?;
+            Ok(())
+        })
+        .await?;
     Ok(())
 }
 
