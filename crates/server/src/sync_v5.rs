@@ -330,7 +330,7 @@ pub async fn sync_events(
     // Periodically clean up expired connections
     maybe_cleanup_connections().await;
 
-    let curr_sn = data::user::device::curr_sn_after_inbox_writes().await?;
+    let curr_sn = data::user::device::curr_sn_after_inbox_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
 

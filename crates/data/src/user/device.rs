@@ -92,27 +92,39 @@ pub struct NewDbDeviceInbox {
     pub created_at: i64,
 }
 
-const INBOX_STREAM_LOCK_NAMESPACE: i32 = 1_346_456_656;
-const INBOX_STREAM_LOCK_ID: i32 = 3814;
+const INBOX_STREAM_LOCK_NAMESPACE: i64 = 1_346_456_656;
 
-// Serialize inbox sequence allocation with sync snapshots across every Palpo process.
+fn inbox_stream_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
+    // Length-prefix the user ID so opaque device IDs cannot make two pairs produce the
+    // same input string even if they contain punctuation used by Matrix identifiers.
+    format!("{}:{user_id}{device_id}", user_id.as_str().len())
+}
+
+// Serialize one inbox's sequence allocation with its sync snapshots across every Palpo process.
 // PostgreSQL sequences advance before the surrounding transaction commits, so readers must
 // take the same database-backed lock before publishing a cursor based on `occur_sn_seq`.
-async fn lock_inbox_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
-    diesel::sql_query("SELECT pg_advisory_xact_lock($1, $2)")
-        .bind::<diesel::sql_types::Integer, _>(INBOX_STREAM_LOCK_NAMESPACE)
-        .bind::<diesel::sql_types::Integer, _>(INBOX_STREAM_LOCK_ID)
+async fn lock_inbox_stream(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> Result<(), DieselError> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(inbox_stream_lock_key(user_id, device_id))
+        .bind::<diesel::sql_types::BigInt, _>(INBOX_STREAM_LOCK_NAMESPACE)
         .execute(conn)
         .await?;
     Ok(())
 }
 
-/// Read the global stream position after every earlier inbox write is committed.
-pub async fn curr_sn_after_inbox_writes() -> DataResult<Seqnum> {
+/// Read the global stream position after every earlier write to this inbox is committed.
+pub async fn curr_sn_after_inbox_writes(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Seqnum> {
     let curr_sn = connect()
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
-            lock_inbox_stream(conn).await?;
+            lock_inbox_stream(conn, user_id, device_id).await?;
             diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
                 .get_result::<Seqnum>(conn)
                 .await
@@ -392,7 +404,7 @@ pub async fn to_device_events_from(
     let mut rows = connect()
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
-            lock_inbox_stream(conn).await?;
+            lock_inbox_stream(conn, user_id, device_id).await?;
 
             let mut query = device_inboxes::table
                 .filter(device_inboxes::user_id.eq(user_id))
@@ -441,7 +453,7 @@ pub async fn add_to_device_event(
     connect()
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
-            lock_inbox_stream(conn).await?;
+            lock_inbox_stream(conn, target_user_id, target_device_id).await?;
             diesel::insert_into(device_inboxes::table)
                 .values(NewDbDeviceInbox {
                     user_id: target_user_id.to_owned(),
@@ -495,7 +507,7 @@ pub async fn remove_to_device_events_unless_live(
     connect()
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
-            lock_inbox_stream(conn).await?;
+            lock_inbox_stream(conn, user_id, device_id).await?;
             diesel::sql_query("LOCK TABLE user_devices IN SHARE ROW EXCLUSIVE MODE")
                 .execute(conn)
                 .await?;
@@ -530,4 +542,23 @@ pub async fn remove_all_user_to_device_events(user_id: &UserId) -> DataResult<()
         .execute(&mut connect().await?)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod inbox_stream_lock_tests {
+    use super::inbox_stream_lock_key;
+    use crate::core::{OwnedDeviceId, owned_user_id};
+
+    #[test]
+    fn lock_keys_are_scoped_to_the_exact_inbox() {
+        let user = owned_user_id!("@alice:example.org");
+        let other_user = owned_user_id!("@bob:example.org");
+        let device = OwnedDeviceId::from("DEVICE");
+        let other_device = OwnedDeviceId::from("OTHER");
+
+        let key = inbox_stream_lock_key(&user, &device);
+        assert_eq!(key, inbox_stream_lock_key(&user, &device));
+        assert_ne!(key, inbox_stream_lock_key(&user, &other_device));
+        assert_ne!(key, inbox_stream_lock_key(&other_user, &device));
+    }
 }
