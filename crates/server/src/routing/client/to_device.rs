@@ -204,7 +204,7 @@ async fn collect_dehydrated_events(
     }
 
     let since_sn = parse_batch_token(from)?;
-    let events = data::user::device::to_device_events_from(
+    let (events, has_more) = data::user::device::to_device_events_from(
         user_id,
         device_id,
         since_sn,
@@ -216,15 +216,9 @@ async fn collect_dehydrated_events(
     // the number of events returned would be wrong when the inbox happens to hold exactly
     // `limit` more.
     let position = events.last().map(|(occur_sn, _)| *occur_sn);
-    let next_batch = match position {
-        Some(last_sn)
-            if data::user::device::has_to_device_events_after(user_id, device_id, last_sn)
-                .await? =>
-        {
-            Some(last_sn.to_string())
-        }
-        _ => None,
-    };
+    let next_batch = position
+        .filter(|_| has_more)
+        .map(|last_sn| last_sn.to_string());
 
     Ok((
         DehydratedDeviceEventsResBody {

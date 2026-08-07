@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::client::device::Device;
 use crate::core::events::AnyToDeviceEvent;
@@ -90,6 +90,36 @@ pub struct NewDbDeviceInbox {
     pub device_id: OwnedDeviceId,
     pub json_data: JsonValue,
     pub created_at: i64,
+}
+
+const INBOX_STREAM_LOCK_NAMESPACE: i32 = 1_346_456_656;
+const INBOX_STREAM_LOCK_ID: i32 = 3814;
+
+// Serialize inbox sequence allocation with sync snapshots across every Palpo process.
+// PostgreSQL sequences advance before the surrounding transaction commits, so readers must
+// take the same database-backed lock before publishing a cursor based on `occur_sn_seq`.
+async fn lock_inbox_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind::<diesel::sql_types::Integer, _>(INBOX_STREAM_LOCK_NAMESPACE)
+        .bind::<diesel::sql_types::Integer, _>(INBOX_STREAM_LOCK_ID)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Read the global stream position after every earlier inbox write is committed.
+pub async fn curr_sn_after_inbox_writes() -> DataResult<Seqnum> {
+    let curr_sn = connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn).await?;
+            diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
+                .get_result::<Seqnum>(conn)
+                .await
+        })
+        .await?;
+
+    Ok(curr_sn)
 }
 
 pub async fn create_device(
@@ -320,12 +350,22 @@ pub async fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> Da
 pub async fn get_to_device_events(
     user_id: &UserId,
     device_id: &DeviceId,
-    _since_sn: Option<Seqnum>,
-    _until_sn: Option<Seqnum>,
+    since_sn: Option<Seqnum>,
+    until_sn: Option<Seqnum>,
 ) -> DataResult<Vec<RawJson<AnyToDeviceEvent>>> {
-    device_inboxes::table
+    let mut query = device_inboxes::table
         .filter(device_inboxes::user_id.eq(user_id))
         .filter(device_inboxes::device_id.eq(device_id))
+        .into_boxed();
+    if let Some(since_sn) = since_sn {
+        query = query.filter(device_inboxes::occur_sn.ge(since_sn));
+    }
+    if let Some(until_sn) = until_sn {
+        query = query.filter(device_inboxes::occur_sn.lt(until_sn));
+    }
+
+    query
+        .order(device_inboxes::occur_sn.asc())
         .load::<DbDeviceInbox>(&mut connect().await?)
         .await?
         .into_iter()
@@ -347,43 +387,41 @@ pub async fn to_device_events_from(
     device_id: &DeviceId,
     since_sn: Option<Seqnum>,
     limit: usize,
-) -> DataResult<Vec<(Seqnum, RawJson<AnyToDeviceEvent>)>> {
-    let mut query = device_inboxes::table
-        .filter(device_inboxes::user_id.eq(user_id))
-        .filter(device_inboxes::device_id.eq(device_id))
-        .into_boxed();
-    if let Some(since_sn) = since_sn {
-        query = query.filter(device_inboxes::occur_sn.gt(since_sn));
-    }
-
-    query
-        .order(device_inboxes::occur_sn.asc())
-        .limit(limit as i64)
-        .load::<DbDeviceInbox>(&mut connect().await?)
+) -> DataResult<(Vec<(Seqnum, RawJson<AnyToDeviceEvent>)>, bool)> {
+    let fetch_limit = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut rows = connect()
         .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn).await?;
+
+            let mut query = device_inboxes::table
+                .filter(device_inboxes::user_id.eq(user_id))
+                .filter(device_inboxes::device_id.eq(device_id))
+                .into_boxed();
+            if let Some(since_sn) = since_sn {
+                query = query.filter(device_inboxes::occur_sn.gt(since_sn));
+            }
+
+            query
+                .order(device_inboxes::occur_sn.asc())
+                .limit(fetch_limit)
+                .load::<DbDeviceInbox>(conn)
+                .await
+        })
+        .await?;
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+
+    let events = rows
         .into_iter()
         .map(|event| {
             serde_json::from_value(event.json_data)
                 .map(|json| (event.occur_sn, json))
                 .map_err(|_| DataError::public("Invalid JSON in device inbox"))
         })
-        .collect()
-}
+        .collect::<DataResult<Vec<_>>>()?;
 
-/// Whether the device has any to-device message after `since_sn`.
-///
-/// Used to decide whether a batch is the last one, which is what tells a rehydrating client
-/// it can stop calling and delete the dehydrated device.
-pub async fn has_to_device_events_after(
-    user_id: &UserId,
-    device_id: &DeviceId,
-    since_sn: Seqnum,
-) -> DataResult<bool> {
-    let query = device_inboxes::table
-        .filter(device_inboxes::user_id.eq(user_id))
-        .filter(device_inboxes::device_id.eq(device_id))
-        .filter(device_inboxes::occur_sn.gt(since_sn));
-    crate::diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    Ok((events, has_more))
 }
 
 pub async fn add_to_device_event(
@@ -400,14 +438,20 @@ pub async fn add_to_device_event(
 
     let json_data = serde_json::to_value(&json)?;
 
-    diesel::insert_into(device_inboxes::table)
-        .values(NewDbDeviceInbox {
-            user_id: target_user_id.to_owned(),
-            device_id: target_device_id.to_owned(),
-            json_data,
-            created_at: UnixMillis::now().get() as i64,
+    connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn).await?;
+            diesel::insert_into(device_inboxes::table)
+                .values(NewDbDeviceInbox {
+                    user_id: target_user_id.to_owned(),
+                    device_id: target_device_id.to_owned(),
+                    json_data,
+                    created_at: UnixMillis::now().get() as i64,
+                })
+                .execute(conn)
+                .await
         })
-        .execute(&mut connect().await?)
         .await?;
 
     Ok(())
@@ -437,6 +481,47 @@ pub async fn remove_all_to_device_events(user_id: &UserId, device_id: &DeviceId)
     )
     .execute(&mut connect().await?)
     .await?;
+    Ok(())
+}
+
+/// Remove an abandoned dehydrated inbox unless that ID belongs to a live device.
+///
+/// The table lock makes the existence check and purge atomic with every path that inserts a
+/// `user_devices` row, including callers that do not use `create_device`.
+pub async fn remove_to_device_events_unless_live(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<()> {
+    connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn).await?;
+            diesel::sql_query("LOCK TABLE user_devices IN SHARE ROW EXCLUSIVE MODE")
+                .execute(conn)
+                .await?;
+
+            let is_live = diesel::select(diesel::dsl::exists(
+                user_devices::table
+                    .filter(user_devices::user_id.eq(user_id))
+                    .filter(user_devices::device_id.eq(device_id)),
+            ))
+            .get_result::<bool>(conn)
+            .await?;
+
+            if !is_live {
+                diesel::delete(
+                    device_inboxes::table
+                        .filter(device_inboxes::user_id.eq(user_id))
+                        .filter(device_inboxes::device_id.eq(device_id)),
+                )
+                .execute(conn)
+                .await?;
+            }
+
+            Ok(())
+        })
+        .await?;
+
     Ok(())
 }
 

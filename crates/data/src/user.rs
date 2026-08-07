@@ -498,9 +498,7 @@ pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
         // Unless a live device now has the same ID -- logging in with an explicit device
         // ID does not consult the dehydrated table, so the two can collide, and the
         // inbox then belongs to the live device.
-        if !device::is_device_exists(user_id, &device_id).await? {
-            device::remove_all_to_device_events(user_id, &device_id).await?;
-        }
+        device::remove_to_device_events_unless_live(user_id, &device_id).await?;
     }
 
     diesel::delete(
@@ -548,10 +546,8 @@ pub async fn upsert_dehydrated_device(
         // Replacing the dehydrated device abandons the old one; its undelivered messages
         // can no longer be decrypted by anything and would leak. Unless the ID is also a
         // live device's, in which case the inbox is that device's, not the abandoned one's.
-        if current_device_id != device_id
-            && !device::is_device_exists(user_id, &current_device_id).await?
-        {
-            device::remove_all_to_device_events(user_id, &current_device_id).await?;
+        if current_device_id != device_id {
+            device::remove_to_device_events_unless_live(user_id, &current_device_id).await?;
         }
     }
 
