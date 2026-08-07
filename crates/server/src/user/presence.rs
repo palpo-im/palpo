@@ -88,6 +88,12 @@ pub async fn set_presence(
                 last_active_ago: 0,
                 currently_active: presence_state == PresenceState::Online,
                 presence: presence_state,
+                #[cfg(feature = "unstable-msc4495")]
+                recipients: Default::default(),
+                #[cfg(feature = "unstable-msc4495")]
+                stream_id: None,
+                #[cfg(feature = "unstable-msc4495")]
+                prev_id: None,
             }],
         });
 

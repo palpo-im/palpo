@@ -48,6 +48,28 @@ pub fn authed_router() -> Router {
         )
 }
 
+/// MSC4133 unstable-prefixed profile reads.
+///
+/// Clients built on matrix-js-sdk only use the stable `/v3` profile-field
+/// endpoints once the server advertises `uk.tcpip.msc4133.stable`; otherwise
+/// they fall back to `/_matrix/client/unstable/uk.tcpip.msc4133/profile/...`.
+/// Serving both keeps older clients working.
+pub(super) fn msc4133_public_router() -> Router {
+    Router::with_path("uk.tcpip.msc4133/profile/{user_id}")
+        .get(get_profile)
+        .push(Router::with_path("{field}").get(get_profile_field))
+}
+
+/// MSC4133 unstable-prefixed profile writes.
+///
+/// Pushed into an already authenticated and rate-limited router, so no hoops
+/// are attached here.
+pub(super) fn msc4133_authed_router() -> Router {
+    Router::with_path("uk.tcpip.msc4133/profile/{user_id}/{field}")
+        .put(set_profile_field)
+        .delete(delete_profile_field)
+}
+
 #[derive(ToSchema, Serialize, Deserialize, Debug, Default)]
 struct ProfileFieldBody {
     #[serde(flatten)]
