@@ -185,7 +185,15 @@ pub(crate) async fn resolve_state_at_incoming(
             continue;
         }
 
-        if let Ok(frame_id) = state::get_pdu_frame_id(prev_event_id).await {
+        let frame_id = match state::get_pdu_before_frame_id(prev_event_id).await {
+            Ok(frame_id) => Some(frame_id),
+            Err(e) if e.is_not_found() && prev_event.state_key.is_none() => {
+                state::get_pdu_frame_id(prev_event_id).await.ok()
+            }
+            Err(e) if e.is_not_found() => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(frame_id) = frame_id {
             extremity_state_hashes.insert(frame_id, prev_event);
         } else {
             // Outlier (not yet promoted to a timeline event) — treat as if

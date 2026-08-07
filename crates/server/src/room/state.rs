@@ -32,7 +32,7 @@ use crate::data::connect;
 pub use crate::data::room::DbRoomStateDelta;
 use crate::data::room::{NewDbEventMissing, NewDbTimelineGap};
 use crate::data::schema::*;
-use crate::event::{PduEvent, update_frame_id, update_frame_id_by_sn};
+use crate::event::{PduEvent, update_before_frame_id, update_frame_id, update_frame_id_by_sn};
 use crate::room::timeline;
 use crate::{
     AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, membership, room, sending, utils,
@@ -139,6 +139,7 @@ pub async fn set_event_state(
     let hash_data = utils::hash_keys(state_ids_compressed.iter().map(|s| &s[..]));
     if let Ok(frame_id) = get_frame_id(room_id, &hash_data).await {
         update_frame_id(event_id, frame_id).await?;
+        update_before_frame_id(event_id, frame_id).await?;
         Ok(frame_id)
     } else {
         let frame_id = ensure_frame(room_id, hash_data).await?;
@@ -166,6 +167,7 @@ pub async fn set_event_state(
         };
 
         update_frame_id(event_id, frame_id).await?;
+        update_before_frame_id(event_id, frame_id).await?;
         calc_and_save_state_delta(
             room_id,
             frame_id,
@@ -185,14 +187,28 @@ pub async fn set_event_state(
 #[tracing::instrument(skip(new_pdu))]
 pub async fn append_to_state(new_pdu: &SnPduEvent) -> AppResult<i64> {
     let prev_frame_id = get_room_frame_id(&new_pdu.room_id, None).await.ok();
+    let states_parents = if let Some(prev_frame_id) = prev_frame_id {
+        load_frame_info(prev_frame_id).await?
+    } else {
+        Vec::new()
+    };
+    let state_before = states_parents
+        .last()
+        .map(|info| Arc::clone(&info.full_state))
+        .unwrap_or_default();
+
+    // `frame_id` is allowed to follow the room's resolved state for sync-delta
+    // queries, but visibility checks need a snapshot that future state changes can
+    // never rewrite. Record that immutable snapshot before applying this event.
+    set_event_state(
+        &new_pdu.event_id,
+        new_pdu.event_sn,
+        &new_pdu.room_id,
+        state_before,
+    )
+    .await?;
 
     if let Some(state_key) = &new_pdu.state_key {
-        let states_parents = if let Some(prev_frame_id) = prev_frame_id {
-            load_frame_info(prev_frame_id).await?
-        } else {
-            Vec::new()
-        };
-
         let field_id = ensure_field(&new_pdu.event_ty.to_string().into(), state_key)
             .await?
             .id;
@@ -905,8 +921,15 @@ pub async fn server_can_see_event(
     if pdu.room_id != room_id {
         return Ok(false);
     }
-    let frame_id = match get_pdu_frame_id(event_id).await {
+    let frame_id = match get_pdu_before_frame_id(event_id).await {
         Ok(frame_id) => frame_id,
+        Err(e) if e.is_not_found() && pdu.state_key.is_none() => {
+            match get_pdu_frame_id(event_id).await {
+                Ok(frame_id) => frame_id,
+                Err(e) if e.is_not_found() => return Ok(false),
+                Err(e) => return Err(e),
+            }
+        }
         Err(e) if e.is_not_found() => return Ok(false),
         Err(e) => return Err(e),
     };

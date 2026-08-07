@@ -85,8 +85,19 @@ impl SnPduEvent {
             return Ok(true);
         }
 
-        let frame_id = match state::get_pdu_frame_id(&self.event_id).await {
+        let frame_id = match state::get_pdu_before_frame_id(&self.event_id).await {
             Ok(frame_id) => frame_id,
+            // Non-state event frames have always been immutable because `save_state`
+            // only rewrites events present in the state map. They are a safe fallback
+            // for data written before `before_frame_id` existed. Legacy state events
+            // deliberately fail closed instead of risking future-state disclosure.
+            Err(e) if e.is_not_found() && self.state_key.is_none() => {
+                match state::get_pdu_frame_id(&self.event_id).await {
+                    Ok(frame_id) => frame_id,
+                    Err(e) if e.is_not_found() => return Ok(false),
+                    Err(e) => return Err(e),
+                }
+            }
             Err(e) if e.is_not_found() => return Ok(false),
             Err(e) => return Err(e),
         };
