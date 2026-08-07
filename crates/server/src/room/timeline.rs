@@ -870,7 +870,7 @@ pub async fn build_and_append_pdu(
 /// Removes an event that was persisted as an outlier but will never be appended.
 ///
 /// Best-effort: failing to clean up must not mask the reason the event was rejected.
-async fn discard_unsent_event(event_id: &EventId) {
+pub(crate) async fn discard_unsent_event(event_id: &EventId) {
     let Ok(mut conn) = connect().await else {
         return;
     };

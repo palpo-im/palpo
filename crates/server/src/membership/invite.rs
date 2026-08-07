@@ -57,7 +57,15 @@ pub async fn invite_user(
             // otherwise a refused invite is still sent, and a policy-aware invitee rejects
             // an unsigned event we cannot take back.
             let version_rules = crate::room::get_version_rules(&room_version)?;
-            crate::room::policy::check_event(room_id, &mut pdu_json, &version_rules).await?;
+            if let Err(e) =
+                crate::room::policy::check_event(room_id, &mut pdu_json, &version_rules).await
+            {
+                // `hash_sign_save` has already persisted this as an outlier. A refused
+                // invite is never sent or appended, so remove that temporary record just
+                // like the normal local-send path does on a policy refusal.
+                timeline::discard_unsent_event(&pdu.event_id).await;
+                return Err(e);
+            }
             crate::room::timeline::replace_pdu(&pdu.event_id, &pdu_json).await?;
             drop(state_lock);
 
