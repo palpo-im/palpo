@@ -103,7 +103,7 @@ pub(crate) async fn process_incoming_pdu(
         handler::acl_check(sender.server_name(), room_id).await?;
     }
     // 1. Skip the PDU if we already have it as a timeline event
-    if state::get_pdu_frame_id(event_id).await.is_ok() {
+    if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
         return Ok(());
     }
 
@@ -179,7 +179,7 @@ pub(crate) async fn process_pulled_pdu(
     }
 
     // 1. Skip the PDU if we already have it as a timeline event
-    if state::get_pdu_frame_id(event_id).await.is_ok() {
+    if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
         return Ok(());
     }
 
@@ -553,9 +553,8 @@ pub async fn process_to_timeline_pdu(
             // Persist the exact event-time state while this PDU is still an outlier.
             // `append_pdu` makes it queryable, so doing this afterwards would expose
             // a provisional current-room frame to concurrent visibility checks.
-            state::set_event_state(
+            state::set_event_state_before(
                 &incoming_pdu.event_id,
-                incoming_pdu.event_sn,
                 &incoming_pdu.room_id,
                 Arc::clone(&compressed_state_ids),
             )
@@ -653,9 +652,8 @@ pub async fn process_to_timeline_pdu(
     // Store the resolved state before the event is promoted out of outlier storage.
     // This prevents visibility readers from ever observing the room's later resolved
     // state as a temporary event-time snapshot.
-    state::set_event_state(
+    state::set_event_state_before(
         &incoming_pdu.event_id,
-        incoming_pdu.event_sn,
         &incoming_pdu.room_id,
         Arc::clone(&compressed_state_ids),
     )

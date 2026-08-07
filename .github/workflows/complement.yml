@@ -64,7 +64,7 @@ jobs:
           cd /tmp/complement
           COMPLEMENT_BASE_IMAGE=complement-palpo \
             COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
-            go test -p=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m \
+            go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m \
             ./tests/csapi \
             ./tests \
             ./tests/msc3930 \

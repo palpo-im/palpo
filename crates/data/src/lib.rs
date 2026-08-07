@@ -120,18 +120,49 @@ mod migration_tests {
     use super::MIGRATIONS;
 
     #[test]
-    fn concurrent_membership_indexes_run_outside_a_transaction() {
-        let migration = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
-            .expect("embedded migrations should be readable")
-            .into_iter()
-            .find(|migration| {
-                migration.name().to_string() == "2026-08-07-000001_membership_event_lookup_indexes"
-            })
-            .expect("membership lookup migration should be embedded");
+    fn concurrent_membership_indexes_run_as_single_statement_migrations() {
+        let migrations = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
+            .expect("embedded migrations should be readable");
 
-        assert!(
-            !migration.metadata().run_in_transaction(),
-            "CREATE INDEX CONCURRENTLY cannot run inside a transaction"
-        );
+        for (name, up_sql, down_sql) in [
+            (
+                "2026-08-07-000001_membership_event_lookup_indexes",
+                include_str!(
+                    "../migrations/2026-08-07-000001_membership_event_lookup_indexes/up.sql"
+                ),
+                include_str!(
+                    "../migrations/2026-08-07-000001_membership_event_lookup_indexes/down.sql"
+                ),
+            ),
+            (
+                "2026-08-07-000003_membership_server_event_lookup_index",
+                include_str!(
+                    "../migrations/2026-08-07-000003_membership_server_event_lookup_index/up.sql"
+                ),
+                include_str!(
+                    "../migrations/2026-08-07-000003_membership_server_event_lookup_index/down.sql"
+                ),
+            ),
+        ] {
+            let migration = migrations
+                .iter()
+                .find(|migration| migration.name().to_string() == name)
+                .unwrap_or_else(|| panic!("{name} should be embedded"));
+
+            assert!(
+                !migration.metadata().run_in_transaction(),
+                "CREATE INDEX CONCURRENTLY cannot run inside a transaction"
+            );
+            assert_eq!(
+                up_sql.matches(';').count(),
+                1,
+                "concurrent migration batches must contain one statement"
+            );
+            assert_eq!(
+                down_sql.matches(';').count(),
+                1,
+                "concurrent migration rollback batches must contain one statement"
+            );
+        }
     }
 }

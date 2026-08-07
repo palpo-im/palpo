@@ -129,16 +129,14 @@ pub async fn set_room_state(room_id: &RoomId, frame_id: i64) -> AppResult<()> {
 ///
 /// This adds all current state events (not including the incoming event).
 #[tracing::instrument(skip(state_ids_compressed), level = "debug")]
-pub async fn set_event_state(
+pub async fn set_event_state_before(
     event_id: &EventId,
-    event_sn: i64,
     room_id: &RoomId,
     state_ids_compressed: Arc<CompressedState>,
 ) -> AppResult<i64> {
     let prev_frame_id = get_room_frame_id(room_id, None).await.ok();
     let hash_data = utils::hash_keys(state_ids_compressed.iter().map(|s| &s[..]));
     if let Ok(frame_id) = get_frame_id(room_id, &hash_data).await {
-        update_frame_id(event_id, frame_id).await?;
         update_before_frame_id(event_id, frame_id).await?;
         Ok(frame_id)
     } else {
@@ -166,7 +164,6 @@ pub async fn set_event_state(
             (state_ids_compressed, Arc::new(CompressedState::new()))
         };
 
-        update_frame_id(event_id, frame_id).await?;
         update_before_frame_id(event_id, frame_id).await?;
         calc_and_save_state_delta(
             room_id,
@@ -203,13 +200,7 @@ pub async fn append_to_state(new_pdu: &SnPduEvent) -> AppResult<i64> {
     match get_pdu_before_frame_id(&new_pdu.event_id).await {
         Ok(_) => {}
         Err(e) if e.is_not_found() => {
-            set_event_state(
-                &new_pdu.event_id,
-                new_pdu.event_sn,
-                &new_pdu.room_id,
-                state_before,
-            )
-            .await?;
+            set_event_state_before(&new_pdu.event_id, &new_pdu.room_id, state_before).await?;
         }
         Err(e) => return Err(e),
     }
