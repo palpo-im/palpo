@@ -119,7 +119,7 @@ impl SnPduEvent {
                 .as_ref()
                 .is_some_and(state::uses_shared_history_visibility);
         let joined_after = uses_shared_visibility
-            && room::user::joined_after(user_id, &self.room_id, self.depth).await?;
+            && room::user::joined_after(user_id, &self.room_id, &self.event_id, self.depth).await?;
         let state::StateBefore::Resolved(membership) =
             state::user_membership_before(self, frame_id, user_id).await?
         else {

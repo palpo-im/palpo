@@ -178,45 +178,102 @@ pub async fn join_count(room_id: &RoomId) -> AppResult<i64> {
     Ok(count)
 }
 
-pub async fn joined_after(user_id: &UserId, room_id: &RoomId, event_depth: u64) -> AppResult<bool> {
-    let query = events::table
-        .inner_join(event_datas::table.on(event_datas::event_id.eq(events::id)))
-        .filter(events::room_id.eq(room_id))
-        .filter(events::ty.eq("m.room.member"))
-        .filter(events::state_key.eq(user_id.as_str()))
-        .filter(events::depth.gt(utils::u64_to_i64(event_depth)))
-        .filter(events::is_outlier.eq(false))
-        .filter(events::soft_failed.eq(false))
-        .filter(events::is_rejected.eq(false))
-        .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
-            "event_datas.json_data -> 'content' ->> 'membership' = 'join'",
-        ));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+#[derive(QueryableByName)]
+struct CausalJoinExists {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    exists: bool,
+}
+
+pub async fn joined_after(
+    user_id: &UserId,
+    room_id: &RoomId,
+    event_id: &EventId,
+    event_depth: u64,
+) -> AppResult<bool> {
+    let result = diesel::sql_query(
+        r#"
+        WITH RECURSIVE candidate_joins AS (
+            SELECT events.id
+            FROM events
+            INNER JOIN event_datas ON event_datas.event_id = events.id
+            WHERE events.room_id = $1
+              AND events.ty = 'm.room.member'
+              AND events.state_key = $2
+              AND events.depth > $3
+              AND events.is_outlier = FALSE
+              AND events.soft_failed = FALSE
+              AND events.is_rejected = FALSE
+              AND event_datas.json_data -> 'content' ->> 'membership' = 'join'
+        ), ancestors(event_id) AS (
+            SELECT event_edges.prev_id
+            FROM event_edges
+            INNER JOIN candidate_joins ON candidate_joins.id = event_edges.event_id
+            WHERE event_edges.room_id = $1
+            UNION
+            SELECT event_edges.prev_id
+            FROM event_edges
+            INNER JOIN ancestors ON ancestors.event_id = event_edges.event_id
+            WHERE event_edges.room_id = $1
+        )
+        SELECT EXISTS (
+            SELECT 1 FROM ancestors WHERE event_id = $4
+        ) AS exists
+        "#,
+    )
+    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(utils::u64_to_i64(event_depth))
+    .bind::<diesel::sql_types::Text, _>(event_id.as_str())
+    .get_result::<CausalJoinExists>(&mut connect().await?)
+    .await?;
+
+    Ok(result.exists)
 }
 
 pub async fn server_user_joined_after(
     server_name: &ServerName,
     room_id: &RoomId,
+    event_id: &EventId,
     event_depth: u64,
 ) -> AppResult<bool> {
-    let query = events::table
-        .inner_join(event_datas::table.on(event_datas::event_id.eq(events::id)))
-        .filter(events::room_id.eq(room_id))
-        .filter(events::ty.eq("m.room.member"))
-        .filter(
-            diesel::dsl::sql::<diesel::sql_types::Bool>(
-                "substring(events.state_key from position(':' in events.state_key) + 1) = ",
-            )
-            .bind::<diesel::sql_types::Text, _>(server_name.as_str()),
+    let result = diesel::sql_query(
+        r#"
+        WITH RECURSIVE candidate_joins AS (
+            SELECT events.id
+            FROM events
+            INNER JOIN event_datas ON event_datas.event_id = events.id
+            WHERE events.room_id = $1
+              AND events.ty = 'm.room.member'
+              AND substring(events.state_key from position(':' in events.state_key) + 1) = $2
+              AND events.depth > $3
+              AND events.is_outlier = FALSE
+              AND events.soft_failed = FALSE
+              AND events.is_rejected = FALSE
+              AND event_datas.json_data -> 'content' ->> 'membership' = 'join'
+        ), ancestors(event_id) AS (
+            SELECT event_edges.prev_id
+            FROM event_edges
+            INNER JOIN candidate_joins ON candidate_joins.id = event_edges.event_id
+            WHERE event_edges.room_id = $1
+            UNION
+            SELECT event_edges.prev_id
+            FROM event_edges
+            INNER JOIN ancestors ON ancestors.event_id = event_edges.event_id
+            WHERE event_edges.room_id = $1
         )
-        .filter(events::depth.gt(utils::u64_to_i64(event_depth)))
-        .filter(events::is_outlier.eq(false))
-        .filter(events::soft_failed.eq(false))
-        .filter(events::is_rejected.eq(false))
-        .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
-            "event_datas.json_data -> 'content' ->> 'membership' = 'join'",
-        ));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+        SELECT EXISTS (
+            SELECT 1 FROM ancestors WHERE event_id = $4
+        ) AS exists
+        "#,
+    )
+    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(server_name.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(utils::u64_to_i64(event_depth))
+    .bind::<diesel::sql_types::Text, _>(event_id.as_str())
+    .get_result::<CausalJoinExists>(&mut connect().await?)
+    .await?;
+
+    Ok(result.exists)
 }
 
 pub async fn knock_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {

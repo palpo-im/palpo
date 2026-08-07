@@ -931,7 +931,7 @@ pub async fn server_can_see_event(
             .as_ref()
             .is_some_and(uses_shared_history_visibility);
     let joined_after = uses_shared_visibility
-        && room::user::server_user_joined_after(origin, room_id, pdu.depth).await?;
+        && room::user::server_user_joined_after(origin, room_id, &pdu.event_id, pdu.depth).await?;
     let StateBefore::Resolved(memberships) = server_memberships_at(&pdu, frame_id, origin).await?
     else {
         return Ok(false);
