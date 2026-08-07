@@ -150,6 +150,17 @@ struct PendingProfileUsers {
 }
 
 #[cfg(feature = "unstable-msc4262")]
+fn apply_sticky_profiles_config(
+    current: &mut sync_events::v5::ProfilesConfig,
+    cached: &sync_events::v5::ProfilesConfig,
+) {
+    some_or_sticky(&mut current.enabled, cached.enabled);
+    some_or_sticky(&mut current.lists, cached.lists.clone());
+    some_or_sticky(&mut current.rooms, cached.rooms.clone());
+    some_or_sticky(&mut current.fields, cached.fields.clone());
+}
+
+#[cfg(feature = "unstable-msc4262")]
 fn profile_snapshot_config_changed(
     previous: &sync_events::v5::ProfilesConfig,
     current: &sync_events::v5::ProfilesConfig,
@@ -1595,17 +1606,9 @@ pub async fn update_sync_request_with_cache(
         #[cfg(feature = "unstable-msc4262")]
         {
             let previous_profiles = cached.extensions.profiles.clone();
-            some_or_sticky(
-                &mut req_body.extensions.profiles.enabled,
-                cached.extensions.profiles.enabled,
-            );
-            some_or_sticky(
-                &mut req_body.extensions.profiles.lists,
-                cached.extensions.profiles.lists.clone(),
-            );
-            some_or_sticky(
-                &mut req_body.extensions.profiles.rooms,
-                cached.extensions.profiles.rooms.clone(),
+            apply_sticky_profiles_config(
+                &mut req_body.extensions.profiles,
+                &cached.extensions.profiles,
             );
             if profile_snapshot_config_changed(&previous_profiles, &req_body.extensions.profiles) {
                 // Re-enabling must cover users who joined or changed profile while the
@@ -1822,7 +1825,7 @@ mod tests {
     #[cfg(feature = "unstable-msc4262")]
     use super::{
         PendingProfileUsers, SlidingSyncCache, acknowledge_profile_updates,
-        profile_snapshot_config_changed,
+        apply_sticky_profiles_config, profile_snapshot_config_changed,
     };
     #[cfg(feature = "unstable-msc4262")]
     use crate::core::client::sync_events::v5::ProfilesConfig;
@@ -1922,6 +1925,29 @@ mod tests {
             ..Default::default()
         };
         assert!(profile_snapshot_config_changed(&enabled, &filtered));
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_fields_are_sticky_until_explicitly_replaced() {
+        use crate::core::profile::ProfileFieldName;
+
+        let cached = ProfilesConfig {
+            enabled: Some(true),
+            fields: Some(vec![ProfileFieldName::DisplayName]),
+            ..Default::default()
+        };
+        let mut omitted = ProfilesConfig::default();
+        apply_sticky_profiles_config(&mut omitted, &cached);
+        assert_eq!(omitted, cached);
+
+        let mut replaced = ProfilesConfig {
+            fields: Some(vec![ProfileFieldName::AvatarUrl]),
+            ..Default::default()
+        };
+        apply_sticky_profiles_config(&mut replaced, &cached);
+        assert_eq!(replaced.enabled, Some(true));
+        assert_eq!(replaced.fields, Some(vec![ProfileFieldName::AvatarUrl]));
     }
 
     /// Default filter pipeline (no filters set) returns all rooms — this is

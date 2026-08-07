@@ -495,7 +495,7 @@ pub async fn append_pdu(
                 // other profile update, instead of remote members going stale forever.
                 #[cfg(feature = "unstable-msc4262")]
                 if crate::IsRemoteOrLocal::is_remote(&target_user_id) {
-                    record_remote_profile_change(pdu, &target_user_id).await;
+                    record_remote_profile_change(pdu, &target_user_id).await?;
                 }
 
                 // Invalidate appservice room cache when membership changes
@@ -923,20 +923,20 @@ fn should_record_remote_profile(membership: &MembershipState) -> bool {
 }
 
 #[cfg(feature = "unstable-msc4262")]
-async fn record_remote_profile_change(pdu: &SnPduEvent, user_id: &UserId) {
+async fn record_remote_profile_change(pdu: &SnPduEvent, user_id: &UserId) -> AppResult<()> {
     use crate::core::events::room::member::RoomMemberEventContent;
 
     let Ok(content) = pdu.get_content::<RoomMemberEventContent>() else {
-        return;
+        return Ok(());
     };
     // Leave/ban events and other membership transitions routinely omit profile fields and
     // must not clear the remote user's profile. A join event, however, carries the current
     // member profile: an omitted optional field means that field is no longer set.
     if !should_record_remote_profile(&content.membership) {
-        return;
+        return Ok(());
     }
 
-    let previous = data::user::get_profile(user_id, None).await.ok().flatten();
+    let previous = data::user::get_profile(user_id, None).await?;
     let display_name_changed =
         previous.as_ref().and_then(|p| p.display_name.clone()) != content.display_name;
     let avatar_changed = previous
@@ -949,12 +949,10 @@ async fn record_remote_profile_change(pdu: &SnPduEvent, user_id: &UserId) {
     let display_name = display_name_changed.then_some(content.display_name.as_deref());
     let avatar_url = avatar_changed.then_some(content.avatar_url.as_deref());
     let blurhash = blurhash_changed.then_some(content.blurhash.as_deref());
-    if (display_name.is_some() || avatar_url.is_some() || blurhash.is_some())
-        && let Err(e) =
-            data::user::set_remote_profile_fields(user_id, display_name, avatar_url, blurhash).await
-    {
-        warn!(%user_id, error = ?e, "failed to record remote profile fields");
+    if display_name.is_some() || avatar_url.is_some() || blurhash.is_some() {
+        data::user::set_remote_profile_fields(user_id, display_name, avatar_url, blurhash).await?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
