@@ -598,6 +598,12 @@ async fn select_edus_presence(
             currently_active: presence_event.content.currently_active.unwrap_or(false),
             status_msg: presence_event.content.status_msg,
             last_active_ago: presence_event.content.last_active_ago.unwrap_or(0),
+            #[cfg(feature = "unstable-msc4495")]
+            recipients: Default::default(),
+            #[cfg(feature = "unstable-msc4495")]
+            stream_id: None,
+            #[cfg(feature = "unstable-msc4495")]
+            prev_id: None,
         };
 
         presence_updates.insert(user_id, update);
