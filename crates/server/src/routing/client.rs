@@ -43,6 +43,10 @@ use crate::core::client::search::{ResultCategories, SearchReqArgs, SearchReqBody
 use crate::routing::prelude::*;
 
 pub fn router() -> Router {
+    router_with_delayed_events(config::get().delayed_events.enable)
+}
+
+fn router_with_delayed_events(delayed_events: bool) -> Router {
     let mut client = Router::with_path("client").oapi_tag("client");
     for v in ["v3", "v1", "r0"] {
         client = client
@@ -129,7 +133,7 @@ pub fn router() -> Router {
                 .push(Router::with_path("callback").get(oidc::oidc_callback))
                 .push(Router::with_path("login").post(oidc::oidc_login)),
         )
-        .push(unstable::router())
+        .push(unstable::router(delayed_events))
 }
 
 /// #POST /_matrix/client/r0/search
@@ -238,7 +242,7 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
         ("org.matrix.msc3916.stable".to_owned(), true), /* authenticated media (https://github.com/matrix-org/matrix-spec-proposals/pull/3916) */
         ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
         ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
-        ("uk.tcpip.msc4133.stable".to_owned(), true), /* the profile-field endpoints are served on the stable `/v3` prefix too */
+        ("uk.tcpip.msc4133.stable".to_owned(), true), // profile fields also use stable `/v3` routes
         ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
         ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
         ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
@@ -331,15 +335,31 @@ mod router_tests {
     use salvo::http::{Method, Request};
     use salvo::routing::PathState;
 
-    use super::router;
+    use super::router_with_delayed_events;
 
     /// Resolve `path` against the client router without running any handler.
-    async fn is_routed(method: Method, path: &str) -> bool {
-        let router = router();
+    async fn is_routed_with_delayed_events(
+        method: Method,
+        path: &str,
+        delayed_events: bool,
+    ) -> bool {
+        let router = router_with_delayed_events(delayed_events);
         let mut req = Request::default();
         *req.method_mut() = method;
         let mut path_state = PathState::from_owned_path(path.to_owned());
         router.detect(&mut req, &mut path_state).await.is_some()
+    }
+
+    async fn is_routed(method: Method, path: &str) -> bool {
+        is_routed_with_delayed_events(method, path, false).await
+    }
+
+    #[tokio::test]
+    async fn delayed_event_routes_follow_config() {
+        let path = "/client/unstable/org.matrix.msc4140/delayed_events";
+
+        assert!(!is_routed_with_delayed_events(Method::GET, path, false).await);
+        assert!(is_routed_with_delayed_events(Method::GET, path, true).await);
     }
 
     #[tokio::test]

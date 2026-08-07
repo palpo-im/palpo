@@ -4,11 +4,11 @@ use crate::core::MatrixError;
 use crate::core::client::discovery::rendezvous::DiscoverRendezvousResBody;
 use crate::{JsonResult, config, hoops, json_ok};
 
-pub(super) fn router() -> Router {
+pub(super) fn router(delayed_events: bool) -> Router {
     let mut authed = Router::new()
         .hoop(hoops::limit_rate)
         .hoop(hoops::auth_by_access_token);
-    if config::get().delayed_events.enable {
+    if delayed_events {
         authed = authed.push(super::delayed_event::authed_router());
     }
     Router::with_path("unstable")

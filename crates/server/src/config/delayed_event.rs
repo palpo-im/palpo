@@ -53,16 +53,6 @@ impl Default for DelayedEventsConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn delayed_events_are_disabled_by_default() {
-        assert!(!DelayedEventsConfig::default().enable);
-    }
-}
-
 fn default_max_delay_ms() -> u64 {
     24 * 60 * 60_000
 }
@@ -73,4 +63,14 @@ fn default_max_scheduled() -> u64 {
 
 fn default_retention_ms() -> u64 {
     7 * 24 * 60 * 60_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delayed_events_are_disabled_by_default() {
+        assert!(!DelayedEventsConfig::default().enable);
+    }
 }
