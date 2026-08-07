@@ -28,6 +28,13 @@ pub struct OutlierPdu {
     pub pdu: PduEvent,
     pub json_data: CanonicalJsonObject,
     pub soft_failed: bool,
+    /// The room's Policy Server (MSC4284) refused to vouch for this event.
+    ///
+    /// Kept apart from `soft_failed` because the DAG-recovery paths clear that flag once
+    /// the event turns out to be well-formed and authorised, which a policy refusal has
+    /// nothing to do with. It is folded in when the event is persisted, so no recovery
+    /// path can promote a refused event to the timeline.
+    pub policy_refused: bool,
 
     pub remote_server: OwnedServerName,
     pub room_id: OwnedRoomId,
@@ -116,10 +123,12 @@ impl OutlierPdu {
             pdu,
             json_data,
             soft_failed,
+            policy_refused,
             room_id,
             event_sn,
             ..
         } = self;
+        let soft_failed = soft_failed || policy_refused;
         if let Some(event_sn) = event_sn {
             return Ok((
                 SnPduEvent {
