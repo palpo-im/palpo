@@ -343,6 +343,11 @@ pub(super) async fn post_message(
             event_type: args.event_type.to_string().into(),
             content,
             unsigned: BTreeMap::new(),
+            timestamp: if authed.appservice().is_some() {
+                args.timestamp
+            } else {
+                None
+            },
             sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
         },

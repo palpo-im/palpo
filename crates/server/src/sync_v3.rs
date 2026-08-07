@@ -471,6 +471,7 @@ async fn load_joined_room(
     // just joined, or is syncing for the first time, gets every unexpired sticky event in
     // the room.
     let (sticky, sticky_ttls) = load_sticky(
+        sender_id,
         room_id,
         if joined_since_incremental {
             None
@@ -1147,6 +1148,7 @@ pub struct TimelineData {
 ///
 /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
 async fn load_sticky(
+    user_id: &UserId,
     room_id: &RoomId,
     since_sn: Option<Seqnum>,
     until_sn: Seqnum,
@@ -1170,11 +1172,22 @@ async fn load_sticky(
             );
             continue;
         }
-        let pdu = match timeline::get_pdu(&entry.event_id).await {
+        let mut pdu = match timeline::get_pdu(&entry.event_id).await {
             Ok(pdu) => pdu,
             Err(error) if error.is_not_found() => continue,
             Err(error) => return Err(error),
         };
+
+        // A sticky event omitted from the normal timeline still has exactly the same
+        // visibility and per-recipient unsigned-data rules as its timeline copy.
+        if !pdu.user_can_see(user_id).await? {
+            continue;
+        }
+        if pdu.sender != user_id {
+            pdu.remove_transaction_id()?;
+        }
+        pdu.add_unsigned_membership(user_id).await?;
+        pdu.add_age()?;
         events
             .push(crate::event::sticky::with_ttl(pdu, entry.expires_at, now).to_sync_room_event());
     }
