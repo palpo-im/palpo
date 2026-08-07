@@ -111,13 +111,11 @@ pub fn router() -> Router {
     }
     client
         .push(
-            Router::with_path("v1")
-                .hoop(hoops::auth_by_access_token)
-                .push(user::stable_v1_router())
-                .push(
-                    Router::with_path("room_summary/{room_id_or_alias}")
-                        .get(room::summary::get_summary),
-                ),
+            Router::with_path("v1").push(user::stable_v1_router()).push(
+                Router::with_path("room_summary/{room_id_or_alias}")
+                    .hoop(hoops::auth_by_access_token)
+                    .get(room::summary::get_summary),
+            ),
         )
         .push(Router::with_path("versions").get(supported_versions))
         .push(Router::with_path("v1/auth_metadata").get(unstable::auth_metadata))

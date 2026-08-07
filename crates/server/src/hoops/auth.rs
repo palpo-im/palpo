@@ -42,6 +42,23 @@ pub async fn auth_by_access_token_or_signatures(
 pub async fn auth_by_access_token(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
     auth_by_access_token_inner(aa, depot).await
 }
+
+/// Authenticates a route whose own query schema uses `user_id` for something other than
+/// application-service masquerading.
+///
+/// Matrix's stable mutual-rooms endpoint names its target-user query parameter `user_id`,
+/// which otherwise collides with the application-service impersonation parameter parsed
+/// into [`AuthArgs`]. Such a route must authenticate the application service as its sender
+/// and leave the target `user_id` for the endpoint extractor.
+#[handler]
+pub async fn auth_by_access_token_without_query_masquerade(
+    mut aa: AuthArgs,
+    depot: &mut Depot,
+) -> AppResult<()> {
+    aa.user_id = None;
+    auth_by_access_token_inner(aa, depot).await
+}
+
 #[handler]
 pub async fn auth_by_signatures(
     _aa: AuthArgs,
