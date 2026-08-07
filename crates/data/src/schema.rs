@@ -532,6 +532,7 @@ diesel::table! {
         recipients -> Jsonb,
         pending_stream_id -> Nullable<Int8>,
         pending_recipients -> Nullable<Jsonb>,
+        pending_edu_sn -> Nullable<Int8>,
     }
 }
 

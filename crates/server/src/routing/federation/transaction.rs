@@ -156,7 +156,10 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
         // MSC4495: keep our view of who this user shares presence with up to date before
         // recording the transition, since that set is what limits who is shown it.
         #[cfg(feature = "unstable-msc4495")]
-        track_presence_recipients(origin, &update).await;
+        if let Err(e) = track_presence_recipients(origin, &update).await {
+            warn!(user_id = %update.user_id, error = %e, "failed to update presence recipients");
+            continue;
+        }
 
         crate::data::user::set_presence(
             NewDbPresence {
@@ -186,17 +189,14 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
 ///
 /// [MSC4495]: https://github.com/matrix-org/matrix-spec-proposals/pull/4495
 #[cfg(feature = "unstable-msc4495")]
-async fn track_presence_recipients(origin: &ServerName, update: &PresenceUpdate) {
+async fn track_presence_recipients(
+    origin: &ServerName,
+    update: &PresenceUpdate,
+) -> crate::AppResult<()> {
     use crate::user::presence::recipients::{self, Inbound};
 
     let user_id = &update.user_id;
-    let known = match recipients::remote_set(user_id).await {
-        Ok(known) => known,
-        Err(e) => {
-            warn!(%user_id, error = %e, "failed to read stored presence recipients");
-            return;
-        }
-    };
+    let known = recipients::remote_set(user_id).await?;
     let known_stream_id = known.as_ref().map(|(stream_id, _)| *stream_id);
 
     match recipients::classify(
@@ -205,37 +205,32 @@ async fn track_presence_recipients(origin: &ServerName, update: &PresenceUpdate)
         update.prev_id,
         &update.recipients,
     ) {
-        // A sender that does not implement the proposal gets the legacy treatment, which
-        // is what our stored-set-absent path already does.
-        Inbound::Legacy | Inbound::Unchanged => {}
+        Inbound::Legacy => {
+            // A downgraded or mixed-deployment origin has returned to legacy semantics.
+            // Keeping its old selective row would continue filtering through a stale set.
+            recipients::clear_remote_set(user_id).await?;
+        }
+        Inbound::Unchanged => {}
         Inbound::Apply { stream_id, updates } => {
             let mut set = known.map(|(_, set)| set).unwrap_or_default();
             recipients::apply(&mut set, &updates);
-            if let Err(e) = recipients::store_remote_set(user_id, stream_id, &set).await {
-                warn!(%user_id, error = %e, "failed to store presence recipients");
-            }
+            recipients::store_remote_set(user_id, stream_id, &set).await?;
         }
         Inbound::Resync => {
             // Marked unknown rather than stored at the position the sender claimed: a
             // later delta must not appear to apply cleanly on top of a set we know is
             // wrong, and leaving it unknown makes every further update retry the fetch
             // until one succeeds.
-            if let Err(e) = recipients::store_remote_set(
+            recipients::store_remote_set(
                 user_id,
                 recipients::UNKNOWN_STREAM_ID,
                 &Default::default(),
             )
-            .await
-            {
-                warn!(%user_id, error = %e, "failed to clear presence recipients");
-            }
-            if let Err(e) =
-                crate::user::presence::recipients::fetch_remote_set(origin, user_id).await
-            {
-                warn!(%user_id, %origin, error = %e, "failed to re-fetch presence recipients");
-            }
+            .await?;
+            recipients::schedule_resync(origin, user_id);
         }
     }
+    Ok(())
 }
 
 async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {

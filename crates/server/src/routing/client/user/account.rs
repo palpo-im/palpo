@@ -70,11 +70,8 @@ pub(super) async fn set_global_data(
     // reach their server until the user next changed presence, and until then that server
     // would go on showing the presence it already had.
     #[cfg(feature = "unstable-msc4495")]
-    if event_type == crate::core::events::presence::sharing::PresenceSharingEventContent::TYPE
-        && let Err(e) =
-            crate::user::presence::recipients::mark_recipients_changed(authed.user_id()).await
-    {
-        warn!(error = %e, "failed to schedule a presence recipient update");
+    if event_type == crate::core::events::presence::sharing::PresenceSharingEventContent::TYPE {
+        crate::user::presence::recipients::mark_recipients_changed(authed.user_id()).await?;
     }
 
     empty_ok()

@@ -135,12 +135,13 @@ pub async fn sharing_policy(user_id: &UserId) -> AppResult<Option<PresenceSharin
     .await
     {
         Ok(policy) => Ok(policy),
-        Err(e) => {
+        Err(data::DataError::SerdeJson(e)) => {
             // An unreadable configuration must never widen sharing, so treat it as absent
             // rather than falling back to anything more permissive.
             warn!(%user_id, error = %e, "ignoring unparseable presence sharing configuration");
             Ok(None)
         }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -192,6 +193,9 @@ pub async fn recipients_of(user_id: &UserId) -> AppResult<BTreeSet<OwnedUserId>>
 /// extended to local users: a local client could otherwise opt out of selective presence
 /// just by never writing its configuration.
 pub async fn may_see(sender_id: &UserId, viewer_id: &UserId) -> AppResult<bool> {
+    if sender_id == viewer_id {
+        return Ok(true);
+    }
     if sender_id.server_name() == config::server_name() {
         return Ok(recipients_of(sender_id).await?.contains(viewer_id));
     }

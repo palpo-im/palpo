@@ -72,16 +72,43 @@ impl DbPresence {
 }
 
 pub async fn last_presence(user_id: &UserId) -> DataResult<PresenceEvent> {
+    maybe_last_presence(user_id)
+        .await?
+        .ok_or_else(|| MatrixError::not_found("No presence data found for user").into())
+}
+
+/// Returns the user's current presence, or `None` when they have no presence row.
+pub async fn maybe_last_presence(user_id: &UserId) -> DataResult<Option<PresenceEvent>> {
     let presence = user_presences::table
         .filter(user_presences::user_id.eq(user_id))
         .first::<DbPresence>(&mut connect().await?)
         .await
         .optional()?;
     if let Some(data) = presence {
-        Ok(data.to_presence_event(user_id).await?)
+        Ok(Some(data.to_presence_event(user_id).await?))
     } else {
-        Err(MatrixError::not_found("No presence data found for user").into())
+        Ok(None)
     }
+}
+
+/// Sequence number of the user's current presence row, if one exists.
+pub async fn presence_sn(user_id: &UserId) -> DataResult<Option<i64>> {
+    user_presences::table
+        .filter(user_presences::user_id.eq(user_id))
+        .select(user_presences::occur_sn)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Users that currently have a presence row.
+pub async fn presence_user_ids() -> DataResult<Vec<OwnedUserId>> {
+    user_presences::table
+        .select(user_presences::user_id)
+        .load(&mut connect().await?)
+        .await
+        .map_err(Into::into)
 }
 
 /// Adds a presence event which will be saved until a new event replaces it.
@@ -121,7 +148,9 @@ pub async fn remove_presence(user_id: &UserId) -> DataResult<()> {
 }
 
 /// Returns the most recent presence updates that happened after the event with id `since`.
-pub async fn presences_since(since_sn: i64) -> DataResult<HashMap<OwnedUserId, PresenceEvent>> {
+pub async fn presences_since(
+    since_sn: i64,
+) -> DataResult<HashMap<OwnedUserId, (i64, PresenceEvent)>> {
     let presences = user_presences::table
         .filter(user_presences::occur_sn.ge(since_sn))
         .load::<DbPresence>(&mut connect().await?)
@@ -129,7 +158,32 @@ pub async fn presences_since(since_sn: i64) -> DataResult<HashMap<OwnedUserId, P
     let mut result = HashMap::new();
     for presence in presences {
         let event = presence.to_presence_event(&presence.user_id).await?;
-        result.insert(presence.user_id, event);
+        result.insert(presence.user_id, (presence.occur_sn, event));
+    }
+    Ok(result)
+}
+
+/// Returns current presence rows inside one inclusive, stable EDU selection window.
+///
+/// Ordering is part of the contract: federation can stop after a bounded number of
+/// updates and safely resume at the last returned sequence number.
+pub async fn presences_between(
+    since_sn: i64,
+    through_sn: i64,
+) -> DataResult<Vec<(OwnedUserId, (i64, PresenceEvent))>> {
+    let presences = user_presences::table
+        .filter(user_presences::occur_sn.ge(since_sn))
+        .filter(user_presences::occur_sn.le(through_sn))
+        .order((
+            user_presences::occur_sn.asc(),
+            user_presences::user_id.asc(),
+        ))
+        .load::<DbPresence>(&mut connect().await?)
+        .await?;
+    let mut result = Vec::with_capacity(presences.len());
+    for presence in presences {
+        let event = presence.to_presence_event(&presence.user_id).await?;
+        result.push((presence.user_id, (presence.occur_sn, event)));
     }
     Ok(result)
 }

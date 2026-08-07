@@ -24,11 +24,13 @@ CREATE TABLE presence_recipient_streams (
 -- the `prev_id` of the next delta.
 --
 -- `pending_recipients` is a delta that has been put on the wire but not yet
--- acknowledged; it is promoted into `recipients` when the destination's EDU
--- cursor advances past the transaction carrying it. Writing straight into
+-- acknowledged; it is promoted into `recipients` only when the transaction
+-- carrying that exact presence batch succeeds. Writing straight into
 -- `recipients` instead would lose a removal whose transaction failed: the next
 -- pass would see nothing left to remove while the destination still held the
--- recipient.
+-- recipient. `pending_edu_sn` ties that pending state to the selection window
+-- that actually carried it, so an unrelated successful transaction cannot
+-- confirm it after a restart.
 CREATE TABLE presence_recipient_sets (
     user_id TEXT NOT NULL,
     server_id TEXT NOT NULL,
@@ -36,6 +38,7 @@ CREATE TABLE presence_recipient_sets (
     recipients JSONB NOT NULL,
     pending_stream_id BIGINT,
     pending_recipients JSONB,
+    pending_edu_sn BIGINT,
     PRIMARY KEY (user_id, server_id)
 );
 

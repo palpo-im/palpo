@@ -1,3 +1,5 @@
+#[cfg(feature = "unstable-msc4495")]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::pending;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -59,7 +61,7 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
     let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
     // EDU selection windows of in-flight transactions; persisted as the
     // destination's cursor once the transaction succeeds.
-    let mut pending_edu_cursors = HashMap::<OutgoingKind, Seqnum>::new();
+    let mut pending_edu_cursors = HashMap::<OutgoingKind, (Seqnum, bool)>::new();
 
     // Retry requests we could not finish yet
     let mut initial_transactions = HashMap::<OutgoingKind, Vec<SendingEventType>>::new();
@@ -83,9 +85,37 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
         entry.push(event);
     }
 
-    for (outgoing_kind, events) in initial_transactions {
+    for (outgoing_kind, mut events) in initial_transactions {
+        // Active rows survived a process restart, but their dynamic EDUs did not. Rebuild
+        // the same unadvanced window before retrying so a pending recipient removal cannot
+        // be confirmed by an unrelated PDU-only transaction.
+        if let OutgoingKind::Normal(server_name) = &outgoing_kind {
+            match select_edus(server_name).await {
+                Ok((select_edus, last_sn, has_presence)) => {
+                    if !select_edus.is_empty() {
+                        events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+                        pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
+                    }
+                }
+                Err(e) => {
+                    error!(?server_name, error = ?e, "failed to rebuild startup EDU window");
+                    current_transaction_status
+                        .insert(outgoing_kind, TransactionStatus::Failed(1, Instant::now()));
+                    continue;
+                }
+            }
+        }
         current_transaction_status.insert(outgoing_kind.clone(), TransactionStatus::Running);
         futures.push(super::send_events(outgoing_kind.clone(), events));
+    }
+
+    // Recipient recalculation tasks are intentionally background work during normal room
+    // processing. Re-scheduling every local presence row at startup closes the crash window
+    // between committing an account-data/room change and that task creating its durable
+    // Flush row.
+    #[cfg(feature = "unstable-msc4495")]
+    for user_id in data::user::presence_user_ids().await? {
+        crate::user::presence::recipients::schedule_recipients_changed(&user_id);
     }
 
     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
@@ -98,23 +128,40 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
             Some(response) = futures.next() => {
                 match response {
                     Ok(outgoing_kind) => {
-                        super::delete_all_active_requests_for(&outgoing_kind).await?;
-
-                        // The transaction reached the destination; persist its EDU
-                        // window so the next selection resumes after it.
-                        #[cfg(feature = "unstable-msc4495")]
-                        if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                            && let Err(e) =
-                                crate::user::presence::recipients::confirm_sent(server_name).await
-                        {
-                            warn!(error = %e, "failed to confirm presence recipient deltas");
-                        }
-                        if let Some(edu_sn) = pending_edu_cursors.remove(&outgoing_kind)
+                        if let Some((edu_sn, has_presence)) = pending_edu_cursors.remove(&outgoing_kind)
                             && let OutgoingKind::Normal(server_name) = &outgoing_kind
-                            && let Err(e) = data::sending::advance_edu_cursor(server_name, edu_sn).await
                         {
-                            error!(?server_name, error = ?e, "failed to advance edu cursor");
+                            #[cfg(feature = "unstable-msc4495")]
+                            let recorded: AppResult<()> = crate::user::presence::recipients::confirm_sent(
+                                server_name,
+                                edu_sn,
+                                has_presence.then_some(edu_sn),
+                            )
+                            .await;
+                            #[cfg(not(feature = "unstable-msc4495"))]
+                            let recorded: AppResult<()> = {
+                                let _ = has_presence;
+                                data::sending::advance_edu_cursor(server_name, edu_sn)
+                                    .await
+                                    .map_err(Into::into)
+                            };
+                            if let Err(e) = recorded {
+                                // The peer received the transaction, but local durable state
+                                // did not. Keep the active rows and retry the same idempotent
+                                // window rather than acknowledging deltas we cannot recover.
+                                error!(?server_name, error = ?e, "failed to record delivered EDU window");
+                                current_transaction_status.insert(
+                                    outgoing_kind,
+                                    TransactionStatus::Failed(1, Instant::now()),
+                                );
+                                continue;
+                            }
                         }
+
+                        // Delete only after the cursor and recipient confirmations commit.
+                        // A crash before this point leaves the active row as a durable retry
+                        // anchor; a crash after it is safe because the delivery is recorded.
+                        super::delete_all_active_requests_for(&outgoing_kind).await?;
 
                         // Find events that have been added since starting the last request
                         let new_events = super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await.unwrap_or_default();
@@ -132,16 +179,31 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                             // Piggyback EDUs that accumulated while the previous
                             // transaction was in flight, so a busy destination
                             // does not starve presence/receipt/device-list updates.
-                            if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                                && let Ok((select_edus, last_sn)) = select_edus(server_name).await
-                            {
-                                events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-                                pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                            if let OutgoingKind::Normal(server_name) = &outgoing_kind {
+                                match select_edus(server_name).await {
+                                    Ok((select_edus, last_sn, has_presence)) => {
+                                        if !select_edus.is_empty() {
+                                            events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+                                            pending_edu_cursors.insert(
+                                                outgoing_kind.clone(),
+                                                (last_sn, has_presence),
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(?server_name, error = ?e, "failed to select follow-up EDU window");
+                                        current_transaction_status.insert(
+                                            outgoing_kind,
+                                            TransactionStatus::Failed(1, Instant::now()),
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
 
                             futures.push(super::send_events(outgoing_kind.clone(), events));
                         } else if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                            && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+                            && let Ok((select_edus, last_sn, has_presence)) = select_edus(server_name).await
                             && !select_edus.is_empty()
                         {
                             // No queued PDUs, but the EDU window is not empty
@@ -149,7 +211,7 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                             // deliver the EDUs on their own instead of leaving
                             // them until unrelated traffic shows up.
                             let events = select_edus.into_iter().map(SendingEventType::Edu).collect::<Vec<_>>();
-                            pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                            pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
                             futures.push(super::send_events(outgoing_kind.clone(), events));
                         } else {
                             current_transaction_status.remove(&outgoing_kind);
@@ -201,12 +263,12 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                     // rows, so if this returned here they would wait for unrelated traffic
                     // -- which in a quiet room may never come.
                     if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                        && let Ok((select_edus, last_sn)) = select_edus(server_name).await
+                        && let Ok((select_edus, last_sn, has_presence)) = select_edus(server_name).await
                         && !select_edus.is_empty()
                     {
                         current_transaction_status
                             .insert(outgoing_kind.clone(), TransactionStatus::Running);
-                        pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                        pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
                         let events = select_edus
                             .into_iter()
                             .map(SendingEventType::Edu)
@@ -314,12 +376,26 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                     // dropped from pending_edu_cursors without advancing the
                     // cursor, so it is re-selected here instead of waiting for
                     // unrelated future traffic to this destination.
-                    if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                        && let Ok((select_edus, last_sn)) = select_edus(server_name).await
-                        && !select_edus.is_empty()
-                    {
-                        events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-                        pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+                    if let OutgoingKind::Normal(server_name) = &outgoing_kind {
+                        match select_edus(server_name).await {
+                            Ok((select_edus, last_sn, has_presence)) => {
+                                if !select_edus.is_empty() {
+                                    events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+                                    pending_edu_cursors.insert(
+                                        outgoing_kind.clone(),
+                                        (last_sn, has_presence),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!(?server_name, error = ?e, "failed to rebuild retry EDU window");
+                                current_transaction_status.insert(
+                                    outgoing_kind,
+                                    TransactionStatus::Failed(tries, Instant::now()),
+                                );
+                                continue;
+                            }
+                        }
                     }
 
                     if events.is_empty() {
@@ -363,7 +439,7 @@ async fn select_events(
     outgoing_kind: &OutgoingKind,
     new_events: Vec<(i64, SendingEventType)>, // Events we want to send: event and full key
     current_transaction_status: &mut HashMap<OutgoingKind, TransactionStatus>,
-    pending_edu_cursors: &mut HashMap<OutgoingKind, Seqnum>,
+    pending_edu_cursors: &mut HashMap<OutgoingKind, (Seqnum, bool)>,
 ) -> AppResult<Option<Vec<SendingEventType>>> {
     let mut retry = false;
     let mut allow = true;
@@ -420,11 +496,28 @@ async fn select_events(
     // Piggyback pending EDUs on fresh and retry transactions alike. The
     // cursor only advances once a transaction succeeds, so a retry simply
     // re-selects the same window.
-    if let OutgoingKind::Normal(server_name) = outgoing_kind
-        && let Ok((select_edus, last_sn)) = select_edus(server_name).await
-    {
-        events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-        pending_edu_cursors.insert(outgoing_kind.clone(), last_sn);
+    if let OutgoingKind::Normal(server_name) = outgoing_kind {
+        match select_edus(server_name).await {
+            Ok((select_edus, last_sn, has_presence)) => {
+                if !select_edus.is_empty() {
+                    events.extend(select_edus.into_iter().map(SendingEventType::Edu));
+                    pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
+                }
+            }
+            Err(e) => {
+                let tries = match current_transaction_status.get(outgoing_kind) {
+                    Some(
+                        TransactionStatus::Retrying(tries) | TransactionStatus::Failed(tries, _),
+                    ) => *tries,
+                    _ => 1,
+                };
+                current_transaction_status.insert(
+                    outgoing_kind.clone(),
+                    TransactionStatus::Failed(tries, Instant::now()),
+                );
+                return Err(e);
+            }
+        }
     }
 
     Ok(Some(events))
@@ -611,7 +704,12 @@ async fn select_edus_receipts_room(
 async fn selective_presence_delta(
     server_name: &ServerName,
     user_id: &UserId,
-) -> AppResult<Option<crate::user::presence::recipients::RecipientDelta>> {
+) -> AppResult<
+    Option<(
+        crate::user::presence::recipients::RecipientDelta,
+        std::collections::BTreeSet<OwnedUserId>,
+    )>,
+> {
     use std::collections::BTreeSet;
 
     use crate::user::presence::{recipients, sharing};
@@ -637,26 +735,35 @@ async fn selective_presence_delta(
     if updates.is_empty() && sent.pending.is_none() {
         // Nothing changed for this destination, so keep naming the position it already
         // holds rather than inventing one it would have to resync against.
-        return Ok(Some(recipients::RecipientDelta {
-            stream_id: prev_id.unwrap_or(recipients::stream_id(user_id).await?),
-            prev_id: None,
-            updates,
-        }));
+        return Ok(Some((
+            recipients::RecipientDelta {
+                stream_id: prev_id.unwrap_or(recipients::stream_id(user_id).await?),
+                prev_id: None,
+                updates,
+            },
+            current,
+        )));
     }
 
-    // Reuse the position of an unacknowledged delta rather than burning a new one: the
-    // destination has not seen the old one, so a new position would only make it resync.
-    let stream_id = match sent.pending.as_ref() {
-        Some((stream_id, _)) => *stream_id,
-        None => recipients::advance_stream(user_id).await?,
+    // Reuse an unacknowledged position only while it still describes the same set. If the
+    // policy changed again during a failed send, use the user's newer global position;
+    // a peer that received the older attempt will then resynchronise instead of treating
+    // different sets as the same stream position.
+    let stream_id = if let Some((stream_id, pending)) = sent.pending.as_ref()
+        && pending == &current
+    {
+        *stream_id
+    } else {
+        recipients::stream_id(user_id).await?
     };
-    recipients::record_pending(user_id, server_name, stream_id, &current).await?;
-
-    Ok(Some(recipients::RecipientDelta {
-        stream_id,
-        prev_id,
-        updates,
-    }))
+    Ok(Some((
+        recipients::RecipientDelta {
+            stream_id,
+            prev_id,
+            updates,
+        },
+        current,
+    )))
 }
 
 /// Look for presence
@@ -664,17 +771,20 @@ async fn selective_presence_delta(
 async fn select_edus_presence(
     server_name: &ServerName,
     since_sn: Seqnum,
-    _max_edu_sn: &Seqnum,
-) -> AppResult<Option<EduBuf>> {
-    let presences_since = crate::data::user::presences_since(since_sn).await?;
+    max_edu_sn: Seqnum,
+) -> AppResult<(Option<EduBuf>, Seqnum)> {
+    let presences = crate::data::user::presences_between(since_sn, max_edu_sn).await?;
 
     let mut presence_updates = HashMap::<OwnedUserId, PresenceUpdate>::new();
-    for (user_id, presence_event) in presences_since {
-        // max_edu_sn.fetch_max(occur_sn, Ordering::Relaxed);
+    #[cfg(feature = "unstable-msc4495")]
+    let mut pending_updates = Vec::<(OwnedUserId, Seqnum, BTreeSet<OwnedUserId>)>::new();
+    let mut confirmed_through = max_edu_sn;
+    for (user_id, (presence_sn, presence_event)) in presences {
         if !user_id.is_local() {
             continue;
         }
 
+        #[cfg(not(feature = "unstable-msc4495"))]
         if !state::server_can_see_user(server_name, &user_id).await? {
             continue;
         }
@@ -683,7 +793,8 @@ async fn select_edus_presence(
         // recipient set has to move to get there. `None` means the user shares presence
         // with nobody on this server, so nothing is sent at all.
         #[cfg(feature = "unstable-msc4495")]
-        let Some(delta) = selective_presence_delta(server_name, &user_id).await? else {
+        let Some((delta, recipients)) = selective_presence_delta(server_name, &user_id).await?
+        else {
             continue;
         };
 
@@ -701,14 +812,21 @@ async fn select_edus_presence(
             prev_id: delta.prev_id,
         };
 
+        #[cfg(feature = "unstable-msc4495")]
+        pending_updates.push((user_id.clone(), delta.stream_id, recipients));
         presence_updates.insert(user_id, update);
         if presence_updates.len() >= SELECT_PRESENCE_LIMIT {
+            // The rows are ordered. Confirm only through the last update actually placed
+            // in this transaction; the next pass resumes at its successor.
+            confirmed_through = presence_sn;
             break;
         }
     }
 
     if presence_updates.is_empty() {
-        return Ok(None);
+        #[cfg(feature = "unstable-msc4495")]
+        crate::user::presence::recipients::clear_pending(server_name).await?;
+        return Ok((None, confirmed_through));
     }
 
     let presence_content = Edu::Presence(PresenceContent {
@@ -716,12 +834,24 @@ async fn select_edus_presence(
     });
 
     let mut buf = EduBuf::new();
-    if let Err(e) = serde_json::to_writer(&mut buf, &presence_content) {
-        tracing::error!("failed to serialize Presence EDU to JSON: {e}");
-        return Ok(None);
+    serde_json::to_writer(&mut buf, &presence_content)?;
+
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        crate::user::presence::recipients::clear_pending(server_name).await?;
+        for (user_id, stream_id, recipients) in pending_updates {
+            crate::user::presence::recipients::record_pending(
+                &user_id,
+                server_name,
+                stream_id,
+                &recipients,
+                confirmed_through,
+            )
+            .await?;
+        }
     }
 
-    Ok(Some(buf))
+    Ok((Some(buf), confirmed_through))
 }
 
 /// The lower bound (inclusive) of the next EDU selection window.
@@ -734,7 +864,7 @@ fn edu_since_sn(cursor: Option<Seqnum>, max_edu_sn: Seqnum) -> Seqnum {
 }
 
 #[tracing::instrument(skip(server_name))]
-pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
+pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64, bool)> {
     let max_edu_sn = data::curr_sn().await?;
     let conf = crate::config::get();
 
@@ -752,13 +882,19 @@ pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64)> {
         events.push(receipts);
     }
 
-    if conf.presence.allow_outgoing
-        && let Some(presence) = select_edus_presence(server_name, since_sn, &max_edu_sn).await?
-    {
-        events.push(presence);
+    let mut confirmed_through = max_edu_sn;
+    let mut has_presence = false;
+    if conf.presence.allow_outgoing {
+        let (presence, presence_confirmed_through) =
+            select_edus_presence(server_name, since_sn, max_edu_sn).await?;
+        confirmed_through = confirmed_through.min(presence_confirmed_through);
+        has_presence = presence.is_some();
+        if let Some(presence) = presence {
+            events.push(presence);
+        }
     }
 
-    Ok((events, max_edu_sn))
+    Ok((events, confirmed_through, has_presence))
 }
 
 #[cfg(test)]

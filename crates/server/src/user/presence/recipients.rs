@@ -11,14 +11,15 @@
 use std::collections::BTreeSet;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
-use crate::AppResult;
-use crate::core::Seqnum;
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceRecipientListUpdates;
+use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
+use crate::exts::IsRemoteOrLocal;
+use crate::{AppError, AppResult};
 
 /// What one destination server must be told about a user's recipient set.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +86,7 @@ pub struct SentState {
 
 /// Reads what `server_id` has been told about `user_id`'s recipient set.
 pub async fn sent_state(user_id: &UserId, server_id: &ServerName) -> AppResult<SentState> {
-    let Some((stream_id, recipients, pending_stream_id, pending_recipients)) =
+    let Some((stream_id, recipients, pending_stream_id, pending_recipients, pending_edu_sn)) =
         presence_recipient_sets::table
             .find((user_id, server_id))
             .select((
@@ -93,12 +94,14 @@ pub async fn sent_state(user_id: &UserId, server_id: &ServerName) -> AppResult<S
                 presence_recipient_sets::recipients,
                 presence_recipient_sets::pending_stream_id,
                 presence_recipient_sets::pending_recipients,
+                presence_recipient_sets::pending_edu_sn,
             ))
             .first::<(
                 Seqnum,
                 serde_json::Value,
                 Option<Seqnum>,
                 Option<serde_json::Value>,
+                Option<Seqnum>,
             )>(&mut connect().await?)
             .await
             .optional()?
@@ -113,7 +116,8 @@ pub async fn sent_state(user_id: &UserId, server_id: &ServerName) -> AppResult<S
         )),
         pending: pending_stream_id
             .zip(pending_recipients)
-            .map(|(stream_id, recipients)| {
+            .zip(pending_edu_sn)
+            .map(|((stream_id, recipients), _)| {
                 (
                     stream_id,
                     serde_json::from_value(recipients).unwrap_or_default(),
@@ -133,6 +137,7 @@ pub async fn record_pending(
     server_id: &ServerName,
     stream_id: Seqnum,
     recipients: &BTreeSet<OwnedUserId>,
+    edu_sn: Seqnum,
 ) -> AppResult<()> {
     let recipients = serde_json::to_value(recipients)?;
     diesel::insert_into(presence_recipient_sets::table)
@@ -145,6 +150,7 @@ pub async fn record_pending(
             presence_recipient_sets::recipients.eq(serde_json::json!([])),
             presence_recipient_sets::pending_stream_id.eq(stream_id),
             presence_recipient_sets::pending_recipients.eq(&recipients),
+            presence_recipient_sets::pending_edu_sn.eq(edu_sn),
         ))
         .on_conflict((
             presence_recipient_sets::user_id,
@@ -154,46 +160,99 @@ pub async fn record_pending(
         .set((
             presence_recipient_sets::pending_stream_id.eq(stream_id),
             presence_recipient_sets::pending_recipients.eq(&recipients),
+            presence_recipient_sets::pending_edu_sn.eq(edu_sn),
         ))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
 }
 
-/// Promotes every pending delta for `server_id` now that it has acknowledged a transaction.
-///
-/// Called when the destination's EDU cursor advances, which only happens on a successful
-/// transaction. A destination whose confirmed set has become empty is then forgotten
-/// entirely: the removal has landed, and MSC4495 says to stop sending to it.
-pub async fn confirm_sent(server_id: &ServerName) -> AppResult<()> {
-    let mut conn = connect().await?;
+/// Discards an unconfirmed selection before rebuilding the destination's next batch.
+/// Confirmed state is left untouched, so every rebuilt delta is still based on what the
+/// peer is known to hold.
+pub async fn clear_pending(server_id: &ServerName) -> AppResult<()> {
     diesel::update(
-        presence_recipient_sets::table
-            .filter(presence_recipient_sets::server_id.eq(server_id))
-            .filter(presence_recipient_sets::pending_stream_id.is_not_null()),
+        presence_recipient_sets::table.filter(presence_recipient_sets::server_id.eq(server_id)),
     )
     .set((
-        presence_recipient_sets::stream_id.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
-            "COALESCE(pending_stream_id, stream_id)",
-        )),
-        presence_recipient_sets::recipients.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
-            "COALESCE(pending_recipients, recipients)",
-        )),
         presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
         presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+        presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
     ))
-    .execute(&mut conn)
-    .await?;
-
-    diesel::delete(
-        presence_recipient_sets::table
-            .filter(presence_recipient_sets::server_id.eq(server_id))
-            .filter(presence_recipient_sets::pending_stream_id.is_null())
-            .filter(presence_recipient_sets::recipients.eq(serde_json::json!([]))),
-    )
-    .execute(&mut conn)
+    .execute(&mut connect().await?)
     .await?;
     Ok(())
+}
+
+/// Advances the EDU cursor and promotes only the presence batch this transaction carried.
+///
+/// Both changes commit atomically. If the process stops before this transaction commits,
+/// the active outgoing row and pending delta remain available for startup recovery. If it
+/// stops afterwards, the cursor proves that the dynamic EDU already landed. Passing no
+/// `presence_edu_sn` deliberately leaves pending presence untouched when the transaction
+/// contained only receipts or device-list EDUs.
+pub async fn confirm_sent(
+    server_id: &ServerName,
+    edu_sn: Seqnum,
+    presence_edu_sn: Option<Seqnum>,
+) -> AppResult<()> {
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            if let Some(presence_edu_sn) = presence_edu_sn {
+                diesel::update(
+                    presence_recipient_sets::table
+                        .filter(presence_recipient_sets::server_id.eq(server_id))
+                        .filter(presence_recipient_sets::pending_edu_sn.eq(presence_edu_sn)),
+                )
+                .set((
+                    presence_recipient_sets::stream_id.eq(diesel::dsl::sql::<
+                        diesel::sql_types::BigInt,
+                    >(
+                        "COALESCE(pending_stream_id, stream_id)",
+                    )),
+                    presence_recipient_sets::recipients.eq(diesel::dsl::sql::<
+                        diesel::sql_types::Jsonb,
+                    >(
+                        "COALESCE(pending_recipients, recipients)",
+                    )),
+                    presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
+                    presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+                    presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
+                ))
+                .execute(conn)
+                .await?;
+
+                diesel::delete(
+                    presence_recipient_sets::table
+                        .filter(presence_recipient_sets::server_id.eq(server_id))
+                        .filter(presence_recipient_sets::pending_stream_id.is_null())
+                        .filter(presence_recipient_sets::recipients.eq(serde_json::json!([]))),
+                )
+                .execute(conn)
+                .await?;
+            }
+
+            let now = UnixMillis::now().get() as i64;
+            diesel::insert_into(outgoing_edu_cursors::table)
+                .values((
+                    outgoing_edu_cursors::server_id.eq(server_id),
+                    outgoing_edu_cursors::edu_sn.eq(edu_sn),
+                    outgoing_edu_cursors::updated_at.eq(now),
+                ))
+                .on_conflict(outgoing_edu_cursors::server_id)
+                .do_update()
+                .set((
+                    outgoing_edu_cursors::edu_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                        "GREATEST(outgoing_edu_cursors.edu_sn, excluded.edu_sn)",
+                    )),
+                    outgoing_edu_cursors::updated_at.eq(now),
+                ))
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
+        .await
 }
 
 /// A remote user's recipient set as we currently understand it.
@@ -241,6 +300,14 @@ pub async fn store_remote_set(
     Ok(())
 }
 
+/// Removes selective state when a remote origin sends a legacy presence update.
+pub async fn clear_remote_set(user_id: &UserId) -> AppResult<()> {
+    diesel::delete(remote_presence_recipients::table.find(user_id))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 /// Records a set a destination is known to hold, bypassing the pending step.
 ///
 /// Used by the recovery endpoint: once we have handed a destination a snapshot in a
@@ -260,6 +327,7 @@ pub async fn record_confirmed(
             presence_recipient_sets::recipients.eq(&recipients),
             presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
             presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+            presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
         ))
         .on_conflict((
             presence_recipient_sets::user_id,
@@ -271,10 +339,32 @@ pub async fn record_confirmed(
             presence_recipient_sets::recipients.eq(&recipients),
             presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
             presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+            presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
         ))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
+}
+
+/// Wakes every destination that either needs the current set or was told an older set.
+pub async fn wake_recipient_servers(user_id: &UserId) -> AppResult<()> {
+    let mut servers: BTreeSet<OwnedServerName> = presence_recipient_sets::table
+        .filter(presence_recipient_sets::user_id.eq(user_id))
+        .select(presence_recipient_sets::server_id)
+        .load(&mut connect().await?)
+        .await?
+        .into_iter()
+        .collect();
+    servers.extend(
+        super::sharing::recipients_of(user_id)
+            .await?
+            .into_iter()
+            .map(|recipient| recipient.server_name().to_owned()),
+    );
+    let initial_edu_cursor = crate::data::user::presence_sn(user_id)
+        .await?
+        .map(|sn| sn.saturating_sub(1));
+    crate::sending::wake_servers(servers.into_iter(), initial_edu_cursor).await
 }
 
 /// Schedules a fresh recipient delta for a user whose sharing inputs changed.
@@ -285,7 +375,11 @@ pub async fn record_confirmed(
 /// presence row puts the user back in the selection window without inventing a state
 /// transition they did not make.
 pub async fn mark_recipients_changed(user_id: &UserId) -> AppResult<()> {
-    let Ok(presence) = crate::data::user::last_presence(user_id).await else {
+    // One recipient-list change has one global position, regardless of how many
+    // destination servers later select its per-server delta.
+    advance_stream(user_id).await?;
+
+    let Some(presence) = crate::data::user::maybe_last_presence(user_id).await? else {
         // No presence to re-send; the next transition will carry the new set.
         return Ok(());
     };
@@ -308,7 +402,100 @@ pub async fn mark_recipients_changed(user_id: &UserId) -> AppResult<()> {
         true,
     )
     .await?;
+
+    wake_recipient_servers(user_id).await?;
     Ok(())
+}
+
+/// Users currently being recalculated; `true` means another pass was requested meanwhile.
+static RECALCULATING: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<OwnedUserId, bool>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Recalculates one local user's recipients in the background, collapsing bursts without
+/// losing a change that arrives while an earlier pass is still running.
+pub fn schedule_recipients_changed(user_id: &UserId) {
+    if !user_id.is_local() {
+        return;
+    }
+    {
+        let mut recalculating = RECALCULATING
+            .lock()
+            .expect("recipient recalculation map is not poisoned");
+        if let Some(dirty) = recalculating.get_mut(user_id) {
+            *dirty = true;
+            return;
+        }
+        recalculating.insert(user_id.to_owned(), false);
+    }
+
+    let user_id = user_id.to_owned();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = mark_recipients_changed(&user_id).await {
+                warn!(%user_id, error = %e, "failed to refresh presence recipients; retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                continue;
+            }
+            let mut recalculating = RECALCULATING
+                .lock()
+                .expect("recipient recalculation map is not poisoned");
+            match recalculating.get_mut(&user_id) {
+                Some(dirty) if *dirty => *dirty = false,
+                _ => {
+                    recalculating.remove(&user_id);
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Recalculates every local member affected by a room membership or sharing-hint change.
+static RECALCULATING_ROOMS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<OwnedRoomId, bool>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub fn schedule_room_recipients_changed(room_id: &RoomId) {
+    {
+        let mut recalculating = RECALCULATING_ROOMS
+            .lock()
+            .expect("room recipient recalculation map is not poisoned");
+        if let Some(dirty) = recalculating.get_mut(room_id) {
+            *dirty = true;
+            return;
+        }
+        recalculating.insert(room_id.to_owned(), false);
+    }
+
+    let room_id = room_id.to_owned();
+    tokio::spawn(async move {
+        loop {
+            match crate::room::user::local_users(&room_id).await {
+                Ok(users) => {
+                    for user_id in users {
+                        schedule_recipients_changed(&user_id);
+                    }
+                }
+                Err(e) => {
+                    warn!(%room_id, error = %e, "failed to list presence-sharing users; retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    continue;
+                }
+            }
+
+            let mut recalculating = RECALCULATING_ROOMS
+                .lock()
+                .expect("room recipient recalculation map is not poisoned");
+            match recalculating.get_mut(&room_id) {
+                Some(dirty) if *dirty => *dirty = false,
+                _ => {
+                    recalculating.remove(&room_id);
+                    break;
+                }
+            }
+        }
+    });
 }
 
 /// Users whose recipient snapshot is currently being fetched.

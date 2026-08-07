@@ -291,7 +291,7 @@ pub async fn sync_events(
 
     if config::get().presence.allow_local {
         // Take presence updates from this room
-        for (user_id, presence_event) in
+        for (user_id, (_, presence_event)) in
             crate::data::user::presences_since(since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn())
                 .await?
         {

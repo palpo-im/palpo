@@ -1,8 +1,13 @@
+#[cfg(not(feature = "unstable-msc4495"))]
 use crate::core::federation::transaction::Edu;
-use crate::core::presence::{PresenceContent, PresenceState, PresenceUpdate};
+use crate::core::presence::PresenceState;
+#[cfg(not(feature = "unstable-msc4495"))]
+use crate::core::presence::{PresenceContent, PresenceUpdate};
 use crate::core::{UnixMillis, UserId};
 use crate::data::user::{NewDbPresence, last_presence};
-use crate::{AppResult, config, data, sending};
+#[cfg(not(feature = "unstable-msc4495"))]
+use crate::sending;
+use crate::{AppResult, config, data};
 
 #[cfg(feature = "unstable-msc4495")]
 pub mod recipients;
@@ -54,6 +59,8 @@ pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppRe
         false,
     )
     .await?;
+    #[cfg(feature = "unstable-msc4495")]
+    recipients::wake_recipient_servers(user_id).await?;
     Ok(())
 }
 
@@ -94,12 +101,9 @@ pub async fn set_presence(
     // or a quiet room would never get the update at all.
     #[cfg(feature = "unstable-msc4495")]
     if state_changed {
-        let joined_rooms = data::user::joined_rooms(sender_id).await?;
-        let remote_servers = data::room::joined_servers_for_rooms(&joined_rooms).await?;
-        sending::wake_servers(remote_servers.into_iter())?;
+        recipients::wake_recipient_servers(sender_id).await?;
     }
-    #[cfg(feature = "unstable-msc4495")]
-    let state_changed = false;
+    #[cfg(not(feature = "unstable-msc4495"))]
     if state_changed {
         let edu = Edu::Presence(PresenceContent {
             push: vec![PresenceUpdate {
