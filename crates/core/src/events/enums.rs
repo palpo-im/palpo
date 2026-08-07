@@ -35,6 +35,8 @@ pub const RECOMMENDED_TRANSFERABLE_STATE_EVENT_TYPES: &[StateEventType] = &[
     StateEventType::RoomHistoryVisibility,
     StateEventType::RoomJoinRules,
     StateEventType::RoomPowerLevels,
+    #[cfg(feature = "unstable-msc4495")]
+    StateEventType::RoomPresenceSharing,
 ];
 
 event_enum! {
@@ -49,6 +51,12 @@ event_enum! {
         "m.ignored_user_list" => super::ignored_user_list,
         "m.key_backup" => super::key_backup,
         "m.push_rules" => super::push_rules,
+        #[cfg(feature = "unstable-msc4495")]
+        #[palpo_enum(ident = PresencePrompted)]
+        "org.continuwuity.presence_v2.msc4495.presence.prompted" => super::presence::prompted,
+        #[cfg(feature = "unstable-msc4495")]
+        #[palpo_enum(ident = PresenceSharing)]
+        "org.continuwuity.presence_v2.msc4495.presence.sharing" => super::presence::sharing,
         "m.secret_storage.default_key" => super::secret_storage::default_key,
         "m.secret_storage.key.*" => super::secret_storage::key,
          #[cfg(feature = "unstable-msc4278")]
@@ -184,6 +192,9 @@ event_enum! {
         "m.room.pinned_events" => super::room::pinned_events,
         "m.room.policy" => super::room::policy,
         "m.room.power_levels" => super::room::power_levels,
+        #[cfg(feature = "unstable-msc4495")]
+        #[palpo_enum(alias = "m.room.presence_sharing")]
+        "org.continuwuity.presence_v2.msc4495.room.presence_sharing" => super::room::presence_sharing,
         "m.room.server_acl" => super::room::server_acl,
         "m.room.third_party_invite" => super::room::third_party_invite,
         "m.room.tombstone" => super::room::tombstone,
