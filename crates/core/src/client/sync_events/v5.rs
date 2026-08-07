@@ -1300,3 +1300,92 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "unstable-msc4262"))]
+mod profiles_tests {
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+
+    use super::{ExtensionRoomConfig, Extensions, ExtensionsConfig, Profiles};
+    use crate::profile::UserProfileUpdate;
+    use crate::{owned_user_id, user_id};
+
+    #[test]
+    fn extension_request_uses_the_msc4262_unstable_name() {
+        let config: ExtensionsConfig = from_json_value(json!({
+            "org.matrix.msc4262.profiles": {
+                "enabled": true,
+                "lists": ["all"],
+                "rooms": ["*", "!room:example.org"],
+                "fields": ["displayname", "m.tz"],
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.profiles.enabled, Some(true));
+        assert_eq!(
+            config.profiles.lists.as_deref(),
+            Some(&["all".to_owned()][..])
+        );
+        assert_eq!(
+            config.profiles.rooms.as_deref(),
+            Some(
+                &[
+                    ExtensionRoomConfig::AllSubscribed,
+                    ExtensionRoomConfig::Room("!room:example.org".try_into().unwrap()),
+                ][..]
+            )
+        );
+        assert_eq!(
+            config.profiles.fields.as_ref().map(|fields| fields
+                .iter()
+                .map(|f| f.as_str().to_owned())
+                .collect::<Vec<_>>()),
+            Some(vec!["displayname".to_owned(), "m.tz".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_departed_user_serializes_as_null() {
+        let mut alice = UserProfileUpdate::new();
+        alice.set("displayname".to_owned(), json!("Alice"));
+        alice.remove("org.example.gone".to_owned());
+
+        let extensions = Extensions {
+            profiles: Profiles {
+                users: [
+                    (owned_user_id!("@alice:example.org"), Some(alice)),
+                    (owned_user_id!("@bob:remote.example.org"), None),
+                ]
+                .into(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            to_json_value(&extensions).unwrap()["org.matrix.msc4262.profiles"],
+            json!({
+                "users": {
+                    "@alice:example.org": {
+                        "updated": { "displayname": "Alice" },
+                        "removed": ["org.example.gone"],
+                    },
+                    "@bob:remote.example.org": null,
+                }
+            })
+        );
+
+        let _ = user_id!("@alice:example.org");
+    }
+
+    #[test]
+    fn an_empty_extension_is_omitted() {
+        let extensions = Extensions::default();
+
+        assert_eq!(
+            to_json_value(&extensions)
+                .unwrap()
+                .get("org.matrix.msc4262.profiles"),
+            None
+        );
+    }
+}
