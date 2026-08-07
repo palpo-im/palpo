@@ -5,13 +5,14 @@ use serde_json::json;
 use crate::core::UnixMillis;
 use crate::core::client::room::ReportContentReqBody;
 use crate::core::client::state::{
-    SendStateEventReqBody, SendStateEventResBody, StateEventFormat, StateEventsForEmptyKeyReqArgs,
-    StateEventsForKeyReqArgs, StateEventsForKeyResBody, StateEventsResBody,
+    SendStateEventReqArgs, SendStateEventReqBody, SendStateEventResBody, StateEventFormat,
+    StateEventsForEmptyKeyReqArgs, StateEventsForKeyReqArgs, StateEventsForKeyResBody,
+    StateEventsResBody,
 };
 use crate::core::client::typing::{CreateTypingEventReqBody, Typing};
 use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::identifiers::*;
-use crate::core::room::{RoomEventReqArgs, RoomEventTypeReqArgs, RoomTypingReqArgs};
+use crate::core::room::{RoomEventReqArgs, RoomTypingReqArgs};
 use crate::room::{state, timeline};
 use crate::utils::HtmlEscape;
 use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, json_ok, room};
@@ -223,7 +224,7 @@ pub(super) async fn state_for_empty_key(
 #[endpoint]
 pub(super) async fn send_state_for_key(
     _aa: AuthArgs,
-    args: StateEventsForKeyReqArgs,
+    args: SendStateEventReqArgs,
     body: JsonBody<SendStateEventReqBody>,
     depot: &mut Depot,
 ) -> JsonResult<SendStateEventResBody> {
@@ -236,7 +237,13 @@ pub(super) async fn send_state_for_key(
         &crate::room::get_version(&args.room_id).await?,
         &args.event_type,
         body.0,
-        args.state_key.to_owned(),
+        args.state_key.clone().unwrap_or_default(),
+        args.sticky_duration_ms,
+        authed
+            .appservice()
+            .is_some()
+            .then_some(args.timestamp)
+            .flatten(),
     )
     .await?;
 
@@ -254,7 +261,7 @@ pub(super) async fn send_state_for_key(
 #[endpoint]
 pub(super) async fn send_state_for_empty_key(
     _aa: AuthArgs,
-    args: RoomEventTypeReqArgs,
+    args: SendStateEventReqArgs,
     body: JsonBody<SendStateEventReqBody>,
     depot: &mut Depot,
 ) -> JsonResult<SendStateEventResBody> {
@@ -264,9 +271,15 @@ pub(super) async fn send_state_for_empty_key(
         authed.user_id(),
         &args.room_id,
         &crate::room::get_version(&args.room_id).await?,
-        &args.event_type.to_string().into(),
+        &args.event_type,
         body.0,
         "".into(),
+        args.sticky_duration_ms,
+        authed
+            .appservice()
+            .is_some()
+            .then_some(args.timestamp)
+            .flatten(),
     )
     .await?;
 

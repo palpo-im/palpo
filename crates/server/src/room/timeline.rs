@@ -574,10 +574,9 @@ pub async fn append_pdu(
     }
     .save()
     .await?;
-    diesel::update(events::table.find(&*pdu.event_id))
-        .set(events::is_outlier.eq(false))
-        .execute(&mut connect().await?)
-        .await?;
+    // MSC4354: publish timeline visibility and the sticky delivery position together. If
+    // this fails, the event remains an outlier and a federation retry can safely resume.
+    crate::event::sticky::promote_to_timeline(pdu).await?;
 
     for prev_id in &pdu.prev_events {
         let new_edge = NewDbEventEdge {
@@ -807,6 +806,9 @@ pub async fn build_and_append_pdu(
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<SnPduEvent> {
+    // Identical content is normally a no-op, but a sticky send is asking for a fresh
+    // sticky window even when the value has not moved -- refreshing an MSC4354 state event
+    // is the whole point of sending it again.
     if let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
             room_id,
@@ -816,6 +818,10 @@ pub async fn build_and_append_pdu(
         )
         .await
         && curr_state.content.get() == pdu_builder.content.get()
+        && state_send_is_deduplicable(
+            pdu_builder.sticky_duration_ms,
+            curr_state.sticky_duration_ms(),
+        )
     {
         return Ok(curr_state);
     }
@@ -852,6 +858,13 @@ pub async fn build_and_append_pdu(
     Ok(pdu)
 }
 
+fn state_send_is_deduplicable(
+    requested_sticky: Option<crate::core::events::sticky::StickyDurationMs>,
+    current_sticky: Option<crate::core::events::sticky::StickyDurationMs>,
+) -> bool {
+    requested_sticky.is_none() && current_sticky.is_none()
+}
+
 /// Replace a PDU with the redacted form.
 #[tracing::instrument(skip(reason))]
 pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> {
@@ -875,6 +888,11 @@ pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> 
                 .execute(conn)
                 .await?;
             diesel::delete(event_searches::table.filter(event_searches::event_id.eq(event_id)))
+                .execute(conn)
+                .await?;
+            // The redacted event no longer carries a sticky object, so stop delivering it
+            // outside the timeline.
+            diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
                 .execute(conn)
                 .await?;
 
@@ -906,7 +924,8 @@ mod tests {
     use serde_json::value::RawValue;
     use tracing_test::traced_test;
 
-    use super::canonicalize_prev_content;
+    use super::{canonicalize_prev_content, state_send_is_deduplicable};
+    use crate::core::events::sticky::StickyDurationMs;
     use crate::core::identifiers::{EventId, OwnedEventId, OwnedRoomId, RoomId};
     use crate::core::serde::to_canonical_object;
 
@@ -931,6 +950,16 @@ mod tests {
 
         let expected = to_canonical_object(serde_json::json!({"membership":"join"})).unwrap();
         assert_eq!(got, Some(expected));
+    }
+
+    #[test]
+    fn state_deduplication_preserves_sticky_form_changes() {
+        let sticky = Some(StickyDurationMs::new_clamped(60_000_u64));
+
+        assert!(state_send_is_deduplicable(None, None));
+        assert!(!state_send_is_deduplicable(sticky, None));
+        assert!(!state_send_is_deduplicable(None, sticky));
+        assert!(!state_send_is_deduplicable(sticky, sticky));
     }
 
     #[test]

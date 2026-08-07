@@ -261,6 +261,20 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
+    // MSC4354: reclaim the sticky-event index once events fall out of their sticky
+    // window. Delivery already filters on the expiry, so this only frees space.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            if let Err(e) =
+                crate::event::sticky::delete_expired(crate::core::UnixMillis::now()).await
+            {
+                tracing::warn!(error = ?e, "failed to reap expired sticky events");
+            }
+        }
+    });
+
     let router = routing::root();
     // let doc = OpenApi::new("palpo api", "0.0.1").merge_router(&router);
     // let router = router
