@@ -232,6 +232,26 @@ pub async fn check_event(
     add_signature(&policy, pdu_json, rules).await
 }
 
+/// Verify an event received by a synchronous federation membership endpoint, then enforce
+/// the room's Policy Server.
+///
+/// The generic transaction path already verifies the sender before reaching the policy
+/// check. The invite/join/leave/knock endpoints need a hard Policy Server error instead of
+/// a soft failure, so they call this earlier and must perform the same verification first;
+/// otherwise an authenticated peer could make us forward unverified events to the Policy
+/// Server.
+pub async fn check_federation_event(
+    room_id: &RoomId,
+    pdu_json: &mut CanonicalJsonObject,
+    room_version: &RoomVersionId,
+) -> AppResult<()> {
+    crate::server_key::verify_event(pdu_json, room_version)
+        .await
+        .map_err(|e| MatrixError::invalid_param(format!("signature verification failed: {e}")))?;
+    let rules = crate::room::get_version_rules(room_version)?;
+    check_event(room_id, pdu_json, &rules).await
+}
+
 /// Whether the event is allowed into the room by the room's Policy Server.
 ///
 /// The federation variant of [`check_event`]: a Policy Server that refuses to sign or

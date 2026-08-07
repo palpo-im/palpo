@@ -39,12 +39,21 @@ async fn sign_event(
         .and_then(|value| RoomId::parse(value).ok())
         .ok_or_else(|| MatrixError::bad_json("Policy Server signing request has no room_id"))?;
 
-    // MSC4284 has a Policy Server answer 404 for rooms it does not serve. We only serve
-    // rooms we are in, which is also what tells us the room version to redact against.
-    let rules = match crate::room::get_version(&room_id).await {
-        Ok(room_version) => crate::room::get_version_rules(&room_version)?,
-        Err(_) => return Err(MatrixError::not_found("Unknown room").into()),
+    // MSC4284 has a Policy Server answer 404 for rooms it does not serve. A room record
+    // alone is insufficient: invited/peeked rooms also have one. The current usable policy
+    // configuration must name this server, and its joined-user requirement is enforced by
+    // `policy_server`.
+    let policy = crate::room::policy::policy_server(&room_id).await?;
+    if !matches!(policy, Some(policy) if policy.via == *config::server_name()) {
+        return Err(MatrixError::not_found("Room is not protected by this Policy Server").into());
+    }
+
+    let room_version = match crate::room::get_version(&room_id).await {
+        Ok(room_version) => room_version,
+        Err(e) if e.is_not_found() => return Err(MatrixError::not_found("Unknown room").into()),
+        Err(e) => return Err(e),
     };
+    let rules = crate::room::get_version_rules(&room_version)?;
 
     let signature = sign_policy_event(object, &rules)?;
 
