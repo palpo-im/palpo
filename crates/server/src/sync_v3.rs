@@ -40,7 +40,7 @@ pub async fn sync_events(
     args: &SyncEventsReqArgs,
 ) -> AppResult<SyncEventsResBody> {
     crate::user::get_push_rules(sender_id).await?;
-    let curr_sn = data::curr_sn().await?;
+    let curr_sn = data::user::device::curr_sn_after_inbox_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let since_tk = if let Some(since_str) = args.since.as_ref() {
         let since_tk: BatchToken = since_str.parse()?;

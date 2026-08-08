@@ -333,7 +333,7 @@ pub async fn sync_events(
     if req_body.extensions.account_data.enabled.unwrap_or(false) {
         crate::user::get_push_rules(sender_id).await?;
     }
-    let curr_sn = data::curr_sn().await?;
+    let curr_sn = data::user::device::curr_sn_after_inbox_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
 

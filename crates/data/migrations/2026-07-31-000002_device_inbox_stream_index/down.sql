@@ -1,0 +1,1 @@
+DROP INDEX device_inboxes_user_device_sn_idx;
