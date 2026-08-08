@@ -5,11 +5,10 @@ use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::Seqnum;
-use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::member::MembershipState;
 use crate::core::events::{AnyStrippedStateEvent, AnySyncStateEvent, GlobalAccountDataEventType};
 use crate::core::identifiers::*;
-use crate::core::push::{AnyPushRuleRef, NewPushRule, NewSimplePushRule};
+use crate::core::push::{NewPushRule, NewSimplePushRule};
 use crate::core::serde::{JsonValue, RawJson};
 use crate::data::room::{DbEventPushSummary, DbRoomTag, NewDbRoomTag};
 use crate::data::schema::*;
@@ -444,51 +443,38 @@ pub async fn copy_room_tags_and_direct_to_room(
 /// Copy all of the push rules from one room to another for a specific user
 pub async fn copy_push_rules_from_room_to_room(
     user_id: &UserId,
-    _old_room_id: &RoomId,
+    old_room_id: &RoomId,
     new_room_id: &RoomId,
 ) -> AppResult<()> {
-    let Ok(mut user_data_content) = crate::data::user::get_data::<PushRulesEventContent>(
-        user_id,
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    else {
-        return Ok(());
-    };
+    // `get_push_rules` falls back to server defaults for a record it cannot
+    // parse, which is fine for evaluation but not here: this path writes back,
+    // and writing the fallback would replace the raw value that fallback
+    // exists to preserve.
+    for _ in 0..4 {
+        let Ok(Some(mut writable)) = crate::user::get_writable_push_rules(user_id).await else {
+            return Ok(());
+        };
 
-    let mut new_rules = vec![];
-    for push_rule in user_data_content.global.iter() {
-        if !push_rule.enabled() {
-            continue;
+        let Some(old_rule) = writable.content.global.room.get(old_room_id.as_str()) else {
+            return Ok(());
+        };
+        if !old_rule.enabled {
+            return Ok(());
+        }
+        let new_rule = NewPushRule::Room(NewSimplePushRule::new(
+            new_room_id.to_owned(),
+            old_rule.actions.clone(),
+        ));
+        if let Err(e) = writable.content.global.insert(new_rule, None, None) {
+            error!("failed to insert copied push rule: {e}");
+            return Ok(());
         }
 
-        // Other `AnyPushRuleRef` variants (Override, Content, PostContent, Sender,
-        // Underride) are intentionally not copied yet.
-        #[allow(clippy::single_match)]
-        match push_rule {
-            AnyPushRuleRef::Room(rule) => {
-                let new_rule = NewPushRule::Room(NewSimplePushRule::new(
-                    new_room_id.to_owned(),
-                    rule.actions.clone(),
-                ));
-                new_rules.push(new_rule);
-            }
-            _ => {}
-        }
-    }
-    for new_rule in new_rules {
-        if let Err(e) = user_data_content.global.insert(new_rule, None, None) {
-            error!("failed to insert copied push rule: {}", e);
+        if writable.save(user_id).await? {
+            return Ok(());
         }
     }
 
-    crate::data::user::set_data(
-        user_id,
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-        serde_json::to_value(user_data_content)?,
-    )
-    .await?;
+    warn!(%user_id, %old_room_id, %new_room_id, "push rules kept changing; skipped room-rule copy");
     Ok(())
 }
