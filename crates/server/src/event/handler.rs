@@ -291,8 +291,6 @@ pub async fn process_to_outlier_pdu(
             room_id: room_id.to_owned(),
             room_version: room_version.to_owned(),
             event_sn: Some(event_sn),
-            rejected_auth_events: vec![],
-            rejected_prev_events: vec![],
         }));
     }
 
@@ -372,15 +370,13 @@ pub async fn process_to_outlier_pdu(
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
                 event_sn: None,
-                rejected_auth_events: vec![],
-                rejected_prev_events: vec![],
             }));
         }
         return Ok(None);
     }
 
     let mut soft_failed = false;
-    let (prev_events, missing_prev_event_ids) =
+    let (_, missing_prev_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.prev_events).await?;
     if !missing_prev_event_ids.is_empty() {
         warn!(
@@ -389,22 +385,9 @@ pub async fn process_to_outlier_pdu(
         );
         soft_failed = true;
     }
-    let rejected_prev_events = prev_events
-        .iter()
-        .filter_map(|pdu| {
-            if pdu.rejected() {
-                Some(pdu.event_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    if !rejected_prev_events.is_empty() {
-        incoming_pdu.rejection_reason = Some(format!(
-            "event's prev events rejected: {rejected_prev_events:?}"
-        ));
-        // soft_failed = true; // Will try to fetch rejected prev events again later
-    }
+    // A rejected predecessor does not reject its descendants. State resolution
+    // skips rejected predecessors and falls back to the last accepted state, so
+    // a later valid event can reconnect the room DAG.
 
     let (auth_events, missing_auth_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.auth_events).await?;
@@ -463,7 +446,7 @@ pub async fn process_to_outlier_pdu(
         let was_soft_failed = soft_failed;
         if let Err(e) = auth_check(&incoming_pdu, &version_rules, None).await {
             match e {
-                AppError::State(StateError::Forbidden(brief)) => {
+                AppError::State(StateError::Forbidden(brief) | StateError::AuthEvent(brief)) => {
                     incoming_pdu.rejection_reason = Some(brief);
                 }
                 _ => {
@@ -483,8 +466,6 @@ pub async fn process_to_outlier_pdu(
         room_id: room_id.to_owned(),
         room_version: room_version.to_owned(),
         event_sn: None,
-        rejected_auth_events,
-        rejected_prev_events,
     }))
 }
 

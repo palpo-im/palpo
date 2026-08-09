@@ -33,8 +33,6 @@ pub struct OutlierPdu {
     pub room_id: OwnedRoomId,
     pub room_version: RoomVersionId,
     pub event_sn: Option<Seqnum>,
-    pub rejected_auth_events: Vec<OwnedEventId>,
-    pub rejected_prev_events: Vec<OwnedEventId>,
 }
 impl AsRef<PduEvent> for OutlierPdu {
     fn as_ref(&self) -> &PduEvent {
@@ -172,11 +170,11 @@ impl OutlierPdu {
         remote_server: &ServerName,
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
-        if (!self.soft_failed && !self.rejected())
-            || (self.rejected()
-                && self.rejected_prev_events.is_empty()
-                && self.rejected_auth_events.is_empty())
-        {
+        // A rejected event cannot become valid by fetching more predecessors:
+        // event IDs and their auth references are immutable. Persist it without
+        // issuing federation requests so later valid descendants can reconnect
+        // to the last accepted state.
+        if !self.soft_failed || self.rejected() {
             return self.save_to_database(is_backfill).await;
         }
 
@@ -213,13 +211,6 @@ impl OutlierPdu {
             .filter(events::is_rejected.eq(true));
         Ok(diesel_exists!(query, &mut connect().await?)?)
     }
-    async fn any_prev_event_rejected(&self) -> AppResult<bool> {
-        let query = events::table
-            .filter(events::id.eq_any(&self.pdu.prev_events))
-            .filter(events::is_rejected.eq(true));
-        Ok(diesel_exists!(query, &mut connect().await?)?)
-    }
-
     pub async fn process_pulled(
         mut self,
         _remote_server: &ServerName,
@@ -231,10 +222,6 @@ impl OutlierPdu {
             return self.save_to_database(is_backfill).await;
         }
 
-        if self.any_prev_event_rejected().await? {
-            self.rejection_reason = Some("one or more prev events are rejected".to_string());
-            return self.save_to_database(is_backfill).await;
-        }
         if self.any_auth_event_rejected().await?
             && let Err(e) = fetch_and_process_auth_chain(
                 &self.remote_server,
@@ -323,7 +310,9 @@ impl OutlierPdu {
                 auth_check(&self.pdu, &version_rules, state_at_incoming_event.as_ref()).await
             {
                 match e {
-                    AppError::State(StateError::Forbidden(brief)) => {
+                    AppError::State(
+                        StateError::Forbidden(brief) | StateError::AuthEvent(brief),
+                    ) => {
                         self.pdu.rejection_reason = Some(brief);
                     }
                     _ => {

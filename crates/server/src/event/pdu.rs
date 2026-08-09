@@ -76,6 +76,16 @@ impl SnPduEvent {
     }
 
     pub async fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
+        // Clients must always be able to observe their own membership transitions.
+        // In particular, a `knock` -> `leave` transition would otherwise be hidden
+        // by shared history visibility because neither side is a joined membership.
+        // The event only describes the requesting user's own membership/profile.
+        if self.event_ty == TimelineEventType::RoomMember
+            && self.state_key.as_deref() == Some(user_id.as_str())
+        {
+            return Ok(true);
+        }
+
         let frame_id = match state::get_pdu_before_frame_id(&self.event_id).await {
             Ok(frame_id) => frame_id,
             // Non-state event frames have always been immutable because `save_state`
