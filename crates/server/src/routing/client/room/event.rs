@@ -462,20 +462,16 @@ pub(super) async fn timestamp_to_event(
         // the timestamp result as an outlier while its predecessor is missing.
         // Retry after backfill so the now-connected result gets an event-time
         // state frame and can be authorized by `/context` and `/messages`.
-        match state::get_pdu_frame_id(&event_id).await {
-            Ok(_) => {}
-            Err(e) if e.is_not_found() => {
-                process_pulled_pdu(
-                    &remote_server,
-                    &event_id,
-                    &args.room_id,
-                    &room_version,
-                    event_value_for_promotion,
-                    true,
-                )
-                .await?;
-            }
-            Err(e) => return Err(e),
+        if timeline::get_non_outlier_pdu(&event_id).await?.is_none() {
+            process_pulled_pdu(
+                &remote_server,
+                &event_id,
+                &args.room_id,
+                &room_version,
+                event_value_for_promotion,
+                true,
+            )
+            .await?;
         }
 
         return json_ok(TimestampToEventResBody {

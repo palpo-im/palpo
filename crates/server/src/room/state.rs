@@ -1234,6 +1234,11 @@ mod history_visibility_tests {
             Some(&MembershipState::Invite),
             true
         ));
+        assert!(!history_visibility_allows(
+            &HistoryVisibility::Joined,
+            Some(&MembershipState::Leave),
+            true
+        ));
     }
 
     #[test]
