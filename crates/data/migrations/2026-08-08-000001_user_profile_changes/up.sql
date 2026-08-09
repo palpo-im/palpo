@@ -39,7 +39,10 @@ DELETE FROM user_profiles a
     WHERE a.room_id IS NULL
       AND b.room_id IS NULL
       AND a.user_id = b.user_id
-      AND a.id > b.id;
+      -- Keep the newest global profile. Older Palpo versions could create more
+      -- than one NULL-room row because PostgreSQL does not consider NULLs equal
+      -- for a normal unique constraint.
+      AND a.id < b.id;
 
 CREATE UNIQUE INDEX user_profiles_global_udx
     ON user_profiles (user_id)

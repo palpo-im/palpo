@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::client::device::Device;
 use crate::core::events::AnyToDeviceEvent;
@@ -90,6 +90,48 @@ pub struct NewDbDeviceInbox {
     pub device_id: OwnedDeviceId,
     pub json_data: JsonValue,
     pub created_at: i64,
+}
+
+const INBOX_STREAM_LOCK_NAMESPACE: i64 = 1_346_456_656;
+
+fn inbox_stream_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
+    // Length-prefix the user ID so opaque device IDs cannot make two pairs produce the
+    // same input string even if they contain punctuation used by Matrix identifiers.
+    format!("{}:{user_id}{device_id}", user_id.as_str().len())
+}
+
+// Serialize one inbox's sequence allocation with its sync snapshots across every Palpo process.
+// PostgreSQL sequences advance before the surrounding transaction commits, so readers must
+// take the same database-backed lock before publishing a cursor based on `occur_sn_seq`.
+pub(crate) async fn lock_inbox_stream(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> Result<(), DieselError> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(inbox_stream_lock_key(user_id, device_id))
+        .bind::<diesel::sql_types::BigInt, _>(INBOX_STREAM_LOCK_NAMESPACE)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Read the global stream position after every earlier write to this inbox is committed.
+pub async fn curr_sn_after_inbox_writes(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Seqnum> {
+    let curr_sn = connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn, user_id, device_id).await?;
+            diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
+                .get_result::<Seqnum>(conn)
+                .await
+        })
+        .await?;
+
+    Ok(curr_sn)
 }
 
 pub async fn create_device(
@@ -320,12 +362,22 @@ pub async fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> Da
 pub async fn get_to_device_events(
     user_id: &UserId,
     device_id: &DeviceId,
-    _since_sn: Option<Seqnum>,
-    _until_sn: Option<Seqnum>,
+    since_sn: Option<Seqnum>,
+    until_sn: Option<Seqnum>,
 ) -> DataResult<Vec<RawJson<AnyToDeviceEvent>>> {
-    device_inboxes::table
+    let mut query = device_inboxes::table
         .filter(device_inboxes::user_id.eq(user_id))
         .filter(device_inboxes::device_id.eq(device_id))
+        .into_boxed();
+    if let Some(since_sn) = since_sn {
+        query = query.filter(device_inboxes::occur_sn.ge(since_sn));
+    }
+    if let Some(until_sn) = until_sn {
+        query = query.filter(device_inboxes::occur_sn.lt(until_sn));
+    }
+
+    query
+        .order(device_inboxes::occur_sn.asc())
         .load::<DbDeviceInbox>(&mut connect().await?)
         .await?
         .into_iter()
@@ -334,6 +386,54 @@ pub async fn get_to_device_events(
                 .map_err(|_| DataError::public("Invalid JSON in device inbox"))
         })
         .collect::<DataResult<Vec<_>>>()
+}
+
+/// Reads a device's to-device messages in stream order, starting after `since_sn`.
+///
+/// Returns each message with its stream position so the caller can hand the client a
+/// resume token. Unlike `/sync`, reading does not consume: MSC3814 requires that a
+/// dehydrated device's messages survive being read, so that an interrupted rehydration can
+/// be restarted by another device.
+pub async fn to_device_events_from(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    since_sn: Option<Seqnum>,
+    limit: usize,
+) -> DataResult<(Vec<(Seqnum, RawJson<AnyToDeviceEvent>)>, bool)> {
+    let fetch_limit = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut rows = connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn, user_id, device_id).await?;
+
+            let mut query = device_inboxes::table
+                .filter(device_inboxes::user_id.eq(user_id))
+                .filter(device_inboxes::device_id.eq(device_id))
+                .into_boxed();
+            if let Some(since_sn) = since_sn {
+                query = query.filter(device_inboxes::occur_sn.gt(since_sn));
+            }
+
+            query
+                .order(device_inboxes::occur_sn.asc())
+                .limit(fetch_limit)
+                .load::<DbDeviceInbox>(conn)
+                .await
+        })
+        .await?;
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+
+    let events = rows
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value(event.json_data)
+                .map(|json| (event.occur_sn, json))
+                .map_err(|_| DataError::public("Invalid JSON in device inbox"))
+        })
+        .collect::<DataResult<Vec<_>>>()?;
+
+    Ok((events, has_more))
 }
 
 pub async fn add_to_device_event(
@@ -350,14 +450,20 @@ pub async fn add_to_device_event(
 
     let json_data = serde_json::to_value(&json)?;
 
-    diesel::insert_into(device_inboxes::table)
-        .values(NewDbDeviceInbox {
-            user_id: target_user_id.to_owned(),
-            device_id: target_device_id.to_owned(),
-            json_data,
-            created_at: UnixMillis::now().get() as i64,
+    connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn, target_user_id, target_device_id).await?;
+            diesel::insert_into(device_inboxes::table)
+                .values(NewDbDeviceInbox {
+                    user_id: target_user_id.to_owned(),
+                    device_id: target_device_id.to_owned(),
+                    json_data,
+                    created_at: UnixMillis::now().get() as i64,
+                })
+                .execute(conn)
+                .await
         })
-        .execute(&mut connect().await?)
         .await?;
 
     Ok(())
@@ -390,9 +496,69 @@ pub async fn remove_all_to_device_events(user_id: &UserId, device_id: &DeviceId)
     Ok(())
 }
 
+/// Remove an abandoned dehydrated inbox unless that ID belongs to a live device.
+///
+/// The table lock makes the existence check and purge atomic with every path that inserts a
+/// `user_devices` row, including callers that do not use `create_device`.
+pub async fn remove_to_device_events_unless_live(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<()> {
+    connect()
+        .await?
+        .transaction::<_, DieselError, _>(async |conn| {
+            lock_inbox_stream(conn, user_id, device_id).await?;
+            diesel::sql_query("LOCK TABLE user_devices IN SHARE ROW EXCLUSIVE MODE")
+                .execute(conn)
+                .await?;
+
+            let is_live = diesel::select(diesel::dsl::exists(
+                user_devices::table
+                    .filter(user_devices::user_id.eq(user_id))
+                    .filter(user_devices::device_id.eq(device_id)),
+            ))
+            .get_result::<bool>(conn)
+            .await?;
+
+            if !is_live {
+                diesel::delete(
+                    device_inboxes::table
+                        .filter(device_inboxes::user_id.eq(user_id))
+                        .filter(device_inboxes::device_id.eq(device_id)),
+                )
+                .execute(conn)
+                .await?;
+            }
+
+            Ok(())
+        })
+        .await?;
+
+    Ok(())
+}
+
 pub async fn remove_all_user_to_device_events(user_id: &UserId) -> DataResult<()> {
     diesel::delete(device_inboxes::table.filter(device_inboxes::user_id.eq(user_id)))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod inbox_stream_lock_tests {
+    use super::inbox_stream_lock_key;
+    use crate::core::{OwnedDeviceId, owned_user_id};
+
+    #[test]
+    fn lock_keys_are_scoped_to_the_exact_inbox() {
+        let user = owned_user_id!("@alice:example.org");
+        let other_user = owned_user_id!("@bob:example.org");
+        let device = OwnedDeviceId::from("DEVICE");
+        let other_device = OwnedDeviceId::from("OTHER");
+
+        let key = inbox_stream_lock_key(&user, &device);
+        assert_eq!(key, inbox_stream_lock_key(&user, &device));
+        assert_ne!(key, inbox_stream_lock_key(&user, &other_device));
+        assert_ne!(key, inbox_stream_lock_key(&other_user, &device));
+    }
 }

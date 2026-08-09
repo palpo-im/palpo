@@ -418,10 +418,14 @@ pub async fn sync_events(
     #[cfg(feature = "unstable-msc4262")]
     acknowledge_profile_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
 
+    if req_body.extensions.account_data.enabled.unwrap_or(false) {
+        crate::user::get_push_rules(sender_id).await?;
+    }
+
     #[cfg(feature = "unstable-msc4262")]
-    let curr_sn = data::user::curr_sn_after_profile_writes().await?;
+    let curr_sn = data::user::curr_sn_after_profile_and_inbox_writes(sender_id, device_id).await?;
     #[cfg(not(feature = "unstable-msc4262"))]
-    let curr_sn = data::curr_sn().await?;
+    let curr_sn = data::user::device::curr_sn_after_inbox_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
 

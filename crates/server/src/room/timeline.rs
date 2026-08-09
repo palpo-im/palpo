@@ -6,14 +6,13 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde::Deserialize;
 
 use crate::core::Seqnum;
-use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::encrypted::Relation;
 use crate::core::events::room::member::MembershipState;
-use crate::core::events::{GlobalAccountDataEventType, StateEventType, TimelineEventType};
+use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceState;
-use crate::core::push::{Action, HighlightTweakValue, Ruleset, Tweak};
+use crate::core::push::{Action, HighlightTweakValue, Tweak};
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, to_canonical_object};
 use crate::core::state::Event;
 use crate::data::room::{DbEvent, DbEventData, NewDbEventEdge};
@@ -384,13 +383,7 @@ pub async fn append_pdu(
             continue;
         }
 
-        let rules_for_user = data::user::get_global_data::<PushRulesEventContent>(
-            user_id,
-            &GlobalAccountDataEventType::PushRules.to_string(),
-        )
-        .await?
-        .map(|content: PushRulesEventContent| content.global)
-        .unwrap_or_else(|| Ruleset::server_default(user_id));
+        let rules_for_user = crate::user::get_push_rules(user_id).await?.global;
 
         let mut highlight = false;
         let mut notify = false;

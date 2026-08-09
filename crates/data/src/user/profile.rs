@@ -27,14 +27,23 @@ async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), 
     Ok(())
 }
 
-/// Read the global stream position after every earlier profile mutation commits.
-pub async fn curr_sn_after_profile_writes() -> DataResult<Seqnum> {
+/// Read the global stream position after every earlier profile mutation and write to this
+/// device inbox commits.
+///
+/// Both streams allocate from `occur_sn_seq`. Holding both advisory locks in one
+/// transaction prevents the sequence read from observing a position allocated by an
+/// uncommitted writer from the other stream.
+pub async fn curr_sn_after_profile_and_inbox_writes(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Seqnum> {
     let curr_sn = connect()
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
             // Readers may run together, but an exclusive writer cannot publish a stream
             // position until its profile row and change row have both committed.
             lock_profile_stream_shared(conn).await?;
+            super::device::lock_inbox_stream(conn, user_id, device_id).await?;
             diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
                 .get_result::<Seqnum>(conn)
                 .await
