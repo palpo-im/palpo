@@ -334,7 +334,7 @@ async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDevice
 
                 DeviceIdOrAllDevices::AllDevices => {
                     let (sender, ev_type, event) = (&sender, &ev_type, &event);
-                    for target_device_id in data::user::all_device_ids(target_user_id)
+                    for target_device_id in data::user::all_to_device_target_ids(target_user_id)
                         .await
                         .unwrap_or_default()
                         .iter()

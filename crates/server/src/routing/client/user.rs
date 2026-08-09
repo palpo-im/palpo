@@ -35,3 +35,11 @@ pub fn authed_router() -> Router {
                 ),
         )
 }
+
+pub fn stable_v1_router() -> Router {
+    Router::with_hoop(hoops::limit_rate).push(
+        Router::with_path("mutual_rooms")
+            .hoop(hoops::auth_by_access_token_without_query_masquerade)
+            .get(room::get_mutual_rooms_v1),
+    )
+}

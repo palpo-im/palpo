@@ -380,7 +380,7 @@ pub async fn process_to_outlier_pdu(
                 pdu: incoming_pdu,
                 json_data: val,
                 soft_failed: false,
-                policy_refused: false,
+                policy_refused: !policy_allowed,
                 remote_server: remote_server.to_owned(),
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
