@@ -111,7 +111,7 @@ subtle = "2.6"
 serde_html_form = "0.4.0"
 serde_ignored = "0.1.14"
 serde_json = { version = "1.0.150" }
-serde-saphyr = { version = "0.0.29" }
+serde-saphyr = { version = "1.0.1" }
 serde_regex = { version = "1.2.0" }
 smallvec = { version = "1.15.1" }
 sha2 = "0.11.0"
