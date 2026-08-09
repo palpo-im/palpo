@@ -29,12 +29,22 @@ async fn lock_sticky_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselEr
     Ok(())
 }
 
-/// Read the global stream position after every earlier sticky delivery update commits.
-pub async fn curr_sn_after_sticky_writes() -> AppResult<Seqnum> {
+/// Read the global stream position after all earlier sticky and device-inbox writes that
+/// can affect this `/sync` have committed.
+///
+/// Both features allocate from `occur_sn_seq`. Taking their advisory locks in one
+/// transaction is essential: two separate snapshots could let the second one observe a
+/// sequence number allocated by an uncommitted writer that started after the first lock
+/// was released, causing the returned sync token to skip that event permanently.
+pub async fn curr_sn_after_sync_writes(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> AppResult<Seqnum> {
     let curr_sn = connect()
         .await?
         .transaction::<_, DieselError, _>(async |conn| {
             lock_sticky_stream(conn).await?;
+            crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
             diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
                 .get_result::<Seqnum>(conn)
                 .await
@@ -127,17 +137,29 @@ pub async fn promote_to_timeline(pdu: &SnPduEvent) -> AppResult<()> {
             // events created by older code and direct membership paths which did not
             // persist it; those reach promotion immediately, so `now` is their receipt
             // time for practical purposes.
-            let stored_received_at = events::table
+            // Lock the event row so a concurrent redaction and promotion have a defined
+            // order. Without this, promotion could read the old unredacted PDU, race with
+            // `redact_pdu` deleting its sticky row, and recreate that row after the
+            // redaction committed.
+            let (stored_received_at, is_redacted) = events::table
                 .find(&*pdu.event_id)
-                .select(events::received_at)
-                .first::<Option<i64>>(conn)
+                .select((events::received_at, events::is_redacted))
+                .for_update()
+                .first::<(Option<i64>, bool)>(conn)
                 .await?;
             let received_at = stored_received_at
                 .and_then(|value| u64::try_from(value).ok())
                 .map(UnixMillis)
                 .unwrap_or_else(UnixMillis::now);
             let now = UnixMillis::now();
-            if let Some(expires_at) = pdu.sticky_expires_at(received_at)
+            if is_redacted {
+                // Also repairs a stale row left by an older server or interrupted cleanup.
+                diesel::delete(
+                    event_stickies::table.filter(event_stickies::event_id.eq(&pdu.event_id)),
+                )
+                .execute(conn)
+                .await?;
+            } else if let Some(expires_at) = pdu.sticky_expires_at(received_at)
                 && expires_at > now
             {
                 diesel::insert_into(event_stickies::table)
@@ -159,17 +181,19 @@ pub async fn promote_to_timeline(pdu: &SnPduEvent) -> AppResult<()> {
 
             // `nextval` is evaluated only for a pending, unexpired row. An event that
             // expired while it was an outlier consumes no delivery position.
-            diesel::update(
-                event_stickies::table
-                    .filter(event_stickies::event_id.eq(&pdu.event_id))
-                    .filter(event_stickies::deliver_sn.is_null())
-                    .filter(event_stickies::expires_at.gt(now.0 as i64)),
-            )
-            .set(event_stickies::deliver_sn.eq(diesel::dsl::sql::<
-                diesel::sql_types::Nullable<diesel::sql_types::BigInt>,
-            >("nextval('occur_sn_seq')")))
-            .execute(conn)
-            .await?;
+            if !is_redacted {
+                diesel::update(
+                    event_stickies::table
+                        .filter(event_stickies::event_id.eq(&pdu.event_id))
+                        .filter(event_stickies::deliver_sn.is_null())
+                        .filter(event_stickies::expires_at.gt(now.0 as i64)),
+                )
+                .set(event_stickies::deliver_sn.eq(diesel::dsl::sql::<
+                    diesel::sql_types::Nullable<diesel::sql_types::BigInt>,
+                >("nextval('occur_sn_seq')")))
+                .execute(conn)
+                .await?;
+            }
 
             diesel::update(events::table.find(&*pdu.event_id))
                 .set(events::is_outlier.eq(false))

@@ -96,7 +96,8 @@ pub fn router() -> Router {
                             .delete(device::delete_dehydrated)
                             .push(
                                 Router::with_path("{device_id}/events")
-                                    .post(to_device::for_dehydrated),
+                                    .get(to_device::for_dehydrated)
+                                    .post(to_device::for_dehydrated_legacy),
                             ),
                     ),
             )
@@ -111,12 +112,11 @@ pub fn router() -> Router {
     }
     client
         .push(
-            Router::with_path("v1")
-                .hoop(hoops::auth_by_access_token)
-                .push(
-                    Router::with_path("room_summary/{room_id_or_alias}")
-                        .get(room::summary::get_summary),
-                ),
+            Router::with_path("v1").push(user::stable_v1_router()).push(
+                Router::with_path("room_summary/{room_id_or_alias}")
+                    .hoop(hoops::auth_by_access_token)
+                    .get(room::summary::get_summary),
+            ),
         )
         .push(Router::with_path("versions").get(supported_versions))
         .push(Router::with_path("v1/auth_metadata").get(unstable::auth_metadata))
@@ -219,6 +219,10 @@ fn supported_versions_body() -> VersionsResBody {
             ("org.matrix.e2e_cross_signing".to_owned(), true),
             ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
             ("uk.half-shot.msc2666.query_mutual_rooms".to_owned(), true), /* query mutual rooms (https://github.com/matrix-org/matrix-spec-proposals/pull/2666) */
+            (
+                "uk.half-shot.msc2666.query_mutual_rooms.stable".to_owned(),
+                true,
+            ),
             ("org.matrix.msc2836".to_owned(), true), /* threading/threads (https://github.com/matrix-org/matrix-spec-proposals/pull/2836) */
             ("org.matrix.msc2946".to_owned(), true), /* spaces/hierarchy summaries (https://github.com/matrix-org/matrix-spec-proposals/pull/2946) */
             ("org.matrix.msc3026.busy_presence".to_owned(), true), /* busy presence status (https://github.com/matrix-org/matrix-spec-proposals/pull/3026) */
@@ -286,6 +290,17 @@ mod supported_versions_tests {
         assert_eq!(
             to_json_value(server).unwrap(),
             json!({ "name": "Palpo", "version": server.version })
+        );
+    }
+
+    #[test]
+    fn advertises_stable_mutual_rooms_endpoint() {
+        let body = supported_versions_body();
+
+        assert_eq!(
+            body.unstable_features
+                .get("uk.half-shot.msc2666.query_mutual_rooms.stable"),
+            Some(&true)
         );
     }
 }

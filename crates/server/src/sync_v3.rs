@@ -39,7 +39,8 @@ pub async fn sync_events(
     device_id: &DeviceId,
     args: &SyncEventsReqArgs,
 ) -> AppResult<SyncEventsResBody> {
-    let curr_sn = crate::event::sticky::curr_sn_after_sticky_writes().await?;
+    crate::user::get_push_rules(sender_id).await?;
+    let curr_sn = crate::event::sticky::curr_sn_after_sync_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let since_tk = if let Some(since_str) = args.since.as_ref() {
         let since_tk: BatchToken = since_str.parse()?;
@@ -93,6 +94,7 @@ pub async fn sync_events(
             sender_id,
             device_id,
             room_id,
+            false,
             since_tk,
             Some(BatchToken::new_live(curr_sn)),
             next_batch,
@@ -139,6 +141,7 @@ pub async fn sync_events(
             sender_id,
             device_id,
             &room_id,
+            true,
             since_tk,
             Some(BatchToken::new_live(curr_sn)),
             next_batch,
@@ -392,6 +395,7 @@ async fn load_joined_room(
     sender_id: &UserId,
     device_id: &DeviceId,
     room_id: &RoomId,
+    is_peeking: bool,
     since_tk: Option<BatchToken>,
     until_tk: Option<BatchToken>,
     next_batch: BatchToken,
@@ -480,6 +484,7 @@ async fn load_joined_room(
         },
         next_batch.event_sn(),
         &timeline,
+        is_peeking,
     )
     // Deliberately not swallowed: returning a successful sync with an advanced token would
     // move the client past sticky events it never received, and nothing would ever send
@@ -1153,6 +1158,7 @@ async fn load_sticky(
     since_sn: Option<Seqnum>,
     until_sn: Seqnum,
     timeline: &TimelineData,
+    enforce_history_visibility: bool,
 ) -> AppResult<(Sticky, BTreeMap<Seqnum, u64>)> {
     let now = UnixMillis::now();
     let entries = crate::event::sticky::unexpired(room_id, since_sn, until_sn, now).await?;
@@ -1180,7 +1186,11 @@ async fn load_sticky(
 
         // A sticky event omitted from the normal timeline still has exactly the same
         // visibility and per-recipient unsigned-data rules as its timeline copy.
-        if !pdu.user_can_see(user_id).await? {
+        // MSC4354 deliberately exempts sticky events from history visibility for joined
+        // users, including users who joined after the event was sent. A peeker is not a
+        // joined user, so it retains the ordinary visibility check and cannot use the
+        // sticky section to read otherwise-hidden history.
+        if enforce_history_visibility && !pdu.user_can_see(user_id).await? {
             continue;
         }
         if pdu.sender != user_id {
