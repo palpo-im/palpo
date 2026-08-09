@@ -723,16 +723,16 @@ pub fn classify(
     known: Option<Option<Seqnum>>,
     stream_id: Option<Seqnum>,
     prev_id: Option<Seqnum>,
-    updates: &PresenceRecipientListUpdates,
+    updates: Option<&PresenceRecipientListUpdates>,
 ) -> Inbound {
     let Some(stream_id) = stream_id else {
         return Inbound::Legacy;
     };
 
-    match (updates.is_empty(), prev_id) {
+    match (updates, prev_id) {
         // No delta and no prev_id: the sender is telling us its set is unchanged. That is
         // only meaningful if our view is at the position it names.
-        (true, None) => {
+        (None, None) => {
             if known == Some(Some(stream_id)) {
                 Inbound::Unchanged
             } else {
@@ -741,7 +741,7 @@ pub fn classify(
         }
         // A delta with no prev_id initialises the set, but only when we hold nothing;
         // otherwise we would silently drop whatever we had.
-        (false, None) => {
+        (Some(updates), None) => {
             if known.is_none() {
                 Inbound::Apply {
                     stream_id,
@@ -752,7 +752,7 @@ pub fn classify(
             }
         }
         // A delta with a prev_id applies only on top of exactly that position.
-        (_, Some(prev_id)) => {
+        (Some(updates), Some(prev_id)) => {
             if known == Some(Some(prev_id)) {
                 Inbound::Apply {
                     stream_id,
@@ -762,6 +762,9 @@ pub fn classify(
                 Inbound::Resync
             }
         }
+        // `prev_id` describes the base of a recipient delta. Without a `recipients`
+        // object there is no delta to apply, and MSC4495 defines no such wire shape.
+        (None, Some(_)) => Inbound::Resync,
     }
 }
 
@@ -813,31 +816,21 @@ mod tests {
 
     #[test]
     fn an_update_without_a_stream_id_is_a_legacy_sender() {
-        assert_eq!(
-            classify(
-                Some(Some(7)),
-                None,
-                None,
-                &PresenceRecipientListUpdates::default()
-            ),
-            Inbound::Legacy
-        );
+        assert_eq!(classify(Some(Some(7)), None, None, None), Inbound::Legacy);
     }
 
     #[test]
     fn an_empty_update_confirms_the_position_we_hold() {
-        let empty = PresenceRecipientListUpdates::default();
-
         assert_eq!(
-            classify(Some(Some(7)), Some(7), None, &empty),
+            classify(Some(Some(7)), Some(7), None, None),
             Inbound::Unchanged
         );
         // A position we do not hold means we missed something in between.
         assert_eq!(
-            classify(Some(Some(6)), Some(7), None, &empty),
+            classify(Some(Some(6)), Some(7), None, None),
             Inbound::Resync
         );
-        assert_eq!(classify(None, Some(7), None, &empty), Inbound::Resync);
+        assert_eq!(classify(None, Some(7), None, None), Inbound::Resync);
     }
 
     #[test]
@@ -846,7 +839,7 @@ mod tests {
             PresenceRecipientListUpdates::new(vec![owned_user_id!("@a:example.org")], Vec::new());
 
         assert_eq!(
-            classify(None, Some(7), None, &updates),
+            classify(None, Some(7), None, Some(&updates)),
             Inbound::Apply {
                 stream_id: 7,
                 updates: updates.clone()
@@ -855,7 +848,7 @@ mod tests {
         // We already hold a set; taking this as a fresh start would drop recipients we
         // were told about earlier.
         assert_eq!(
-            classify(Some(Some(3)), Some(7), None, &updates),
+            classify(Some(Some(3)), Some(7), None, Some(&updates)),
             Inbound::Resync
         );
     }
@@ -868,22 +861,14 @@ mod tests {
         // Whatever the sender claims, a set we have marked unknown must not accept a
         // delta: it would look applied while still missing everything we never fetched.
         assert_eq!(
-            classify(Some(None), Some(7), Some(3), &updates),
+            classify(Some(None), Some(7), Some(3), Some(&updates)),
             Inbound::Resync
         );
         assert_eq!(
-            classify(Some(None), Some(7), None, &updates),
+            classify(Some(None), Some(7), None, Some(&updates)),
             Inbound::Resync
         );
-        assert_eq!(
-            classify(
-                Some(None),
-                Some(7),
-                None,
-                &PresenceRecipientListUpdates::default()
-            ),
-            Inbound::Resync
-        );
+        assert_eq!(classify(Some(None), Some(7), None, None), Inbound::Resync);
     }
 
     #[test]
@@ -892,16 +877,40 @@ mod tests {
             PresenceRecipientListUpdates::new(vec![owned_user_id!("@a:example.org")], Vec::new());
 
         assert_eq!(
-            classify(Some(Some(3)), Some(7), Some(3), &updates),
+            classify(Some(Some(3)), Some(7), Some(3), Some(&updates)),
             Inbound::Apply {
                 stream_id: 7,
                 updates: updates.clone()
             }
         );
         assert_eq!(
-            classify(Some(Some(4)), Some(7), Some(3), &updates),
+            classify(Some(Some(4)), Some(7), Some(3), Some(&updates)),
             Inbound::Resync
         );
-        assert_eq!(classify(None, Some(7), Some(3), &updates), Inbound::Resync);
+        assert_eq!(
+            classify(None, Some(7), Some(3), Some(&updates)),
+            Inbound::Resync
+        );
+    }
+
+    #[test]
+    fn an_explicit_empty_delta_advances_a_known_set() {
+        let empty = PresenceRecipientListUpdates::default();
+
+        assert_eq!(
+            classify(Some(Some(3)), Some(7), Some(3), Some(&empty)),
+            Inbound::Apply {
+                stream_id: 7,
+                updates: empty
+            }
+        );
+    }
+
+    #[test]
+    fn a_prev_id_without_a_recipient_delta_is_rejected() {
+        assert_eq!(
+            classify(Some(Some(3)), Some(7), Some(3), None),
+            Inbound::Resync
+        );
     }
 }

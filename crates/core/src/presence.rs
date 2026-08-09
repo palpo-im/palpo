@@ -81,9 +81,9 @@ pub struct PresenceUpdate {
     #[serde(
         default,
         rename = "org.continuwuity.presence_v2.msc4495.recipients",
-        skip_serializing_if = "PresenceRecipientListUpdates::is_empty"
+        skip_serializing_if = "Option::is_none"
     )]
-    pub recipients: PresenceRecipientListUpdates,
+    pub recipients: Option<PresenceRecipientListUpdates>,
 
     /// The stream ID of the user's current presence recipient list.
     ///
@@ -119,7 +119,7 @@ impl PresenceUpdate {
             status_msg: None,
             currently_active: false,
             #[cfg(feature = "unstable-msc4495")]
-            recipients: PresenceRecipientListUpdates::default(),
+            recipients: None,
             #[cfg(feature = "unstable-msc4495")]
             stream_id: None,
             #[cfg(feature = "unstable-msc4495")]
@@ -167,10 +167,10 @@ mod msc4495_tests {
             status_msg: None,
             last_active_ago: 1_000,
             currently_active: true,
-            recipients: PresenceRecipientListUpdates::new(
+            recipients: Some(PresenceRecipientListUpdates::new(
                 vec![owned_user_id!("@bob:example.org")],
                 vec![owned_user_id!("@charlie:example.org")],
-            ),
+            )),
             stream_id: Some(321),
             prev_id: Some(123),
         };
@@ -195,8 +195,9 @@ mod msc4495_tests {
         let parsed: PresenceUpdate = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.stream_id, Some(321));
         assert_eq!(parsed.prev_id, Some(123));
-        assert_eq!(parsed.recipients.add.len(), 1);
-        assert_eq!(parsed.recipients.delete.len(), 1);
+        let recipients = parsed.recipients.unwrap();
+        assert_eq!(recipients.add.len(), 1);
+        assert_eq!(recipients.delete.len(), 1);
     }
 
     #[test]
@@ -233,6 +234,25 @@ mod msc4495_tests {
                 "add": ["@bob:example.org"],
                 "delete": []
             })
+        );
+    }
+
+    #[test]
+    fn an_explicit_empty_recipient_delta_is_not_omitted() {
+        let update = PresenceUpdate {
+            user_id: owned_user_id!("@alice:example.org"),
+            presence: PresenceState::Online,
+            status_msg: None,
+            last_active_ago: 1_000,
+            currently_active: false,
+            recipients: Some(PresenceRecipientListUpdates::default()),
+            stream_id: Some(321),
+            prev_id: Some(123),
+        };
+
+        assert_eq!(
+            serde_json::to_value(update).unwrap()["org.continuwuity.presence_v2.msc4495.recipients"],
+            json!({ "add": [], "delete": [] })
         );
     }
 }

@@ -811,7 +811,11 @@ async fn select_edus_presence(
             status_msg: presence_event.content.status_msg,
             last_active_ago: presence_event.content.last_active_ago.unwrap_or(0),
             #[cfg(feature = "unstable-msc4495")]
-            recipients: delta.updates,
+            // A changed stream with no users relevant to this destination still carries
+            // an explicit empty delta. Omitting `recipients` while retaining `prev_id`
+            // produces a wire shape MSC4495 does not define.
+            recipients: (delta.prev_id.is_some() || !delta.updates.is_empty())
+                .then_some(delta.updates),
             #[cfg(feature = "unstable-msc4495")]
             stream_id: Some(delta.stream_id),
             #[cfg(feature = "unstable-msc4495")]

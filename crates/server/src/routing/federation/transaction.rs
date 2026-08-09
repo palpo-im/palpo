@@ -203,7 +203,7 @@ async fn track_presence_recipients(
         known_stream_id,
         update.stream_id,
         update.prev_id,
-        &update.recipients,
+        update.recipients.as_ref(),
     ) {
         Inbound::Legacy => {
             // A downgraded or mixed-deployment origin has returned to legacy semantics.
@@ -391,7 +391,7 @@ async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDevice
 
                 DeviceIdOrAllDevices::AllDevices => {
                     let (sender, ev_type, event) = (&sender, &ev_type, &event);
-                    for target_device_id in data::user::all_device_ids(target_user_id)
+                    for target_device_id in data::user::all_to_device_target_ids(target_user_id)
                         .await
                         .unwrap_or_default()
                         .iter()

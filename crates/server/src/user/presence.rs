@@ -113,7 +113,7 @@ pub async fn set_presence(
                 currently_active: presence_state == PresenceState::Online,
                 presence: presence_state,
                 #[cfg(feature = "unstable-msc4495")]
-                recipients: Default::default(),
+                recipients: None,
                 #[cfg(feature = "unstable-msc4495")]
                 stream_id: None,
                 #[cfg(feature = "unstable-msc4495")]
