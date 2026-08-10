@@ -314,9 +314,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64ct"
@@ -330,7 +330,7 @@ version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0cd0bd35a28836d528d2b58ad499bc3c5641d59379421b1be9eeb0c2f2b912a"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "blowfish",
  "getrandom 0.4.2",
  "subtle",
@@ -3620,7 +3620,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bcrypt",
  "blurhash",
  "byteorder",
@@ -3715,7 +3715,7 @@ dependencies = [
  "as_variant",
  "assert_matches2",
  "async-trait",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bcrypt",
  "bytes",
  "chrono",
@@ -3794,7 +3794,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bcrypt",
  "blurhash",
  "byteorder",
@@ -5234,7 +5234,7 @@ version = "0.95.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5534a46ae4615230a7d2e4b2b89448e8c118c33fd0b799d6f1efb90237355045"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "http-body-util",
  "hyper-rustls",
@@ -5256,7 +5256,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9883d7ac6cc4bb8f1d2c2ec0bfe4bd69c911d7f6026a2e504f25af09adae7cce"
 dependencies = [
  "anyhow",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "compact_str",
@@ -5355,7 +5355,7 @@ checksum = "162f4e5acc586bdb40acc30949c8663e2ce5ffefafda461ed69bc2bf5f65adc4"
 dependencies = [
  "arc-swap",
  "async-trait",
- "base64 0.23.0",
+ "base64 0.23.1",
  "brotli",
  "bytes",
  "chardetng",
@@ -5405,7 +5405,7 @@ version = "0.95.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "524065e106874eec5f41c9cfa4be9f3ed061b2d0a3c7783aa545cb25e96de72f"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "etag",
  "futures-util",
  "http-body-util",
