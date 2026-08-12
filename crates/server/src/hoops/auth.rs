@@ -27,12 +27,10 @@ pub async fn auth_by_access_token_or_signatures(
     req: &mut Request,
     depot: &mut Depot,
 ) -> AppResult<()> {
-    if let Some(authorization) = &aa.authorization {
-        if authorization.starts_with("Bearer ") {
-            auth_by_access_token_inner(aa, depot).await
-        } else {
-            auth_by_signatures_inner(req, depot).await
-        }
+    if aa.uses_access_token() {
+        auth_by_access_token_inner(aa, depot).await
+    } else if aa.authorization.is_some() {
+        auth_by_signatures_inner(req, depot).await
     } else {
         Err(MatrixError::missing_token("missing token").into())
     }
