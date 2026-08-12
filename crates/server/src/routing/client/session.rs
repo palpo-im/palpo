@@ -632,7 +632,7 @@ async fn get_access_token(
 /// - Triggers device list updates
 /// - With delegated auth: revokes the OAuth2 token at the auth provider
 #[endpoint]
-async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyResult {
+async fn logout(aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let Ok(authed) = depot.authed_info() else {
         return empty_ok();
     };
@@ -641,11 +641,7 @@ async fn logout(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) -> EmptyRes
     // sessions are revoked only from Palpo's local device tables below.
     if authed.is_delegated_auth()
         && let Some(da) = config::get().enabled_delegated_auth()
-        && let Some(token) = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
+        && let Ok(token) = aa.require_access_token()
         && let Err(e) = revoke_delegated_token(da, token).await
     {
         tracing::warn!("Failed to revoke delegated auth token: {e}");
