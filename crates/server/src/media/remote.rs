@@ -5,7 +5,7 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use salvo::Response;
 use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use salvo::http::{ResBody, StatusCode};
+use salvo::http::{HeaderMap, ResBody, StatusCode};
 
 use super::{Dimension, FileMeta};
 use crate::core::federation::media::{ContentReqArgs, FileOrLocation, try_from_multipart_mixed};
@@ -22,6 +22,7 @@ use crate::{AppError, AppResult, config};
 pub async fn fetch_remote_content(
     server_name: &ServerName,
     media_id: &str,
+    requested_filename: Option<&str>,
     res: &mut Response,
 ) -> AppResult<()> {
     check_fetch_authorized(&Mxc {
@@ -59,12 +60,11 @@ pub async fn fetch_remote_content(
     let Some(content_type_header) = response_content_type(&content_response)
         .filter(|content_type| is_multipart_mixed(content_type))
     else {
-        // The legacy endpoint answers with the file itself, so it can be
-        // forwarded as it is streamed in.
-        for (key, value) in content_response.headers().iter() {
-            res.headers_mut().insert(key.clone(), value.clone());
-        }
-        res.status_code(content_response.status());
+        // The legacy endpoint answers with the file itself. Do not forward
+        // arbitrary response headers from a remote server under our origin.
+        let status = content_response.status();
+        apply_legacy_response_headers(content_response.headers(), status, requested_filename, res)?;
+        res.status_code(status);
         res.stream(content_response.bytes_stream());
         return Ok(());
     };
@@ -101,10 +101,12 @@ pub async fn fetch_remote_content(
     let content_disposition = make_content_disposition(
         None,
         Some(&content_type),
-        content
-            .content_disposition
-            .as_ref()
-            .and_then(|disposition| disposition.filename.as_deref()),
+        requested_filename.or_else(|| {
+            content
+                .content_disposition
+                .as_ref()
+                .and_then(|disposition| disposition.filename.as_deref())
+        }),
     );
 
     res.add_header(CONTENT_TYPE, &content_type, true)?;
@@ -113,6 +115,42 @@ pub async fn fetch_remote_content(
     res.status_code(StatusCode::OK);
     res.body = ResBody::Once(content.file.into());
 
+    Ok(())
+}
+
+fn apply_legacy_response_headers(
+    headers: &HeaderMap,
+    status: StatusCode,
+    requested_filename: Option<&str>,
+    res: &mut Response,
+) -> AppResult<()> {
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+
+    if !status.is_success() {
+        if let Some(content_type) = content_type {
+            res.add_header(CONTENT_TYPE, content_type, true)?;
+        }
+        return Ok(());
+    }
+
+    let content_type = content_type.unwrap_or(mime::APPLICATION_OCTET_STREAM.as_ref());
+    let remote_filename = headers
+        .get(CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| ContentDisposition::from_str(value).ok())
+        .and_then(|disposition| disposition.filename);
+    let content_disposition = make_content_disposition(
+        None,
+        Some(content_type),
+        requested_filename.or(remote_filename.as_deref()),
+    );
+
+    res.add_header(CONTENT_TYPE, content_type, true)?;
+    res.add_header(CONTENT_DISPOSITION, content_disposition.to_string(), true)?;
+    res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
     Ok(())
 }
 
@@ -655,4 +693,127 @@ pub async fn delete_remote_media(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use salvo::Response;
+    use salvo::http::header::{
+        CONNECTION, CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION, SET_COOKIE,
+    };
+    use salvo::http::{HeaderMap, HeaderValue, StatusCode};
+
+    use super::apply_legacy_response_headers;
+    use crate::core::http_headers::{ContentDisposition, ContentDispositionType};
+
+    #[test]
+    fn legacy_media_only_forwards_rebuilt_safe_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/html"));
+        headers.insert(
+            CONTENT_DISPOSITION,
+            HeaderValue::from_static("inline; filename=remote.html"),
+        );
+        headers.insert(SET_COOKIE, HeaderValue::from_static("session=attacker"));
+        headers.insert(LOCATION, HeaderValue::from_static("https://attacker.test"));
+        headers.insert(CONNECTION, HeaderValue::from_static("close"));
+
+        let mut response = Response::new();
+        apply_legacy_response_headers(
+            &headers,
+            StatusCode::OK,
+            Some("requested.html"),
+            &mut response,
+        )
+        .unwrap();
+
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/html");
+        let disposition = response
+            .headers()
+            .get(CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| ContentDisposition::from_str(value).ok())
+            .unwrap();
+        assert_eq!(
+            disposition.disposition_type,
+            ContentDispositionType::Attachment
+        );
+        assert_eq!(disposition.filename.as_deref(), Some("requested.html"));
+        assert_eq!(
+            response
+                .headers()
+                .get("Cross-Origin-Resource-Policy")
+                .unwrap(),
+            "cross-origin"
+        );
+        assert!(!response.headers().contains_key(SET_COOKIE));
+        assert!(!response.headers().contains_key(LOCATION));
+        assert!(!response.headers().contains_key(CONNECTION));
+    }
+
+    #[test]
+    fn legacy_media_keeps_a_remote_filename_when_none_was_requested() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+        headers.insert(
+            CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=remote.png"),
+        );
+
+        let mut response = Response::new();
+        apply_legacy_response_headers(&headers, StatusCode::OK, None, &mut response).unwrap();
+
+        let disposition = response
+            .headers()
+            .get(CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| ContentDisposition::from_str(value).ok())
+            .unwrap();
+        assert_eq!(disposition.disposition_type, ContentDispositionType::Inline);
+        assert_eq!(disposition.filename.as_deref(), Some("remote.png"));
+    }
+
+    #[test]
+    fn legacy_media_without_a_content_type_uses_safe_defaults() {
+        let headers = HeaderMap::new();
+        let mut response = Response::new();
+
+        apply_legacy_response_headers(&headers, StatusCode::OK, None, &mut response).unwrap();
+
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+        let disposition = response
+            .headers()
+            .get(CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| ContentDisposition::from_str(value).ok())
+            .unwrap();
+        assert_eq!(
+            disposition.disposition_type,
+            ContentDispositionType::Attachment
+        );
+        assert!(disposition.filename.is_none());
+    }
+
+    #[test]
+    fn legacy_error_responses_only_keep_the_content_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(SET_COOKIE, HeaderValue::from_static("session=attacker"));
+
+        let mut response = Response::new();
+        apply_legacy_response_headers(&headers, StatusCode::NOT_FOUND, None, &mut response)
+            .unwrap();
+
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert!(!response.headers().contains_key(CONTENT_DISPOSITION));
+        assert!(!response.headers().contains_key(SET_COOKIE));
+    }
 }
