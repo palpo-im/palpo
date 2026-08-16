@@ -1455,9 +1455,9 @@ dependencies = [
 
 [[package]]
 name = "diesel"
-version = "2.3.11"
+version = "2.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e54d1f576cd3a3460f212a4615fd12ce1b6303c095b79a44449ffbe627753dc1"
+checksum = "715377c6e464cb44bb89bd8487584240516c8d5052bc645d6babc50bb8be46c3"
 dependencies = [
  "bigdecimal",
  "bitflags 2.11.1",
@@ -3520,7 +3520,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec75551ff4cf3e57da98979f6a937aaa9ddb3915bf68cc17d03df733be6646ed"
 dependencies = [
  "anyhow",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "http",
@@ -3583,7 +3583,7 @@ version = "0.58.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58e80cdf192d7eff05feed747894d64f81905ac4eaf132edf7ea270abdd2d663"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "crc-fast",
  "http",
@@ -4795,7 +4795,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4ac1510872d9481205975d264deb39c109797e5068cc882ed9064270eaae5fa"
 dependencies = [
  "anyhow",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "hex",
@@ -5541,7 +5541,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af2c6921c8ce48fb1b052b457619d008834039d80325992ed3bc55bbe6c155ad"
 dependencies = [
  "annotate-snippets",
- "base64 0.23.0",
+ "base64 0.22.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
