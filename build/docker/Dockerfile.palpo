@@ -12,17 +12,17 @@ RUN --mount=type=cache,target=/work/target/ \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     cargo build --release && mv ./target/release/palpo .
 
-FROM debian:bookworm
+FROM debian:bookworm-slim
 
 WORKDIR /var/palpo
 
 COPY --from=builder /work/palpo /var/palpo/palpo
-# COPY crates/server/palpo-example.toml /var/palpo/palpo.toml
 
-RUN apt-get update && apt-get install -y debian-keyring \
-    debian-archive-keyring apt-transport-https ca-certificates \
-    curl libpq-dev &&\
-    mkdir -p /var/palpo/media /var/palpo/certs /var/palpo/acme
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl libpq5 && \
+    mkdir -p /var/palpo/media /var/palpo/certs /var/palpo/acme && \
+    rm -rf /var/lib/apt/lists/* /var/cache/debconf/*
 
 # Create non-root user
 RUN groupadd -r palpo && useradd -r -g palpo palpo && \
