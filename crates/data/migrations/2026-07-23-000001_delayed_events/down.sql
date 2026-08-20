@@ -1,0 +1,12 @@
+DROP TRIGGER IF EXISTS delayed_events_remove_output ON delayed_events;
+DROP FUNCTION IF EXISTS palpo_remove_delayed_event_output;
+DROP TRIGGER IF EXISTS events_record_delayed_event_output ON events;
+DROP FUNCTION IF EXISTS palpo_confirm_delayed_event_output;
+DROP TRIGGER IF EXISTS event_datas_track_delayed_event_output ON event_datas;
+DROP FUNCTION IF EXISTS palpo_track_delayed_event_output;
+DROP TABLE IF EXISTS delayed_event_outputs;
+DROP INDEX IF EXISTS idx_delayed_events_finalized;
+DROP INDEX IF EXISTS idx_delayed_events_due;
+DROP INDEX IF EXISTS idx_delayed_events_user;
+DROP INDEX IF EXISTS idx_delayed_events_txn;
+DROP TABLE IF EXISTS delayed_events;

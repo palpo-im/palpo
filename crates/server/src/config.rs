@@ -27,6 +27,8 @@ mod compression;
 pub use compression::*;
 mod db;
 pub use db::*;
+mod delayed_event;
+pub use delayed_event::*;
 // mod dns;
 // pub use dns::*;
 mod federation;

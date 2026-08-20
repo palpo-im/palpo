@@ -42,7 +42,7 @@ pub(super) async fn list_threads(
     json_ok(ThreadsResBody {
         chunk: threads
             .into_iter()
-            .map(|(_, pdu)| pdu.to_room_event())
+            .map(|(_, pdu)| pdu.to_room_event_for(authed.user_id()))
             .collect(),
         next_batch: next_batch.map(|b| b.to_string()),
     })

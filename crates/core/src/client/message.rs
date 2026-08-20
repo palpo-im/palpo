@@ -161,6 +161,16 @@ pub struct CreateMessageWithTxnReqArgs {
     #[serde(skip_serializing_if = "Option::is_none", rename = "ts")]
     pub timestamp: Option<UnixMillis>,
 
+    /// Delay this event by the given number of milliseconds (MSC4140).
+    #[cfg(feature = "unstable-msc4140")]
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "org.matrix.msc4140.delay"
+    )]
+    pub delay: Option<u64>,
+
     /// The duration for which the event should receive sticky delivery guarantees.
     #[cfg(feature = "unstable-msc4354")]
     #[salvo(parameter(parameter_in = Query))]
@@ -200,6 +210,16 @@ pub struct CreateMessageReqArgs {
     #[serde(skip_serializing_if = "Option::is_none", rename = "ts")]
     pub timestamp: Option<UnixMillis>,
 
+    /// Delay this event by the given number of milliseconds (MSC4140).
+    #[cfg(feature = "unstable-msc4140")]
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "org.matrix.msc4140.delay"
+    )]
+    pub delay: Option<u64>,
+
     /// The duration for which the event should receive sticky delivery guarantees.
     #[cfg(feature = "unstable-msc4354")]
     #[salvo(parameter(parameter_in = Query))]
@@ -222,6 +242,33 @@ impl SendMessageResBody {
     /// Creates a new `Response` with the given event id.
     pub fn new(event_id: OwnedEventId) -> Self {
         Self { event_id }
+    }
+}
+
+#[cfg(all(test, feature = "unstable-msc4140"))]
+mod delayed_event_tests {
+    use super::{CreateMessageReqArgs, CreateMessageWithTxnReqArgs};
+
+    #[test]
+    fn delay_uses_msc4140_query_name() {
+        let args: CreateMessageWithTxnReqArgs = serde_html_form::from_str(
+            "room_id=%21room%3Aexample.org&event_type=m.room.message&txn_id=0000&\
+             org.matrix.msc4140.delay=123456",
+        )
+        .unwrap();
+
+        assert_eq!(args.delay, Some(123_456));
+    }
+
+    #[test]
+    fn delay_is_accepted_without_a_transaction_id() {
+        let args: CreateMessageReqArgs = serde_html_form::from_str(
+            "room_id=%21room%3Aexample.org&event_type=m.room.message&\
+             org.matrix.msc4140.delay=900",
+        )
+        .unwrap();
+
+        assert_eq!(args.delay, Some(900));
     }
 }
 

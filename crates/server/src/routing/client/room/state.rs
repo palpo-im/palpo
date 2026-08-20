@@ -1,17 +1,20 @@
+use std::time::Duration;
+
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::json;
 
 use crate::core::UnixMillis;
+use crate::core::client::delayed_events::SendEventResBody;
 use crate::core::client::room::ReportContentReqBody;
 use crate::core::client::state::{
-    SendStateEventReqBody, SendStateEventResBody, StateEventFormat, StateEventsForEmptyKeyReqArgs,
+    SendStateEventReqArgs, SendStateEventReqBody, StateEventFormat, StateEventsForEmptyKeyReqArgs,
     StateEventsForKeyReqArgs, StateEventsForKeyResBody, StateEventsResBody,
 };
 use crate::core::client::typing::{CreateTypingEventReqBody, Typing};
 use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::identifiers::*;
-use crate::core::room::{RoomEventReqArgs, RoomEventTypeReqArgs, RoomTypingReqArgs};
+use crate::core::room::{RoomEventReqArgs, RoomTypingReqArgs};
 use crate::room::{state, timeline};
 use crate::utils::HtmlEscape;
 use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, json_ok, room};
@@ -50,7 +53,7 @@ pub(super) async fn get_state(
         .await
         .unwrap_or_default()
         .values()
-        .map(|pdu| pdu.to_state_event())
+        .map(|pdu| pdu.to_state_event_for(sender_id))
         .collect();
     json_ok(StateEventsResBody::new(room_state))
 }
@@ -166,7 +169,7 @@ pub(super) async fn state_for_key(
     json_ok(StateEventsForKeyResBody {
         content: Some(event.get_content()?),
         event: if event_format {
-            Some(event.to_state_event_value())
+            Some(event.to_state_event_value_for(sender_id))
         } else {
             None
         },
@@ -207,7 +210,7 @@ pub(super) async fn state_for_empty_key(
     json_ok(StateEventsForKeyResBody {
         content: Some(event.get_content()?),
         event: if event_format {
-            Some(event.to_state_event_value())
+            Some(event.to_state_event_value_for(sender_id))
         } else {
             None
         },
@@ -223,12 +226,36 @@ pub(super) async fn state_for_empty_key(
 #[endpoint]
 pub(super) async fn send_state_for_key(
     _aa: AuthArgs,
-    args: StateEventsForKeyReqArgs,
+    args: SendStateEventReqArgs,
     body: JsonBody<SendStateEventReqBody>,
     depot: &mut Depot,
-) -> JsonResult<SendStateEventResBody> {
+) -> JsonResult<SendEventResBody> {
     let authed = depot.authed_info()?;
     let body = body.into_inner();
+    let state_key = args.state_key.clone().unwrap_or_default();
+
+    if let Some(delay_ms) = args.delay {
+        if !crate::config::get().delayed_events.enable {
+            return Err(MatrixError::unrecognized("MSC4140 delayed events are disabled").into());
+        }
+        let txn_id: OwnedTransactionId = crate::utils::random_string(18).into();
+        let event_type = args.event_type.to_string().into();
+        let content = serde_json::from_str(body.0.as_str())?;
+        let delay_id = crate::delayed_event::schedule(
+            authed.user_id(),
+            Some(authed.device_id()),
+            authed.appservice().is_some(),
+            &args.room_id,
+            &event_type,
+            &txn_id,
+            args.timestamp,
+            Duration::from_millis(delay_ms),
+            Some(state_key),
+            content,
+        )
+        .await?;
+        return json_ok(SendEventResBody::delayed(delay_id));
+    }
 
     let event_id = crate::state::send_state_event_for_key(
         authed.user_id(),
@@ -236,13 +263,12 @@ pub(super) async fn send_state_for_key(
         &crate::room::get_version(&args.room_id).await?,
         &args.event_type,
         body.0,
-        args.state_key.to_owned(),
+        state_key,
+        appservice_timestamp(authed.appservice().is_some(), args.timestamp),
     )
     .await?;
 
-    json_ok(SendStateEventResBody {
-        event_id: (*event_id).to_owned(),
-    })
+    json_ok(SendEventResBody::sent((*event_id).to_owned()))
 }
 
 /// #PUT /_matrix/client/r0/rooms/{room_id}/state/{event_type}
@@ -254,12 +280,34 @@ pub(super) async fn send_state_for_key(
 #[endpoint]
 pub(super) async fn send_state_for_empty_key(
     _aa: AuthArgs,
-    args: RoomEventTypeReqArgs,
+    args: SendStateEventReqArgs,
     body: JsonBody<SendStateEventReqBody>,
     depot: &mut Depot,
-) -> JsonResult<SendStateEventResBody> {
+) -> JsonResult<SendEventResBody> {
     let authed = depot.authed_info()?;
     let body = body.into_inner();
+    if let Some(delay_ms) = args.delay {
+        if !crate::config::get().delayed_events.enable {
+            return Err(MatrixError::unrecognized("MSC4140 delayed events are disabled").into());
+        }
+        let txn_id: OwnedTransactionId = crate::utils::random_string(18).into();
+        let event_type = args.event_type.to_string().into();
+        let content = serde_json::from_str(body.0.as_str())?;
+        let delay_id = crate::delayed_event::schedule(
+            authed.user_id(),
+            Some(authed.device_id()),
+            authed.appservice().is_some(),
+            &args.room_id,
+            &event_type,
+            &txn_id,
+            args.timestamp,
+            Duration::from_millis(delay_ms),
+            Some(String::new()),
+            content,
+        )
+        .await?;
+        return json_ok(SendEventResBody::delayed(delay_id));
+    }
     let event_id = crate::state::send_state_event_for_key(
         authed.user_id(),
         &args.room_id,
@@ -267,12 +315,36 @@ pub(super) async fn send_state_for_empty_key(
         &args.event_type.to_string().into(),
         body.0,
         "".into(),
+        appservice_timestamp(authed.appservice().is_some(), args.timestamp),
     )
     .await?;
 
-    json_ok(SendStateEventResBody {
-        event_id: (*event_id).to_owned(),
-    })
+    json_ok(SendEventResBody::sent((*event_id).to_owned()))
+}
+
+fn appservice_timestamp(
+    is_appservice: bool,
+    requested_timestamp: Option<UnixMillis>,
+) -> Option<UnixMillis> {
+    if is_appservice {
+        requested_timestamp
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::appservice_timestamp;
+    use crate::core::UnixMillis;
+
+    #[test]
+    fn timestamp_massaging_is_limited_to_appservices() {
+        let timestamp = UnixMillis(123_456);
+
+        assert_eq!(appservice_timestamp(true, Some(timestamp)), Some(timestamp));
+        assert_eq!(appservice_timestamp(false, Some(timestamp)), None);
+    }
 }
 
 /// #PUT /_matrix/client/r0/rooms/{room_id}/typing/{user_id}
