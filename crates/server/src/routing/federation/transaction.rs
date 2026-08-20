@@ -15,6 +15,8 @@ use crate::core::federation::transaction::{
 };
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceContent;
+#[cfg(feature = "unstable-msc4495")]
+use crate::core::presence::PresenceUpdate;
 use crate::core::serde::RawJsonValue;
 use crate::core::to_device::DeviceIdOrAllDevices;
 use crate::data::user::NewDbPresence;
@@ -151,6 +153,14 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
             continue;
         }
 
+        // MSC4495: keep our view of who this user shares presence with up to date before
+        // recording the transition, since that set is what limits who is shown it.
+        #[cfg(feature = "unstable-msc4495")]
+        if let Err(e) = track_presence_recipients(origin, &update).await {
+            warn!(user_id = %update.user_id, error = %e, "failed to update presence recipients");
+            continue;
+        }
+
         crate::data::user::set_presence(
             NewDbPresence {
                 user_id: update.user_id.clone(),
@@ -168,6 +178,53 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
         .await
         .ok();
     }
+}
+
+/// Applies an incoming update's recipient-set information ([MSC4495] inbound rules).
+///
+/// When the delta does not fit the view we hold, the set is emptied and a snapshot is
+/// requested from the origin. Emptying first is the conservative direction: a stale wide
+/// set would keep showing the user's presence to people they may have just denied, whereas
+/// a stale empty set only delays presence until the snapshot arrives.
+///
+/// [MSC4495]: https://github.com/matrix-org/matrix-spec-proposals/pull/4495
+#[cfg(feature = "unstable-msc4495")]
+async fn track_presence_recipients(
+    origin: &ServerName,
+    update: &PresenceUpdate,
+) -> crate::AppResult<()> {
+    use crate::user::presence::recipients::{self, Inbound};
+
+    let user_id = &update.user_id;
+    let known = recipients::remote_set(user_id).await?;
+    let known_stream_id = known.as_ref().map(|(stream_id, _)| *stream_id);
+
+    match recipients::classify(
+        known_stream_id,
+        update.stream_id,
+        update.prev_id,
+        update.recipients.as_ref(),
+    ) {
+        Inbound::Legacy => {
+            // A downgraded or mixed-deployment origin has returned to legacy semantics.
+            // Keeping its old selective row would continue filtering through a stale set.
+            recipients::clear_remote_set(user_id).await?;
+        }
+        Inbound::Unchanged => {}
+        Inbound::Apply { stream_id, updates } => {
+            let mut set = known.map(|(_, set)| set).unwrap_or_default();
+            recipients::apply(&mut set, &updates);
+            recipients::store_remote_set(user_id, Some(stream_id), &set).await?;
+        }
+        Inbound::Resync => {
+            // Marked unknown rather than stored at the position the sender claimed: a
+            // later delta must not appear to apply cleanly on top of a set we know is
+            // wrong, and leaving it unknown makes every further update retry the fetch
+            // until one succeeds.
+            recipients::schedule_resync(origin, user_id).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
