@@ -66,7 +66,7 @@ pub(super) async fn sync_events_v3(
         let default = Duration::from_secs(30);
         let duration = std::cmp::min(args.timeout.unwrap_or(default), default);
         // Setup watchers, so if there's no response, we can wait for them
-        let watcher = crate::watcher::watch(sender_id, device_id);
+        let watcher = crate::watcher::watch(sender_id, device_id, false);
         _ = tokio::time::timeout(duration, watcher).await;
 
         // Retry returning data
