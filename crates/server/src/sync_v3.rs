@@ -8,8 +8,8 @@ use crate::core::client::filter::{FilterDefinition, LazyLoadOptions, RoomEventFi
 use crate::core::client::sync_events::UnreadNotificationsCount;
 use crate::core::client::sync_events::v3::{
     Ephemeral, Filter, GlobalAccountData, InviteState, InvitedRoom, JoinedRoom, KnockState,
-    KnockedRoom, LeftRoom, Presence, RoomAccountData, RoomSummary, Rooms, State, SyncEventsReqArgs,
-    SyncEventsResBody, Timeline, ToDevice,
+    KnockedRoom, LeftRoom, Presence, RoomAccountData, RoomSummary, Rooms, State, Sticky,
+    SyncEventsReqArgs, SyncEventsResBody, Timeline, ToDevice,
 };
 use crate::core::device::DeviceLists;
 use crate::core::events::receipt::SyncReceiptEvent;
@@ -40,7 +40,7 @@ pub async fn sync_events(
     args: &SyncEventsReqArgs,
 ) -> AppResult<SyncEventsResBody> {
     crate::user::get_push_rules(sender_id).await?;
-    let curr_sn = data::user::device::curr_sn_after_inbox_writes(sender_id, device_id).await?;
+    let curr_sn = crate::event::sticky::curr_sn_after_sync_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let since_tk = if let Some(since_str) = args.since.as_ref() {
         let since_tk: BatchToken = since_str.parse()?;
@@ -90,10 +90,11 @@ pub async fn sync_events(
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     for room_id in &all_joined_rooms {
-        let joined_room = match load_joined_room(
+        let (joined_room, _) = load_joined_room(
             sender_id,
             device_id,
             room_id,
+            false,
             since_tk,
             Some(BatchToken::new_live(curr_sn)),
             next_batch,
@@ -104,14 +105,7 @@ pub async fn sync_events(
             &mut joined_users,
             &mut left_users,
         )
-        .await
-        {
-            Ok((joined_room, _)) => joined_room,
-            Err(e) => {
-                tracing::error!(error = ?e, "load joined room failed");
-                continue;
-            }
-        };
+        .await?;
         if since_tk.is_none() || !joined_room.is_empty() {
             joined_rooms.insert(room_id.to_owned(), joined_room);
         }
@@ -143,10 +137,11 @@ pub async fn sync_events(
             let _ = data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await;
             continue;
         }
-        match load_joined_room(
+        let (mut peeked_room, _) = load_joined_room(
             sender_id,
             device_id,
             &room_id,
+            true,
             since_tk,
             Some(BatchToken::new_live(curr_sn)),
             next_batch,
@@ -157,21 +152,14 @@ pub async fn sync_events(
             &mut peek_joined_users,
             &mut peek_left_users,
         )
-        .await
-        {
-            Ok((mut peeked_room, _)) => {
-                // Strip joined-only ephemeral (read receipts, typing) and the
-                // user's own room account data: a peeker is not a member and
-                // shouldn't receive that activity for a room they only preview.
-                peeked_room.ephemeral = Default::default();
-                peeked_room.account_data = Default::default();
-                if since_tk.is_none() || !peeked_room.is_empty() {
-                    peeked_rooms.insert(room_id, peeked_room);
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "load peeked room failed");
-            }
+        .await?;
+        // Strip joined-only ephemeral (read receipts, typing) and the
+        // user's own room account data: a peeker is not a member and
+        // shouldn't receive that activity for a room they only preview.
+        peeked_room.ephemeral = Default::default();
+        peeked_room.account_data = Default::default();
+        if since_tk.is_none() || !peeked_room.is_empty() {
+            peeked_rooms.insert(room_id, peeked_room);
         }
     }
     // peek_device_updates / peek_joined_users / peek_left_users go out of scope
@@ -407,6 +395,7 @@ async fn load_joined_room(
     sender_id: &UserId,
     device_id: &DeviceId,
     room_id: &RoomId,
+    is_peeking: bool,
     since_tk: Option<BatchToken>,
     until_tk: Option<BatchToken>,
     next_batch: BatchToken,
@@ -479,6 +468,28 @@ async fn load_joined_room(
             }
         }
     }
+
+    // MSC4354: sticky events must reach the client even when the room's timeline was
+    // truncated to `timeline_limit`, so they get their own section. Delivery is
+    // stream-like -- a client sees each sticky event once -- except that a user who has
+    // just joined, or is syncing for the first time, gets every unexpired sticky event in
+    // the room.
+    let (sticky, sticky_ttls) = load_sticky(
+        sender_id,
+        room_id,
+        if joined_since_incremental {
+            None
+        } else {
+            since_tk.map(|since_tk| since_tk.event_sn())
+        },
+        next_batch.event_sn(),
+        &timeline,
+        is_peeking,
+    )
+    // Deliberately not swallowed: returning a successful sync with an advanced token would
+    // move the client past sticky events it never received, and nothing would ever send
+    // them again. Failing here makes the client retry from the same token.
+    .await?;
 
     let since_tk = if let Some(since_tk) = since_tk {
         since_tk
@@ -918,7 +929,20 @@ async fn load_joined_room(
             events: timeline
                 .events
                 .iter()
-                .map(|(_, pdu)| pdu.to_sync_room_event())
+                .map(|(event_sn, pdu)| match sticky_ttls.get(event_sn) {
+                    // A sticky event that made it into the timeline is not repeated in the
+                    // sticky section, so this is the only copy the client gets -- it has to
+                    // be the one carrying the remaining stickiness.
+                    Some(ttl) => {
+                        let mut pdu = pdu.clone();
+                        pdu.pdu.unsigned.insert(
+                            crate::event::STICKY_TTL_KEY.to_owned(),
+                            serde_json::value::to_raw_value(ttl).expect("u64 is valid json"),
+                        );
+                        pdu.to_sync_room_event()
+                    }
+                    None => pdu.to_sync_room_event(),
+                })
                 .collect(),
         },
         state: State::Before(
@@ -929,6 +953,7 @@ async fn load_joined_room(
                 .into(),
         ),
         ephemeral: Ephemeral { events: edus },
+        sticky,
         unread_thread_notifications: if filter.room.timeline.unread_thread_notifications {
             notify_summary
                 .threads
@@ -1111,6 +1136,73 @@ pub struct TimelineData {
     pub limited: bool,
     pub prev_batch: Option<BatchToken>,
     pub next_batch: Option<BatchToken>,
+}
+
+/// Collects the room's unexpired sticky events for one sync response ([MSC4354]).
+///
+/// `since_sn` is `None` for a sync that must carry the room's full sticky state: an initial
+/// sync, or the sync in which the user joined. Otherwise only sticky events past that
+/// position are returned, so each one reaches the client exactly once.
+///
+/// Sticky events already present in `timeline.events` are not repeated here -- they are the
+/// same events, and duplicating them would only bloat the response. Their remaining TTLs
+/// come back in the second value, keyed by sequence number, so the caller can annotate the
+/// timeline copy: it is the only copy the client sees and still has to carry the remaining
+/// stickiness. The timeline filter has already been applied at this point, so an event the
+/// filter removed from the timeline is delivered in the sticky section as normal.
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+async fn load_sticky(
+    user_id: &UserId,
+    room_id: &RoomId,
+    since_sn: Option<Seqnum>,
+    until_sn: Seqnum,
+    timeline: &TimelineData,
+    enforce_history_visibility: bool,
+) -> AppResult<(Sticky, BTreeMap<Seqnum, u64>)> {
+    let now = UnixMillis::now();
+    let entries = crate::event::sticky::unexpired(room_id, since_sn, until_sn, now).await?;
+    if entries.is_empty() {
+        return Ok((Sticky::default(), BTreeMap::new()));
+    }
+
+    let mut events = Vec::with_capacity(entries.len());
+    let mut timeline_ttls = BTreeMap::new();
+    for entry in entries {
+        if timeline.events.contains_key(&entry.event_sn) {
+            // Not repeated in the sticky section; the caller annotates the timeline copy
+            // instead, since that is the only copy the client will see.
+            timeline_ttls.insert(
+                entry.event_sn,
+                crate::event::sticky::ttl_ms(entry.expires_at, now),
+            );
+            continue;
+        }
+        let mut pdu = match timeline::get_pdu(&entry.event_id).await {
+            Ok(pdu) => pdu,
+            Err(error) if error.is_not_found() => continue,
+            Err(error) => return Err(error),
+        };
+
+        // A sticky event omitted from the normal timeline still has exactly the same
+        // visibility and per-recipient unsigned-data rules as its timeline copy.
+        // MSC4354 deliberately exempts sticky events from history visibility for joined
+        // users, including users who joined after the event was sent. A peeker is not a
+        // joined user, so it retains the ordinary visibility check and cannot use the
+        // sticky section to read otherwise-hidden history.
+        if enforce_history_visibility && !pdu.user_can_see(user_id).await? {
+            continue;
+        }
+        if pdu.sender != user_id {
+            pdu.remove_transaction_id()?;
+        }
+        pdu.add_unsigned_membership(user_id).await?;
+        pdu.add_age()?;
+        events
+            .push(crate::event::sticky::with_ttl(pdu, entry.expires_at, now).to_sync_room_event());
+    }
+
+    Ok((Sticky { events }, timeline_ttls))
 }
 
 fn timeline_contains_own_join(timeline: &TimelineData, user_id: &UserId) -> bool {

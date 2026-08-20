@@ -74,6 +74,15 @@ pub(crate) async fn process_incoming_pdu(
             {
                 warn!("failed to delete event_datas for {}: {}", event_id, e);
             }
+            // The event is about to be re-ingested and will get a fresh sequence number,
+            // so a sticky row recorded against the old one would point at nothing.
+            if let Err(e) =
+                diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
+                    .execute(&mut connect().await?)
+                    .await
+            {
+                warn!("failed to delete event_stickies for {}: {}", event_id, e);
+            }
         }
     }
 

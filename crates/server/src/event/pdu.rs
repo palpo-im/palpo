@@ -16,6 +16,7 @@ use crate::core::events::room::history_visibility::{
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::redaction::RoomRedactionEventContent;
 use crate::core::events::space::child::HierarchySpaceChildEvent;
+use crate::core::events::sticky::StickyDurationMs;
 use crate::core::events::{
     AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
     AnySyncTimelineEvent, AnyTimelineEvent, MessageLikeEventContent, StateEvent, StateEventContent,
@@ -36,6 +37,14 @@ use crate::event::{BatchToken, SeqnumQueueGuard};
 use crate::room::state;
 use crate::room::timeline::get_pdu;
 use crate::{AppError, AppResult, MatrixError, RoomMutexGuard, room};
+
+/// Unstable name of the top-level sticky object ([MSC4354]).
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+pub const STICKY_KEY: &str = "msc4354_sticky";
+
+/// Unstable name of the remaining-stickiness hint added to `unsigned` in `/sync`.
+pub const STICKY_TTL_KEY: &str = "msc4354_sticky_duration_ttl_ms";
 
 /// Content hashes of a PDU.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -423,6 +432,10 @@ impl PduEvent {
             to_raw_value(reason).expect("to_raw_value(PduEvent) always works"),
         );
 
+        // MSC4354 leaves the sticky object unprotected from redaction: a redacted sticky
+        // event is an ordinary event.
+        self.extra_data.remove(STICKY_KEY);
+
         self.content = to_raw_value(&new_content).expect("to string always works");
 
         Ok(())
@@ -480,6 +493,9 @@ impl PduEvent {
         if let Some(redacts) = &self.redacts {
             json["redacts"] = json!(redacts);
         }
+        if let Some(sticky) = self.sticky_object() {
+            json[STICKY_KEY] = sticky;
+        }
 
         serde_json::from_value(json).expect("RawJson::from_value always works")
     }
@@ -511,6 +527,9 @@ impl PduEvent {
         if let Some(redacts) = &self.redacts {
             data["redacts"] = json!(redacts);
         }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
+        }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
@@ -534,6 +553,9 @@ impl PduEvent {
         }
         if let Some(redacts) = &self.redacts {
             data["redacts"] = json!(redacts);
+        }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -563,9 +585,14 @@ impl PduEvent {
         }
 
         for (key, value) in &self.extra_data {
-            if !data.contains_key(key) {
+            // The sticky object goes through validation below rather than being copied
+            // verbatim, so a malformed annotation is not echoed back to clients.
+            if key != STICKY_KEY && !data.contains_key(key) {
                 data.insert(key.clone(), value.clone());
             }
+        }
+        if let Some(sticky) = self.sticky_object() {
+            data.insert(STICKY_KEY.to_owned(), sticky);
         }
 
         JsonValue::Object(data)
@@ -584,6 +611,9 @@ impl PduEvent {
 
         if !self.unsigned.is_empty() {
             data["unsigned"] = json!(self.unsigned);
+        }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -641,6 +671,9 @@ impl PduEvent {
         if !self.unsigned.is_empty() {
             data["unsigned"] = json!(self.unsigned);
         }
+        if let Some(sticky) = self.sticky_object() {
+            data[STICKY_KEY] = sticky;
+        }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
@@ -679,6 +712,43 @@ impl PduEvent {
         T: for<'de> Deserialize<'de>,
     {
         serde_json::from_str(self.content.get())
+    }
+
+    /// The sticky duration of this event, if it is a valid sticky event ([MSC4354]).
+    ///
+    /// Returns `None` for a malformed or out-of-range `msc4354_sticky` object: an invalid
+    /// sticky annotation makes the event ordinary rather than making it invalid, so that a
+    /// peer cannot get an event rejected by attaching nonsense to it.
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    pub fn sticky_duration_ms(&self) -> Option<StickyDurationMs> {
+        let duration = self.extra_data.get(STICKY_KEY)?.get("duration_ms")?;
+        // Only unsigned integers within range; floats and negatives are not durations.
+        let duration = duration.as_u64()?;
+        if duration > StickyDurationMs::MAX as u64 {
+            return None;
+        }
+        Some(StickyDurationMs::new_clamped(duration))
+    }
+
+    /// The `msc4354_sticky` object to expose to clients, if the event is sticky.
+    ///
+    /// Built from the validated duration rather than copied from `extra_data`, so an
+    /// out-of-range or malformed annotation is not echoed back as if the server had
+    /// accepted it.
+    pub fn sticky_object(&self) -> Option<JsonValue> {
+        self.sticky_duration_ms()
+            .map(|duration| json!({ "duration_ms": duration.get() }))
+    }
+
+    /// The instant at which this event stops being sticky.
+    ///
+    /// The start of the sticky window is `min(received_at, origin_server_ts)`, so a sender
+    /// with a clock set in the future cannot extend how long its events stay sticky.
+    pub fn sticky_expires_at(&self, received_at: UnixMillis) -> Option<UnixMillis> {
+        let duration = self.sticky_duration_ms()?;
+        let start = received_at.0.min(self.origin_server_ts.0);
+        Some(UnixMillis(start.saturating_add(duration.get() as u64)))
     }
 
     pub fn is_room_state(&self) -> bool {
@@ -805,6 +875,14 @@ pub struct PduBuilder {
     pub state_key: Option<String>,
     pub redacts: Option<OwnedEventId>,
     pub timestamp: Option<UnixMillis>,
+    /// How long the event should stay sticky, per [MSC4354].
+    ///
+    /// This becomes the top-level `msc4354_sticky` object, which is part of the PDU and so
+    /// is covered by the event hash and signature.
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    #[serde(default)]
+    pub sticky_duration_ms: Option<StickyDurationMs>,
 }
 
 impl PduBuilder {
@@ -842,6 +920,7 @@ impl PduBuilder {
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let (pdu, pdu_json) = self.hash_sign(sender_id, room_id, room_version).await?;
         let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id).await?;
+        let received_at = UnixMillis::now();
         let content_value: JsonValue = serde_json::from_str(pdu.content.get())?;
         NewDbEvent {
             id: pdu.event_id.to_owned(),
@@ -853,7 +932,7 @@ impl PduBuilder {
             topological_ordering: pdu.depth as i64,
             stream_ordering: event_sn,
             origin_server_ts: pdu.origin_server_ts,
-            received_at: None,
+            received_at: Some(received_at.0 as i64),
             sender_id: Some(sender_id.to_owned()),
             contains_url: content_value.get("url").is_some(),
             worker_id: None,
@@ -875,6 +954,10 @@ impl PduBuilder {
         }
         .save()
         .await?;
+
+        // MSC4354: the sticky window is measured from when the event was first stored, so
+        // it is recorded here rather than when the event reaches the timeline.
+        crate::event::sticky::record(&pdu, event_sn, received_at).await?;
 
         Ok((
             SnPduEvent {
@@ -902,6 +985,7 @@ impl PduBuilder {
             state_key,
             redacts,
             timestamp,
+            sticky_duration_ms,
             ..
         } = self;
 
@@ -988,6 +1072,16 @@ impl PduBuilder {
             extra_data: Default::default(),
             rejection_reason: None,
         };
+
+        // MSC4354: the sticky object is top level, not inside `content`, so that it stays
+        // visible on encrypted events. Setting it here means it is hashed and signed with
+        // the rest of the PDU and travels over federation unchanged.
+        if let Some(duration) = sticky_duration_ms {
+            pdu.extra_data.insert(
+                STICKY_KEY.to_owned(),
+                serde_json::json!({ "duration_ms": duration.get() }),
+            );
+        }
 
         let fetch_event = async |event_id: OwnedEventId| {
             get_pdu(&event_id)
@@ -1104,6 +1198,7 @@ impl Default for PduBuilder {
             state_key: None,
             redacts: None,
             timestamp: None,
+            sticky_duration_ms: None,
         }
     }
 }
