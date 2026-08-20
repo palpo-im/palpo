@@ -12,7 +12,7 @@ use crate::core::federation::membership::*;
 use crate::core::identifiers::*;
 use crate::core::room::{JoinRule, RoomEventReqArgs};
 use crate::core::serde::{
-    CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, to_canonical_object,
+    CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, to_canonical_object,
 };
 use crate::data::connect;
 use crate::data::room::NewDbEvent;
@@ -185,6 +185,13 @@ async fn invite_user(
     crate::server_key::hash_and_sign_event(&mut signed_event, &body.room_version)
         .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
 
+    // Verify the sender's event before forwarding it to a Policy Server. The receiving
+    // server's signature added above is supplementary and does not replace the required
+    // sender signature.
+    crate::server_key::verify_event(&signed_event, &body.room_version)
+        .await
+        .map_err(|e| MatrixError::invalid_param(format!("signature verification failed: {e}")))?;
+
     // Generate event id
     let event_id = crate::event::gen_event_id(&signed_event, &body.room_version)?;
 
@@ -204,6 +211,13 @@ async fn invite_user(
         return Err(MatrixError::forbidden("this server does not allow room invites", None).into());
     }
 
+    // Federation invites bypass the normal incoming-PDU handler. If this server already
+    // participates in the room, enforce its current Policy Server before recording or
+    // exposing the invite to the local user. Any signature obtained here is persisted and
+    // returned along with our own signature below.
+    let version_rules = room::get_version_rules(&body.room_version)?;
+    crate::room::policy::check_event(&args.room_id, &mut signed_event, &version_rules).await?;
+
     let mut invite_state = body
         .invite_room_state
         .iter()
@@ -215,11 +229,9 @@ async fn invite_user(
     // record the invited state for client /sync through update_membership(), and
     // send the invite PDU to the relevant appservices.
     // if !room::is_server_joined(&config::get().server_name, &args.room_id)? {
-    let mut event: CanonicalJsonObject = serde_json::from_str(body.event.get())
-        .map_err(|_| MatrixError::invalid_param("invalid invite event bytes"))?;
-
-    // let event_id: OwnedEventId = format!("$dummy_{}", Ulid::generate()).try_into()?;
-    event.insert("event_id".to_owned(), event_id.to_string().into());
+    // Store the same event that is returned to the inviting server. This includes this
+    // server's signature and any Policy Server signature added above.
+    let event = signed_event.clone();
 
     let (event_sn, event_guard) = crate::event::ensure_event_sn(&args.room_id, &event_id).await?;
     let pdu = SnPduEvent::from_canonical_object(
@@ -411,7 +423,7 @@ async fn send_leave(
     // We do not add the event_id field to the pdu here because of signature and hashes checks
     let room_version_id = room::get_version(&args.room_id).await?;
 
-    let Ok((event_id, value)) =
+    let Ok((event_id, mut value)) =
         crate::event::gen_event_id_canonical_json(&body.0, &room_version_id)
     else {
         // Event could not be converted to canonical json
@@ -498,6 +510,12 @@ async fn send_leave(
     if state_key != sender {
         return Err(MatrixError::bad_json("state_key does not match sender user").into());
     }
+
+    // A synchronous send_leave must report a Policy Server refusal to the sender. The
+    // normal incoming-PDU path intentionally turns the same refusal into a soft failure
+    // for transaction traffic, which would incorrectly make this endpoint return success.
+    crate::room::policy::check_federation_event(&args.room_id, &mut value, &room_version_id)
+        .await?;
 
     handler::process_incoming_pdu(
         origin,

@@ -117,7 +117,10 @@ pub(crate) async fn process_incoming_pdu(
         .process_incoming(remote_server, is_backfill)
         .await?;
 
-    if incoming_pdu.rejected() {
+    // A soft-failed event is kept for inspection but must not reach the timeline. This
+    // matches `process_pulled_pdu`, and it is what keeps an event the room's Policy Server
+    // refused (MSC4284) from being promoted by the DAG-recovery paths.
+    if incoming_pdu.rejected() || incoming_pdu.soft_failed {
         return Ok(());
     }
 
@@ -237,6 +240,7 @@ pub(crate) async fn process_pulled_pdu(
                     if let Ok(pdu) = timeline::get_pdu(&next_id).await
                         && pdu.is_outlier
                         && !pdu.rejected()
+                        && !pdu.soft_failed
                     {
                         let content = pdu.get_content()?;
                         if let Err(e) =
@@ -287,6 +291,7 @@ pub async fn process_to_outlier_pdu(
             pdu: pdu.into_inner(),
             json_data: val,
             soft_failed: false,
+            policy_refused: false,
             remote_server: remote_server.to_owned(),
             room_id: room_id.to_owned(),
             room_version: room_version.to_owned(),
@@ -347,6 +352,13 @@ pub async fn process_to_outlier_pdu(
         "event_id".to_owned(),
         CanonicalJsonValue::String(event_id.as_str().to_owned()),
     );
+
+    // The room may require a Policy Server signature (MSC4284). Do this before building
+    // the PDU so that a signature we had to fetch ourselves ends up in both the parsed
+    // event and the stored JSON, and is therefore passed on transitively.
+    let policy_allowed =
+        crate::room::policy::is_event_allowed(room_id, &mut val, &version_rules).await;
+
     let mut incoming_pdu = PduEvent::from_json_value(
         room_id,
         event_id,
@@ -368,6 +380,7 @@ pub async fn process_to_outlier_pdu(
                 pdu: incoming_pdu,
                 json_data: val,
                 soft_failed: false,
+                policy_refused: !policy_allowed,
                 remote_server: remote_server.to_owned(),
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
@@ -478,6 +491,7 @@ pub async fn process_to_outlier_pdu(
     Ok(Some(OutlierPdu {
         pdu: incoming_pdu,
         soft_failed,
+        policy_refused: !policy_allowed,
         json_data: val,
         remote_server: remote_server.to_owned(),
         room_id: room_id.to_owned(),
@@ -497,6 +511,14 @@ pub async fn process_to_timeline_pdu(
     // Skip the PDU if we already have it as a timeline event
     if !incoming_pdu.is_outlier {
         return Ok(());
+    }
+    // The single boundary every promotion path goes through, so the guard lives here
+    // rather than being repeated (and forgotten) in each caller -- backfill in particular
+    // promotes PDUs straight from `backfill_pdu`.
+    if incoming_pdu.soft_failed {
+        return Err(AppError::internal(
+            "cannot process soft-failed event to timeline",
+        ));
     }
     if incoming_pdu.rejected() {
         return Err(AppError::internal(
