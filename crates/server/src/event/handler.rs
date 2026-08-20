@@ -103,7 +103,7 @@ pub(crate) async fn process_incoming_pdu(
         handler::acl_check(sender.server_name(), room_id).await?;
     }
     // 1. Skip the PDU if we already have it as a timeline event
-    if state::get_pdu_frame_id(event_id).await.is_ok() {
+    if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
         return Ok(());
     }
 
@@ -179,7 +179,7 @@ pub(crate) async fn process_pulled_pdu(
     }
 
     // 1. Skip the PDU if we already have it as a timeline event
-    if state::get_pdu_frame_id(event_id).await.is_ok() {
+    if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
         return Ok(());
     }
 
@@ -291,8 +291,6 @@ pub async fn process_to_outlier_pdu(
             room_id: room_id.to_owned(),
             room_version: room_version.to_owned(),
             event_sn: Some(event_sn),
-            rejected_auth_events: vec![],
-            rejected_prev_events: vec![],
         }));
     }
 
@@ -372,15 +370,13 @@ pub async fn process_to_outlier_pdu(
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
                 event_sn: None,
-                rejected_auth_events: vec![],
-                rejected_prev_events: vec![],
             }));
         }
         return Ok(None);
     }
 
     let mut soft_failed = false;
-    let (prev_events, missing_prev_event_ids) =
+    let (_, missing_prev_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.prev_events).await?;
     if !missing_prev_event_ids.is_empty() {
         warn!(
@@ -389,22 +385,9 @@ pub async fn process_to_outlier_pdu(
         );
         soft_failed = true;
     }
-    let rejected_prev_events = prev_events
-        .iter()
-        .filter_map(|pdu| {
-            if pdu.rejected() {
-                Some(pdu.event_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    if !rejected_prev_events.is_empty() {
-        incoming_pdu.rejection_reason = Some(format!(
-            "event's prev events rejected: {rejected_prev_events:?}"
-        ));
-        // soft_failed = true; // Will try to fetch rejected prev events again later
-    }
+    // A rejected predecessor does not reject its descendants. State resolution
+    // skips rejected predecessors and falls back to the last accepted state, so
+    // a later valid event can reconnect the room DAG.
 
     let (auth_events, missing_auth_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.auth_events).await?;
@@ -463,7 +446,7 @@ pub async fn process_to_outlier_pdu(
         let was_soft_failed = soft_failed;
         if let Err(e) = auth_check(&incoming_pdu, &version_rules, None).await {
             match e {
-                AppError::State(StateError::Forbidden(brief)) => {
+                AppError::State(StateError::Forbidden(brief) | StateError::AuthEvent(brief)) => {
                     incoming_pdu.rejection_reason = Some(brief);
                 }
                 _ => {
@@ -483,8 +466,6 @@ pub async fn process_to_outlier_pdu(
         room_id: room_id.to_owned(),
         room_version: room_version.to_owned(),
         event_sn: None,
-        rejected_auth_events,
-        rejected_prev_events,
     }))
 }
 
@@ -550,6 +531,15 @@ pub async fn process_to_timeline_pdu(
                 )?);
             }
             let compressed_state_ids = Arc::new(compressed_state_ids_set);
+            // Persist the exact event-time state while this PDU is still an outlier.
+            // `append_pdu` makes it queryable, so doing this afterwards would expose
+            // a provisional current-room frame to concurrent visibility checks.
+            state::set_event_state_before(
+                &incoming_pdu.event_id,
+                &incoming_pdu.room_id,
+                Arc::clone(&compressed_state_ids),
+            )
+            .await?;
             debug!("preparing for stateres to derive new room state");
 
             // We also add state after incoming event to the fork states
@@ -576,13 +566,6 @@ pub async fn process_to_timeline_pdu(
 
             debug!("appended incoming pdu");
             timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
-            state::set_event_state(
-                &incoming_pdu.event_id,
-                incoming_pdu.event_sn,
-                &incoming_pdu.room_id,
-                compressed_state_ids,
-            )
-            .await?;
             drop(state_lock);
         }
         return Ok(());
@@ -647,6 +630,15 @@ pub async fn process_to_timeline_pdu(
         )?);
     }
     let compressed_state_ids = Arc::new(compressed_state_ids_set);
+    // Store the resolved state before the event is promoted out of outlier storage.
+    // This prevents visibility readers from ever observing the room's later resolved
+    // state as a temporary event-time snapshot.
+    state::set_event_state_before(
+        &incoming_pdu.event_id,
+        &incoming_pdu.room_id,
+        Arc::clone(&compressed_state_ids),
+    )
+    .await?;
 
     let guards = if let Some(state_key) = &incoming_pdu.state_key {
         debug!("preparing for stateres to derive new room state");
@@ -707,13 +699,6 @@ pub async fn process_to_timeline_pdu(
     } else {
         debug!("appended incoming pdu");
         timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
-        state::set_event_state(
-            &incoming_pdu.event_id,
-            incoming_pdu.event_sn,
-            &incoming_pdu.room_id,
-            compressed_state_ids,
-        )
-        .await?;
     }
     drop(guards);
 

@@ -295,6 +295,7 @@ diesel::table! {
         room_id -> Text,
         thread_id -> Nullable<Text>,
         frame_id -> Nullable<Int8>,
+        before_frame_id -> Nullable<Int8>,
         stripped_state -> Nullable<Json>,
     }
 }

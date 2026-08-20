@@ -204,10 +204,13 @@ async fn invite_user(
         return Err(MatrixError::forbidden("this server does not allow room invites", None).into());
     }
 
+    let preserve_full_create = crate::room::get_version_rules(&body.room_version)?
+        .authorization
+        .room_create_event_id_as_room_id;
     let mut invite_state = body
         .invite_room_state
         .iter()
-        .map(|event| stripped_invite_state_event(event))
+        .map(|event| stripped_invite_state_event(event, preserve_full_create))
         .collect::<Result<Vec<_>, _>>()?;
 
     // If we are active in the room, the remote server will notify us about the join via /send.
@@ -298,12 +301,20 @@ async fn invite_user(
 /// stripped state. Both forms contain these four common fields.
 fn stripped_invite_state_event(
     event: &RawJsonValue,
+    preserve_full_create: bool,
 ) -> Result<RawJson<AnyStrippedStateEvent>, MatrixError> {
-    let event: JsonValue = serde_json::from_str(event.get())
+    let event_value: JsonValue = serde_json::from_str(event.get())
         .map_err(|_| MatrixError::invalid_param("invite state event is invalid JSON"))?;
-    let event = event
+    let event = event_value
         .as_object()
         .ok_or_else(|| MatrixError::invalid_param("invite state event is not an object"))?;
+
+    if preserve_full_create
+        && event.get("type").and_then(JsonValue::as_str) == Some("m.room.create")
+    {
+        return RawJson::from_value(&event_value)
+            .map_err(|_| MatrixError::invalid_param("invite state event is invalid"));
+    }
 
     let field = |name| {
         event.get(name).cloned().ok_or_else(|| {
@@ -539,7 +550,7 @@ mod tests {
         }))
         .unwrap();
 
-        let stripped = stripped_invite_state_event(&pdu).unwrap();
+        let stripped = stripped_invite_state_event(&pdu, false).unwrap();
         let value: Value = serde_json::from_str(stripped.as_str()).unwrap();
 
         assert_eq!(
@@ -563,7 +574,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(stripped_invite_state_event(&event).is_ok());
+        assert!(stripped_invite_state_event(&event, false).is_ok());
     }
 
     #[test]
@@ -574,6 +585,26 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(stripped_invite_state_event(&event).is_err());
+        assert!(stripped_invite_state_event(&event, false).is_err());
+    }
+
+    #[test]
+    fn preserves_full_create_event_for_domainless_rooms() {
+        let event = to_raw_value(&json!({
+            "auth_events": [],
+            "content": { "room_version": "12" },
+            "depth": 1,
+            "origin_server_ts": 1,
+            "sender": "@alice:example.org",
+            "state_key": "",
+            "type": "m.room.create"
+        }))
+        .unwrap();
+
+        let preserved = stripped_invite_state_event(&event, true).unwrap();
+        let value: Value = serde_json::from_str(preserved.as_str()).unwrap();
+
+        assert_eq!(value["origin_server_ts"], 1);
+        assert_eq!(value["depth"], 1);
     }
 }

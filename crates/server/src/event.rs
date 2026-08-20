@@ -236,6 +236,14 @@ pub async fn update_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()>
     Ok(())
 }
 
+pub async fn update_before_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()> {
+    diesel::update(event_points::table.find(event_id))
+        .set(event_points::before_frame_id.eq(frame_id))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 pub async fn update_frame_id_by_sn(event_sn: Seqnum, frame_id: i64) -> AppResult<()> {
     diesel::update(event_points::table.filter(event_points::event_sn.eq(event_sn)))
         .set(event_points::frame_id.eq(frame_id))

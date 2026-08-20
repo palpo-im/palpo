@@ -433,6 +433,7 @@ pub(super) async fn timestamp_to_event(
                 origin_server_ts,
             });
         };
+        let event_value_for_promotion = event_value.clone();
         process_pulled_pdu(
             &remote_server,
             &event_id,
@@ -454,6 +455,23 @@ pub(super) async fn timestamp_to_event(
                 .await
         {
             warn!("failed to backfill history around timestamp_to_event result: {e}");
+        }
+
+        // `/backfill` returns the predecessors of its seed, not necessarily the
+        // seed itself. The first processing attempt above can therefore leave
+        // the timestamp result as an outlier while its predecessor is missing.
+        // Retry after backfill so the now-connected result gets an event-time
+        // state frame and can be authorized by `/context` and `/messages`.
+        if timeline::get_non_outlier_pdu(&event_id).await?.is_none() {
+            process_pulled_pdu(
+                &remote_server,
+                &event_id,
+                &args.room_id,
+                &room_version,
+                event_value_for_promotion,
+                true,
+            )
+            .await?;
         }
 
         return json_ok(TimestampToEventResBody {
