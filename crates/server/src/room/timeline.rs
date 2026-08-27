@@ -17,7 +17,7 @@ use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, to_
 use crate::core::state::Event;
 use crate::data::room::{DbEvent, DbEventData, NewDbEventEdge};
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
+use crate::data::{connect, coordination_connect, diesel_exists};
 use crate::event::{PduBuilder, PduEvent};
 use crate::room::{push_action, state, timeline};
 use crate::{
@@ -557,19 +557,27 @@ pub async fn append_pdu(
         _ => {}
     }
 
-    DbEventData {
+    let event_data = DbEventData {
         event_id: pdu.event_id.clone(),
         event_sn: pdu.event_sn,
         room_id: pdu.room_id.to_owned(),
         internal_metadata: None,
         json_data: serde_json::to_value(&pdu_json)?,
         format_version: None,
-    }
-    .save()
-    .await?;
-    diesel::update(events::table.find(&*pdu.event_id))
-        .set(events::is_outlier.eq(false))
-        .execute(&mut connect().await?)
+    };
+    // Event JSON is the timeline's visibility gate. Keep it in the same transaction as
+    // promotion so feature branches can add derived visibility indexes here without
+    // exposing a partially published event to another server process.
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            event_data.save_with_conn(conn).await?;
+            diesel::update(events::table.find(&*pdu.event_id))
+                .set(events::is_outlier.eq(false))
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
         .await?;
 
     for prev_id in &pdu.prev_events {
@@ -800,6 +808,36 @@ pub async fn build_and_append_pdu(
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<SnPduEvent> {
+    // The process-local state mutex held by the caller is not sufficient when several
+    // Palpo processes serve the same database. Keep a transaction-scoped PostgreSQL lock
+    // from the first current-state/prev-event read through timeline publication.
+    let (pdu, appended) = coordination_connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            crate::data::room::timeline::lock_event_append(conn, room_id).await?;
+            build_and_append_pdu_locked(pdu_builder, sender, room_id, room_version, state_lock)
+                .await
+        })
+        .await?;
+
+    // Deliver to participating servers only after releasing the append fence. Queueing
+    // unrelated destinations must not prevent another process from building the room's
+    // next event.
+    if appended {
+        let servers = super::participating_servers(room_id, false).await?;
+        crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
+    }
+
+    Ok(pdu)
+}
+
+async fn build_and_append_pdu_locked(
+    pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+) -> AppResult<(SnPduEvent, bool)> {
     if let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
             room_id,
@@ -810,7 +848,7 @@ pub async fn build_and_append_pdu(
         .await
         && curr_state.content.get() == pdu_builder.content.get()
     {
-        return Ok(curr_state);
+        return Ok((curr_state, false));
     }
 
     let (pdu, pdu_json, _event_guard) = pdu_builder
@@ -837,12 +875,7 @@ pub async fn build_and_append_pdu(
     //     crate::room::update_currents(&room_id)?;
     // }
 
-    // Deliver to participating servers. Peeking servers are handled centrally in
-    // `append_pdu` (which also covers events received from other servers).
-    let servers = super::participating_servers(room_id, false).await?;
-    crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
-
-    Ok(pdu)
+    Ok((pdu, true))
 }
 
 /// Replace a PDU with the redacted form.

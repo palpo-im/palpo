@@ -34,14 +34,43 @@ use crate::core::Seqnum;
 pub type DataResult<T> = Result<T, DataError>;
 
 pub static DIESEL_POOL: OnceLock<DieselPool> = OnceLock::new();
+pub static COORDINATION_POOL: OnceLock<DieselPool> = OnceLock::new();
 pub static REPLICA_POOL: OnceLock<Option<DieselPool>> = OnceLock::new();
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 pub fn init(config: &DbConfig) {
-    let pool = DieselPool::new(&config.url, config).expect("diesel pool should be created");
-    DIESEL_POOL.set(pool).expect("diesel pool should be set");
+    let (query_pool_size, coordination_pool_size) = split_pool_size(config.pool_size);
+
+    // Migrations use a one-off synchronous connection. Run them before creating the
+    // long-lived pools so startup does not temporarily exceed the configured budget.
     migrate(config);
+
+    let pool = DieselPool::new(&config.url, config, query_pool_size, "queries")
+        .expect("diesel query pool should be created");
+    DIESEL_POOL.set(pool).expect("diesel pool should be set");
+    let coordination_pool =
+        DieselPool::new(&config.url, config, coordination_pool_size, "coordination")
+            .expect("diesel coordination pool should be created");
+    COORDINATION_POOL
+        .set(coordination_pool)
+        .expect("diesel coordination pool should be set");
+}
+
+fn split_pool_size(total: u32) -> (usize, usize) {
+    let coordination = coordination_pool_capacity(total);
+    (total as usize - coordination, coordination)
+}
+
+/// Number of connections reserved for database-backed coordination inside the
+/// configured total pool budget.
+pub fn coordination_pool_capacity(total: u32) -> usize {
+    assert!(
+        total >= 2,
+        "db.pool_size must be at least 2 so database-backed coordination cannot deadlock query work"
+    );
+    let total = total as usize;
+    (total / 2).clamp(1, 8)
 }
 
 /// Run pending migrations using a one-off synchronous connection.
@@ -66,6 +95,26 @@ pub async fn connect() -> Result<PgPooledConnection, PoolError> {
         Ok(conn) => Ok(conn),
         Err(e) => {
             tracing::error!("db connect error: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// Get a connection reserved for operations which must hold a database lock while
+/// ordinary queries continue on the primary pool.
+///
+/// Both pools are carved out of `db.pool_size`; using this pool never increases the
+/// configured steady-state connection budget.
+pub async fn coordination_connect() -> Result<PgPooledConnection, PoolError> {
+    match COORDINATION_POOL
+        .get()
+        .expect("diesel coordination pool should set")
+        .get()
+        .await
+    {
+        Ok(conn) => Ok(conn),
+        Err(e) => {
+            tracing::error!("db coordination connect error: {e}");
             Err(e)
         }
     }
@@ -120,7 +169,34 @@ mod migration_tests {
     use diesel::pg::Pg;
     use diesel_migrations::EmbeddedMigrations;
 
-    use super::MIGRATIONS;
+    use super::{MIGRATIONS, coordination_pool_capacity, split_pool_size};
+
+    #[test]
+    fn coordination_pool_stays_inside_the_configured_budget() {
+        for total in 2..=64 {
+            let (queries, coordination) = split_pool_size(total);
+            assert!(queries > 0);
+            assert!(coordination > 0);
+            assert_eq!(queries + coordination, total as usize);
+            assert!(coordination <= 8);
+            assert_eq!(coordination, coordination_pool_capacity(total));
+        }
+    }
+
+    #[test]
+    fn coordination_capacity_matches_the_pool_split_policy() {
+        assert_eq!(split_pool_size(2), (1, 1));
+        assert_eq!(split_pool_size(3), (2, 1));
+        assert_eq!(split_pool_size(4), (2, 2));
+        assert_eq!(split_pool_size(5), (3, 2));
+        assert_eq!(split_pool_size(20), (12, 8));
+    }
+
+    #[test]
+    #[should_panic(expected = "db.pool_size must be at least 2")]
+    fn a_single_connection_cannot_support_database_coordination() {
+        split_pool_size(1);
+    }
 
     fn validate_index_guard(statement: &str) -> Result<Option<bool>, &'static str> {
         let tokens = statement

@@ -9,6 +9,9 @@ pub struct DbConfig {
     /// Settings for the primary database. default reade env var PALPO_DB_URL.
     #[serde(default = "default_db_url")]
     pub url: String,
+    /// Maximum number of long-lived PostgreSQL connections used by this process.
+    /// The budget includes both ordinary queries and database-backed coordination;
+    /// it must be at least 2.
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
 

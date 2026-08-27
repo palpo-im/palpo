@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
@@ -143,17 +143,24 @@ impl OutlierPdu {
         db_event.soft_failed = soft_failed;
         db_event.is_rejected = pdu.rejection_reason.is_some();
         db_event.rejection_reason = pdu.rejection_reason.clone();
-        db_event.save().await?;
-        DbEventData {
+        let event_data = DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
             room_id: pdu.room_id.clone(),
             internal_metadata: None,
             json_data: serde_json::to_value(&json_data)?,
             format_version: None,
-        }
-        .save()
-        .await?;
+        };
+        // An outlier becomes queryable as soon as its JSON row commits. Keep metadata and
+        // JSON together so feature-specific outlier indexes can share this transaction.
+        connect()
+            .await?
+            .transaction::<_, AppError, _>(async |conn| {
+                db_event.save_with_conn(conn).await?;
+                event_data.save_with_conn(conn).await?;
+                Ok(())
+            })
+            .await?;
         let pdu = SnPduEvent {
             pdu,
             event_sn,

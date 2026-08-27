@@ -1,12 +1,28 @@
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::room::DbEvent;
 use crate::schema::*;
 use crate::{DataResult, connect};
+
+const ROOM_EVENT_APPEND_LOCK_NAMESPACE: i64 = 7_252_664_853;
+
+/// Serialize locally authored events for one room across all server processes.
+///
+/// The caller must keep the surrounding transaction open until the event has been
+/// built and published. A transaction-scoped lock is released automatically on
+/// success, error, cancellation, or connection loss.
+pub async fn lock_event_append(conn: &mut AsyncPgConnection, room_id: &RoomId) -> DataResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+        .bind::<diesel::sql_types::BigInt, _>(ROOM_EVENT_APPEND_LOCK_NAMESPACE)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
 
 /// Get PDUs by room with pagination
 pub async fn get_pdus_by_room(

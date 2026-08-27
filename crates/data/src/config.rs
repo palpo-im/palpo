@@ -36,6 +36,9 @@ pub struct DbConfig {
     /// some configurations.
     /// An optional follower database. Always read-only.
     pub url: String,
+    /// Maximum number of long-lived PostgreSQL connections used by this process.
+    /// The server divides this budget between ordinary queries and operations which
+    /// hold database-backed coordination locks. Must be at least 2.
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
 

@@ -878,6 +878,12 @@ impl ServerConfig {
             tracing::warn!("Note: palpo was built without optimisations (i.e. debug build)");
         }
 
+        if self.db.pool_size < 2 {
+            return Err(AppError::internal(
+                "db.pool_size must be at least 2 so query and coordination work cannot deadlock",
+            ));
+        }
+
         // NOTE: `check()` runs *before* `logging::init()` in main, so a
         // `tracing::error!` here would be dropped on the floor. Use
         // `eprintln!` so the banners are always written to stderr regardless
