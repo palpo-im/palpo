@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS events_room_id_stream_ordering_idx;
