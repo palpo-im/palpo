@@ -141,7 +141,7 @@ pub(super) async fn get_messages(
                 lazy_loaded.insert(event.sender.clone());
             }
 
-            next_token = events.last().map(|(_, pdu)| pdu.live_token());
+            next_token = events.last().map(|(_, pdu)| pdu.historic_token());
 
             let events: Vec<_> = events
                 .into_iter()
