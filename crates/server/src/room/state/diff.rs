@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::FrameInfo;
 use crate::core::{OwnedEventId, RoomId, Seqnum};
 use crate::data::room::DbRoomStateDelta;
-use crate::{AppResult, data, utils};
+use crate::{AppError, AppResult, data, utils};
 
 pub struct StateDiff {
     pub parent_id: Option<i64>,
@@ -90,19 +90,19 @@ pub async fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
     } = data::room::get_state_delta(frame_id).await?;
     Ok(StateDiff {
         parent_id,
-        appended: Arc::new(
-            appended
-                .chunks_exact(size_of::<CompressedEvent>())
-                .map(|chunk| CompressedEvent(chunk.try_into().expect("we checked the size above")))
-                .collect(),
-        ),
-        disposed: Arc::new(
-            disposed
-                .chunks_exact(size_of::<CompressedEvent>())
-                .map(|chunk| CompressedEvent(chunk.try_into().expect("we checked the size above")))
-                .collect(),
-        ),
+        appended: Arc::new(decode_compressed_state(&appended)?),
+        disposed: Arc::new(decode_compressed_state(&disposed)?),
     })
+}
+
+fn decode_compressed_state(bytes: &[u8]) -> AppResult<CompressedState> {
+    let (events, remainder) = bytes.as_chunks::<{ size_of::<CompressedEvent>() }>();
+    if !remainder.is_empty() {
+        return Err(AppError::internal(
+            "stored room state delta has an invalid byte length",
+        ));
+    }
+    Ok(events.iter().copied().map(CompressedEvent).collect())
 }
 
 pub async fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) -> AppResult<()> {
@@ -129,6 +129,7 @@ pub async fn save_state_delta(room_id: &RoomId, frame_id: i64, diff: StateDiff) 
     .await?;
     Ok(())
 }
+
 /// Creates a new state_hash that often is just a diff to an already existing
 /// state_hash and therefore very efficient.
 ///
@@ -251,5 +252,30 @@ pub async fn calc_and_save_state_delta(
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompressedEvent, decode_compressed_state};
+    use crate::core::Seqnum;
+
+    #[test]
+    fn compressed_state_decoder_round_trips_complete_events() {
+        let first = CompressedEvent::new(1, Seqnum::from(2));
+        let second = CompressedEvent::new(3, Seqnum::from(4));
+        let bytes = [first.as_bytes(), second.as_bytes()].concat();
+
+        let decoded = decode_compressed_state(&bytes).unwrap();
+
+        assert_eq!(decoded.into_iter().collect::<Vec<_>>(), vec![first, second]);
+    }
+
+    #[test]
+    fn compressed_state_decoder_rejects_truncated_rows() {
+        let event = CompressedEvent::new(1, Seqnum::from(2));
+        let bytes = &event.as_bytes()[..3];
+
+        assert!(decode_compressed_state(bytes).is_err());
     }
 }
