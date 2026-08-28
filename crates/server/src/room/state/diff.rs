@@ -92,14 +92,18 @@ pub async fn load_state_diff(frame_id: i64) -> AppResult<StateDiff> {
         parent_id,
         appended: Arc::new(
             appended
-                .chunks_exact(size_of::<CompressedEvent>())
-                .map(|chunk| CompressedEvent(chunk.try_into().expect("we checked the size above")))
+                .as_chunks::<{ size_of::<CompressedEvent>() }>()
+                .0
+                .iter()
+                .map(|chunk| CompressedEvent(*chunk))
                 .collect(),
         ),
         disposed: Arc::new(
             disposed
-                .chunks_exact(size_of::<CompressedEvent>())
-                .map(|chunk| CompressedEvent(chunk.try_into().expect("we checked the size above")))
+                .as_chunks::<{ size_of::<CompressedEvent>() }>()
+                .0
+                .iter()
+                .map(|chunk| CompressedEvent(*chunk))
                 .collect(),
         ),
     })
