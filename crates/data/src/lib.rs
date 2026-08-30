@@ -113,55 +113,154 @@ pub async fn curr_sn() -> DataResult<Seqnum> {
 
 #[cfg(test)]
 mod migration_tests {
+    use std::fs;
+    use std::path::Path;
+
     use diesel::migration::MigrationSource;
     use diesel::pg::Pg;
     use diesel_migrations::EmbeddedMigrations;
 
     use super::MIGRATIONS;
 
+    fn validate_index_guard(statement: &str) -> Result<Option<bool>, &'static str> {
+        let tokens = statement
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .filter(|token| !token.is_empty())
+            .map(str::to_ascii_uppercase)
+            .collect::<Vec<_>>();
+        let Some(operation) = tokens.first().map(String::as_str) else {
+            return Ok(None);
+        };
+
+        let mut cursor = 1;
+        if operation == "CREATE" && tokens.get(cursor).map(String::as_str) == Some("UNIQUE") {
+            cursor += 1;
+        }
+        if !matches!(operation, "CREATE" | "DROP")
+            || tokens.get(cursor).map(String::as_str) != Some("INDEX")
+        {
+            return Ok(None);
+        }
+
+        cursor += 1;
+        let concurrently = tokens.get(cursor).map(String::as_str) == Some("CONCURRENTLY");
+        if concurrently {
+            cursor += 1;
+        }
+
+        let guard = tokens
+            .get(cursor..)
+            .unwrap_or_default()
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let starts_like_guard = guard
+            .first()
+            .is_some_and(|token| matches!(*token, "IF" | "NOT" | "EXISTS"));
+
+        match operation {
+            "CREATE" if concurrently || starts_like_guard => {
+                if guard.starts_with(&["IF", "NOT", "EXISTS"]) {
+                    Ok(Some(concurrently))
+                } else {
+                    Err("CREATE INDEX guard must use IF NOT EXISTS")
+                }
+            }
+            "DROP" if concurrently || starts_like_guard => {
+                if guard.starts_with(&["IF", "EXISTS"]) {
+                    Ok(Some(concurrently))
+                } else {
+                    Err("DROP INDEX guard must use IF EXISTS")
+                }
+            }
+            _ => Ok(Some(concurrently)),
+        }
+    }
+
     #[test]
-    fn concurrent_membership_indexes_run_as_single_statement_migrations() {
+    fn index_migrations_guard_existence_and_transaction_mode_correctly() {
         let migrations = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
             .expect("embedded migrations should be readable");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
 
-        for (name, up_sql, down_sql) in [
-            (
-                "2026-08-07-000001_membership_event_lookup_indexes",
-                include_str!(
-                    "../migrations/2026-08-07-000001_membership_event_lookup_indexes/up.sql"
-                ),
-                include_str!(
-                    "../migrations/2026-08-07-000001_membership_event_lookup_indexes/down.sql"
-                ),
-            ),
-            (
-                "2026-08-07-000003_membership_server_event_lookup_index",
-                include_str!(
-                    "../migrations/2026-08-07-000003_membership_server_event_lookup_index/up.sql"
-                ),
-                include_str!(
-                    "../migrations/2026-08-07-000003_membership_server_event_lookup_index/down.sql"
-                ),
-            ),
-        ] {
+        let mut checked = 0usize;
+        for entry in fs::read_dir(&dir).expect("migrations directory should be readable") {
+            let entry = entry.expect("migration directory entry should be readable");
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
             let migration = migrations
                 .iter()
                 .find(|migration| migration.name().to_string() == name)
                 .unwrap_or_else(|| panic!("{name} should be embedded"));
 
+            for file in ["up.sql", "down.sql"] {
+                let Ok(sql) = fs::read_to_string(entry.path().join(file)) else {
+                    continue;
+                };
+                // Migration files document the query sites they index, and those comments
+                // mention the very keywords checked below.
+                let sql = sql
+                    .lines()
+                    .map(|line| line.split("--").next().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let mut has_concurrent_index = false;
+                for statement in sql
+                    .split(';')
+                    .filter(|statement| !statement.trim().is_empty())
+                {
+                    match validate_index_guard(statement) {
+                        Ok(Some(concurrently)) => has_concurrent_index |= concurrently,
+                        Ok(None) => {}
+                        Err(error) => panic!("{name}/{file}: {error}: {statement}"),
+                    }
+                }
+
+                if has_concurrent_index {
+                    assert!(
+                        !migration.metadata().run_in_transaction(),
+                        "{name}: CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction"
+                    );
+                    assert_eq!(
+                        sql.matches(';').count(),
+                        1,
+                        "{name}/{file}: concurrent migration batches must contain one statement"
+                    );
+                }
+                checked += 1;
+            }
+        }
+
+        assert!(checked > 0, "no migration SQL was checked");
+    }
+
+    #[test]
+    fn concurrent_index_guards_are_recognized_structurally() {
+        for statement in [
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS example_idx ON example (id)",
+            "DROP INDEX CONCURRENTLY IF EXISTS example_idx",
+            "DROP INDEX IF EXISTS example_idx",
+        ] {
+            assert!(validate_index_guard(statement).is_ok());
+        }
+
+        for statement in [
+            "CREATE INDEX CONCURRENTLY example_idx ON example (id)",
+            "CREATE INDEX CONCURRENTLY IF EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX IF EXISTS example_idx ON example (id)",
+            "DROP INDEX CONCURRENTLY example_idx",
+            "DROP INDEX CONCURRENTLY IF NOT EXISTS example_idx",
+            "DROP INDEX IF NOT EXISTS example_idx",
+        ] {
             assert!(
-                !migration.metadata().run_in_transaction(),
-                "CREATE INDEX CONCURRENTLY cannot run inside a transaction"
-            );
-            assert_eq!(
-                up_sql.matches(';').count(),
-                1,
-                "concurrent migration batches must contain one statement"
-            );
-            assert_eq!(
-                down_sql.matches(';').count(),
-                1,
-                "concurrent migration rollback batches must contain one statement"
+                validate_index_guard(statement).is_err(),
+                "invalid guard was accepted: {statement}"
             );
         }
     }
