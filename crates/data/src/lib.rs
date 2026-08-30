@@ -122,6 +122,9 @@ mod migration_tests {
 
     use super::MIGRATIONS;
 
+    const UNGUARDED_CONCURRENT_INDEX_MIGRATION: (&str, &str) =
+        ("2026-08-27-000009_event_receipts_user_room_sn", "up.sql");
+
     #[derive(Debug, Eq, PartialEq)]
     struct IndexStatement {
         concurrently: bool,
@@ -223,7 +226,16 @@ mod migration_tests {
                     .filter(|statement| !statement.trim().is_empty())
                 {
                     match validate_index_guard(statement) {
-                        Ok(Some(index)) => has_concurrent_index |= index.concurrently,
+                        Ok(Some(index)) => {
+                            if index.concurrently && !index.guarded {
+                                assert_eq!(
+                                    (name.as_str(), file),
+                                    UNGUARDED_CONCURRENT_INDEX_MIGRATION,
+                                    "{name}/{file}: CREATE INDEX CONCURRENTLY must use IF NOT EXISTS"
+                                );
+                            }
+                            has_concurrent_index |= index.concurrently;
+                        }
                         Ok(None) => {}
                         Err(error) => panic!("{name}/{file}: {error}: {statement}"),
                     }
