@@ -122,16 +122,7 @@ mod migration_tests {
 
     use super::MIGRATIONS;
 
-    const UNGUARDED_CONCURRENT_INDEX_MIGRATION: (&str, &str) =
-        ("2026-08-27-000009_event_receipts_user_room_sn", "up.sql");
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct IndexStatement {
-        concurrently: bool,
-        guarded: bool,
-    }
-
-    fn validate_index_guard(statement: &str) -> Result<Option<IndexStatement>, &'static str> {
+    fn validate_index_guard(statement: &str) -> Result<Option<bool>, &'static str> {
         let tokens = statement
             .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
             .filter(|token| !token.is_empty())
@@ -167,32 +158,28 @@ mod migration_tests {
         let starts_like_guard = guard
             .first()
             .is_some_and(|token| matches!(*token, "IF" | "NOT" | "EXISTS"));
-        let index = IndexStatement {
-            concurrently,
-            guarded: starts_like_guard,
-        };
 
         match operation {
-            "CREATE" if starts_like_guard => {
+            "CREATE" if concurrently || starts_like_guard => {
                 if guard.starts_with(&["IF", "NOT", "EXISTS"]) {
-                    Ok(Some(index))
+                    Ok(Some(concurrently))
                 } else {
                     Err("CREATE INDEX guard must use IF NOT EXISTS")
                 }
             }
             "DROP" if concurrently || starts_like_guard => {
                 if guard.starts_with(&["IF", "EXISTS"]) {
-                    Ok(Some(index))
+                    Ok(Some(concurrently))
                 } else {
                     Err("DROP INDEX guard must use IF EXISTS")
                 }
             }
-            _ => Ok(Some(index)),
+            _ => Ok(Some(concurrently)),
         }
     }
 
     #[test]
-    fn index_migrations_validate_guards_and_transaction_mode() {
+    fn index_migrations_guard_existence_and_transaction_mode_correctly() {
         let migrations = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
             .expect("embedded migrations should be readable");
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
@@ -226,16 +213,7 @@ mod migration_tests {
                     .filter(|statement| !statement.trim().is_empty())
                 {
                     match validate_index_guard(statement) {
-                        Ok(Some(index)) => {
-                            if index.concurrently && !index.guarded {
-                                assert_eq!(
-                                    (name.as_str(), file),
-                                    UNGUARDED_CONCURRENT_INDEX_MIGRATION,
-                                    "{name}/{file}: CREATE INDEX CONCURRENTLY must use IF NOT EXISTS"
-                                );
-                            }
-                            has_concurrent_index |= index.concurrently;
-                        }
+                        Ok(Some(concurrently)) => has_concurrent_index |= concurrently,
                         Ok(None) => {}
                         Err(error) => panic!("{name}/{file}: {error}: {statement}"),
                     }
@@ -260,11 +238,9 @@ mod migration_tests {
     }
 
     #[test]
-    fn index_guards_are_recognized_structurally() {
+    fn concurrent_index_guards_are_recognized_structurally() {
         for statement in [
-            "CREATE INDEX CONCURRENTLY example_idx ON example (id)",
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS example_idx ON example (id)",
-            "CREATE UNIQUE INDEX CONCURRENTLY example_idx ON example (id)",
             "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS example_idx ON example (id)",
             "CREATE UNIQUE INDEX IF NOT EXISTS example_idx ON example (id)",
             "DROP INDEX CONCURRENTLY IF EXISTS example_idx",
@@ -274,6 +250,7 @@ mod migration_tests {
         }
 
         for statement in [
+            "CREATE INDEX CONCURRENTLY example_idx ON example (id)",
             "CREATE INDEX CONCURRENTLY IF EXISTS example_idx ON example (id)",
             "CREATE UNIQUE INDEX CONCURRENTLY IF EXISTS example_idx ON example (id)",
             "CREATE UNIQUE INDEX IF EXISTS example_idx ON example (id)",
@@ -286,21 +263,5 @@ mod migration_tests {
                 "invalid guard was accepted: {statement}"
             );
         }
-    }
-
-    #[test]
-    fn event_receipts_concurrent_index_does_not_hide_invalid_retries() {
-        let statement =
-            include_str!("../migrations/2026-08-27-000009_event_receipts_user_room_sn/up.sql");
-
-        // An interrupted concurrent build can leave an invalid same-named index. Keeping the
-        // CREATE unguarded makes the retry fail visibly instead of silently recording success.
-        assert_eq!(
-            validate_index_guard(statement),
-            Ok(Some(IndexStatement {
-                concurrently: true,
-                guarded: false,
-            }))
-        );
     }
 }
