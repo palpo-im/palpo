@@ -113,6 +113,9 @@ pub async fn curr_sn() -> DataResult<Seqnum> {
 
 #[cfg(test)]
 mod migration_tests {
+    use std::fs;
+    use std::path::Path;
+
     use diesel::migration::MigrationSource;
     use diesel::pg::Pg;
     use diesel_migrations::EmbeddedMigrations;
@@ -120,49 +123,68 @@ mod migration_tests {
     use super::MIGRATIONS;
 
     #[test]
-    fn concurrent_membership_indexes_run_as_single_statement_migrations() {
+    fn index_migrations_guard_existence_and_transaction_mode_correctly() {
         let migrations = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
             .expect("embedded migrations should be readable");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
 
-        for (name, up_sql, down_sql) in [
-            (
-                "2026-08-07-000001_membership_event_lookup_indexes",
-                include_str!(
-                    "../migrations/2026-08-07-000001_membership_event_lookup_indexes/up.sql"
-                ),
-                include_str!(
-                    "../migrations/2026-08-07-000001_membership_event_lookup_indexes/down.sql"
-                ),
-            ),
-            (
-                "2026-08-07-000003_membership_server_event_lookup_index",
-                include_str!(
-                    "../migrations/2026-08-07-000003_membership_server_event_lookup_index/up.sql"
-                ),
-                include_str!(
-                    "../migrations/2026-08-07-000003_membership_server_event_lookup_index/down.sql"
-                ),
-            ),
-        ] {
+        let mut checked = 0usize;
+        for entry in fs::read_dir(&dir).expect("migrations directory should be readable") {
+            let entry = entry.expect("migration directory entry should be readable");
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
             let migration = migrations
                 .iter()
                 .find(|migration| migration.name().to_string() == name)
                 .unwrap_or_else(|| panic!("{name} should be embedded"));
 
-            assert!(
-                !migration.metadata().run_in_transaction(),
-                "CREATE INDEX CONCURRENTLY cannot run inside a transaction"
-            );
-            assert_eq!(
-                up_sql.matches(';').count(),
-                1,
-                "concurrent migration batches must contain one statement"
-            );
-            assert_eq!(
-                down_sql.matches(';').count(),
-                1,
-                "concurrent migration rollback batches must contain one statement"
-            );
+            for file in ["up.sql", "down.sql"] {
+                let Ok(sql) = fs::read_to_string(entry.path().join(file)) else {
+                    continue;
+                };
+                // Migration files document the query sites they index, and those comments
+                // mention the very keywords checked below.
+                let sql = sql
+                    .lines()
+                    .map(|line| line.split("--").next().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let statement = sql
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_uppercase();
+
+                // PostgreSQL only reports these as syntax errors when the migration runs,
+                // which on a fresh database means the server never finishes starting.
+                assert!(
+                    !statement.contains("CREATE INDEX IF EXISTS")
+                        && !statement.contains("CREATE INDEX CONCURRENTLY IF EXISTS"),
+                    "{name}/{file}: CREATE INDEX must be guarded with IF NOT EXISTS"
+                );
+                assert!(
+                    !statement.contains("DROP INDEX IF NOT EXISTS")
+                        && !statement.contains("DROP INDEX CONCURRENTLY IF NOT EXISTS"),
+                    "{name}/{file}: DROP INDEX must be guarded with IF EXISTS"
+                );
+
+                if statement.contains("CONCURRENTLY") {
+                    assert!(
+                        !migration.metadata().run_in_transaction(),
+                        "{name}: CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction"
+                    );
+                    assert_eq!(
+                        sql.matches(';').count(),
+                        1,
+                        "{name}/{file}: concurrent migration batches must contain one statement"
+                    );
+                }
+                checked += 1;
+            }
         }
+
+        assert!(checked > 0, "no migration SQL was checked");
     }
 }
