@@ -15,6 +15,15 @@ const ROOM_EVENT_APPEND_LOCK_NAMESPACE: i64 = 7_252_664_853;
 /// The caller must keep the surrounding transaction open until the event has been
 /// built and published. A transaction-scoped lock is released automatically on
 /// success, error, cancellation, or connection loss.
+///
+/// This fences *locally authored* appends against each other. Events received over
+/// federation are appended without it, exactly as before: forks created by a remote
+/// server are ordinary Matrix DAG forks that state resolution already handles, while two
+/// Palpo processes independently authoring an event from the same forward extremity are
+/// not.
+///
+/// The connection's `statement_timeout` also bounds the wait, so a room whose append lock
+/// is held for longer fails the request instead of blocking forever.
 pub async fn lock_event_append(conn: &mut AsyncPgConnection, room_id: &RoomId) -> DataResult<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
         .bind::<diesel::sql_types::Text, _>(room_id.as_str())

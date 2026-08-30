@@ -883,6 +883,14 @@ impl ServerConfig {
                 "db.pool_size must be at least 2 so query and coordination work cannot deadlock",
             ));
         }
+        if let Some(coordination_pool_size) = self.db.coordination_pool_size
+            && !(1..self.db.pool_size).contains(&coordination_pool_size)
+        {
+            return Err(AppError::internal(format!(
+                "db.coordination_pool_size must be at least 1 and smaller than db.pool_size ({}), but it is {coordination_pool_size}",
+                self.db.pool_size
+            )));
+        }
 
         // NOTE: `check()` runs *before* `logging::init()` in main, so a
         // `tracing::error!` here would be dropped on the floor. Use

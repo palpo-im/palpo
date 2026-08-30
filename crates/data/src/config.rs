@@ -42,6 +42,12 @@ pub struct DbConfig {
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
 
+    /// Connections carved out of `pool_size` for operations which hold a database-backed
+    /// coordination lock while ordinary queries continue on the remaining connections.
+    /// Leave unset to derive it from `pool_size`.
+    #[serde(default)]
+    pub coordination_pool_size: Option<u32>,
+
     /// Number of seconds to wait for unacknowledged TCP packets before treating the connection as
     /// broken. This value will determine how long crates.io stays unavailable in case of full
     /// packet loss between the application and the database: setting it too high will result in an

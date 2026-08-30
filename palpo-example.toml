@@ -776,6 +776,17 @@
 #
 # pool_size =
 
+# Connections carved out of `pool_size` for operations which hold a database-backed
+# coordination lock (currently building and publishing a locally authored room
+# event) while ordinary queries keep using the remaining connections. This caps how
+# many locally authored events the process can publish concurrently, so raise it
+# together with `pool_size` on a write-heavy deployment.
+#
+# Leave unset to derive it from `pool_size` as `pool_size / 4`, clamped to 1..=16.
+# When set it must be at least 1 and smaller than `pool_size`.
+#
+# coordination_pool_size =
+
 # Number of seconds to wait for unacknowledged TCP packets before treating the connection as
 # broken. This value will determine how long crates.io stays unavailable in case of full
 # packet loss between the application and the database: setting it too high will result in an

@@ -811,10 +811,23 @@ pub async fn build_and_append_pdu(
     // The process-local state mutex held by the caller is not sufficient when several
     // Palpo processes serve the same database. Keep a transaction-scoped PostgreSQL lock
     // from the first current-state/prev-event read through timeline publication.
-    let (pdu, appended) = coordination_connect()
-        .await?
+    //
+    // The coordination pool caps how many rooms can be in this section at once, so report
+    // exhaustion as such instead of letting a bare pool timeout reach the operator.
+    let mut fence = coordination_connect().await.map_err(|e| {
+        AppError::internal(format!(
+            "no coordination connection available to fence the event append for room {room_id}; raise db.coordination_pool_size (and db.pool_size with it) if this happens under normal load: {e}"
+        ))
+    })?;
+    let (pdu, appended) = fence
         .transaction::<_, AppError, _>(async |conn| {
-            crate::data::room::timeline::lock_event_append(conn, room_id).await?;
+            crate::data::room::timeline::lock_event_append(conn, room_id)
+                .await
+                .map_err(|e| {
+                    AppError::internal(format!(
+                        "failed to acquire the event append lock for room {room_id}: {e}"
+                    ))
+                })?;
             build_and_append_pdu_locked(pdu_builder, sender, room_id, room_version, state_lock)
                 .await
         })

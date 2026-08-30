@@ -15,6 +15,17 @@ pub struct DbConfig {
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
 
+    /// Connections carved out of `pool_size` for operations which hold a database-backed
+    /// coordination lock (currently building and publishing a locally authored room
+    /// event) while ordinary queries keep using the remaining connections. This caps how
+    /// many locally authored events the process can publish concurrently, so raise it
+    /// together with `pool_size` on a write-heavy deployment.
+    ///
+    /// Leave unset to derive it from `pool_size` as `pool_size / 4`, clamped to 1..=16.
+    /// When set it must be at least 1 and smaller than `pool_size`.
+    #[serde(default)]
+    pub coordination_pool_size: Option<u32>,
+
     /// Number of seconds to wait for unacknowledged TCP packets before treating the connection as
     /// broken. This value will determine how long crates.io stays unavailable in case of full
     /// packet loss between the application and the database: setting it too high will result in an
@@ -42,6 +53,7 @@ impl DbConfig {
         let Self {
             url,
             pool_size,
+            coordination_pool_size,
             tcp_timeout,
             connection_timeout,
             statement_timeout,
@@ -50,6 +62,7 @@ impl DbConfig {
         crate::data::DbConfig {
             url: url.clone(),
             pool_size,
+            coordination_pool_size,
             tcp_timeout,
             connection_timeout,
             statement_timeout,
@@ -63,6 +76,7 @@ impl Default for DbConfig {
         Self {
             url: default_db_url(),
             pool_size: default_db_pool_size(),
+            coordination_pool_size: None,
             tcp_timeout: default_tcp_timeout(),
             connection_timeout: default_connection_timeout(),
             statement_timeout: default_statement_timeout(),
