@@ -2707,9 +2707,9 @@ dependencies = [
 
 [[package]]
 name = "ipaddress"
-version = "0.2.9"
+version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44377319d743964dfb78bab0707a821ec1762a77c05620c4d1c6991cd3cdf5ca"
+checksum = "67a97d7409c3ade4304acbff6b33b915af4564c42bf6e383651ced09bd6a2bce"
 dependencies = [
  "lazy_static",
  "libc",
