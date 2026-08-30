@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serde::Deserialize;
 
 use crate::core::events::StateEventType;
@@ -215,12 +215,19 @@ pub struct DbEventData {
 
 impl DbEventData {
     pub async fn save(&self) -> DataResult<()> {
+        let mut conn = connect().await?;
+        self.save_with_conn(&mut conn).await
+    }
+
+    /// Save event JSON using the caller's connection, allowing publication and
+    /// any feature-specific visibility index to share one transaction.
+    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<()> {
         diesel::insert_into(event_datas::table)
             .values(self)
             .on_conflict(event_datas::event_id)
             .do_update()
             .set(self)
-            .execute(&mut connect().await?)
+            .execute(conn)
             .await?;
         Ok(())
     }
@@ -346,12 +353,19 @@ impl NewDbEvent {
     }
 
     pub async fn save(&self) -> DataResult<()> {
+        let mut conn = connect().await?;
+        self.save_with_conn(&mut conn).await
+    }
+
+    /// Save event metadata using the caller's connection so the event row and its
+    /// JSON representation can be created atomically.
+    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<()> {
         diesel::insert_into(events::table)
             .values(self)
             .on_conflict(events::id)
             .do_update()
             .set(self)
-            .execute(&mut connect().await?)
+            .execute(conn)
             .await?;
         Ok(())
     }
