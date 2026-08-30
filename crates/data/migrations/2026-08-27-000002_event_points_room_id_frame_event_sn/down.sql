@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS event_points_room_id_frame_id_event_sn_idx;

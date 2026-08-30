@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS e2e_key_changes_room_id_occur_sn_idx;
