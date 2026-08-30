@@ -122,6 +122,62 @@ mod migration_tests {
 
     use super::MIGRATIONS;
 
+    fn validate_index_guard(statement: &str) -> Result<Option<bool>, &'static str> {
+        let tokens = statement
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .filter(|token| !token.is_empty())
+            .map(str::to_ascii_uppercase)
+            .collect::<Vec<_>>();
+        let Some(operation) = tokens.first().map(String::as_str) else {
+            return Ok(None);
+        };
+
+        let mut cursor = 1;
+        if operation == "CREATE" && tokens.get(cursor).map(String::as_str) == Some("UNIQUE") {
+            cursor += 1;
+        }
+        if !matches!(operation, "CREATE" | "DROP")
+            || tokens.get(cursor).map(String::as_str) != Some("INDEX")
+        {
+            return Ok(None);
+        }
+
+        cursor += 1;
+        let concurrently = tokens.get(cursor).map(String::as_str) == Some("CONCURRENTLY");
+        if concurrently {
+            cursor += 1;
+        }
+
+        let guard = tokens
+            .get(cursor..)
+            .unwrap_or_default()
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let starts_like_guard = guard
+            .first()
+            .is_some_and(|token| matches!(*token, "IF" | "NOT" | "EXISTS"));
+
+        match operation {
+            "CREATE" if concurrently || starts_like_guard => {
+                if guard.starts_with(&["IF", "NOT", "EXISTS"]) {
+                    Ok(Some(concurrently))
+                } else {
+                    Err("CREATE INDEX guard must use IF NOT EXISTS")
+                }
+            }
+            "DROP" if concurrently || starts_like_guard => {
+                if guard.starts_with(&["IF", "EXISTS"]) {
+                    Ok(Some(concurrently))
+                } else {
+                    Err("DROP INDEX guard must use IF EXISTS")
+                }
+            }
+            _ => Ok(Some(concurrently)),
+        }
+    }
+
     #[test]
     fn index_migrations_guard_existence_and_transaction_mode_correctly() {
         let migrations = <EmbeddedMigrations as MigrationSource<Pg>>::migrations(&MIGRATIONS)
@@ -151,26 +207,19 @@ mod migration_tests {
                     .map(|line| line.split("--").next().unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join(" ");
-                let statement = sql
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_uppercase();
+                let mut has_concurrent_index = false;
+                for statement in sql
+                    .split(';')
+                    .filter(|statement| !statement.trim().is_empty())
+                {
+                    match validate_index_guard(statement) {
+                        Ok(Some(concurrently)) => has_concurrent_index |= concurrently,
+                        Ok(None) => {}
+                        Err(error) => panic!("{name}/{file}: {error}: {statement}"),
+                    }
+                }
 
-                // PostgreSQL only reports these as syntax errors when the migration runs,
-                // which on a fresh database means the server never finishes starting.
-                assert!(
-                    !statement.contains("CREATE INDEX IF EXISTS")
-                        && !statement.contains("CREATE INDEX CONCURRENTLY IF EXISTS"),
-                    "{name}/{file}: CREATE INDEX must be guarded with IF NOT EXISTS"
-                );
-                assert!(
-                    !statement.contains("DROP INDEX IF NOT EXISTS")
-                        && !statement.contains("DROP INDEX CONCURRENTLY IF NOT EXISTS"),
-                    "{name}/{file}: DROP INDEX must be guarded with IF EXISTS"
-                );
-
-                if statement.contains("CONCURRENTLY") {
+                if has_concurrent_index {
                     assert!(
                         !migration.metadata().run_in_transaction(),
                         "{name}: CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction"
@@ -186,5 +235,33 @@ mod migration_tests {
         }
 
         assert!(checked > 0, "no migration SQL was checked");
+    }
+
+    #[test]
+    fn concurrent_index_guards_are_recognized_structurally() {
+        for statement in [
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS example_idx ON example (id)",
+            "DROP INDEX CONCURRENTLY IF EXISTS example_idx",
+            "DROP INDEX IF EXISTS example_idx",
+        ] {
+            assert!(validate_index_guard(statement).is_ok());
+        }
+
+        for statement in [
+            "CREATE INDEX CONCURRENTLY example_idx ON example (id)",
+            "CREATE INDEX CONCURRENTLY IF EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF EXISTS example_idx ON example (id)",
+            "CREATE UNIQUE INDEX IF EXISTS example_idx ON example (id)",
+            "DROP INDEX CONCURRENTLY example_idx",
+            "DROP INDEX CONCURRENTLY IF NOT EXISTS example_idx",
+            "DROP INDEX IF NOT EXISTS example_idx",
+        ] {
+            assert!(
+                validate_index_guard(statement).is_err(),
+                "invalid guard was accepted: {statement}"
+            );
+        }
     }
 }
