@@ -36,8 +36,17 @@ pub struct DbConfig {
     /// some configurations.
     /// An optional follower database. Always read-only.
     pub url: String,
+    /// Maximum number of long-lived PostgreSQL connections used by this process.
+    /// The server divides this budget between ordinary queries and operations which
+    /// hold database-backed coordination locks. Must be at least 2.
     #[serde(default = "default_db_pool_size")]
     pub pool_size: u32,
+
+    /// Connections carved out of `pool_size` for operations which hold a database-backed
+    /// coordination lock while ordinary queries continue on the remaining connections.
+    /// Leave unset to derive it from `pool_size`.
+    #[serde(default)]
+    pub coordination_pool_size: Option<u32>,
 
     /// Number of seconds to wait for unacknowledged TCP packets before treating the connection as
     /// broken. This value will determine how long crates.io stays unavailable in case of full

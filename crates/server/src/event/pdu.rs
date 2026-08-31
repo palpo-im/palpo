@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::to_raw_value;
@@ -856,7 +856,7 @@ impl PduBuilder {
         let (pdu, pdu_json) = self.hash_sign(sender_id, room_id, room_version).await?;
         let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id).await?;
         let content_value: JsonValue = serde_json::from_str(pdu.content.get())?;
-        NewDbEvent {
+        let db_event = NewDbEvent {
             id: pdu.event_id.to_owned(),
             sn: event_sn,
             ty: pdu.event_ty.to_string(),
@@ -875,19 +875,26 @@ impl PduBuilder {
             soft_failed: false,
             is_rejected: false,
             rejection_reason: None,
-        }
-        .save()
-        .await?;
-        DbEventData {
+        };
+        let event_data = DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
             room_id: pdu.room_id.to_owned(),
             internal_metadata: None,
             json_data: serde_json::to_value(&pdu_json)?,
             format_version: None,
-        }
-        .save()
-        .await?;
+        };
+        // Store the event metadata and JSON as one unit. Feature-specific indexes which
+        // make an outlier intentionally observable can join this transaction rather than
+        // racing a separately committed event row.
+        connect()
+            .await?
+            .transaction::<_, AppError, _>(async |conn| {
+                db_event.save_with_conn(conn).await?;
+                event_data.save_with_conn(conn).await?;
+                Ok(())
+            })
+            .await?;
 
         Ok((
             SnPduEvent {
