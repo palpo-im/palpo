@@ -239,6 +239,7 @@ pub(super) async fn send_state_for_key(
         &args.event_type,
         body.0,
         state_key,
+        args.sticky_duration_ms,
         appservice_timestamp(authed.appservice().is_some(), args.timestamp),
     )
     .await?;
@@ -265,9 +266,10 @@ pub(super) async fn send_state_for_empty_key(
         authed.user_id(),
         &args.room_id,
         &crate::room::get_version(&args.room_id).await?,
-        &args.event_type.to_string().into(),
+        &args.event_type,
         body.0,
         "".into(),
+        args.sticky_duration_ms,
         appservice_timestamp(authed.appservice().is_some(), args.timestamp),
     )
     .await?;

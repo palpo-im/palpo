@@ -141,7 +141,10 @@ pub async fn lock_presence_stream(conn: &mut AsyncPgConnection) -> DataResult<()
     Ok(())
 }
 
-/// Readers of the stream position hold this shared, so they wait for publishers only.
+/// Shared form of [`lock_presence_stream`] for readers taking a cursor snapshot.
+///
+/// Public so the server's `/sync` snapshot can hold it together with its other stream
+/// locks in one transaction.
 pub async fn lock_presence_stream_shared(conn: &mut AsyncPgConnection) -> DataResult<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
         .bind::<diesel::sql_types::BigInt, _>(PRESENCE_STREAM_LOCK)

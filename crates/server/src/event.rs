@@ -7,6 +7,7 @@ pub use batch_token::*;
 pub use pdu::*;
 mod outlier;
 pub mod search;
+pub mod sticky;
 use std::collections::BTreeSet;
 
 use diesel::prelude::*;
