@@ -225,6 +225,12 @@ pub async fn limit_rate_user_directory(depot: &mut Depot) -> AppResult<()> {
     USER_DIRECTORY_LIMITER.check(&user_id, &crate::config::get().rc_user_directory)
 }
 
+/// Apply the normal per-user message rate to an event emitted later by the
+/// delayed-event scheduler, which has no originating HTTP request.
+pub fn limit_delayed_message(user_id: &crate::core::UserId) -> AppResult<()> {
+    MESSAGE_LIMITER.check(user_id.as_str(), &crate::config::get().rc_message)
+}
+
 #[cfg(test)]
 mod rate_limit_tests {
     use std::net::IpAddr;
@@ -320,5 +326,25 @@ pub async fn catch_status_error(
         let matrix = MatrixError::unrecognized("method not allowed");
         matrix.write(req, depot, res).await;
         ctrl.skip_rest();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RateLimiter;
+    use crate::config::RateLimitConfig;
+
+    #[test]
+    fn rate_limit_buckets_are_isolated_by_key() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig {
+            per_second: 1.0,
+            burst: 2,
+        };
+
+        assert!(limiter.check("alice", &config).is_ok());
+        assert!(limiter.check("alice", &config).is_ok());
+        assert!(limiter.check("alice", &config).is_err());
+        assert!(limiter.check("bob", &config).is_ok());
     }
 }

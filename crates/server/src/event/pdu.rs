@@ -463,8 +463,10 @@ impl PduEvent {
         }
     }
 
-    pub fn remove_transaction_id(&mut self) -> AppResult<()> {
+    /// Strip unsigned metadata which is only visible to the event sender.
+    pub fn remove_sender_only_unsigned(&mut self) -> AppResult<()> {
         self.unsigned.remove("transaction_id");
+        self.unsigned.remove(DELAY_ID_UNSIGNED_KEY);
         Ok(())
     }
 
@@ -473,9 +475,9 @@ impl PduEvent {
         recipient: &UserId,
         device_id: Option<&DeviceId>,
     ) -> Cow<'_, BTreeMap<String, Box<RawJsonValue>>> {
-        let originating_device = self.sender == recipient
-            && device_id.is_some()
-            && self.transaction_device.as_deref() == device_id;
+        let is_sender = self.sender == recipient;
+        let originating_device =
+            is_sender && device_id.is_some() && self.transaction_device.as_deref() == device_id;
         if originating_device
             && !self.unsigned.contains_key("redacted_because")
             && !self.unsigned.contains_key("m.relations")
@@ -486,6 +488,10 @@ impl PduEvent {
             if originating_device && let Some(txn) = self.unsigned.get("transaction_id") {
                 unsigned.insert("transaction_id".into(), txn.clone());
             }
+            // MSC4140: the delay id is visible to every device of the sender.
+            if is_sender && let Some(delay_id) = self.unsigned.get(DELAY_ID_UNSIGNED_KEY) {
+                unsigned.insert(DELAY_ID_UNSIGNED_KEY.into(), delay_id.clone());
+            }
             Cow::Owned(unsigned)
         }
     }
@@ -493,6 +499,7 @@ impl PduEvent {
     fn unsigned_without_transaction_id(&self) -> BTreeMap<String, Box<RawJsonValue>> {
         let mut unsigned = self.unsigned.clone();
         unsigned.remove("transaction_id");
+        unsigned.remove(DELAY_ID_UNSIGNED_KEY);
         // Embedded events have independent senders and devices. Old stored bundles
         // may predate the privacy filtering at their creation sites.
         for key in ["redacted_because", "m.relations"] {
@@ -1279,12 +1286,17 @@ impl Default for PduBuilder {
     }
 }
 
+/// MSC4140 unsigned field naming the delayed event which produced a PDU. Like
+/// `transaction_id`, it is only visible to the event sender and never federated.
+pub(crate) const DELAY_ID_UNSIGNED_KEY: &str = "org.matrix.msc4140.delay_id";
+
 /// Only event metadata is private; similarly named fields inside content are user data.
 fn strip_embedded_transaction_ids(value: &mut JsonValue) {
     match value {
         JsonValue::Object(object) => {
             if let Some(JsonValue::Object(unsigned)) = object.get_mut("unsigned") {
                 unsigned.remove("transaction_id");
+                unsigned.remove(DELAY_ID_UNSIGNED_KEY);
             }
             for (key, value) in object {
                 if key != "content" {
@@ -1307,6 +1319,7 @@ pub(crate) fn sanitize_federation_unsigned(pdu: &mut CanonicalJsonObject) {
         return;
     };
     unsigned.remove("transaction_id");
+    unsigned.remove(DELAY_ID_UNSIGNED_KEY);
     for key in ["redacted_because", "m.relations"] {
         if let Some(value) = unsigned.get_mut(key) {
             let mut json = serde_json::to_value(&*value).expect("valid canonical JSON");
@@ -1420,6 +1433,61 @@ mod sender_only_unsigned_tests {
         let converted = parsed.to_room_event_for(&parsed.sender, Some("PHONE".into()));
         let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
         assert!(json.pointer("/unsigned/transaction_id").is_none());
+    }
+
+    #[test]
+    fn delay_id_is_visible_to_every_sender_device_only() {
+        let mut event = event_with_transaction_id();
+        event.transaction_device = Some("PHONE".into());
+        event.unsigned.insert(
+            DELAY_ID_UNSIGNED_KEY.to_owned(),
+            to_raw_value("delay").unwrap(),
+        );
+        let bob: OwnedUserId = "@bob:example.org".try_into().unwrap();
+        let laptop: &DeviceId = "LAPTOP".into();
+
+        for device in [Some("PHONE".into()), Some(laptop), None] {
+            let json: JsonValue =
+                serde_json::from_str(event.to_room_event_for(&event.sender, device).as_str())
+                    .unwrap();
+            assert_eq!(
+                json.pointer("/unsigned/org.matrix.msc4140.delay_id"),
+                Some(&json!("delay"))
+            );
+        }
+        let json: JsonValue =
+            serde_json::from_str(event.to_room_event_for(&bob, Some(laptop)).as_str()).unwrap();
+        assert!(
+            json.pointer("/unsigned/org.matrix.msc4140.delay_id")
+                .is_none()
+        );
+
+        let nested: JsonValue = serde_json::from_str(
+            event
+                .to_message_like_event_without_transaction_id()
+                .as_str(),
+        )
+        .unwrap();
+        assert!(
+            nested
+                .pointer("/unsigned/org.matrix.msc4140.delay_id")
+                .is_none()
+        );
+
+        let mut federation: CanonicalJsonObject =
+            serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+        sanitize_federation_unsigned(&mut federation);
+        let federation = serde_json::to_value(&federation).unwrap();
+        assert!(
+            federation
+                .pointer("/unsigned/org.matrix.msc4140.delay_id")
+                .is_none()
+        );
+        assert!(federation.pointer("/unsigned/transaction_id").is_none());
+
+        event.remove_sender_only_unsigned().unwrap();
+        assert!(!event.unsigned.contains_key(DELAY_ID_UNSIGNED_KEY));
+        assert!(!event.unsigned.contains_key("transaction_id"));
     }
 
     #[test]
