@@ -537,7 +537,13 @@ async fn send_knock(
     if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]).await {
         error!("failed to notify knock event: {e}");
     }
-    json_ok(SendKnockResBody { knock_room_state })
+    let signed_event = Some(to_raw_value(
+        &crate::sending::convert_to_outgoing_federation_event(value).await,
+    )?);
+    json_ok(SendKnockResBody {
+        knock_room_state,
+        signed_event,
+    })
 }
 
 /// # `GET /_matrix/federation/v1/make_knock/{room_id}/{user_id}`
