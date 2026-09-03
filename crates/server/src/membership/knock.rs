@@ -185,7 +185,7 @@ pub async fn knock_room(
     );
 
     // It has enough fields to be called a proper event now
-    let knock_event = knock_event_stub;
+    let mut knock_event = knock_event_stub;
 
     info!("asking {remote_server} for send_knock in room {room_id}");
     let send_knock_request = send_knock_request(
@@ -200,12 +200,41 @@ pub async fn knock_room(
     )?
     .into_inner();
 
-    let _send_knock_body =
+    let send_knock_body =
         crate::sending::send_federation_request(&remote_server, send_knock_request, None)
             .await?
             .json::<SendKnockResBody>()
             .await?;
     info!("send knock finished");
+
+    if let Some(signed_raw) = &send_knock_body.signed_event {
+        let (returned_event_id, returned_event) =
+            crate::event::gen_event_id_canonical_json(signed_raw, &room_version).map_err(|_| {
+                MatrixError::invalid_param("server returned an invalid knock event")
+            })?;
+        if returned_event_id != event_id {
+            return Err(MatrixError::invalid_param(
+                "server returned a knock event with the wrong event ID",
+            )
+            .into());
+        }
+        match crate::server_key::verify_event(&returned_event, &room_version).await {
+            Ok(crate::core::signatures::Verified::All) => {}
+            Ok(crate::core::signatures::Verified::Signatures) => {
+                return Err(MatrixError::invalid_param(
+                    "server returned a knock event with an invalid content hash",
+                )
+                .into());
+            }
+            Err(e) => {
+                return Err(MatrixError::invalid_param(format!(
+                    "server returned an invalid knock event signature: {e}"
+                ))
+                .into());
+            }
+        }
+        crate::federation::merge_supplementary_signatures(&mut knock_event, &returned_event)?;
+    }
 
     info!("parsing knock event");
     let parsed_knock_pdu = PduEvent::from_canonical_object(room_id, &event_id, knock_event.clone())

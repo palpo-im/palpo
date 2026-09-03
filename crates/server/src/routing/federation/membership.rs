@@ -379,19 +379,27 @@ async fn invite_user(
     // Server adds a supplementary signature.
     let version_rules = room::get_version_rules(&body.room_version)?;
     let event_id = event_id_for_pdu(&signed_event, &body.room_version, &version_rules)?;
-    match crate::server_key::verify_event(&signed_event, &body.room_version).await {
-        Ok(Verified::All) => {}
-        Ok(Verified::Signatures) => {
-            return Err(
-                MatrixError::invalid_param("invite event has an invalid content hash").into(),
-            );
-        }
-        Err(e) => {
-            return Err(
-                MatrixError::invalid_param(format!("signature verification failed: {e}")).into(),
-            );
-        }
-    }
+    let content_was_redacted =
+        match crate::server_key::verify_event(&signed_event, &body.room_version).await {
+            Ok(Verified::All) => false,
+            Ok(Verified::Signatures) => {
+                signed_event = crate::core::serde::canonical_json::redact(
+                    signed_event,
+                    &version_rules.redaction,
+                    None,
+                )
+                .map_err(|e| {
+                    MatrixError::invalid_param(format!("invite event redaction failed: {e}"))
+                })?;
+                true
+            }
+            Err(e) => {
+                return Err(MatrixError::invalid_param(format!(
+                    "signature verification failed: {e}"
+                ))
+                .into());
+            }
+        };
     if event_id != args.event_id {
         return Err(MatrixError::bad_json("event ID does not match the request path").into());
     }
@@ -424,8 +432,15 @@ async fn invite_user(
     // to a server which is already participating in the room deadlock on the same mutex.
     let state_lock = room::lock_state(&args.room_id).await;
 
-    crate::server_key::hash_and_sign_event(&mut signed_event, &body.room_version)
-        .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
+    if content_was_redacted {
+        // Keep the sender's original content hash. Re-hashing a redacted copy would make
+        // the sender's otherwise-valid signature cover a different `hashes` block.
+        crate::server_key::sign_json(&mut signed_event)
+            .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
+    } else {
+        crate::server_key::hash_and_sign_event(&mut signed_event, &body.room_version)
+            .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
+    }
     signed_event.insert(
         "event_id".to_owned(),
         CanonicalJsonValue::String(event_id.to_string()),
