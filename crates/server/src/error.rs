@@ -21,6 +21,8 @@ pub enum AppError {
     Public(String),
     #[error("internal: `{0}`")]
     Internal(String),
+    #[error("sticky sync: `{0}`")]
+    StickySync(Box<AppError>),
     #[error("state: `{0}`")]
     State(#[from] StateError),
     #[error("power levels: `{0}`")]
@@ -104,6 +106,14 @@ impl AppError {
 
     pub fn internal<S: Into<String>>(msg: S) -> Self {
         Self::Internal(msg.into())
+    }
+
+    pub fn sticky_sync(error: Self) -> Self {
+        Self::StickySync(Box::new(error))
+    }
+
+    pub fn is_sticky_sync(&self) -> bool {
+        matches!(self, Self::StickySync(_))
     }
     // pub fn local_unable_process<S: Into<String>>(msg: S) -> Self {
     //     Self::LocalUnableProcess(msg.into())
@@ -193,6 +203,10 @@ impl Writer for AppError {
                     // details; production clients get a stable message.
                     MatrixError::unknown("internal server error")
                 }
+            }
+            Self::StickySync(error) => {
+                error!(error = ?error, "failed to load sticky sync data");
+                MatrixError::unknown("failed to load sticky sync data")
             }
             // Self::LocalUnableProcess(msg) => MatrixError::unrecognized(msg),
             Self::Matrix(e) => e,

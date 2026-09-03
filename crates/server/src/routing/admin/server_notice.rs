@@ -116,6 +116,7 @@ pub async fn send_server_notice(
             state_key: body.state_key,
             redacts: None,
             timestamp: None,
+            sticky_duration_ms: None,
         };
         timeline::build_and_append_pdu(
             pdu_builder,

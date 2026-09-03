@@ -132,6 +132,7 @@ impl OutlierPdu {
             ));
         }
         let (event_sn, event_guard) = ensure_event_sn(&room_id, &pdu.event_id).await?;
+        let received_at = UnixMillis::now();
         let mut db_event = NewDbEvent::from_canonical_json_with_room_id(
             &pdu.event_id,
             event_sn,
@@ -143,6 +144,7 @@ impl OutlierPdu {
         db_event.soft_failed = soft_failed;
         db_event.is_rejected = pdu.rejection_reason.is_some();
         db_event.rejection_reason = pdu.rejection_reason.clone();
+        db_event.received_at = Some(received_at.0 as i64);
         let event_data = DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
@@ -158,6 +160,7 @@ impl OutlierPdu {
             .transaction::<_, AppError, _>(async |conn| {
                 db_event.save_with_conn(conn).await?;
                 event_data.save_with_conn(conn).await?;
+                crate::event::sticky::record_with_conn(conn, &pdu, event_sn, received_at).await?;
                 Ok(())
             })
             .await?;
