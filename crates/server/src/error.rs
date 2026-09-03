@@ -112,8 +112,7 @@ impl AppError {
     pub fn is_not_found(&self) -> bool {
         match self {
             Self::Diesel(diesel::result::Error::NotFound) => true,
-            Self::Data(crate::data::DataError::Diesel(diesel::result::Error::NotFound)) => true,
-            Self::Data(crate::data::DataError::Matrix(e)) => e.is_not_found(),
+            Self::Data(e) => e.is_not_found(),
             Self::Matrix(e) => e.is_not_found(),
             _ => false,
         }
@@ -311,6 +310,13 @@ mod tests {
     use salvo::http::Method;
 
     use super::*;
+
+    #[test]
+    fn data_layer_not_found_is_preserved() {
+        assert!(
+            AppError::Data(crate::data::DataError::Diesel(DieselError::NotFound)).is_not_found()
+        );
+    }
 
     #[test]
     fn access_tokens_are_redacted_from_log_text() {

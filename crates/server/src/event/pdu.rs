@@ -35,7 +35,7 @@ use crate::data::schema::*;
 use crate::event::{BatchToken, SeqnumQueueGuard};
 use crate::room::state;
 use crate::room::timeline::get_pdu;
-use crate::{AppError, AppResult, MatrixError, RoomMutexGuard, room};
+use crate::{AppError, AppResult, MatrixError, room};
 
 /// Content hashes of a PDU.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -76,6 +76,10 @@ impl SnPduEvent {
     }
 
     pub async fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
+        // A policy refusal must not be bypassed by the own-membership exception.
+        if self.rejection_reason.is_some() {
+            return Ok(false);
+        }
         // Clients must always be able to observe their own membership transitions.
         // In particular, a `knock` -> `leave` transition would otherwise be hidden
         // by shared history visibility because neither side is a joined membership.
@@ -846,14 +850,17 @@ impl PduBuilder {
         }
     }
 
-    pub async fn hash_sign_save(
-        self,
+    /// Persist an already authorised and signed local event as an outlier.
+    ///
+    /// Keeping this separate from [`Self::hash_sign`] lets callers perform checks which
+    /// may fail (notably a Policy Server round trip) without leaving an event that can
+    /// never be appended behind in the database.
+    pub async fn save_as_outlier(
+        pdu: PduEvent,
+        pdu_json: CanonicalJsonObject,
         sender_id: &UserId,
-        room_id: &RoomId,
-        room_version: &RoomVersionId,
-        _state_lock: &RoomMutexGuard,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
-        let (pdu, pdu_json) = self.hash_sign(sender_id, room_id, room_version).await?;
+        let room_id = &pdu.room_id;
         let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id).await?;
         let content_value: JsonValue = serde_json::from_str(pdu.content.get())?;
         let db_event = NewDbEvent {

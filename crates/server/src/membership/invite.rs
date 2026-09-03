@@ -44,17 +44,21 @@ pub async fn invite_user(
             };
 
             let state_lock = crate::room::lock_state(room_id).await;
-            let (pdu, pdu_json, _event_guard) = PduBuilder::state(invitee_id.to_string(), &content)
-                .hash_sign_save(
-                    inviter_id,
-                    room_id,
-                    crate::room::get_version(room_id)
-                        .await
-                        .as_ref()
-                        .unwrap_or(&conf.default_room_version),
-                    &state_lock,
-                )
+            let room_version = crate::room::get_version(room_id)
+                .await
+                .unwrap_or_else(|_| conf.default_room_version.clone());
+            let (pdu, mut pdu_json) = PduBuilder::state(invitee_id.to_string(), &content)
+                .hash_sign(inviter_id, room_id, &room_version)
                 .await?;
+
+            // This path builds and federates the invite itself rather than going through
+            // `build_and_append_pdu`, so the Policy Server check has to happen here too --
+            // otherwise a refused invite is still sent, and a policy-aware invitee rejects
+            // an unsigned event we cannot take back.
+            let version_rules = crate::room::get_version_rules(&room_version)?;
+            crate::room::policy::check_event(room_id, &mut pdu_json, &version_rules).await?;
+            let (pdu, pdu_json, _event_guard) =
+                PduBuilder::save_as_outlier(pdu, pdu_json, inviter_id).await?;
             drop(state_lock);
 
             let invite_room_state = state::summary_stripped(&pdu).await?;
