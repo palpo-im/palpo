@@ -1,0 +1,2 @@
+ALTER TABLE remote_presence_recipients DROP COLUMN recovery_generation;
+DROP SEQUENCE remote_presence_recovery_seq;
