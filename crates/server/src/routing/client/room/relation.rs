@@ -17,6 +17,7 @@ pub(super) async fn get_relation(
 
     let body = crate::room::pdu_metadata::paginate_relations_with_filter(
         authed.user_id(),
+        Some(authed.device_id()),
         &args.room_id,
         &args.event_id,
         None,
@@ -42,6 +43,7 @@ pub(super) async fn get_relation_by_rel_type(
 
     let body = crate::room::pdu_metadata::paginate_relations_with_filter(
         authed.user_id(),
+        Some(authed.device_id()),
         &args.room_id,
         &args.event_id,
         None,
@@ -68,6 +70,7 @@ pub(super) async fn get_relation_by_rel_type_and_event_type(
 
     let body = crate::room::pdu_metadata::paginate_relations_with_filter(
         authed.user_id(),
+        Some(authed.device_id()),
         &args.room_id,
         &args.event_id,
         Some(args.event_type.clone()),

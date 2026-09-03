@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -395,6 +396,10 @@ pub struct PduEvent {
 
     #[serde(skip, default)]
     pub rejection_reason: Option<String>,
+
+    // Trusted local provenance, never accepted from or emitted into event JSON.
+    #[serde(skip)]
+    pub(crate) transaction_device: Option<OwnedDeviceId>,
 }
 
 impl PduEvent {
@@ -463,6 +468,70 @@ impl PduEvent {
         Ok(())
     }
 
+    fn unsigned_for_recipient(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> Cow<'_, BTreeMap<String, Box<RawJsonValue>>> {
+        let originating_device = self.sender == recipient
+            && device_id.is_some()
+            && self.transaction_device.as_deref() == device_id;
+        if originating_device
+            && !self.unsigned.contains_key("redacted_because")
+            && !self.unsigned.contains_key("m.relations")
+        {
+            Cow::Borrowed(&self.unsigned)
+        } else {
+            let mut unsigned = self.unsigned_without_transaction_id();
+            if originating_device && let Some(txn) = self.unsigned.get("transaction_id") {
+                unsigned.insert("transaction_id".into(), txn.clone());
+            }
+            Cow::Owned(unsigned)
+        }
+    }
+
+    fn unsigned_without_transaction_id(&self) -> BTreeMap<String, Box<RawJsonValue>> {
+        let mut unsigned = self.unsigned.clone();
+        unsigned.remove("transaction_id");
+        // Embedded events have independent senders and devices. Old stored bundles
+        // may predate the privacy filtering at their creation sites.
+        for key in ["redacted_because", "m.relations"] {
+            if let Some(raw) = unsigned.remove(key)
+                && let Ok(mut value) = serde_json::from_str::<JsonValue>(raw.get())
+            {
+                strip_embedded_transaction_ids(&mut value);
+                unsigned.insert(key.into(), to_raw_value(&value).expect("valid JSON"));
+            }
+        }
+        unsigned
+    }
+
+    fn transaction_metadata(&self) -> Option<JsonValue> {
+        let device = self.transaction_device.as_ref()?;
+        let txn: OwnedTransactionId =
+            serde_json::from_str(self.unsigned.get("transaction_id")?.get()).ok()?;
+        Some(
+            json!({"transaction_device": device, "transaction_id": txn, "transaction_user": self.sender}),
+        )
+    }
+
+    /// Hydrate device provenance only from trusted local metadata or a legacy idempotency record.
+    pub(crate) async fn load_transaction_device(&mut self) -> AppResult<()> {
+        self.transaction_device = None;
+        if let Some(txn_id) = self.unsigned.get("transaction_id")
+            && let Ok(txn_id) = serde_json::from_str::<OwnedTransactionId>(txn_id.get())
+        {
+            self.transaction_device = crate::data::room::transaction_id::get_event_device(
+                &txn_id,
+                &self.sender,
+                &self.room_id,
+                &self.event_id,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub fn add_age(&mut self) -> AppResult<()> {
         let now: i128 = UnixMillis::now().get().into();
         let then: i128 = self.origin_server_ts.get().into();
@@ -474,8 +543,10 @@ impl PduEvent {
         Ok(())
     }
 
-    #[tracing::instrument]
-    pub fn to_sync_room_event(&self) -> RawJson<AnySyncTimelineEvent> {
+    fn to_sync_room_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnySyncTimelineEvent> {
         let mut json = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -484,8 +555,8 @@ impl PduEvent {
             "origin_server_ts": self.origin_server_ts,
         });
 
-        if !self.unsigned.is_empty() {
-            json["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            json["unsigned"] = json!(unsigned);
         }
         if let Some(state_key) = &self.state_key {
             json["state_key"] = json!(state_key);
@@ -497,8 +568,24 @@ impl PduEvent {
         serde_json::from_value(json).expect("RawJson::from_value always works")
     }
 
-    #[tracing::instrument]
-    pub fn to_room_event(&self) -> RawJson<AnyTimelineEvent> {
+    pub fn to_sync_room_event_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> RawJson<AnySyncTimelineEvent> {
+        self.to_sync_room_event_with_unsigned(
+            self.unsigned_for_recipient(recipient, device_id).as_ref(),
+        )
+    }
+
+    pub fn to_sync_room_event_without_transaction_id(&self) -> RawJson<AnySyncTimelineEvent> {
+        self.to_sync_room_event_with_unsigned(&self.unsigned_without_transaction_id())
+    }
+
+    fn to_room_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnyTimelineEvent> {
         let age = UnixMillis::now()
             .get()
             .saturating_sub(self.origin_server_ts.get());
@@ -511,12 +598,12 @@ impl PduEvent {
             "room_id": self.room_id,
         });
 
-        if self.unsigned.is_empty() {
+        if unsigned.is_empty() {
             data["unsigned"] = json!({ "age": age });
         } else {
-            let mut unsigned = json!(self.unsigned);
-            unsigned["age"] = json!(age);
-            data["unsigned"] = unsigned;
+            let mut unsigned_json = json!(unsigned);
+            unsigned_json["age"] = json!(age);
+            data["unsigned"] = unsigned_json;
         }
         if let Some(state_key) = &self.state_key {
             data["state_key"] = json!(state_key);
@@ -528,8 +615,22 @@ impl PduEvent {
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
 
-    #[tracing::instrument]
-    pub fn to_message_like_event(&self) -> RawJson<AnyMessageLikeEvent> {
+    pub fn to_room_event_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> RawJson<AnyTimelineEvent> {
+        self.to_room_event_with_unsigned(self.unsigned_for_recipient(recipient, device_id).as_ref())
+    }
+
+    pub fn to_room_event_without_transaction_id(&self) -> RawJson<AnyTimelineEvent> {
+        self.to_room_event_with_unsigned(&self.unsigned_without_transaction_id())
+    }
+
+    fn to_message_like_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnyMessageLikeEvent> {
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -539,8 +640,8 @@ impl PduEvent {
             "room_id": self.room_id,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            data["unsigned"] = json!(unsigned);
         }
         if let Some(state_key) = &self.state_key {
             data["state_key"] = json!(state_key);
@@ -552,13 +653,41 @@ impl PduEvent {
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
 
+    pub fn to_message_like_event_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> RawJson<AnyMessageLikeEvent> {
+        self.to_message_like_event_with_unsigned(
+            self.unsigned_for_recipient(recipient, device_id).as_ref(),
+        )
+    }
+
+    pub fn to_message_like_event_without_transaction_id(&self) -> RawJson<AnyMessageLikeEvent> {
+        self.to_message_like_event_with_unsigned(&self.unsigned_without_transaction_id())
+    }
+
     #[tracing::instrument]
-    pub fn to_state_event(&self) -> RawJson<AnyStateEvent> {
-        serde_json::from_value(self.to_state_event_value())
+    pub fn to_state_event_with_sender_only_unsigned(&self) -> RawJson<AnyStateEvent> {
+        serde_json::from_value(self.to_state_event_value_with_unsigned(&self.unsigned))
             .expect("RawJson::from_value always works")
     }
-    #[tracing::instrument]
-    pub fn to_state_event_value(&self) -> JsonValue {
+
+    pub fn to_state_event_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> RawJson<AnyStateEvent> {
+        serde_json::from_value(self.to_state_event_value_with_unsigned(
+            self.unsigned_for_recipient(recipient, device_id).as_ref(),
+        ))
+        .expect("RawJson::from_value always works")
+    }
+
+    fn to_state_event_value_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> JsonValue {
         let JsonValue::Object(mut data) = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -571,8 +700,8 @@ impl PduEvent {
             panic!("Invalid JSON value, never happened!");
         };
 
-        if !self.unsigned.is_empty() {
-            data.insert("unsigned".into(), json!(self.unsigned));
+        if !unsigned.is_empty() {
+            data.insert("unsigned".into(), json!(unsigned));
         }
 
         for (key, value) in &self.extra_data {
@@ -584,8 +713,20 @@ impl PduEvent {
         JsonValue::Object(data)
     }
 
-    #[tracing::instrument]
-    pub fn to_sync_state_event(&self) -> RawJson<AnySyncStateEvent> {
+    pub fn to_state_event_value_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> JsonValue {
+        self.to_state_event_value_with_unsigned(
+            self.unsigned_for_recipient(recipient, device_id).as_ref(),
+        )
+    }
+
+    fn to_sync_state_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnySyncStateEvent> {
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -595,11 +736,21 @@ impl PduEvent {
             "state_key": self.state_key,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            data["unsigned"] = json!(unsigned);
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
+    }
+
+    pub fn to_sync_state_event_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> RawJson<AnySyncStateEvent> {
+        self.to_sync_state_event_with_unsigned(
+            self.unsigned_for_recipient(recipient, device_id).as_ref(),
+        )
     }
 
     #[tracing::instrument]
@@ -639,7 +790,12 @@ impl PduEvent {
     }
 
     #[tracing::instrument]
-    pub fn to_member_event(&self) -> RawJson<StateEvent<RoomMemberEventContent>> {
+    pub fn to_member_event_for(
+        &self,
+        recipient: &UserId,
+        device_id: Option<&DeviceId>,
+    ) -> RawJson<StateEvent<RoomMemberEventContent>> {
+        let unsigned = self.unsigned_for_recipient(recipient, device_id);
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -651,8 +807,8 @@ impl PduEvent {
             "state_key": self.state_key,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            data["unsigned"] = json!(unsigned);
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -818,6 +974,9 @@ pub struct PduBuilder {
     pub state_key: Option<String>,
     pub redacts: Option<OwnedEventId>,
     pub timestamp: Option<UnixMillis>,
+    /// Authenticated local provenance; never accept this field from JSON.
+    #[serde(skip)]
+    pub transaction_device: Option<OwnedDeviceId>,
 }
 
 impl PduBuilder {
@@ -880,7 +1039,7 @@ impl PduBuilder {
             event_id: pdu.event_id.clone(),
             event_sn,
             room_id: pdu.room_id.to_owned(),
-            internal_metadata: None,
+            internal_metadata: pdu.transaction_metadata(),
             json_data: serde_json::to_value(&pdu_json)?,
             format_version: None,
         };
@@ -922,6 +1081,7 @@ impl PduBuilder {
             state_key,
             redacts,
             timestamp,
+            transaction_device,
             ..
         } = self;
 
@@ -1007,6 +1167,7 @@ impl PduBuilder {
             signatures: None,
             extra_data: Default::default(),
             rejection_reason: None,
+            transaction_device,
         };
 
         let fetch_event = async |event_id: OwnedEventId| {
@@ -1124,6 +1285,308 @@ impl Default for PduBuilder {
             state_key: None,
             redacts: None,
             timestamp: None,
+            transaction_device: None,
         }
+    }
+}
+
+/// Only event metadata is private; similarly named fields inside content are user data.
+fn strip_embedded_transaction_ids(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(object) => {
+            if let Some(JsonValue::Object(unsigned)) = object.get_mut("unsigned") {
+                unsigned.remove("transaction_id");
+            }
+            for (key, value) in object {
+                if key != "content" {
+                    strip_embedded_transaction_ids(value);
+                }
+            }
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                strip_embedded_transaction_ids(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Federation has no originating-device context, including for embedded events.
+pub(crate) fn sanitize_federation_unsigned(pdu: &mut CanonicalJsonObject) {
+    let Some(CanonicalJsonValue::Object(unsigned)) = pdu.get_mut("unsigned") else {
+        return;
+    };
+    unsigned.remove("transaction_id");
+    for key in ["redacted_because", "m.relations"] {
+        if let Some(value) = unsigned.get_mut(key) {
+            let mut json = serde_json::to_value(&*value).expect("valid canonical JSON");
+            strip_embedded_transaction_ids(&mut json);
+            *value =
+                serde_json::from_value(json).expect("removing fields preserves canonical JSON");
+        }
+    }
+}
+
+#[cfg(test)]
+mod sender_only_unsigned_tests {
+    use serde_json::value::to_raw_value;
+
+    use super::*;
+
+    fn event_with_transaction_id() -> PduEvent {
+        let mut unsigned = BTreeMap::new();
+        unsigned.insert("transaction_id".to_owned(), to_raw_value("txn").unwrap());
+        unsigned.insert("age".to_owned(), to_raw_value(&10_u64).unwrap());
+
+        PduEvent {
+            event_id: "$event:example.org".try_into().unwrap(),
+            sender: "@alice:example.org".try_into().unwrap(),
+            origin_server_ts: UnixMillis(1),
+            event_ty: TimelineEventType::RoomMessage,
+            content: to_raw_value(&json!({"body": "hi", "msgtype": "m.text"})).unwrap(),
+            state_key: None,
+            room_id: "!room:example.org".try_into().unwrap(),
+            prev_events: Vec::new(),
+            depth: 1,
+            auth_events: Vec::new(),
+            redacts: None,
+            hashes: EventHash {
+                sha256: String::new(),
+            },
+            signatures: None,
+            unsigned,
+            extra_data: Default::default(),
+            rejection_reason: None,
+            transaction_device: None,
+        }
+    }
+
+    #[test]
+    fn originating_device_keeps_its_transaction_id() {
+        let mut event = event_with_transaction_id();
+        event.transaction_device = Some("PHONE".into());
+        let sender: OwnedUserId = "@alice:example.org".try_into().unwrap();
+
+        let converted = event.to_room_event_for(&sender, Some("PHONE".into()));
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert_eq!(
+            json.pointer("/unsigned/transaction_id"),
+            Some(&json!("txn"))
+        );
+    }
+
+    #[test]
+    fn other_users_do_not_receive_the_transaction_id() {
+        let event = event_with_transaction_id();
+        let recipient: OwnedUserId = "@bob:example.org".try_into().unwrap();
+
+        let converted = event.to_room_event_for(&recipient, Some("PHONE".into()));
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+        assert!(json.pointer("/unsigned/age").is_some());
+    }
+
+    #[test]
+    fn member_listing_does_not_leak_the_transaction_id() {
+        let mut event = event_with_transaction_id();
+        event.event_ty = TimelineEventType::RoomMember;
+        event.state_key = Some(event.sender.to_string());
+        event.content = to_raw_value(&json!({"membership": "join"})).unwrap();
+        let recipient: OwnedUserId = "@bob:example.org".try_into().unwrap();
+
+        let converted = event.to_member_event_for(&recipient, Some("PHONE".into()));
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+        assert_eq!(json.pointer("/unsigned/age"), Some(&json!(10)));
+    }
+
+    #[test]
+    fn another_device_and_device_less_consumers_do_not_receive_transaction_ids() {
+        let mut event = event_with_transaction_id();
+        event.transaction_device = Some("PHONE".into());
+        let laptop: &DeviceId = "LAPTOP".into();
+        for device in [Some(laptop), None] {
+            let converted = event.to_room_event_for(&event.sender, device);
+            let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+            assert!(json.pointer("/unsigned/transaction_id").is_none());
+        }
+    }
+
+    #[test]
+    fn event_json_cannot_supply_trusted_device_provenance() {
+        let event = event_with_transaction_id();
+        let mut json = serde_json::to_value(&event).unwrap();
+        json["transaction_device"] = json!("PHONE");
+        let parsed: PduEvent = serde_json::from_value(json).unwrap();
+        assert!(parsed.transaction_device.is_none());
+        let builder: PduBuilder = serde_json::from_value(json!({
+            "type": "m.room.message", "content": {}, "transaction_device": "PHONE"
+        }))
+        .unwrap();
+        assert!(builder.transaction_device.is_none());
+        let converted = parsed.to_room_event_for(&parsed.sender, Some("PHONE".into()));
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+    }
+
+    #[test]
+    fn nested_events_never_expose_a_transaction_id() {
+        let event = event_with_transaction_id();
+
+        let converted = event.to_message_like_event_without_transaction_id();
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+        assert_eq!(json.pointer("/unsigned/age"), Some(&json!(10)));
+    }
+
+    #[test]
+    fn stored_redactions_and_relation_bundles_do_not_leak_device_metadata() {
+        let mut event = event_with_transaction_id();
+        event.transaction_device = Some("PHONE".into());
+        let embedded = json!({
+            "type": "m.room.message", "sender": "@other:example.org",
+            "content": {"unsigned": {"transaction_id": "user content"}},
+            "unsigned": {"transaction_id": "private nested transaction", "age": 12}
+        });
+        event
+            .unsigned
+            .insert("redacted_because".into(), to_raw_value(&embedded).unwrap());
+        event.unsigned.insert(
+            "m.relations".into(),
+            to_raw_value(&json!({
+                "m.thread": {"latest_event": embedded}, "m.replace": embedded
+            }))
+            .unwrap(),
+        );
+        for device in [Some("PHONE".into()), Some("LAPTOP".into()), None] {
+            let converted = event.to_room_event_for(&event.sender, device);
+            let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+            assert_eq!(
+                json.pointer("/unsigned/transaction_id").is_some(),
+                device == Some("PHONE".into())
+            );
+            for path in [
+                "/unsigned/redacted_because",
+                "/unsigned/m.relations/m.thread/latest_event",
+                "/unsigned/m.relations/m.replace",
+            ] {
+                assert!(
+                    json.pointer(&format!("{path}/unsigned/transaction_id"))
+                        .is_none()
+                );
+                assert_eq!(
+                    json.pointer(&format!("{path}/unsigned/age")),
+                    Some(&json!(12))
+                );
+                assert_eq!(
+                    json.pointer(&format!("{path}/content/unsigned/transaction_id")),
+                    Some(&json!("user content"))
+                );
+            }
+        }
+        let mut federation = to_canonical_object(&event).unwrap();
+        sanitize_federation_unsigned(&mut federation);
+        let federation = serde_json::to_value(federation).unwrap();
+        assert!(federation.pointer("/unsigned/transaction_id").is_none());
+        for path in [
+            "/unsigned/redacted_because",
+            "/unsigned/m.relations/m.thread/latest_event",
+            "/unsigned/m.relations/m.replace",
+        ] {
+            assert!(
+                federation
+                    .pointer(&format!("{path}/unsigned/transaction_id"))
+                    .is_none()
+            );
+            assert_eq!(
+                federation.pointer(&format!("{path}/content/unsigned/transaction_id")),
+                Some(&json!("user content"))
+            );
+        }
+    }
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_transaction_device_is_scoped_to_the_event() {
+        crate::test_database::init();
+        let mut event = event_with_transaction_id();
+        let phone: &DeviceId = "PHONE".into();
+        let laptop: &DeviceId = "LAPTOP".into();
+        crate::data::room::transaction_id::add_txn_id(
+            "txn".into(),
+            &event.sender,
+            Some(phone),
+            Some(&event.room_id),
+            Some(&event.event_id),
+        )
+        .await
+        .unwrap();
+        // Another device can reuse the transaction string for a different event.
+        let other = EventId::parse("$other:example.org").unwrap();
+        crate::data::room::transaction_id::add_txn_id(
+            "txn".into(),
+            &event.sender,
+            Some(laptop),
+            Some(&event.room_id),
+            Some(&other),
+        )
+        .await
+        .unwrap();
+        event.load_transaction_device().await.unwrap();
+        assert_eq!(event.transaction_device.as_deref(), Some(phone));
+        for (device, expected) in [(phone, true), (laptop, false)] {
+            let json: JsonValue = serde_json::from_str(
+                event
+                    .to_room_event_for(&event.sender, Some(device))
+                    .as_str(),
+            )
+            .unwrap();
+            assert_eq!(json.pointer("/unsigned/transaction_id").is_some(), expected);
+        }
+        event.event_id = other;
+        event.load_transaction_device().await.unwrap();
+        assert_eq!(event.transaction_device.as_deref(), Some(laptop));
+        event.room_id = "!other:example.org".try_into().unwrap();
+        event.load_transaction_device().await.unwrap();
+        assert!(event.transaction_device.is_none());
+
+        // A newly visible event already has device provenance even while its route
+        // has not yet written the idempotency-completion row.
+        event.event_id = "$before-idempotency:example.org".try_into().unwrap();
+        event.transaction_device = Some(phone.to_owned());
+        let metadata = event.transaction_metadata();
+        let event_data = DbEventData {
+            event_id: event.event_id.clone(),
+            event_sn: 500,
+            room_id: event.room_id.clone(),
+            json_data: serde_json::to_value(&event).unwrap(),
+            internal_metadata: metadata,
+            format_version: None,
+        };
+        event_data.save().await.unwrap();
+        assert!(
+            crate::data::room::transaction_id::get_event_id(
+                "txn".into(),
+                &event.sender,
+                Some(phone),
+                Some(&event.room_id)
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        event.transaction_device = None;
+        event.load_transaction_device().await.unwrap();
+        assert_eq!(event.transaction_device.as_deref(), Some(phone));
+        // Later JSON updates must not clear trusted metadata.
+        let mut update = event_data;
+        update.internal_metadata = None;
+        update.save().await.unwrap();
+        event.load_transaction_device().await.unwrap();
+        assert_eq!(event.transaction_device.as_deref(), Some(phone));
     }
 }
