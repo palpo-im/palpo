@@ -27,6 +27,9 @@ use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
 
+#[cfg(feature = "unstable-msc4262")]
+mod profiles;
+
 /// Apply a sliding-sync list's filter pipeline to the candidate room sets.
 ///
 /// Returns the rooms (in input order) that survive the `is_invite`,
@@ -122,6 +125,88 @@ struct SlidingSyncCache {
     known_rooms: KnownRooms, // For every room, the room_since_sn number
     extensions: sync_events::v5::ExtensionsConfig,
     required_state: BTreeSet<Seqnum>,
+    /// Rooms whose full member profiles this connection has acknowledged (MSC4262).
+    ///
+    /// Tracked separately from `known_rooms` because a room can have been delivered long
+    /// before the profiles extension was switched on, or before a selector started
+    /// covering it -- and in both cases it still needs its snapshot.
+    #[serde(default)]
+    profile_rooms: BTreeSet<OwnedRoomId>,
+    /// Snapshots sent in responses that the client has not acknowledged with their token.
+    #[serde(default)]
+    pending_profile_rooms: BTreeMap<Seqnum, BTreeSet<OwnedRoomId>>,
+    /// Users whose non-null profile data this client has acknowledged.
+    #[serde(default)]
+    profile_users: BTreeSet<OwnedUserId>,
+    /// User tracking changes awaiting acknowledgement of their response token.
+    #[serde(default)]
+    pending_profile_users: BTreeMap<Seqnum, PendingProfileUsers>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct PendingProfileUsers {
+    added: BTreeSet<OwnedUserId>,
+    removed: BTreeSet<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4262")]
+fn apply_sticky_profiles_config(
+    current: &mut sync_events::v5::ProfilesConfig,
+    cached: &sync_events::v5::ProfilesConfig,
+) {
+    some_or_sticky(&mut current.enabled, cached.enabled);
+    some_or_sticky(&mut current.lists, cached.lists.clone());
+    some_or_sticky(&mut current.rooms, cached.rooms.clone());
+    some_or_sticky(&mut current.fields, cached.fields.clone());
+}
+
+#[cfg(feature = "unstable-msc4262")]
+fn profile_snapshot_config_changed(
+    previous: &sync_events::v5::ProfilesConfig,
+    current: &sync_events::v5::ProfilesConfig,
+) -> bool {
+    let enabled_now = current.enabled.unwrap_or(false);
+    let newly_enabled = enabled_now && !previous.enabled.unwrap_or(false);
+    newly_enabled || current.fields != previous.fields
+}
+
+#[cfg(feature = "unstable-msc4262")]
+fn acknowledge_profile_updates(cached: &mut SlidingSyncCache, since_sn: Seqnum) -> bool {
+    let stale_rooms: Vec<Seqnum> = cached
+        .pending_profile_rooms
+        .range(..since_sn)
+        .map(|(sn, _)| *sn)
+        .collect();
+    let stale_users: Vec<Seqnum> = cached
+        .pending_profile_users
+        .range(..since_sn)
+        .map(|(sn, _)| *sn)
+        .collect();
+    let accepted_rooms = cached.pending_profile_rooms.remove(&since_sn);
+    let accepted_users = cached.pending_profile_users.remove(&since_sn);
+    let changed = accepted_rooms.is_some()
+        || accepted_users.is_some()
+        || !stale_rooms.is_empty()
+        || !stale_users.is_empty();
+    if !changed {
+        return false;
+    }
+    for sn in stale_rooms {
+        cached.pending_profile_rooms.remove(&sn);
+    }
+    for sn in stale_users {
+        cached.pending_profile_users.remove(&sn);
+    }
+    if let Some(rooms) = accepted_rooms {
+        cached.profile_rooms.extend(rooms);
+    }
+    if let Some(users) = accepted_users {
+        cached.profile_users.extend(users.added);
+        for user_id in users.removed {
+            cached.profile_users.remove(&user_id);
+        }
+    }
+    true
 }
 
 /// In-memory cache backed by database for cross-instance persistence.
@@ -330,9 +415,16 @@ pub async fn sync_events(
     // Periodically clean up expired connections
     maybe_cleanup_connections().await;
 
+    #[cfg(feature = "unstable-msc4262")]
+    acknowledge_profile_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
+
     if req_body.extensions.account_data.enabled.unwrap_or(false) {
         crate::user::get_push_rules(sender_id).await?;
     }
+
+    #[cfg(feature = "unstable-msc4262")]
+    let curr_sn = data::user::curr_sn_after_profile_and_inbox_writes(sender_id, device_id).await?;
+    #[cfg(not(feature = "unstable-msc4262"))]
     let curr_sn = data::user::device::curr_sn_after_inbox_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
@@ -376,6 +468,12 @@ pub async fn sync_events(
     // request flood.
     if since_sn > curr_sn {
         let mut res = SyncEventsResBody::new(next_batch.to_string());
+        #[cfg(feature = "unstable-msc4262")]
+        let profiles_enabled = req_body.extensions.profiles.enabled.unwrap_or(false);
+        #[cfg(feature = "unstable-msc4262")]
+        let mut listed_rooms = BTreeMap::new();
+        #[cfg(feature = "unstable-msc4262")]
+        let mut room_subset = BTreeSet::new();
         for (list_id, list) in &req_body.lists {
             let active_rooms = compute_active_rooms(
                 list,
@@ -385,6 +483,30 @@ pub async fn sync_events(
                 &dm_rooms,
             )
             .await;
+            #[cfg(feature = "unstable-msc4262")]
+            if profiles_enabled {
+                let mut sorted_rooms = active_rooms.clone();
+                sort_rooms_by_activity(&mut sorted_rooms).await?;
+                let mut selected = BTreeSet::new();
+                let ranges = if list.ranges.is_empty() {
+                    vec![(0, 50)]
+                } else {
+                    list.ranges.clone()
+                };
+                for (start, inclusive_end) in ranges {
+                    let start = start.min(sorted_rooms.len());
+                    let end = inclusive_end.saturating_add(1).min(sorted_rooms.len());
+                    if start < end {
+                        selected.extend(
+                            sorted_rooms[start..end]
+                                .iter()
+                                .map(|room_id| (*room_id).to_owned()),
+                        );
+                    }
+                }
+                room_subset.extend(selected.iter().cloned());
+                listed_rooms.insert(list_id.clone(), selected);
+            }
             res.lists.insert(
                 list_id.clone(),
                 sync_events::v5::SyncList {
@@ -393,7 +515,34 @@ pub async fn sync_events(
                 },
             );
         }
-        return Ok(res);
+        #[cfg(feature = "unstable-msc4262")]
+        let profiles_owe_snapshot = if profiles_enabled {
+            room_subset.extend(req_body.room_subscriptions.keys().cloned());
+            let joined: BTreeSet<OwnedRoomId> = all_joined_rooms
+                .iter()
+                .map(|room_id| (*room_id).to_owned())
+                .collect();
+            let selected = profiles::config_rooms(
+                &req_body.extensions.profiles,
+                &room_subset,
+                &listed_rooms,
+                &req_body.room_subscriptions,
+            )
+            .into_iter()
+            .filter(|room_id| joined.contains(room_id))
+            .collect();
+            !unsnapshotted_profile_rooms(sender_id, device_id, &req_body.conn_id, selected)
+                .await
+                .is_empty()
+        } else {
+            false
+        };
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profiles_owe_snapshot = false;
+
+        if !profiles_owe_snapshot {
+            return Ok(res);
+        }
     }
 
     let mut todo_rooms: TodoRooms = BTreeMap::new();
@@ -420,7 +569,8 @@ pub async fn sync_events(
         },
     };
 
-    process_lists(
+    #[cfg_attr(not(feature = "unstable-msc4262"), allow(unused_variables))]
+    let listed_rooms = process_lists(
         sync_info,
         &all_invited_rooms,
         &all_joined_rooms,
@@ -434,6 +584,23 @@ pub async fn sync_events(
 
     fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms).await?;
 
+    // MSC4262 profile updates need the finished room subset, so they are collected after
+    // the lists and subscriptions have been resolved rather than alongside the other
+    // extensions.
+    #[cfg(feature = "unstable-msc4262")]
+    let snapshotted_profile_rooms = {
+        let (profiles, snapshotted_rooms) = profiles::collect(
+            sync_info,
+            &all_joined_rooms,
+            &todo_rooms,
+            &listed_rooms,
+            next_batch,
+        )
+        .await?;
+        res_body.extensions.profiles = profiles;
+        snapshotted_rooms
+    };
+
     res_body.rooms = process_rooms(
         sync_info,
         &all_invited_rooms,
@@ -444,6 +611,38 @@ pub async fn sync_events(
         &mut res_body,
     )
     .await?;
+
+    // Profile delivery becomes durable only after the complete response was built and is
+    // accepted only when the client returns with this response token.
+    #[cfg(feature = "unstable-msc4262")]
+    let added_profile_users = res_body
+        .extensions
+        .profiles
+        .users
+        .iter()
+        .filter_map(|(user_id, update)| update.as_ref().map(|_| user_id.clone()))
+        .collect();
+    #[cfg(feature = "unstable-msc4262")]
+    let removed_profile_users = res_body
+        .extensions
+        .profiles
+        .users
+        .iter()
+        .filter(|(_, update)| update.is_none())
+        .map(|(user_id, _)| user_id.clone())
+        .collect();
+    #[cfg(feature = "unstable-msc4262")]
+    record_profile_updates_sent(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        &req_body.extensions.profiles.fields,
+        next_batch,
+        snapshotted_profile_rooms,
+        added_profile_users,
+        removed_profile_users,
+    )
+    .await;
     Ok(res_body)
 }
 
@@ -462,7 +661,11 @@ async fn process_lists(
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
     res_body: &mut SyncEventsResBody,
-) -> AppResult<()> {
+) -> AppResult<BTreeMap<String, BTreeSet<OwnedRoomId>>> {
+    // What each list actually resolved to in this response. The cached `known_rooms` is
+    // the previous request's answer, so it is empty on an initial sync and stale for any
+    // room that has just entered a list.
+    let mut selected: BTreeMap<String, BTreeSet<OwnedRoomId>> = BTreeMap::new();
     for (list_id, list) in &req_body.lists {
         let active_rooms = compute_active_rooms(
             list,
@@ -488,7 +691,7 @@ async fn process_lists(
         for range in &ranges {
             // Ranges are inclusive [start, end] per MSC4186
             let start = range.0.min(count);
-            let end = (range.1 + 1).min(count); // convert to exclusive for slicing
+            let end = range.1.saturating_add(1).min(count); // convert to exclusive
 
             if start >= end {
                 continue;
@@ -539,6 +742,8 @@ async fn process_lists(
             .lists
             .insert(list_id.clone(), sync_events::v5::SyncList { count, ops });
 
+        selected.insert(list_id.clone(), new_known_rooms.clone());
+
         crate::sync_v5::update_sync_known_rooms(
             sender_id.to_owned(),
             device_id.to_owned(),
@@ -549,7 +754,7 @@ async fn process_lists(
         )
         .await;
     }
-    Ok(())
+    Ok(selected)
 }
 
 async fn fetch_subscriptions(
@@ -1402,6 +1607,20 @@ pub async fn update_sync_request_with_cache(
             &mut req_body.extensions.receipts.lists,
             cached.extensions.receipts.lists.clone(),
         );
+        #[cfg(feature = "unstable-msc4262")]
+        {
+            let previous_profiles = cached.extensions.profiles.clone();
+            apply_sticky_profiles_config(
+                &mut req_body.extensions.profiles,
+                &cached.extensions.profiles,
+            );
+            if profile_snapshot_config_changed(&previous_profiles, &req_body.extensions.profiles) {
+                // Re-enabling must cover users who joined or changed profile while the
+                // extension was off. A changed field filter likewise needs a new base.
+                cached.profile_rooms.clear();
+                cached.pending_profile_rooms.clear();
+            }
+        }
 
         cached.extensions = req_body.extensions.clone();
         let known = cached.known_rooms.clone();
@@ -1500,12 +1719,123 @@ pub async fn is_required_state_send(
     cached.required_state.contains(&event_sn)
 }
 
+/// Of `rooms`, those whose profiles this connection has not been sent yet.
+///
+/// [MSC4262]: https://github.com/matrix-org/matrix-spec-proposals/pull/4262
+#[cfg(feature = "unstable-msc4262")]
+pub async fn unsnapshotted_profile_rooms(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    rooms: BTreeSet<OwnedRoomId>,
+) -> BTreeSet<OwnedRoomId> {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    let cached = entry.lock().unwrap();
+    rooms
+        .into_iter()
+        .filter(|room_id| !cached.profile_rooms.contains(room_id))
+        .collect()
+}
+
+/// Records profile delivery as pending until the client acknowledges its response token.
+#[cfg(feature = "unstable-msc4262")]
+pub async fn record_profile_updates_sent(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    fields: &Option<Vec<crate::core::profile::ProfileFieldName>>,
+    response_sn: Seqnum,
+    rooms: BTreeSet<OwnedRoomId>,
+    added_users: BTreeSet<OwnedUserId>,
+    removed_users: BTreeSet<OwnedUserId>,
+) {
+    if rooms.is_empty() && added_users.is_empty() && removed_users.is_empty() {
+        return;
+    }
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    let cache_snapshot = {
+        let cached = &mut entry.lock().unwrap();
+        if cached.extensions.profiles.fields == *fields {
+            cached
+                .pending_profile_rooms
+                .entry(response_sn)
+                .or_default()
+                .extend(rooms);
+        } else if !rooms.is_empty() {
+            // A concurrent request changed the field filter after this response began.
+            // Its cache reset must win over this response's narrower snapshot.
+            // User tracking is independent of the field filter and remains valid.
+        }
+        let pending_users = cached.pending_profile_users.entry(response_sn).or_default();
+        pending_users.added.extend(added_users);
+        pending_users.removed.extend(removed_users);
+        cached.clone()
+    };
+    persist_connection(
+        &user_id.to_owned(),
+        &device_id.to_owned(),
+        conn_id,
+        &cache_snapshot,
+    )
+    .await;
+}
+
+/// Accepts profile delivery only when a later request proves the client received its token.
+#[cfg(feature = "unstable-msc4262")]
+pub async fn acknowledge_profile_delivery(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    since_sn: Seqnum,
+) {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    let cache_snapshot = {
+        let cached = &mut entry.lock().unwrap();
+        if !acknowledge_profile_updates(cached, since_sn) {
+            return;
+        }
+        cached.clone()
+    };
+    persist_connection(
+        &user_id.to_owned(),
+        &device_id.to_owned(),
+        conn_id,
+        &cache_snapshot,
+    )
+    .await;
+}
+
+#[cfg(feature = "unstable-msc4262")]
+pub async fn tracked_profile_users(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+) -> BTreeSet<OwnedUserId> {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    entry.lock().unwrap().profile_users.clone()
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "unstable-msc4262")]
+    use std::collections::BTreeSet;
     use std::collections::HashSet;
 
     use super::compute_active_rooms;
+    #[cfg(feature = "unstable-msc4262")]
+    use super::{
+        PendingProfileUsers, SlidingSyncCache, acknowledge_profile_updates,
+        apply_sticky_profiles_config, profile_snapshot_config_changed,
+    };
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::core::client::sync_events::v5::ProfilesConfig;
     use crate::core::client::sync_events::v5::{ReqList, ReqListFilters};
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::core::identifiers::UserId;
     use crate::core::identifiers::{OwnedRoomId, RoomId};
 
     fn rid(s: &str) -> OwnedRoomId {
@@ -1517,6 +1847,111 @@ mod tests {
             filters: Some(filters),
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_delivery_is_accepted_only_through_the_returned_token() {
+        let room_a = rid("!a:example.org");
+        let room_b = rid("!b:example.org");
+        let stale_room = rid("!stale:example.org");
+        let alice = UserId::parse("@alice:example.org").unwrap().to_owned();
+        let bob = UserId::parse("@bob:example.org").unwrap().to_owned();
+        let stale_user = UserId::parse("@stale:example.org").unwrap().to_owned();
+        let mut cached = SlidingSyncCache::default();
+        cached
+            .pending_profile_rooms
+            .insert(10, [room_a.clone()].into());
+        cached
+            .pending_profile_rooms
+            .insert(20, [room_b.clone()].into());
+        cached.pending_profile_users.insert(
+            10,
+            PendingProfileUsers {
+                added: [alice.clone(), bob.clone()].into(),
+                removed: BTreeSet::new(),
+            },
+        );
+        cached.pending_profile_users.insert(
+            20,
+            PendingProfileUsers {
+                added: BTreeSet::new(),
+                removed: [bob.clone()].into(),
+            },
+        );
+
+        assert!(!acknowledge_profile_updates(&mut cached, 9));
+        assert!(cached.profile_rooms.is_empty());
+        assert!(cached.profile_users.is_empty());
+
+        assert!(acknowledge_profile_updates(&mut cached, 10));
+        assert_eq!(cached.profile_rooms, [room_a.clone()].into());
+        assert_eq!(cached.profile_users, [alice.clone(), bob.clone()].into());
+        assert!(cached.pending_profile_rooms.contains_key(&20));
+
+        cached
+            .pending_profile_rooms
+            .insert(15, [stale_room.clone()].into());
+        cached.pending_profile_users.insert(
+            15,
+            PendingProfileUsers {
+                added: [stale_user.clone()].into(),
+                removed: BTreeSet::new(),
+            },
+        );
+
+        assert!(acknowledge_profile_updates(&mut cached, 20));
+        assert_eq!(cached.profile_rooms, [room_a, room_b].into());
+        assert_eq!(cached.profile_users, [alice].into());
+        assert!(!cached.profile_rooms.contains(&stale_room));
+        assert!(!cached.profile_users.contains(&stale_user));
+        assert!(cached.pending_profile_rooms.is_empty());
+        assert!(cached.pending_profile_users.is_empty());
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn enabling_profiles_or_changing_fields_requires_a_new_snapshot() {
+        let disabled = ProfilesConfig {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        let enabled = ProfilesConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(profile_snapshot_config_changed(&disabled, &enabled));
+        assert!(!profile_snapshot_config_changed(&enabled, &enabled));
+
+        let filtered = ProfilesConfig {
+            enabled: Some(true),
+            fields: Some(vec![crate::core::profile::ProfileFieldName::DisplayName]),
+            ..Default::default()
+        };
+        assert!(profile_snapshot_config_changed(&enabled, &filtered));
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_fields_are_sticky_until_explicitly_replaced() {
+        use crate::core::profile::ProfileFieldName;
+
+        let cached = ProfilesConfig {
+            enabled: Some(true),
+            fields: Some(vec![ProfileFieldName::DisplayName]),
+            ..Default::default()
+        };
+        let mut omitted = ProfilesConfig::default();
+        apply_sticky_profiles_config(&mut omitted, &cached);
+        assert_eq!(omitted, cached);
+
+        let mut replaced = ProfilesConfig {
+            fields: Some(vec![ProfileFieldName::AvatarUrl]),
+            ..Default::default()
+        };
+        apply_sticky_profiles_config(&mut replaced, &cached);
+        assert_eq!(replaced.enabled, Some(true));
+        assert_eq!(replaced.fields, Some(vec![ProfileFieldName::AvatarUrl]));
     }
 
     /// Default filter pipeline (no filters set) returns all rooms — this is
