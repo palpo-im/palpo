@@ -50,7 +50,7 @@ pub(super) async fn get_state(
         .await
         .unwrap_or_default()
         .values()
-        .map(|pdu| pdu.to_state_event())
+        .map(|pdu| pdu.to_state_event_for(sender_id, Some(authed.device_id())))
         .collect();
     json_ok(StateEventsResBody::new(room_state))
 }
@@ -166,7 +166,7 @@ pub(super) async fn state_for_key(
     json_ok(StateEventsForKeyResBody {
         content: Some(event.get_content()?),
         event: if event_format {
-            Some(event.to_state_event_value())
+            Some(event.to_state_event_value_for(sender_id, Some(authed.device_id())))
         } else {
             None
         },
@@ -207,7 +207,7 @@ pub(super) async fn state_for_empty_key(
     json_ok(StateEventsForKeyResBody {
         content: Some(event.get_content()?),
         event: if event_format {
-            Some(event.to_state_event_value())
+            Some(event.to_state_event_value_for(sender_id, Some(authed.device_id())))
         } else {
             None
         },

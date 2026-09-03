@@ -46,6 +46,7 @@ pub async fn add_relation(
 
 pub async fn paginate_relations_with_filter(
     user_id: &UserId,
+    device_id: Option<&DeviceId>,
     room_id: &RoomId,
     target: &EventId,
     filter_event_type: Option<TimelineEventType>,
@@ -99,7 +100,7 @@ pub async fn paginate_relations_with_filter(
 
     let events: Vec<_> = events
         .into_iter()
-        .map(|(_, pdu)| pdu.to_message_like_event())
+        .map(|(_, pdu)| pdu.to_message_like_event_for(user_id, device_id))
         .collect();
 
     Ok(RelationEventsResBody {

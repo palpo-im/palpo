@@ -43,7 +43,7 @@ pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<(
         {
             // Thread already existed
             relations.count += 1;
-            relations.latest_event = pdu.to_message_like_event();
+            relations.latest_event = pdu.to_message_like_event_without_transaction_id();
 
             let content = serde_json::to_value(relations).expect("to_value always works");
 
@@ -56,7 +56,7 @@ pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<(
         } else {
             // New thread
             let relations = BundledThread {
-                latest_event: pdu.to_message_like_event(),
+                latest_event: pdu.to_message_like_event_without_transaction_id(),
                 count: 1,
                 current_user_participated: true,
             };

@@ -176,7 +176,7 @@ async fn initial_sync(
             .server_name()
             .is_ok_and(|server| *server != config::get().server_name)
         {
-            return remote_peek_preview(room_id, args.limit.unwrap_or(20)).await;
+            return remote_peek_preview(sender_id, room_id, args.limit.unwrap_or(20)).await;
         }
         return Err(MatrixError::forbidden("No room preview available.", None).into());
     }
@@ -195,7 +195,7 @@ async fn initial_sync(
         .await
         .unwrap_or_default()
         .into_values()
-        .map(|event| event.to_state_event())
+        .map(|event| event.to_state_event_for(sender_id, Some(authed.device_id())))
         .collect::<Vec<_>>();
 
     let messages = PaginationChunk {
@@ -212,7 +212,7 @@ async fn initial_sync(
             .unwrap_or_default(),
         chunk: events
             .into_iter()
-            .map(|(_sn, event)| event.to_room_event())
+            .map(|(_sn, event)| event.to_room_event_for(sender_id, Some(authed.device_id())))
             .collect(),
     };
 
@@ -241,7 +241,11 @@ async fn initial_sync(
 /// Any failure (room not world-readable, federation disabled, server
 /// unreachable, malformed response) collapses to a clean "no preview" error so
 /// the client falls back to showing the join prompt instead of a hard error.
-async fn remote_peek_preview(room_id: &RoomId, limit: usize) -> JsonResult<InitialSyncResBody> {
+async fn remote_peek_preview(
+    recipient: &UserId,
+    room_id: &RoomId,
+    limit: usize,
+) -> JsonResult<InitialSyncResBody> {
     let no_preview = || MatrixError::forbidden("No room preview available.", None);
 
     let server = room_id.server_name().map_err(|_| no_preview())?;
@@ -278,7 +282,8 @@ async fn remote_peek_preview(room_id: &RoomId, limit: usize) -> JsonResult<Initi
         .pdus
         .iter()
         .filter_map(|raw| {
-            parse_peek_pdu(room_id, &room_version, raw).map(|pdu| pdu.to_state_event())
+            parse_peek_pdu(room_id, &room_version, raw)
+                .map(|pdu| pdu.to_state_event_for(recipient, None))
         })
         .collect();
 
@@ -291,7 +296,8 @@ async fn remote_peek_preview(room_id: &RoomId, limit: usize) -> JsonResult<Initi
         .messages
         .iter()
         .filter_map(|raw| {
-            parse_peek_pdu(room_id, &room_version, raw).map(|pdu| pdu.to_room_event())
+            parse_peek_pdu(room_id, &room_version, raw)
+                .map(|pdu| pdu.to_room_event_for(recipient, None))
         })
         .collect();
 
