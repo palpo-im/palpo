@@ -103,7 +103,7 @@ pub(super) async fn get_members(
         .into_iter()
         .filter(|(key, _)| key.0 == StateEventType::RoomMember)
         .filter_map(|(_, pdu)| membership_filter(pdu, membership, not_membership, until_sn))
-        .map(|pdu| pdu.to_member_event())
+        .map(|pdu| pdu.to_member_event_for(authed.user_id()))
         .collect();
 
     json_ok(MembersResBody { chunk: states })

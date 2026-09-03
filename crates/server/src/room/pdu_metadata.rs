@@ -99,7 +99,7 @@ pub async fn paginate_relations_with_filter(
 
     let events: Vec<_> = events
         .into_iter()
-        .map(|(_, pdu)| pdu.to_message_like_event())
+        .map(|(_, pdu)| pdu.to_message_like_event_for(user_id))
         .collect();
 
     Ok(RelationEventsResBody {
@@ -138,7 +138,7 @@ pub async fn get_relations(
     for relation in relations {
         if let Ok(mut pdu) = timeline::get_pdu(&relation.child_id).await {
             if pdu.sender != user_id {
-                pdu.remove_transaction_id()?;
+                pdu.remove_sender_only_unsigned()?;
             }
             if pdu.user_can_see(user_id).await.unwrap_or(false) {
                 pdus.push((relation.child_sn, pdu));

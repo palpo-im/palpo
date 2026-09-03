@@ -3,6 +3,8 @@ pub mod admin;
 pub mod appservice;
 pub mod backup;
 pub mod dehydrated_device;
+#[cfg(feature = "unstable-msc4140")]
+pub mod delayed_events;
 pub mod device;
 pub mod directory;
 pub mod discovery;

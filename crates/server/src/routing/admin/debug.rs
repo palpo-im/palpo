@@ -236,7 +236,9 @@ pub async fn get_room_state(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomS
     let events = state::get_full_state(frame_id)
         .await?
         .values()
-        .map(|pdu| serde_json::to_value(pdu.to_state_event()).unwrap_or_default())
+        .map(|pdu| {
+            serde_json::to_value(pdu.to_state_event_with_sender_only_unsigned()).unwrap_or_default()
+        })
         .collect::<Vec<_>>();
 
     json_ok(RoomStateResponse {

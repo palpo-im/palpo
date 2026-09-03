@@ -65,10 +65,9 @@ pub(super) async fn get_room_event(
         return Err(MatrixError::not_found("event not found").into());
     }
 
-    let mut event = event.clone();
-    event.add_age()?;
-
-    json_ok(RoomEventResBody::new(event.to_room_event()))
+    json_ok(RoomEventResBody::new(
+        event.to_room_event_for(authed.user_id()),
+    ))
 }
 
 /// #POST /_matrix/client/r0/rooms/{room_id}/report/{event_id}
@@ -198,7 +197,7 @@ pub(super) async fn get_context(
 
     // Use limit with maximum 100
     let limit = args.limit.min(100);
-    let base_event = base_event.to_room_event();
+    let base_event = base_event.to_room_event_for(sender_id);
     let events_before_loaded = timeline::stream::load_pdus_backward(
         Some(sender_id),
         &room_id,
@@ -238,7 +237,7 @@ pub(super) async fn get_context(
         .unwrap_or_else(|| base_token);
     let events_before = events_before
         .into_iter()
-        .map(|(_, pdu)| pdu.to_room_event())
+        .map(|(_, pdu)| pdu.to_room_event_for(sender_id))
         .collect::<Vec<_>>();
     let events_after = timeline::stream::load_pdus_forward(
         Some(sender_id),
@@ -285,7 +284,7 @@ pub(super) async fn get_context(
         .unwrap_or_else(|| base_token);
     let events_after: Vec<_> = events_after
         .into_iter()
-        .map(|(_, pdu)| pdu.to_room_event())
+        .map(|(_, pdu)| pdu.to_room_event_for(sender_id))
         .collect();
     let mut state = Vec::new();
 
@@ -304,7 +303,7 @@ pub(super) async fn get_context(
                     continue;
                 }
             };
-            state.push(pdu.to_state_event());
+            state.push(pdu.to_state_event_for(sender_id));
         } else if !lazy_load_enabled || lazy_loaded.contains(&state_key) {
             let pdu = match timeline::get_pdu(&event_id).await {
                 Ok(pdu) => pdu,
@@ -313,7 +312,7 @@ pub(super) async fn get_context(
                     continue;
                 }
             };
-            state.push(pdu.to_state_event());
+            state.push(pdu.to_state_event_for(sender_id));
         }
     }
 

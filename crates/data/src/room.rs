@@ -9,6 +9,7 @@ use crate::core::{MatrixError, Seqnum, UnixMillis};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
+pub mod delayed_event;
 pub mod event;
 pub mod event_report;
 pub mod lazy_loading;
