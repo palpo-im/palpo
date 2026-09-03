@@ -468,7 +468,9 @@ async fn load_joined_room(
                 timeline = load_timeline_around_join(
                     sender_id,
                     room_id,
-                    BatchToken::new_live(join_sn),
+                    // Backward live bounds are exclusive. Keep our own join in the
+                    // replacement timeline after filling remote room history.
+                    join_sn,
                     Some(&filter.room.timeline),
                 )
                 .await?;
@@ -1126,14 +1128,15 @@ fn timeline_contains_own_join(timeline: &TimelineData, user_id: &UserId) -> bool
 async fn load_timeline_around_join(
     user_id: &UserId,
     room_id: &RoomId,
-    join_tk: BatchToken,
+    join_sn: Seqnum,
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
     let limit = filter.and_then(|f| f.limit).unwrap_or(10);
     let mut timeline_pdus = timeline::topolo::load_pdus_backward(
         Some(user_id),
         room_id,
-        Some(join_tk),
+        // Live bounds are exclusive. Keep the join in the replacement timeline.
+        Some(BatchToken::new_live(join_sn.saturating_add(1))),
         None,
         filter,
         limit + 1,
@@ -1339,4 +1342,103 @@ pub(crate) async fn share_encrypted_room(
     }
 
     Ok(shared_rooms)
+}
+
+#[cfg(test)]
+mod pagination_database_tests {
+    use super::*;
+    use crate::core::serde::to_canonical_object;
+    use crate::data::room::{DbEventData, NewDbEvent};
+
+    async fn save_event(event_id: &str, sn: i64, depth: i64, membership: bool) -> SnPduEvent {
+        let pdu: PduEvent = serde_json::from_value(serde_json::json!({
+            "event_id": event_id, "room_id": "!pagination:example.org", "sender": "@alice:example.org",
+            "type": if membership { "m.room.member" } else { "m.room.message" },
+            "state_key": if membership { Some("@alice:example.org") } else { None },
+            "content": if membership { serde_json::json!({"membership":"join"}) } else { serde_json::json!({"body":"test", "msgtype":"m.text"}) },
+            "origin_server_ts": 1, "depth": depth, "hashes": {"sha256":""}
+        })).unwrap();
+        let json = to_canonical_object(&pdu).unwrap();
+        let mut event = NewDbEvent::from_canonical_json_with_room_id(
+            &pdu.event_id,
+            sn,
+            &json,
+            false,
+            &pdu.room_id,
+        )
+        .unwrap();
+        event.is_outlier = false;
+        let mut conn = data::connect().await.unwrap();
+        event.save_with_conn(&mut conn).await.unwrap();
+        DbEventData {
+            event_id: pdu.event_id.clone(),
+            event_sn: sn,
+            room_id: pdu.room_id.clone(),
+            json_data: serde_json::to_value(&json).unwrap(),
+            internal_metadata: None,
+            format_version: None,
+        }
+        .save_with_conn(&mut conn)
+        .await
+        .unwrap();
+        SnPduEvent::new(pdu, sn, false, false, false)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_pagination_is_chronological_and_keeps_the_join() {
+        crate::test_database::init();
+        let a = save_event("$page-a", 100, 1, false).await;
+        let b = save_event("$page-b", 101, 2, false).await;
+        let join = save_event("$page-join", 102, 2, true).await;
+        let c = save_event("$page-c", 103, 3, false).await;
+        let first = timeline::topolo::load_pdus_forward(
+            None,
+            &a.room_id,
+            Some(BatchToken::new_live(100)),
+            None,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.keys().copied().collect::<Vec<_>>(), vec![100, 101]);
+        let next = timeline::topolo::load_pdus_forward(
+            None,
+            &a.room_id,
+            Some(b.historic_token()),
+            None,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(next.keys().copied().collect::<Vec<_>>(), vec![102, 103]);
+        let bounded = timeline::topolo::load_pdus_forward(
+            None,
+            &a.room_id,
+            Some(a.historic_token()),
+            Some(join.historic_token()),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bounded.keys().copied().collect::<Vec<_>>(), vec![101, 102]);
+        let reverse = timeline::topolo::load_pdus_backward(
+            None,
+            &a.room_id,
+            Some(BatchToken::new_live(c.event_sn)),
+            None,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reverse.keys().copied().collect::<Vec<_>>(), vec![102, 101]);
+        let recovered = load_timeline_around_join(&join.sender, &join.room_id, join.event_sn, None)
+            .await
+            .unwrap();
+        assert!(timeline_contains_own_join(&recovered, &join.sender));
+    }
 }

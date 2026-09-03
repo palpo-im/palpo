@@ -49,8 +49,8 @@ pub async fn load_pdus_backward(
     .await
 }
 
-/// Returns an iterator over all events and their tokens in a room that happened before the
-/// event with id `until` in reverse-chronological order.
+/// Returns events and their tokens in the requested pagination direction.
+/// Forward pages are chronological; backward pages are reverse chronological.
 /// Skips events before user joined the room.
 #[tracing::instrument]
 pub async fn load_pdus(
@@ -72,6 +72,11 @@ pub async fn load_pdus(
         let mut query = events::table
             .filter(events::room_id.eq(room_id))
             .into_boxed();
+
+        // Live sync tokens contain the next stream position, so their bounds form a
+        // half-open interval. Historic tokens identify the event immediately before
+        // the position, so forward pagination excludes `since` but includes `until`;
+        // backward pagination uses the inverse boundaries.
         if dir == Direction::Forward {
             if let Some(since_tk) = since_tk {
                 match since_tk {
@@ -86,7 +91,7 @@ pub async fn load_pdus(
                             events::topological_ordering.gt(topological_ordering).or(
                                 events::topological_ordering
                                     .eq(topological_ordering)
-                                    .and(events::stream_ordering.ge(stream_ordering)),
+                                    .and(events::stream_ordering.gt(stream_ordering)),
                             ),
                         );
                     }
@@ -95,7 +100,7 @@ pub async fn load_pdus(
             if let Some(until_tk) = until_tk {
                 match until_tk {
                     BatchToken::Live { stream_ordering } => {
-                        query = query.filter(events::stream_ordering.le(stream_ordering));
+                        query = query.filter(events::stream_ordering.lt(stream_ordering));
                     }
                     BatchToken::Historic {
                         topological_ordering,
@@ -115,7 +120,7 @@ pub async fn load_pdus(
             if let Some(since_tk) = since_tk {
                 match since_tk {
                     BatchToken::Live { stream_ordering } => {
-                        query = query.filter(events::stream_ordering.le(stream_ordering));
+                        query = query.filter(events::stream_ordering.lt(stream_ordering));
                     }
                     BatchToken::Historic {
                         topological_ordering,
@@ -137,7 +142,7 @@ pub async fn load_pdus(
                         events::topological_ordering.gt(topological_ordering).or(
                             events::topological_ordering
                                 .eq(topological_ordering)
-                                .and(events::stream_ordering.ge(until_tk.stream_ordering())),
+                                .and(events::stream_ordering.gt(until_tk.stream_ordering())),
                         ),
                     );
                 } else {
@@ -179,9 +184,9 @@ pub async fn load_pdus(
         }
         let events: Vec<(OwnedEventId, Seqnum, i64)> = if dir == Direction::Forward {
             query
+                .filter(events::is_rejected.eq(false))
                 .order((
                     events::topological_ordering.asc(),
-                    events::origin_server_ts.asc(),
                     events::stream_ordering.asc(),
                 ))
                 .offset(offset)
@@ -190,13 +195,12 @@ pub async fn load_pdus(
                 .load::<(OwnedEventId, Seqnum, i64)>(&mut connect().await?)
                 .await?
                 .into_iter()
-                .rev()
                 .collect()
         } else {
             query = query
+                .filter(events::is_rejected.eq(false))
                 .order((
                     events::topological_ordering.desc(),
-                    events::origin_server_ts.desc(),
                     events::stream_ordering.desc(),
                 ))
                 .offset(offset)

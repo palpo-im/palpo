@@ -94,3 +94,12 @@ jobs:
       - name: Cargo test
         timeout-minutes: 40
         run: cargo test --all --all-features --no-fail-fast -- --nocapture
+
+      - name: PostgreSQL regression tests
+        env:
+          PALPO_TEST_DATABASE_URL: postgres://palpo_test:palpo_test@localhost/palpo_test
+        run: |
+          sudo systemctl start postgresql
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE palpo_test WITH LOGIN PASSWORD 'palpo_test';"
+          sudo -u postgres createdb -O palpo_test palpo_test
+          cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
