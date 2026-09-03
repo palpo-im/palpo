@@ -573,7 +573,10 @@ pub async fn append_pdu(
         .transaction::<_, AppError, _>(async |conn| {
             event_data.save_with_conn(conn).await?;
             diesel::update(events::table.find(&*pdu.event_id))
-                .set(events::is_outlier.eq(false))
+                .set((
+                    events::is_outlier.eq(false),
+                    events::soft_failed.eq(pdu.soft_failed),
+                ))
                 .execute(conn)
                 .await?;
             Ok(())
@@ -864,20 +867,28 @@ async fn build_and_append_pdu_locked(
         return Ok((curr_state, false));
     }
 
-    let (pdu, pdu_json, _event_guard) = pdu_builder
-        .hash_sign_save(sender, room_id, room_version, state_lock)
-        .await?;
-    let room_id = &pdu.room_id;
-    crate::room::ensure_room(room_id, room_version).await?;
+    let (pdu, mut pdu_json) = pdu_builder.hash_sign(sender, room_id, room_version).await?;
+    let room_id = pdu.room_id.clone();
+    crate::room::ensure_room(&room_id, room_version).await?;
+
+    // Ask the room's Policy Server (MSC4284) to vouch for the event before it goes
+    // anywhere. A refusal means the policy server considers the event spam, so the client
+    // request fails rather than the event being sent out unsigned. `append_pdu` persists
+    // the signature we obtained, so it travels with the event over federation.
+    //
+    let version_rules = crate::room::get_version_rules(room_version)?;
+    crate::room::policy::check_event(&room_id, &mut pdu_json, &version_rules).await?;
 
     // let conf = crate::config::get();
     // let admin_room = super::resolve_local_alias(
     //     <&RoomAliasId>::try_from(format!("#admins:{}", &conf.server_name).as_str())
     //         .expect("#admins:server_name is a valid room alias"),
     // )?;
-    if crate::room::is_admin_room(room_id).await? {
+    if crate::room::is_admin_room(&room_id).await? {
         check_pdu_for_admin_room(&pdu, sender).await?;
     }
+
+    let (pdu, pdu_json, _event_guard) = PduBuilder::save_as_outlier(pdu, pdu_json, sender).await?;
 
     append_pdu(&pdu, pdu_json, state_lock).await?;
 

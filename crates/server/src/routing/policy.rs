@@ -2,8 +2,9 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
 use crate::core::federation::policy::sign_event::{PolicySignEventReqBody, PolicySignEventResBody};
+use crate::core::identifiers::*;
+use crate::core::room_version_rules::{EventIdFormatVersion, RoomVersionRules};
 use crate::core::serde::CanonicalJsonObject;
-use crate::core::signatures::KeyPair;
 use crate::{AppError, AppResult, AuthArgs, JsonResult, MatrixError, config, hoops, json_ok};
 
 pub fn router() -> Router {
@@ -24,11 +25,37 @@ async fn check_policy_server_enabled() -> AppResult<()> {
 }
 
 #[endpoint]
-fn sign_event(
+async fn sign_event(
     _aa: AuthArgs,
     body: JsonBody<PolicySignEventReqBody>,
 ) -> JsonResult<PolicySignEventResBody> {
-    let signature = sign_policy_event(&body.0.0)?;
+    let object: CanonicalJsonObject = serde_json::from_str(body.0.0.get()).map_err(|_| {
+        MatrixError::bad_json("Policy Server signing request must be a JSON object")
+    })?;
+
+    let room_id = object
+        .get("room_id")
+        .and_then(|value| value.as_str())
+        .and_then(|value| RoomId::parse(value).ok())
+        .ok_or_else(|| MatrixError::bad_json("Policy Server signing request has no room_id"))?;
+
+    // MSC4284 has a Policy Server answer 404 for rooms it does not serve. A room record
+    // alone is insufficient: invited/peeked rooms also have one. The current usable policy
+    // configuration must name this server, and its joined-user requirement is enforced by
+    // `policy_server`.
+    let policy = crate::room::policy::policy_server(&room_id).await?;
+    if !matches!(policy, Some(policy) if policy.via == *config::server_name()) {
+        return Err(MatrixError::not_found("Room is not protected by this Policy Server").into());
+    }
+
+    let room_version = match crate::room::get_version(&room_id).await {
+        Ok(room_version) => room_version,
+        Err(e) if e.is_not_found() => return Err(MatrixError::not_found("Unknown room").into()),
+        Err(e) => return Err(e),
+    };
+    let rules = crate::room::get_version_rules(&room_version)?;
+
+    let signature = sign_policy_event(object, &rules)?;
 
     json_ok(PolicySignEventResBody::new(
         config::get().server_name.clone(),
@@ -36,11 +63,16 @@ fn sign_event(
     ))
 }
 
-fn sign_policy_event(pdu: &serde_json::value::RawValue) -> AppResult<String> {
-    let mut object: CanonicalJsonObject = serde_json::from_str(pdu.get()).map_err(|_| {
-        MatrixError::bad_json("Policy Server signing request must be a JSON object")
-    })?;
-
+/// Signs the event the same way a receiver verifies it: over the redacted PDU, with
+/// `signatures` and `unsigned` removed.
+///
+/// Signing the unredacted event instead produces a signature that every implementation --
+/// including palpo's own `verify_policy_server_signature` -- rejects for any event whose
+/// content the redaction algorithm strips.
+fn sign_policy_event(
+    mut object: CanonicalJsonObject,
+    rules: &RoomVersionRules,
+) -> AppResult<String> {
     if object.get("type").and_then(|value| value.as_str()) == Some("m.room.policy")
         && object.get("state_key").and_then(|value| value.as_str()) == Some("")
     {
@@ -51,11 +83,13 @@ fn sign_policy_event(pdu: &serde_json::value::RawValue) -> AppResult<String> {
         .into());
     }
 
-    object.remove("signatures");
-    object.remove("unsigned");
+    // `event_id` is only part of the PDU in room version 1; senders that keep a copy of it
+    // alongside the event must not have it counted towards the signature in later versions.
+    if rules.event_id_format != EventIdFormatVersion::V1 {
+        object.remove("event_id");
+    }
 
-    let canonical_json = serde_json::to_string(&object)?;
-    Ok(config::keypair().sign(canonical_json.as_bytes()).base64())
+    crate::room::policy::sign_locally(&object, rules)
 }
 
 #[cfg(test)]
@@ -63,17 +97,22 @@ mod tests {
     use serde_json::json;
 
     use super::sign_policy_event;
-    use crate::core::serde::to_raw_json_value;
+    use crate::core::room_version_rules::RoomVersionRules;
+    use crate::core::serde::CanonicalJsonObject;
+
+    fn object(value: serde_json::Value) -> CanonicalJsonObject {
+        serde_json::from_value(value).unwrap()
+    }
 
     #[test]
     fn policy_config_event_is_rejected() {
-        let pdu = to_raw_json_value(&json!({
+        let pdu = object(json!({
             "type": "m.room.policy",
             "state_key": "",
+            "room_id": "!room:example.org",
             "content": {}
-        }))
-        .unwrap();
+        }));
 
-        assert!(sign_policy_event(&pdu).is_err());
+        assert!(sign_policy_event(pdu, &RoomVersionRules::V11).is_err());
     }
 }

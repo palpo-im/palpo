@@ -11,13 +11,15 @@ use crate::core::events::{AnyStrippedStateEvent, StateEventType, TimelineEventTy
 use crate::core::federation::membership::*;
 use crate::core::identifiers::*;
 use crate::core::room::{JoinRule, RoomEventReqArgs};
+use crate::core::room_version_rules::{EventIdFormatVersion, RoomVersionRules};
 use crate::core::serde::{
     CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, to_canonical_object,
 };
+use crate::core::signatures::Verified;
 use crate::data::connect;
 use crate::data::room::NewDbEvent;
 use crate::data::schema::*;
-use crate::event::handler;
+use crate::event::{PduEvent, handler};
 use crate::federation::maybe_strip_event_id;
 use crate::room::{ensure_room, timeline};
 use crate::{
@@ -145,6 +147,176 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
 
 /// #PUT /_matrix/federation/v2/invite/{room_id}/{event_id}
 /// Invites a remote user to a room.
+fn invite_state_is_full(invite_room_state: &[Box<RawJsonValue>]) -> bool {
+    invite_room_state.iter().all(|raw| {
+        serde_json::from_str::<JsonValue>(raw.get())
+            .ok()
+            .and_then(|event| {
+                Some(
+                    event.get("auth_events")?.is_array()
+                        && event.get("depth")?.is_number()
+                        && event.get("origin_server_ts")?.is_number()
+                        && event.get("signatures")?.is_object(),
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Read or recompute an event ID from a PDU in Palpo's stored form.
+///
+/// Room versions 1 and 2 carry an explicit event ID. Later versions derive it from a
+/// reference hash and do not carry `event_id` on the wire, but Palpo adds the field back
+/// before policy processing and persistence. That stored field must not become part of the
+/// reference-hash input when checking that supplementary signatures preserved the ID.
+fn event_id_for_pdu(
+    event: &CanonicalJsonObject,
+    room_version: &RoomVersionId,
+    rules: &RoomVersionRules,
+) -> Result<OwnedEventId, crate::AppError> {
+    if rules.event_id_format == EventIdFormatVersion::V1 {
+        return event
+            .get("event_id")
+            .and_then(CanonicalJsonValue::as_str)
+            .ok_or_else(|| {
+                crate::AppError::from(MatrixError::invalid_param(
+                    "event has no valid event_id field",
+                ))
+            })?
+            .try_into()
+            .map_err(|_| crate::AppError::from(MatrixError::invalid_param("event_id is invalid")));
+    }
+
+    let mut event = event.clone();
+    event.remove("event_id");
+    crate::event::gen_event_id(&event, room_version)
+}
+
+fn requires_full_invite_state(rules: &RoomVersionRules) -> bool {
+    // Room version 12 is the first stable version covered by the mandatory MSC4311
+    // validation. The same authorization flag also identifies its domainless room IDs.
+    rules.authorization.room_create_event_id_as_room_id
+}
+
+async fn authenticate_invite_event(
+    room_id: &RoomId,
+    event_id: &EventId,
+    event: &CanonicalJsonObject,
+    room_version: &RoomVersionId,
+    invite_room_state: &[Box<RawJsonValue>],
+) -> Result<PduEvent, crate::AppError> {
+    let incoming = PduEvent::from_canonical_object(room_id, event_id, event.clone())
+        .map_err(|_| MatrixError::invalid_param("invalid invite event"))?;
+    if incoming.event_ty != TimelineEventType::RoomMember
+        || incoming.state_key.as_deref().is_none()
+        || incoming
+            .get_content::<RoomMemberEventContent>()
+            .map_err(|_| MatrixError::invalid_param("invite has invalid member content"))?
+            .membership
+            != MembershipState::Invite
+    {
+        return Err(MatrixError::invalid_param("event is not a membership invite").into());
+    }
+    let rules = room::get_version_rules(room_version)?;
+    let requires_full_invite_state = requires_full_invite_state(&rules);
+
+    // When we participate in the room, authorise against our trusted event-time state.
+    if room::is_server_joined(config::server_name(), room_id).await? {
+        handler::auth_check(&incoming, &rules, None).await?;
+        return Ok(incoming);
+    }
+
+    // Older servers can still send stripped invite state. It cannot be used as an auth
+    // snapshot because it has neither event IDs nor signatures, but accepting it remains
+    // necessary for federation compatibility through room version 11. Version 12 and
+    // later require full room-version PDUs, including the create event (Matrix v1.16).
+    // The invite event itself was signature-checked by the caller.
+    if !invite_state_is_full(invite_room_state) {
+        if requires_full_invite_state {
+            return Err(MatrixError::invalid_param(
+                "invite room state is not formatted for this room version",
+            )
+            .into());
+        }
+        return Ok(incoming);
+    }
+
+    // Full invite state can be checked for integrity and room binding, but it is not a
+    // trusted current-state snapshot: federation invites do not carry the full auth chain.
+    // Do not use these events to authorise each other.
+    let mut has_create = false;
+    for raw in invite_room_state {
+        let original: CanonicalJsonObject = serde_json::from_str(raw.get())
+            .map_err(|_| MatrixError::invalid_param("invite state event is invalid JSON"))?;
+        if let Some(CanonicalJsonValue::String(event_room_id)) = original.get("room_id")
+            && event_room_id != room_id.as_str()
+        {
+            return Err(MatrixError::invalid_param(
+                "invite state event belongs to a different room",
+            )
+            .into());
+        }
+        let has_declared_room_id =
+            original.get("room_id").and_then(CanonicalJsonValue::as_str) == Some(room_id.as_str());
+        let state_event_id = crate::event::gen_event_id(&original, room_version)?;
+        // The invite itself is commonly included for presentation to the invitee, but it
+        // is not part of the state *before* itself and must never satisfy its own target
+        // membership auth lookup.
+        if state_event_id == event_id {
+            continue;
+        }
+        match crate::server_key::verify_event(&original, room_version).await {
+            Ok(Verified::All) => {}
+            Ok(Verified::Signatures) => {
+                return Err(MatrixError::invalid_param(
+                    "invite state event has an invalid content hash",
+                )
+                .into());
+            }
+            Err(e) => {
+                return Err(MatrixError::invalid_param(format!(
+                    "invite state event signature verification failed: {e}"
+                ))
+                .into());
+            }
+        }
+        let pdu = PduEvent::from_canonical_object(room_id, &state_event_id, original)
+            .map_err(|_| MatrixError::invalid_param("invite state event is not a full PDU"))?;
+        let Some(state_key) = pdu.state_key.as_deref() else {
+            return Err(
+                MatrixError::invalid_param("invite room state contains a non-state event").into(),
+            );
+        };
+        if pdu.event_ty == TimelineEventType::RoomCreate && state_key.is_empty() {
+            if has_create {
+                return Err(MatrixError::invalid_param(
+                    "invite room state contains multiple create events",
+                )
+                .into());
+            }
+            has_create = true;
+            if rules.authorization.room_create_event_id_as_room_id {
+                let derived_room_id = RoomId::new_v2(state_event_id.localpart())?;
+                if derived_room_id != room_id {
+                    return Err(MatrixError::invalid_param(
+                        "invite create event does not match the room ID",
+                    )
+                    .into());
+                }
+            } else if !has_declared_room_id {
+                return Err(MatrixError::invalid_param(
+                    "invite create event has no matching room ID",
+                )
+                .into());
+            }
+        }
+    }
+    if !has_create && requires_full_invite_state {
+        return Err(MatrixError::missing_param("invite room state has no create event").into());
+    }
+    Ok(incoming)
+}
+
 #[endpoint]
 async fn invite_user(
     args: RoomEventReqArgs,
@@ -182,19 +354,53 @@ async fn invite_user(
         .map_err(|_| MatrixError::not_found("invitee user not found"))?;
     handler::acl_check(invitee_id.server_name(), &args.room_id).await?;
 
-    crate::server_key::hash_and_sign_event(&mut signed_event, &body.room_version)
-        .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
+    let sender_id: OwnedUserId = serde_json::from_value(
+        signed_event
+            .get("sender")
+            .ok_or(MatrixError::invalid_param("event had no sender field"))?
+            .clone()
+            .into(),
+    )
+    .map_err(|_| MatrixError::invalid_param("sender is not a user id"))?;
+    if sender_id.server_name() != origin {
+        return Err(MatrixError::forbidden(
+            "cannot send an invite on behalf of another server",
+            None,
+        )
+        .into());
+    }
+    if let Some(CanonicalJsonValue::String(event_room_id)) = signed_event.get("room_id")
+        && event_room_id != args.room_id.as_str()
+    {
+        return Err(MatrixError::bad_json("event room ID does not match the request path").into());
+    }
 
-    // Generate event id
-    let event_id = crate::event::gen_event_id(&signed_event, &body.room_version)?;
-
-    // Add event_id back
-    signed_event.insert(
+    // Authenticate the sender's original event before either this server or a Policy
+    // Server adds a supplementary signature.
+    let version_rules = room::get_version_rules(&body.room_version)?;
+    let event_id = event_id_for_pdu(&signed_event, &body.room_version, &version_rules)?;
+    match crate::server_key::verify_event(&signed_event, &body.room_version).await {
+        Ok(Verified::All) => {}
+        Ok(Verified::Signatures) => {
+            return Err(
+                MatrixError::invalid_param("invite event has an invalid content hash").into(),
+            );
+        }
+        Err(e) => {
+            return Err(
+                MatrixError::invalid_param(format!("signature verification failed: {e}")).into(),
+            );
+        }
+    }
+    if event_id != args.event_id {
+        return Err(MatrixError::bad_json("event ID does not match the request path").into());
+    }
+    let mut auth_event = signed_event.clone();
+    auth_event.insert(
         "event_id".to_owned(),
         CanonicalJsonValue::String(event_id.to_string()),
     );
 
-    let state_lock = room::lock_state(&args.room_id).await;
     ensure_room(&args.room_id, &body.room_version).await?;
     if data::room::is_banned(&args.room_id).await? {
         return Err(MatrixError::forbidden("this room is banned on this homeserver", None).into());
@@ -204,9 +410,43 @@ async fn invite_user(
         return Err(MatrixError::forbidden("this server does not allow room invites", None).into());
     }
 
-    let preserve_full_create = crate::room::get_version_rules(&body.room_version)?
-        .authorization
-        .room_create_event_id_as_room_id;
+    authenticate_invite_event(
+        &args.room_id,
+        &event_id,
+        &auth_event,
+        &body.room_version,
+        &body.invite_room_state,
+    )
+    .await?;
+
+    // `auth_check` resolves the event-time state and takes the room state lock internally.
+    // Acquire our write-side lock only after that read-only validation, otherwise invites
+    // to a server which is already participating in the room deadlock on the same mutex.
+    let state_lock = room::lock_state(&args.room_id).await;
+
+    crate::server_key::hash_and_sign_event(&mut signed_event, &body.room_version)
+        .map_err(|e| MatrixError::invalid_param(format!("failed to sign event: {e}")))?;
+    signed_event.insert(
+        "event_id".to_owned(),
+        CanonicalJsonValue::String(event_id.to_string()),
+    );
+
+    // Only contact the Policy Server after room authorization. For a first invite, use
+    // the signed policy state supplied alongside the event because no local state exists.
+    crate::room::policy::check_invite_event(
+        &args.room_id,
+        &mut signed_event,
+        &body.room_version,
+        &body.invite_room_state,
+    )
+    .await?;
+    if event_id_for_pdu(&signed_event, &body.room_version, &version_rules)? != event_id {
+        return Err(
+            MatrixError::bad_json("supplementary invite signatures changed the event ID").into(),
+        );
+    }
+
+    let preserve_full_create = version_rules.authorization.room_create_event_id_as_room_id;
     let mut invite_state = body
         .invite_room_state
         .iter()
@@ -218,11 +458,9 @@ async fn invite_user(
     // record the invited state for client /sync through update_membership(), and
     // send the invite PDU to the relevant appservices.
     // if !room::is_server_joined(&config::get().server_name, &args.room_id)? {
-    let mut event: CanonicalJsonObject = serde_json::from_str(body.event.get())
-        .map_err(|_| MatrixError::invalid_param("invalid invite event bytes"))?;
-
-    // let event_id: OwnedEventId = format!("$dummy_{}", Ulid::generate()).try_into()?;
-    event.insert("event_id".to_owned(), event_id.to_string().into());
+    // Store the same event that is returned to the inviting server. This includes this
+    // server's signature and any Policy Server signature added above.
+    let event = signed_event.clone();
 
     let (event_sn, event_guard) = crate::event::ensure_event_sn(&args.room_id, &event_id).await?;
     let pdu = SnPduEvent::from_canonical_object(
@@ -422,7 +660,7 @@ async fn send_leave(
     // We do not add the event_id field to the pdu here because of signature and hashes checks
     let room_version_id = room::get_version(&args.room_id).await?;
 
-    let Ok((event_id, value)) =
+    let Ok((event_id, mut value)) =
         crate::event::gen_event_id_canonical_json(&body.0, &room_version_id)
     else {
         // Event could not be converted to canonical json
@@ -510,6 +748,17 @@ async fn send_leave(
         return Err(MatrixError::bad_json("state_key does not match sender user").into());
     }
 
+    // A synchronous send_leave must report a Policy Server refusal to the sender. The
+    // normal incoming-PDU path intentionally turns the same refusal into a soft failure
+    // for transaction traffic, which would incorrectly make this endpoint return success.
+    crate::room::policy::check_federation_event(
+        &args.room_id,
+        &event_id,
+        &mut value,
+        &room_version_id,
+    )
+    .await?;
+
     handler::process_incoming_pdu(
         origin,
         &event_id,
@@ -531,7 +780,73 @@ mod tests {
     use serde_json::value::to_raw_value;
     use serde_json::{Value, json};
 
-    use super::stripped_invite_state_event;
+    use super::{
+        event_id_for_pdu, invite_state_is_full, requires_full_invite_state,
+        stripped_invite_state_event,
+    };
+    use crate::core::identifiers::RoomVersionId;
+    use crate::core::room_version_rules::RoomVersionRules;
+    use crate::core::serde::CanonicalJsonObject;
+
+    #[test]
+    fn supplementary_invite_signatures_preserve_reference_hash_event_id() {
+        let room_version = RoomVersionId::V11;
+        let mut event: CanonicalJsonObject = serde_json::from_value(json!({
+            "auth_events": [],
+            "content": { "membership": "invite" },
+            "depth": 1,
+            "hashes": { "sha256": "hash" },
+            "origin_server_ts": 1,
+            "prev_events": [],
+            "room_id": "!room:example.org",
+            "sender": "@alice:example.org",
+            "signatures": { "example.org": { "ed25519:one": "first" } },
+            "state_key": "@bob:remote.example",
+            "type": "m.room.member"
+        }))
+        .unwrap();
+        let event_id = crate::event::gen_event_id(&event, &room_version).unwrap();
+
+        event.insert("event_id".to_owned(), event_id.to_string().into());
+        event
+            .get_mut("signatures")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "remote.example".to_owned(),
+                serde_json::from_value(json!({ "ed25519:two": "second" })).unwrap(),
+            );
+
+        assert_eq!(
+            event_id_for_pdu(&event, &room_version, &RoomVersionRules::V11).unwrap(),
+            event_id
+        );
+    }
+
+    #[test]
+    fn legacy_room_versions_use_the_explicit_event_id() {
+        let event_id = "$opaque:example.org";
+        let event: CanonicalJsonObject = serde_json::from_value(json!({
+            "event_id": event_id,
+            "signatures": { "example.org": { "ed25519:one": "first" } },
+            "type": "m.room.member"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            event_id_for_pdu(&event, &RoomVersionId::V1, &RoomVersionRules::V1)
+                .unwrap()
+                .as_str(),
+            event_id
+        );
+    }
+
+    #[test]
+    fn full_invite_state_becomes_mandatory_in_room_version_12() {
+        assert!(!requires_full_invite_state(&RoomVersionRules::V11));
+        assert!(requires_full_invite_state(&RoomVersionRules::V12));
+    }
 
     #[test]
     fn strips_full_federation_pdu_for_client_state() {
@@ -562,6 +877,7 @@ mod tests {
                 "type": "m.room.name"
             })
         );
+        assert!(invite_state_is_full(&[pdu]));
     }
 
     #[test]
@@ -575,6 +891,7 @@ mod tests {
         .unwrap();
 
         assert!(stripped_invite_state_event(&event, false).is_ok());
+        assert!(!invite_state_is_full(&[event]));
     }
 
     #[test]

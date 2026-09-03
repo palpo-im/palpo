@@ -156,6 +156,13 @@ pub async fn send_join_v1(
     crate::server_key::hash_and_sign_event(&mut value, &room_version_id)
         .map_err(|e| MatrixError::invalid_param(format!("failed to sign send_join event: {e}")))?;
 
+    // Unlike ordinary transaction PDUs, send_join is synchronous: MSC4284 requires a
+    // Policy Server refusal to fail the federation request, not to be hidden behind the
+    // generic incoming-event soft-fail result. The signature added here is also returned
+    // to the joining server in `event` below.
+    crate::room::policy::check_federation_event(room_id, &event_id, &mut value, &room_version_id)
+        .await?;
+
     let origin: OwnedServerName = serde_json::from_value(
         serde_json::to_value(
             value
