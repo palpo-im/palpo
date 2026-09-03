@@ -1,8 +1,18 @@
+#[cfg(not(feature = "unstable-msc4495"))]
 use crate::core::federation::transaction::Edu;
-use crate::core::presence::{PresenceContent, PresenceState, PresenceUpdate};
+use crate::core::presence::PresenceState;
+#[cfg(not(feature = "unstable-msc4495"))]
+use crate::core::presence::{PresenceContent, PresenceUpdate};
 use crate::core::{UnixMillis, UserId};
 use crate::data::user::{NewDbPresence, last_presence};
-use crate::{AppResult, config, data, sending};
+#[cfg(not(feature = "unstable-msc4495"))]
+use crate::sending;
+use crate::{AppResult, config, data};
+
+#[cfg(feature = "unstable-msc4495")]
+pub mod recipients;
+#[cfg(feature = "unstable-msc4495")]
+pub mod sharing;
 
 /// Resets the presence timeout, so the user will stay in their current presence state.
 pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppResult<()> {
@@ -45,10 +55,13 @@ pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppRe
             last_user_sync_at: None,
             currently_active: Some(currently_active),
             occur_sn: None,
+            updated_at: UnixMillis::now(),
         },
         false,
     )
     .await?;
+    #[cfg(feature = "unstable-msc4495")]
+    recipients::wake_recipient_servers(user_id).await?;
     Ok(())
 }
 
@@ -77,9 +90,22 @@ pub async fn set_presence(
         last_user_sync_at: None,
         currently_active: Some(presence_state == PresenceState::Online),
         occur_sn: None,
+        updated_at: UnixMillis::now(),
     };
 
+    #[cfg_attr(feature = "unstable-msc4495", allow(unused_variables))]
     let state_changed = data::user::set_presence(db_presence, force).await?;
+    // With selective presence the recipient scoping lives in the sending guard's EDU
+    // selection, which runs off the presence row just written. Broadcasting here as well
+    // would put an update with no `stream_id` on the wire, and a peer implementing MSC4495
+    // reads that as a legacy sender and shows it to everyone -- exactly what an absent or
+    // empty sharing policy is supposed to prevent. The destinations still have to be woken,
+    // or a quiet room would never get the update at all.
+    #[cfg(feature = "unstable-msc4495")]
+    if state_changed {
+        recipients::wake_recipient_servers(sender_id).await?;
+    }
+    #[cfg(not(feature = "unstable-msc4495"))]
     if state_changed {
         let edu = Edu::Presence(PresenceContent {
             push: vec![PresenceUpdate {
@@ -89,7 +115,7 @@ pub async fn set_presence(
                 currently_active: presence_state == PresenceState::Online,
                 presence: presence_state,
                 #[cfg(feature = "unstable-msc4495")]
-                recipients: Default::default(),
+                recipients: None,
                 #[cfg(feature = "unstable-msc4495")]
                 stream_id: None,
                 #[cfg(feature = "unstable-msc4495")]

@@ -385,6 +385,7 @@ async fn set_avatar_url(
             last_user_sync_at: None,
             currently_active: None,
             occur_sn: None,
+            updated_at: UnixMillis::now(),
         },
         true,
     )
@@ -510,6 +511,7 @@ async fn set_display_name(
                 last_user_sync_at: None,
                 currently_active: None,
                 occur_sn: None,
+                updated_at: UnixMillis::now(),
             },
             true,
         )

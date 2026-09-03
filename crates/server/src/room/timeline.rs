@@ -606,6 +606,28 @@ pub async fn append_pdu(
     // We set the room state after inserting the pdu, so that we never have a moment in time
     // where events in the current room state do not exist
     state::set_room_state(&pdu.room_id, frame_id).await?;
+
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        if pdu.event_ty == TimelineEventType::RoomMember {
+            if let Some(state_key) = &pdu.state_key
+                && let Ok(user_id) = UserId::parse(state_key)
+            {
+                // A leaving local user is no longer returned by `local_users`, but their
+                // own recipient set changed too and still needs a final removal delta.
+                crate::user::presence::recipients::schedule_recipients_changed(&user_id);
+            }
+            crate::user::presence::recipients::schedule_room_recipients_changed(&pdu.room_id);
+        }
+        let event_type = pdu.event_ty.to_string();
+        if matches!(
+            event_type.as_str(),
+            "org.continuwuity.presence_v2.msc4495.room.presence_sharing"
+                | "m.room.presence_sharing"
+        ) {
+            crate::user::presence::recipients::schedule_room_recipients_changed(&pdu.room_id);
+        }
+    }
     if pdu.state_key.is_some()
         && let Err(e) = crate::room::update_currents(&pdu.room_id).await
     {

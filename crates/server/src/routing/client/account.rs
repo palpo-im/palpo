@@ -8,6 +8,8 @@ use crate::core::client::account::{
     DeactivateReqBody, DeactivateResBody, ThirdPartyIdRemovalStatus, WhoamiResBody,
 };
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+#[cfg(feature = "unstable-msc4495")]
+use crate::core::events::StaticEventContent;
 use crate::core::identifiers::*;
 use crate::exts::*;
 use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, empty_ok, hoops, json_ok};
@@ -168,6 +170,11 @@ pub(super) async fn delete_account_data_msc3391(
     }
 
     data::user::delete_global_data(authed.user_id(), &account_type).await?;
+
+    #[cfg(feature = "unstable-msc4495")]
+    if account_type == crate::core::events::presence::sharing::PresenceSharingEventContent::TYPE {
+        crate::user::presence::recipients::mark_recipients_changed(authed.user_id()).await?;
+    }
     empty_ok()
 }
 
