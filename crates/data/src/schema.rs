@@ -516,6 +516,43 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    presence_recipient_streams (user_id) {
+        user_id -> Text,
+        stream_id -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    presence_recipient_sets (user_id, server_id) {
+        user_id -> Text,
+        server_id -> Text,
+        stream_id -> Int8,
+        recipients -> Jsonb,
+        pending_stream_id -> Nullable<Int8>,
+        pending_recipients -> Nullable<Jsonb>,
+        pending_edu_sn -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    remote_presence_recipients (user_id) {
+        user_id -> Text,
+        stream_id -> Nullable<Int8>,
+        recipients -> Jsonb,
+        recovery_generation -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     outgoing_requests (id) {
         id -> Int8,
         kind -> Text,
@@ -973,6 +1010,7 @@ diesel::table! {
         last_user_sync_at -> Nullable<Int8>,
         currently_active -> Nullable<Bool>,
         occur_sn -> Int8,
+        updated_at -> Int8,
     }
 }
 
@@ -1194,6 +1232,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     media_url_previews,
     outgoing_edu_cursors,
     outgoing_requests,
+    presence_recipient_sets,
+    presence_recipient_streams,
+    remote_presence_recipients,
     room_aliases,
     room_joined_servers,
     room_lookup_servers,

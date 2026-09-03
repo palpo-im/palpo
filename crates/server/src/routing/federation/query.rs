@@ -11,6 +11,12 @@ use crate::{
     AuthArgs, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, config, data, json_ok,
 };
 
+#[cfg(feature = "unstable-msc4495")]
+pub fn unstable_router() -> Router {
+    Router::with_path("org.continuwuity.presence_v2.msc4495/query")
+        .push(Router::with_path("presence_recipients").get(get_presence_recipients))
+}
+
 pub fn router() -> Router {
     Router::with_path("query")
         .push(Router::with_path("profile").get(get_profile))
@@ -98,4 +104,72 @@ async fn get_directory(
 #[endpoint]
 async fn query_by_type(_aa: AuthArgs) -> EmptyResult {
     Err(MatrixError::unrecognized("Unsupported federation query type.").into())
+}
+
+/// #GET /_matrix/federation/unstable/org.continuwuity.presence_v2.msc4495/query/presence_recipients
+/// Returns a local user's current presence recipient set for the asking server ([MSC4495]).
+///
+/// A server whose view of the set has fallen out of step -- a delta whose `prev_id` it does
+/// not hold -- calls this to resynchronise. Only the asking server's own users are
+/// returned; the set for another server is none of its business, and the proposal scopes
+/// the answer that way for exactly that reason.
+///
+/// [MSC4495]: https://github.com/matrix-org/matrix-spec-proposals/pull/4495
+#[cfg(feature = "unstable-msc4495")]
+#[endpoint]
+pub(super) async fn get_presence_recipients(
+    _aa: AuthArgs,
+    args: crate::core::federation::query::PresenceRecipientsReqArgs,
+    depot: &mut Depot,
+) -> JsonResult<crate::core::federation::query::PresenceRecipientsResBody> {
+    use crate::DepotExt;
+    use crate::user::presence::{recipients, sharing};
+
+    let origin = depot.origin()?.clone();
+
+    if args.user_id.server_name().is_remote() {
+        return Err(MatrixError::invalid_param("User does not belong to this server.").into());
+    }
+
+    // A policy delta can be selected while this snapshot is being computed. Fence the
+    // confirmed write against the user's stream row; if another state reserved a newer
+    // position first, recompute rather than overwriting its pending removal with stale
+    // recipients.
+    for _ in 0..4 {
+        let snapshot: Vec<_> = sharing::recipients_of(&args.user_id)
+            .await?
+            .into_iter()
+            .filter(|recipient| recipient.server_name() == origin)
+            .collect();
+
+        let stream_id = recipients::advance_stream(&args.user_id).await?;
+        if snapshot.is_empty() {
+            if recipients::forget_confirmed(&args.user_id, &origin, stream_id).await? {
+                // The proposal answers 404 when there is no set for the asking server,
+                // which keeps "shares with nobody here" distinguishable from "set is
+                // momentarily empty".
+                return Err(
+                    MatrixError::not_found("No presence recipients for this server.").into(),
+                );
+            }
+            continue;
+        }
+
+        if recipients::record_confirmed(
+            &args.user_id,
+            &origin,
+            stream_id,
+            &snapshot.iter().cloned().collect(),
+        )
+        .await?
+        {
+            return json_ok(
+                crate::core::federation::query::PresenceRecipientsResBody::new(stream_id, snapshot),
+            );
+        }
+    }
+
+    Err(crate::AppError::internal(
+        "presence recipient policy kept changing while building its snapshot",
+    ))
 }
