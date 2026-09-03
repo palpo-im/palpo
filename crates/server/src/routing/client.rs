@@ -268,6 +268,11 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
     #[cfg(feature = "unstable-msc4495")]
     unstable_features.insert("org.continuwuity.presence_v2.msc4495".to_owned(), true); /* Selective presence (https://github.com/matrix-org/matrix-spec-proposals/pull/4495) */
 
+    // Only advertised when the extension is actually compiled in, so a build without it
+    // does not promise a sliding sync extension it will silently ignore.
+    #[cfg(feature = "unstable-msc4262")]
+    unstable_features.insert("org.matrix.msc4262".to_owned(), true); /* Profile updates in sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4262) */
+
     VersionsResBody {
         versions: SUPPORTED_MATRIX_VERSIONS
             .iter()
@@ -341,6 +346,21 @@ mod supported_versions_tests {
                 .get("org.matrix.msc4140"),
             Some(&true)
         );
+    }
+
+    /// MSC4262 is only promised when the sliding sync extension is compiled in, so a build
+    /// without it does not advertise an extension it would silently ignore.
+    #[test]
+    fn msc4262_is_advertised_only_when_built_in() {
+        let advertised = supported_versions_body(false)
+            .unstable_features
+            .get("org.matrix.msc4262")
+            .copied();
+
+        #[cfg(feature = "unstable-msc4262")]
+        assert_eq!(advertised, Some(true));
+        #[cfg(not(feature = "unstable-msc4262"))]
+        assert_eq!(advertised, None);
     }
 
     #[test]

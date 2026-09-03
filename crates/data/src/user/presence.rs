@@ -141,16 +141,22 @@ pub async fn lock_presence_stream(conn: &mut AsyncPgConnection) -> DataResult<()
     Ok(())
 }
 
+/// Readers of the stream position hold this shared, so they wait for publishers only.
+pub async fn lock_presence_stream_shared(conn: &mut AsyncPgConnection) -> DataResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
+        .bind::<diesel::sql_types::BigInt, _>(PRESENCE_STREAM_LOCK)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn curr_sn_after_presence_writes(
     device: Option<(&UserId, &DeviceId)>,
 ) -> DataResult<i64> {
     connect()
         .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
-            diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
-                .bind::<diesel::sql_types::BigInt, _>(PRESENCE_STREAM_LOCK)
-                .execute(&mut *conn)
-                .await?;
+            lock_presence_stream_shared(conn).await?;
             if let Some((user, device)) = device {
                 super::device::lock_inbox_stream(conn, user, device).await?;
             }
