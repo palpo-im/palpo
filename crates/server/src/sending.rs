@@ -440,7 +440,7 @@ async fn send_events(
                             timeline::get_pdu(event_id)
                                 .await
                                 .map_err(|e| (kind.clone(), e))?
-                                .to_room_event(),
+                                .to_room_event_without_sender_only_unsigned(),
                         );
                     }
                     SendingEventType::Edu(_) => {
@@ -1016,19 +1016,15 @@ async fn claim_queued_requests(
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
 ///
-/// Strips internal fields (`event_sn`, `transaction_id`) and conditionally removes
-/// `event_id` based on the room version. Room versions V1/V2 require `event_id` in
-/// the federation format; V3+ derive it from the event hash.
+/// Strips internal and sender-only fields (`event_sn`, `transaction_id`, MSC4140's
+/// `delay_id`) and conditionally removes `event_id` based on the room version. Room
+/// versions V1/V2 require `event_id` in the federation format; V3+ derive it from the
+/// event hash.
 #[tracing::instrument]
 pub async fn convert_to_outgoing_federation_event(
     mut pdu_json: CanonicalJsonObject,
 ) -> Box<RawJsonValue> {
-    if let Some(unsigned) = pdu_json
-        .get_mut("unsigned")
-        .and_then(|val| val.as_object_mut())
-    {
-        unsigned.remove("transaction_id");
-    }
+    strip_sender_only_unsigned(&mut pdu_json);
 
     // Determine room version to decide whether to strip event_id.
     // V1/V2 require event_id in federation format; V3+ derive it from content hash.
@@ -1074,6 +1070,18 @@ pub async fn convert_to_outgoing_federation_event(
     to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
 }
 
+fn strip_sender_only_unsigned(pdu_json: &mut CanonicalJsonObject) {
+    if let Some(unsigned) = pdu_json
+        .get_mut("unsigned")
+        .and_then(|val| val.as_object_mut())
+    {
+        unsigned.remove("transaction_id");
+        // MSC4140: the delay_id is only ever shown to the event's own sender, so it must
+        // never cross a federation boundary.
+        unsigned.remove("org.matrix.msc4140.delay_id");
+    }
+}
+
 fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBuilder> {
     let mut reqwest_client_builder = reqwest::Client::builder()
         .pool_idle_timeout(Some(Duration::from_millis(config.request_idle_timeout)))
@@ -1103,6 +1111,25 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
 mod tests {
     use super::*;
     use crate::config::FederationConfig;
+
+    #[test]
+    fn federation_events_strip_all_sender_only_unsigned_fields() {
+        let mut pdu_json: CanonicalJsonObject = serde_json::from_value(serde_json::json!({
+            "unsigned": {
+                "transaction_id": "txn",
+                "org.matrix.msc4140.delay_id": "delay",
+                "age": 10,
+            }
+        }))
+        .unwrap();
+
+        strip_sender_only_unsigned(&mut pdu_json);
+
+        let unsigned = pdu_json["unsigned"].as_object().unwrap();
+        assert!(!unsigned.contains_key("transaction_id"));
+        assert!(!unsigned.contains_key("org.matrix.msc4140.delay_id"));
+        assert!(unsigned.contains_key("age"));
+    }
 
     #[tokio::test]
     async fn full_wakeup_queue_drops_wakeups_but_closed_queue_fails() {

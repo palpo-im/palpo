@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -458,9 +459,29 @@ impl PduEvent {
         }
     }
 
-    pub fn remove_transaction_id(&mut self) -> AppResult<()> {
+    /// Strip unsigned metadata which is only visible to the event sender.
+    pub fn remove_sender_only_unsigned(&mut self) -> AppResult<()> {
         self.unsigned.remove("transaction_id");
+        self.unsigned.remove("org.matrix.msc4140.delay_id");
         Ok(())
+    }
+
+    fn unsigned_for_recipient(
+        &self,
+        recipient: &UserId,
+    ) -> Cow<'_, BTreeMap<String, Box<RawJsonValue>>> {
+        if self.sender == recipient {
+            Cow::Borrowed(&self.unsigned)
+        } else {
+            Cow::Owned(self.unsigned_without_sender_only())
+        }
+    }
+
+    fn unsigned_without_sender_only(&self) -> BTreeMap<String, Box<RawJsonValue>> {
+        let mut unsigned = self.unsigned.clone();
+        unsigned.remove("transaction_id");
+        unsigned.remove("org.matrix.msc4140.delay_id");
+        unsigned
     }
 
     pub fn add_age(&mut self) -> AppResult<()> {
@@ -474,8 +495,10 @@ impl PduEvent {
         Ok(())
     }
 
-    #[tracing::instrument]
-    pub fn to_sync_room_event(&self) -> RawJson<AnySyncTimelineEvent> {
+    fn to_sync_room_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnySyncTimelineEvent> {
         let mut json = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -484,8 +507,8 @@ impl PduEvent {
             "origin_server_ts": self.origin_server_ts,
         });
 
-        if !self.unsigned.is_empty() {
-            json["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            json["unsigned"] = json!(unsigned);
         }
         if let Some(state_key) = &self.state_key {
             json["state_key"] = json!(state_key);
@@ -497,8 +520,18 @@ impl PduEvent {
         serde_json::from_value(json).expect("RawJson::from_value always works")
     }
 
-    #[tracing::instrument]
-    pub fn to_room_event(&self) -> RawJson<AnyTimelineEvent> {
+    pub fn to_sync_room_event_for(&self, recipient: &UserId) -> RawJson<AnySyncTimelineEvent> {
+        self.to_sync_room_event_with_unsigned(self.unsigned_for_recipient(recipient).as_ref())
+    }
+
+    pub fn to_sync_room_event_without_sender_only_unsigned(&self) -> RawJson<AnySyncTimelineEvent> {
+        self.to_sync_room_event_with_unsigned(&self.unsigned_without_sender_only())
+    }
+
+    fn to_room_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnyTimelineEvent> {
         let age = UnixMillis::now()
             .get()
             .saturating_sub(self.origin_server_ts.get());
@@ -511,12 +544,12 @@ impl PduEvent {
             "room_id": self.room_id,
         });
 
-        if self.unsigned.is_empty() {
+        if unsigned.is_empty() {
             data["unsigned"] = json!({ "age": age });
         } else {
-            let mut unsigned = json!(self.unsigned);
-            unsigned["age"] = json!(age);
-            data["unsigned"] = unsigned;
+            let mut unsigned_json = json!(unsigned);
+            unsigned_json["age"] = json!(age);
+            data["unsigned"] = unsigned_json;
         }
         if let Some(state_key) = &self.state_key {
             data["state_key"] = json!(state_key);
@@ -528,8 +561,18 @@ impl PduEvent {
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
 
-    #[tracing::instrument]
-    pub fn to_message_like_event(&self) -> RawJson<AnyMessageLikeEvent> {
+    pub fn to_room_event_for(&self, recipient: &UserId) -> RawJson<AnyTimelineEvent> {
+        self.to_room_event_with_unsigned(self.unsigned_for_recipient(recipient).as_ref())
+    }
+
+    pub fn to_room_event_without_sender_only_unsigned(&self) -> RawJson<AnyTimelineEvent> {
+        self.to_room_event_with_unsigned(&self.unsigned_without_sender_only())
+    }
+
+    fn to_message_like_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnyMessageLikeEvent> {
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -539,8 +582,8 @@ impl PduEvent {
             "room_id": self.room_id,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            data["unsigned"] = json!(unsigned);
         }
         if let Some(state_key) = &self.state_key {
             data["state_key"] = json!(state_key);
@@ -552,13 +595,35 @@ impl PduEvent {
         serde_json::from_value(data).expect("RawJson::from_value always works")
     }
 
+    pub fn to_message_like_event_for(&self, recipient: &UserId) -> RawJson<AnyMessageLikeEvent> {
+        self.to_message_like_event_with_unsigned(self.unsigned_for_recipient(recipient).as_ref())
+    }
+
+    pub fn to_message_like_event_without_sender_only_unsigned(
+        &self,
+    ) -> RawJson<AnyMessageLikeEvent> {
+        self.to_message_like_event_with_unsigned(&self.unsigned_without_sender_only())
+    }
+
     #[tracing::instrument]
-    pub fn to_state_event(&self) -> RawJson<AnyStateEvent> {
-        serde_json::from_value(self.to_state_event_value())
+    pub fn to_state_event_with_sender_only_unsigned(&self) -> RawJson<AnyStateEvent> {
+        serde_json::from_value(self.to_state_event_value_with_unsigned(&self.unsigned))
             .expect("RawJson::from_value always works")
     }
-    #[tracing::instrument]
-    pub fn to_state_event_value(&self) -> JsonValue {
+
+    pub fn to_state_event_for(&self, recipient: &UserId) -> RawJson<AnyStateEvent> {
+        serde_json::from_value(
+            self.to_state_event_value_with_unsigned(
+                self.unsigned_for_recipient(recipient).as_ref(),
+            ),
+        )
+        .expect("RawJson::from_value always works")
+    }
+
+    fn to_state_event_value_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> JsonValue {
         let JsonValue::Object(mut data) = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -571,8 +636,8 @@ impl PduEvent {
             panic!("Invalid JSON value, never happened!");
         };
 
-        if !self.unsigned.is_empty() {
-            data.insert("unsigned".into(), json!(self.unsigned));
+        if !unsigned.is_empty() {
+            data.insert("unsigned".into(), json!(unsigned));
         }
 
         for (key, value) in &self.extra_data {
@@ -584,8 +649,14 @@ impl PduEvent {
         JsonValue::Object(data)
     }
 
-    #[tracing::instrument]
-    pub fn to_sync_state_event(&self) -> RawJson<AnySyncStateEvent> {
+    pub fn to_state_event_value_for(&self, recipient: &UserId) -> JsonValue {
+        self.to_state_event_value_with_unsigned(self.unsigned_for_recipient(recipient).as_ref())
+    }
+
+    fn to_sync_state_event_with_unsigned(
+        &self,
+        unsigned: &BTreeMap<String, Box<RawJsonValue>>,
+    ) -> RawJson<AnySyncStateEvent> {
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -595,11 +666,15 @@ impl PduEvent {
             "state_key": self.state_key,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            data["unsigned"] = json!(unsigned);
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
+    }
+
+    pub fn to_sync_state_event_for(&self, recipient: &UserId) -> RawJson<AnySyncStateEvent> {
+        self.to_sync_state_event_with_unsigned(self.unsigned_for_recipient(recipient).as_ref())
     }
 
     #[tracing::instrument]
@@ -639,7 +714,11 @@ impl PduEvent {
     }
 
     #[tracing::instrument]
-    pub fn to_member_event(&self) -> RawJson<StateEvent<RoomMemberEventContent>> {
+    pub fn to_member_event_for(
+        &self,
+        recipient: &UserId,
+    ) -> RawJson<StateEvent<RoomMemberEventContent>> {
+        let unsigned = self.unsigned_for_recipient(recipient);
         let mut data = json!({
             "content": self.content,
             "type": self.event_ty,
@@ -651,8 +730,8 @@ impl PduEvent {
             "state_key": self.state_key,
         });
 
-        if !self.unsigned.is_empty() {
-            data["unsigned"] = json!(self.unsigned);
+        if !unsigned.is_empty() {
+            data["unsigned"] = json!(unsigned);
         }
 
         serde_json::from_value(data).expect("RawJson::from_value always works")
@@ -1125,5 +1204,111 @@ impl Default for PduBuilder {
             redacts: None,
             timestamp: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod sender_only_unsigned_tests {
+    use serde_json::value::to_raw_value;
+
+    use super::*;
+
+    fn event_with_sender_only_unsigned() -> PduEvent {
+        let mut unsigned = BTreeMap::new();
+        unsigned.insert("transaction_id".to_owned(), to_raw_value("txn").unwrap());
+        unsigned.insert(
+            "org.matrix.msc4140.delay_id".to_owned(),
+            to_raw_value("delay").unwrap(),
+        );
+        unsigned.insert("age".to_owned(), to_raw_value(&10_u64).unwrap());
+
+        PduEvent {
+            event_id: "$event:example.org".try_into().unwrap(),
+            sender: "@alice:example.org".try_into().unwrap(),
+            origin_server_ts: UnixMillis(1),
+            event_ty: TimelineEventType::RoomMessage,
+            content: to_raw_value(&json!({"body": "hi", "msgtype": "m.text"})).unwrap(),
+            state_key: None,
+            room_id: "!room:example.org".try_into().unwrap(),
+            prev_events: Vec::new(),
+            depth: 1,
+            auth_events: Vec::new(),
+            redacts: None,
+            hashes: EventHash {
+                sha256: String::new(),
+            },
+            signatures: None,
+            unsigned,
+            extra_data: Default::default(),
+            rejection_reason: None,
+        }
+    }
+
+    #[test]
+    fn sender_keeps_sender_only_unsigned_fields() {
+        let event = event_with_sender_only_unsigned();
+        let sender: OwnedUserId = "@alice:example.org".try_into().unwrap();
+
+        let converted = event.to_room_event_for(&sender);
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert_eq!(
+            json.pointer("/unsigned/transaction_id"),
+            Some(&json!("txn"))
+        );
+        assert_eq!(
+            json.pointer("/unsigned/org.matrix.msc4140.delay_id"),
+            Some(&json!("delay"))
+        );
+    }
+
+    #[test]
+    fn other_users_do_not_receive_sender_only_unsigned_fields() {
+        let event = event_with_sender_only_unsigned();
+        let recipient: OwnedUserId = "@bob:example.org".try_into().unwrap();
+
+        let converted = event.to_room_event_for(&recipient);
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+        assert!(
+            json.pointer("/unsigned/org.matrix.msc4140.delay_id")
+                .is_none()
+        );
+        assert!(json.pointer("/unsigned/age").is_some());
+    }
+
+    #[test]
+    fn member_listing_does_not_leak_sender_only_unsigned_fields() {
+        let mut event = event_with_sender_only_unsigned();
+        event.event_ty = TimelineEventType::RoomMember;
+        event.state_key = Some(event.sender.to_string());
+        event.content = to_raw_value(&json!({"membership": "join"})).unwrap();
+        let recipient: OwnedUserId = "@bob:example.org".try_into().unwrap();
+
+        let converted = event.to_member_event_for(&recipient);
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+        assert!(
+            json.pointer("/unsigned/org.matrix.msc4140.delay_id")
+                .is_none()
+        );
+        assert_eq!(json.pointer("/unsigned/age"), Some(&json!(10)));
+    }
+
+    #[test]
+    fn nested_events_never_expose_sender_only_unsigned_fields() {
+        let event = event_with_sender_only_unsigned();
+
+        let converted = event.to_message_like_event_without_sender_only_unsigned();
+        let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
+
+        assert!(json.pointer("/unsigned/transaction_id").is_none());
+        assert!(
+            json.pointer("/unsigned/org.matrix.msc4140.delay_id")
+                .is_none()
+        );
+        assert_eq!(json.pointer("/unsigned/age"), Some(&json!(10)));
     }
 }

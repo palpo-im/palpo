@@ -370,7 +370,7 @@ pub async fn append_pdu(
         .await?;
     }
 
-    let sync_pdu = pdu.to_sync_room_event();
+    let sync_pdu = pdu.to_sync_room_event_without_sender_only_unsigned();
     let mut notifies = Vec::new();
     let mut highlights = Vec::new();
 
@@ -828,8 +828,15 @@ pub async fn build_and_append_pdu(
                         "failed to acquire the event append lock for room {room_id}: {e}"
                     ))
                 })?;
-            build_and_append_pdu_locked(pdu_builder, sender, room_id, room_version, state_lock)
-                .await
+            build_and_append_pdu_locked(
+                pdu_builder,
+                sender,
+                room_id,
+                room_version,
+                state_lock,
+                false,
+            )
+            .await
         })
         .await?;
 
@@ -844,14 +851,44 @@ pub async fn build_and_append_pdu(
     Ok(pdu)
 }
 
+/// Creates and appends a PDU even when an equivalent state event is already
+/// current. Delayed events need this so each successful delay id is observable
+/// on its own timeline event.
+/// The caller must already hold the cross-process room append lock and must queue
+/// federation delivery after its surrounding transaction commits.
+#[tracing::instrument(skip_all)]
+pub async fn build_and_append_pdu_force_locked(
+    pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+) -> AppResult<SnPduEvent> {
+    let (pdu, appended) =
+        build_and_append_pdu_locked(pdu_builder, sender, room_id, room_version, state_lock, true)
+            .await?;
+    debug_assert!(appended, "forced room event append cannot be deduplicated");
+    Ok(pdu)
+}
+
+/// Queue a locally authored PDU for participating remote servers after its room append
+/// fence has been released. Delayed-event callers invoke this after their row-locking
+/// transaction commits as well.
+pub(crate) async fn deliver_local_pdu(room_id: &RoomId, event_id: &EventId) -> AppResult<()> {
+    let servers = super::participating_servers(room_id, false).await?;
+    crate::sending::send_pdu_servers(servers.into_iter(), event_id).await
+}
+
 async fn build_and_append_pdu_locked(
     pdu_builder: PduBuilder,
     sender: &UserId,
     room_id: &RoomId,
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
+    force: bool,
 ) -> AppResult<(SnPduEvent, bool)> {
-    if let Some(state_key) = &pdu_builder.state_key
+    if !force
+        && let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
             room_id,
             &pdu_builder.event_type.to_string().into(),

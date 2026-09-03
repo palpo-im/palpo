@@ -4,13 +4,13 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::value::to_raw_value;
 
-use crate::core::Direction;
 use crate::core::client::message::{
     CreateMessageReqArgs, CreateMessageWithTxnReqArgs, MessagesReqArgs, MessagesResBody,
     SendMessageResBody,
 };
 use crate::core::events::{StateEventType, TimelineEventType};
-use crate::core::serde::{RawJsonValue, to_canonical_value};
+use crate::core::serde::to_canonical_value;
+use crate::core::{Direction, UnixMillis};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
@@ -18,7 +18,7 @@ use crate::room::timeline::{self, topolo};
 use crate::routing::prelude::*;
 use crate::{PduBuilder, room};
 
-fn parse_event_content(payload: &[u8]) -> AppResult<Box<RawJsonValue>> {
+fn parse_event_content(payload: &[u8]) -> AppResult<JsonValue> {
     let content: JsonValue =
         serde_json::from_slice(payload).map_err(|_| MatrixError::bad_json("invalid json body"))?;
     if !content.is_object() {
@@ -27,7 +27,18 @@ fn parse_event_content(payload: &[u8]) -> AppResult<Box<RawJsonValue>> {
     to_canonical_value(&content).map_err(|e| {
         MatrixError::bad_json(format!("event content is not valid canonical JSON: {e}"))
     })?;
-    Ok(to_raw_value(&content).expect("validated JSON content can be serialized as raw JSON"))
+    Ok(content)
+}
+
+fn appservice_timestamp(
+    is_appservice: bool,
+    requested_timestamp: Option<UnixMillis>,
+) -> Option<UnixMillis> {
+    if is_appservice {
+        requested_timestamp
+    } else {
+        None
+    }
 }
 
 /// #GET /_matrix/client/r0/rooms/{room_id}/messages
@@ -145,7 +156,7 @@ pub(super) async fn get_messages(
 
             let events: Vec<_> = events
                 .into_iter()
-                .map(|(_, pdu)| pdu.to_room_event())
+                .map(|(_, pdu)| pdu.to_room_event_for(sender_id))
                 .collect();
 
             resp.start = from_tk.to_string();
@@ -200,7 +211,10 @@ pub(super) async fn get_messages(
             next_token = events.last().map(|(_, pdu)| pdu.prev_historic_token());
             resp.start = from_tk.to_string();
             resp.end = next_token.map(|tk| tk.to_string());
-            resp.chunk = events.values().map(|pdu| pdu.to_room_event()).collect();
+            resp.chunk = events
+                .values()
+                .map(|pdu| pdu.to_room_event_for(sender_id))
+                .collect();
         }
     }
 
@@ -214,7 +228,7 @@ pub(super) async fn get_messages(
         )
         .await
         {
-            resp.state.push(member_event.to_state_event());
+            resp.state.push(member_event.to_state_event_for(sender_id));
         }
     }
 
@@ -280,13 +294,9 @@ pub(super) async fn send_message(
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: args.event_type.to_string().into(),
-            content,
+            content: to_raw_value(&content)?,
             unsigned,
-            timestamp: if authed.appservice().is_some() {
-                args.timestamp
-            } else {
-                None
-            },
+            timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             ..Default::default()
         },
         authed.user_id(),
@@ -326,7 +336,6 @@ pub(super) async fn post_message(
     let authed = depot.authed_info()?;
 
     let conf = config::get();
-    let state_lock = room::lock_state(&args.room_id).await;
     // Forbid m.room.encrypted if encryption is disabled
     if TimelineEventType::RoomEncrypted == args.event_type.to_string().into()
         && !conf.allow_encryption
@@ -337,11 +346,13 @@ pub(super) async fn post_message(
     let payload = req.payload().await?;
     let content = parse_event_content(payload)?;
 
+    let state_lock = room::lock_state(&args.room_id).await;
     let event_id = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: args.event_type.to_string().into(),
-            content,
+            content: to_raw_value(&content)?,
             unsigned: BTreeMap::new(),
+            timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             ..Default::default()
         },
         authed.user_id(),
@@ -354,4 +365,18 @@ pub(super) async fn post_message(
     .event_id;
 
     json_ok(SendMessageResBody::new((*event_id).to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::appservice_timestamp;
+    use crate::core::UnixMillis;
+
+    #[test]
+    fn timestamp_massaging_is_limited_to_appservices() {
+        let timestamp = UnixMillis(123_456);
+
+        assert_eq!(appservice_timestamp(true, Some(timestamp)), Some(timestamp));
+        assert_eq!(appservice_timestamp(false, Some(timestamp)), None);
+    }
 }

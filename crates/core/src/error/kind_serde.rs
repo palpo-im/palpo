@@ -203,6 +203,7 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::ConflictingUnsubscription => ErrorKind::ConflictingUnsubscription,
             ErrorCode::ConnectionFailed => ErrorKind::ConnectionFailed,
             ErrorCode::ConnectionTimeout => ErrorKind::ConnectionTimeout,
+            ErrorCode::DelayTooLarge => ErrorKind::DelayTooLarge,
             ErrorCode::DuplicateAnnotation => ErrorKind::DuplicateAnnotation,
             ErrorCode::Exclusive => ErrorKind::Exclusive,
             ErrorCode::Forbidden => ErrorKind::Forbidden,
@@ -387,6 +388,12 @@ pub enum ErrorCode {
     ///
     /// The connection to the application service timed out.
     ConnectionTimeout,
+
+    /// `ORG.MATRIX.MSC4140_DELAY_TOO_LARGE`
+    ///
+    /// A delayed event requested a delay larger than the homeserver permits.
+    #[palpo_enum(rename = "ORG.MATRIX.MSC4140_DELAY_TOO_LARGE")]
+    DelayTooLarge,
 
     /// `M_DUPLICATE_ANNOTATION`
     ///
@@ -821,6 +828,17 @@ mod tests {
 
     //     assert_eq!(deserialized, ErrorKind::Forbidden);
     // }
+
+    #[test]
+    fn delay_too_large_serde() {
+        let value = json!({ "errcode": "ORG.MATRIX.MSC4140_DELAY_TOO_LARGE" });
+
+        assert_eq!(
+            from_json_value::<ErrorKind>(value.clone()).unwrap(),
+            ErrorKind::DelayTooLarge
+        );
+        assert_eq!(to_json_value(ErrorKind::DelayTooLarge).unwrap(), value);
+    }
 
     #[test]
     fn deserialize_incompatible_room_version() {

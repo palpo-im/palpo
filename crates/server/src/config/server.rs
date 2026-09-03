@@ -5,10 +5,10 @@ use salvo::http::HeaderValue;
 use serde::Deserialize;
 
 use super::{
-    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelegatedAuthConfig,
-    FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig, OidcConfig,
-    PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig, TypingConfig,
-    UrlPreviewConfig, WellKnownConfig,
+    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelayedEventsConfig,
+    DelegatedAuthConfig, FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig,
+    OidcConfig, PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig,
+    TypingConfig, UrlPreviewConfig, WellKnownConfig,
 };
 use crate::core::serde::{default_false, default_true};
 use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
@@ -75,7 +75,8 @@ impl ListenerConfig {
 ### https://palpo.im/guide/configuration.html
 "#,
     ignore = "federation well_known compression typing read_receipt presence \
-        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice"
+        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice \
+        delayed_events"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
@@ -727,6 +728,10 @@ pub struct ServerConfig {
 
     // external structure; separate section
     #[serde(default)]
+    pub delayed_events: DelayedEventsConfig,
+
+    // external structure; separate section
+    #[serde(default)]
     pub presence: PresenceConfig,
 
     // external structure; separate section
@@ -890,6 +895,17 @@ impl ServerConfig {
                 "db.coordination_pool_size must be at least 1 and smaller than db.pool_size ({}), but it is {coordination_pool_size}",
                 self.db.pool_size
             )));
+        }
+
+        if self.delayed_events.enable
+            && crate::data::coordination_pool_capacity(
+                self.db.pool_size,
+                self.db.coordination_pool_size,
+            ) < 2
+        {
+            return Err(AppError::internal(
+                "MSC4140 delayed events require at least two coordination connections; increase db.pool_size or set db.coordination_pool_size",
+            ));
         }
 
         // NOTE: `check()` runs *before* `logging::init()` in main, so a

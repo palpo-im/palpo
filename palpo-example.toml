@@ -811,6 +811,26 @@
 #
 # enforce_tls =
 
+# [delayed_events]
+
+# Allow scheduling MSC4140 delayed events. Disabled by default while the MSC
+# is unstable. When disabled, the endpoints are not registered and the feature
+# is not advertised.
+#
+# enable = false
+
+# Maximum requested delay in milliseconds. Defaults to 24 hours.
+#
+# max_delay_ms = 86400_000
+
+# Maximum number of delayed events a user may have scheduled at once.
+#
+# max_scheduled = 100
+
+# Retention period for finalized delayed events, in milliseconds.
+#
+# retention_ms = 604800_000
+
 # [federation]
 
 # Controls whether federation is allowed or not. It is not recommended to

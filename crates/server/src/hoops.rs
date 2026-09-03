@@ -102,6 +102,7 @@ static LOGIN_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 static REGISTRATION_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 static PASSWORD_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 static MESSAGE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static DELAYED_MESSAGE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 
 #[handler]
 pub async fn limit_rate_login(req: &mut Request) -> AppResult<()> {
@@ -134,6 +135,13 @@ pub async fn limit_rate(req: &mut Request) -> AppResult<()> {
         MESSAGE_LIMITER.check(&ip, &crate::config::get().rc_message)?;
     }
     Ok(())
+}
+
+/// Apply the normal message rate to an event emitted later by the delayed-event
+/// scheduler. There is no originating HTTP connection at that point, so use the
+/// authenticated sender as the bucket key.
+pub fn limit_delayed_message(user_id: &crate::core::UserId) -> AppResult<()> {
+    DELAYED_MESSAGE_LIMITER.check(user_id.as_str(), &crate::config::get().rc_message)
 }
 
 // utf8 will cause complement testing fail.
@@ -194,5 +202,25 @@ pub async fn catch_status_error(
         let matrix = MatrixError::unrecognized("method not allowed");
         matrix.write(req, depot, res).await;
         ctrl.skip_rest();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RateLimiter;
+    use crate::config::RateLimitConfig;
+
+    #[test]
+    fn rate_limit_buckets_are_isolated_by_key() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig {
+            per_second: 1.0,
+            burst: 2,
+        };
+
+        assert!(limiter.check("alice", &config).is_ok());
+        assert!(limiter.check("alice", &config).is_ok());
+        assert!(limiter.check("alice", &config).is_err());
+        assert!(limiter.check("bob", &config).is_ok());
     }
 }
