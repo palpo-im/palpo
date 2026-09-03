@@ -572,10 +572,7 @@ pub async fn append_pdu(
         .await?
         .transaction::<_, AppError, _>(async |conn| {
             event_data.save_with_conn(conn).await?;
-            diesel::update(events::table.find(&*pdu.event_id))
-                .set(events::is_outlier.eq(false))
-                .execute(conn)
-                .await?;
+            crate::event::sticky::promote_to_timeline_with_conn(conn, pdu).await?;
             Ok(())
         })
         .await?;
@@ -860,6 +857,10 @@ async fn build_and_append_pdu_locked(
         )
         .await
         && curr_state.content.get() == pdu_builder.content.get()
+        && state_send_is_deduplicable(
+            pdu_builder.sticky_duration_ms,
+            curr_state.sticky_duration_ms(),
+        )
     {
         return Ok((curr_state, false));
     }
@@ -891,6 +892,13 @@ async fn build_and_append_pdu_locked(
     Ok((pdu, true))
 }
 
+fn state_send_is_deduplicable(
+    requested_sticky: Option<crate::core::events::sticky::StickyDurationMs>,
+    current_sticky: Option<crate::core::events::sticky::StickyDurationMs>,
+) -> bool {
+    requested_sticky.is_none() && current_sticky.is_none()
+}
+
 /// Replace a PDU with the redacted form.
 #[tracing::instrument(skip(reason))]
 pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> {
@@ -914,6 +922,11 @@ pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> 
                 .execute(conn)
                 .await?;
             diesel::delete(event_searches::table.filter(event_searches::event_id.eq(event_id)))
+                .execute(conn)
+                .await?;
+            // The redacted event no longer carries a sticky object, so stop delivering it
+            // outside the timeline.
+            diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
                 .execute(conn)
                 .await?;
 
@@ -945,7 +958,8 @@ mod tests {
     use serde_json::value::RawValue;
     use tracing_test::traced_test;
 
-    use super::canonicalize_prev_content;
+    use super::{canonicalize_prev_content, state_send_is_deduplicable};
+    use crate::core::events::sticky::StickyDurationMs;
     use crate::core::identifiers::{EventId, OwnedEventId, OwnedRoomId, RoomId};
     use crate::core::serde::to_canonical_object;
 
@@ -970,6 +984,16 @@ mod tests {
 
         let expected = to_canonical_object(serde_json::json!({"membership":"join"})).unwrap();
         assert_eq!(got, Some(expected));
+    }
+
+    #[test]
+    fn state_deduplication_preserves_sticky_form_changes() {
+        let sticky = Some(StickyDurationMs::new_clamped(60_000_u64));
+
+        assert!(state_send_is_deduplicable(None, None));
+        assert!(!state_send_is_deduplicable(sticky, None));
+        assert!(!state_send_is_deduplicable(None, sticky));
+        assert!(!state_send_is_deduplicable(sticky, sticky));
     }
 
     #[test]
