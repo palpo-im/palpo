@@ -48,10 +48,16 @@ impl TryFrom<Vec<Namespace>> for NamespaceRegex {
         let mut non_exclusive = vec![];
 
         for namespace in value {
+            // The appservice spec (registration `namespaces[].regex`) requires the
+            // pattern to match the WHOLE identifier. `RegexSet::is_match` is a
+            // substring search, so `@ac_.*` would also claim `@xac_...` and a
+            // rooms pattern `!abc:example.org` would claim `!abc:example.org.evil`.
+            // Anchor every pattern; an already-anchored pattern stays equivalent.
+            let anchored = anchor_namespace_regex(&namespace.regex);
             if namespace.exclusive {
-                exclusive.push(namespace.regex);
+                exclusive.push(anchored);
             } else {
-                non_exclusive.push(namespace.regex);
+                non_exclusive.push(anchored);
             }
         }
 
@@ -70,6 +76,14 @@ impl TryFrom<Vec<Namespace>> for NamespaceRegex {
     }
 
     type Error = regex::Error;
+}
+
+
+/// Wrap a registration namespace pattern so it must match the entire
+/// identifier, as the appservice spec requires. `^(?:re)$` is equivalent
+/// for patterns that already carry their own anchors.
+pub fn anchor_namespace_regex(pattern: &str) -> String {
+    format!("^(?:{pattern})$")
 }
 
 /// Appservice registration combined with its compiled regular expressions.
@@ -354,5 +368,48 @@ mod tests {
         assert!(redacted.contains("foo=bar"));
         assert!(redacted.contains("access_token=REDACTED"));
         assert!(!redacted.contains("secret"));
+    }
+
+    use super::{NamespaceRegex, anchor_namespace_regex};
+    use crate::core::appservice::Namespace;
+
+    fn users(exclusive: bool, pattern: &str) -> NamespaceRegex {
+        NamespaceRegex::try_from(vec![Namespace::new(exclusive, pattern.to_owned())]).unwrap()
+    }
+
+    #[test]
+    fn namespace_regex_matches_the_whole_identifier_not_a_substring() {
+        // Before anchoring, `@ac_.*` also claimed `@xac_...` because RegexSet
+        // searches for a substring anywhere in the haystack.
+        let ns = users(true, "@ac_.*");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(ns.is_exclusive_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("@xac_alice:example.org"));
+        assert!(!ns.is_match("prefix@ac_alice:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_room_pattern_does_not_claim_a_longer_server_name() {
+        let ns = users(false, "!abc:example.org");
+        assert!(ns.is_match("!abc:example.org"));
+        assert!(!ns.is_match("!abc:example.org.evil"));
+        assert!(!ns.is_exclusive_match("!abc:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_keeps_working_for_patterns_that_already_carry_anchors() {
+        let ns = users(true, "^@ac_[^:]+:example\\.org$");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("@ac_alice:example.org.evil"));
+        assert_eq!(anchor_namespace_regex("^a$"), "^(?:^a$)$");
+    }
+
+    #[test]
+    fn namespace_regex_non_exclusive_is_anchored_too() {
+        let ns = users(false, "@bot_.*");
+        assert!(ns.is_match("@bot_x:example.org"));
+        assert!(!ns.is_match("@notbot_x:example.org"));
+        assert!(!ns.is_match("junk@bot_x:example.org")); // substring hit before anchoring
+        assert!(!ns.is_exclusive_match("@bot_x:example.org"));
     }
 }
