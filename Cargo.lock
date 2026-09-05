@@ -3666,6 +3666,7 @@ dependencies = [
  "path-slash",
  "rand 0.10.2",
  "regex",
+ "regex-syntax",
  "reqwest",
  "reqwest-middleware",
  "reqwest-retry",

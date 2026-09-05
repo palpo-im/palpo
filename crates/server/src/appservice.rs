@@ -48,10 +48,16 @@ impl TryFrom<Vec<Namespace>> for NamespaceRegex {
         let mut non_exclusive = vec![];
 
         for namespace in value {
+            // A namespace pattern claims an identifier only when it matches the
+            // WHOLE identifier. `RegexSet::is_match` is a substring search, so
+            // `@ac_.*` would also claim `prefix@ac_...` and a rooms pattern
+            // `!abc:example.org` would claim `!abc:example.org.evil`. Anchor
+            // every pattern semantically (see `anchor_namespace_regex`).
+            let anchored = anchor_namespace_regex(&namespace.regex)?;
             if namespace.exclusive {
-                exclusive.push(namespace.regex);
+                exclusive.push(anchored);
             } else {
-                non_exclusive.push(namespace.regex);
+                non_exclusive.push(anchored);
             }
         }
 
@@ -70,6 +76,32 @@ impl TryFrom<Vec<Namespace>> for NamespaceRegex {
     }
 
     type Error = regex::Error;
+}
+
+
+/// Rewrite a registration namespace pattern so it must match the entire
+/// identifier.
+///
+/// The pattern is compiled on its own first, so an invalid pattern fails with
+/// exactly the diagnostic the original text produces. It is then parsed into
+/// `regex-syntax`'s HIR and wrapped in start/end-of-text assertions there,
+/// rather than by pasting `^(?:...)$` around the source text: textual wrapping
+/// changes what parses (an unbalanced `a)|(b` would become valid, and a
+/// verbose-mode pattern ending in a `# comment` would swallow the closing
+/// group). Patterns that already carry anchors stay equivalent.
+pub fn anchor_namespace_regex(pattern: &str) -> Result<String, regex::Error> {
+    // Original diagnostics first: `Regex::new` and the HIR parser agree on
+    // validity, and this is the error a registration author expects to see.
+    regex::Regex::new(pattern)?;
+    let hir = regex_syntax::Parser::new()
+        .parse(pattern)
+        .map_err(|e| regex::Error::Syntax(e.to_string()))?;
+    let anchored = regex_syntax::hir::Hir::concat(vec![
+        regex_syntax::hir::Hir::look(regex_syntax::hir::Look::Start),
+        hir,
+        regex_syntax::hir::Hir::look(regex_syntax::hir::Look::End),
+    ]);
+    Ok(anchored.to_string())
 }
 
 /// Appservice registration combined with its compiled regular expressions.
@@ -354,5 +386,76 @@ mod tests {
         assert!(redacted.contains("foo=bar"));
         assert!(redacted.contains("access_token=REDACTED"));
         assert!(!redacted.contains("secret"));
+    }
+
+    use super::{NamespaceRegex, anchor_namespace_regex};
+    use crate::core::appservice::Namespace;
+
+    fn users(exclusive: bool, pattern: &str) -> NamespaceRegex {
+        NamespaceRegex::try_from(vec![Namespace::new(exclusive, pattern.to_owned())]).unwrap()
+    }
+
+    #[test]
+    fn namespace_regex_matches_the_whole_identifier_not_a_substring() {
+        // `RegexSet::is_match` is a substring search: without anchoring
+        // `@ac_.*` also claimed `prefix@ac_alice:example.org`.
+        let ns = users(true, "@ac_.*");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(ns.is_exclusive_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("prefix@ac_alice:example.org"));
+        // Never matched, anchored or not: `@xac_` does not contain `@ac_`.
+        assert!(!ns.is_match("@xac_alice:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_room_pattern_does_not_claim_a_longer_server_name() {
+        let ns = users(false, "!abc:example.org");
+        assert!(ns.is_match("!abc:example.org"));
+        assert!(!ns.is_match("!abc:example.org.evil"));
+        assert!(!ns.is_exclusive_match("!abc:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_keeps_working_for_patterns_that_already_carry_anchors() {
+        let ns = users(true, "^@ac_[^:]+:example\\.org$");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("@ac_alice:example.org.evil"));
+    }
+
+    #[test]
+    fn namespace_regex_non_exclusive_is_anchored_too() {
+        let ns = users(false, "@bot_.*");
+        assert!(ns.is_match("@bot_x:example.org"));
+        assert!(!ns.is_match("junk@bot_x:example.org")); // substring hit before anchoring
+        assert!(!ns.is_exclusive_match("@bot_x:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_anchors_every_branch_of_an_alternation() {
+        let ns = users(true, "@a:x|@b:x");
+        assert!(ns.is_match("@a:x"));
+        assert!(ns.is_match("@b:x"));
+        assert!(!ns.is_match("@a:xy"));
+        assert!(!ns.is_match("y@b:x"));
+    }
+
+    #[test]
+    fn namespace_regex_rejects_an_invalid_pattern_with_its_original_diagnostic() {
+        // Pasting `^(?:...)$` around this text would have turned it into the
+        // VALID pattern `^(?:a)|(b)$` — and one that is not anchored at all.
+        let err = NamespaceRegex::try_from(vec![Namespace::new(true, "a)|(b".to_owned())])
+            .expect_err("an unbalanced pattern must not compile");
+        let original = regex::Regex::new("a)|(b").unwrap_err();
+        assert_eq!(err.to_string(), original.to_string());
+    }
+
+    #[test]
+    fn namespace_regex_accepts_a_verbose_pattern_with_a_trailing_comment() {
+        // In `(?x)` mode `#` starts a comment to end of line; textual wrapping
+        // would have put the closing `)$` inside that comment.
+        let ns = users(true, "(?x)^@ac_alice:example\\.org$ # exact user");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("@ac_alice:example.org.evil"));
+        assert!(anchor_namespace_regex("(?x)a # c").is_ok());
     }
 }
