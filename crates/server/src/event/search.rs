@@ -38,6 +38,7 @@ fn searchable_events<'a>(
 
 pub async fn search_pdus(
     user_id: &UserId,
+    device_id: Option<&DeviceId>,
     criteria: &Criteria,
     next_batch: Option<&str>,
 ) -> AppResult<ResultRoomEvents> {
@@ -125,11 +126,19 @@ pub async fn search_pdus(
             continue;
         }
         results.push(SearchResult {
-            context: calc_event_context(user_id, &pdu.room_id, pdu.event_sn, 10, 10, false)
-                .await
-                .unwrap_or_default(),
+            context: calc_event_context(
+                user_id,
+                device_id,
+                &pdu.room_id,
+                pdu.event_sn,
+                10,
+                10,
+                false,
+            )
+            .await
+            .unwrap_or_default(),
             rank: Some(rank as f64),
-            result: Some(pdu.to_room_event()),
+            result: Some(pdu.to_room_event_for(user_id, device_id)),
         });
     }
 
@@ -150,6 +159,7 @@ pub async fn search_pdus(
 // Calculates the contextual events for any search results.
 async fn calc_event_context(
     user_id: &UserId,
+    device_id: Option<&DeviceId>,
     room_id: &RoomId,
     event_sn: Seqnum,
     before_limit: usize,
@@ -205,11 +215,11 @@ async fn calc_event_context(
             .map(|(sn, _)| BatchToken::new_live(*sn).to_string()),
         events_before: before_pdus
             .into_iter()
-            .map(|(_, pdu)| pdu.to_room_event())
+            .map(|(_, pdu)| pdu.to_room_event_for(user_id, device_id))
             .collect(),
         events_after: after_pdus
             .into_iter()
-            .map(|(_, pdu)| pdu.to_room_event())
+            .map(|(_, pdu)| pdu.to_room_event_for(user_id, device_id))
             .collect(),
         profile_info: BTreeMap::new(),
     };

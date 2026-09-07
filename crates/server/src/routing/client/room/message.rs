@@ -145,7 +145,7 @@ pub(super) async fn get_messages(
 
             let events: Vec<_> = events
                 .into_iter()
-                .map(|(_, pdu)| pdu.to_room_event())
+                .map(|(_, pdu)| pdu.to_room_event_for(sender_id, Some(authed.device_id())))
                 .collect();
 
             resp.start = from_tk.to_string();
@@ -200,7 +200,10 @@ pub(super) async fn get_messages(
             next_token = events.last().map(|(_, pdu)| pdu.prev_historic_token());
             resp.start = from_tk.to_string();
             resp.end = next_token.map(|tk| tk.to_string());
-            resp.chunk = events.values().map(|pdu| pdu.to_room_event()).collect();
+            resp.chunk = events
+                .values()
+                .map(|pdu| pdu.to_room_event_for(sender_id, Some(authed.device_id())))
+                .collect();
         }
     }
 
@@ -214,7 +217,8 @@ pub(super) async fn get_messages(
         )
         .await
         {
-            resp.state.push(member_event.to_state_event());
+            resp.state
+                .push(member_event.to_state_event_for(sender_id, Some(authed.device_id())));
         }
     }
 
@@ -282,6 +286,7 @@ pub(super) async fn send_message(
             event_type: args.event_type.to_string().into(),
             content,
             unsigned,
+            transaction_device: Some(authed.device_id().to_owned()),
             timestamp: if authed.appservice().is_some() {
                 args.timestamp
             } else {

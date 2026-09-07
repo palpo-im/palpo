@@ -920,13 +920,13 @@ async fn load_joined_room(
             events: timeline
                 .events
                 .iter()
-                .map(|(_, pdu)| pdu.to_sync_room_event())
+                .map(|(_, pdu)| pdu.to_sync_room_event_for(sender_id, Some(device_id)))
                 .collect(),
         },
         state: State::Before(
             state_events
                 .iter()
-                .map(|pdu| pdu.to_sync_state_event())
+                .map(|pdu| pdu.to_sync_state_event_for(sender_id, Some(device_id)))
                 .collect::<Vec<_>>()
                 .into(),
         ),
@@ -956,7 +956,7 @@ async fn load_joined_room(
 #[tracing::instrument(skip_all)]
 async fn load_left_room(
     sender_id: &UserId,
-    _device_id: &DeviceId,
+    device_id: &DeviceId,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
     _until_tk: Option<BatchToken>,
@@ -990,6 +990,7 @@ async fn load_left_room(
             signatures: None,
             extra_data: Default::default(),
             rejection_reason: None,
+            transaction_device: None,
         };
         return Ok(LeftRoom {
             account_data: RoomAccountData::default(),
@@ -998,7 +999,9 @@ async fn load_left_room(
                 prev_batch: Some(next_batch.to_string()),
                 events: Vec::new(),
             },
-            state: State::Before(vec![event.to_sync_state_event()].into()),
+            state: State::Before(
+                vec![event.to_sync_state_event_for(sender_id, Some(device_id))].into(),
+            ),
         });
     }
 
@@ -1086,7 +1089,6 @@ async fn load_left_room(
             .map(|(sn, _)| BatchToken::new_live(*sn).to_string())
     };
 
-    // let left_event = timeline::get_pdu(&left_event_id).map(|pdu| pdu.to_sync_room_event());
     Ok(LeftRoom {
         account_data: RoomAccountData { events: Vec::new() },
         timeline: Timeline {
@@ -1095,13 +1097,13 @@ async fn load_left_room(
             events: timeline
                 .events
                 .iter()
-                .map(|(_, pdu)| pdu.to_sync_room_event())
+                .map(|(_, pdu)| pdu.to_sync_room_event_for(sender_id, Some(device_id)))
                 .collect(),
         },
         state: State::Before(
             state_events
                 .iter()
-                .map(|pdu| pdu.to_sync_state_event())
+                .map(|pdu| pdu.to_sync_state_event_for(sender_id, Some(device_id)))
                 .collect::<Vec<_>>()
                 .into(),
         ),

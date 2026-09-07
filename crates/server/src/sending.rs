@@ -440,7 +440,7 @@ async fn send_events(
                             timeline::get_pdu(event_id)
                                 .await
                                 .map_err(|e| (kind.clone(), e))?
-                                .to_room_event(),
+                                .to_room_event_without_transaction_id(),
                         );
                     }
                     SendingEventType::Edu(_) => {
@@ -1023,12 +1023,7 @@ async fn claim_queued_requests(
 pub async fn convert_to_outgoing_federation_event(
     mut pdu_json: CanonicalJsonObject,
 ) -> Box<RawJsonValue> {
-    if let Some(unsigned) = pdu_json
-        .get_mut("unsigned")
-        .and_then(|val| val.as_object_mut())
-    {
-        unsigned.remove("transaction_id");
-    }
+    crate::event::sanitize_federation_unsigned(&mut pdu_json);
 
     // Determine room version to decide whether to strip event_id.
     // V1/V2 require event_id in federation format; V3+ derive it from content hash.

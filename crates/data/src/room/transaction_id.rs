@@ -81,3 +81,49 @@ pub async fn get_event_id(
         .map(|v| v.flatten())
         .map_err(Into::into)
 }
+
+/// Recover the originating device using the complete, locally recorded event identity.
+pub async fn get_event_device(
+    txn_id: &TransactionId,
+    user_id: &UserId,
+    room_id: &RoomId,
+    event_id: &EventId,
+) -> DataResult<Option<OwnedDeviceId>> {
+    // New events save trusted provenance in the same transaction as their JSON,
+    // before /sync can see them and before the route records idempotency completion.
+    let metadata = event_datas::table
+        .filter(event_datas::event_id.eq(event_id))
+        .filter(event_datas::room_id.eq(room_id))
+        .select(event_datas::internal_metadata)
+        .first::<Option<serde_json::Value>>(&mut connect().await?)
+        .await
+        .optional()?
+        .flatten();
+    if let Some(metadata) = metadata
+        && metadata
+            .get("transaction_user")
+            .and_then(serde_json::Value::as_str)
+            == Some(user_id.as_str())
+        && metadata
+            .get("transaction_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(txn_id.as_str())
+        && let Some(device) = metadata
+            .get("transaction_device")
+            .and_then(serde_json::Value::as_str)
+    {
+        return Ok(Some(device.into()));
+    }
+    // Existing events predate the provenance field.
+    event_idempotents::table
+        .filter(event_idempotents::txn_id.eq(txn_id))
+        .filter(event_idempotents::user_id.eq(user_id))
+        .filter(event_idempotents::room_id.eq(room_id))
+        .filter(event_idempotents::event_id.eq(event_id))
+        .select(event_idempotents::device_id)
+        .first::<Option<OwnedDeviceId>>(&mut connect().await?)
+        .await
+        .optional()
+        .map(|v| v.flatten())
+        .map_err(Into::into)
+}
