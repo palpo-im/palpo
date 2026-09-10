@@ -414,7 +414,7 @@ async fn send_knock(
         return Err(MatrixError::forbidden("room version does not support knocking", None).into());
     }
 
-    let Ok((event_id, value)) = gen_event_id_canonical_json(&body.0, &room_version) else {
+    let Ok((event_id, mut value)) = gen_event_id_canonical_json(&body.0, &room_version) else {
         // Event could not be converted to canonical json
         return Err(MatrixError::invalid_param("could not convert event to canonical json").into());
     };
@@ -503,6 +503,16 @@ async fn send_knock(
     let pdu: PduEvent = PduEvent::from_json_value(&args.room_id, &event_id, event.into())
         .map_err(|e| MatrixError::invalid_param(format!("invalid knock event pdu: {e}")))?;
 
+    // send_knock is a synchronous membership request, so a Policy Server refusal must be
+    // returned as an error instead of becoming the generic transaction-path soft failure.
+    crate::room::policy::check_federation_event(
+        &args.room_id,
+        &event_id,
+        &mut value,
+        &room_version,
+    )
+    .await?;
+
     handler::process_incoming_pdu(
         &origin,
         &event_id,
@@ -527,7 +537,13 @@ async fn send_knock(
     if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]).await {
         error!("failed to notify knock event: {e}");
     }
-    json_ok(SendKnockResBody { knock_room_state })
+    let signed_event = Some(to_raw_value(
+        &crate::sending::convert_to_outgoing_federation_event(value).await,
+    )?);
+    json_ok(SendKnockResBody {
+        knock_room_state,
+        signed_event,
+    })
 }
 
 /// # `GET /_matrix/federation/v1/make_knock/{room_id}/{user_id}`

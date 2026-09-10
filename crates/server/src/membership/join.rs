@@ -265,31 +265,22 @@ pub async fn join_room(
             return Err(MatrixError::invalid_param("server sent event with wrong event id").into());
         }
 
-        match signed_value["signatures"]
-            .as_object()
-            .ok_or(MatrixError::invalid_param(
-                "server sent invalid signatures type",
-            ))
-            .and_then(|e| {
-                e.get(remote_server.as_str())
-                    .ok_or(MatrixError::invalid_param(
-                        "server did not send its signature",
-                    ))
-            }) {
-            Ok(signature) => {
-                join_event
-                    .get_mut("signatures")
-                    .expect("we created a valid pdu")
-                    .as_object_mut()
-                    .expect("we created a valid pdu")
-                    .insert(remote_server.to_string(), signature.clone());
+        match crate::server_key::verify_event(&signed_value, &room_version).await {
+            Ok(crate::core::signatures::Verified::All) => {}
+            Ok(crate::core::signatures::Verified::Signatures) => {
+                return Err(MatrixError::invalid_param(
+                    "server returned a join event with an invalid content hash",
+                )
+                .into());
             }
             Err(e) => {
-                warn!(
-                    "server {remote_server} sent invalid signature in sendjoin signatures for event {signed_value:?}: {e:?}",
-                );
+                return Err(MatrixError::invalid_param(format!(
+                    "server returned an invalid join event signature: {e}"
+                ))
+                .into());
             }
         }
+        crate::federation::merge_supplementary_signatures(&mut join_event, &signed_value)?;
     }
 
     room::ensure_room(room_id, &room_version).await?;
@@ -488,6 +479,21 @@ pub async fn join_room(
     .await?;
 
     state::force_state(room_id, frame_id, appended, disposed).await?;
+    // The returned event can carry the resident's restricted-join signature and a
+    // separate Policy Server signature. The merge above preserves both. Now that the
+    // trusted room state is installed, validate the policy signature against that state;
+    // if an old resident omitted it, fetch a fresh one before publishing our join.
+    crate::room::policy::check_event(
+        room_id,
+        &mut join_event,
+        &crate::room::get_version_rules(&room_version)?,
+    )
+    .await?;
+    let parsed_join_pdu = PduEvent::from_canonical_object(room_id, &event_id, join_event.clone())
+        .map_err(|e| {
+        warn!("invalid pdu in send_join response after supplementary signatures: {e}");
+        AppError::public("invalid join event pdu")
+    })?;
     info!("appending new room join event");
     diesel::insert_into(events::table)
         .values(NewDbEvent::from_canonical_json_with_room_id(

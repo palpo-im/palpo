@@ -286,17 +286,23 @@ pub async fn summary_stripped(event: &PduEvent) -> AppResult<Vec<RawJson<AnyStri
 ///
 /// Matrix v1.16 requires every entry to be a full PDU in the room version's
 /// wire format and requires the room's create event to be present.
+fn federation_invite_state_cells(sender: &str) -> [(StateEventType, &str); 10] {
+    [
+        (StateEventType::RoomCreate, ""),
+        (StateEventType::RoomJoinRules, ""),
+        (StateEventType::RoomPowerLevels, ""),
+        (StateEventType::RoomCanonicalAlias, ""),
+        (StateEventType::RoomName, ""),
+        (StateEventType::RoomAvatar, ""),
+        (StateEventType::RoomMember, sender),
+        (StateEventType::RoomEncryption, ""),
+        (StateEventType::RoomTopic, ""),
+        (StateEventType::RoomPolicy, ""),
+    ]
+}
+
 pub async fn summary_pdus(event: &PduEvent) -> AppResult<Vec<Box<RawJsonValue>>> {
-    let cells: [(&StateEventType, &str); 8] = [
-        (&StateEventType::RoomCreate, ""),
-        (&StateEventType::RoomJoinRules, ""),
-        (&StateEventType::RoomCanonicalAlias, ""),
-        (&StateEventType::RoomName, ""),
-        (&StateEventType::RoomAvatar, ""),
-        (&StateEventType::RoomMember, event.sender.as_str()),
-        (&StateEventType::RoomEncryption, ""),
-        (&StateEventType::RoomTopic, ""),
-    ];
+    let cells = federation_invite_state_cells(event.sender.as_str());
 
     let create = super::get_state(&event.room_id, &StateEventType::RoomCreate, "", None)
         .await
@@ -304,9 +310,28 @@ pub async fn summary_pdus(event: &PduEvent) -> AppResult<Vec<Box<RawJsonValue>>>
 
     let mut events = vec![create];
     for (event_type, state_key) in cells.into_iter().skip(1) {
-        if let Ok(state_event) = super::get_state(&event.room_id, event_type, state_key, None).await
+        if let Ok(state_event) =
+            super::get_state(&event.room_id, &event_type, state_key, None).await
         {
             events.push(state_event);
+        }
+    }
+
+    // First-time invitees also need signed evidence that the policy server is
+    // joined. Include one current membership from that server, without duplicates.
+    if let Some(policy) = crate::room::policy::policy_server(&event.room_id).await? {
+        let member_id = room_users::table
+            .filter(room_users::room_id.eq(&event.room_id))
+            .filter(room_users::user_server_id.eq(policy.via.as_str()))
+            .filter(room_users::membership.eq("join"))
+            .select(room_users::event_id)
+            .first::<OwnedEventId>(&mut connect().await?)
+            .await
+            .optional()?;
+        if let Some(member_id) = member_id
+            && !events.iter().any(|event| event.event_id == member_id)
+        {
+            events.push(timeline::get_pdu(&member_id).await?);
         }
     }
 
@@ -1167,6 +1192,24 @@ pub fn allowed_room_ids(join_rule: JoinRule) -> Vec<OwnedRoomId> {
         }
     }
     room_ids
+}
+
+#[cfg(test)]
+mod invite_state_tests {
+    use super::federation_invite_state_cells;
+    use crate::core::events::StateEventType;
+
+    #[test]
+    fn federation_invite_state_carries_the_policy_configuration() {
+        let cells = federation_invite_state_cells("@inviter:example.org");
+
+        assert_eq!(cells[0], (StateEventType::RoomCreate, ""));
+        assert!(cells.contains(&(StateEventType::RoomPowerLevels, "")));
+        assert!(
+            cells.contains(&(StateEventType::RoomPolicy, "")),
+            "the invitee needs m.room.policy to verify the invite's policy signature"
+        );
+    }
 }
 
 #[cfg(test)]

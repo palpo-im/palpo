@@ -41,6 +41,7 @@ mod current;
 pub mod directory;
 pub mod lazy_loading;
 pub mod pdu_metadata;
+pub mod policy;
 pub mod receipt;
 pub mod space;
 pub mod state;

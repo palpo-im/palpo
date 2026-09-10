@@ -5,7 +5,7 @@ use crate::core::error::{AuthenticateError, ErrorKind};
 use crate::core::federation::authentication::XMatrix;
 use crate::core::identifiers::*;
 use crate::core::room::{AllowRule, JoinRule};
-use crate::core::serde::{CanonicalJsonObject, JsonValue};
+use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue};
 use crate::core::{MatrixError, signatures};
 use crate::{AppError, AppResult, config, room, sending};
 
@@ -238,5 +238,76 @@ pub(crate) fn maybe_strip_event_id(
             pdu_json.remove("event_id");
             true
         }
+    }
+}
+
+/// Merge signatures added by a federation membership endpoint into our original PDU.
+///
+/// The caller must first verify that the returned PDU has the expected event ID, valid
+/// sender signatures, and a valid content hash. Signatures are excluded from both the
+/// content and reference hashes, so supplementary signatures can then be copied without
+/// changing the event. Existing signatures always win: a resident server must never be
+/// able to replace the signature made by the event's origin.
+pub(crate) fn merge_supplementary_signatures(
+    target: &mut CanonicalJsonObject,
+    returned: &CanonicalJsonObject,
+) -> AppResult<()> {
+    let returned_signatures = returned
+        .get("signatures")
+        .and_then(CanonicalJsonValue::as_object)
+        .ok_or_else(|| MatrixError::invalid_param("server returned invalid signatures"))?;
+    let target_signatures = target
+        .get_mut("signatures")
+        .and_then(CanonicalJsonValue::as_object_mut)
+        .ok_or_else(|| MatrixError::invalid_param("local event has invalid signatures"))?;
+
+    for (server, returned_set) in returned_signatures {
+        let returned_set = returned_set.as_object().ok_or_else(|| {
+            MatrixError::invalid_param("server returned an invalid signature set")
+        })?;
+        let target_set = target_signatures
+            .entry(server.clone())
+            .or_insert_with(|| CanonicalJsonValue::Object(Default::default()))
+            .as_object_mut()
+            .ok_or_else(|| {
+                MatrixError::invalid_param("local event has an invalid signature set")
+            })?;
+        for (key_id, signature) in returned_set {
+            target_set
+                .entry(key_id.clone())
+                .or_insert_with(|| signature.clone());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::merge_supplementary_signatures;
+    use crate::core::serde::CanonicalJsonObject;
+
+    #[test]
+    fn supplementary_signatures_never_replace_origin_signatures() {
+        let mut target: CanonicalJsonObject = serde_json::from_value(json!({
+            "signatures": { "origin.example": { "ed25519:one": "original" } }
+        }))
+        .unwrap();
+        let returned: CanonicalJsonObject = serde_json::from_value(json!({
+            "signatures": {
+                "origin.example": { "ed25519:one": "replacement" },
+                "policy.example": { "ed25519:policy_server": "policy" }
+            }
+        }))
+        .unwrap();
+
+        merge_supplementary_signatures(&mut target, &returned).unwrap();
+
+        let signatures = target["signatures"].as_object().unwrap();
+        let origin = signatures["origin.example"].as_object().unwrap();
+        let policy = signatures["policy.example"].as_object().unwrap();
+        assert_eq!(origin["ed25519:one"].as_str(), Some("original"));
+        assert_eq!(policy["ed25519:policy_server"].as_str(), Some("policy"));
     }
 }

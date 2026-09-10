@@ -210,6 +210,12 @@ async fn leave_room_remote(
         CanonicalJsonValue::String(event_id.as_str().to_owned()),
     );
 
+    // This fallback path builds, stores, and federates the leave directly. It can be
+    // reached after the normal local path failed, including on a Policy Server refusal,
+    // so enforce the same policy before any database write or remote send.
+    let version_rules = room::get_version_rules(&room_version_id)?;
+    crate::room::policy::check_event(room_id, &mut leave_event_stub, &version_rules).await?;
+
     let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
     NewDbEvent {
         id: event_id.to_owned(),
