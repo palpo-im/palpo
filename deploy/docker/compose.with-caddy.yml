@@ -21,7 +21,7 @@ services:
 
   postgres:
     hostname: postgres
-    image: postgres:18
+    image: postgres:18-alpine
     restart: always
     volumes:
       - ./data/pgsql:/var/lib/postgresql
