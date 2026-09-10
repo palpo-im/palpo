@@ -1,7 +1,7 @@
 use std::fmt;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 
 use crate::core::appservice::Registration;
@@ -171,6 +171,49 @@ pub async fn set_disabled(id: &str, disabled: bool) -> DataResult<bool> {
         .execute(&mut connect().await?)
         .await?;
     Ok(affected > 0)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum UpdateUrlResult {
+    Updated,
+    NotFound,
+    Mismatch,
+}
+
+/// Change only the URL when it still equals the caller's exact observed value.
+/// The row lock keeps missing/mismatch detection consistent with concurrent
+/// updates or deletion, and the SQL predicate also enforces the comparison.
+pub async fn update_url_if_unchanged(
+    id: &str,
+    expected_url: Option<&str>,
+    url: &str,
+) -> DataResult<UpdateUrlResult> {
+    let mut conn = connect().await?;
+    conn.transaction::<_, crate::DataError, _>(async |conn| {
+        let existing = appservice_registrations::table
+            .find(id)
+            .select(appservice_registrations::url)
+            .for_update()
+            .first::<Option<String>>(conn)
+            .await
+            .optional()?;
+        let Some(current_url) = existing else {
+            return Ok(UpdateUrlResult::NotFound);
+        };
+        if current_url.as_deref() != expected_url {
+            return Ok(UpdateUrlResult::Mismatch);
+        }
+        diesel::update(
+            appservice_registrations::table
+                .find(id)
+                .filter(appservice_registrations::url.is_not_distinct_from(expected_url)),
+        )
+        .set(appservice_registrations::url.eq(url))
+        .execute(conn)
+        .await?;
+        Ok(UpdateUrlResult::Updated)
+    })
+    .await
 }
 
 /// Load every registration, including administratively disabled ones.
