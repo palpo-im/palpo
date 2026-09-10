@@ -7,7 +7,7 @@ use subtle::ConstantTimeEq;
 use crate::core::appservice::{Namespace, Registration};
 use crate::core::identifiers::*;
 pub use crate::data::appservice::DbRegistration;
-use crate::{AppError, AppResult, data, sending};
+use crate::{AppError, AppResult, MatrixError, data, sending};
 
 /// Compiled regular expressions for a namespace.
 ///
@@ -179,6 +179,44 @@ pub async fn unregister_appservice(id: &str) -> AppResult<()> {
 /// Set the `disabled` flag on an appservice. Returns true if a row was updated.
 pub async fn set_appservice_disabled(id: &str, disabled: bool) -> AppResult<bool> {
     Ok(data::appservice::set_disabled(id, disabled).await?)
+}
+
+/// Atomically rebind an existing registration without replacing its identity.
+pub async fn update_appservice_url(
+    id: &str,
+    expected_url: Option<&str>,
+    url: &str,
+) -> AppResult<data::appservice::UpdateUrlResult> {
+    validate_appservice_url(url)?;
+    Ok(data::appservice::update_url_if_unchanged(id, expected_url, url).await?)
+}
+
+fn validate_appservice_url(value: &str) -> AppResult<()> {
+    let invalid = || {
+        MatrixError::invalid_param(
+            "url must be an absolute HTTP(S) URL without userinfo, query, or fragment",
+        )
+    };
+    let parsed = url::Url::parse(value).map_err(|_| invalid())?;
+    // Reject syntax that URL parsing would silently trim or normalize, including
+    // empty userinfo (`http://@host`) and backslashes interpreted as slashes.
+    let authority = value
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default());
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || authority.is_none_or(|authority| authority.is_empty() || authority.contains('@'))
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return Err(invalid().into());
+    }
+    Ok(())
 }
 
 /// List all registrations in the database, including disabled ones.
@@ -371,7 +409,40 @@ fn redacted_access_token_url(url: &url::Url) -> url::Url {
 
 #[cfg(test)]
 mod tests {
-    use super::redacted_access_token_url;
+    use super::{redacted_access_token_url, validate_appservice_url};
+
+    #[test]
+    fn appservice_url_cas_validates_callback_urls_without_losing_path_prefixes() {
+        for value in [
+            "http://127.0.0.1:18080/relay/fleet-a",
+            "https://relay.example/prefix/",
+            "https://[::1]:8443/relay",
+        ] {
+            validate_appservice_url(value).unwrap();
+        }
+        for value in [
+            "",
+            "/relative",
+            "ftp://relay.example/",
+            "http:relay.example",
+            "https://user:password@relay.example/",
+            "https://user@relay.example/",
+            "https://@relay.example/",
+            "https://relay.example/?",
+            "https://relay.example/?a=b",
+            "https://relay.example/#",
+            "https://relay.example/#section",
+            " https://relay.example/",
+            "https://relay.example/\n",
+            "https://relay.example/with space",
+            "https://relay.example\\path",
+        ] {
+            assert!(
+                validate_appservice_url(value).is_err(),
+                "accepted invalid URL {value:?}"
+            );
+        }
+    }
 
     #[test]
     fn redacts_access_token_query_parameter() {

@@ -1,0 +1,42 @@
+services:
+  admin:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: palpo-web-admin:${RELEASE_ID:?set RELEASE_ID to the source snapshot hash}
+    labels:
+      org.hafleet.component: palpo-web-admin
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:${PALPO_WEB_PORT:-8090}:8090"
+    environment:
+      PALPO_URL: ${PALPO_URL:?set the internal Palpo HTTP origin}
+      PALPO_SERVER_NAME: ${PALPO_SERVER_NAME:?set the Matrix server name}
+      PALPO_CALLBACK_ORIGINS: ${PALPO_CALLBACK_ORIGINS:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set the public HTTPS browser origin}
+      PALPO_TRANSPORT_ORIGIN: ${PALPO_TRANSPORT_ORIGIN:?set the public HTTPS origin for outbound HAFleet clients}
+      PALPO_FLEET_QUEUE_MAX_PENDING: ${PALPO_FLEET_QUEUE_MAX_PENDING:-1000}
+      PALPO_FLEET_QUEUE_MAX_RECORDS: ${PALPO_FLEET_QUEUE_MAX_RECORDS:-10000}
+      PALPO_FLEET_QUEUE_MAX_BYTES: ${PALPO_FLEET_QUEUE_MAX_BYTES:-16777216}
+      PALPO_RELAY_ORIGIN: http://palpo-web-admin:8090
+      PALPO_ACCOUNT_CONFIG: ${PALPO_ACCOUNT_CONFIG:-}
+    volumes:
+      - admin-data:/app/data
+    networks:
+      palpo:
+        aliases:
+          - palpo-web-admin
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({host:'127.0.0.1',port:8090,path:'/',headers:{host:new URL(process.env.PUBLIC_ORIGIN).host}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+volumes:
+  admin-data:
+networks:
+  palpo:
+    external: true
+    name: ${PALPO_DOCKER_NETWORK:?set the existing Palpo Docker network}

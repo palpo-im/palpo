@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Palpo · HAFleet administration</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script><script src="/accounts.js" defer></script>
+</head>
+<body>
+  <header><div class="brand"><span class="mark">P</span><div><strong>Palpo</strong><span>HAFleet administration</span></div></div><div id="account"></div></header>
+  <main>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <section id="login-panel" class="login panel">
+      <p class="eyebrow">PROJECT SERVER</p><h1>Welcome back.</h1><p>Sign in with your Matrix account. Project members can request agents; server administrators authorize HAFleet connections.</p>
+      <form id="login-form"><label>Matrix ID<input name="username" placeholder="@you:example.org" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form>
+      <button id="open-account-request" type="button" class="secondary" hidden>Request an account</button>
+      <p class="muted">Administrator and App Service tokens stay in the server application. Your browser receives an expiring session.</p>
+    </section>
+    <section id="account-request-panel" class="login panel" hidden>
+      <p class="eyebrow">JOIN THIS SERVER</p><h1>Request an account</h1>
+      <p>An administrator will review your request in their private Matrix room. Once approved, use the same username and password in Palpo Web and Robrix.</p>
+      <form id="account-request-form">
+        <label>Username<input name="username" required maxlength="64" pattern="[a-z][a-z0-9_.=\-]{0,63}" autocomplete="username" placeholder="alice"></label>
+        <p id="account-server-name" class="hint"></p>
+        <label>Display name<input name="displayName" required maxlength="128" autocomplete="name" placeholder="Your name"></label>
+        <label>Choose a password<input name="password" required type="password" minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <label>Confirm password<input name="confirmPassword" required type="password" minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <label>Why would you like an account?<textarea name="reason" required maxlength="1000" rows="3"></textarea></label>
+        <p class="hint">Your password is never included in the approval message. Keep this browser to check your request status.</p>
+        <button type="submit">Send account request</button>
+      </form>
+      <div id="account-request-status" role="status" aria-live="polite" hidden></div>
+      <div class="actions"><button id="refresh-account-request" type="button" class="secondary" hidden>Refresh status</button><button id="new-account-request" type="button" class="secondary" hidden>Request another account</button><button id="account-back-login" type="button" class="secondary">Back to sign in</button></div>
+    </section>
+    <nav id="view-nav" hidden><button id="show-member" class="secondary">Projects &amp; my HAFleets</button><button id="show-admin" class="secondary">Server administration</button></nav>
+    <div id="member-workspace" hidden>
+      <div class="heading"><div><p class="eyebrow" id="member-server-name">PROJECT SERVER</p><h1>HAFleet services</h1><p>Connect your HAFleet, register a project and request the role you need.</p></div><button id="member-refresh" class="secondary">Refresh status</button></div>
+      <section class="panel"><h2>My HAFleet access</h2><p>Download your assigned service configuration into HAFleet, then verify its connection to create your reception room.</p><div id="my-fleets"></div></section>
+      <div class="layout">
+        <aside class="panel"><h2>Create or register a project</h2><form id="project-form">
+          <label>HAFleet provider<select name="fleetId" required></select></label>
+          <label>Project name<input name="name" required maxlength="128" placeholder="Octos project"></label>
+          <label>Existing project room ID (optional)<input name="roomId" placeholder="!room:example.org"></label>
+          <p class="hint">Leave empty to create a private, unencrypted project room. A separate encrypted owner approval room is created automatically.</p>
+          <label>Project operation ID<input name="requestId" required pattern="[a-zA-Z0-9_-]+"></label>
+          <button type="submit">Create project and approval room</button>
+        </form></aside>
+        <section class="panel"><h2>My projects</h2><div id="projects"></div></section>
+      </div>
+      <section class="panel"><h2>Define and request an Agent</h2><p>Define your Agent here and choose a published resource. You can define multiple Agents on the same resource. HAFleet reviews each request and creates its own Agent identity after approval.</p><p id="request-role-hint" class="hint" role="status" hidden>Usable HAFleet resources and their supported roles appear here automatically.</p><section id="request-resources" aria-label="Available resources"></section><form id="request-form" class="inline-form">
+        <label>Target project<select name="projectId" required></select></label>
+        <label>Resource<select name="resourceId" required aria-label="Resource" aria-describedby="request-resource-hint"></select></label>
+        <label>Agent name<input name="agentName" required maxlength="64" pattern="\p{L}[\p{L}\p{M}\p{N}_\-]{0,63}" placeholder="小白 or Edison" aria-describedby="agent-name-help"></label>
+        <label>Role<select name="role" required aria-label="Role" aria-describedby="request-selected-resource"></select></label>
+        <label>Requested tokens<input name="requestedTokens" type="number" min="1" step="1" value="100000" required></label>
+        <label>Daily rate<input name="ratePerDay" type="number" min="1" step="1" value="20000" required></label>
+        <label>Request ID<input name="requestId" required pattern="[a-zA-Z0-9_-]+"></label>
+        <button type="submit">Send agent request</button>
+      </form>
+        <p id="request-resource-hint" class="hint" role="status" hidden>No usable resources are currently available. New resources are published automatically; the HAFleet owner can check configuration or restore withdrawn resources.</p>
+        <p id="request-selected-resource" class="hint" role="status">Select a Resource first. Role describes the Agent’s job; available roles depend on the selected resource.</p>
+        <p id="agent-name-help" class="hint">Chinese names are supported, for example 小白 or 孙悟空-01. Start with a letter; use letters, numbers, underscores or hyphens, up to 64 characters. Each Agent in this project needs a distinct name.</p>
+      <div id="request-connection" class="scope-note" role="status" hidden></div><p id="request-status" role="status" aria-live="polite" hidden></p><div id="requests"></div></section>
+    </div>
+    <div id="workspace" hidden>
+      <section id="account-admin-panel" class="panel" hidden><h2>Account requests</h2><p>Review account requests in the private administrator room using Robrix. Palpo verifies administrator permissions when a decision arrives.</p><div id="account-admin-room"></div><div id="account-admin-requests"></div></section>
+      <div class="heading"><div><p class="eyebrow" id="server-name">PROJECT SERVER</p><h1>HAFleet connections</h1><p>Authorize a provider, install its service identity, and track what is ready.</p></div><button id="refresh" class="secondary">Refresh</button></div>
+      <div class="scope-note">Server administrators authorize service access. HAFleet owners complete pairing and event verification; project members request agents through their own Matrix accounts.</div>
+      <div class="layout">
+        <aside class="panel"><h2>Authorize a HAFleet</h2><p class="muted">Each provider receives its own service, representative and namespace.</p><form id="fleet-form">
+          <label>Name<input name="name" required maxlength="128" placeholder="Octos coding team"></label>
+          <label>Owner Matrix ID<input name="ownerMxid" required placeholder="@owner:example.org"></label>
+          <label>Connection mode<select name="transportMode"><option value="outbound">HAFleet connects outbound to Palpo</option><option value="callback">Legacy direct callback</option></select></label>
+          <label id="callback-field" hidden>HAFleet callback URL<input name="callbackUrl" type="url" disabled placeholder="https://fleet.example.org/matrix"></label>
+          <p class="hint" id="callback-policy"></p>
+          <label>Request ID<input name="requestId" required pattern="[a-zA-Z0-9_-]+" maxlength="80"></label>
+          <p class="hint">Retry with the same request ID to recover a partial installation.</p>
+          <button type="submit">Authorize and install</button>
+        </form></aside>
+        <section class="panel"><div class="section-heading"><h2>Registered HAFleets</h2><span class="count" id="fleet-count">0</span></div><div id="fleets"></div></section>
+      </div>
+      <section id="agent-panel" class="panel" hidden><div class="section-heading"><div><p class="eyebrow">MATRIX IDENTITIES</p><h2 id="agent-heading">Agents</h2></div><button id="close-agents" class="secondary">Close</button></div>
+        <p>Identity provisioning does not approve a HAFleet engagement or start a local agent. Enter a request reference that you have independently approved.</p>
+        <form id="agent-form" class="inline-form"><label>Stable agent ID<input name="agentId" required pattern="[a-z0-9_]+" placeholder="coding_01"></label><label>Display name<input name="displayName" required maxlength="128" placeholder="Coding agent"></label><label>Public role<input name="role" required maxlength="80" placeholder="coding"></label><label>Approved request reference<input name="approvedRequestId" required pattern="[a-zA-Z0-9_-]+"></label><button type="submit">Create identity</button></form>
+        <div id="agents"></div>
+      </section>
+      <section class="panel audit"><div class="section-heading"><h2>Recent operations</h2><span class="muted">Last 200 entries</span></div><div id="audit"></div></section>
+    </div>
+  </main>
+</body>
+</html>
