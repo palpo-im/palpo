@@ -76,7 +76,7 @@ async function refresh() {
   }));
   $('#fleet-count').textContent = fleetRows.length;
   $('#fleets').replaceChildren(...fleetRows.map(renderFleet));
-  if (!fleetRows.length) $('#fleets').append(node('p', 'No HAFleets have been authorized yet.', 'empty'));
+  if (!fleetRows.length) $('#fleets').append(node('p', 'No Hagencys have been authorized yet.', 'empty'));
   const table = node('table'), head = node('tr');
   for (const title of ['When', 'Actor', 'Operation', 'Result']) head.append(node('th', title));
   table.append(head);
@@ -93,7 +93,7 @@ function renderFleet(fleet) {
   const states = node('div', null, 'statusline'); states.append(badge(`Installation: ${fleet.installation}`), badge(`Identity: ${fleet.readiness.identity}`), badge(`Event delivery: ${fleet.readiness.eventDelivery}`, fleet.readiness.eventDelivery === 'verified' ? '' : 'warning'), badge(`Reception: ${fleet.readiness.reception}`, fleet.readiness.reception === 'verified' ? '' : 'warning')); card.append(states);
   card.append(node('div', `Credential version ${fleet.credentialVersion} · ${fleet.credentialDeliveredAt ? 'Issued to owner' : 'Awaiting owner pairing'} · Local task stop: ${fleet.localTaskStop}`, 'meta'));
   if (fleet.state === 'revoked') card.append(node('p', 'The service credential is disabled. Retire each identity separately to remove its Matrix memberships and any independent sessions.', 'hint'));
-  const pairing = node('details'), summary = node('summary', 'Owner pairing endpoint'); pairing.append(summary, node('p', 'The HAFleet owner uses their own Matrix session to retrieve the assigned credentials. Retries return the same version. No administrator token is shared.', 'hint'), node('code', `POST /api/pair/${fleet.id}`)); card.append(pairing);
+  const pairing = node('details'), summary = node('summary', 'Owner pairing endpoint'); pairing.append(summary, node('p', 'The Hagency owner uses their own Matrix session to retrieve the assigned credentials. Retries return the same version. No administrator token is shared.', 'hint'), node('code', `POST /api/pair/${fleet.id}`)); card.append(pairing);
   if (fleet.lastError) card.append(node('div', `Last operation failed: ${fleet.lastError.code}. Retry installation with the existing registration.`, 'meta'));
   const actions = node('div', null, 'actions');
   actions.append(button(`Manage ${fleet.agentCount} identities`, () => showAgents(fleet.id)));
@@ -107,10 +107,10 @@ function renderFleet(fleet) {
     if (currentSession?.outboundAvailable && fleet.state !== 'paused') actions.append(button(fleet.transport?.mode === 'outbound' ? 'Rotate transport credential' : 'Migrate to outbound connection', async () => {
       const key = `palpo-outbound-${fleet.id}`, requestId = sessionStorage.getItem(key) ?? crypto.randomUUID(); sessionStorage.setItem(key, requestId);
       await api(`/fleets/${fleet.id}/outbound`, 'POST', { requestId, rotate: fleet.transport?.mode === 'outbound' });
-      sessionStorage.removeItem(key); notice('Outbound registration is ready. The owner must download the new configuration into HAFleet and verify the Matrix event channel.'); await refresh();
+      sessionStorage.removeItem(key); notice('Outbound registration is ready. The owner must download the new configuration into Hagency and verify the Matrix event channel.'); await refresh();
     }));
     actions.append(button(fleet.state === 'paused' ? 'Resume' : 'Pause', () => mutate(fleet.state === 'paused' ? 'resume' : 'pause')));
-    actions.append(button('Revoke service', async () => { if (confirm(`Revoke the App Service for ${fleet.name}? Its service token will stop working. Retire individual identities separately to remove memberships and independent sessions. Local tasks require HAFleet confirmation.`)) await mutate('revoke'); }, 'danger'));
+    actions.append(button('Revoke service', async () => { if (confirm(`Revoke the App Service for ${fleet.name}? Its service token will stop working. Retire individual identities separately to remove memberships and independent sessions. Local tasks require Hagency confirmation.`)) await mutate('revoke'); }, 'danger'));
   }
   card.append(actions); return card;
 }
@@ -124,7 +124,7 @@ async function showAgents(id) {
     const states = node('div', null, 'statusline'); states.append(badge(readable(agent.state)), badge(`Matrix: ${agent.matrixIdentity}`), badge('Runtime health: unknown', 'warning')); card.append(states);
     card.append(node('div', `Role: ${agent.role} · Request: ${agent.approvedRequestId} · Observed: ${new Date(agent.observedAt).toLocaleString()}`, 'meta'));
     card.append(node('div', `Joined rooms: ${agent.joinedRooms === null ? 'unknown' : agent.joinedRooms.join(', ') || 'none'}`, 'meta'));
-    if (agent.localTaskStop === 'unconfirmed') card.append(node('p', 'Matrix access is retired; stopping local HAFleet tasks remains unconfirmed.', 'hint'));
+    if (agent.localTaskStop === 'unconfirmed') card.append(node('p', 'Matrix access is retired; stopping local Hagency tasks remains unconfirmed.', 'hint'));
     if (agent.observationError) card.append(node('p', `Could not observe Matrix state: ${agent.observationError}`, 'hint'));
     const actions = node('div', null, 'actions');
     if (agent.state === 'registered' && ['pending_connection', 'ready'].includes(fleet.state)) actions.append(button('Edit display name', async () => { const displayName = prompt('Display name', agent.displayName); if (!displayName) return; await api(`/fleets/${id}/agents/${agent.id}`, 'PATCH', { displayName }); await refresh(); }));
@@ -135,7 +135,7 @@ async function showAgents(id) {
 }
 $('#login-form').onsubmit = event => { event.preventDefault(); action(event.submitter, async () => { const form = event.target; const input = Object.fromEntries(new FormData(form)); try { const result = await api('/login', 'POST', input); csrf = result.csrf; await session(); $('#notice').hidden = true; } finally { form.elements.password.value = ''; } }); };
 $('#fleet-form').onsubmit = event => { event.preventDefault(); action(event.submitter, async () => { try { await api('/fleets', 'POST', Object.fromEntries(new FormData(event.target))); notice('App Service and representative verified. Event delivery and reception still require integration.'); event.target.reset(); event.target.elements.requestId.value = crypto.randomUUID(); } finally { await refresh(); } }); };
-$('#agent-form').onsubmit = event => { event.preventDefault(); action(event.submitter, async () => { await api(`/fleets/${selectedFleet}/agents`, 'POST', Object.fromEntries(new FormData(event.target))); event.target.reset(); notice('Matrix identity created. HAFleet runtime and project admission are separate.'); await refresh(); }); };
+$('#agent-form').onsubmit = event => { event.preventDefault(); action(event.submitter, async () => { await api(`/fleets/${selectedFleet}/agents`, 'POST', Object.fromEntries(new FormData(event.target))); event.target.reset(); notice('Matrix identity created. Hagency runtime and project admission are separate.'); await refresh(); }); };
 $('#refresh').onclick = event => action(event.target, refresh);
 $('#close-agents').onclick = () => { selectedFleet = null; $('#agent-panel').hidden = true; };
 function option(value, label, disabled = false) { const el = node('option', label); el.value = value; el.disabled = disabled; return el; }
@@ -163,8 +163,8 @@ function setRoles() {
   select.replaceChildren(option('', 'Choose a resource from the pool'), ...resources.map(resource => option(resource.id, `${resource.name} · ${resource.model} / ${resource.reasoning ?? 'default'}`)));
   if (resources.some(resource => resource.id === previous)) select.value = previous;
   $('#request-role-hint').textContent = readFailed
-    ? `Could not refresh roles from this HAFleet (${fleet.capabilityRead.code}). ${offers.length ? 'The listed roles are from the last successful check. ' : ''}Refresh status to try again before requesting an agent.`
-    : 'No supported roles are currently available from this HAFleet. New usable resources are published automatically; its owner can check resource configuration and withdrawn roles.';
+    ? `Could not refresh roles from this Hagency (${fleet.capabilityRead.code}). ${offers.length ? 'The listed roles are from the last successful check. ' : ''}Refresh status to try again before requesting an agent.`
+    : 'No supported roles are currently available from this Hagency. New usable resources are published automatically; its owner can check resource configuration and withdrawn roles.';
   $('#request-role-hint').hidden = !fleet || (!readFailed && offers.length > 0);
   renderRequestResources();
   setResourceRoles();
@@ -186,8 +186,8 @@ function renderRequestResources() {
   $('#request-resource-hint').hidden = !fleet?.capabilities?.offers?.length || resources.length > 0;
   const panel = $('#request-resources'); panel.replaceChildren();
   if (!resources.length) return;
-  panel.append(node('h3', `HAFleet resource pool · ${resources.length}`));
-  panel.append(node('p', 'New HAFleet resources appear automatically. This pool updates every 10 seconds while this page is visible. Choose a resource, then define your Agent and its role. Multiple Agents can use the same resource.', 'hint'));
+  panel.append(node('h3', `Hagency resource pool · ${resources.length}`));
+  panel.append(node('p', 'New Hagency resources appear automatically. This pool updates every 10 seconds while this page is visible. Choose a resource, then define your Agent and its role. Multiple Agents can use the same resource.', 'hint'));
   const cards = node('div', null, 'resource-pool-list'); panel.append(cards);
   for (const resource of resources) {
     const card = node('article', null, 'resource-card'); card.dataset.resourceId = resource.id;
@@ -264,22 +264,22 @@ function updateRequestAvailability() {
   const ready = (outbound ? fleet?.readiness?.canQueue === true : fleet?.readiness?.ready === true && remaining > 0) && !check?.error;
   const offline = outbound && !fleet.transport.online;
   const connection = $('#request-connection'); connection.replaceChildren(); connection.hidden = !fleet || (ready && !offline);
-  if (fleet && ready && offline) connection.append(node('p', 'HAFleet is offline. These are its last published resources. Your request will be stored in Palpo and delivered when HAFleet reconnects; allocation still requires its owner’s decision.'));
+  if (fleet && ready && offline) connection.append(node('p', 'Hagency is offline. These are its last published resources. Your request will be stored in Palpo and delivered when Hagency reconnects; allocation still requires its owner’s decision.'));
   if (fleet && !ready) {
     const expired = remaining <= 0;
-    connection.append(node('p', outbound ? 'Waiting for HAFleet to receive the actual Matrix verification event through its outbound connection. Download and import the configuration, then verify the connection.' : expired ? 'Connection verification has expired. New agent requests cannot be sent until the connection is verified again.' : 'This HAFleet connection is not ready to receive agent requests.'));
+    connection.append(node('p', outbound ? 'Waiting for Hagency to receive the actual Matrix verification event through its outbound connection. Download and import the configuration, then verify the connection.' : expired ? 'Connection verification has expired. New agent requests cannot be sent until the connection is verified again.' : 'This Hagency connection is not ready to receive agent requests.'));
     if (check?.pending) connection.append(node('p', 'Renewing the connection automatically… Your request fields will be kept.'));
     if (check?.error) connection.append(node('p', `Connection could not be verified: ${check.error}`, 'request-error'));
     if (fleet.owned) {
       const verify = button('Verify connection', async () => {
         requestNotice('Verifying the connection… Your request fields will be kept.');
-        try { await verifyFleetConnection(fleet.id); requestNotice(outbound ? 'Verification event queued. HAFleet will confirm receipt automatically; refresh status to check.' : 'Connection verified. Review your request and click Send agent request.'); }
+        try { await verifyFleetConnection(fleet.id); requestNotice(outbound ? 'Verification event queued. Hagency will confirm receipt automatically; refresh status to check.' : 'Connection verified. Review your request and click Send agent request.'); }
         catch (error) { requestNotice(`Connection could not be verified: ${error.message}`, true); }
       });
       verify.disabled = !!check?.pending;
       connection.append(verify);
     }
-    else connection.append(node('p', `Ask the HAFleet owner (${fleet.ownerMxid}) to use Verify connection & create reception in My HAFleet access, then refresh status here.`));
+    else connection.append(node('p', `Ask the Hagency owner (${fleet.ownerMxid}) to use Verify connection & create reception in My Hagency access, then refresh status here.`));
   }
   $('#request-form [type=submit]').disabled = requestBusy || !project?.canRequest || !ready || fleet?.capabilityRead?.state === 'failed' || !$('#request-form [name=role]').value || !$('#request-form [name=resourceId]').value;
   if (ready && !outbound) requestExpiryTimer = setTimeout(updateRequestAvailability, Math.min(remaining + 1, 2147483647));
@@ -297,18 +297,18 @@ async function refreshMember() {
     if (fleet.reception?.roomId) card.append(roomLink(fleet.reception.roomId, 'Open reception room'));
     if (fleet.lastError) card.append(node('p', `Last check: ${fleet.lastError.code}. Use Verify connection again to continue.`, 'hint'));
     const actions = node('div', null, 'actions');
-    actions.append(button('Download HAFleet configuration', async () => {
+    actions.append(button('Download Hagency configuration', async () => {
       const result = await api(`/my/fleets/${fleet.id}/pair`, 'POST', {});
       const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = `${fleet.id}-registration.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notice('Configuration downloaded for this HAFleet. Store it in the HAFleet credential store; retries preserve the same version.');
+      notice('Configuration downloaded for this Hagency. Store it in the Hagency credential store; retries preserve the same version.');
     }));
     actions.append(button('Verify connection & create reception', async () => {
-      await verifyFleetConnection(fleet.id); notice(fleet.transport?.mode === 'outbound' ? 'Verification event queued for HAFleet. Receipt will be confirmed over its outbound connection.' : 'Verified the actual Matrix event round trip and owner/representative reception membership.');
+      await verifyFleetConnection(fleet.id); notice(fleet.transport?.mode === 'outbound' ? 'Verification event queued for Hagency. Receipt will be confirmed over its outbound connection.' : 'Verified the actual Matrix event round trip and owner/representative reception membership.');
     }));
     card.append(actions); return card;
   }));
-  if (!ownedData.fleets.length) $('#my-fleets').append(node('p', 'No HAFleets are assigned to your Matrix account. You can still request from available providers below.', 'empty'));
+  if (!ownedData.fleets.length) $('#my-fleets').append(node('p', 'No Hagencys are assigned to your Matrix account. You can still request from available providers below.', 'empty'));
   const previousFleet = $('#project-form [name=fleetId]').value;
   $('#project-form [name=fleetId]').replaceChildren(...catalog.map(fleet => option(fleet.id, `${fleet.name}${fleet.readiness.ready ? ' · ready' : ' · pending connection'}`)));
   if (catalog.some(fleet => fleet.id === previousFleet)) $('#project-form [name=fleetId]').value = previousFleet;
@@ -317,7 +317,7 @@ async function refreshMember() {
     const states = node('div', null, 'statusline'); states.append(badge(readable(project.state)), badge(`Owner approval: ${project.ownerApproval}`, project.canRequest ? '' : 'warning')); card.append(states);
     if (project.roomId) card.append(roomLink(project.roomId, 'Open project room'));
     if (project.ownerDmRoomId) { card.append(node('span', ' · '), roomLink(project.ownerDmRoomId, 'Open private approval room')); }
-    if (project.readinessError) card.append(node('p', project.readinessError === 'owner_dm_join_pending' ? 'Waiting for the HAFleet approval account to join. This page checks automatically; you can also refresh status.' : project.readinessError, 'hint'));
+    if (project.readinessError) card.append(node('p', project.readinessError === 'owner_dm_join_pending' ? 'Waiting for the Hagency approval account to join. This page checks automatically; you can also refresh status.' : project.readinessError, 'hint'));
     return card;
   }));
   if (!projects.length) $('#projects').append(node('p', 'Create a project or register an existing room you own.', 'empty'));
@@ -331,8 +331,8 @@ async function refreshMember() {
     const top = node('div', null, 'section-heading'); top.append(node('h3', `${request.agentDefinition ? request.agentDefinition.name + ' · ' : ''}${request.role} · ${request.requestedTokens.toLocaleString()} tokens`), badge(readable(request.state), request.state === 'active' && request.agentJoined ? '' : 'warning')); card.append(top);
     if (request.resource) card.append(node('p', `Requested resource: ${request.resource.name} · ${request.resource.model} / ${request.resource.reasoning ?? 'default'}`, 'meta'));
     card.append(node('p', `Request ${request.requestId}`, 'meta'));
-    if (request.state === 'pending') card.append(node('p', 'Awaiting the HAFleet owner’s resource decision.', 'hint'));
-    if (request.state === 'queued') card.append(node('p', 'Stored in Palpo. Waiting for HAFleet to receive this request; delivery does not approve or allocate an Agent.', 'hint'));
+    if (request.state === 'pending') card.append(node('p', 'Awaiting the Hagency owner’s resource decision.', 'hint'));
+    if (request.state === 'queued') card.append(node('p', 'Stored in Palpo. Waiting for Hagency to receive this request; delivery does not approve or allocate an Agent.', 'hint'));
     if (request.provider?.agentMxid) card.append(node('p', `Agent: ${request.provider.agentMxid}`, 'meta'));
     if (request.provider?.serving?.model) card.append(node('p', `Configuration: ${[request.provider.serving.framework, request.provider.serving.model, request.provider.serving.reasoning, request.provider.serving.tier].filter(Boolean).join(' · ')}`, 'meta'));
     if (request.provider?.fulfillment?.phase) card.append(node('p', `Preparation: ${request.provider.fulfillment.phase}`, 'meta'));
@@ -345,7 +345,7 @@ async function refreshMember() {
   }));
 }
 $('#project-form').onsubmit = event => { event.preventDefault(); action(event.submitter, async () => {
-  try { await api('/projects', 'POST', Object.fromEntries(new FormData(event.target))); event.target.elements.name.value = ''; event.target.elements.roomId.value = ''; event.target.elements.requestId.value = crypto.randomUUID(); notice('Project and encrypted private approval room created. The HAFleet approval account must join before you request an agent.'); }
+  try { await api('/projects', 'POST', Object.fromEntries(new FormData(event.target))); event.target.elements.name.value = ''; event.target.elements.roomId.value = ''; event.target.elements.requestId.value = crypto.randomUUID(); notice('Project and encrypted private approval room created. The Hagency approval account must join before you request an agent.'); }
   finally { await refreshMember(); }
 }); };
 $('#request-form').onsubmit = async event => {
@@ -356,8 +356,8 @@ $('#request-form').onsubmit = async event => {
     const result = await api('/requests', 'POST', Object.fromEntries(new FormData(event.target)));
     event.target.elements.requestId.value = crypto.randomUUID();
     event.target.elements.agentName.value = '';
-    requestNotice(result.request?.state === 'queued' ? `Request ${result.request.requestId} stored in Palpo. It will be delivered when HAFleet connects; its owner will review the allocation.` : `Request ${result.request?.requestId ?? result.requestId ?? ''} delivered to HAFleet. Its owner will review the resource allocation.`);
-  } catch (error) { requestNotice(`HAFleet has not confirmed this request: ${error.message} Your request ID and fields have been kept for retry.`, true); }
+    requestNotice(result.request?.state === 'queued' ? `Request ${result.request.requestId} stored in Palpo. It will be delivered when Hagency connects; its owner will review the allocation.` : `Request ${result.request?.requestId ?? result.requestId ?? ''} delivered to Hagency. Its owner will review the resource allocation.`);
+  } catch (error) { requestNotice(`Hagency has not confirmed this request: ${error.message} Your request ID and fields have been kept for retry.`, true); }
   finally {
     try { await refreshMember(); }
     catch (error) { notice(`Could not refresh request status: ${error.message}`, true); }
@@ -372,7 +372,7 @@ function updateTransportForm() {
   const callback = $('#fleet-form [name=transportMode]').value === 'callback';
   $('#callback-field').hidden = !callback;
   $('#fleet-form [name=callbackUrl]').disabled = !callback; $('#fleet-form [name=callbackUrl]').required = callback;
-  $('#callback-policy').textContent = callback ? `Allowed callback origins: ${(currentSession?.callbackOrigins ?? []).join(', ')}` : 'HAFleet connects to this Palpo server over HTTPS. No inbound HAFleet port or reverse tunnel is needed.';
+  $('#callback-policy').textContent = callback ? `Allowed callback origins: ${(currentSession?.callbackOrigins ?? []).join(', ')}` : 'Hagency connects to this Palpo server over HTTPS. No inbound Hagency port or reverse tunnel is needed.';
 }
 $('#fleet-form [name=transportMode]').onchange = updateTransportForm;
 $('#show-member').onclick = event => action(event.target, async () => { memberView = true; $('#workspace').hidden = true; $('#member-workspace').hidden = false; await refreshMember(); });

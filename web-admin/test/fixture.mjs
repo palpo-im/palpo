@@ -89,7 +89,7 @@ export function fixture({ path = ':memory:', bypassRetirement = false, deliverPr
         if (transactions.has(transaction)) return response(200, { event_id: transactions.get(transaction) });
         const eventId = `$event${events.size + 1}`, event = { event_id: eventId, sender: actor, room_id: roomId, type, content: body };
         events.set(eventId, event); transactions.set(transaction, eventId);
-        if (type === 'com.hafleet.connection.probe.v1' && deliverProbe) receipts.set(eventId, { fleetId: body.fleetId, sourceRoomId: roomId, challenge: body.challenge });
+        if (type === 'com.hagency.connection.probe.v1' && deliverProbe) receipts.set(eventId, { fleetId: body.fleetId, sourceRoomId: roomId, challenge: body.challenge });
         return response(200, { event_id: eventId });
       }
     }

@@ -1,6 +1,6 @@
-# Outbound HAFleet transport v2
+# Outbound Hagency transport v2
 
-New registrations default to outbound transport. HAFleet initiates all transport
+New registrations default to outbound transport. Hagency initiates all transport
 connections to Palpo over HTTPS. Palpo's homeserver sends Matrix App Service
 transactions only to the colocated web service. The web service never calls an
 outbound fleet's callback for capabilities, requests, probes or status.
@@ -26,7 +26,7 @@ public reverse proxy and verify the homeserver can reach the relay on the shared
 Docker network. Build the image with `docker compose -f deploy/compose.yaml build`
 to stage it without replacing a running container. Activate the same source
 snapshot with `docker compose -f deploy/compose.yaml up -d --wait` after the
-matching HAFleet version and proxy routes are ready.
+matching Hagency version and proxy routes are ready.
 
 Install a Palpo server version supporting atomic
 `PUT /_palpo/admin/v1/appservices/{id}/url` before migrating an existing fleet.
@@ -40,9 +40,9 @@ administrator UI or `POST /api/fleets/{id}/outbound` with `{ "requestId": "..." 
 The operation is persisted and retryable. Fleet, registration, representative,
 Agent, project, request and Matrix event identities remain unchanged. Every
 existing request with a saved source event is replayed into the new generation
-so HAFleet can resume status publication using its canonical idempotency checks.
+so Hagency can resume status publication using its canonical idempotency checks.
 
-The owner downloads the new configuration, imports it into HAFleet, and verifies
+The owner downloads the new configuration, imports it into Hagency, and verifies
 the initial connection once. Only after outbound acceptance with all reverse
 forwards disabled should the operator remove the old reverse route. Existing
 legacy fleets continue using their explicit callback transport until migration.
@@ -66,7 +66,7 @@ The registered App Service URL is the fixed relay origin plus
 `/api/relay/v2/{fleetId}`. Existing `as_token` and `hs_token` retain their Matrix
 roles. The machine token is separate and absent from catalog, list, status,
 audit and migration projections. Machine requests require `Authorization:
-Bearer <token>` and `X-HAFleet-Generation: <generation>`. Browser Origin headers
+Bearer <token>` and `X-Hagency-Generation: <generation>`. Browser Origin headers
 are refused on machine routes; browser cookies do not authorize them.
 
 ## Delivery and receipt protocol
@@ -94,7 +94,7 @@ one active 30-second lease, in FIFO order. Another poll cannot replace an active
 lease; expiry makes the same delivery eligible with a new receipt token.
 `POST /ack {id,lane,token}` succeeds only for the current generation and token.
 Repeating the same completed ACK succeeds; expired/replaced leases return
-`409 stale_lease`. A delivery ACK means HAFleet has persisted receipt, not that
+`409 stale_lease`. A delivery ACK means Hagency has persisted receipt, not that
 it approved, allocated or completed business work.
 
 Work deliveries use `kind: "probe"` with the existing v1 probe body, or
@@ -104,7 +104,7 @@ Full Matrix transactions, including device/ephemeral fields when present, are
 stored before the relay returns HTTP 200. Their original ID and content digest
 make retries idempotent across machine generations of the same AS registration;
 changed content returns 409. An old ACKed transaction is not queued again after
-rotation, so HAFleet must retain its durable AS inbox independently of its machine
+rotation, so Hagency must retain its durable AS inbox independently of its machine
 credential generation. User queries acknowledge
 only the exact representative or registered managed identities within this
 fleet's namespace. Unknown users and aliases return 404.
@@ -155,7 +155,7 @@ Only pre-existing requests in this fleet with matching original role, quota,
 source, target and Agent definition can be updated. Namespace checks precede
 storage. Usability and managed identity linkage additionally require actual
 Matrix membership, a current-generation connection proof and a recent heartbeat.
-Each status carries `observedAt`, the ISO time when HAFleet actually checked the
+Each status carries `observedAt`, the ISO time when Hagency actually checked the
 local request. A usable request needs a current-generation status both observed
 and received within the last 90 seconds. Up to five seconds of clock skew is
 allowed, capped at server receipt time. Missing/invalid timestamps and clocks
@@ -167,7 +167,7 @@ Admission failures can remain `submission_pending`, never synthetic fulfillment.
 
 A heartbeat alone cannot establish the initial connection. Owner verification
 creates the real reception/probe event and queues its exact challenge; HTTP 202
-means it is awaiting receipt. HAFleet first persists and ACKs the original Matrix
+means it is awaiting receipt. Hagency first persists and ACKs the original Matrix
 transaction, then processes it and publishes the probe receipt. Palpo matches the
 exact event, room, challenge, generation and ACKed transaction and rechecks that
 the owner and representative are still joined. This establishes the generation's
@@ -195,6 +195,6 @@ rollback, stale status expiry, repeated owner verification, offline request
 retry, immutable status bindings and actual room membership. The browser check
 exercises default outbound authorization, owner download, exact relay proof,
 offline resource selection and queued request delivery while failing on any
-reverse HAFleet call. Encrypted transaction payloads are retained unchanged;
-full native encrypted chat/file acceptance requires the coordinated HAFleet and
+reverse Hagency call. Encrypted transaction payloads are retained unchanged;
+full native encrypted chat/file acceptance requires the coordinated Hagency and
 Robrix deployment and is not established by the web fixtures alone.

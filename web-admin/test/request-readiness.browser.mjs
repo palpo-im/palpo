@@ -36,7 +36,7 @@ const signIn = async mxid => {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.locator('#projects article').first().waitFor();
 };
-const proofEvents = () => [...f.events.values()].filter(event => event.type === 'com.hafleet.connection.probe.v1').length;
+const proofEvents = () => [...f.events.values()].filter(event => event.type === 'com.hagency.connection.probe.v1').length;
 const connectResponses = [];
 page.on('response', response => { if (response.url().endsWith('/connect')) connectResponses.push(response.status()); });
 const waitReady = () => page.waitForFunction(() => document.querySelector('#request-connection').hidden && !document.querySelector('#request-form [type=submit]').disabled);
@@ -46,7 +46,7 @@ try {
   const connection = page.locator('#request-connection'), form = page.locator('#request-form');
   const send = form.getByRole('button', { name: 'Send agent request', exact: true });
   await connection.getByText(/Connection verification has expired/).waitFor();
-  assert.match(await connection.innerText(), /Ask the HAFleet owner \(@owner:example.test\)/);
+  assert.match(await connection.innerText(), /Ask the Hagency owner \(@owner:example.test\)/);
   assert.equal(await connection.getByRole('button').count(), 0);
   assert.equal(await send.isEnabled(), false);
   assert.deepEqual(connectResponses, []); assert.equal(f.requests.size, 0);
@@ -128,7 +128,7 @@ try {
   const lateRenewal = page.waitForResponse(r => r.url().endsWith('/connect'));
   await send.click(); assert.equal((await rejected).status(), 409);
   assert.equal((await lateRenewal).status(), 200); await waitReady();
-  await page.locator('#request-status').getByText(/HAFleet has not confirmed this request/).waitFor();
+  await page.locator('#request-status').getByText(/Hagency has not confirmed this request/).waitFor();
   assert.equal(f.requests.size, 0); assert.equal(Object.keys(f.store.state.requests).length, 0);
   assert.deepEqual(await form.evaluate(el => Object.fromEntries(new FormData(el))), draft);
 
@@ -175,8 +175,8 @@ try {
   assert.equal(f.requests.size, 0);
 
   await send.click();
-  await page.locator('#request-status').getByText(/Request retained-request-id delivered to HAFleet/).waitFor();
-  await page.locator('#requests').getByText('Awaiting the HAFleet owner’s resource decision.', { exact: true }).waitFor();
+  await page.locator('#request-status').getByText(/Request retained-request-id delivered to Hagency/).waitFor();
+  await page.locator('#requests').getByText('Awaiting the Hagency owner’s resource decision.', { exact: true }).waitFor();
   assert.equal(f.requests.size, 1);
   const actual = Object.values(f.store.state.requests)[0];
   assert.equal(actual.projectId, ownerProject.id); assert.equal(actual.state, 'pending');

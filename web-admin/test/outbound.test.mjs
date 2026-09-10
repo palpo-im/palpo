@@ -33,7 +33,7 @@ async function setup(t, options = {}) {
   };
   const stored = () => f.service.fleet(fleet.id);
   const machine = (path, body, overrides = {}) => call(`/api/fleet/v2/${fleet.id}${path}`, { method: body === undefined ? 'GET' : 'POST', body,
-    host: new URL(transportOrigin).host, origin: null, headers: { Authorization: `Bearer ${stored().transport.token}`, 'X-HAFleet-Generation': String(stored().transport.generation) }, ...overrides });
+    host: new URL(transportOrigin).host, origin: null, headers: { Authorization: `Bearer ${stored().transport.token}`, 'X-Hagency-Generation': String(stored().transport.generation) }, ...overrides });
   const relay = (transactionId, body) => call(`/api/relay/v2/${fleet.id}/_matrix/app/v1/transactions/${transactionId}`, { method: 'PUT', body, host: new URL(relayOrigin).host, origin: null, headers: { Authorization: `Bearer ${stored().registration.hs_token}` } });
   const update = (sequence, extra = {}) => machine('/updates', { v: 2, generation: stored().transport.generation, sequence, heartbeat: true, ...extra });
   const poll = lane => machine(`/poll?lane=${lane}&consumer=${randomUUID()}&wait=0`);
@@ -132,7 +132,7 @@ test('relay can arrive before Matrix send returns and duplicate transactions can
   const f = await setup(t);
   f.palpo.fetch = async (url, options) => {
     const response = await f.fetch(url, options);
-    if (new URL(url).pathname.includes('/send/com.hafleet.connection.probe.v1/')) {
+    if (new URL(url).pathname.includes('/send/com.hagency.connection.probe.v1/')) {
       const { event_id: id } = await response.clone().json();
       f.service.outbound.transaction(f.stored(), 'early-proof', { events: [f.events.get(id)] });
     }
@@ -146,7 +146,7 @@ test('relay can arrive before Matrix send returns and duplicate transactions can
 test('cross-fleet credentials and generic namespace claims cannot access another registration', async t => {
   const f = await setup(t);
   const other = await f.service.create({ requestId: 'other-fleet', name: 'Other', ownerMxid: '@other:example.test' }, '@admin:example.test', 'admin-secret');
-  const headers = { Authorization: `Bearer ${f.stored().transport.token}`, 'X-HAFleet-Generation': '1' };
+  const headers = { Authorization: `Bearer ${f.stored().transport.token}`, 'X-Hagency-Generation': '1' };
   assert.equal((await f.call(`/api/fleet/v2/${other.id}/poll?lane=matrix&consumer=${randomUUID()}&wait=0`, { host: new URL(transportOrigin).host, origin: null, headers })).status, 401);
   const query = (kind, identity) => f.call(`/api/relay/v2/${f.fleet.id}/_matrix/app/v1/${kind}/${encodeURIComponent(identity)}`, { host: new URL(relayOrigin).host, origin: null, headers: { Authorization: `Bearer ${f.stored().registration.hs_token}` } });
   assert.equal((await query('users', f.fleet.representativeMxid)).status, 200);
@@ -168,7 +168,7 @@ test('heartbeat and a probe whose owner left cannot establish readiness', async 
   assert.equal(publicFleet(f.stored()).readiness.ready, false); assert.equal(f.stored().connection, undefined);
 });
 
-test('offline requests queue once and outbound catalog/status reads never call HAFleet', async t => {
+test('offline requests queue once and outbound catalog/status reads never call Hagency', async t => {
   const f = await setup(t), auth = await prove(f);
   f.palpo.fetch = (url, options) => { assert.ok(!new URL(url).pathname.startsWith('/api/fleet/v1')); return f.fetch(url, options); };
   const project = (await f.call('/api/projects', { method: 'POST', headers: auth, body: { fleetId: f.fleet.id, requestId: 'outbound-project', name: 'Project' } })).data.project;
@@ -217,7 +217,7 @@ test('updates reject stale/conflicting sequences, foreign requests and changed b
   assert.equal((await f.update(3, { statuses: [{ v: 1, requestId: 'unknown', fleetId: f.fleet.id }] })).data.code, 'unknown_request');
   assert.equal(f.stored().transport.sequence, 2);
   assert.equal((await f.machine('/updates', { v: 2, generation: 2, sequence: 3, heartbeat: true })).status, 400);
-  const wrong = { Authorization: `Bearer ${f.stored().registration.as_token}`, 'X-HAFleet-Generation': '1' };
+  const wrong = { Authorization: `Bearer ${f.stored().registration.as_token}`, 'X-Hagency-Generation': '1' };
   assert.equal((await f.machine('/updates', { v: 2, generation: 1, sequence: 3, heartbeat: true }, { headers: wrong })).status, 401);
 });
 
@@ -290,7 +290,7 @@ test('SQLite restart retains leases, tombstones, update sequence and exact trans
   assert.equal(fleet.transport.sequence, 5);
   assert.equal(transport.claim(fleet, 'matrix', randomUUID()), null);
   const resumed = await new Promise((resolve, reject) => {
-    const req = httpRequest(`http://127.0.0.1:${restarted.address().port}/api/fleet/v2/${fleet.id}/updates`, { method: 'POST', headers: { Host: new URL(transportOrigin).host, Authorization: `Bearer ${fleet.transport.token}`, 'X-HAFleet-Generation': '1', 'Content-Type': 'application/json' } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    const req = httpRequest(`http://127.0.0.1:${restarted.address().port}/api/fleet/v2/${fleet.id}/updates`, { method: 'POST', headers: { Host: new URL(transportOrigin).host, Authorization: `Bearer ${fleet.transport.token}`, 'X-Hagency-Generation': '1', 'Content-Type': 'application/json' } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
     req.on('error', reject); req.end(JSON.stringify({ v: 2, generation: 1, sequence: 6, heartbeat: true }));
   });
   assert.equal(resumed, 200);

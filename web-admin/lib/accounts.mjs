@@ -7,7 +7,7 @@ const fail = (status, code, message) => { throw new ApiError(status, code, messa
 const terminal = new Set(['registered', 'rejected', 'expired', 'name_unavailable']);
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-// Registration is separate from browser login and from HAFleet allocation.
+// Registration is separate from browser login and from Hagency allocation.
 // The worker owns only this private room. It never consumes project chat.
 export class Accounts {
   constructor(service, config, { clock = Date.now, intervalMs = 2500 } = {}) {
@@ -153,7 +153,7 @@ export class Accounts {
     this.ready = true;
   }
   card(row) {
-    return { msgtype: 'm.text', body: `Account request: ${row.userId}\nName: ${row.displayName}\nReason: ${row.reason}\nApprove creates an ordinary Matrix account. Agent resources still require HAFleet approval.`,
+    return { msgtype: 'm.text', body: `Account request: ${row.userId}\nName: ${row.displayName}\nReason: ${row.reason}\nApprove creates an ordinary Matrix account. Agent resources still require Hagency approval.`,
       'org.octos.approval_request': { request_id: row.id, tool_name: 'palpo.register_account', tool_args_digest: row.digest,
         title: `Register ${row.userId}`, summary: `${row.displayName}\n${row.reason}\nOrdinary user account; no administrator privileges.`,
         risk_level: 'normal', authorized_approvers: this.config.approvers, expires_at: new Date(row.expiresAt).toISOString(), on_timeout: 'notify' },

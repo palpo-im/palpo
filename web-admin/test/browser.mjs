@@ -28,7 +28,7 @@ try {
   await page.getByLabel('Matrix ID', { exact: true }).fill('@admin:example.test');
   await page.getByLabel('Password', { exact: true }).fill('correct-password');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.getByRole('heading', { name: 'HAFleet connections' }).waitFor();
+  await page.getByRole('heading', { name: 'Hagency connections' }).waitFor();
   // Regression: an AS credential failure must preserve the administrator login
   // and durable failed operation, as seen during the first real deployment.
   let denyAsOnce = true;
@@ -42,7 +42,7 @@ try {
   const fleetForm = page.locator('#fleet-form');
   await fleetForm.getByLabel('Name', { exact: true }).fill('Octos coding team');
   await fleetForm.getByLabel('Owner Matrix ID').fill('@owner:example.test');
-  await fleetForm.getByLabel('HAFleet callback URL').fill('https://fleet.example.test/matrix');
+  await fleetForm.getByLabel('Hagency callback URL').fill('https://fleet.example.test/matrix');
   await fleetForm.getByRole('button', { name: 'Authorize and install' }).click();
   const card = page.locator('#fleets article').filter({ hasText: 'Octos coding team' });
   await card.getByRole('button', { name: 'Retry installation', exact: true }).waitFor();
@@ -68,7 +68,7 @@ try {
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Retire identity' }).click();
   await page.locator('#agents').getByText('Matrix: deactivated', { exact: true }).waitFor();
-  assert.match(await page.locator('#agents').innerText(), /local HAFleet tasks remains unconfirmed/);
+  assert.match(await page.locator('#agents').innerText(), /local Hagency tasks remains unconfirmed/);
   await card.getByRole('button', { name: 'Pause', exact: true }).click();
   await card.getByText('paused', { exact: true }).waitFor();
   await card.getByRole('button', { name: 'Resume', exact: true }).click();
@@ -81,7 +81,7 @@ try {
     await page.getByLabel('Matrix ID', { exact: true }).fill(mxid);
     await page.getByLabel('Password', { exact: true }).fill('correct-password');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.getByRole('heading', { name: 'HAFleet services', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Hagency services', exact: true }).waitFor();
   };
   await signIn('@owner:example.test');
   await page.getByRole('button', { name: 'Verify connection & create reception', exact: true }).click();
@@ -119,7 +119,7 @@ try {
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
   await page.locator('#request-role-hint').waitFor({ state: 'hidden' });
   const pool = page.locator('#request-resources');
-  await pool.getByRole('heading', { name: 'HAFleet resource pool · 3', exact: true }).waitFor();
+  await pool.getByRole('heading', { name: 'Hagency resource pool · 3', exact: true }).waitFor();
   assert.equal(await pool.locator('article').count(), 3); // Shared resources appear once, independent of Role.
   assert.equal(await requestForm.getByLabel('Role', { exact: true }).isDisabled(), true);
   assert.equal(await requestForm.getByLabel('Resource', { exact: true }).locator('option').count(), 4);
@@ -142,7 +142,7 @@ try {
   f.palpo.fetch = async (target, options) => new URL(target).pathname === '/api/fleet/v1/capabilities'
     ? new Response(JSON.stringify({ code: 'provider_unavailable' }), { status: 503 }) : f.fetch(target, options);
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
-  await page.getByText(/Could not refresh roles from this HAFleet/).waitFor();
+  await page.getByText(/Could not refresh roles from this Hagency/).waitFor();
   assert.match(await page.locator('#request-role-hint').innerText(), /last successful check/);
   assert.equal(await requestForm.locator('select[name=role]').inputValue(), 'coding');
   assert.equal(await requestForm.getByRole('button', { name: 'Send agent request', exact: true }).isEnabled(), false);
@@ -151,7 +151,7 @@ try {
   await page.locator('#request-role-hint').waitFor({ state: 'hidden' });
   await requestForm.getByLabel('Request ID', { exact: true }).fill('ui-request-1');
   await requestForm.getByRole('button', { name: 'Send agent request', exact: true }).click();
-  await page.locator('#requests').getByText('Awaiting the HAFleet owner’s resource decision.', { exact: true }).waitFor();
+  await page.locator('#requests').getByText('Awaiting the Hagency owner’s resource decision.', { exact: true }).waitFor();
   f.fulfill(actualFleetId, 'ui-request-1');
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
   await page.getByRole('link', { name: 'Open project and use agent', exact: true }).waitFor();
@@ -159,7 +159,7 @@ try {
   await requestForm.getByLabel('Agent name', { exact: true }).fill('fast-two');
   await requestForm.getByLabel('Request ID', { exact: true }).fill('ui-request-2');
   await requestForm.getByRole('button', { name: 'Send agent request', exact: true }).click();
-  await page.locator('#requests article[data-request-id="ui-request-2"]').getByText('Awaiting the HAFleet owner’s resource decision.', { exact: true }).waitFor();
+  await page.locator('#requests article[data-request-id="ui-request-2"]').getByText('Awaiting the Hagency owner’s resource decision.', { exact: true }).waitFor();
   const definitions = Object.values(f.store.state.requests).map(r => r.payload.agentDefinition);
   assert.deepEqual(definitions, ['fast-one', 'fast-two'].map(name => ({ name, resourceId: `resource_${'a'.repeat(24)}` })));
   assert.equal(f.requests.size, 2);
@@ -169,7 +169,7 @@ try {
   const retainedRequestId = await requestForm.getByLabel('Request ID', { exact: true }).inputValue();
   f.publishedOffers.set(actualFleetId, poolOffers.map(offer => ({ ...offer, resources: offer.resources.filter(r => r.id !== medium.id) })));
   // The timer must observe withdrawal without a manual refresh.
-  await pool.getByRole('heading', { name: 'HAFleet resource pool · 2', exact: true }).waitFor({ timeout: 20000 });
+  await pool.getByRole('heading', { name: 'Hagency resource pool · 2', exact: true }).waitFor({ timeout: 20000 });
   assert.equal(await requestForm.getByLabel('Resource', { exact: true }).inputValue(), '');
   assert.equal(await requestForm.getByLabel('Role', { exact: true }).isDisabled(), true);
   assert.equal(await requestForm.getByRole('button', { name: 'Send agent request', exact: true }).isEnabled(), false);
@@ -177,7 +177,7 @@ try {
   assert.equal(await requestForm.getByLabel('Request ID', { exact: true }).inputValue(), retainedRequestId);
   f.publishedOffers.set(actualFleetId, poolOffers);
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await pool.getByRole('heading', { name: 'HAFleet resource pool · 3', exact: true }).waitFor();
+  await pool.getByRole('heading', { name: 'Hagency resource pool · 3', exact: true }).waitFor();
   assert.equal(await requestForm.getByLabel('Agent name', { exact: true }).inputValue(), 'retained-third');
   assert.equal(await requestForm.getByLabel('Request ID', { exact: true }).inputValue(), retainedRequestId);
   assert.equal(f.requests.size, 2); // Refresh never submits a draft.

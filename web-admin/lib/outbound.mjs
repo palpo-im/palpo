@@ -14,7 +14,7 @@ export const outboundProven = fleet => isOutbound(fleet) && fleet.connection?.ge
 export const outboundOnline = fleet => isOutbound(fleet) && Date.now() - Date.parse(fleet.transport.lastSeenAt ?? '') < 90000;
 export const outboundStatusCurrent = (fleet, request) => {
   const status = request.outboundStatus, received = Date.parse(status?.receivedAt ?? ''), observed = Date.parse(status?.observedAt ?? '');
-  // A frozen publication may first arrive long after HAFleet observed it. Its
+  // A frozen publication may first arrive long after Hagency observed it. Its
   // delivery timestamp cannot make that old observation current again. Allow a
   // small clock skew, but cap the effective timestamp at local receipt time.
   return status?.generation === fleet.transport.generation && Number.isFinite(observed)
@@ -76,7 +76,7 @@ export class Outbound {
       // Only exact probe events in the representative's reception are eligible
       // proof evidence. Commit that evidence with the original transaction.
       for (const event of body.events) {
-        if (event.type !== 'com.hafleet.connection.probe.v1' || event.room_id !== probe?.roomId || !validId(event.event_id) || (probe?.eventId && event.event_id !== probe.eventId)
+        if (event.type !== 'com.hagency.connection.probe.v1' || event.room_id !== probe?.roomId || !validId(event.event_id) || (probe?.eventId && event.event_id !== probe.eventId)
           || event.sender !== fleet.representativeMxid || event.content?.fleetId !== fleet.id || event.content?.challenge !== probe?.challenge) continue;
         if (probe.matrixTransactionId && probe.matrixEventId === event.event_id) continue;
         probe.matrixTransactionId = transactionId; probe.matrixEventId = event.event_id; this.store.save();

@@ -28,7 +28,7 @@ export class Workflow {
   }
   fleet(id) {
     const fleet = this.service.fleet(id);
-    if (!['pending_connection', 'ready'].includes(fleet.state) || fleet.installation !== 'installed') fail(409, 'fleet_inactive', 'The HAFleet service is not active.');
+    if (!['pending_connection', 'ready'].includes(fleet.state) || fleet.installation !== 'installed') fail(409, 'fleet_inactive', 'The Hagency service is not active.');
     return fleet;
   }
   ownerFleet(id, actor) {
@@ -43,11 +43,11 @@ export class Workflow {
     if (isOutbound(fleet)) fail(409, 'outbound_callback_forbidden', 'Outbound fleets publish snapshots and poll delivery; reverse callbacks are disabled.');
     // The owner cannot choose a second integration host. The scoped API shares
     // the administrator-approved App Service callback listener and credential.
-    return new Palpo(fleet.callbackUrl, this.palpo.fetch, 'HAFleet callback').call(`/api/fleet/v1${path}`, fleet.registration.hs_token, options);
+    return new Palpo(fleet.callbackUrl, this.palpo.fetch, 'Hagency callback').call(`/api/fleet/v1${path}`, fleet.registration.hs_token, options);
   }
   async capabilities(fleet, signal) {
     if (isOutbound(fleet)) {
-      if (!fleet.capabilities) fail(409, 'capabilities_pending', 'Waiting for HAFleet to publish its resource catalog.');
+      if (!fleet.capabilities) fail(409, 'capabilities_pending', 'Waiting for Hagency to publish its resource catalog.');
       return fleet.capabilities;
     }
     const data = await this.provider(fleet, '/capabilities', { signal });
@@ -58,7 +58,7 @@ export class Workflow {
     if (data.v !== 1 || data.fleetId !== fleet.id || data.serverName !== this.service.serverName || data.representativeMxid !== fleet.representativeMxid) fail(409, 'provider_identity_mismatch', 'The callback does not identify the installed fleet and server.');
     if (!Array.isArray(data.offers) || data.offers.some(offer => !offer || typeof offer !== 'object' || Array.isArray(offer)
       || (Array.isArray(offer.resources) && offer.resources.some(resource => !resource || typeof resource !== 'object' || Array.isArray(resource))))
-      || !data.approvalBotMxid || !/^@[^\s:]+:.+$/.test(data.approvalBotMxid)) fail(409, 'provider_capability_missing', 'HAFleet has not published its roles and approval identity.');
+      || !data.approvalBotMxid || !/^@[^\s:]+:.+$/.test(data.approvalBotMxid)) fail(409, 'provider_capability_missing', 'Hagency has not published its roles and approval identity.');
     // v1 providers may return only published roles, without a flag. When a
     // provider includes configured-but-withdrawn roles, honor explicit false.
     fleet.capabilities = { v: 1, fleetId: data.fleetId, serverName: data.serverName, representativeMxid: data.representativeMxid, approvalBotMxid: data.approvalBotMxid, offers: data.offers.filter(offer => offer.published !== false).map(offer => ({ role: field(offer.role, 'Role', 80), ...(typeof offer.description === 'string' ? { description: offer.description.slice(0, 500) } : {}),
@@ -116,7 +116,7 @@ export class Workflow {
         const matches = [];
         for (const room of rooms) {
           const state = await this.roomState(room, token, asUser);
-          if (sameBinding(stateContent(state, 'com.hafleet.admin.binding.v1'), binding)) matches.push(room);
+          if (sameBinding(stateContent(state, 'com.hagency.admin.binding.v1'), binding)) matches.push(room);
         }
         if (matches.length > 1) fail(409, 'room_binding_conflict', 'More than one room claims this durable operation.');
         if (matches.length) plan.roomId = matches[0];
@@ -125,7 +125,7 @@ export class Workflow {
         const result = await this.palpo.call(`/_matrix/client/v3/createRoom${query}`, token, { method: 'POST', body: {
           name, room_alias_name: plan.aliasLocalpart, visibility: 'private', preset: 'private_chat', room_version: '11', invite,
           initial_state: [
-            { type: 'com.hafleet.admin.binding.v1', state_key: '', content: binding },
+            { type: 'com.hagency.admin.binding.v1', state_key: '', content: binding },
             ...(encrypted ? [{ type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } }] : []),
           ],
         } });
@@ -136,10 +136,10 @@ export class Workflow {
     }
     const state = await this.roomState(plan.roomId, token, asUser);
     const creator = stateContent(state, 'm.room.create')?.creator ?? state.find(event => event.type === 'm.room.create')?.sender;
-    if (creator !== actor || !sameBinding(stateContent(state, 'com.hafleet.admin.binding.v1'), binding)) fail(409, 'room_binding_conflict', 'The room creator or saved operation binding does not match.');
+    if (creator !== actor || !sameBinding(stateContent(state, 'com.hagency.admin.binding.v1'), binding)) fail(409, 'room_binding_conflict', 'The room creator or saved operation binding does not match.');
     if (stateContent(state, 'm.room.join_rules')?.join_rule !== 'invite') fail(409, 'room_privacy_required', 'The managed room must be invite-only.');
     const encryption = stateContent(state, 'm.room.encryption');
-    if (encrypted ? encryption?.algorithm !== 'm.megolm.v1.aes-sha2' : encryption !== undefined) fail(409, 'room_encryption_mismatch', encrypted ? 'Owner approval room must use Matrix encryption.' : 'The HAFleet reception/project channel must be unencrypted.');
+    if (encrypted ? encryption?.algorithm !== 'm.megolm.v1.aes-sha2' : encryption !== undefined) fail(409, 'room_encryption_mismatch', encrypted ? 'Owner approval room must use Matrix encryption.' : 'The Hagency reception/project channel must be unencrypted.');
     return { roomId: plan.roomId, state };
   }
   async reception(id, actor, token) {
@@ -163,7 +163,7 @@ export class Workflow {
       const probe = fleet.probe;
       if (probe.roomId !== roomId) fail(409, 'probe_binding_conflict', 'The saved connectivity probe belongs to a different room.');
       if (!probe.eventId) {
-        const sent = await this.rep(fleet, `/_matrix/client/v3/rooms/${enc(roomId)}/send/com.hafleet.connection.probe.v1/${enc(`probe_${probe.challenge}`)}`, { method: 'PUT', body: { v: 1, fleetId: id, challenge: probe.challenge } });
+        const sent = await this.rep(fleet, `/_matrix/client/v3/rooms/${enc(roomId)}/send/com.hagency.connection.probe.v1/${enc(`probe_${probe.challenge}`)}`, { method: 'PUT', body: { v: 1, fleetId: id, challenge: probe.challenge } });
         if (!sent.event_id) fail(502, 'probe_event_missing', 'Matrix did not acknowledge the connectivity event.');
         probe.eventId = sent.event_id; this.store.save();
       }
@@ -176,7 +176,7 @@ export class Workflow {
         return publicFleet(fleet);
       }
       const receipt = await this.waitForProbe(fleet, probePayload);
-      if (receipt.received !== true || receipt.fleetId !== id || receipt.sourceRoomId !== roomId || receipt.sourceEventId !== probe.eventId || receipt.challenge !== probe.challenge) fail(409, 'event_delivery_unverified', 'HAFleet has not verified receipt of this exact App Service event.');
+      if (receipt.received !== true || receipt.fleetId !== id || receipt.sourceRoomId !== roomId || receipt.sourceEventId !== probe.eventId || receipt.challenge !== probe.challenge) fail(409, 'event_delivery_unverified', 'Hagency has not verified receipt of this exact App Service event.');
       this.ownerFleet(id, actor);
       probe.completedAt = now();
       fleet.connection = { verifiedAt: now(), expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(), sourceRoomId: roomId, sourceEventId: probe.eventId, challenge: probe.challenge };
@@ -204,7 +204,7 @@ export class Workflow {
   }
   async validateProjectRoom(roomId, actor, token, ownerMxid = actor, requireOwnerAuthority = false, signal) {
     const state = await this.roomState(roomId, token, undefined, signal);
-    if (stateContent(state, 'm.room.encryption')) fail(409, 'project_encrypted', 'The current HAFleet project channel requires an unencrypted room.');
+    if (stateContent(state, 'm.room.encryption')) fail(409, 'project_encrypted', 'The current Hagency project channel requires an unencrypted room.');
     if (stateContent(state, 'm.room.join_rules')?.join_rule !== 'invite') fail(409, 'project_privacy_required', 'The project room must be invite-only.');
     if (stateContent(state, 'm.room.member', actor)?.membership !== 'join' || stateContent(state, 'm.room.member', ownerMxid)?.membership !== 'join') fail(403, 'project_membership_required', 'The requester and recorded project owner must be joined members.');
     const power = stateContent(state, 'm.room.power_levels') ?? {};
@@ -219,7 +219,7 @@ export class Workflow {
     const allowed = [project.ownerMxid, project.approvalBotMxid].sort();
     if (stateContent(state, 'm.room.encryption')?.algorithm !== 'm.megolm.v1.aes-sha2' || stateContent(state, 'm.room.join_rules')?.join_rule !== 'invite') fail(409, 'owner_dm_privacy_required', 'Owner approvals require an encrypted invite-only room.');
     if (state.some(event => event.type === 'm.room.member' && ['join', 'invite'].includes(event.content?.membership) && !allowed.includes(event.state_key))) fail(409, 'owner_dm_not_private', 'The owner approval room contains an unrelated joined or invited member.');
-    if (digest(members) !== digest(allowed)) fail(409, 'owner_dm_join_pending', 'Waiting for the HAFleet approval identity to join the private owner room.');
+    if (digest(members) !== digest(allowed)) fail(409, 'owner_dm_join_pending', 'Waiting for the Hagency approval identity to join the private owner room.');
     return true;
   }
   async createProject(input, actor, token) {
@@ -241,7 +241,7 @@ export class Workflow {
         project.roomId = room.roomId; this.store.save();
       }
       await this.validateProjectRoom(project.roomId, actor, token, actor, true);
-      await this.palpo.call(`/_matrix/client/v3/rooms/${enc(project.roomId)}/state/com.hafleet.admin.binding.v1/${enc(fleet.id)}`, token, { method: 'PUT', body: { v: 1, fleetId: fleet.id, purpose: 'project', projectId: project.id, ownerMxid: actor, authVersion: project.authVersion } });
+      await this.palpo.call(`/_matrix/client/v3/rooms/${enc(project.roomId)}/state/com.hagency.admin.binding.v1/${enc(fleet.id)}`, token, { method: 'PUT', body: { v: 1, fleetId: fleet.id, purpose: 'project', projectId: project.id, ownerMxid: actor, authVersion: project.authVersion } });
       const targetState = await this.roomState(project.roomId, token);
       const repMembership = stateContent(targetState, 'm.room.member', fleet.representativeMxid)?.membership;
       if (!['join', 'invite'].includes(repMembership)) await this.palpo.call(`/_matrix/client/v3/rooms/${enc(project.roomId)}/invite`, token, { method: 'POST', body: { user_id: fleet.representativeMxid } });
@@ -306,7 +306,7 @@ export class Workflow {
     if (request && request.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID is already bound to different content.');
     if (!request) {
       const offer = capabilities.offers.find(offer => offer.role === role);
-      if (!offer) fail(409, 'role_unavailable', 'This role is not currently published by the HAFleet.');
+      if (!offer) fail(409, 'role_unavailable', 'This role is not currently published by the Hagency.');
       const resource = agentDefinition && offer.resources?.find(resource => resource.id === agentDefinition.resourceId);
       if (agentDefinition && !resource) fail(409, 'resource_unavailable', 'This resource is not currently published for the selected role. Refresh the catalog and review your definition.');
       if (agentDefinition && Object.values(this.store.state.requests).some(other => other.projectId === project.id
@@ -326,7 +326,7 @@ export class Workflow {
         // The private approval-room address travels only over the authenticated
         // per-fleet HTTP channel, never in plaintext reception events.
         const { ownerDmRoomId, ...eventContent } = payload;
-        const event = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(payload.sourceRoomId)}/send/com.hafleet.engagement.request.v1/${enc(`request_${digest({ fleetId: fleet.id, actor, requestId })}`)}`, token, { method: 'PUT', body: eventContent });
+        const event = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(payload.sourceRoomId)}/send/com.hagency.engagement.request.v1/${enc(`request_${digest({ fleetId: fleet.id, actor, requestId })}`)}`, token, { method: 'PUT', body: eventContent });
         if (!event.event_id) fail(502, 'request_event_missing', 'Matrix did not acknowledge the request event.');
         request.sourceEventId = event.event_id; this.store.save();
       }
@@ -344,10 +344,10 @@ export class Workflow {
     } catch (error) { request.lastError = { code: error.code ?? 'internal_error', at: now() }; request.state = 'submission_pending'; this.store.audit(actor, 'request.submit', fleet.id, requestId, 'submission_pending'); throw error; }
   }
   applyStatus(request, result, persist = true) {
-    if (result.requestId !== request.requestId || result.fleetId !== request.fleetId) fail(409, 'request_binding_conflict', 'HAFleet returned a different request binding.');
-    if (result.targetProjectId !== request.payload.targetProjectId || result.targetRoomId !== request.payload.targetRoomId || result.sourceRoomId !== request.payload.sourceRoomId || result.sourceEventId !== request.sourceEventId) fail(409, 'request_binding_conflict', 'HAFleet returned a different source or target project.');
+    if (result.requestId !== request.requestId || result.fleetId !== request.fleetId) fail(409, 'request_binding_conflict', 'Hagency returned a different request binding.');
+    if (result.targetProjectId !== request.payload.targetProjectId || result.targetRoomId !== request.payload.targetRoomId || result.sourceRoomId !== request.payload.sourceRoomId || result.sourceEventId !== request.sourceEventId) fail(409, 'request_binding_conflict', 'Hagency returned a different source or target project.');
     if (request.payload.agentDefinition && canonicalJson(result.agentDefinition) !== canonicalJson(request.payload.agentDefinition)) {
-      fail(409, 'request_binding_conflict', 'HAFleet did not confirm the requested Agent definition. Update its integration and retry this same request.');
+      fail(409, 'request_binding_conflict', 'Hagency did not confirm the requested Agent definition. Update its integration and retry this same request.');
     }
     const fields = ['v', 'fleetId', 'requestId', 'engagementId', 'state', 'targetProjectId', 'targetRoomId', 'sourceRoomId', 'sourceEventId', 'role', 'requestedTokens', 'allocatedTokens', 'agentMxid', 'bound', 'ready', 'decidedAt', 'endedAt'];
     request.provider = Object.fromEntries(fields.filter(key => result[key] !== undefined).map(key => [key, result[key]]));
@@ -403,7 +403,7 @@ export class Workflow {
           if (!request.agentJoined) request.state = 'admission_pending';
           else if (request.provider.ready === true && request.provider.bound === true && request.provider.fulfillment?.incomplete !== true && request.provider.serving?.framework && request.provider.serving?.model) {
             const agentId = `fulfilled_${digest({ requestId: request.requestId }).slice(0, 20)}`;
-            managedAgent = { id: agentId, fleetId: fleet.id, mxid: agentMxid, role: request.payload.role, displayName: request.payload.agentDefinition?.name ?? request.provider.agent ?? agentMxid, approvedRequestId: request.requestId, engagementId: request.provider.engagementId, projectId: project.id, authorization: 'verified_hafleet_fulfillment', state: 'registered', createdAt: now(), localTaskStop: 'unknown' };
+            managedAgent = { id: agentId, fleetId: fleet.id, mxid: agentMxid, role: request.payload.role, displayName: request.payload.agentDefinition?.name ?? request.provider.agent ?? agentMxid, approvedRequestId: request.requestId, engagementId: request.provider.engagementId, projectId: project.id, authorization: 'verified_hagency_fulfillment', state: 'registered', createdAt: now(), localTaskStop: 'unknown' };
             request.usable = true;
           }
           else request.state = 'preparing';

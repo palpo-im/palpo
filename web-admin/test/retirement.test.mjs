@@ -24,7 +24,7 @@ async function setup(t, options = {}) {
   const call = (body = input, headers = {}, route = `/api/fleet/v2/${fleet.id}/retire-agent`, method = 'POST') => new Promise((resolve, reject) => {
     const req = httpRequest(`http://127.0.0.1:${server.address().port}${route}`, {
       method, headers: { Host: 'transport.example.test', 'Content-Type': 'application/json',
-        Authorization: `Bearer ${fleet.transport.token}`, 'X-HAFleet-Generation': String(fleet.transport.generation), ...headers },
+        Authorization: `Bearer ${fleet.transport.token}`, 'X-Hagency-Generation': String(fleet.transport.generation), ...headers },
     }, res => { const parts = []; res.on('data', p => parts.push(p)); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(parts)) })); });
     req.on('error', reject); req.end(method === 'GET' ? undefined : JSON.stringify(body));
   });
@@ -60,7 +60,7 @@ test('outbound retirement rejects human foreign unknown and still allocated iden
   }
   assert.equal((await f.call({ ...f.input, requestId: 'unknown' })).status, 403);
   assert.equal((await f.call(f.input, { Authorization: 'Bearer invalid' })).status, 401);
-  assert.equal((await f.call(f.input, { 'X-HAFleet-Generation': '999' })).status, 409);
+  assert.equal((await f.call(f.input, { 'X-Hagency-Generation': '999' })).status, 409);
   f.store.state.requests.other = { ...structuredClone(f.request), requestId: 'other' };
   assert.equal((await f.call()).body.code, 'agent_still_allocated');
   delete f.store.state.requests.other;

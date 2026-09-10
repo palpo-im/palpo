@@ -55,7 +55,7 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
         const expectedOrigin = machine ? service.transportOrigin : service.relayOrigin;
         if (!expectedOrigin || req.headers.host !== new URL(expectedOrigin).host || req.headers.origin) error(403, 'host_forbidden', 'This machine endpoint requires its fixed server origin and no browser Origin.');
         const token = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1] ?? (relay ? url.searchParams.get('access_token') : null);
-        const generation = req.headers['x-hafleet-generation'];
+        const generation = req.headers['x-hagency-generation'];
         const fleet = service.outbound.authenticate((machine ?? relay)[1], token, generation, !!relay);
         if (machine?.[2] === 'poll' && req.method === 'GET') {
           const controller = new AbortController(); res.once('close', () => controller.abort());

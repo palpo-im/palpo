@@ -81,7 +81,7 @@ test('readiness requires actual pushed event receipt and exact reception members
   const connected = await f.workflow.connect(f.fleet.id, ...owner);
   assert.equal(connected.readiness.ready, true);
   assert.equal(connected.reception.roomId, connected.connection.sourceRoomId);
-  assert.equal(f.events.get(connected.connection.sourceEventId).type, 'com.hafleet.connection.probe.v1');
+  assert.equal(f.events.get(connected.connection.sourceEventId).type, 'com.hagency.connection.probe.v1');
   const count = f.rooms.size;
   await f.workflow.connect(f.fleet.id, ...owner);
   assert.equal(f.rooms.size, count);
@@ -164,7 +164,7 @@ test('project creation is resumable, publishes scoped target binding and creates
   assert.equal(result.state, 'registered'); assert.equal(result.canRequest, true);
   assert.notEqual(result.roomId, result.ownerDmRoomId);
   const target = f.rooms.get(result.roomId);
-  assert.deepEqual(target.state.find(event => event.type === 'com.hafleet.admin.binding.v1' && event.state_key === f.fleet.id).content, { v: 1, fleetId: f.fleet.id, purpose: 'project', projectId: result.id, ownerMxid: owner[0], authVersion: 1 });
+  assert.deepEqual(target.state.find(event => event.type === 'com.hagency.admin.binding.v1' && event.state_key === f.fleet.id).content, { v: 1, fleetId: f.fleet.id, purpose: 'project', projectId: result.id, ownerMxid: owner[0], authVersion: 1 });
   assert.equal(f.rooms.get(result.ownerDmRoomId).state.find(event => event.type === 'm.room.encryption').content.algorithm, 'm.megolm.v1.aes-sha2');
   const count = f.rooms.size;
   const retried = await f.workflow.createProject({ fleetId: f.fleet.id, requestId: 'project-op-1', name: 'Coding project' }, ...owner);
@@ -183,7 +183,7 @@ test('reordered Matrix binding keys recover an existing reception without creati
   const recovered = await f.workflow.connect(f.fleet.id, ...owner);
   assert.equal(recovered.reception.roomId, roomId);
   assert.equal(f.calls.filter(call => call.path === '/_matrix/client/v3/createRoom').length, 1);
-  const binding = f.rooms.get(roomId).state.find(event => event.type === 'com.hafleet.admin.binding.v1');
+  const binding = f.rooms.get(roomId).state.find(event => event.type === 'com.hagency.admin.binding.v1');
   binding.content.purpose = 'another_operation';
   await assert.rejects(f.workflow.connect(f.fleet.id, ...owner), { code: 'room_binding_conflict' });
   assert.equal(f.rooms.size, 1);
@@ -253,7 +253,7 @@ test('status links a real admitted agent only after verified ready fulfillment, 
   assert.equal(requests[0].provider.serving.framework, 'codex');
   assert.ok(!JSON.stringify(requests).includes('must-never-appear'));
   const agents = Object.values(f.service.fleet(f.fleet.id).agents);
-  assert.equal(agents.length, 1); assert.equal(agents[0].authorization, 'verified_hafleet_fulfillment');
+  assert.equal(agents.length, 1); assert.equal(agents[0].authorization, 'verified_hagency_fulfillment');
   assert.equal(agents[0].mxid, fulfilled.agentMxid);
 });
 

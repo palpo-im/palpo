@@ -76,6 +76,6 @@ try {
   assert.ok((await page.locator('#account-admin-requests').innerText()).includes('registered'));
   assert.deepEqual(errors, []);
   writeFileSync(new URL('summary.json', out), JSON.stringify({ passed: true, realPalpo: false, nativeRobrix: false, pageErrors: errors,
-    checks: ['signup form', 'password-free browser receipt', 'pending survives reload', 'Octos verdict received through room history', 'approved account login', 'ordinary member creates project', 'Agent request remains pending HAFleet approval', 'admin room link and request visibility'] }, null, 2));
+    checks: ['signup form', 'password-free browser receipt', 'pending survives reload', 'Octos verdict received through room history', 'approved account login', 'ordinary member creates project', 'Agent request remains pending Hagency approval', 'admin room link and request visibility'] }, null, 2));
   console.log('Account signup browser flow passed: signup → approval fixture → login → project → Agent request.');
 } finally { await browser.close(); await server.accounts.stop(); await new Promise(resolve => server.close(resolve)); f.store.close(); }

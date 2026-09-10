@@ -41,7 +41,7 @@ export class Palpo {
       signal?.throwIfAborted();
     } catch {
       if (signal?.aborted) throw signal.reason;
-      fail(502, this.label === 'Palpo' ? 'palpo_unreachable' : 'hafleet_unreachable', `The configured ${this.label} did not respond.`);
+      fail(502, this.label === 'Palpo' ? 'palpo_unreachable' : 'hagency_unreachable', `The configured ${this.label} did not respond.`);
     }
     let data;
     try { data = raw ? JSON.parse(raw) : {}; } catch { data = {}; }

@@ -2,7 +2,7 @@
 
 The signup page uses the same Palpo Matrix accounts as the web member dashboard
 and Robrix. A request does not create an account, a project, or an Agent. It
-queues a private administrator decision. HAFleet resource approval is unchanged.
+queues a private administrator decision. Hagency resource approval is unchanged.
 
 1. Applicant chooses **Request an account**, a local username, display name,
    password (12–256 characters), and a reason. A private status receipt is stored
@@ -20,7 +20,7 @@ queues a private administrator decision. HAFleet resource approval is unchanged.
    authority and deadline. Text replies do not approve requests.
 6. An approved request creates an ordinary local Matrix account using the
    homeserver registration API. The applicant signs in with their chosen
-   password, creates a project and submits an Agent request to HAFleet.
+   password, creates a project and submits an Agent request to Hagency.
 
 ## Operator configuration
 
@@ -69,13 +69,13 @@ receipt during network failures.
 No configuration means signup is disabled, preserving login-only installations.
 An invalid configured identity or room keeps signup unavailable and exposes the
 problem to logged-in administrators. Account processing uses its own worker and
-does not hold HAFleet's mutation queue during polling or registration.
+does not hold Hagency's mutation queue during polling or registration.
 
 ## Verification
 
 `npm test` includes authorization, replay, conflicts, expiry, password handling,
 restart recovery and real local HTTP boundary tests. `node test/accounts.browser.mjs`
 uses Playwright against a fixture homeserver for signup, approval receipt, login,
-project creation and an Agent request that stays pending HAFleet approval. Its
+project creation and an Agent request that stays pending Hagency approval. Its
 Matrix decision is a fixture, not a native Robrix click. Real homeserver/Robrix evidence
 must be recorded separately.

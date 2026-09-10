@@ -5,7 +5,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: palpo-web-admin:${RELEASE_ID:?set RELEASE_ID to the source snapshot hash}
     labels:
-      org.hafleet.component: palpo-web-admin
+      org.hagency.component: palpo-web-admin
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -16,7 +16,7 @@ services:
       PALPO_SERVER_NAME: ${PALPO_SERVER_NAME:?set the Matrix server name}
       PALPO_CALLBACK_ORIGINS: ${PALPO_CALLBACK_ORIGINS:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set the public HTTPS browser origin}
-      PALPO_TRANSPORT_ORIGIN: ${PALPO_TRANSPORT_ORIGIN:?set the public HTTPS origin for outbound HAFleet clients}
+      PALPO_TRANSPORT_ORIGIN: ${PALPO_TRANSPORT_ORIGIN:?set the public HTTPS origin for outbound Hagency clients}
       PALPO_FLEET_QUEUE_MAX_PENDING: ${PALPO_FLEET_QUEUE_MAX_PENDING:-1000}
       PALPO_FLEET_QUEUE_MAX_RECORDS: ${PALPO_FLEET_QUEUE_MAX_RECORDS:-10000}
       PALPO_FLEET_QUEUE_MAX_BYTES: ${PALPO_FLEET_QUEUE_MAX_BYTES:-16777216}
