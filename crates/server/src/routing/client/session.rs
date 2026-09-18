@@ -721,8 +721,10 @@ mod tests {
     }
 
     fn test_oidc_config() -> config::OidcConfig {
-        let mut oidc = config::OidcConfig::default();
-        oidc.enable = true;
+        let mut oidc = config::OidcConfig {
+            enable: true,
+            ..config::OidcConfig::default()
+        };
         for (key, display_name) in [
             ("github", Some("Sign in with GitHub".to_owned())),
             ("google", None),
