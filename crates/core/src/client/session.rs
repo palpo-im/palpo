@@ -617,9 +617,11 @@ pub struct IdentityProvider {
     pub name: String,
 
     /// The icon for the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<OwnedMxcUri>,
 
     /// The brand identifier for the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<IdentityProviderBrand>,
 }
 

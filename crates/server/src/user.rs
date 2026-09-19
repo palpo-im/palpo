@@ -274,12 +274,23 @@ pub async fn find_from_openid_token(token: &str) -> AppResult<OwnedUserId> {
 /// `m.login.token` mechanism.
 pub async fn create_login_token(user_id: &UserId, token: &str) -> AppResult<u64> {
     let expires_in = crate::config::get().login_token_ttl;
+    create_login_token_with_ttl(user_id, token, expires_in).await?;
+    Ok(expires_in)
+}
+
+/// Creates a single-use login token with the requested lifetime in
+/// milliseconds.
+pub async fn create_login_token_with_ttl(
+    user_id: &UserId,
+    token: &str,
+    expires_in: u64,
+) -> AppResult<()> {
     let now = UnixMillis::now().get();
     let expires_at = now.saturating_add(expires_in).min(i64::MAX as u64) as i64;
 
     data::user::login_token::upsert_login_token(user_id, token, expires_at).await?;
 
-    Ok(expires_in)
+    Ok(())
 }
 
 /// Find out which user a login token belongs to.
