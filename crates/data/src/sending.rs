@@ -60,6 +60,26 @@ pub async fn get_edu_cursor(server: &ServerName) -> DataResult<Option<i64>> {
         .map_err(Into::into)
 }
 
+/// Creates the first delivered-EDU cursor without changing an existing one.
+///
+/// Selective-presence wakeups use this to anchor a new destination immediately before
+/// the presence row that caused the wakeup. A later successful transaction remains the
+/// only operation allowed to advance an established cursor.
+pub async fn initialize_edu_cursor(server: &ServerName, edu_sn: i64) -> DataResult<()> {
+    let now = UnixMillis::now().get() as i64;
+    diesel::insert_into(outgoing_edu_cursors::table)
+        .values((
+            outgoing_edu_cursors::server_id.eq(server),
+            outgoing_edu_cursors::edu_sn.eq(edu_sn),
+            outgoing_edu_cursors::updated_at.eq(now),
+        ))
+        .on_conflict(outgoing_edu_cursors::server_id)
+        .do_nothing()
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 /// Record that EDUs up to `edu_sn` have been delivered to `server`. The
 /// cursor never moves backwards, so concurrent instances cannot rewind each
 /// other and cause duplicate selection windows.
