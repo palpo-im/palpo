@@ -68,6 +68,7 @@ async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
             .map(config::DelegatedAuthConfig::password_login_enabled)
             .unwrap_or(false),
         oidc_providers,
+        conf.login_via_existing_session,
     ))))
 }
 
@@ -75,15 +76,22 @@ fn supported_login_flows(
     delegated_auth_enabled: bool,
     delegated_password_login_enabled: bool,
     oidc_providers: Vec<IdentityProvider>,
+    get_login_token_enabled: bool,
 ) -> Vec<LoginType> {
     let mut flows = Vec::new();
+    let oidc_sso_enabled = !oidc_providers.is_empty();
     if !delegated_auth_enabled || delegated_password_login_enabled {
         flows.push(LoginType::password());
     }
     flows.push(LoginType::appservice());
-    if delegated_auth_enabled || !oidc_providers.is_empty() {
+    if delegated_auth_enabled || oidc_sso_enabled {
         flows.push(LoginType::Sso(SsoLoginType {
             identity_providers: oidc_providers,
+        }));
+    }
+    if oidc_sso_enabled {
+        flows.push(LoginType::Token(TokenLoginType {
+            get_login_token: get_login_token_enabled,
         }));
     }
     flows
@@ -221,12 +229,7 @@ async fn login(
 
             user_id
         }
-        LoginInfo::Token(Token { token }) => {
-            if !crate::config::get().login_via_existing_session {
-                return Err(MatrixError::unknown("Token login is not enabled.").into());
-            }
-            user::take_login_token(token).await?
-        }
+        LoginInfo::Token(Token { token }) => user::take_login_token(token).await?,
         LoginInfo::Jwt(info) => {
             let conf = config::get();
             let jwt_conf = conf
@@ -749,7 +752,7 @@ mod tests {
 
     #[test]
     fn delegated_auth_advertises_delegated_login_flows_without_password_exchange() {
-        let flows = supported_login_flows(true, false, Vec::new());
+        let flows = supported_login_flows(true, false, Vec::new(), false);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
@@ -760,7 +763,7 @@ mod tests {
 
     #[test]
     fn delegated_auth_advertises_password_when_exchange_is_configured() {
-        let flows = supported_login_flows(true, true, Vec::new());
+        let flows = supported_login_flows(true, true, Vec::new(), false);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
@@ -775,7 +778,7 @@ mod tests {
 
     #[test]
     fn legacy_auth_keeps_existing_login_flows() {
-        let flows = supported_login_flows(false, false, Vec::new());
+        let flows = supported_login_flows(false, false, Vec::new(), false);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
@@ -786,8 +789,12 @@ mod tests {
 
     #[test]
     fn oidc_login_advertises_sso_with_identity_providers() {
-        let flows =
-            supported_login_flows(false, false, oidc_identity_providers(&test_oidc_config()));
+        let flows = supported_login_flows(
+            false,
+            false,
+            oidc_identity_providers(&test_oidc_config()),
+            true,
+        );
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
@@ -795,7 +802,8 @@ mod tests {
             vec![
                 "m.login.password",
                 "m.login.application_service",
-                "m.login.sso"
+                "m.login.sso",
+                "m.login.token"
             ]
         );
 
@@ -814,13 +822,21 @@ mod tests {
 
     #[test]
     fn delegated_auth_with_oidc_advertises_oidc_identity_providers() {
-        let flows =
-            supported_login_flows(true, false, oidc_identity_providers(&test_oidc_config()));
+        let flows = supported_login_flows(
+            true,
+            false,
+            oidc_identity_providers(&test_oidc_config()),
+            false,
+        );
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
             flow_types,
-            vec!["m.login.application_service", "m.login.sso"]
+            vec![
+                "m.login.application_service",
+                "m.login.sso",
+                "m.login.token"
+            ]
         );
 
         let Some(LoginType::Sso(sso)) = flows
@@ -840,7 +856,7 @@ mod tests {
         };
         assert!(oidc_identity_providers(&oidc).is_empty());
 
-        let flows = supported_login_flows(false, false, oidc_identity_providers(&oidc));
+        let flows = supported_login_flows(false, false, oidc_identity_providers(&oidc), false);
         let flow_types = flows.iter().map(LoginType::login_type).collect::<Vec<_>>();
 
         assert_eq!(
@@ -866,7 +882,7 @@ mod tests {
             serde_json::json!({
                 "type": "m.login.sso",
                 "identity_providers": [
-                    {"id": "github", "name": "GitHub", "icon": null, "brand": null}
+                    {"id": "github", "name": "GitHub"}
                 ]
             })
         );
@@ -875,8 +891,8 @@ mod tests {
     #[test]
     fn oidc_sso_redirect_url_targets_the_custom_oidc_flow() {
         assert_eq!(
-            build_oidc_sso_redirect_url("github"),
-            "/_matrix/client/oidc/auth?provider=github"
+            build_oidc_sso_redirect_url("github&work", "element://login?state=abc"),
+            "/_matrix/client/oidc/auth?provider=github%26work&redirectUrl=element%3A%2F%2Flogin%3Fstate%3Dabc"
         );
     }
 
@@ -884,6 +900,39 @@ mod tests {
     fn default_oidc_provider_picks_the_first_configured_provider() {
         let provider = default_oidc_provider(&test_oidc_config()).unwrap();
         assert_eq!(provider, "github");
+    }
+
+    #[test]
+    fn default_oidc_provider_honors_the_configured_default() {
+        let oidc = config::OidcConfig {
+            default_provider: Some("google".to_owned()),
+            ..test_oidc_config()
+        };
+        assert_eq!(default_oidc_provider(&oidc).unwrap(), "google");
+    }
+
+    #[test]
+    fn delegated_authorization_url_uses_discovered_endpoint() {
+        let url = build_delegated_authorization_url(
+            "https://idm.example.com/ui/oauth2?prompt=login",
+            "matrix-client",
+            "https://client.example/callback?state=client-state",
+            "server-state",
+        )
+        .unwrap();
+        let url = url::Url::parse(&url).unwrap();
+        let params = url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(url.path(), "/ui/oauth2");
+        assert_eq!(params.get("prompt").unwrap(), "login");
+        assert_eq!(params.get("client_id").unwrap(), "matrix-client");
+        assert_eq!(
+            params.get("redirect_uri").unwrap(),
+            "https://client.example/callback?state=client-state"
+        );
+        assert_eq!(params.get("state").unwrap(), "server-state");
     }
 
     #[test]
@@ -986,8 +1035,9 @@ fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
         .ok_or_else(|| MatrixError::bad_json("Missing redirectUrl parameter"))
 }
 
-/// Build the authorization URL for the delegated auth issuer.
-fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
+/// Build the authorization URL for the delegated auth issuer from its OIDC
+/// discovery metadata.
+async fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
     let conf = config::get();
     let da = conf
         .enabled_delegated_auth()
@@ -1000,18 +1050,33 @@ fn build_sso_redirect_url(redirect_url: &str) -> Result<String, MatrixError> {
         .client_id
         .as_deref()
         .ok_or_else(|| MatrixError::unknown("Delegated auth client_id not configured"))?;
+    let provider_info = super::oidc::discover_oidc_metadata(issuer).await?;
 
-    let state = utils::random_string(TOKEN_LENGTH);
-    let authorize_url = format!("{}/authorize", issuer.trim_end_matches('/'));
-    let params = url::form_urlencoded::Serializer::new(String::new())
+    build_delegated_authorization_url(
+        &provider_info.authorization_endpoint,
+        client_id,
+        redirect_url,
+        &utils::random_string(TOKEN_LENGTH),
+    )
+}
+
+fn build_delegated_authorization_url(
+    authorization_endpoint: &str,
+    client_id: &str,
+    redirect_url: &str,
+    state: &str,
+) -> Result<String, MatrixError> {
+    let mut authorize_url = url::Url::parse(authorization_endpoint)
+        .map_err(|e| MatrixError::unknown(format!("Invalid authorization endpoint: {e}")))?;
+    authorize_url
+        .query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", client_id)
-        .append_pair("redirect_url", redirect_url)
+        .append_pair("redirect_uri", redirect_url)
         .append_pair("scope", "openid urn:matrix:org.matrix.msc2967.client:api:*")
-        .append_pair("state", &state)
-        .finish();
+        .append_pair("state", state);
 
-    Ok(format!("{authorize_url}?{params}"))
+    Ok(authorize_url.into())
 }
 
 /// Map the custom OIDC provider configs to MSC2858 identity providers.
@@ -1033,21 +1098,31 @@ fn oidc_identity_providers(oidc: &config::OidcConfig) -> Vec<IdentityProvider> {
 
 /// Build the redirect target for the custom OIDC login flow.
 ///
-/// Note: `/_matrix/client/oidc/auth` currently has no post-login redirect
-/// parameter — `/oidc/callback` returns the login credentials as JSON — so the
-/// client's `redirectUrl` can only be validated, not carried through the OIDC
-/// flow yet. A relative URL is enough because `/oidc/auth` is served by the
-/// same host this endpoint was reached on.
-fn build_oidc_sso_redirect_url(provider: &str) -> String {
-    format!("/_matrix/client/oidc/auth?provider={provider}")
+/// A relative URL is enough because `/oidc/auth` is served by the same host
+/// this endpoint was reached on.
+fn build_oidc_sso_redirect_url(provider: &str, redirect_url: &str) -> String {
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("provider", provider)
+        .append_pair("redirectUrl", redirect_url)
+        .finish();
+    format!("/_matrix/client/oidc/auth?{params}")
 }
 
 /// Resolve the provider for `/login/sso/redirect` without an `idpId`.
 ///
-/// With multiple providers this picks the first configured one (alphabetical
-/// map order); clients should use the `/login/sso/redirect/{idpId}` variant to
-/// select a specific provider.
+/// With multiple providers this honors `default_provider`, then falls back to
+/// the first configured one (alphabetical map order). Clients should use the
+/// `/login/sso/redirect/{idpId}` variant to select a specific provider.
 fn default_oidc_provider(oidc: &config::OidcConfig) -> Result<String, MatrixError> {
+    if let Some(provider) = &oidc.default_provider {
+        if oidc.providers.contains_key(provider) {
+            return Ok(provider.clone());
+        }
+        return Err(MatrixError::not_found(format!(
+            "Unknown default OIDC provider: {provider}"
+        )));
+    }
+
     oidc.providers
         .keys()
         .next()
@@ -1058,20 +1133,19 @@ fn default_oidc_provider(oidc: &config::OidcConfig) -> Result<String, MatrixErro
 #[endpoint]
 async fn redirect(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppResult<()> {
     let conf = config::get();
+    let redirect_url = get_redirect_url(req)?;
     if conf.enabled_delegated_auth().is_some() {
-        let redirect_url = get_redirect_url(req)?;
-        let auth_url = build_sso_redirect_url(&redirect_url)?;
+        let auth_url = build_sso_redirect_url(&redirect_url).await?;
         res.render(salvo::prelude::Redirect::found(auth_url));
         return Ok(());
     }
 
-    get_redirect_url(req)?;
     let Some(oidc) = conf.enabled_oidc() else {
         return Err(MatrixError::not_found("SSO is not enabled on this server").into());
     };
     let provider = default_oidc_provider(oidc)?;
     res.render(salvo::prelude::Redirect::found(
-        build_oidc_sso_redirect_url(&provider),
+        build_oidc_sso_redirect_url(&provider, &redirect_url),
     ));
     Ok(())
 }
@@ -1084,23 +1158,16 @@ async fn provider_url(
     res: &mut Response,
 ) -> AppResult<()> {
     let conf = config::get();
-    if conf.enabled_delegated_auth().is_some() {
-        let redirect_url = get_redirect_url(req)?;
-        let auth_url = build_sso_redirect_url(&redirect_url)?;
-        res.render(salvo::prelude::Redirect::found(auth_url));
-        return Ok(());
-    }
-
-    get_redirect_url(req)?;
-    let Some(oidc) = conf.enabled_oidc() else {
-        return Err(MatrixError::not_found("SSO is not enabled on this server").into());
-    };
+    let redirect_url = get_redirect_url(req)?;
     let idp_id = idp_id.into_inner();
+    let Some(oidc) = conf.enabled_oidc() else {
+        return Err(MatrixError::not_found(format!("Unknown identity provider: {idp_id}")).into());
+    };
     if !oidc.providers.contains_key(&idp_id) {
         return Err(MatrixError::not_found(format!("Unknown identity provider: {idp_id}")).into());
     }
     res.render(salvo::prelude::Redirect::found(
-        build_oidc_sso_redirect_url(&idp_id),
+        build_oidc_sso_redirect_url(&idp_id, &redirect_url),
     ));
     Ok(())
 }
