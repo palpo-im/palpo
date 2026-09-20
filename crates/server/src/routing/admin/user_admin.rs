@@ -11,13 +11,18 @@
 //! - POST /_synapse/admin/v1/reset_password/{user_id}
 //! - GET/PUT /_synapse/admin/v1/users/{user_id}/admin
 //! - POST/DELETE /_synapse/admin/v1/users/{user_id}/shadow_ban
+//! - POST /_synapse/admin/v1/users/{user_id}/login_token
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::identifiers::*;
-use crate::{EmptyResult, JsonResult, MatrixError, data, empty_ok, json_ok, user};
+use crate::exts::*;
+use crate::{
+    AppResult, EmptyResult, JsonResult, MatrixError, TOKEN_LENGTH, config, data, empty_ok, json_ok,
+    user, utils,
+};
 
 // ============================================================================
 // Response/Request Types
@@ -129,6 +134,26 @@ pub struct SuspendReqBody {
 pub struct SuspendResponse {
     pub user_id: String,
     pub suspended: bool,
+}
+
+/// Request for login token
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct LoginTokenReqBody {
+    /// Requested lifetime of the token in milliseconds.
+    ///
+    /// Defaults to the server's `login_token_ttl` and is clamped to
+    /// [`MIN_LOGIN_TOKEN_TTL_MS`, `MAX_LOGIN_TOKEN_TTL_MS`].
+    #[serde(default)]
+    pub expires_in_ms: Option<u64>,
+}
+
+/// Response for login token
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LoginTokenResponse {
+    /// The single-use token to send as `token` in an `m.login.token` login.
+    pub login_token: String,
+    /// The lifetime of the token in milliseconds.
+    pub expires_in_ms: u64,
 }
 
 /// Response for admin status
@@ -678,6 +703,77 @@ pub async fn suspend_user(
     })
 }
 
+/// Smallest lifetime an admin may request for a login token, in milliseconds.
+const MIN_LOGIN_TOKEN_TTL_MS: u64 = 1_000;
+/// Largest lifetime an admin may request for a login token, in milliseconds.
+const MAX_LOGIN_TOKEN_TTL_MS: u64 = 900_000;
+
+/// POST /_synapse/admin/v1/users/{user_id}/login_token
+///
+/// Mint a single-use `m.login.token` for a local user, so that a trusted
+/// control panel can log a freshly provisioned device in without ever handling
+/// the user's password.
+///
+/// The token is redeemed with the standard `m.login.token` flow of
+/// `POST /_matrix/client/v3/login`, is invalidated on first use, and expires
+/// after `expires_in_ms`.
+///
+/// The request body is optional: `{"expires_in_ms": <u64>}` overrides the
+/// server's `login_token_ttl`, clamped to
+/// [`MIN_LOGIN_TOKEN_TTL_MS`, `MAX_LOGIN_TOKEN_TTL_MS`].
+#[endpoint]
+pub async fn create_user_login_token(
+    user_id: PathParam<OwnedUserId>,
+    req: &mut Request,
+) -> JsonResult<LoginTokenResponse> {
+    let user_id = user_id.into_inner();
+
+    // Login tokens are only meaningful for accounts this server authenticates.
+    if !user_id.is_local() {
+        return Err(
+            MatrixError::invalid_param("Can only create login tokens for local users").into(),
+        );
+    }
+
+    // Verify user exists
+    if !data::user::user_exists(&user_id).await? {
+        return Err(MatrixError::not_found("User not found").into());
+    }
+
+    if data::user::is_deactivated(&user_id).await? {
+        return Err(MatrixError::user_deactivated("User is deactivated").into());
+    }
+
+    let expires_in_ms = requested_login_token_ttl(read_login_token_req_body(req).await?);
+
+    let login_token = utils::random_string(TOKEN_LENGTH);
+    user::create_login_token_with_ttl(&user_id, &login_token, expires_in_ms).await?;
+
+    json_ok(LoginTokenResponse {
+        login_token,
+        expires_in_ms,
+    })
+}
+
+/// Parse the optional JSON body of the login token endpoint.
+async fn read_login_token_req_body(req: &mut Request) -> AppResult<LoginTokenReqBody> {
+    let payload = req.payload().await?;
+    if payload.is_empty() {
+        return Ok(LoginTokenReqBody::default());
+    }
+
+    serde_json::from_slice::<LoginTokenReqBody>(payload)
+        .map_err(|e| MatrixError::bad_json(e.to_string()).into())
+}
+
+/// Resolve the requested lifetime against the server default and the allowed
+/// bounds.
+fn requested_login_token_ttl(body: LoginTokenReqBody) -> u64 {
+    body.expires_in_ms
+        .unwrap_or_else(|| config::get().login_token_ttl)
+        .clamp(MIN_LOGIN_TOKEN_TTL_MS, MAX_LOGIN_TOKEN_TTL_MS)
+}
+
 // ============================================================================
 // Phase 2: Extended User Management
 // ============================================================================
@@ -906,6 +1002,8 @@ pub fn router() -> Router {
         )
         // v1/suspend/{user_id}
         .push(Router::with_path("v1/suspend/{user_id}").put(suspend_user))
+        // v1/users/{user_id}/login_token
+        .push(Router::with_path("v1/users/{user_id}/login_token").post(create_user_login_token))
         // Phase 2: Extended User Management
         // v1/whois/{user_id}
         .push(Router::with_path("v1/whois/{user_id}").get(whois_user))
@@ -922,4 +1020,35 @@ pub fn router() -> Router {
                 .post(set_user_ratelimit)
                 .delete(delete_user_ratelimit),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requested_login_token_ttl_uses_the_requested_lifetime() {
+        assert_eq!(
+            requested_login_token_ttl(LoginTokenReqBody {
+                expires_in_ms: Some(300_000),
+            }),
+            300_000
+        );
+    }
+
+    #[test]
+    fn requested_login_token_ttl_clamps_to_the_allowed_range() {
+        assert_eq!(
+            requested_login_token_ttl(LoginTokenReqBody {
+                expires_in_ms: Some(0),
+            }),
+            MIN_LOGIN_TOKEN_TTL_MS
+        );
+        assert_eq!(
+            requested_login_token_ttl(LoginTokenReqBody {
+                expires_in_ms: Some(u64::MAX),
+            }),
+            MAX_LOGIN_TOKEN_TTL_MS
+        );
+    }
 }

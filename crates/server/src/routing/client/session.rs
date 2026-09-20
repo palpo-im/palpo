@@ -89,11 +89,14 @@ fn supported_login_flows(
             identity_providers: oidc_providers,
         }));
     }
-    if oidc_sso_enabled {
-        flows.push(LoginType::Token(TokenLoginType {
-            get_login_token: get_login_token_enabled,
-        }));
-    }
+    // `POST /login` accepts `m.login.token` unconditionally, no matter who
+    // minted the token: the SSO callback, `POST /login/get_token`, or the admin
+    // API. Advertise the flow whenever the server would honour it so clients
+    // stop treating token login as SSO-only. `get_login_token` still reports
+    // only whether clients may mint their own token from an existing session.
+    flows.push(LoginType::Token(TokenLoginType {
+        get_login_token: get_login_token_enabled,
+    }));
     flows
 }
 
@@ -757,7 +760,11 @@ mod tests {
 
         assert_eq!(
             flow_types,
-            vec!["m.login.application_service", "m.login.sso"]
+            vec![
+                "m.login.application_service",
+                "m.login.sso",
+                "m.login.token"
+            ]
         );
     }
 
@@ -771,7 +778,8 @@ mod tests {
             vec![
                 "m.login.password",
                 "m.login.application_service",
-                "m.login.sso"
+                "m.login.sso",
+                "m.login.token"
             ]
         );
     }
@@ -783,7 +791,11 @@ mod tests {
 
         assert_eq!(
             flow_types,
-            vec!["m.login.password", "m.login.application_service"]
+            vec![
+                "m.login.password",
+                "m.login.application_service",
+                "m.login.token"
+            ]
         );
     }
 
@@ -861,8 +873,38 @@ mod tests {
 
         assert_eq!(
             flow_types,
-            vec!["m.login.password", "m.login.application_service"]
+            vec![
+                "m.login.password",
+                "m.login.application_service",
+                "m.login.token"
+            ]
         );
+    }
+
+    #[test]
+    fn token_login_is_advertised_without_oidc() {
+        let flows = supported_login_flows(false, false, Vec::new(), false);
+
+        let Some(LoginType::Token(token)) = flows
+            .into_iter()
+            .find(|flow| flow.login_type() == "m.login.token")
+        else {
+            panic!("token flow missing");
+        };
+        assert!(!token.get_login_token);
+    }
+
+    #[test]
+    fn token_login_reports_get_login_token_from_config() {
+        let flows = supported_login_flows(false, false, Vec::new(), true);
+
+        let Some(LoginType::Token(token)) = flows
+            .into_iter()
+            .find(|flow| flow.login_type() == "m.login.token")
+        else {
+            panic!("token flow missing");
+        };
+        assert!(token.get_login_token);
     }
 
     #[test]
