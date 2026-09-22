@@ -314,6 +314,7 @@ async fn set_avatar_url(
     // Allow if the user is updating their own profile, or if an appservice is updating
     // a user within its namespace
     ensure_profile_update_allowed(authed, &user_id)?;
+    data::user::ensure_profile_exists(&user_id).await?;
 
     let SetAvatarUrlReqBody {
         avatar_url,
