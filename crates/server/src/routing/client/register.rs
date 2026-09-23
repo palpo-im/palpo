@@ -24,12 +24,10 @@ use crate::{
 };
 
 pub fn public_router() -> Router {
-    Router::with_path("register").push(
-        Router::with_hoop(hoops::limit_rate_registration)
-            .push(Router::with_path("available").get(available))
-            .post(register)
-            .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
-    )
+    Router::with_path("register")
+        .push(Router::with_path("available").get(available))
+        .post(register)
+        .push(Router::with_path("m.login.registration_token/validity").get(validate_token))
 }
 
 pub fn authed_router() -> Router {
@@ -52,6 +50,7 @@ async fn register(
     _depot: &mut Depot,
     _res: &mut Response,
 ) -> JsonResult<RegisterResBody> {
+    hoops::check_registration_rate(req)?;
     let body = body.into_inner();
     // For complement test `TestRequestEncodingFails`.
     if body.is_default() {
@@ -322,7 +321,11 @@ async fn register(
 /// Note: This will not reserve the username, so the username might become invalid when trying to
 /// register
 #[endpoint]
-async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableResBody> {
+async fn available(
+    username: QueryParam<String, true>,
+    req: &mut Request,
+) -> JsonResult<AvailableResBody> {
+    hoops::check_registration_available_rate(req)?;
     if config::get().enabled_delegated_auth().is_some() {
         return Err(MatrixError::forbidden(
             "Local registration is disabled while delegated authentication is enabled.",
@@ -374,9 +377,20 @@ async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableRe
 // "/_matrix/client/v1/register/m.login.registration_token/validity",     }
 // };
 #[endpoint]
-async fn validate_token(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
-    let _authed = depot.authed_info()?;
-    empty_ok()
+async fn validate_token(
+    token: QueryParam<String, true>,
+    req: &mut Request,
+) -> JsonResult<ValidateTokenResBody> {
+    hoops::check_registration_token_rate(req)?;
+    let token = token.into_inner();
+    let valid = config::get()
+        .registration_token
+        .as_deref()
+        .is_some_and(|expected| {
+            let supplied = token.trim().as_bytes();
+            supplied.len() == expected.len() && supplied.ct_eq(expected.as_bytes()).into()
+        });
+    Ok(Json(ValidateTokenResBody { valid }))
 }
 
 // `POST /_matrix/client/*/register/email/requestToken`

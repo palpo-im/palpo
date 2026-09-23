@@ -38,9 +38,7 @@ pub fn public_router() -> Router {
 pub fn authed_router() -> Router {
     Router::new()
         .push(
-            Router::with_path("login")
-                .hoop(hoops::limit_rate_login)
-                .push(Router::with_path("get_token").post(get_access_token)),
+            Router::with_path("login").push(Router::with_path("get_token").post(get_access_token)),
         )
         .push(Router::with_path("refresh").post(refresh_access_token))
         .push(
@@ -627,6 +625,7 @@ async fn get_access_token(
         return Err(MatrixError::not_json("No JSON body was sent when required.").into());
     }
 
+    hoops::check_login_token_rate(sender_id.as_str())?;
     let login_token = utils::random_string(TOKEN_LENGTH);
     let expires_in = crate::user::create_login_token(sender_id, &login_token).await?;
 

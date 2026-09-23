@@ -82,6 +82,11 @@ pub struct ServerConfig {
     #[serde(default = "default_listener")]
     pub listeners: Vec<ListenerConfig>,
 
+    /// CIDR ranges of reverse proxies trusted to set X-Forwarded-For for
+    /// per-IP rate limits. Leave empty when Palpo is directly exposed.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+
     /// The server_name is the pretty name of this server. It is used as a
     /// suffix for user and room IDs/aliases.
     /// YOU NEED TO EDIT THIS.
@@ -319,17 +324,36 @@ pub struct ServerConfig {
     #[serde(default = "default_rc_registration")]
     pub rc_registration: RateLimitConfig,
 
-    /// Per-IP rate limiting for password change / account deactivation.
+    /// Per-IP rate limiting for username availability checks.
+    ///
+    /// default: { per_second = 0.5, burst = 5 }
+    #[serde(default = "default_rc_registration_available")]
+    pub rc_registration_available: RateLimitConfig,
+
+    /// Per-IP rate limiting for registration token validity checks.
+    ///
+    /// default: { per_second = 0.1, burst = 5 }
+    #[serde(default = "default_rc_registration_token_validity")]
+    pub rc_registration_token_validity: RateLimitConfig,
+
+    /// Per-user rate limiting for failed password UIAA attempts during password
+    /// change and account deactivation.
     ///
     /// default: { per_second = 0.17, burst = 3 }
     #[serde(default = "default_rc_password")]
     pub rc_password: RateLimitConfig,
 
-    /// Per-IP rate limiting for general API endpoints.
+    /// Per-user rate limiting for authenticated, non-read-only API endpoints.
     ///
     /// default: { per_second = 10.0, burst = 50 }
     #[serde(default = "default_rc_message")]
     pub rc_message: RateLimitConfig,
+
+    /// Per-user rate limiting for user directory searches.
+    ///
+    /// default: { per_second = 0.016, burst = 200 }
+    #[serde(default = "default_rc_user_directory")]
+    pub rc_user_directory: RateLimitConfig,
 
     /// Always calls /forget on behalf of the user if leaving a room. This is a
     /// part of MSC4267 "Automatically forgetting rooms on leave"
@@ -1079,6 +1103,14 @@ impl ServerConfig {
             }
         }
 
+        for cidr in &self.trusted_proxies {
+            if ipaddress::IPAddress::parse(cidr).is_err() {
+                return Err(AppError::internal(format!(
+                    "Invalid trusted proxy CIDR range: {cidr}"
+                )));
+            }
+        }
+
         //     if self.allow_registration
         //         &&
         // !self.yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse
@@ -1390,6 +1422,20 @@ fn default_rc_registration() -> RateLimitConfig {
     }
 }
 
+fn default_rc_registration_available() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.5,
+        burst: 5,
+    }
+}
+
+fn default_rc_registration_token_validity() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.1,
+        burst: 5,
+    }
+}
+
 fn default_rc_password() -> RateLimitConfig {
     RateLimitConfig {
         per_second: 0.17,
@@ -1401,6 +1447,13 @@ fn default_rc_message() -> RateLimitConfig {
     RateLimitConfig {
         per_second: 10.0,
         burst: 50,
+    }
+}
+
+fn default_rc_user_directory() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.016,
+        burst: 200,
     }
 }
 

@@ -46,7 +46,6 @@ pub fn authed_router() -> Router {
         )
         .push(
             Router::with_path("deactivate")
-                .hoop(hoops::limit_rate_password)
                 .post(deactivate),
         )
         .push(password::authed_router())
@@ -121,15 +120,18 @@ async fn deactivate(
             .await?;
         return Err(uiaa_info.into());
     };
+    hoops::check_password_attempt(authed.user_id().as_str())?;
     let (authenticated, uiaa) =
         match crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).await {
             Ok(result) => result,
             Err(_) => {
+                hoops::record_password_failure(authed.user_id().as_str())?;
                 res.status_code(StatusCode::UNAUTHORIZED);
                 return Err(MatrixError::forbidden("Authentication failed.", None).into());
             }
         };
     if !authenticated {
+        hoops::record_password_failure(authed.user_id().as_str())?;
         return Err(uiaa.into());
     }
 
