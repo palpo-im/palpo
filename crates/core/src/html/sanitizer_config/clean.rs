@@ -264,7 +264,7 @@ impl SanitizerConfig {
                 {
                     for attr in attrs.iter() {
                         let value = &attr.value;
-                        let attr_name = attr.name.local.as_ref();
+                        let attr_name: &str = attr.name.local.as_ref();
 
                         if let Some(schemes) = deny_schemes.get(attr_name) {
                             // Check if the scheme is denied.
