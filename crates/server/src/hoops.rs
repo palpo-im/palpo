@@ -105,6 +105,10 @@ static MESSAGE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 
 #[handler]
 pub async fn limit_rate_login(req: &mut Request) -> AppResult<()> {
+    check_login_rate(req)
+}
+
+pub fn check_login_rate(req: &Request) -> AppResult<()> {
     if let Some(ip) = extract_ip(req) {
         LOGIN_LIMITER.check(&ip, &crate::config::get().rc_login)?;
     }
