@@ -1515,6 +1515,101 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_oidc_profiles_are_created_repaired_and_preserved() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name": "oidc-profile.example",
+                "db": { "url": "unused-test-config" }
+            }))
+            .unwrap()
+        });
+
+        let server_name = config::server_name();
+        let oidc_config = crate::config::OidcConfig {
+            allow_registration: true,
+            ..Default::default()
+        };
+        let user_id = format!("@oidc-profile-new:{server_name}");
+        let avatar_url = OwnedMxcUri::from(format!("mxc://{server_name}/initial-avatar"));
+
+        let user = create_or_get_user(
+            &user_id,
+            "Mapped Name",
+            Some(avatar_url.clone()),
+            &oidc_config,
+        )
+        .await
+        .unwrap();
+        let profile = crate::data::user::get_profile(&user.id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(profile.display_name.as_deref(), Some("Mapped Name"));
+        assert_eq!(profile.avatar_url, Some(avatar_url));
+
+        crate::data::user::set_display_name(&user.id, "Chosen Name")
+            .await
+            .unwrap();
+        create_or_get_user(&user_id, "Provider Changed", None, &oidc_config)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::data::user::display_name(&user.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Chosen Name")
+        );
+
+        let legacy_user_id = format!("@oidc-profile-legacy:{server_name}");
+        let legacy_user_id = crate::core::identifiers::UserId::parse(legacy_user_id).unwrap();
+        let legacy_user = crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: legacy_user_id.clone(),
+            ty: Some("oidc".to_owned()),
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: legacy_user_id.localpart().to_owned(),
+            server_name: legacy_user_id.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        assert!(
+            crate::data::user::get_profile(&legacy_user.id, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        crate::data::user::set_display_name(&legacy_user.id, "Repaired Name")
+            .await
+            .unwrap();
+        crate::data::user::set_profile_field(
+            &legacy_user.id,
+            "com.example.banner",
+            serde_json::json!("mxc://example.org/banner"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::data::user::display_name(&legacy_user.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Repaired Name")
+        );
+        assert_eq!(
+            crate::data::user::profile_field(&legacy_user.id, "com.example.banner")
+                .await
+                .unwrap(),
+            Some(serde_json::json!("mxc://example.org/banner"))
+        );
+    }
+
+    #[tokio::test]
     async fn discovery_uses_advertised_authorization_and_token_endpoints() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
