@@ -19,6 +19,11 @@
 #
 # listeners =
 
+# Trust X-Forwarded-For for per-IP rate limits only when the direct peer is in
+# one of these CIDR ranges. Use the range of your reverse proxy, not the public
+# client network. Empty by default.
+# trusted_proxies = []
+
 # The server_name is the pretty name of this server. It is used as a
 # suffix for user and room IDs/aliases.
 # YOU NEED TO EDIT THIS.
@@ -199,13 +204,23 @@
 #
 # rc_registration = { per_second = 0.17, burst = 3 } (~1 per 6s, burst of 3)
 
-# Per-IP rate limiting for password change / account deactivation.
+# Username availability checks use a separate allowance.
+# rc_registration_available = { per_second = 0.5, burst = 5 }
+
+# Registration token checks match Synapse's per-IP default.
+# rc_registration_token_validity = { per_second = 0.1, burst = 5 }
+
+# Per-user rate limiting for failed password UIAA attempts during password
+# change and account deactivation.
 #
 # rc_password = { per_second = 0.17, burst = 3 }
 
-# Per-IP rate limiting for general API endpoints.
+# Per-user rate limiting for authenticated, non-read-only API endpoints.
 #
 # rc_message = { per_second = 10.0, burst = 50 }
+
+# Per-user rate limiting for user directory searches (Synapse default).
+# rc_user_directory = { per_second = 0.016, burst = 200 }
 
 # Always calls /forget on behalf of the user if leaving a room. This is a
 # part of MSC4267 "Automatically forgetting rooms on leave"

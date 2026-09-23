@@ -16,7 +16,7 @@ use crate::{AuthArgs, DepotExt, JsonResult, data, hoops, json_ok, room};
 
 pub fn authed_router() -> Router {
     Router::with_path("user_directory/search")
-        .hoop(hoops::limit_rate)
+        .hoop(hoops::limit_rate_user_directory)
         .post(search)
 }
 
