@@ -178,7 +178,11 @@ pub struct OidcProviderConfig {
     /// Override the default mapping of OIDC claims to Matrix user attributes.
     /// Keys are Matrix attributes, values are OIDC claim names.
     ///
-    /// example: { "display_name" = "given_name", "avatar_url" = "picture" }
+    /// The mapped avatar claim must contain an `mxc://` Matrix Content URI;
+    /// ordinary `https://` OIDC picture URLs cannot be used as Matrix avatars
+    /// without first uploading their content to a Matrix media repository.
+    ///
+    /// example: { "display_name" = "given_name", "avatar_url" = "matrix_avatar" }
     ///
     /// default: {}
     #[serde(default)]
