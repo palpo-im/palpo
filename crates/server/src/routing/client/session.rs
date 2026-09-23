@@ -26,7 +26,6 @@ use crate::{
 pub fn public_router() -> Router {
     Router::new().push(
         Router::with_path("login")
-            .hoop(hoops::limit_rate_login)
             .get(login_types)
             .post(login)
             .push(
@@ -114,6 +113,10 @@ async fn login(
     req: &mut Request,
     res: &mut Response,
 ) -> JsonResult<LoginResBody> {
+    // Only login submissions consume the per-IP login allowance. Discovery and
+    // SSO redirects are GET requests under /login and must remain available.
+    hoops::check_login_rate(req)?;
+
     // Validate login method
     // TODO: Other login methods
     let user_id = match &body.login_info {
