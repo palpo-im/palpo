@@ -178,11 +178,11 @@ pub struct OidcProviderConfig {
     /// Override the default mapping of OIDC claims to Matrix user attributes.
     /// Keys are Matrix attributes, values are OIDC claim names.
     ///
-    /// The mapped avatar claim must contain an `mxc://` Matrix Content URI;
-    /// ordinary `https://` OIDC picture URLs cannot be used as Matrix avatars
-    /// without first uploading their content to a Matrix media repository.
+    /// The mapped avatar claim may contain an `mxc://` Matrix Content URI or
+    /// an HTTPS image URL. HTTPS images are fetched and stored as Matrix media
+    /// when a user's profile is first created. Existing avatars are preserved.
     ///
-    /// example: { "display_name" = "given_name", "avatar_url" = "matrix_avatar" }
+    /// example: { "display_name" = "given_name", "avatar_url" = "picture" }
     ///
     /// default: {}
     #[serde(default)]
