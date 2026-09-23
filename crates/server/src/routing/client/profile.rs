@@ -200,25 +200,16 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
             .await?;
         return json_ok(profile_from_federation_response(profile)?);
     }
-    let profile = data::user::get_profile(&user_id, None).await?;
-    let Some(DbProfile {
+    let profile = data::user::get_profile(&user_id, None)
+        .await?
+        .ok_or_else(|| MatrixError::not_found("Profile not found."))?;
+    let DbProfile {
         blurhash,
         avatar_url,
         display_name,
         fields,
         ..
-    }) = profile
-    else {
-        if !data::user::user_exists(&user_id).await? {
-            return Err(MatrixError::not_found("Profile not found.").into());
-        }
-        return json_ok(ProfileResBody {
-            avatar_url: None,
-            blurhash: None,
-            display_name: Some(user_id.localpart().to_owned()),
-            fields: BTreeMap::new(),
-        });
-    };
+    } = profile;
 
     json_ok(ProfileResBody {
         avatar_url,
@@ -336,10 +327,10 @@ async fn set_avatar_url(
         avatar_url,
         blurhash,
     } = body.into_inner();
-    if avatar_url.as_ref().is_some_and(|url| !url.is_valid()) {
+    if !avatar_url.is_valid() {
         return Err(MatrixError::invalid_param("Avatar URL must be an MXC URI.").into());
     }
-    update_avatar_url(&user_id, avatar_url, blurhash).await
+    update_avatar_url(&user_id, Some(avatar_url), blurhash).await
 }
 
 #[endpoint]

@@ -149,9 +149,8 @@ impl DisplayNameResBody {
 pub struct SetAvatarUrlReqBody {
     /// The new avatar URL for the user.
     ///
-    /// `None` is used to unset the avatar.
-    #[serde(default)]
-    pub avatar_url: Option<OwnedMxcUri>,
+    /// Use DELETE on the profile field to unset the avatar.
+    pub avatar_url: OwnedMxcUri,
 
     /// The [BlurHash](https://blurha.sh) for the avatar pointed to by `avatar_url`.
     ///
@@ -286,5 +285,7 @@ mod tests {
             )
             .is_err()
         );
+        assert!(serde_json::from_str::<SetAvatarUrlReqBody>(r#"{}"#).is_err());
+        assert!(serde_json::from_str::<SetAvatarUrlReqBody>(r#"{"avatar_url":null}"#).is_err());
     }
 }

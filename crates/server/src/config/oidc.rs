@@ -179,8 +179,9 @@ pub struct OidcProviderConfig {
     /// Keys are Matrix attributes, values are OIDC claim names.
     ///
     /// The mapped avatar claim may contain an `mxc://` Matrix Content URI or
-    /// an HTTPS image URL. HTTPS images are fetched and stored as Matrix media
-    /// when a user's profile is first created. Existing avatars are preserved.
+    /// an HTTPS URL for a PNG, JPEG, GIF, or WebP image. HTTPS images are
+    /// fetched and stored as Matrix media when a user's profile is first
+    /// created. Existing avatars are preserved.
     ///
     /// example: { "display_name" = "given_name", "avatar_url" = "picture" }
     ///

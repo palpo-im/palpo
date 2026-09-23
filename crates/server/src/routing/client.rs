@@ -352,6 +352,15 @@ mod router_tests {
         assert!(is_routed(Method::PUT, FIELD).await);
         assert!(is_routed(Method::DELETE, FIELD).await);
     }
+
+    #[tokio::test]
+    async fn standard_profile_fields_support_delete() {
+        for field in ["displayname", "avatar_url"] {
+            let path = format!("/client/v3/profile/@alice:example.org/{field}");
+            assert!(is_routed(Method::PUT, &path).await);
+            assert!(is_routed(Method::DELETE, &path).await);
+        }
+    }
 }
 
 #[endpoint]
