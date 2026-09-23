@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use palpo_core::UnixMillis;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -20,7 +19,7 @@ use crate::core::profile::ProfileFieldName;
 use crate::core::serde::{JsonObject, JsonValue};
 use crate::core::user::ProfileResBody;
 use crate::data::schema::*;
-use crate::data::user::{DbProfile, NewDbPresence};
+use crate::data::user::DbProfile;
 use crate::data::{connect, diesel_exists};
 use crate::exts::*;
 use crate::room::timeline;
@@ -404,22 +403,7 @@ async fn update_avatar_url(
         }
     }
 
-    // Presence update
-    crate::data::user::set_presence(
-        NewDbPresence {
-            user_id: user_id.to_owned(),
-            stream_id: None,
-            state: None,
-            status_msg: None,
-            last_active_at: Some(UnixMillis::now()),
-            last_federation_update_at: None,
-            last_user_sync_at: None,
-            currently_active: None,
-            occur_sn: None,
-        },
-        true,
-    )
-    .await?;
+    crate::data::user::refresh_presence_for_profile(user_id).await?;
     for (pdu_builder, room_id) in all_joined_rooms {
         let _ = timeline::build_and_append_pdu(
             pdu_builder,
@@ -552,21 +536,7 @@ async fn update_display_name(user_id: &UserId, display_name: Option<String>) -> 
         .await?;
     }
 
-    crate::data::user::set_presence(
-        NewDbPresence {
-            user_id: user_id.to_owned(),
-            stream_id: None,
-            state: None,
-            status_msg: None,
-            last_active_at: Some(UnixMillis::now()),
-            last_federation_update_at: None,
-            last_user_sync_at: None,
-            currently_active: None,
-            occur_sn: None,
-        },
-        true,
-    )
-    .await?;
+    crate::data::user::refresh_presence_for_profile(user_id).await?;
 
     empty_ok()
 }
