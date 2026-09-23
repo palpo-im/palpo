@@ -143,7 +143,7 @@ fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted_proxies: &[String]) 
 }
 
 fn is_trusted_proxy(ip: IpAddr, trusted_proxies: &[String]) -> bool {
-    let Ok(ip) = ipaddress::IPAddress::parse(&ip.to_string()) else {
+    let Ok(ip) = ipaddress::IPAddress::parse(ip.to_string()) else {
         return false;
     };
     trusted_proxies
