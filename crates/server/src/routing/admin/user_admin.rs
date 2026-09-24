@@ -11,8 +11,8 @@
 //! - POST /_synapse/admin/v1/reset_password/{user_id}
 //! - GET/PUT /_synapse/admin/v1/users/{user_id}/admin
 //! - POST/DELETE /_synapse/admin/v1/users/{user_id}/shadow_ban
-//! - POST /_palpo/admin/v1/users/{user_id}/login_token (Palpo extension,
-//!   also available under /_synapse/admin for existing admin clients)
+//! - POST /_palpo/admin/v1/users/{user_id}/login_token (Palpo extension, also available under
+//!   /_synapse/admin for existing admin clients)
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
