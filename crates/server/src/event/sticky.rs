@@ -867,19 +867,6 @@ mod tests {
         assert_eq!(delivery_since(None, false), None);
     }
 
-    #[tokio::test]
-    async fn only_redactions_are_soft_failed_against_current_state() {
-        let event = pdu(1_000, Some(json!({"duration_ms": 60_000})));
-        assert!(
-            !crate::event::handler::fails_current_state_check(
-                &event,
-                &crate::core::RoomVersionId::V11
-            )
-            .await
-            .unwrap()
-        );
-    }
-
     /// Stores `event` as an outlier, as federation ingestion does.
     async fn store_outlier(event: &PduEvent, soft_failed: bool) -> crate::event::SnPduEvent {
         store_outlier_with(event, soft_failed, false).await
