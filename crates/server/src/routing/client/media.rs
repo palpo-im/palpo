@@ -239,10 +239,9 @@ pub async fn upload_content(
         let metadata = NewDbMetadata {
             media_id: args.media_id.clone(),
             origin_server: conf.server_name.clone(),
-            disposition_type: args
-                .filename
-                .clone()
-                .map(|filename| format!(r#"inline; filename="{filename}""#)),
+            // Only the disposition type belongs here; the filename is stored in
+            // `file_name` and sanitised when the response header is built.
+            disposition_type: Some("inline".into()),
             content_type: args.content_type.clone(),
             file_name,
             file_extension,
