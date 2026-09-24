@@ -103,7 +103,7 @@ fn inbox_stream_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
 // Serialize one inbox's sequence allocation with its sync snapshots across every Palpo process.
 // PostgreSQL sequences advance before the surrounding transaction commits, so readers must
 // take the same database-backed lock before publishing a cursor based on `occur_sn_seq`.
-async fn lock_inbox_stream(
+pub(crate) async fn lock_inbox_stream(
     conn: &mut AsyncPgConnection,
     user_id: &UserId,
     device_id: &DeviceId,
