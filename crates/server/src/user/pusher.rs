@@ -32,10 +32,7 @@ pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<
                     },
                 append,
             } = data;
-            if !append {
-                data::user::pusher::delete_pusher(authed.user_id(), &app_id, &pushkey).await?;
-            }
-            data::user::pusher::insert_pusher(&NewDbPusher {
+            let new_pusher = NewDbPusher {
                 user_id: authed.user_id().to_owned(),
                 profile_tag,
                 kind: kind.name().to_owned(),
@@ -47,10 +44,10 @@ pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<
                 pushkey,
                 lang,
                 data: kind.json_data()?,
-                enabled: true, // TODO
+                enabled: true,
                 created_at: UnixMillis::now(),
-            })
-            .await?;
+            };
+            data::user::pusher::set_pusher(&new_pusher, append).await?;
         }
         PusherAction::Delete(ids) => {
             data::user::pusher::delete_pusher(authed.user_id(), &ids.app_id, &ids.pushkey).await?;
@@ -133,6 +130,7 @@ pub async fn send_push_notice(
     let mut notify = None;
     let mut tweaks = Vec::new();
     let power_levels = room::get_power_levels(&pdu.room_id).await?;
+    let member_count = room::joined_member_count(&pdu.room_id).await?;
 
     for action in data::user::pusher::get_actions(
         user,
@@ -140,6 +138,7 @@ pub async fn send_push_notice(
         &power_levels,
         &pdu.to_sync_room_event_without_transaction_id(),
         &pdu.room_id,
+        member_count,
     )
     .await?
     {
@@ -247,5 +246,118 @@ async fn send_notice(
         // TODO: Handle email
         PusherKind::Email(_) => Ok(()),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    use super::*;
+    use crate::data::connect;
+    use crate::data::room::NewDbRoomUser;
+    use crate::data::schema::*;
+
+    fn http_pusher(user_id: &str, app_id: &str, pushkey: &str) -> NewDbPusher {
+        NewDbPusher {
+            user_id: UserId::parse(user_id).unwrap(),
+            kind: "http".to_owned(),
+            app_id: app_id.to_owned(),
+            app_display_name: "App".to_owned(),
+            device_id: "DEVICE".into(),
+            device_display_name: "Device".to_owned(),
+            access_token_id: None,
+            profile_tag: None,
+            pushkey: pushkey.to_owned(),
+            lang: "en".to_owned(),
+            data: serde_json::json!({ "url": "https://push.example/_matrix/push/v1/notify" }),
+            enabled: true,
+            created_at: UnixMillis::now(),
+        }
+    }
+
+    async fn pusher_owners(app_id: &str, pushkey: &str) -> Vec<String> {
+        user_pushers::table
+            .filter(user_pushers::app_id.eq(app_id))
+            .filter(user_pushers::pushkey.eq(pushkey))
+            .order_by(user_pushers::user_id)
+            .select(user_pushers::user_id)
+            .load::<String>(&mut connect().await.unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_set_pusher_follows_append_semantics() {
+        crate::test_database::init();
+        let (app_id, pushkey) = ("m.example.app", "shared-pushkey");
+
+        // Setting the same pusher again replaces it instead of adding a duplicate, whether
+        // or not `append` is set.
+        data::user::pusher::set_pusher(&http_pusher("@alice:example.com", app_id, pushkey), false)
+            .await
+            .unwrap();
+        data::user::pusher::set_pusher(&http_pusher("@alice:example.com", app_id, pushkey), true)
+            .await
+            .unwrap();
+        assert_eq!(pusher_owners(app_id, pushkey).await, ["@alice:example.com"]);
+
+        // `append` keeps other users' pushers for the same key.
+        data::user::pusher::set_pusher(&http_pusher("@bob:example.com", app_id, pushkey), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            pusher_owners(app_id, pushkey).await,
+            ["@alice:example.com", "@bob:example.com"]
+        );
+
+        // Without `append`, the key moves to the new user.
+        data::user::pusher::set_pusher(&http_pusher("@carol:example.com", app_id, pushkey), false)
+            .await
+            .unwrap();
+        assert_eq!(pusher_owners(app_id, pushkey).await, ["@carol:example.com"]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_joined_member_count_without_statistics_counts_members() {
+        crate::test_database::init();
+        let room_id = RoomId::parse("!push-member-count:example.com").unwrap();
+
+        for (index, (user_id, membership)) in [
+            ("@alice:example.com", "join"),
+            ("@bob:example.com", "join"),
+            ("@carol:example.com", "leave"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let user_id = UserId::parse(user_id).unwrap();
+            diesel::insert_into(room_users::table)
+                .values(&NewDbRoomUser {
+                    event_id: EventId::parse(format!("$member-count-{index}")).unwrap(),
+                    event_sn: index as i64,
+                    room_id: room_id.clone(),
+                    room_server_id: Some(room_id.server_name().unwrap().to_owned()),
+                    user_server_id: user_id.server_name().to_owned(),
+                    sender_id: user_id.clone(),
+                    user_id,
+                    membership: membership.to_owned(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: UnixMillis::now(),
+                })
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+
+        // No statistics row has been written for this room, which is the state of rooms
+        // whose membership has not changed since statistics were introduced.
+        assert_eq!(room::joined_member_count(&room_id).await.unwrap(), 2);
     }
 }

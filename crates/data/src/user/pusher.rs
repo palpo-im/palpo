@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use palpo_core::push::PusherIds;
 
 use crate::core::UnixMillis;
@@ -103,12 +103,18 @@ pub async fn get_pushers(user_id: &UserId) -> DataResult<Vec<DbPusher>> {
         .map_err(Into::into)
 }
 
+/// Evaluates `ruleset` for `pdu` on behalf of `user`.
+///
+/// `member_count` is the number of joined members in the room, which the
+/// `room_member_count` condition is matched against (the default
+/// `.m.rule.room_one_to_one` rules, for instance, match when it is 2).
 pub async fn get_actions<'a>(
     user: &UserId,
     ruleset: &'a Ruleset,
     power_levels: &RoomPowerLevels,
     pdu: &RawJson<AnySyncTimelineEvent>,
     room_id: &RoomId,
+    member_count: u64,
 ) -> DataResult<&'a [Action]> {
     let power_levels = PushConditionPowerLevelsCtx {
         users: power_levels.users.clone(),
@@ -118,7 +124,7 @@ pub async fn get_actions<'a>(
     };
     let ctx = PushConditionRoomCtx {
         room_id: room_id.to_owned(),
-        member_count: 10_u32.into(), // TODO: get member count efficiently
+        member_count,
         user_id: user.to_owned(),
         user_display_name: crate::user::display_name(user)
             .await
@@ -175,11 +181,30 @@ pub async fn delete_pusher(user_id: &UserId, app_id: &str, pushkey: &str) -> Dat
     Ok(())
 }
 
-/// Insert a pusher row.
-pub async fn insert_pusher(new_pusher: &NewDbPusher) -> DataResult<()> {
-    diesel::insert_into(user_pushers::table)
-        .values(new_pusher)
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
+/// Create or replace the pusher identified by `(user_id, app_id, pushkey)`.
+///
+/// A user has at most one pusher per `(app_id, pushkey)`, so an existing one is replaced.
+/// Unless `append` is set, pushers with the same `(app_id, pushkey)` belonging to other users
+/// are removed as well, as `POST /pushers/set` requires: a device that is now signed in to
+/// another account must stop receiving notifications for the previous one.
+pub async fn set_pusher(new_pusher: &NewDbPusher, append: bool) -> DataResult<()> {
+    let mut conn = connect().await?;
+    conn.transaction::<_, DataError, _>(async |conn| {
+        let same_key = user_pushers::table
+            .filter(user_pushers::app_id.eq(&new_pusher.app_id))
+            .filter(user_pushers::pushkey.eq(&new_pusher.pushkey));
+        if append {
+            diesel::delete(same_key.filter(user_pushers::user_id.eq(&new_pusher.user_id)))
+                .execute(conn)
+                .await?;
+        } else {
+            diesel::delete(same_key).execute(conn).await?;
+        }
+        diesel::insert_into(user_pushers::table)
+            .values(new_pusher)
+            .execute(conn)
+            .await?;
+        Ok(())
+    })
+    .await
 }
