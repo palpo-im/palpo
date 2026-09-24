@@ -1,3 +1,4 @@
+use crate::core::UnixMillis;
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
@@ -20,6 +21,7 @@ pub async fn send_state_event_for_key(
     event_type: &StateEventType,
     json: RawJson<AnyStateEventContent>,
     state_key: String,
+    timestamp: Option<UnixMillis>,
 ) -> AppResult<OwnedEventId> {
     allowed_to_send_state_event(room_id, event_type, &state_key, &json).await?;
     let pdu = timeline::build_and_append_pdu(
@@ -27,6 +29,7 @@ pub async fn send_state_event_for_key(
             event_type: event_type.to_string().into(),
             content: serde_json::from_value(serde_json::to_value(json)?)?,
             state_key: Some(state_key),
+            timestamp,
             ..Default::default()
         },
         user_id,
@@ -40,7 +43,7 @@ pub async fn send_state_event_for_key(
     Ok(pdu.event_id)
 }
 
-async fn allowed_to_send_state_event(
+pub(crate) async fn allowed_to_send_state_event(
     room_id: &RoomId,
     event_type: &StateEventType,
     state_key: &str,
