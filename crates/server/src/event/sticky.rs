@@ -1021,9 +1021,22 @@ mod tests {
                 .is_empty()
         );
 
-        // Passing the re-evaluation promotes it like any accepted event, which delivers
-        // it to /sync and clears the soft-failed mark.
+        // Promoting a PDU still flagged soft failed delivers nothing.
         promote(&held).await;
+        assert!(
+            !unexpired(room_id, None, i64::MAX, now)
+                .await
+                .unwrap()
+                .iter()
+                .any(|entry| entry.event_id == held.event_id)
+        );
+
+        // Passing the re-evaluation clears the flag in `process_to_timeline_pdu` (after the
+        // deferred policy check), and the promotion then delivers it to /sync and clears
+        // the stored soft-failed mark.
+        let mut passed = held.clone();
+        passed.soft_failed = false;
+        promote(&passed).await;
         let mut conn = connect().await.unwrap();
         assert!(
             !events::table
@@ -1133,5 +1146,86 @@ mod tests {
         plain.extra_data.clear();
         let plain = store_outlier(&plain, false).await;
         assert!(!user_can_see_while_sticky(&plain, carol).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_policy_refused_sticky_event_is_never_delivered_or_reevaluated() {
+        use super::*;
+        crate::test_database::init();
+        let room = "!refused:example.org";
+        let room_id = RoomId::parse(room).unwrap();
+        let room_id = &*room_id;
+        let now = UnixMillis::now();
+        let mut conn = connect().await.unwrap();
+        let sticky_rows = async |event_id: &EventId| {
+            event_stickies::table
+                .find(event_id)
+                .count()
+                .get_result::<i64>(&mut connect().await.unwrap())
+                .await
+                .unwrap()
+        };
+
+        // Refused on arrival (MSC4284): persisted as a rejection with no sticky window,
+        // and never a candidate for soft-fail re-evaluation.
+        let refused = store_outlier_with(
+            &sticky_event("$refused:other.org", room, "@bob:other.org", now),
+            true,
+            true,
+        )
+        .await;
+        assert!(
+            events::table
+                .find(&refused.event_id)
+                .select(events::is_rejected)
+                .first::<bool>(&mut conn)
+                .await
+                .unwrap()
+        );
+        assert_eq!(sticky_rows(&refused.event_id).await, 0);
+        assert!(
+            soft_failed_candidates(room_id, now)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Even if a caller promoted it anyway, it would get no sticky delivery.
+        promote(&refused).await;
+        assert!(
+            unexpired(room_id, None, i64::MAX, now)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Refused only once its DAG was recovered: the pending sticky window is dropped.
+        let event = sticky_event("$late-refusal:other.org", room, "@bob:other.org", now);
+        let pending = store_outlier(&event, true).await;
+        assert_eq!(sticky_rows(&pending.event_id).await, 1);
+        assert_eq!(
+            soft_failed_candidates(room_id, now).await.unwrap(),
+            vec![pending.event_id.clone()]
+        );
+        crate::event::OutlierPdu {
+            pdu: event.clone(),
+            json_data: crate::core::serde::to_canonical_object(&event).unwrap(),
+            soft_failed: true,
+            policy_refused: true,
+            remote_server: "other.org".try_into().unwrap(),
+            room_id: event.room_id.clone(),
+            room_version: crate::core::RoomVersionId::V11,
+            event_sn: Some(pending.event_sn),
+        }
+        .save_to_database(false)
+        .await
+        .unwrap();
+        assert_eq!(sticky_rows(&pending.event_id).await, 0);
+        assert!(
+            soft_failed_candidates(room_id, now)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
