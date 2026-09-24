@@ -491,6 +491,26 @@ pub async fn mark_recipients_changed(user_id: &UserId) -> AppResult<()> {
     Ok(())
 }
 
+/// Recalculation triggered by room changes or startup rather than by a policy edit.
+///
+/// Most users never write a sharing policy, and without one their set is empty whatever
+/// the rooms look like. If no destination was ever told a set either, there is nothing to
+/// retract or announce, so skip the stream bump, restamp and wakeup that would otherwise
+/// run for every local member on every membership event. Policy edits call
+/// [`mark_recipients_changed`] directly and always take the full path, which keeps the
+/// stream fence against selections computed from the previous policy.
+async fn recalculate_recipients(user_id: &UserId) -> AppResult<()> {
+    if super::sharing::sharing_policy(user_id).await?.is_none() {
+        let query = presence_recipient_sets::table
+            .filter(presence_recipient_sets::user_id.eq(user_id))
+            .select(presence_recipient_sets::user_id);
+        if !crate::data::diesel_exists!(query, &mut connect().await?)? {
+            return Ok(());
+        }
+    }
+    mark_recipients_changed(user_id).await
+}
+
 /// Moves an existing presence row without inventing a state transition.
 ///
 /// Local recipient changes use this to put the current state back into federation's EDU
@@ -541,12 +561,12 @@ async fn publish_recovery(
 }
 
 /// One startup worker holds at most a page of users and performs one calculation at
-/// a time. Failed users trigger another pass without blocking unrelated accounts
-/// or allocating a task for every account.
+/// a time. Only the users that failed are retried after the pass, so one persistently
+/// failing account cannot make every other user be restamped and re-sent over and over.
 pub fn reconcile_on_startup() {
     tokio::spawn(async {
         let mut after: Option<OwnedUserId> = None;
-        let mut retry_pass = false;
+        let mut failed = BTreeSet::new();
         loop {
             let users = match crate::data::user::presence_user_ids_after(after.as_deref()).await {
                 Ok(users) => users,
@@ -556,25 +576,31 @@ pub fn reconcile_on_startup() {
                     continue;
                 }
             };
-            if users.is_empty() {
-                if retry_pass {
-                    after = None;
-                    retry_pass = false;
-                    tokio::time::sleep(RESYNC_RETRY_DELAY).await;
-                    continue;
-                }
+            let Some(last) = users.last().cloned() else {
                 break;
-            }
-            for user in &users {
+            };
+            for user in users {
                 if !user.is_local() {
                     continue;
                 }
-                if let Err(error) = mark_recipients_changed(user).await {
-                    retry_pass = true;
+                if let Err(error) = recalculate_recipients(&user).await {
                     warn!(%user, ?error, "failed startup presence reconciliation; retrying after the pass");
+                    failed.insert(user);
                 }
             }
-            after = users.last().cloned();
+            after = Some(last);
+        }
+
+        while !failed.is_empty() {
+            tokio::time::sleep(RESYNC_RETRY_DELAY).await;
+            let mut still_failed = BTreeSet::new();
+            for user in failed {
+                if let Err(error) = recalculate_recipients(&user).await {
+                    warn!(%user, ?error, "startup presence reconciliation retry failed");
+                    still_failed.insert(user);
+                }
+            }
+            failed = still_failed;
         }
     });
 }
@@ -604,7 +630,7 @@ pub fn schedule_recipients_changed(user_id: &UserId) {
     let user_id = user_id.to_owned();
     tokio::spawn(async move {
         loop {
-            if let Err(e) = mark_recipients_changed(&user_id).await {
+            if let Err(e) = recalculate_recipients(&user_id).await {
                 warn!(%user_id, error = %e, "failed to refresh presence recipients; retrying");
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 continue;

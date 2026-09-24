@@ -44,7 +44,8 @@ pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppRe
 
     let currently_active = *new_state == PresenceState::Online;
 
-    data::user::set_presence(
+    #[cfg_attr(not(feature = "unstable-msc4495"), allow(unused_variables))]
+    let state_changed = data::user::set_presence(
         NewDbPresence {
             user_id: user_id.to_owned(),
             stream_id: None,
@@ -60,8 +61,12 @@ pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppRe
         false,
     )
     .await?;
+    // Only a written row has a new stream position for the guard to select; waking on an
+    // unchanged ping would recompute the recipient set and queue flushes for nothing.
     #[cfg(feature = "unstable-msc4495")]
-    recipients::wake_recipient_servers(user_id).await?;
+    if state_changed {
+        recipients::wake_recipient_servers(user_id).await?;
+    }
     Ok(())
 }
 

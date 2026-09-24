@@ -200,17 +200,31 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                             }
 
                             futures.push(super::send_events(outgoing_kind.clone(), events));
-                        } else if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                            && let Ok((select_edus, last_sn, has_presence)) = select_edus(server_name).await
-                            && !select_edus.is_empty()
-                        {
-                            // No queued PDUs, but the EDU window is not empty
-                            // (e.g. a previous send failed and dropped it):
-                            // deliver the EDUs on their own instead of leaving
-                            // them until unrelated traffic shows up.
-                            let events = select_edus.into_iter().map(SendingEventType::Edu).collect::<Vec<_>>();
-                            pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
-                            futures.push(super::send_events(outgoing_kind.clone(), events));
+                        } else if let OutgoingKind::Normal(server_name) = &outgoing_kind {
+                            match select_edus(server_name).await {
+                                Ok((select_edus, last_sn, has_presence)) if !select_edus.is_empty() => {
+                                    // No queued PDUs, but the EDU window is not empty
+                                    // (e.g. a previous send failed and dropped it):
+                                    // deliver the EDUs on their own instead of leaving
+                                    // them until unrelated traffic shows up.
+                                    let events = select_edus.into_iter().map(SendingEventType::Edu).collect::<Vec<_>>();
+                                    pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
+                                    futures.push(super::send_events(outgoing_kind.clone(), events));
+                                }
+                                Ok(_) => {
+                                    current_transaction_status.remove(&outgoing_kind);
+                                }
+                                Err(e) => {
+                                    // e.g. a concurrent recovery snapshot moved the recipient
+                                    // stream mid-selection. Nothing queued would bring this
+                                    // destination back, so let the retry timer re-select.
+                                    error!(?server_name, error = ?e, "failed to select EDU-only follow-up window");
+                                    current_transaction_status.insert(
+                                        outgoing_kind,
+                                        TransactionStatus::Failed(1, Instant::now()),
+                                    );
+                                }
+                            }
                         } else {
                             current_transaction_status.remove(&outgoing_kind);
                         }

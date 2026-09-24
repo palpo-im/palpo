@@ -130,6 +130,11 @@ pub(super) async fn get_presence_recipients(
     if args.user_id.server_name().is_remote() {
         return Err(MatrixError::invalid_param("User does not belong to this server.").into());
     }
+    // Checked before any stream mutation: `advance_stream` inserts a durable row, and a
+    // peer naming arbitrary nonexistent local IDs must not be able to grow that table.
+    if !data::user::user_exists(&args.user_id).await? {
+        return Err(MatrixError::not_found("No presence recipients for this server.").into());
+    }
 
     // A policy delta can be selected while this snapshot is being computed. Fence the
     // confirmed write against the user's stream row; if another state reserved a newer

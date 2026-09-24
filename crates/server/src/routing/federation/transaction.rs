@@ -215,6 +215,9 @@ async fn track_presence_recipients(
         Inbound::Apply { stream_id, updates } => {
             let mut set = known.map(|(_, set)| set).unwrap_or_default();
             recipients::apply(&mut set, &updates);
+            // As with recovered snapshots, the origin only speaks for our users' view;
+            // entries naming other servers are meaningless here and would only bloat the row.
+            set.retain(|recipient| recipient.server_name() == crate::config::server_name());
             recipients::store_remote_set(user_id, Some(stream_id), &set).await?;
         }
         Inbound::Resync => {
