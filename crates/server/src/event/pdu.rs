@@ -1052,8 +1052,11 @@ pub struct PduBuilder {
     /// This becomes the top-level `msc4354_sticky` object, which is part of the PDU and so
     /// is covered by the event hash and signature.
     ///
+    /// Only the validated `org.matrix.msc4354.sticky_duration_ms` query parameter sets it;
+    /// event JSON (such as `initial_state` in `/createRoom`) cannot.
+    ///
     /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
-    #[serde(default)]
+    #[serde(skip)]
     pub sticky_duration_ms: Option<StickyDurationMs>,
 }
 

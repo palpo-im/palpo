@@ -225,7 +225,13 @@ impl OutlierPdu {
                 // Both explicit rejection writers pair these columns, and the returned PDU
                 // below reports the same. Keep the stored row from disagreeing with either.
                 db_event.soft_failed |= db_event.is_rejected;
-                db_event.save_with_conn(conn).await?;
+                // A re-saved outlier keeps its first receipt time; the sticky window must
+                // be measured from that, not from this retransmission.
+                let received_at = db_event
+                    .save_with_conn(conn)
+                    .await?
+                    .and_then(|stored| u64::try_from(stored).ok())
+                    .map_or(received_at, UnixMillis);
                 event_data.save_with_conn(conn).await?;
                 // A rejected event, including one the Policy Server refused, can never
                 // reach the timeline, so it gets no sticky window.

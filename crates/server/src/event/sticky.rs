@@ -492,6 +492,19 @@ mod tests {
     }
 
     #[test]
+    fn event_json_cannot_make_a_builder_sticky() {
+        // `/createRoom` deserializes `initial_state` entries straight into `PduBuilder`;
+        // stickiness is requested only through the validated send query parameter.
+        let builder: crate::event::PduBuilder = serde_json::from_value(json!({
+            "type": "m.room.topic",
+            "content": {},
+            "sticky_duration_ms": 60_000,
+        }))
+        .unwrap();
+        assert!(builder.sticky_duration_ms.is_none());
+    }
+
+    #[test]
     fn redaction_removes_the_stickiness() {
         let mut sticky = pdu(1_000_000, Some(json!({ "duration_ms": 300_000 })));
         let reason = pdu(1_000_001, None);
@@ -532,7 +545,8 @@ mod tests {
             event_sn: None,
         };
         let mut conn = connect().await.unwrap();
-        diesel::sql_query("CREATE FUNCTION reject_sticky_test() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RAISE EXCEPTION ''injected sticky failure''; END'")
+        // Scoped to this event so concurrently running database tests are unaffected.
+        diesel::sql_query("CREATE FUNCTION reject_sticky_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_id = '$event:example.org' THEN RAISE EXCEPTION 'injected sticky failure'; END IF; RETURN NEW; END $$")
             .execute(&mut conn).await.unwrap();
         diesel::sql_query("CREATE TRIGGER reject_sticky_test BEFORE INSERT ON event_stickies FOR EACH ROW EXECUTE FUNCTION reject_sticky_test()")
             .execute(&mut conn).await.unwrap();
@@ -603,6 +617,69 @@ mod tests {
                 .unwrap()
                 .get(&stored.event_sn),
             Some(&0)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_resaved_outlier_keeps_its_first_receipt_time() {
+        use super::*;
+        use crate::event::OutlierPdu;
+        crate::test_database::init();
+        let now = UnixMillis::now();
+        // A sender clock far in the future: the window is measured from our receipt.
+        let mut event = pdu(now.0 + 86_400_000, Some(json!({"duration_ms": 60_000})));
+        event.event_id = EventId::parse("$resaved:example.org").unwrap().to_owned();
+        let outlier = OutlierPdu {
+            pdu: event.clone(),
+            json_data: crate::core::serde::to_canonical_object(&event).unwrap(),
+            soft_failed: false,
+            policy_refused: false,
+            remote_server: "example.org".try_into().unwrap(),
+            room_id: event.room_id.clone(),
+            room_version: crate::core::RoomVersionId::V11,
+            event_sn: None,
+        };
+        outlier.clone().save_to_database(false).await.unwrap();
+
+        // The first receipt was long enough ago that the window has closed, and the reaper
+        // has removed the sticky row.
+        let first_receipt = now.0 as i64 - 120_000;
+        let mut conn = connect().await.unwrap();
+        diesel::update(events::table.find(&event.event_id))
+            .set(events::received_at.eq(first_receipt))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        diesel::delete(event_stickies::table.find(&event.event_id))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        // A retransmission must not restart the window.
+        let (stored, _, _guard) = outlier.save_to_database(false).await.unwrap();
+        assert_eq!(
+            events::table
+                .find(&event.event_id)
+                .select(events::received_at)
+                .first::<Option<i64>>(&mut conn)
+                .await
+                .unwrap(),
+            Some(first_receipt)
+        );
+        conn.transaction::<(), crate::AppError, _>(async |conn| {
+            promote_to_timeline_with_conn(conn, &stored).await
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            event_stickies::table
+                .find(&event.event_id)
+                .count()
+                .get_result::<i64>(&mut conn)
+                .await
+                .unwrap(),
+            0
         );
     }
 }

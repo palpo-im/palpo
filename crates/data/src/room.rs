@@ -280,6 +280,9 @@ pub struct NewDbEvent {
     pub stream_ordering: i64,
     pub unrecognized_keys: Option<String>,
     pub origin_server_ts: UnixMillis,
+    /// When this server first received the event. Never overwritten once set; see
+    /// [`NewDbEvent::save_with_conn`].
+    #[diesel(skip_update)]
     pub received_at: Option<i64>,
     pub sender_id: Option<OwnedUserId>,
     #[serde(default = "default_false")]
@@ -355,20 +358,31 @@ impl NewDbEvent {
 
     pub async fn save(&self) -> DataResult<()> {
         let mut conn = connect().await?;
-        self.save_with_conn(&mut conn).await
+        self.save_with_conn(&mut conn).await?;
+        Ok(())
     }
 
     /// Save event metadata using the caller's connection so the event row and its
     /// JSON representation can be created atomically.
-    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<()> {
-        diesel::insert_into(events::table)
+    ///
+    /// Returns the stored `received_at`. Re-saving an existing event (an outlier received
+    /// again, for example) keeps the first non-null receipt time, so a retransmission
+    /// cannot move the event's receipt forward.
+    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<Option<i64>> {
+        use diesel::sql_types::{BigInt, Nullable};
+
+        let first_receipt = diesel::dsl::sql::<Nullable<BigInt>>(
+            "COALESCE(events.received_at, excluded.received_at)",
+        );
+        let received_at = diesel::insert_into(events::table)
             .values(self)
             .on_conflict(events::id)
             .do_update()
-            .set(self)
-            .execute(conn)
+            .set((self, events::received_at.eq(first_receipt)))
+            .returning(events::received_at)
+            .get_result(conn)
             .await?;
-        Ok(())
+        Ok(received_at)
     }
 }
 
