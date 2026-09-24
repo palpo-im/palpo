@@ -17,6 +17,7 @@ use crate::core::serde::{
     to_canonical_object,
 };
 use crate::core::signatures::Verified;
+use crate::core::state::StateError;
 use crate::data::connect;
 use crate::data::room::NewDbEvent;
 use crate::data::schema::*;
@@ -24,8 +25,8 @@ use crate::event::{PduEvent, handler};
 use crate::federation::maybe_strip_event_id;
 use crate::room::{ensure_room, timeline};
 use crate::{
-    AppResult, DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, PduBuilder,
-    SnPduEvent, config, data, empty_ok, json_ok, membership, room,
+    AppError, AppResult, DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError,
+    PduBuilder, SnPduEvent, config, data, empty_ok, json_ok, membership, room,
 };
 
 pub fn router_v1() -> Router {
@@ -207,9 +208,20 @@ async fn authenticate_invite_event(
         return Err(MatrixError::invalid_param("event is not a membership invite").into());
     }
 
-    // When we participate in the room, authorise against our trusted event-time state.
+    // When we participate in the room, authorise against our trusted event-time state. Only
+    // a definitive authorization failure rejects the invite: our copy of the DAG can lag
+    // behind the inviting server (e.g. its latest prev event is still in flight), and such
+    // invites were always accepted before this check existed.
     if room::is_server_joined(config::server_name(), room_id).await? {
-        handler::auth_check(&incoming, rules, None).await?;
+        match handler::auth_check(&incoming, rules, None).await {
+            Ok(()) => {}
+            Err(e @ AppError::State(StateError::Forbidden(_) | StateError::AuthEvent(_))) => {
+                return Err(e);
+            }
+            Err(e) => {
+                warn!("could not authorise invite {event_id} against local state: {e}");
+            }
+        }
     }
     Ok(incoming)
 }

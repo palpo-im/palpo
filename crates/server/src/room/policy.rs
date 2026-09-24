@@ -219,21 +219,28 @@ async fn check_against_policy(
     add_signature(policy, pdu_json, rules).await
 }
 
-/// Read a policy configuration from the full state bundled with a federation invite.
+/// Read a policy configuration from signed state PDUs supplied by another server.
 ///
-/// This state is used only when the local server is not joined and consequently has no
-/// trusted current state of its own. The matching state event must itself have a valid
-/// Matrix signature before its public key is used.
-async fn policy_from_invite_state(
+/// This is used where the local server has no trusted current state of its own yet: the
+/// full state bundled with a federation invite, and the room state returned by
+/// `send_join`. The matching state event must itself have a valid Matrix signature before
+/// its public key is used, and `via` must be proven joined by a signed membership event in
+/// the same set. Entries that are not state PDUs are ignored here; validating them is the
+/// caller's concern.
+async fn policy_from_state_pdus(
     room_id: &RoomId,
-    invite_room_state: &[Box<RawJsonValue>],
+    state_pdus: &[Box<RawJsonValue>],
     room_version: &RoomVersionId,
 ) -> AppResult<Option<RoomPolicyEventContent>> {
+    let parsed = state_pdus
+        .iter()
+        .filter_map(|raw| serde_json::from_str::<CanonicalJsonObject>(raw.get()).ok())
+        .collect::<Vec<_>>();
     let mut candidate = None;
-    for raw in invite_room_state {
-        let event: CanonicalJsonObject = serde_json::from_str(raw.get())
-            .map_err(|_| MatrixError::invalid_param("invite state event is invalid JSON"))?;
-        let (event_ty, state_key) = event_kind_and_state_key(&event)?;
+    for event in &parsed {
+        let Ok((event_ty, state_key)) = event_kind_and_state_key(event) else {
+            continue;
+        };
         if !is_policy_config_event(event_ty, state_key) {
             continue;
         }
@@ -241,27 +248,27 @@ async fn policy_from_invite_state(
             && event_room_id != room_id.as_str()
         {
             return Err(MatrixError::invalid_param(
-                "invite room policy belongs to a different room",
+                "supplied room policy belongs to a different room",
             )
             .into());
         }
         if candidate.is_some() {
             return Err(MatrixError::invalid_param(
-                "invite room state contains multiple policy events",
+                "supplied room state contains multiple policy events",
             )
             .into());
         }
-        match crate::server_key::verify_event(&event, room_version).await {
+        match crate::server_key::verify_event(event, room_version).await {
             Ok(crate::core::signatures::Verified::All) => {}
             Ok(crate::core::signatures::Verified::Signatures) => {
                 return Err(MatrixError::invalid_param(
-                    "invite room policy event has an invalid content hash",
+                    "supplied room policy event has an invalid content hash",
                 )
                 .into());
             }
             Err(e) => {
                 return Err(MatrixError::invalid_param(format!(
-                    "invite room policy signature verification failed: {e}"
+                    "supplied room policy signature verification failed: {e}"
                 ))
                 .into());
             }
@@ -285,13 +292,12 @@ async fn policy_from_invite_state(
     {
         return Ok(None);
     }
-    // A policy event alone does not prove that its server still participates.
-    // First-time invitees can only use a joined membership bundled with it.
-    for raw in invite_room_state {
-        let event: CanonicalJsonObject = serde_json::from_str(raw.get())?;
-        if invite_proves_joined_server(&event, room_id, &policy.via)
+    // A policy event alone does not prove that its server still participates. Without
+    // trusted local state, only a signed joined membership in the same set can.
+    for event in &parsed {
+        if state_proves_joined_server(event, room_id, &policy.via)
             && matches!(
-                crate::server_key::verify_event(&event, room_version).await,
+                crate::server_key::verify_event(event, room_version).await,
                 Ok(crate::core::signatures::Verified::All)
             )
         {
@@ -301,7 +307,7 @@ async fn policy_from_invite_state(
     Ok(None)
 }
 
-fn invite_proves_joined_server(
+fn state_proves_joined_server(
     event: &CanonicalJsonObject,
     room_id: &RoomId,
     server: &ServerName,
@@ -379,10 +385,32 @@ pub async fn check_invite_event(
     if crate::room::is_server_joined(config::server_name(), room_id).await? {
         return Ok(());
     }
-    let Some(policy) = policy_from_invite_state(room_id, invite_room_state, room_version).await?
+    let Some(policy) = policy_from_state_pdus(room_id, invite_room_state, room_version).await?
     else {
         return Ok(());
     };
+    check_against_policy(&policy, pdu_json, &rules).await
+}
+
+/// Enforce the room's Policy Server on our own join event after a remote `send_join`.
+///
+/// The joining server has no room state of its own until it installs the state returned
+/// by `send_join`, so the policy is read from that (signed) state instead. This must run
+/// before the state or our membership is persisted: a refusal then leaves no partial join
+/// behind, and a retry does not hit the "already joined" fast path.
+///
+/// A signature the resident obtained and returned is kept if it verifies; otherwise one
+/// is requested from the Policy Server now.
+pub async fn check_remote_join_event(
+    room_id: &RoomId,
+    pdu_json: &mut CanonicalJsonObject,
+    room_version: &RoomVersionId,
+    send_join_state: &[Box<RawJsonValue>],
+) -> AppResult<()> {
+    let Some(policy) = policy_from_state_pdus(room_id, send_join_state, room_version).await? else {
+        return Ok(());
+    };
+    let rules = crate::room::get_version_rules(room_version)?;
     check_against_policy(&policy, pdu_json, &rules).await
 }
 
@@ -390,16 +418,26 @@ pub async fn check_invite_event(
 /// the room's Policy Server.
 ///
 /// The generic transaction path already verifies the sender before reaching the policy
-/// check. The invite/join/leave/knock endpoints need a hard Policy Server error instead of
-/// a soft failure, so they call this earlier and must perform the same verification first;
+/// check. The join/leave/knock endpoints need a hard Policy Server error instead of a soft
+/// failure, so they call this earlier and must perform the same verification first;
 /// otherwise an authenticated peer could make us forward unverified events to the Policy
 /// Server.
+///
+/// Rooms without a usable Policy Server return immediately, so these endpoints behave
+/// exactly as before for them.
 pub async fn check_federation_event(
     room_id: &RoomId,
     event_id: &EventId,
     pdu_json: &mut CanonicalJsonObject,
     room_version: &RoomVersionId,
 ) -> AppResult<()> {
+    let Some(policy) = policy_server(room_id).await? else {
+        return Ok(());
+    };
+    let (event_ty, state_key) = event_kind_and_state_key(pdu_json)?;
+    if is_policy_config_event(event_ty, state_key) {
+        return Ok(());
+    }
     crate::server_key::verify_event(pdu_json, room_version)
         .await
         .map_err(|e| MatrixError::invalid_param(format!("signature verification failed: {e}")))?;
@@ -407,7 +445,7 @@ pub async fn check_federation_event(
     let pdu = crate::event::PduEvent::from_canonical_object(room_id, event_id, pdu_json.clone())
         .map_err(|_| MatrixError::invalid_param("membership event is not a valid PDU"))?;
     crate::event::handler::auth_check(&pdu, &rules, None).await?;
-    check_event(room_id, pdu_json, &rules).await
+    check_against_policy(&policy, pdu_json, &rules).await
 }
 
 /// Whether the event is allowed into the room by the room's Policy Server.
@@ -469,9 +507,57 @@ mod tests {
     use crate::core::serde::CanonicalJsonObject;
     use crate::core::state::Event;
 
+    #[tokio::test]
+    async fn supplied_state_without_policy_event_means_no_policy_server() {
+        use super::policy_from_state_pdus;
+        let room = crate::core::RoomId::parse("!room:example.org").unwrap();
+        let raw = |value: serde_json::Value| serde_json::value::to_raw_value(&value).unwrap();
+        let state = vec![
+            raw(serde_json::json!("not an event")),
+            raw(serde_json::json!({"content": {}})),
+            raw(serde_json::json!({
+                "type": "m.room.create", "room_id": "!room:example.org",
+                "state_key": "", "content": {}
+            })),
+            // Only the empty state key configures a policy server.
+            raw(serde_json::json!({
+                "type": "m.room.policy", "room_id": "!room:example.org",
+                "state_key": "not-empty", "content": {"via": "policy.example.org"}
+            })),
+        ];
+        let policy = policy_from_state_pdus(&room, &state, &crate::core::RoomVersionId::V11)
+            .await
+            .unwrap();
+        assert!(policy.is_none());
+        assert!(
+            policy_from_state_pdus(&room, &[], &crate::core::RoomVersionId::V11)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn supplied_policy_event_for_another_room_is_rejected() {
+        use super::policy_from_state_pdus;
+        let room = crate::core::RoomId::parse("!room:example.org").unwrap();
+        let state = vec![
+            serde_json::value::to_raw_value(&serde_json::json!({
+                "type": "m.room.policy", "room_id": "!other:example.org",
+                "state_key": "", "content": {"via": "policy.example.org"}
+            }))
+            .unwrap(),
+        ];
+        assert!(
+            policy_from_state_pdus(&room, &state, &crate::core::RoomVersionId::V11)
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn invite_requires_joined_membership_on_the_policy_server() {
-        use super::invite_proves_joined_server;
+        use super::state_proves_joined_server;
         let room = crate::core::RoomId::parse("!room:example.org").unwrap();
         let server = crate::core::ServerName::parse("policy.example.org").unwrap();
         let original = serde_json::json!({
@@ -479,7 +565,7 @@ mod tests {
             "state_key": "@moderator:policy.example.org", "content": {"membership": "join"}
         });
         let parse = |value| serde_json::from_value::<CanonicalJsonObject>(value).unwrap();
-        assert!(invite_proves_joined_server(
+        assert!(state_proves_joined_server(
             &parse(original.clone()),
             &room,
             &server
@@ -491,12 +577,12 @@ mod tests {
         ] {
             let mut event = original.clone();
             event[key] = value.into();
-            assert!(!invite_proves_joined_server(&parse(event), &room, &server));
+            assert!(!state_proves_joined_server(&parse(event), &room, &server));
         }
         for membership in ["leave", "invite", "ban", "knock"] {
             let mut event = original.clone();
             event["content"]["membership"] = membership.into();
-            assert!(!invite_proves_joined_server(&parse(event), &room, &server));
+            assert!(!state_proves_joined_server(&parse(event), &room, &server));
         }
     }
 

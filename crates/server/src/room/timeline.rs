@@ -937,7 +937,6 @@ async fn build_and_append_pdu_locked(
     // anywhere. A refusal means the policy server considers the event spam, so the client
     // request fails rather than the event being sent out unsigned. `append_pdu` persists
     // the signature we obtained, so it travels with the event over federation.
-    //
     let version_rules = crate::room::get_version_rules(room_version)?;
     crate::room::policy::check_event(&room_id, &mut pdu_json, &version_rules).await?;
 

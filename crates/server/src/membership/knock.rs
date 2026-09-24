@@ -11,7 +11,9 @@ use crate::core::federation::knock::{
 };
 use crate::core::identifiers::*;
 use crate::core::room::JoinRule;
-use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, RawJson, to_canonical_value};
+use crate::core::serde::{
+    CanonicalJsonObject, CanonicalJsonValue, RawJson, RawJsonValue, to_canonical_value,
+};
 use crate::data::connect;
 use crate::data::room::NewDbEvent;
 use crate::data::schema::room_users;
@@ -212,33 +214,15 @@ pub async fn knock_room(
             .await?;
     info!("send knock finished");
 
-    if let Some(signed_raw) = &send_knock_body.signed_event {
-        let (returned_event_id, returned_event) =
-            crate::event::gen_event_id_canonical_json(signed_raw, &room_version).map_err(|_| {
-                MatrixError::invalid_param("server returned an invalid knock event")
-            })?;
-        if returned_event_id != event_id {
-            return Err(MatrixError::invalid_param(
-                "server returned a knock event with the wrong event ID",
-            )
-            .into());
-        }
-        match crate::server_key::verify_event(&returned_event, &room_version).await {
-            Ok(crate::core::signatures::Verified::All) => {}
-            Ok(crate::core::signatures::Verified::Signatures) => {
-                return Err(MatrixError::invalid_param(
-                    "server returned a knock event with an invalid content hash",
-                )
-                .into());
-            }
-            Err(e) => {
-                return Err(MatrixError::invalid_param(format!(
-                    "server returned an invalid knock event signature: {e}"
-                ))
-                .into());
-            }
-        }
-        crate::federation::merge_supplementary_signatures(&mut knock_event, &returned_event)?;
+    // The resident has already accepted the knock, so this optional extension must never
+    // fail it here: a returned event that is unusable only means we keep our own copy
+    // without the supplementary (e.g. Policy Server) signatures.
+    if let Some(signed_raw) = &send_knock_body.signed_event
+        && let Err(e) =
+            merge_returned_knock_signatures(&mut knock_event, signed_raw, &event_id, &room_version)
+                .await
+    {
+        warn!("ignoring signed knock event returned by {remote_server}: {e}");
     }
 
     info!("parsing knock event");
@@ -304,6 +288,28 @@ pub async fn knock_room(
 
     drop(event_guard);
     Ok(Some(knock_pdu))
+}
+
+/// Copy supplementary signatures from the knock event returned by `send_knock`.
+///
+/// Only signatures are taken, and only once the returned event is proven to be our event
+/// (same event ID, so the same redacted form the signatures cover) with valid signatures.
+async fn merge_returned_knock_signatures(
+    knock_event: &mut CanonicalJsonObject,
+    signed_raw: &RawJsonValue,
+    event_id: &EventId,
+    room_version: &RoomVersionId,
+) -> AppResult<()> {
+    let (returned_event_id, returned_event) =
+        crate::event::gen_event_id_canonical_json(signed_raw, room_version)
+            .map_err(|_| MatrixError::invalid_param("returned knock event is invalid"))?;
+    if returned_event_id != event_id {
+        return Err(
+            MatrixError::invalid_param("returned knock event has the wrong event ID").into(),
+        );
+    }
+    crate::server_key::verify_event(&returned_event, room_version).await?;
+    crate::federation::merge_supplementary_signatures(knock_event, &returned_event)
 }
 
 fn stripped_knock_state_event<T: serde::Serialize>(
