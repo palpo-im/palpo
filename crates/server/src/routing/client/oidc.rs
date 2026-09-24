@@ -482,10 +482,9 @@ pub(super) async fn discover_oidc_metadata(issuer: &str) -> Result<OidcMetadata,
     let metadata = response.json::<OidcMetadata>().await.map_err(|e| {
         MatrixError::unknown(format!("Failed to parse OIDC discovery document: {e}"))
     })?;
-    let expected_issuer = issuer.trim_end_matches('/');
-    if metadata.issuer != expected_issuer {
+    if metadata.issuer != issuer {
         return Err(MatrixError::unknown(format!(
-            "OIDC discovery issuer mismatch: expected {expected_issuer}, got {}",
+            "OIDC discovery issuer mismatch: expected {issuer}, got {}",
             metadata.issuer
         )));
     }
@@ -1722,44 +1721,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_uses_advertised_authorization_and_token_endpoints() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let issuer = format!("http://{address}/oauth2/openid/example");
-        let expected_issuer = issuer.clone();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = vec![0; 4096];
-            let read = stream.read(&mut request).await.unwrap();
-            let request = String::from_utf8_lossy(&request[..read]);
-            assert!(request.starts_with(
-                "GET /oauth2/openid/example/.well-known/openid-configuration HTTP/1.1"
-            ));
+    async fn discovery_preserves_issuer_and_uses_advertised_endpoints() {
+        for (configured_suffix, advertised_suffix, should_match) in [
+            ("", "", true),
+            ("/", "/", true),
+            ("", "/", false),
+            ("/", "", false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let issuer_base = format!("http://{address}/oauth2/openid/example");
+            let issuer = format!("{issuer_base}{configured_suffix}");
+            let advertised_issuer = format!("{issuer_base}{advertised_suffix}");
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                let read = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                assert!(request.starts_with(
+                    "GET /oauth2/openid/example/.well-known/openid-configuration HTTP/1.1"
+                ));
 
-            let body = serde_json::json!({
-                "issuer": expected_issuer,
-                "authorization_endpoint": "https://idm.example.com/ui/oauth2",
-                "token_endpoint": "https://idm.example.com/oauth2/token",
-                "userinfo_endpoint": "https://idm.example.com/oauth2/userinfo"
-            })
-            .to_string();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-        });
+                let body = serde_json::json!({
+                    "issuer": advertised_issuer,
+                    "authorization_endpoint": "https://idm.example.com/ui/oauth2",
+                    "token_endpoint": "https://idm.example.com/oauth2/token",
+                    "userinfo_endpoint": "https://idm.example.com/oauth2/userinfo"
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
 
-        let metadata = discover_oidc_metadata(&issuer).await.unwrap();
-        server.await.unwrap();
+            let metadata = discover_oidc_metadata(&issuer).await;
+            server.await.unwrap();
 
-        assert_eq!(
-            metadata.authorization_endpoint,
-            "https://idm.example.com/ui/oauth2"
-        );
-        assert_eq!(
-            metadata.token_endpoint,
-            "https://idm.example.com/oauth2/token"
-        );
+            if should_match {
+                let metadata = metadata.unwrap();
+                assert_eq!(metadata.issuer, issuer);
+                assert_eq!(
+                    metadata.authorization_endpoint,
+                    "https://idm.example.com/ui/oauth2"
+                );
+                assert_eq!(
+                    metadata.token_endpoint,
+                    "https://idm.example.com/oauth2/token"
+                );
+            } else {
+                assert!(
+                    metadata.is_err(),
+                    "mismatched issuer was accepted: {issuer}"
+                );
+            }
+        }
     }
 }
