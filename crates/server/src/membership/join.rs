@@ -370,6 +370,12 @@ pub async fn join_room(
             Ok(t) => t,
             Err(_) => continue,
         };
+        if let Err(e) =
+            crate::event::check_create_event_for_room(room_id, &room_version, &event_id, &value)
+        {
+            warn!("ignoring invalid create event in send_join response: {e}");
+            continue;
+        }
 
         let pdu = if let Some(pdu) = timeline::get_pdu(&event_id).await.optional()? {
             pdu
@@ -427,6 +433,12 @@ pub async fn join_room(
             Ok(t) => t,
             Err(_) => continue,
         };
+        if let Err(e) =
+            crate::event::check_create_event_for_room(room_id, &room_version, &event_id, &value)
+        {
+            warn!("ignoring invalid create event in send_join response: {e}");
+            continue;
+        }
 
         if !timeline::has_pdu(&event_id).await {
             let (event_sn, event_guard) = ensure_event_sn(room_id, &event_id).await?;
