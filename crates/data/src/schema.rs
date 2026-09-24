@@ -1043,6 +1043,20 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    user_profile_changes (id) {
+        id -> Int8,
+        occur_sn -> Int8,
+        user_id -> Text,
+        field -> Text,
+        value -> Nullable<Jsonb>,
+        removed -> Bool,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     user_profiles (id) {
         id -> Int8,
         user_id -> Text,
@@ -1214,6 +1228,7 @@ diesel::table! {
         conn_id -> Text,
         cache_data -> Jsonb,
         updated_at -> Int8,
+        version -> Int8,
     }
 }
 
@@ -1296,6 +1311,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     user_passwords,
     user_peeks,
     user_presences,
+    user_profile_changes,
     user_profiles,
     user_pushers,
     user_ratelimit_override,
