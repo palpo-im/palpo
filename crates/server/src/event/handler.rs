@@ -74,6 +74,15 @@ pub(crate) async fn process_incoming_pdu(
             {
                 warn!("failed to delete event_datas for {}: {}", event_id, e);
             }
+            // The event is about to be re-ingested and will get a fresh sequence number,
+            // so a sticky row recorded against the old one would point at nothing.
+            if let Err(e) =
+                diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
+                    .execute(&mut connect().await?)
+                    .await
+            {
+                warn!("failed to delete event_stickies for {}: {}", event_id, e);
+            }
         }
     }
 
@@ -486,6 +495,21 @@ pub async fn process_to_outlier_pdu(
     }))
 }
 
+/// The soft-fail check: whether an event that passed authorisation against the state
+/// at the event fails against the room's *current* state, and so must be kept out of
+/// the timeline.
+pub(crate) async fn fails_current_state_check(
+    pdu: &PduEvent,
+    room_version_id: &RoomVersionId,
+) -> AppResult<bool> {
+    match pdu.redacts_id(room_version_id) {
+        None => Ok(false),
+        Some(redact_id) => {
+            Ok(!state::user_can_redact(&redact_id, &pdu.sender, &pdu.room_id, true).await?)
+        }
+    }
+}
+
 #[tracing::instrument(skip(incoming_pdu, json_data))]
 pub async fn process_to_timeline_pdu(
     mut incoming_pdu: SnPduEvent,
@@ -639,18 +663,7 @@ pub async fn process_to_timeline_pdu(
 
     // Soft fail check before doing state res
     debug!("performing soft-fail check");
-    let soft_fail = match incoming_pdu.redacts_id(room_version_id) {
-        None => false,
-        Some(redact_id) => {
-            !state::user_can_redact(
-                &redact_id,
-                &incoming_pdu.sender,
-                &incoming_pdu.room_id,
-                true,
-            )
-            .await?
-        }
-    };
+    let soft_fail = fails_current_state_check(&incoming_pdu, room_version_id).await?;
 
     // 13. Use state resolution to find new room state
     let state_lock = crate::room::lock_state(&incoming_pdu.room_id).await;

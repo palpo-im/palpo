@@ -299,6 +299,7 @@ pub(super) async fn send_message(
             unsigned,
             transaction_device: Some(authed.device_id().to_owned()),
             timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
+            sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
         },
         authed.user_id(),
@@ -355,6 +356,7 @@ pub(super) async fn post_message(
             content: to_raw_value(&content)?,
             unsigned: BTreeMap::new(),
             timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
+            sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
         },
         authed.user_id(),

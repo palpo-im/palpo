@@ -117,6 +117,7 @@ pub async fn send_server_notice(
             redacts: None,
             timestamp: None,
             transaction_device: None,
+            sticky_duration_ms: None,
         };
         timeline::build_and_append_pdu(
             pdu_builder,

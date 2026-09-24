@@ -332,6 +332,8 @@ async fn send_delayed_pdu(
             timestamp: event.origin_server_ts.map(|ts| UnixMillis(ts as u64)),
             // MSC4140: delayed events carry a delay id instead of a transaction id.
             transaction_device: None,
+            // The delayed-event endpoint has no MSC4354 sticky parameter.
+            sticky_duration_ms: None,
         },
         &event.user_id,
         &event.room_id,

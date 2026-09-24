@@ -150,6 +150,12 @@ impl OutlierPdu {
                     ))
                     .execute(&mut connect().await?)
                     .await?;
+                // A refused event is never promoted, so its sticky window can go too.
+                diesel::delete(
+                    event_stickies::table.filter(event_stickies::event_id.eq(&pdu.event_id)),
+                )
+                .execute(&mut connect().await?)
+                .await?;
             }
             return Ok((
                 SnPduEvent {
@@ -164,6 +170,7 @@ impl OutlierPdu {
             ));
         }
         let (event_sn, event_guard) = ensure_event_sn(&room_id, &pdu.event_id).await?;
+        let received_at = UnixMillis::now();
         let mut db_event = NewDbEvent::from_canonical_json_with_room_id(
             &pdu.event_id,
             event_sn,
@@ -175,6 +182,7 @@ impl OutlierPdu {
         db_event.soft_failed = soft_failed;
         db_event.is_rejected = pdu.rejected();
         db_event.rejection_reason = pdu.rejection_reason.clone();
+        db_event.received_at = Some(received_at.0 as i64);
         let event_data = DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
@@ -217,8 +225,20 @@ impl OutlierPdu {
                 // Both explicit rejection writers pair these columns, and the returned PDU
                 // below reports the same. Keep the stored row from disagreeing with either.
                 db_event.soft_failed |= db_event.is_rejected;
-                db_event.save_with_conn(conn).await?;
+                // A re-saved outlier keeps its first receipt time; the sticky window must
+                // be measured from that, not from this retransmission.
+                let received_at = db_event
+                    .save_with_conn(conn)
+                    .await?
+                    .and_then(|stored| u64::try_from(stored).ok())
+                    .map_or(received_at, UnixMillis);
                 event_data.save_with_conn(conn).await?;
+                // A rejected event, including one the Policy Server refused, can never
+                // reach the timeline, so it gets no sticky window.
+                if !db_event.is_rejected {
+                    crate::event::sticky::record_with_conn(conn, &pdu, event_sn, received_at)
+                        .await?;
+                }
                 Ok((db_event.is_rejected, db_event.rejection_reason.clone()))
             })
             .await?;
