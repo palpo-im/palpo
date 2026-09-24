@@ -230,6 +230,8 @@ pub async fn promote_to_timeline_with_conn(
             .await?;
         }
 
+        // `process_to_timeline_pdu` clears the PDU's soft-failed flag once the event is
+        // re-authorised (and policy-checked), including on sticky re-evaluation.
         diesel::update(events::table.find(&*pdu.event_id))
             .set((
                 events::is_outlier.eq(false),
@@ -348,6 +350,178 @@ pub fn with_ttl(mut pdu: SnPduEvent, expires_at: UnixMillis, now: UnixMillis) ->
         serde_json::value::to_raw_value(&ttl_ms(expires_at, now)).expect("u64 is valid json"),
     );
     pdu
+}
+
+/// Whether the event is currently sticky and has reached the timeline.
+///
+/// Soft-failed, rejected and outlier events never get a delivery position, so they gain
+/// none of the sticky privileges below.
+async fn is_delivered_and_sticky(event_id: &EventId, now: UnixMillis) -> AppResult<bool> {
+    let query = event_stickies::table
+        .filter(event_stickies::event_id.eq(event_id))
+        .filter(event_stickies::deliver_sn.is_not_null())
+        .filter(event_stickies::expires_at.gt(now.0 as i64));
+    Ok(crate::data::diesel_exists!(query, &mut connect().await?)?)
+}
+
+/// MSC4354: history visibility is not applied to sticky events. Any currently joined
+/// user may see one for as long as it stays sticky.
+///
+/// Only consults the database for events that carry a valid sticky object, so ordinary
+/// events cost nothing extra.
+pub async fn user_can_see_while_sticky(pdu: &PduEvent, user_id: &UserId) -> AppResult<bool> {
+    if pdu.sticky_duration_ms().is_none()
+        || !is_delivered_and_sticky(&pdu.event_id, UnixMillis::now()).await?
+    {
+        return Ok(false);
+    }
+    crate::room::user::is_joined(user_id, &pdu.room_id).await
+}
+
+/// Server counterpart of [`user_can_see_while_sticky`], for federation `/event`,
+/// `/backfill` and the other endpoints guarded by `server_can_see_event`.
+pub async fn server_can_see_while_sticky(pdu: &PduEvent, server: &ServerName) -> AppResult<bool> {
+    if pdu.sticky_duration_ms().is_none()
+        || !is_delivered_and_sticky(&pdu.event_id, UnixMillis::now()).await?
+    {
+        return Ok(false);
+    }
+    crate::room::is_server_joined(server, &pdu.room_id).await
+}
+
+/// This server's own unexpired sticky events in the room, in creation order.
+///
+/// Only events that reached the timeline qualify; redacted events have already lost their
+/// sticky row.
+///
+/// The sender is read from the event JSON: `events.sender_id` is not populated for every
+/// event.
+pub async fn own_unexpired(
+    room_id: &RoomId,
+    server_name: &ServerName,
+    now: UnixMillis,
+) -> AppResult<Vec<OwnedEventId>> {
+    let rows = event_stickies::table
+        .inner_join(events::table.on(events::id.eq(event_stickies::event_id)))
+        .inner_join(event_datas::table.on(event_datas::event_id.eq(event_stickies::event_id)))
+        .filter(event_stickies::room_id.eq(room_id))
+        .filter(event_stickies::expires_at.gt(now.0 as i64))
+        .filter(event_stickies::deliver_sn.is_not_null())
+        .filter(events::is_outlier.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::is_redacted.eq(false))
+        .order(event_stickies::event_sn.asc())
+        .select((
+            event_stickies::event_id,
+            diesel::dsl::sql::<diesel::sql_types::Nullable<diesel::sql_types::Text>>(
+                "event_datas.json_data ->> 'sender'",
+            ),
+        ))
+        .load::<(OwnedEventId, Option<String>)>(&mut connect().await?)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, sender)| {
+            sender
+                .as_deref()
+                .and_then(|sender| UserId::parse(sender).ok())
+                .is_some_and(|sender| sender.server_name() == server_name)
+        })
+        .map(|(event_id, _)| event_id)
+        .collect())
+}
+
+/// MSC4354: when a server newly joins the room, push it all of our own unexpired sticky
+/// events.
+///
+/// They go through the normal durable federation queue, which honours per-server backoff
+/// and never drops queued PDUs under load. Enqueueing in creation order gives the
+/// best-effort ordering the MSC asks for.
+pub async fn push_own_to_new_server(room_id: &RoomId, server: &ServerName) -> AppResult<()> {
+    let own = own_unexpired(room_id, crate::config::server_name(), UnixMillis::now()).await?;
+    for event_id in own {
+        crate::sending::send_pdu_servers(std::iter::once(server.to_owned()), &event_id).await?;
+    }
+    Ok(())
+}
+
+/// Unexpired sticky events in the room that are held back as soft failed.
+pub async fn soft_failed_candidates(
+    room_id: &RoomId,
+    now: UnixMillis,
+) -> AppResult<Vec<OwnedEventId>> {
+    event_stickies::table
+        .inner_join(events::table.on(events::id.eq(event_stickies::event_id)))
+        .filter(event_stickies::room_id.eq(room_id))
+        .filter(event_stickies::expires_at.gt(now.0 as i64))
+        .filter(event_stickies::deliver_sn.is_null())
+        .filter(events::is_outlier.eq(true))
+        .filter(events::soft_failed.eq(true))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::is_redacted.eq(false))
+        .order(event_stickies::event_sn.asc())
+        .select(event_stickies::event_id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// MSC4354: re-evaluates the soft-failure of the room's unexpired sticky events after its
+/// current state changed, promoting those that now pass to the timeline (and so to
+/// `/sync`).
+///
+/// Runs detached: the caller holds the room's state lock, which the promotion path takes
+/// itself. Expired events are no longer candidates, so re-evaluation stops with the
+/// stickiness.
+pub fn reevaluate_soft_failed_later(room_id: OwnedRoomId) {
+    tokio::spawn(async move {
+        if let Err(e) = reevaluate_soft_failed(&room_id).await {
+            tracing::warn!(%room_id, error = ?e, "failed to re-evaluate soft-failed sticky events");
+        }
+    });
+}
+
+/// Re-runs the soft-fail check for the room's soft-failed sticky events and processes those
+/// that now pass through the normal timeline path. Returns how many reached the timeline.
+pub async fn reevaluate_soft_failed(room_id: &RoomId) -> AppResult<usize> {
+    let candidates = soft_failed_candidates(room_id, UnixMillis::now()).await?;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let room_version = crate::room::get_version(room_id).await?;
+    let mut promoted = 0;
+    for event_id in candidates {
+        let pdu = match crate::room::timeline::get_pdu(&event_id).await {
+            Ok(pdu) => pdu,
+            Err(e) if e.is_not_found() => continue,
+            Err(e) => return Err(e),
+        };
+        // Checked first so an event that still fails leaves no trace: the full
+        // timeline path would record it as soft failed again.
+        if crate::event::handler::fails_current_state_check(&pdu, &room_version).await? {
+            continue;
+        }
+        let Some(json) = crate::room::timeline::get_pdu_json(&event_id).await? else {
+            continue;
+        };
+        match crate::event::handler::process_to_timeline_pdu(pdu, json, None).await {
+            Ok(()) => promoted += 1,
+            Err(e) => {
+                tracing::debug!(%event_id, error = ?e, "soft-failed sticky event still not accepted");
+            }
+        }
+    }
+    Ok(promoted)
+}
+
+/// The sync position sticky events are delivered from ([MSC4354]).
+///
+/// `None` means every unexpired sticky event in the room: on an initial sync, and in the
+/// sync following the user's join, the MSC requires all of them regardless of `since`.
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+pub fn delivery_since(since_sn: Option<Seqnum>, joined_since: bool) -> Option<Seqnum> {
+    if joined_since { None } else { since_sn }
 }
 
 #[cfg(test)]
@@ -681,5 +855,283 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn sync_after_join_delivers_every_unexpired_sticky_event() {
+        use super::delivery_since;
+        assert_eq!(delivery_since(Some(42), false), Some(42));
+        // MSC4354: the sync following a join carries all unexpired sticky events, not
+        // just those that became deliverable since the previous sync.
+        assert_eq!(delivery_since(Some(42), true), None);
+        assert_eq!(delivery_since(None, false), None);
+    }
+
+    #[tokio::test]
+    async fn only_redactions_are_soft_failed_against_current_state() {
+        let event = pdu(1_000, Some(json!({"duration_ms": 60_000})));
+        assert!(
+            !crate::event::handler::fails_current_state_check(
+                &event,
+                &crate::core::RoomVersionId::V11
+            )
+            .await
+            .unwrap()
+        );
+    }
+
+    /// Stores `event` as an outlier, as federation ingestion does.
+    async fn store_outlier(event: &PduEvent, soft_failed: bool) -> crate::event::SnPduEvent {
+        store_outlier_with(event, soft_failed, false).await
+    }
+
+    /// Stores `event` as an outlier, optionally refused by the room's Policy Server.
+    async fn store_outlier_with(
+        event: &PduEvent,
+        soft_failed: bool,
+        policy_refused: bool,
+    ) -> crate::event::SnPduEvent {
+        let outlier = crate::event::OutlierPdu {
+            pdu: event.clone(),
+            json_data: crate::core::serde::to_canonical_object(event).unwrap(),
+            soft_failed,
+            policy_refused,
+            remote_server: "example.org".try_into().unwrap(),
+            room_id: event.room_id.clone(),
+            room_version: crate::core::RoomVersionId::V11,
+            event_sn: None,
+        };
+        outlier.save_to_database(false).await.unwrap().0
+    }
+
+    async fn promote(stored: &crate::event::SnPduEvent) {
+        use diesel_async::AsyncConnection;
+
+        use crate::data::connect;
+        connect()
+            .await
+            .unwrap()
+            .transaction::<(), crate::AppError, _>(async |conn| {
+                super::promote_to_timeline_with_conn(conn, stored).await
+            })
+            .await
+            .unwrap();
+    }
+
+    fn sticky_event(event_id: &str, room_id: &str, sender: &str, now: UnixMillis) -> PduEvent {
+        let mut event = pdu(now.0, Some(json!({"duration_ms": 60_000})));
+        event.event_id = EventId::parse(event_id).unwrap().to_owned();
+        event.room_id = RoomId::parse(room_id).unwrap().to_owned();
+        event.sender = UserId::parse(sender).unwrap().to_owned();
+        event
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_new_joiner_is_sent_only_our_unexpired_sticky_events_in_order() {
+        use super::*;
+        crate::test_database::init();
+        let room = "!joiner:example.org";
+        let now = UnixMillis::now();
+
+        // A server only counts as newly joined the first time it is recorded.
+        let room_id = RoomId::parse(room).unwrap();
+        let room_id = &*room_id;
+        let other: &ServerName = "other.org".try_into().unwrap();
+        assert!(
+            crate::data::room::add_joined_server(room_id, other)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !crate::data::room::add_joined_server(room_id, other)
+                .await
+                .unwrap()
+        );
+
+        let first = store_outlier(
+            &sticky_event("$own1:example.org", room, "@alice:example.org", now),
+            false,
+        )
+        .await;
+        let remote = store_outlier(
+            &sticky_event("$remote:other.org", room, "@bob:other.org", now),
+            false,
+        )
+        .await;
+        let second = store_outlier(
+            &sticky_event("$own2:example.org", room, "@alice:example.org", now),
+            false,
+        )
+        .await;
+        // Never reached the timeline, so there is nothing to push.
+        store_outlier(
+            &sticky_event("$pending:example.org", room, "@alice:example.org", now),
+            true,
+        )
+        .await;
+        // Promoted out of creation order: the push still follows creation order.
+        promote(&second).await;
+        promote(&remote).await;
+        promote(&first).await;
+
+        let own: &ServerName = "example.org".try_into().unwrap();
+        assert_eq!(
+            own_unexpired(room_id, own, now).await.unwrap(),
+            vec![first.event_id.clone(), second.event_id.clone()]
+        );
+        // Stickiness over, nothing left to push.
+        assert!(
+            own_unexpired(room_id, own, UnixMillis(now.0 + 61_000))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_soft_failed_sticky_event_is_reevaluated_until_promoted_or_expired() {
+        use super::*;
+        crate::test_database::init();
+        let room = "!softfail:example.org";
+        let room_id = RoomId::parse(room).unwrap();
+        let room_id = &*room_id;
+        let now = UnixMillis::now();
+        let held = store_outlier(
+            &sticky_event("$held:other.org", room, "@bob:other.org", now),
+            true,
+        )
+        .await;
+        store_outlier(
+            &sticky_event("$ok:other.org", room, "@bob:other.org", now),
+            false,
+        )
+        .await;
+
+        assert_eq!(
+            soft_failed_candidates(room_id, now).await.unwrap(),
+            vec![held.event_id.clone()]
+        );
+        // Re-evaluation stops once the event is no longer sticky.
+        assert!(
+            soft_failed_candidates(room_id, UnixMillis(now.0 + 61_000))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Passing the re-evaluation promotes it like any accepted event, which delivers
+        // it to /sync and clears the soft-failed mark.
+        promote(&held).await;
+        let mut conn = connect().await.unwrap();
+        assert!(
+            !events::table
+                .find(&held.event_id)
+                .select(events::soft_failed)
+                .first::<bool>(&mut conn)
+                .await
+                .unwrap()
+        );
+        assert!(
+            soft_failed_candidates(room_id, now)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let delivered = unexpired(room_id, None, i64::MAX, now).await.unwrap();
+        assert!(
+            delivered
+                .iter()
+                .any(|entry| entry.event_id == held.event_id)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_joined_users_and_servers_see_sticky_events_regardless_of_visibility() {
+        use super::*;
+        use crate::data::room::NewDbRoomUser;
+        crate::test_database::init();
+        let room = "!visible:example.org";
+        let room_id = RoomId::parse(room).unwrap();
+        let room_id = &*room_id;
+        let now = UnixMillis::now();
+        let carol = UserId::parse("@carol:example.org").unwrap();
+        let carol = &*carol;
+        let dave = UserId::parse("@dave:example.org").unwrap();
+        let dave = &*dave;
+        let joined_server: &ServerName = "joined.org".try_into().unwrap();
+        let other_server: &ServerName = "elsewhere.org".try_into().unwrap();
+
+        let mut conn = connect().await.unwrap();
+        diesel::insert_into(room_users::table)
+            .values(NewDbRoomUser {
+                event_id: EventId::parse("$carol-join:example.org")
+                    .unwrap()
+                    .to_owned(),
+                event_sn: 1,
+                room_id: room_id.to_owned(),
+                room_server_id: None,
+                user_id: carol.to_owned(),
+                user_server_id: carol.server_name().to_owned(),
+                sender_id: carol.to_owned(),
+                membership: "join".to_owned(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: None,
+                created_at: now,
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        crate::data::room::add_joined_server(room_id, joined_server)
+            .await
+            .unwrap();
+
+        let stored = store_outlier(
+            &sticky_event("$seen:other.org", room, "@bob:other.org", now),
+            false,
+        )
+        .await;
+        // Not delivered yet: no sticky privilege.
+        assert!(!user_can_see_while_sticky(&stored, carol).await.unwrap());
+        promote(&stored).await;
+
+        assert!(user_can_see_while_sticky(&stored, carol).await.unwrap());
+        // The bypass is reached from the ordinary visibility check, which has no
+        // event-time state for this event at all.
+        assert!(stored.user_can_see(carol).await.unwrap());
+        assert!(!user_can_see_while_sticky(&stored, dave).await.unwrap());
+        assert!(
+            server_can_see_while_sticky(&stored, joined_server)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !server_can_see_while_sticky(&stored, other_server)
+                .await
+                .unwrap()
+        );
+
+        // Once the stickiness ends, history visibility applies again.
+        diesel::update(event_stickies::table.find(&stored.event_id))
+            .set(event_stickies::expires_at.eq(now.0 as i64 - 1))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        assert!(!user_can_see_while_sticky(&stored, carol).await.unwrap());
+        assert!(
+            !server_can_see_while_sticky(&stored, joined_server)
+                .await
+                .unwrap()
+        );
+
+        // Ordinary events never qualify.
+        let mut plain = sticky_event("$plain:other.org", room, "@bob:other.org", now);
+        plain.extra_data.clear();
+        let plain = store_outlier(&plain, false).await;
+        assert!(!user_can_see_while_sticky(&plain, carol).await.unwrap());
     }
 }

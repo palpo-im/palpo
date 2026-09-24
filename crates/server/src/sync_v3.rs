@@ -497,11 +497,10 @@ async fn load_joined_room(
         sender_id,
         device_id,
         room_id,
-        if joined_since_incremental {
-            None
-        } else {
-            since_tk.map(|since_tk| since_tk.event_sn())
-        },
+        crate::event::sticky::delivery_since(
+            since_tk.map(|since_tk| since_tk.event_sn()),
+            joined_since_incremental,
+        ),
         next_batch.event_sn(),
         &timeline,
         is_peeking,

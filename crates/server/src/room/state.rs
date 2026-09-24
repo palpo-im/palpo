@@ -943,6 +943,11 @@ pub async fn server_can_see_event(
     if pdu.room_id != room_id {
         return Ok(false);
     }
+    // MSC4354: any joined server may see an event while it is sticky, regardless of
+    // history visibility.
+    if crate::event::sticky::server_can_see_while_sticky(&pdu, origin).await? {
+        return Ok(true);
+    }
     let frame_id = match get_pdu_before_frame_id(event_id).await {
         Ok(frame_id) => frame_id,
         Err(e) if e.is_not_found() && pdu.state_key.is_none() => {

@@ -633,6 +633,12 @@ pub async fn append_pdu(
     {
         error!("failed to update statistics for room {}: {e}", pdu.room_id);
     }
+    if pdu.state_key.is_some() {
+        // MSC4354: the room's new current state may authorise sticky events that were
+        // soft failed against the previous one. Spawned only now that the state is set,
+        // so the re-evaluation sees it.
+        crate::event::sticky::reevaluate_soft_failed_later(pdu.room_id.clone());
+    }
 
     if let Err(e) =
         push_action::increment_notification_counts(&pdu.event_id, notifies, highlights).await

@@ -99,6 +99,11 @@ impl SnPduEvent {
         {
             return Ok(true);
         }
+        // MSC4354: any joined user may see an event while it is sticky, regardless of
+        // history visibility.
+        if crate::event::sticky::user_can_see_while_sticky(self, user_id).await? {
+            return Ok(true);
+        }
 
         let frame_id = match state::get_pdu_before_frame_id(&self.event_id).await {
             Ok(frame_id) => frame_id,

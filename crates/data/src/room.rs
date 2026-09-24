@@ -421,9 +421,12 @@ pub async fn is_disabled(room_id: &RoomId) -> DataResult<bool> {
     Ok(diesel_exists!(query, &mut connect().await?)?)
 }
 
-pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<()> {
+/// Records that `server_name` has joined members in the room.
+///
+/// Returns `true` if the server was not already recorded, i.e. it has just joined.
+pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<bool> {
     let next_sn = crate::next_sn().await?;
-    diesel::insert_into(room_joined_servers::table)
+    let inserted = diesel::insert_into(room_joined_servers::table)
         .values((
             room_joined_servers::room_id.eq(room_id),
             room_joined_servers::server_id.eq(server_name),
@@ -432,7 +435,7 @@ pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> Da
         .on_conflict_do_nothing()
         .execute(&mut connect().await?)
         .await?;
-    Ok(())
+    Ok(inserted > 0)
 }
 
 /// Return the distinct set of servers joined to any of the given rooms.
