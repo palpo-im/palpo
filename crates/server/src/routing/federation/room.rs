@@ -23,7 +23,7 @@ use crate::federation::peek as fed_peek;
 use crate::room::{state, timeline};
 use crate::{
     AppResult, AuthArgs, DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError,
-    PduBuilder, PduEvent, data, empty_ok, json_ok, room, sending,
+    PduBuilder, PduEvent, empty_ok, json_ok, room, sending,
 };
 
 pub fn router() -> Router {
@@ -521,8 +521,8 @@ async fn send_knock(
         MatrixError::invalid_param("could not accept as timeline event".to_string())
     })?;
 
-    data::room::add_joined_server(&args.room_id, &origin).await?;
-
+    // A knocking user's server is not joined to the room. The response supplies
+    // the state it needs without adding it to the room's federation recipients.
     let knock_room_state = state::summary_pdus(&pdu).await?;
     if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]).await {
         error!("failed to notify knock event: {e}");
