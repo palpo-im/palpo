@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -18,8 +16,6 @@ use crate::core::identifiers::*;
 use crate::core::profile::ProfileFieldName;
 use crate::core::serde::{JsonObject, JsonValue};
 use crate::core::user::ProfileResBody;
-use crate::data::connect;
-use crate::data::schema::*;
 use crate::data::user::DbProfile;
 use crate::exts::*;
 use crate::room::timeline;

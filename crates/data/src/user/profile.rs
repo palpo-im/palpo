@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use futures_util::future::BoxFuture;
 
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonObject, JsonValue};
@@ -161,6 +162,19 @@ pub async fn get_profile(
     Ok(profile)
 }
 
+/// The global profiles of `user_ids` in one query; users without one are absent.
+pub async fn get_global_profiles(user_ids: &[OwnedUserId]) -> DataResult<Vec<DbProfile>> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    user_profiles::table
+        .filter(user_profiles::user_id.eq_any(user_ids))
+        .filter(user_profiles::room_id.is_null())
+        .load::<DbProfile>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
     let fields = user_profiles::table
         .filter(user_profiles::user_id.eq(user_id))
@@ -194,9 +208,12 @@ pub(crate) fn ensure_profile_updated(updated: usize) -> DataResult<()> {
 /// `attempt` returns how many global profile rows it changed and must append to the
 /// change stream only when that count is non-zero, so a retried attempt records nothing
 /// twice.
-async fn with_profile_repair(
+///
+/// The attempt is boxed as `Send` explicitly: a generic async closure here makes callers
+/// inside other transactions fail the higher-ranked `Send` check.
+async fn with_profile_repair<'a>(
     user_id: &UserId,
-    attempt: impl AsyncFn() -> DataResult<usize>,
+    attempt: impl Fn() -> BoxFuture<'a, DataResult<usize>>,
 ) -> DataResult<()> {
     let mut updated = attempt().await?;
     if updated == 0 {
@@ -207,54 +224,60 @@ async fn with_profile_repair(
 }
 
 pub async fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> DataResult<()> {
-    with_profile_repair(user_id, async || {
-        connect()
-            .await?
-            .transaction::<_, DataError, _>(async |conn| {
-                lock_profile_stream(conn).await?;
-                let updated = diesel::sql_query(
-                    "UPDATE user_profiles \
-                 SET fields = fields || jsonb_build_object($2, $3::jsonb) \
-                 WHERE user_id = $1 AND room_id IS NULL",
-                )
-                .bind::<Text, _>(user_id.as_str())
-                .bind::<Text, _>(field)
-                .bind::<Jsonb, _>(value.clone())
-                .execute(conn)
-                .await?;
-                if updated == 0 {
-                    return Ok(0);
-                }
-                record_profile_change_on_conn(conn, user_id, field, Some(value.clone())).await?;
-                Ok(updated)
-            })
-            .await
+    let value = &value;
+    with_profile_repair(user_id, || {
+        Box::pin(async move {
+            connect()
+                .await?
+                .transaction::<_, DataError, _>(async |conn| {
+                    lock_profile_stream(conn).await?;
+                    let updated = diesel::sql_query(
+                        "UPDATE user_profiles \
+                         SET fields = fields || jsonb_build_object($2, $3::jsonb) \
+                         WHERE user_id = $1 AND room_id IS NULL",
+                    )
+                    .bind::<Text, _>(user_id.as_str())
+                    .bind::<Text, _>(field)
+                    .bind::<Jsonb, _>(value.clone())
+                    .execute(conn)
+                    .await?;
+                    if updated == 0 {
+                        return Ok(0);
+                    }
+                    record_profile_change_on_conn(conn, user_id, field, Some(value.clone()))
+                        .await?;
+                    Ok(updated)
+                })
+                .await
+        })
     })
     .await
 }
 
 pub async fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<()> {
-    with_profile_repair(user_id, async || {
-        connect()
-            .await?
-            .transaction::<_, DataError, _>(async |conn| {
-                lock_profile_stream(conn).await?;
-                let updated = diesel::sql_query(
-                    "UPDATE user_profiles \
-                 SET fields = fields - $2 \
-                 WHERE user_id = $1 AND room_id IS NULL",
-                )
-                .bind::<Text, _>(user_id.as_str())
-                .bind::<Text, _>(field)
-                .execute(conn)
-                .await?;
-                if updated == 0 {
-                    return Ok(0);
-                }
-                record_profile_change_on_conn(conn, user_id, field, None).await?;
-                Ok(updated)
-            })
-            .await
+    with_profile_repair(user_id, || {
+        Box::pin(async move {
+            connect()
+                .await?
+                .transaction::<_, DataError, _>(async |conn| {
+                    lock_profile_stream(conn).await?;
+                    let updated = diesel::sql_query(
+                        "UPDATE user_profiles \
+                         SET fields = fields - $2 \
+                         WHERE user_id = $1 AND room_id IS NULL",
+                    )
+                    .bind::<Text, _>(user_id.as_str())
+                    .bind::<Text, _>(field)
+                    .execute(conn)
+                    .await?;
+                    if updated == 0 {
+                        return Ok(0);
+                    }
+                    record_profile_change_on_conn(conn, user_id, field, None).await?;
+                    Ok(updated)
+                })
+                .await
+        })
     })
     .await
 }
@@ -273,27 +296,13 @@ pub struct ProfileChange {
 
 /// Appends a profile field change to the stream read by sliding sync ([MSC4262]).
 ///
-/// Called from every profile write so that a client can be told what changed since its
-/// last sync position without the server having to diff whole profiles.
-///
-/// [MSC4262]: https://github.com/matrix-org/matrix-spec-proposals/pull/4262
-/// The stream position is left to the column's sequence default. All callers hold the
+/// Called from every profile write, on the write's own transaction, so that a client can be
+/// told what changed since its last sync position without the server having to diff whole
+/// profiles. The stream position is left to the column's sequence default. Callers hold the
 /// profile-stream advisory lock until the row commits, and sliding sync takes the same lock
 /// before publishing its upper bound, so a cursor cannot step past an uncommitted change.
-pub async fn record_profile_change(
-    user_id: &UserId,
-    field: &str,
-    value: Option<JsonValue>,
-) -> DataResult<()> {
-    connect()
-        .await?
-        .transaction::<_, DataError, _>(async |conn| {
-            lock_profile_stream(conn).await?;
-            record_profile_change_on_conn(conn, user_id, field, value.clone()).await
-        })
-        .await
-}
-
+///
+/// [MSC4262]: https://github.com/matrix-org/matrix-spec-proposals/pull/4262
 async fn record_profile_change_on_conn(
     conn: &mut AsyncPgConnection,
     user_id: &UserId,
@@ -316,32 +325,34 @@ pub async fn set_global_display_name(
     user_id: &UserId,
     display_name: Option<&str>,
 ) -> DataResult<()> {
-    with_profile_repair(user_id, async || {
-        connect()
-            .await?
-            .transaction::<_, DataError, _>(async |conn| {
-                lock_profile_stream(conn).await?;
-                let updated = diesel::update(
-                    user_profiles::table
-                        .filter(user_profiles::user_id.eq(user_id.as_str()))
-                        .filter(user_profiles::room_id.is_null()),
-                )
-                .set(user_profiles::display_name.eq(display_name))
-                .execute(conn)
-                .await?;
-                if updated == 0 {
-                    return Ok(0);
-                }
-                record_profile_change_on_conn(
-                    conn,
-                    user_id,
-                    "displayname",
-                    display_name.map(Into::into),
-                )
-                .await?;
-                Ok(updated)
-            })
-            .await
+    with_profile_repair(user_id, || {
+        Box::pin(async move {
+            connect()
+                .await?
+                .transaction::<_, DataError, _>(async |conn| {
+                    lock_profile_stream(conn).await?;
+                    let updated = diesel::update(
+                        user_profiles::table
+                            .filter(user_profiles::user_id.eq(user_id.as_str()))
+                            .filter(user_profiles::room_id.is_null()),
+                    )
+                    .set(user_profiles::display_name.eq(display_name))
+                    .execute(conn)
+                    .await?;
+                    if updated == 0 {
+                        return Ok(0);
+                    }
+                    record_profile_change_on_conn(
+                        conn,
+                        user_id,
+                        "displayname",
+                        display_name.map(Into::into),
+                    )
+                    .await?;
+                    Ok(updated)
+                })
+                .await
+        })
     })
     .await
 }
@@ -350,32 +361,34 @@ pub async fn set_global_avatar_url(
     user_id: &UserId,
     avatar_url: Option<&MxcUri>,
 ) -> DataResult<()> {
-    with_profile_repair(user_id, async || {
-        connect()
-            .await?
-            .transaction::<_, DataError, _>(async |conn| {
-                lock_profile_stream(conn).await?;
-                let updated = diesel::update(
-                    user_profiles::table
-                        .filter(user_profiles::user_id.eq(user_id.as_str()))
-                        .filter(user_profiles::room_id.is_null()),
-                )
-                .set(user_profiles::avatar_url.eq(avatar_url.map(MxcUri::as_str)))
-                .execute(conn)
-                .await?;
-                if updated == 0 {
-                    return Ok(0);
-                }
-                record_profile_change_on_conn(
-                    conn,
-                    user_id,
-                    "avatar_url",
-                    avatar_url.map(|url| url.as_str().into()),
-                )
-                .await?;
-                Ok(updated)
-            })
-            .await
+    with_profile_repair(user_id, || {
+        Box::pin(async move {
+            connect()
+                .await?
+                .transaction::<_, DataError, _>(async |conn| {
+                    lock_profile_stream(conn).await?;
+                    let updated = diesel::update(
+                        user_profiles::table
+                            .filter(user_profiles::user_id.eq(user_id.as_str()))
+                            .filter(user_profiles::room_id.is_null()),
+                    )
+                    .set(user_profiles::avatar_url.eq(avatar_url.map(MxcUri::as_str)))
+                    .execute(conn)
+                    .await?;
+                    if updated == 0 {
+                        return Ok(0);
+                    }
+                    record_profile_change_on_conn(
+                        conn,
+                        user_id,
+                        "avatar_url",
+                        avatar_url.map(|url| url.as_str().into()),
+                    )
+                    .await?;
+                    Ok(updated)
+                })
+                .await
+        })
     })
     .await
 }
@@ -385,42 +398,44 @@ pub async fn set_global_avatar_and_blurhash(
     avatar_url: Option<&MxcUri>,
     blurhash: Option<&str>,
 ) -> DataResult<()> {
-    with_profile_repair(user_id, async || {
-        connect()
-            .await?
-            .transaction::<_, DataError, _>(async |conn| {
-                lock_profile_stream(conn).await?;
-                let updated = diesel::update(
-                    user_profiles::table
-                        .filter(user_profiles::user_id.eq(user_id.as_str()))
-                        .filter(user_profiles::room_id.is_null()),
-                )
-                .set((
-                    user_profiles::avatar_url.eq(avatar_url.map(MxcUri::as_str)),
-                    user_profiles::blurhash.eq(blurhash),
-                ))
-                .execute(conn)
-                .await?;
-                if updated == 0 {
-                    return Ok(0);
-                }
-                record_profile_change_on_conn(
-                    conn,
-                    user_id,
-                    "avatar_url",
-                    avatar_url.map(|url| url.as_str().into()),
-                )
-                .await?;
-                record_profile_change_on_conn(
-                    conn,
-                    user_id,
-                    "xyz.amorgan.blurhash",
-                    blurhash.map(Into::into),
-                )
-                .await?;
-                Ok(updated)
-            })
-            .await
+    with_profile_repair(user_id, || {
+        Box::pin(async move {
+            connect()
+                .await?
+                .transaction::<_, DataError, _>(async |conn| {
+                    lock_profile_stream(conn).await?;
+                    let updated = diesel::update(
+                        user_profiles::table
+                            .filter(user_profiles::user_id.eq(user_id.as_str()))
+                            .filter(user_profiles::room_id.is_null()),
+                    )
+                    .set((
+                        user_profiles::avatar_url.eq(avatar_url.map(MxcUri::as_str)),
+                        user_profiles::blurhash.eq(blurhash),
+                    ))
+                    .execute(conn)
+                    .await?;
+                    if updated == 0 {
+                        return Ok(0);
+                    }
+                    record_profile_change_on_conn(
+                        conn,
+                        user_id,
+                        "avatar_url",
+                        avatar_url.map(|url| url.as_str().into()),
+                    )
+                    .await?;
+                    record_profile_change_on_conn(
+                        conn,
+                        user_id,
+                        "xyz.amorgan.blurhash",
+                        blurhash.map(Into::into),
+                    )
+                    .await?;
+                    Ok(updated)
+                })
+                .await
+        })
     })
     .await
 }

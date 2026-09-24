@@ -27,13 +27,14 @@ CREATE TABLE user_profile_changes (
 CREATE INDEX user_profile_changes_sn_idx ON user_profile_changes (occur_sn);
 CREATE INDEX user_profile_changes_user_sn_idx ON user_profile_changes (user_id, occur_sn);
 
--- Remote users get a global profile row too, so that the one place sliding sync
--- reads profiles from answers for them as well.
+-- Sliding sync reads a user's global profile (`room_id IS NULL`) as the base
+-- that later changes apply on top of, so there must be exactly one.
 --
 -- `user_profiles_udx` cannot keep those rows unique: it is `UNIQUE (user_id,
 -- room_id)` and PostgreSQL treats NULLs as distinct, so `(user, NULL)` never
--- conflicts with itself and an upsert on it silently inserts duplicates. A
--- partial index over the global rows is what actually constrains them.
+-- conflicts with itself and concurrent creation silently inserts duplicates. A
+-- partial index over the global rows is what actually constrains them; profile
+-- creation uses `ON CONFLICT DO NOTHING` so the loser of such a race is a no-op.
 DELETE FROM user_profiles a
     USING user_profiles b
     WHERE a.room_id IS NULL

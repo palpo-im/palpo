@@ -20,6 +20,7 @@ use crate::core::client::sync_events::v5::{ExtensionRoomConfig, Profiles, SyncIn
 use crate::core::identifiers::*;
 use crate::core::profile::UserProfileUpdate;
 use crate::core::serde::JsonValue;
+use crate::data::user::DbProfile;
 use crate::exts::IsRemoteOrLocal;
 use crate::{AppResult, data};
 
@@ -52,8 +53,6 @@ pub(super) async fn collect(
             .collect()
     });
 
-    let mut users: BTreeMap<OwnedUserId, Option<UserProfileUpdate>> = BTreeMap::new();
-
     // Rooms whose members need a full profile snapshot: those this connection has not been
     // sent profiles for yet. Tracked per extension rather than reusing whether the room
     // itself was delivered, because a client can enable the extension -- or widen a
@@ -73,6 +72,9 @@ pub(super) async fn collect(
         selected,
     )
     .await;
+    // Members are gathered first and their profiles loaded in one query: a large room
+    // would otherwise cost one database round trip per member.
+    let mut snapshot_users = BTreeSet::new();
     let mut snapshotted_rooms = BTreeSet::new();
     for room_id in fresh {
         // A room subscription is accepted on existence alone, so membership has to be
@@ -81,14 +83,7 @@ pub(super) async fn collect(
         if !crate::room::user::is_joined(sender_id, &room_id).await? {
             continue;
         }
-        for user_id in crate::room::joined_users(&room_id, None).await? {
-            if users.contains_key(&user_id) {
-                continue;
-            }
-            if let Some(profile) = snapshot(&user_id, &room_id, &fields).await? {
-                users.insert(user_id, Some(profile));
-            }
-        }
+        snapshot_users.extend(crate::room::joined_users(&room_id, None).await?);
         snapshotted_rooms.insert(room_id);
     }
 
@@ -98,21 +93,19 @@ pub(super) async fn collect(
     if since_sn > 0 {
         for room_id in all_joined_rooms {
             let joined = data::room::joined_users_since(room_id, since_sn, until_sn).await?;
-            let candidates = if joined.iter().any(|user_id| user_id == sender_id) {
-                crate::room::joined_users(room_id, None).await?
+            if joined.iter().any(|user_id| user_id == sender_id) {
+                snapshot_users.extend(crate::room::joined_users(room_id, None).await?);
             } else {
-                joined
-            };
-            for user_id in candidates {
-                if users.contains_key(&user_id) {
-                    continue;
-                }
-                if let Some(profile) = snapshot(&user_id, room_id, &fields).await? {
-                    users.insert(user_id, Some(profile));
-                }
+                snapshot_users.extend(joined);
             }
         }
     }
+    let mut users: BTreeMap<OwnedUserId, Option<UserProfileUpdate>> =
+        snapshots(&snapshot_users, &fields)
+            .await?
+            .into_iter()
+            .map(|(user_id, profile)| (user_id, Some(profile)))
+            .collect();
     let mut shared = BTreeSet::new();
     if since_sn > 0 {
         for room_id in all_joined_rooms {
@@ -192,54 +185,63 @@ fn apply(update: &mut UserProfileUpdate, field: String, value: Option<JsonValue>
     }
 }
 
-/// The current global profile of a user as a full update, or `None` if nothing is known.
+/// The current global profiles of `user_ids` as full updates. Users with nothing to send
+/// are absent.
 ///
-/// In particular, an `m.room.member` profile is deliberately not used as a fallback for a
-/// remote user. Membership profiles are scoped to one room and may contain a room-specific
-/// pseudonym or avatar; treating either as the user's global profile would disclose it to
-/// clients that only share a different room. Remote profiles can be included once they are
-/// learned through the global-profile federation mechanism (MSC4259).
-async fn snapshot(
-    user_id: &UserId,
-    _room_id: &RoomId,
+/// Remote users are always absent. `create_user` installs a localpart display-name
+/// placeholder for remote members so membership bookkeeping has a user row; it is not a
+/// verified global profile and must not be exposed through MSC4262. Nor is an
+/// `m.room.member` profile used as a fallback: membership profiles are scoped to one room
+/// and may contain a room-specific pseudonym or avatar, and treating either as the user's
+/// global profile would disclose it to clients that only share a different room. Remote
+/// profiles can be included once they are learned through the global-profile federation
+/// mechanism (MSC4259).
+async fn snapshots(
+    user_ids: &BTreeSet<OwnedUserId>,
     fields: &FieldFilter,
-) -> AppResult<Option<UserProfileUpdate>> {
-    // `create_user` installs a localpart display-name placeholder for remote members so
-    // membership bookkeeping has a user row. It is not a verified global profile and
-    // must not be exposed through MSC4262. Remote profiles remain omitted until Palpo
-    // learns them through the global-profile federation mechanism (MSC4259).
-    if user_id.is_remote() {
-        return Ok(None);
-    }
+) -> AppResult<BTreeMap<OwnedUserId, UserProfileUpdate>> {
+    let local_users: Vec<OwnedUserId> = user_ids
+        .iter()
+        .filter(|user_id| user_id.is_local())
+        .cloned()
+        .collect();
+    Ok(data::user::get_global_profiles(&local_users)
+        .await?
+        .into_iter()
+        .filter_map(|profile| {
+            let user_id = profile.user_id.clone();
+            snapshot(profile, fields).map(|update| (user_id, update))
+        })
+        .collect())
+}
 
+/// A stored global profile as a full update, or `None` if none of its fields are wanted.
+fn snapshot(profile: DbProfile, fields: &FieldFilter) -> Option<UserProfileUpdate> {
     let mut update = UserProfileUpdate::new();
-
-    if let Some(profile) = data::user::get_profile(user_id, None).await? {
-        if let Some(display_name) = profile.display_name
-            && wanted(fields, "displayname")
-        {
-            update.set("displayname".to_owned(), display_name.into());
-        }
-        if let Some(avatar_url) = profile.avatar_url
-            && wanted(fields, "avatar_url")
-        {
-            update.set("avatar_url".to_owned(), avatar_url.as_str().into());
-        }
-        if let Some(blurhash) = profile.blurhash
-            && wanted(fields, "xyz.amorgan.blurhash")
-        {
-            update.set("xyz.amorgan.blurhash".to_owned(), blurhash.into());
-        }
-        if let Some(custom) = profile.fields.as_object() {
-            for (field, value) in custom {
-                if wanted(fields, field) {
-                    update.set(field.clone(), value.clone());
-                }
+    if let Some(display_name) = profile.display_name
+        && wanted(fields, "displayname")
+    {
+        update.set("displayname".to_owned(), display_name.into());
+    }
+    if let Some(avatar_url) = profile.avatar_url
+        && wanted(fields, "avatar_url")
+    {
+        update.set("avatar_url".to_owned(), avatar_url.as_str().into());
+    }
+    if let Some(blurhash) = profile.blurhash
+        && wanted(fields, "xyz.amorgan.blurhash")
+    {
+        update.set("xyz.amorgan.blurhash".to_owned(), blurhash.into());
+    }
+    if let JsonValue::Object(custom) = profile.fields {
+        for (field, value) in custom {
+            if wanted(fields, &field) {
+                update.set(field, value);
             }
         }
     }
 
-    Ok((!update.is_empty()).then_some(update))
+    (!update.is_empty()).then_some(update)
 }
 
 /// The rooms the extension applies to, honouring the `lists` and `rooms` selectors.
@@ -283,8 +285,9 @@ pub(super) fn config_rooms(
 mod tests {
     use serde_json::json;
 
-    use super::{FieldFilter, apply, wanted};
+    use super::{FieldFilter, apply, snapshot, wanted};
     use crate::core::profile::UserProfileUpdate;
+    use crate::data::user::DbProfile;
 
     fn filter(fields: &[&str]) -> FieldFilter {
         Some(fields.iter().map(|f| (*f).to_owned()).collect())
@@ -339,6 +342,46 @@ mod tests {
 
         assert_eq!(update.removed, vec!["avatar_url".to_owned()]);
     }
+
+    fn stored_profile() -> DbProfile {
+        DbProfile {
+            id: 1,
+            user_id: "@alice:example.org".try_into().unwrap(),
+            room_id: None,
+            display_name: Some("Alice".to_owned()),
+            avatar_url: Some("mxc://example.org/avatar".into()),
+            blurhash: None,
+            fields: json!({ "org.example.pronouns": "she/her", "org.example.empty": null }),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_carries_every_stored_field_including_null_values() {
+        let update = snapshot(stored_profile(), &None).unwrap();
+
+        assert_eq!(update.get("displayname"), Some(&json!("Alice")));
+        assert_eq!(
+            update.get("avatar_url"),
+            Some(&json!("mxc://example.org/avatar"))
+        );
+        assert_eq!(update.get("org.example.pronouns"), Some(&json!("she/her")));
+        assert_eq!(update.get("org.example.empty"), Some(&json!(null)));
+        assert_eq!(update.get("xyz.amorgan.blurhash"), None);
+        assert!(update.removed.is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_honours_the_field_filter() {
+        let update = snapshot(stored_profile(), &filter(&["avatar_url"])).unwrap();
+        assert_eq!(update.updated.len(), 1);
+        assert_eq!(
+            update.get("avatar_url"),
+            Some(&json!("mxc://example.org/avatar"))
+        );
+
+        assert!(snapshot(stored_profile(), &filter(&["xyz.amorgan.blurhash"])).is_none());
+    }
+
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_concurrent_profile_creation_preserves_the_winner() {
@@ -379,5 +422,55 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_a_repaired_profile_records_its_write_once() {
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+
+        use crate::core::UnixMillis;
+        use crate::data;
+        use crate::data::schema::user_profile_changes;
+
+        crate::test_database::init();
+        let user_id: crate::core::identifiers::OwnedUserId =
+            "@legacy:example.org".try_into().unwrap();
+        data::user::create_user(&data::user::NewDbUser {
+            id: user_id.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user_id.localpart().to_owned(),
+            server_name: user_id.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+
+        // A legacy account without a global profile row: the write repairs the row and
+        // then succeeds, appending exactly one change for the field it wrote.
+        data::user::set_profile_field(&user_id, "org.example.pronouns", json!("they/them"))
+            .await
+            .unwrap();
+
+        let profiles = data::user::get_global_profiles(std::slice::from_ref(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].fields.get("org.example.pronouns"),
+            Some(&json!("they/them"))
+        );
+        let changes = user_profile_changes::table
+            .filter(user_profile_changes::user_id.eq(user_id.as_str()))
+            .select(user_profile_changes::field)
+            .load::<String>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(changes, vec!["org.example.pronouns".to_owned()]);
     }
 }
