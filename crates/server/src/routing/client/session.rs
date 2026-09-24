@@ -94,6 +94,7 @@ fn supported_login_flows(
     if delegated_sso_enabled || oidc_sso_enabled {
         flows.push(LoginType::Sso(SsoLoginType {
             identity_providers: oidc_providers,
+            oauth_aware_preferred: delegated_sso_enabled,
         }));
     }
     if delegated_sso_enabled || oidc_sso_enabled {
@@ -775,6 +776,10 @@ mod tests {
                 "m.login.token"
             ]
         );
+        assert_eq!(
+            serde_json::to_value(&flows[1]).unwrap()["oauth_aware_preferred"],
+            true
+        );
     }
 
     #[test]
@@ -902,6 +907,7 @@ mod tests {
                 "github".to_owned(),
                 "GitHub".to_owned(),
             )],
+            oauth_aware_preferred: false,
         }))
         .unwrap();
         assert_eq!(
@@ -946,6 +952,7 @@ mod tests {
             "https://matrix.example/_matrix/client/v3/login/sso/callback",
             "server-state",
             "pkce-challenge",
+            SsoAction::Login,
         )
         .unwrap();
         let url = url::Url::parse(&url).unwrap();
@@ -963,6 +970,24 @@ mod tests {
         assert_eq!(params.get("state").unwrap(), "server-state");
         assert_eq!(params.get("code_challenge").unwrap(), "pkce-challenge");
         assert_eq!(params.get("code_challenge_method").unwrap(), "S256");
+    }
+
+    #[test]
+    fn delegated_sso_registration_requests_account_creation() {
+        let url = build_delegated_authorization_url(
+            "https://idm.example.com/authorize",
+            "matrix-client",
+            "https://matrix.example/_matrix/client/v3/login/sso/callback",
+            "server-state",
+            "pkce-challenge",
+            SsoAction::Register,
+        )
+        .unwrap();
+        let url = url::Url::parse(&url).unwrap();
+        assert!(
+            url.query_pairs()
+                .any(|(key, value)| key == "prompt" && value == "create")
+        );
     }
 
     #[test]
@@ -1098,6 +1123,21 @@ fn get_redirect_url(req: &Request) -> Result<String, MatrixError> {
 /// discovery metadata.
 const DELEGATED_SSO_SESSION_TTL: Duration = Duration::from_secs(600);
 const DELEGATED_SSO_MAX_SESSIONS: usize = 10_000;
+const SSO_LOGIN_TOKEN_TTL_MS: u64 = 5_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SsoAction {
+    Login,
+    Register,
+}
+
+fn sso_action(req: &Request) -> Result<SsoAction, MatrixError> {
+    match req.query::<String>("action").as_deref() {
+        None | Some("login") => Ok(SsoAction::Login),
+        Some("register") => Ok(SsoAction::Register),
+        Some(_) => Err(MatrixError::invalid_param("Invalid SSO action")),
+    }
+}
 
 struct DelegatedSsoSession {
     client_redirect_url: String,
@@ -1108,7 +1148,10 @@ struct DelegatedSsoSession {
 static DELEGATED_SSO_SESSIONS: LazyLock<Mutex<HashMap<String, DelegatedSsoSession>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-async fn build_sso_redirect_url(redirect_url: &str) -> Result<(String, String), MatrixError> {
+async fn build_sso_redirect_url(
+    redirect_url: &str,
+    action: SsoAction,
+) -> Result<(String, String), MatrixError> {
     let conf = config::get();
     let da = conf
         .enabled_delegated_auth()
@@ -1147,6 +1190,7 @@ async fn build_sso_redirect_url(redirect_url: &str) -> Result<(String, String), 
         callback_url,
         &state,
         &code_challenge,
+        action,
     )?;
 
     let mut sessions = DELEGATED_SSO_SESSIONS
@@ -1194,6 +1238,7 @@ fn build_delegated_authorization_url(
     callback_url: &str,
     state: &str,
     code_challenge: &str,
+    action: SsoAction,
 ) -> Result<String, MatrixError> {
     let mut authorize_url = url::Url::parse(authorization_endpoint)
         .map_err(|e| MatrixError::unknown(format!("Invalid authorization endpoint: {e}")))?;
@@ -1206,6 +1251,12 @@ fn build_delegated_authorization_url(
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256");
+
+    if action == SsoAction::Register {
+        authorize_url
+            .query_pairs_mut()
+            .append_pair("prompt", "create");
+    }
 
     Ok(authorize_url.into())
 }
@@ -1302,7 +1353,7 @@ async fn delegated_sso_callback(req: &mut Request, res: &mut Response) -> AppRes
     user::ensure_account_usable(&matrix_user)?;
 
     let login_token = utils::random_string(TOKEN_LENGTH);
-    user::create_login_token(&user_id, &login_token).await?;
+    user::create_login_token_with_ttl(&user_id, &login_token, SSO_LOGIN_TOKEN_TTL_MS).await?;
     let client_callback =
         super::oidc::append_login_token(&session.client_redirect_url, &login_token)?;
     res.render(Redirect::found(client_callback));
@@ -1367,7 +1418,7 @@ async fn redirect(_aa: AuthArgs, req: &mut Request, res: &mut Response) -> AppRe
     if conf.enabled_delegated_auth().is_some_and(|da| {
         da.sso_callback_url.is_some() && !da.sso_allowed_redirect_origins.is_empty()
     }) {
-        let (auth_url, state) = build_sso_redirect_url(&redirect_url).await?;
+        let (auth_url, state) = build_sso_redirect_url(&redirect_url, sso_action(req)?).await?;
         let secure = conf
             .enabled_delegated_auth()
             .and_then(|da| da.sso_callback_url.as_deref())
