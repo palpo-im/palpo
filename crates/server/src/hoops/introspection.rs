@@ -117,17 +117,51 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
 /// Extract device_id from OAuth scope string.
 /// Looks for `urn:matrix:client:device:<id>` or the unstable variant.
 pub fn device_id_from_scope(scope: &str) -> Option<String> {
+    let mut device_id: Option<&str> = None;
     for part in scope.split_whitespace() {
-        if let Some(id) = part.strip_prefix("urn:matrix:client:device:")
-            && !id.is_empty()
+        if let Some(id) = part
+            .strip_prefix("urn:matrix:client:device:")
+            .or_else(|| part.strip_prefix("urn:matrix:org.matrix.msc2967.client:device:"))
         {
-            return Some(id.to_owned());
-        }
-        if let Some(id) = part.strip_prefix("urn:matrix:org.matrix.msc2967.client:device:")
-            && !id.is_empty()
-        {
-            return Some(id.to_owned());
+            if id.is_empty() || device_id.is_some_and(|previous| previous != id) {
+                return None;
+            }
+            device_id = Some(id);
         }
     }
-    None
+    device_id.map(ToOwned::to_owned)
+}
+
+/// Only Matrix API-scoped OAuth tokens can authorize Client-Server API calls.
+pub fn has_matrix_api_scope(scope: &str) -> bool {
+    scope.split_whitespace().any(|part| {
+        matches!(
+            part,
+            "urn:matrix:client:api:*" | "urn:matrix:org.matrix.msc2967.client:api:*"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matrix_scope_requires_api_access_and_unambiguous_device() {
+        assert!(!has_matrix_api_scope("openid email"));
+        assert!(has_matrix_api_scope("openid urn:matrix:client:api:*"));
+        assert!(has_matrix_api_scope(
+            "urn:matrix:org.matrix.msc2967.client:api:*"
+        ));
+        assert_eq!(
+            device_id_from_scope(
+                "urn:matrix:client:device:DEV urn:matrix:org.matrix.msc2967.client:device:DEV"
+            ),
+            Some("DEV".to_owned())
+        );
+        assert_eq!(
+            device_id_from_scope("urn:matrix:client:device:DEV urn:matrix:client:device:OTHER"),
+            None
+        );
+    }
 }

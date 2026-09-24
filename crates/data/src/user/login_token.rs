@@ -22,21 +22,12 @@ pub async fn upsert_login_token(user_id: &UserId, token: &str, expires_at: i64) 
     Ok(())
 }
 
-/// Look up the user and expiry recorded for a login token.
-pub async fn get_login_token(token: &str) -> DataResult<Option<(OwnedUserId, UnixMillis)>> {
-    user_login_tokens::table
-        .filter(user_login_tokens::token.eq(token))
-        .select((user_login_tokens::user_id, user_login_tokens::expires_at))
-        .first::<(OwnedUserId, UnixMillis)>(&mut connect().await?)
+/// Atomically consume a login token so concurrent requests cannot both use it.
+pub async fn take_login_token(token: &str) -> DataResult<Option<(OwnedUserId, UnixMillis)>> {
+    diesel::delete(user_login_tokens::table.filter(user_login_tokens::token.eq(token)))
+        .returning((user_login_tokens::user_id, user_login_tokens::expires_at))
+        .get_result::<(OwnedUserId, UnixMillis)>(&mut connect().await?)
         .await
         .optional()
         .map_err(Into::into)
-}
-
-/// Remove a login token.
-pub async fn delete_login_token(token: &str) -> DataResult<()> {
-    diesel::delete(user_login_tokens::table.filter(user_login_tokens::token.eq(token)))
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
 }

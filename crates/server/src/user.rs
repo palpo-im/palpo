@@ -296,17 +296,15 @@ pub async fn create_login_token_with_ttl(
 /// Find out which user a login token belongs to.
 /// Removes the token to prevent double-use attacks.
 pub async fn take_login_token(token: &str) -> AppResult<OwnedUserId> {
-    let Some((user_id, expires_at)) = data::user::login_token::get_login_token(token).await? else {
+    let Some((user_id, expires_at)) = data::user::login_token::take_login_token(token).await?
+    else {
         return Err(MatrixError::forbidden("Login token is unrecognised.", None).into());
     };
 
     if expires_at < UnixMillis::now() {
-        trace!(?user_id, ?token, "Removing expired login token");
-        data::user::login_token::delete_login_token(token).await?;
+        trace!(?user_id, "Rejected expired login token");
         return Err(MatrixError::forbidden("Login token is expired.", None).into());
     }
-
-    data::user::login_token::delete_login_token(token).await?;
 
     Ok(user_id)
 }

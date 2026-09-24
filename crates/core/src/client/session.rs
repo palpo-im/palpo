@@ -598,6 +598,10 @@ pub struct SsoLoginType {
     /// The identity provider choices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identity_providers: Vec<IdentityProvider>,
+
+    /// Whether OAuth-aware legacy clients should prefer this SSO flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub oauth_aware_preferred: bool,
 }
 
 impl SsoLoginType {
