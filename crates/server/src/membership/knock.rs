@@ -1,6 +1,9 @@
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::http::StatusError;
 
 use crate::core::UnixMillis;
+use crate::core::events::AnyStrippedStateEvent;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::federation::knock::{
     MakeKnockReqArgs, MakeKnockResBody, SendKnockReqArgs, SendKnockReqBody, SendKnockResBody,
@@ -8,8 +11,10 @@ use crate::core::federation::knock::{
 };
 use crate::core::identifiers::*;
 use crate::core::room::JoinRule;
-use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, to_canonical_value};
+use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, RawJson, to_canonical_value};
+use crate::data::connect;
 use crate::data::room::NewDbEvent;
+use crate::data::schema::room_users;
 use crate::event::{PduBuilder, PduEvent, ensure_event_sn, gen_event_id};
 use crate::room::timeline;
 use crate::{
@@ -200,7 +205,7 @@ pub async fn knock_room(
     )?
     .into_inner();
 
-    let _send_knock_body =
+    let send_knock_body =
         crate::sending::send_federation_request(&remote_server, send_knock_request, None)
             .await?
             .json::<SendKnockResBody>()
@@ -213,7 +218,11 @@ pub async fn knock_room(
             StatusError::internal_server_error().brief(format!("invalid knock event PDU: {e:?}"))
         })?;
 
-    info!("going through send_knock response knock state events");
+    let knock_state = send_knock_body
+        .knock_room_state
+        .iter()
+        .map(stripped_knock_state_event)
+        .collect::<AppResult<Vec<_>>>()?;
 
     info!("appending room knock event locally");
     let event_id = parsed_knock_pdu.event_id.clone();
@@ -249,8 +258,40 @@ pub async fn knock_room(
     };
     timeline::append_pdu(&knock_pdu, knock_event, &room::lock_state(room_id).await).await?;
 
+    // This server is not joined to the remote room. Its local room state only
+    // contains the knock event, so use the state returned by /send_knock for /sync.
+    let updated = diesel::update(
+        room_users::table
+            .filter(room_users::room_id.eq(room_id))
+            .filter(room_users::user_id.eq(sender_id))
+            .filter(room_users::membership.eq(MembershipState::Knock.to_string())),
+    )
+    .set(room_users::state_data.eq(serde_json::to_value(&knock_state)?))
+    .execute(&mut connect().await?)
+    .await?;
+    if updated != 1 {
+        return Err(AppError::internal("failed to save federated knock state"));
+    }
+
     drop(event_guard);
     Ok(Some(knock_pdu))
+}
+
+fn stripped_knock_state_event<T: serde::Serialize>(
+    event: &T,
+) -> AppResult<RawJson<AnyStrippedStateEvent>> {
+    let event = serde_json::to_value(event)?;
+    let field = |name| {
+        event.get(name).cloned().ok_or_else(|| {
+            MatrixError::invalid_param(format!("knock state event is missing {name}"))
+        })
+    };
+    Ok(RawJson::from_value(&serde_json::json!({
+        "content": field("content")?,
+        "sender": field("sender")?,
+        "state_key": field("state_key")?,
+        "type": field("type")?,
+    }))?)
 }
 
 async fn make_knock_request(
@@ -311,4 +352,26 @@ async fn make_knock_request(
     }
 
     make_knock_response_and_server
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stripped_knock_state_event;
+
+    #[test]
+    fn federation_knock_state_is_stripped_for_clients() {
+        let pdu = serde_json::json!({
+            "content": {"creator": "@alice:example.org"},
+            "sender": "@alice:example.org",
+            "state_key": "",
+            "type": "m.room.create",
+            "event_id": "$create",
+            "origin_server_ts": 1234,
+        });
+        let stripped = stripped_knock_state_event(&pdu).unwrap();
+        let value: serde_json::Value = serde_json::from_str(stripped.as_str()).unwrap();
+        assert_eq!(value["type"], "m.room.create");
+        assert!(value.get("origin_server_ts").is_none());
+        assert!(value.get("event_id").is_none());
+    }
 }
