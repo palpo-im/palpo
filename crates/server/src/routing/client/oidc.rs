@@ -109,6 +109,7 @@
 //! - No username/email → `@user_123456:server`
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use cookie::time::Duration;
 use salvo::prelude::*;
@@ -780,7 +781,24 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
     let matrix_user_id =
         generate_matrix_user_id(&user_info, oidc_config, config.server_name.as_str())?;
     let display_name = generate_display_name(&user_info, provider_config);
-    let avatar_url = generate_avatar_url(&user_info, provider_config);
+    let parsed_user_id = crate::core::identifiers::UserId::parse(&matrix_user_id)
+        .map_err(|_| MatrixError::invalid_param("Invalid Matrix user ID format"))?;
+    let needs_profile = crate::data::user::get_profile(&parsed_user_id, None)
+        .await?
+        .is_none();
+    let may_create_profile =
+        oidc_config.allow_registration || crate::data::user::user_exists(&parsed_user_id).await?;
+    let avatar_url = if needs_profile && may_create_profile {
+        match generate_avatar_url(&user_info, provider_config).await {
+            Ok(avatar_url) => avatar_url,
+            Err(error) => {
+                tracing::warn!(%error, "could not import OIDC avatar");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Step 12: Create or retrieve Matrix user account
     let user = create_or_get_user(&matrix_user_id, &display_name, avatar_url, oidc_config).await?;
@@ -1183,12 +1201,12 @@ fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProvide
         })
 }
 
-/// Resolve the configured avatar claim, accepting only Matrix Content URIs as
-/// required by the Client-Server profile API.
-fn generate_avatar_url(
+/// Resolve the configured avatar claim to a Matrix Content URI. OIDC picture
+/// claims normally contain HTTPS URLs, which must be imported as Matrix media.
+async fn generate_avatar_url(
     user_info: &OidcUserInfo,
     provider_config: &OidcProviderConfig,
-) -> Option<OwnedMxcUri> {
+) -> AppResult<Option<OwnedMxcUri>> {
     let avatar_claim = provider_config
         .attribute_mapping
         .get("avatar_url")
@@ -1202,18 +1220,107 @@ fn generate_avatar_url(
             (avatar_claim == "picture")
                 .then_some(user_info.picture.as_deref())
                 .flatten()
-        })?;
+        });
+    let Some(value) = value else { return Ok(None) };
     let avatar_url = OwnedMxcUri::from(value);
 
     if avatar_url.is_valid() {
-        Some(avatar_url)
-    } else {
-        tracing::warn!(
-            claim = avatar_claim,
-            "ignoring OIDC avatar claim because it is not a valid Matrix Content URI"
-        );
-        None
+        return Ok(Some(avatar_url));
     }
+    let mut url = parse_oidc_avatar_url(value)?;
+    let mut redirects = 0;
+    let response = loop {
+        crate::utils::url_guard::ensure_safe_outbound_url(&url)?;
+        let response = oidc_avatar_client().get(url.clone()).send().await?;
+        if !response.status().is_redirection() {
+            break response;
+        }
+        if redirects == 3 {
+            return Err(MatrixError::invalid_param("OIDC avatar redirected too many times").into());
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| MatrixError::invalid_param("OIDC avatar redirect has no location"))?;
+        let next = url
+            .join(location)
+            .map_err(|_| MatrixError::invalid_param("Invalid OIDC avatar redirect"))?;
+        url = parse_oidc_avatar_url(next.as_str())?;
+        redirects += 1;
+    };
+    if !response.status().is_success() {
+        return Err(MatrixError::unknown("OIDC avatar download failed").into());
+    }
+    const MAX_OIDC_AVATAR_SIZE: usize = 10 * 1024 * 1024;
+    let max_size = MAX_OIDC_AVATAR_SIZE.min(config::get().max_upload_size as usize);
+    let image = crate::utils::read_response_limited(response, max_size).await?;
+    let content_type = oidc_avatar_content_type(&image)?;
+    let conf = config::get();
+    let media_id = utils::random_string(crate::MXC_LENGTH);
+    let key = crate::media::media_storage_key(&conf.server_name, &media_id);
+    crate::storage::write(&key, &image).await?;
+    let metadata = crate::data::media::NewDbMetadata {
+        media_id: media_id.clone(),
+        origin_server: conf.server_name.clone(),
+        disposition_type: Some("inline".into()),
+        content_type: Some(content_type.into()),
+        file_name: None,
+        file_extension: None,
+        file_size: image.len() as i64,
+        file_hash: None,
+        created_by: None,
+        created_at: UnixMillis::now(),
+    };
+    if let Err(error) = crate::data::media::insert_metadata(&metadata).await {
+        let _ = crate::storage::delete(&key).await;
+        return Err(error.into());
+    }
+    Ok(Some(OwnedMxcUri::from(format!(
+        "mxc://{}/{}",
+        conf.server_name, media_id
+    ))))
+}
+
+fn oidc_avatar_content_type(image: &[u8]) -> Result<&'static str, MatrixError> {
+    Ok(match image::guess_format(image) {
+        Ok(image::ImageFormat::Png) => "image/png",
+        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+        Ok(image::ImageFormat::Gif) => "image/gif",
+        Ok(image::ImageFormat::WebP) => "image/webp",
+        _ => {
+            return Err(MatrixError::invalid_param(
+                "OIDC avatar is not a supported image",
+            ));
+        }
+    })
+}
+
+fn parse_oidc_avatar_url(value: &str) -> Result<Url, MatrixError> {
+    let url =
+        Url::parse(value).map_err(|_| MatrixError::invalid_param("Invalid OIDC avatar URL"))?;
+    if url.scheme() != "https" || url.username() != "" || url.password().is_some() {
+        return Err(MatrixError::invalid_param(
+            "OIDC avatar must be an HTTPS image URL or MXC URI",
+        ));
+    }
+    Ok(url)
+}
+
+fn oidc_avatar_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let tls_name_override = Arc::new(RwLock::new(crate::TlsNameMap::new()));
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(Arc::new(
+                crate::sending::resolver::Resolver::new_with_cidr_denylist(tls_name_override),
+            ))
+            .build()
+            .expect("OIDC avatar client configuration is valid")
+    })
 }
 
 /// **Matrix User Account Management**
@@ -1495,23 +1602,28 @@ mod tests {
         assert_eq!(generate_display_name(&user_info, &provider), "Tester");
     }
 
-    #[test]
-    fn avatar_mapping_accepts_only_matrix_content_uris() {
+    #[tokio::test]
+    async fn avatar_mapping_accepts_only_matrix_content_uris() {
         let provider = provider_with_mapping(&[("avatar_url", "matrix_avatar")]);
         let valid_user_info = user_info_with_claims(serde_json::json!({
             "sub": "user-id",
             "matrix_avatar": "mxc://matrix.example.com/media-id"
         }));
-        let invalid_user_info = user_info_with_claims(serde_json::json!({
-            "sub": "user-id",
-            "matrix_avatar": "https://idm.example.com/avatar.png"
-        }));
-
         assert_eq!(
-            generate_avatar_url(&valid_user_info, &provider).as_deref(),
+            generate_avatar_url(&valid_user_info, &provider)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("mxc://matrix.example.com/media-id".into())
         );
-        assert_eq!(generate_avatar_url(&invalid_user_info, &provider), None);
+        assert!(parse_oidc_avatar_url("https://idm.example.com/avatar.png").is_ok());
+        assert!(parse_oidc_avatar_url("http://idm.example.com/avatar.png").is_err());
+        assert!(parse_oidc_avatar_url("https://user:secret@idm.example.com/avatar.png").is_err());
+        assert_eq!(
+            oidc_avatar_content_type(b"\x89PNG\r\n\x1a\n\0\0\0\0").unwrap(),
+            "image/png"
+        );
+        assert!(oidc_avatar_content_type(b"<html>not an image</html>").is_err());
     }
 
     #[tokio::test]

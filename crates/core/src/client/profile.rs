@@ -145,12 +145,12 @@ impl DisplayNameResBody {
 
 /// Request type for the `set_avatar_url` endpoint.
 #[derive(ToSchema, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct SetAvatarUrlReqBody {
     /// The new avatar URL for the user.
     ///
-    /// `None` is used to unset the avatar.
-    #[serde(default, deserialize_with = "crate::serde::empty_string_as_none")]
-    pub avatar_url: Option<OwnedMxcUri>,
+    /// Use DELETE on the profile field to unset the avatar.
+    pub avatar_url: OwnedMxcUri,
 
     /// The [BlurHash](https://blurha.sh) for the avatar pointed to by `avatar_url`.
     ///
@@ -198,12 +198,13 @@ pub struct SetAvatarUrlReqArgs {
 
 /// Request type for the `set_display_name` endpoint.
 #[derive(ToSchema, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct SetDisplayNameReqBody {
     /// The new display name for the user.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        alias = "displayname"
+        rename = "displayname"
     )]
     pub display_name: Option<String>,
 }
@@ -265,3 +266,26 @@ impl StaticProfileField for DisplayName {
 //     None,
 //     None,
 // );
+
+#[cfg(test)]
+mod tests {
+    use super::{SetAvatarUrlReqBody, SetDisplayNameReqBody};
+
+    #[test]
+    fn profile_put_bodies_use_matrix_field_names() {
+        let display: SetDisplayNameReqBody =
+            serde_json::from_str(r#"{"displayname":"Alice"}"#).unwrap();
+        assert_eq!(display.display_name.as_deref(), Some("Alice"));
+        assert!(
+            serde_json::from_str::<SetDisplayNameReqBody>(r#"{"display_name":"Alice"}"#).is_err()
+        );
+        assert!(
+            serde_json::from_str::<SetAvatarUrlReqBody>(
+                r#"{"avatar_url":"mxc://example.org/avatar","extra":1}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<SetAvatarUrlReqBody>(r#"{}"#).is_err());
+        assert!(serde_json::from_str::<SetAvatarUrlReqBody>(r#"{"avatar_url":null}"#).is_err());
+    }
+}

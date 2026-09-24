@@ -112,6 +112,22 @@ pub async fn set_presence(db_presence: NewDbPresence, force: bool) -> DataResult
     Ok(state_changed)
 }
 
+/// Publish a profile change through presence without changing the user's presence state.
+pub async fn refresh_presence_for_profile(user_id: &UserId) -> DataResult<()> {
+    diesel::insert_into(user_presences::table)
+        .values(user_presences::user_id.eq(user_id))
+        .on_conflict(user_presences::user_id)
+        .do_update()
+        .set(
+            user_presences::occur_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "nextval('occur_sn_seq')",
+            )),
+        )
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
 /// Removes the presence record for the given user from the database.
 pub async fn remove_presence(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_presences::table.filter(user_presences::user_id.eq(user_id)))
