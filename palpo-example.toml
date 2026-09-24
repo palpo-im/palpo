@@ -1444,6 +1444,17 @@
 #
 # client_id =
 
+# Public callback URL registered as an allowed redirect URI for client_id
+# at the delegated authorization server. Required for legacy Matrix SSO.
+# example: "https://matrix.example.com/_matrix/client/v3/login/sso/callback"
+# sso_callback_url =
+
+# Only these client origins may receive the short-lived Matrix login token.
+# Add your actual Matrix clients. Loopback hosts without a port accept an
+# ephemeral port used by desktop clients.
+# example: ["http://127.0.0.1", "http://localhost", "https://app.example.com"]
+# sso_allowed_redirect_origins = []
+
 # Optional URL for account management UI.
 # Included in the well-known client response under m.authentication.
 #

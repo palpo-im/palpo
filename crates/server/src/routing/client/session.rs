@@ -92,6 +92,13 @@ fn supported_login_flows(
     get_login_token_enabled: bool,
 ) -> Vec<LoginType> {
     let mut flows = Vec::new();
+    // The delegated issuer presents its own provider chooser. Palpo's local
+    // OIDC configuration is unrelated to that issuer's upstream providers.
+    let oidc_providers = if delegated_auth_enabled {
+        Vec::new()
+    } else {
+        oidc_providers
+    };
     let oidc_sso_enabled = !oidc_providers.is_empty();
     if !delegated_auth_enabled || delegated_password_login_enabled {
         flows.push(LoginType::password());
@@ -867,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn delegated_auth_with_oidc_advertises_oidc_identity_providers() {
+    fn delegated_auth_does_not_advertise_local_oidc_identity_providers() {
         let flows = supported_login_flows(
             true,
             true,
@@ -892,7 +899,7 @@ mod tests {
         else {
             panic!("SSO flow missing");
         };
-        assert_eq!(sso.identity_providers.len(), 2);
+        assert!(sso.identity_providers.is_empty());
     }
 
     #[test]
@@ -1511,6 +1518,9 @@ async fn provider_url(
     let conf = config::get();
     let redirect_url = get_redirect_url(req)?;
     let idp_id = idp_id.into_inner();
+    if conf.enabled_delegated_auth().is_some() {
+        return Err(MatrixError::not_found(format!("Unknown identity provider: {idp_id}")).into());
+    }
     let Some(oidc) = conf.enabled_oidc() else {
         return Err(MatrixError::not_found(format!("Unknown identity provider: {idp_id}")).into());
     };
