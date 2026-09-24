@@ -468,8 +468,7 @@ async fn set_read_markers(
 /// #GET /_matrix/client/r0/rooms/{room_id}/aliases
 /// Lists all aliases of the room.
 ///
-/// - Only users joined to the room are allowed to call this
-/// TODO: Allow any user to call it if history_visibility is world readable
+/// - Only users joined to the room are allowed to call this, unless the room is world readable
 #[endpoint]
 async fn get_aliases(
     _aa: AuthArgs,
@@ -478,7 +477,9 @@ async fn get_aliases(
 ) -> JsonResult<AliasesResBody> {
     let authed = depot.authed_info()?;
 
-    if !room::user::is_joined(authed.user_id(), &room_id).await? {
+    if !room::user::is_joined(authed.user_id(), &room_id).await?
+        && !room::is_world_readable(&room_id).await
+    {
         return Err(
             MatrixError::forbidden("you don't have permission to view this room", None).into(),
         );

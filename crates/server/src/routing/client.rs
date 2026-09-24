@@ -142,7 +142,8 @@ fn router_inner() -> Router {
 /// #POST /_matrix/client/r0/search
 /// Searches rooms for messages.
 ///
-/// - Only works if the user is currently joined to the room (TODO: Respect history visibility)
+/// - Only searches rooms the user is currently joined to, and only returns events the user may see
+///   under the room's history visibility
 #[endpoint]
 async fn search(
     _aa: AuthArgs,
