@@ -14,6 +14,7 @@ use crate::core::room::{JoinRule, RoomEventReqArgs};
 use crate::core::serde::{
     CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, to_canonical_object,
 };
+use crate::core::signatures::Verified;
 use crate::data::connect;
 use crate::data::room::NewDbEvent;
 use crate::data::schema::*;
@@ -194,6 +195,37 @@ async fn invite_user(
         CanonicalJsonValue::String(event_id.to_string()),
     );
 
+    let requires_full_invite_state = crate::room::get_version_rules(&body.room_version)?
+        .authorization
+        .room_create_event_id_as_room_id;
+    if requires_full_invite_state {
+        let mut has_create = false;
+        for event in &body.invite_room_state {
+            let (pdu, is_create) =
+                parse_v12_invite_state_event(event, &args.room_id, &body.room_version)?;
+            if is_create {
+                if has_create {
+                    return Err(MatrixError::missing_param(
+                        "invite_room_state contains multiple m.room.create events",
+                    )
+                    .into());
+                }
+                has_create = true;
+            }
+            if !matches!(
+                crate::server_key::verify_event(&pdu, &body.room_version).await,
+                Ok(Verified::All)
+            ) {
+                return Err(MatrixError::missing_param(
+                    "invite_room_state contains an event with an invalid signature or hash",
+                )
+                .into());
+            }
+        }
+        if !has_create {
+            return Err(MatrixError::missing_param("invite_room_state lacks m.room.create").into());
+        }
+    }
     let state_lock = room::lock_state(&args.room_id).await;
     ensure_room(&args.room_id, &body.room_version).await?;
     if data::room::is_banned(&args.room_id).await? {
@@ -204,18 +236,6 @@ async fn invite_user(
         return Err(MatrixError::forbidden("this server does not allow room invites", None).into());
     }
 
-    let requires_full_invite_state = crate::room::get_version_rules(&body.room_version)?
-        .authorization
-        .room_create_event_id_as_room_id;
-    if requires_full_invite_state
-        && !body.invite_room_state.iter().any(|event| {
-            serde_json::from_str::<JsonValue>(event.get()).is_ok_and(|event| {
-                event.get("type").and_then(JsonValue::as_str) == Some("m.room.create")
-            })
-        })
-    {
-        return Err(MatrixError::missing_param("invite_room_state lacks m.room.create").into());
-    }
     let mut invite_state = body
         .invite_room_state
         .iter()
@@ -302,6 +322,59 @@ async fn invite_user(
     json_ok(InviteUserResBodyV2 {
         event: crate::sending::convert_to_outgoing_federation_event(signed_event).await,
     })
+}
+
+/// Version 12 derives the room ID from the create event. Validate the full PDU
+/// before stripping it for clients; a matching `type` alone is not evidence of
+/// the room's create event.
+fn parse_v12_invite_state_event(
+    event: &RawJsonValue,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+) -> Result<(CanonicalJsonObject, bool), MatrixError> {
+    let pdu: CanonicalJsonObject = serde_json::from_str(event.get())
+        .map_err(|_| MatrixError::missing_param("invite_room_state contains an invalid PDU"))?;
+    if ["auth_events", "prev_events", "signatures"]
+        .into_iter()
+        .any(|field| !pdu.contains_key(field))
+    {
+        return Err(MatrixError::missing_param(
+            "invite_room_state contains an incomplete PDU",
+        ));
+    }
+    let is_create = pdu.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create");
+    if pdu
+        .get("state_key")
+        .and_then(CanonicalJsonValue::as_str)
+        .is_none()
+    {
+        return Err(MatrixError::missing_param(
+            "invite_room_state contains a non-state event",
+        ));
+    }
+    if is_create {
+        if pdu.get("state_key").and_then(CanonicalJsonValue::as_str) != Some("")
+            || pdu.contains_key("room_id")
+        {
+            return Err(MatrixError::missing_param(
+                "invite_room_state contains an invalid m.room.create event",
+            ));
+        }
+    } else if pdu.get("room_id").and_then(CanonicalJsonValue::as_str) != Some(room_id.as_str()) {
+        return Err(MatrixError::missing_param(
+            "invite_room_state contains an event from another room",
+        ));
+    }
+    let event_id = crate::event::gen_event_id(&pdu, room_version)
+        .map_err(|_| MatrixError::missing_param("invite_room_state contains an invalid PDU"))?;
+    crate::event::PduEvent::from_canonical_object(room_id, &event_id, pdu.clone())
+        .map_err(|_| MatrixError::missing_param("invite_room_state contains an invalid PDU"))?;
+    if is_create && RoomId::new_v2(event_id.localpart()).ok().as_deref() != Some(room_id) {
+        return Err(MatrixError::missing_param(
+            "invite_room_state create event does not match the room ID",
+        ));
+    }
+    Ok((pdu, is_create))
 }
 
 /// Convert federation invite state to the stripped form exposed to clients.
@@ -532,7 +605,58 @@ mod tests {
     use serde_json::value::to_raw_value;
     use serde_json::{Value, json};
 
-    use super::stripped_invite_state_event;
+    use super::{parse_v12_invite_state_event, stripped_invite_state_event};
+    use crate::core::identifiers::{RoomId, RoomVersionId};
+
+    #[test]
+    fn v12_invite_state_requires_the_real_full_create_event() {
+        let mut create = json!({
+            "auth_events": [],
+            "content": { "room_version": "12" },
+            "depth": 1,
+            "hashes": { "sha256": "hash" },
+            "origin_server_ts": 1,
+            "prev_events": [],
+            "sender": "@alice:example.org",
+            "signatures": { "example.org": { "ed25519:key": "sig" } },
+            "state_key": "",
+            "type": "m.room.create"
+        });
+        let canonical = serde_json::from_value(create.clone()).unwrap();
+        let event_id = crate::event::gen_event_id(&canonical, &RoomVersionId::V12).unwrap();
+        let room_id = RoomId::new_v2(event_id.localpart()).unwrap();
+        let raw = to_raw_value(&create).unwrap();
+        assert!(
+            parse_v12_invite_state_event(&raw, &room_id, &RoomVersionId::V12)
+                .unwrap()
+                .1
+        );
+        let other_room = RoomId::new_v2("other").unwrap();
+        assert!(parse_v12_invite_state_event(&raw, &other_room, &RoomVersionId::V12).is_err());
+
+        create["state_key"] = json!("@alice:example.org");
+        let raw = to_raw_value(&create).unwrap();
+        assert!(parse_v12_invite_state_event(&raw, &room_id, &RoomVersionId::V12).is_err());
+
+        create["state_key"] = json!("");
+        create["room_id"] = json!(room_id);
+        let raw = to_raw_value(&create).unwrap();
+        assert!(parse_v12_invite_state_event(&raw, &room_id, &RoomVersionId::V12).is_err());
+
+        create.as_object_mut().unwrap().remove("room_id");
+        create.as_object_mut().unwrap().remove("signatures");
+        let raw = to_raw_value(&create).unwrap();
+        assert!(parse_v12_invite_state_event(&raw, &room_id, &RoomVersionId::V12).is_err());
+
+        let stripped = to_raw_value(&json!({
+            "content": { "room_version": "12" },
+            "sender": "@alice:example.org",
+            "state_key": "",
+            "type": "m.room.create"
+        }))
+        .unwrap();
+        assert!(parse_v12_invite_state_event(&stripped, &room_id, &RoomVersionId::V12).is_err());
+    }
 
     #[test]
     fn strips_full_federation_pdu_for_client_state() {
