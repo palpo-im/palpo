@@ -454,40 +454,16 @@ pub async fn cancel(
 
 /// Delete finalized delayed events whose retention period has passed.
 pub async fn prune_finalized(finalized_before: i64) -> DataResult<usize> {
-    let mut conn = connect().await?;
-    conn.transaction::<_, diesel::result::Error, _>(async |conn| {
-        // The normal send endpoint also records the transaction in
-        // `event_idempotents`. Remove that mapping with the delayed row, but
-        // only when it points at this delayed event's actual output. Leaving a
-        // stale mapping would let a later retry schedule a new delayed event
-        // while ordinary transaction lookup still points at the old output.
-        diesel::sql_query(
-            "DELETE FROM event_idempotents AS idempotent \
-             USING delayed_events AS delayed \
-             WHERE delayed.finalized_at IS NOT NULL \
-               AND delayed.finalized_at <= $1 \
-               AND delayed.event_id IS NOT NULL \
-               AND NOT EXISTS (SELECT 1 FROM delayed_event_deliveries AS pending WHERE pending.event_id = delayed.event_id) \
-               AND idempotent.event_id = delayed.event_id \
-               AND idempotent.user_id = delayed.user_id \
-               AND idempotent.device_id IS NOT DISTINCT FROM delayed.device_id \
-               AND idempotent.room_id = delayed.room_id \
-               AND idempotent.txn_id = delayed.txn_id",
-        )
-        .bind::<diesel::sql_types::BigInt, _>(finalized_before)
-        .execute(&mut *conn)
-        .await?;
-
-        diesel::delete(
-            delayed_events::table
-                .filter(delayed_events::finalized_at.is_not_null())
-                .filter(delayed_events::finalized_at.le(finalized_before))
-                .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
-                    "NOT EXISTS (SELECT 1 FROM delayed_event_deliveries AS pending WHERE pending.event_id = delayed_events.event_id)")),
-        )
-        .execute(&mut *conn)
-        .await
-    })
+    // Rows whose federation delivery is still pending are kept until it is queued.
+    diesel::delete(
+        delayed_events::table
+            .filter(delayed_events::finalized_at.is_not_null())
+            .filter(delayed_events::finalized_at.le(finalized_before))
+            .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                "NOT EXISTS (SELECT 1 FROM delayed_event_deliveries AS pending                  WHERE pending.event_id = delayed_events.event_id)",
+            )),
+    )
+    .execute(&mut connect().await?)
     .await
     .map_err(Into::into)
 }

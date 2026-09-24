@@ -11,7 +11,8 @@ pub struct DelayedEventsConfig {
     /// server sends into a room after a delay, e.g. reliable MatrixRTC
     /// "hang up" events. When disabled new schedules are rejected and the
     /// feature is not advertised; lookup and management routes remain available
-    /// so existing delayed events can still be inspected or cancelled. Disabled
+    /// so existing delayed events can still be inspected or cancelled, but they
+    /// are not sent automatically until the feature is enabled again. Disabled
     /// by default while MSC4140 is unstable.
     ///
     /// default: false

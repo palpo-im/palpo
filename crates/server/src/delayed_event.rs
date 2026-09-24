@@ -275,30 +275,9 @@ async fn send_delayed_pdu(
     // work or re-run authorization. The event it just sent may itself have
     // changed the state that check reads, which would otherwise turn a
     // completed send into a permanent failure.
-    // Use the delay-specific mapping: a reused transaction id can point at
-    // an older ordinary send, while this marker identifies the exact delayed
-    // event that actually entered the timeline.
+    // Use the delay-specific mapping: it identifies the exact delayed event that
+    // actually entered the timeline.
     if let Some(event_id) = delayed_event::get_output(&event.delay_id).await? {
-        // Repair the conventional transaction-id lookup when possible. The
-        // trigger-backed output is already a sufficient idempotency fence, so
-        // failure to write this secondary mapping must not turn a completed
-        // room append into a failed delayed event.
-        if let Err(error) = crate::transaction_id::add_txn_id(
-            &event.txn_id,
-            &event.user_id,
-            event.device_id.as_deref(),
-            Some(&event.room_id),
-            Some(&event_id),
-        )
-        .await
-        {
-            tracing::warn!(
-                delay_id = %event.delay_id,
-                %event_id,
-                ?error,
-                "failed to repair delayed-event transaction-id mapping"
-            );
-        }
         return Ok(event_id);
     }
 
@@ -363,26 +342,11 @@ async fn send_delayed_pdu(
     .pdu
     .event_id;
 
-    // The database trigger has already recorded the authoritative output in
-    // the same transaction that promoted the event into the timeline. Keep the
-    // standard transaction-id mapping for normal idempotency lookups, but do
-    // not misreport a completed room append if this secondary write fails.
-    if let Err(error) = crate::transaction_id::add_txn_id(
-        &event.txn_id,
-        &event.user_id,
-        event.device_id.as_deref(),
-        Some(&event.room_id),
-        Some(&event_id),
-    )
-    .await
-    {
-        tracing::warn!(
-            delay_id = %event.delay_id,
-            event_id = %event_id,
-            ?error,
-            "failed to record delayed-event transaction-id mapping"
-        );
-    }
+    // The database trigger has already recorded the authoritative output in the
+    // same transaction that promoted the event into the timeline. Do not record the
+    // scheduling transaction id in the `/send` idempotency table: transaction ids
+    // are scoped per endpoint, so that mapping would make a later `/send` reusing
+    // the id silently return this delayed event instead of sending a new one.
     drop(state_lock);
 
     Ok((*event_id).to_owned())

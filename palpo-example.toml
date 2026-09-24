@@ -828,21 +828,34 @@
 
 # [delayed_events]
 
-# Allow scheduling MSC4140 delayed events. Disabled by default while the MSC
-# is unstable. When disabled, the endpoints are not registered and the feature
-# is not advertised.
+# Allow scheduling MSC4140 delayed events.
+#
+# Delayed events let clients schedule message or state events that the
+# server sends into a room after a delay, e.g. reliable MatrixRTC
+# "hang up" events. When disabled new schedules are rejected and the
+# feature is not advertised; lookup and management routes remain available
+# so existing delayed events can still be inspected or cancelled, but they
+# are not sent automatically until the feature is enabled again. Disabled
+# by default while MSC4140 is unstable.
 #
 # enable = false
 
-# Maximum requested delay in milliseconds. Defaults to 24 hours.
+# The maximum delay in milliseconds a client may request for a delayed
+# event. Requests above this limit are rejected with the unstable
+# `ORG.MATRIX.MSC4140_DELAY_TOO_LARGE` error code.
+# Defaults to 24 hours.
 #
 # max_delay_ms = 86400_000
 
-# Maximum number of delayed events a user may have scheduled at once.
+# How many delayed events a user may have scheduled at once. Requests
+# above this limit are rejected with `M_LIMIT_EXCEEDED`.
+# Defaults to 100.
 #
 # max_scheduled = 100
 
-# Retention period for finalized delayed events, in milliseconds.
+# How long finalized (sent, cancelled, or errored) delayed events are
+# retained for lookup before they are pruned, in milliseconds.
+# Defaults to 7 days.
 #
 # retention_ms = 604800_000
 
