@@ -837,7 +837,10 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
     Ok(())
 }
 
-fn append_login_token(redirect_url: &str, login_token: &str) -> Result<Url, MatrixError> {
+pub(super) fn append_login_token(
+    redirect_url: &str,
+    login_token: &str,
+) -> Result<Url, MatrixError> {
     let mut redirect_url = Url::parse(redirect_url)
         .map_err(|e| MatrixError::invalid_param(format!("Invalid redirectUrl: {e}")))?;
     let existing_pairs = redirect_url
