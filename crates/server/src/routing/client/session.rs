@@ -68,8 +68,14 @@ async fn login_types(_aa: AuthArgs) -> JsonResult<LoginTypesResBody> {
             .map(config::DelegatedAuthConfig::password_login_enabled)
             .unwrap_or(false),
         oidc_providers,
-        conf.login_via_existing_session,
+        get_login_token_enabled(conf.login_via_existing_session, delegated_auth.is_some()),
     ))))
+}
+
+// The standard /login/get_token endpoint rejects delegated authentication.
+// This flag describes that endpoint, not the admin or SSO token issuers.
+fn get_login_token_enabled(login_via_existing_session: bool, delegated_auth_enabled: bool) -> bool {
+    login_via_existing_session && !delegated_auth_enabled
 }
 
 fn supported_login_flows(
@@ -905,6 +911,13 @@ mod tests {
             panic!("token flow missing");
         };
         assert!(token.get_login_token);
+    }
+
+    #[test]
+    fn delegated_auth_does_not_advertise_get_login_token() {
+        assert!(!get_login_token_enabled(true, true));
+        assert!(!get_login_token_enabled(false, false));
+        assert!(get_login_token_enabled(true, false));
     }
 
     #[test]

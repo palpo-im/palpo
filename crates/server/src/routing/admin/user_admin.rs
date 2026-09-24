@@ -11,7 +11,8 @@
 //! - POST /_synapse/admin/v1/reset_password/{user_id}
 //! - GET/PUT /_synapse/admin/v1/users/{user_id}/admin
 //! - POST/DELETE /_synapse/admin/v1/users/{user_id}/shadow_ban
-//! - POST /_synapse/admin/v1/users/{user_id}/login_token
+//! - POST /_palpo/admin/v1/users/{user_id}/login_token (Palpo extension,
+//!   also available under /_synapse/admin for existing admin clients)
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -708,11 +709,14 @@ const MIN_LOGIN_TOKEN_TTL_MS: u64 = 1_000;
 /// Largest lifetime an admin may request for a login token, in milliseconds.
 const MAX_LOGIN_TOKEN_TTL_MS: u64 = 900_000;
 
-/// POST /_synapse/admin/v1/users/{user_id}/login_token
+/// POST /_palpo/admin/v1/users/{user_id}/login_token
 ///
 /// Mint a single-use `m.login.token` for a local user, so that a trusted
 /// control panel can log a freshly provisioned device in without ever handling
 /// the user's password.
+/// This is a Palpo extension, not Synapse's `/users/{user_id}/login` endpoint:
+/// that endpoint returns an access token directly and does not create a device.
+/// The shared admin router also exposes this path under `/_synapse/admin`.
 ///
 /// The token is redeemed with the standard `m.login.token` flow of
 /// `POST /_matrix/client/v3/login`, is invalidated on first use, and expires
@@ -740,9 +744,8 @@ pub async fn create_user_login_token(
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    if data::user::is_deactivated(&user_id).await? {
-        return Err(MatrixError::user_deactivated("User is deactivated").into());
-    }
+    let target_user = data::user::get_user(&user_id).await?;
+    user::ensure_account_usable(&target_user)?;
 
     let expires_in_ms = requested_login_token_ttl(read_login_token_req_body(req).await?);
 
