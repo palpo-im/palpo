@@ -12,7 +12,8 @@ use crate::core::federation::membership::*;
 use crate::core::identifiers::*;
 use crate::core::room::{JoinRule, RoomEventReqArgs};
 use crate::core::serde::{
-    CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, to_canonical_object,
+    CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, canonical_json,
+    to_canonical_object,
 };
 use crate::core::signatures::Verified;
 use crate::data::connect;
@@ -22,8 +23,8 @@ use crate::event::handler;
 use crate::federation::maybe_strip_event_id;
 use crate::room::{ensure_room, timeline};
 use crate::{
-    DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, PduBuilder, SnPduEvent,
-    config, data, empty_ok, json_ok, membership, room,
+    AppResult, DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError, PduBuilder,
+    SnPduEvent, config, data, empty_ok, json_ok, membership, room,
 };
 
 pub fn router_v1() -> Router {
@@ -198,34 +199,14 @@ async fn invite_user(
     let requires_full_invite_state = crate::room::get_version_rules(&body.room_version)?
         .authorization
         .room_create_event_id_as_room_id;
-    if requires_full_invite_state {
-        let mut has_create = false;
-        for event in &body.invite_room_state {
-            let (pdu, is_create) =
-                parse_v12_invite_state_event(event, &args.room_id, &body.room_version)?;
-            if is_create {
-                if has_create {
-                    return Err(MatrixError::missing_param(
-                        "invite_room_state contains multiple m.room.create events",
-                    )
-                    .into());
-                }
-                has_create = true;
-            }
-            if !matches!(
-                crate::server_key::verify_event(&pdu, &body.room_version).await,
-                Ok(Verified::All)
-            ) {
-                return Err(MatrixError::missing_param(
-                    "invite_room_state contains an event with an invalid signature or hash",
-                )
-                .into());
-            }
-        }
-        if !has_create {
-            return Err(MatrixError::missing_param("invite_room_state lacks m.room.create").into());
-        }
-    }
+    let verified_invite_state = if requires_full_invite_state {
+        Some(
+            verified_v12_invite_state(&body.invite_room_state, &args.room_id, &body.room_version)
+                .await?,
+        )
+    } else {
+        None
+    };
     let state_lock = room::lock_state(&args.room_id).await;
     ensure_room(&args.room_id, &body.room_version).await?;
     if data::room::is_banned(&args.room_id).await? {
@@ -236,11 +217,21 @@ async fn invite_user(
         return Err(MatrixError::forbidden("this server does not allow room invites", None).into());
     }
 
-    let mut invite_state = body
-        .invite_room_state
-        .iter()
-        .map(|event| stripped_invite_state_event(event))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut invite_state = match &verified_invite_state {
+        Some(pdus) => pdus
+            .iter()
+            .map(|pdu| {
+                let raw = to_raw_value(pdu)
+                    .map_err(|_| MatrixError::invalid_param("invite state event is invalid"))?;
+                stripped_invite_state_event(&raw)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        None => body
+            .invite_room_state
+            .iter()
+            .map(|event| stripped_invite_state_event(event))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
 
     // If we are active in the room, the remote server will notify us about the join via /send.
     // If we are not in the room, we need to manually
@@ -322,6 +313,63 @@ async fn invite_user(
     json_ok(InviteUserResBodyV2 {
         event: crate::sending::convert_to_outgoing_federation_event(signed_event).await,
     })
+}
+
+/// Verify the full PDUs a version 12 invite must carry as room state.
+///
+/// Each event must be correctly signed. An event whose signatures are valid but
+/// whose content hash no longer matches has been redacted, so it is kept in its
+/// redacted form rather than rejecting the invite.
+async fn verified_v12_invite_state(
+    events: &[Box<RawJsonValue>],
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+) -> AppResult<Vec<CanonicalJsonObject>> {
+    let version_rules = crate::room::get_version_rules(room_version)?;
+    let mut has_create = false;
+    let mut verified = Vec::with_capacity(events.len());
+    for event in events {
+        let (pdu, is_create) = parse_v12_invite_state_event(event, room_id, room_version)?;
+        if is_create {
+            if has_create {
+                return Err(MatrixError::missing_param(
+                    "invite_room_state contains multiple m.room.create events",
+                )
+                .into());
+            }
+            has_create = true;
+        }
+        let event_type = pdu
+            .get("type")
+            .and_then(CanonicalJsonValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let pdu = match crate::server_key::verify_event(&pdu, room_version).await {
+            Ok(Verified::All) => pdu,
+            Ok(Verified::Signatures) => {
+                warn!(
+                    "invite state event {event_type} in {room_id} failed its hash check, redacting"
+                );
+                canonical_json::redact(pdu, &version_rules.redaction, None).map_err(|_| {
+                    MatrixError::missing_param("invite_room_state contains an invalid PDU")
+                })?
+            }
+            Err(e) => {
+                warn!(
+                    "rejecting invite to {room_id}: invite state event {event_type} failed signature verification: {e}"
+                );
+                return Err(MatrixError::missing_param(
+                    "invite_room_state contains an event with an invalid signature",
+                )
+                .into());
+            }
+        };
+        verified.push(pdu);
+    }
+    if !has_create {
+        return Err(MatrixError::missing_param("invite_room_state lacks m.room.create").into());
+    }
+    Ok(verified)
 }
 
 /// Version 12 derives the room ID from the create event. Validate the full PDU
