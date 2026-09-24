@@ -262,6 +262,12 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
         unstable_features.insert("org.matrix.msc4140".to_owned(), true);
     }
 
+    // Selective presence is privacy-sensitive: advertising it while only part of the
+    // behaviour exists would tell clients their presence is restricted when it is not, so
+    // it is only advertised when the whole feature is compiled in.
+    #[cfg(feature = "unstable-msc4495")]
+    unstable_features.insert("org.continuwuity.presence_v2.msc4495".to_owned(), true); /* Selective presence (https://github.com/matrix-org/matrix-spec-proposals/pull/4495) */
+
     VersionsResBody {
         versions: SUPPORTED_MATRIX_VERSIONS
             .iter()

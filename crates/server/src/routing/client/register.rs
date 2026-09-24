@@ -192,6 +192,7 @@ async fn register(
             last_user_sync_at: None,
             currently_active: None,
             occur_sn: None,
+            updated_at: UnixMillis::now(),
         },
         true,
     )

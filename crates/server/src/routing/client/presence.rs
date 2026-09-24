@@ -3,11 +3,13 @@ use std::time::Duration;
 use salvo::oapi::extract::{JsonBody, *};
 use salvo::prelude::*;
 
-use crate::core::OwnedUserId;
 use crate::core::client::presence::{PresenceResBody, SetPresenceReqBody};
+use crate::core::{OwnedUserId, UserId};
+#[cfg(not(feature = "unstable-msc4495"))]
 use crate::room::state;
 use crate::{
-    AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config, empty_ok, hoops, json_ok,
+    AppResult, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config, empty_ok, hoops,
+    json_ok,
 };
 
 pub fn authed_router() -> Router {
@@ -33,7 +35,7 @@ async fn get_status(
     let sender_id = authed.user_id();
     let user_id = user_id.into_inner();
 
-    if !state::user_can_see_user(sender_id, &user_id).await? {
+    if !presence_visible_to(&user_id, sender_id).await? {
         return Err(
             MatrixError::unauthorized("you cannot get the presence state of this user").into(),
         );
@@ -89,4 +91,19 @@ async fn set_status(
     crate::user::set_presence(authed.user_id(), Some(presence), status_msg.clone(), true).await?;
 
     empty_ok()
+}
+
+/// Whether `viewer_id` may be shown `sender_id`'s presence.
+///
+/// The same rule `/sync` applies. Authorizing a direct read on shared rooms alone would let
+/// any of them poll for presence the sender never agreed to share (MSC4495).
+async fn presence_visible_to(sender_id: &UserId, viewer_id: &UserId) -> AppResult<bool> {
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        return crate::user::presence::sharing::may_see(sender_id, viewer_id).await;
+    }
+    #[cfg(not(feature = "unstable-msc4495"))]
+    {
+        state::user_can_see_user(viewer_id, sender_id).await
+    }
 }

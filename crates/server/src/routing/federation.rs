@@ -23,7 +23,7 @@ use crate::core::federation::directory::ServerVersionResBody;
 use crate::{AppError, AppResult, AuthArgs, JsonResult, config, hoops, json_ok};
 
 pub fn router() -> Router {
-    Router::with_path("federation")
+    let router = Router::with_path("federation")
         .hoop(check_federation_enabled)
         .hoop(hoops::auth_by_access_token_or_signatures)
         .oapi_tag("federation")
@@ -56,7 +56,12 @@ pub fn router() -> Router {
                 .push(media::router())
                 .push(Router::with_path("version").post(version)),
         )
-        .push(Router::with_path("versions").get(get_versions))
+        .push(Router::with_path("versions").get(get_versions));
+
+    #[cfg(feature = "unstable-msc4495")]
+    let router = router.push(Router::with_path("unstable").push(query::unstable_router()));
+
+    router
 }
 
 #[handler]
