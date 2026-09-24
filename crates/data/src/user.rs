@@ -292,28 +292,48 @@ pub async fn display_name(user_id: &UserId) -> DataResult<Option<String>> {
         .map_err(Into::into)
 }
 pub async fn set_display_name(user_id: &UserId, display_name: &str) -> DataResult<()> {
-    diesel::update(
+    let mut updated = diesel::update(
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.is_null()),
     )
     .set(user_profiles::display_name.eq(display_name))
     .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    .await?;
+    if updated == 0 {
+        ensure_profile_exists(user_id).await?;
+        updated = diesel::update(
+            user_profiles::table
+                .filter(user_profiles::user_id.eq(user_id.as_str()))
+                .filter(user_profiles::room_id.is_null()),
+        )
+        .set(user_profiles::display_name.eq(display_name))
+        .execute(&mut connect().await?)
+        .await?;
+    }
+    ensure_profile_updated(updated)
 }
 pub async fn remove_display_name(user_id: &UserId) -> DataResult<()> {
-    diesel::update(
+    let mut updated = diesel::update(
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.is_null()),
     )
     .set(user_profiles::display_name.eq::<Option<String>>(None))
     .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    .await?;
+    if updated == 0 {
+        ensure_profile_exists(user_id).await?;
+        updated = diesel::update(
+            user_profiles::table
+                .filter(user_profiles::user_id.eq(user_id.as_str()))
+                .filter(user_profiles::room_id.is_null()),
+        )
+        .set(user_profiles::display_name.eq::<Option<String>>(None))
+        .execute(&mut connect().await?)
+        .await?;
+    }
+    ensure_profile_updated(updated)
 }
 
 /// Get the avatar_url of a user.
@@ -329,7 +349,7 @@ pub async fn avatar_url(user_id: &UserId) -> DataResult<Option<OwnedMxcUri>> {
         .map_err(Into::into)
 }
 pub async fn set_avatar_url(user_id: &UserId, avatar_url: &MxcUri) -> DataResult<()> {
-    diesel::update(
+    let mut updated = diesel::update(
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.is_null()),
@@ -337,19 +357,40 @@ pub async fn set_avatar_url(user_id: &UserId, avatar_url: &MxcUri) -> DataResult
     .set(user_profiles::avatar_url.eq(avatar_url.as_str()))
     .execute(&mut connect().await?)
     .await?;
-    Ok(())
+    if updated == 0 {
+        ensure_profile_exists(user_id).await?;
+        updated = diesel::update(
+            user_profiles::table
+                .filter(user_profiles::user_id.eq(user_id.as_str()))
+                .filter(user_profiles::room_id.is_null()),
+        )
+        .set(user_profiles::avatar_url.eq(avatar_url.as_str()))
+        .execute(&mut connect().await?)
+        .await?;
+    }
+    ensure_profile_updated(updated)
 }
 pub async fn remove_avatar_url(user_id: &UserId) -> DataResult<()> {
-    diesel::update(
+    let mut updated = diesel::update(
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.is_null()),
     )
     .set(user_profiles::avatar_url.eq::<Option<String>>(None))
     .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    .await?;
+    if updated == 0 {
+        ensure_profile_exists(user_id).await?;
+        updated = diesel::update(
+            user_profiles::table
+                .filter(user_profiles::user_id.eq(user_id.as_str()))
+                .filter(user_profiles::room_id.is_null()),
+        )
+        .set(user_profiles::avatar_url.eq::<Option<String>>(None))
+        .execute(&mut connect().await?)
+        .await?;
+    }
+    ensure_profile_updated(updated)
 }
 
 pub async fn delete_profile(user_id: &UserId) -> DataResult<()> {

@@ -17,7 +17,8 @@ mod kind;
 /// Separate module because it's a lot of code.
 mod kind_serde;
 pub use kind::*;
-use kind_serde::{ErrorCode, RetryAfter};
+use kind_serde::ErrorCode;
+pub use kind_serde::RetryAfter;
 
 use crate::{MatrixVersion, OwnedUserId, RoomVersionId};
 

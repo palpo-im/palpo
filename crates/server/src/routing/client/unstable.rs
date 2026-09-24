@@ -18,8 +18,8 @@ pub(super) fn router() -> Router {
         // Authed routes
         .push(
             Router::new()
-                .hoop(hoops::limit_rate)
                 .hoop(hoops::auth_by_access_token)
+                .hoop(hoops::limit_rate)
                 .push(
                     Router::with_path(
                         "org.matrix.msc3391/user/{user_id}/account_data/{account_type}",

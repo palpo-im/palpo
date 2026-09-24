@@ -152,11 +152,28 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
 }
 
 /// Validate a token via the external authorization server's introspection endpoint.
-async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> AppResult<()> {
+async fn auth_by_delegated_token(token: &str, _aa: &AuthArgs, depot: &mut Depot) -> AppResult<()> {
     let result = super::introspection::introspect_token(token).await?;
 
     if !result.active {
         return Err(MatrixError::unknown_token("Token is not active", true).into());
+    }
+
+    let scope = result
+        .scope
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown_token("Token has no Matrix API scope", true))?;
+    if !super::introspection::has_matrix_api_scope(scope) {
+        return Err(MatrixError::unknown_token("Token has no Matrix API scope", true).into());
+    }
+    let device_id_str = super::introspection::device_id_from_scope(scope)
+        .ok_or_else(|| MatrixError::unknown_token("Token has no unique Matrix device", true))?;
+    if result
+        .device_id
+        .as_deref()
+        .is_some_and(|device_id| device_id != device_id_str.as_str())
+    {
+        return Err(MatrixError::unknown_token("Token has mismatched Matrix device", true).into());
     }
 
     let username = result
@@ -180,35 +197,13 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
     }
     crate::user::ensure_account_usable(&user)?;
 
-    // Extract device_id from introspection response, scope, or query param
-    let device_id_str = result
-        .device_id
-        .or_else(|| {
-            result
-                .scope
-                .as_deref()
-                .and_then(super::introspection::device_id_from_scope)
-        })
-        .or_else(|| aa.device_id.clone());
-
-    let user_device = if let Some(did) = &device_id_str {
-        let device_id: OwnedDeviceId = did.as_str().into();
-        user_devices::table
-            .filter(user_devices::user_id.eq(&user_id))
-            .filter(user_devices::device_id.eq(&device_id))
-            .first::<DbUserDevice>(&mut connect().await?)
-            .await
-            .map_err(|_| {
-                MatrixError::unknown_token("Device not found (not yet provisioned?)", true)
-            })?
-    } else {
-        // No device_id — use first available device for this user
-        user_devices::table
-            .filter(user_devices::user_id.eq(&user_id))
-            .first::<DbUserDevice>(&mut connect().await?)
-            .await
-            .map_err(|_| MatrixError::unknown_token("No device found for user", true))?
-    };
+    let device_id: OwnedDeviceId = device_id_str.into();
+    let user_device = user_devices::table
+        .filter(user_devices::user_id.eq(&user_id))
+        .filter(user_devices::device_id.eq(&device_id))
+        .first::<DbUserDevice>(&mut connect().await?)
+        .await
+        .map_err(|_| MatrixError::unknown_token("Device not found (not yet provisioned?)", true))?;
 
     depot.insert_typed(AuthedInfo {
         user,

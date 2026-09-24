@@ -86,11 +86,11 @@ jobs:
           grep '^{' results.jsonl \
             | jq -r 'select(.Output != null) | .Output' > results.log
           rm -f _raw_results.jsonl
-          echo "=== Test Summary ==="
-          echo "Total: $(wc -l < __test_all.result.jsonl)"
-          echo "Pass:  $(grep -c '"pass"' __test_all.result.jsonl || true)"
-          echo "Fail:  $(grep -c '"fail"' __test_all.result.jsonl || true)"
-          echo "Skip:  $(grep -c '"skip"' __test_all.result.jsonl || true)"
+          echo "=== Go test events (including parent tests) ==="
+          echo "Total events: $(wc -l < __test_all.result.jsonl)"
+          echo "Pass events:  $(grep -c '"pass"' __test_all.result.jsonl || true)"
+          echo "Fail events:  $(grep -c '"fail"' __test_all.result.jsonl || true)"
+          echo "Skip events:  $(grep -c '"skip"' __test_all.result.jsonl || true)"
 
       - name: Upload test results
         if: always()
@@ -112,10 +112,24 @@ jobs:
             echo "::error::Test results file not found"
             exit 1
           fi
-          FAIL_COUNT=$(grep -c '"fail"' "$RESULTS" || true)
-          PASS_COUNT=$(grep -c '"pass"' "$RESULTS" || true)
+          # Go reports both a failing subtest and every failing parent. Count
+          # terminal tests, plus a parent that fails without a failing child
+          # (for example, in its own setup or cleanup).
+          read -r PASS_COUNT FAIL_COUNT < <(jq -sr '
+            map(select(.Action == "pass" or .Action == "fail")) as $results
+            | [$results[] | select(.Test as $test |
+                if .Action == "fail" then
+                  all($results[]; .Action != "fail" or
+                    ((.Test | startswith($test + "/")) | not))
+                else
+                  all($results[]; (.Test | startswith($test + "/")) | not)
+                end)] as $cases
+            | [($cases | map(select(.Action == "pass")) | length),
+               ($cases | map(select(.Action == "fail")) | length)]
+            | @tsv
+          ' "$RESULTS")
           TOTAL=$((FAIL_COUNT + PASS_COUNT))
-          echo "Pass: $PASS_COUNT, Fail: $FAIL_COUNT, Total: $TOTAL"
+          echo "Individual tests: Pass: $PASS_COUNT, Fail: $FAIL_COUNT, Total: $TOTAL"
           if [ "$TOTAL" -eq 0 ]; then
             echo "::error::No test results found"
             exit 1

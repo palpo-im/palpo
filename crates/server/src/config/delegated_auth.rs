@@ -34,6 +34,15 @@ pub struct DelegatedAuthConfig {
     /// authorization server for SSO login.
     pub client_id: Option<String>,
 
+    /// Public Palpo callback URL registered as a redirect URI for `client_id`
+    /// at the authorization server. Required for legacy Matrix SSO login.
+    pub sso_callback_url: Option<String>,
+
+    /// Origins allowed to receive a legacy SSO login token. A loopback origin
+    /// without a port allows the client's ephemeral loopback port.
+    #[serde(default)]
+    pub sso_allowed_redirect_origins: Vec<String>,
+
     /// Internal endpoint that accepts a Matrix password login exchange.
     /// Palpo authenticates with `admin.mas_secret` as a Bearer token and expects
     /// a delegated access token in response. When unset, `m.login.password` is

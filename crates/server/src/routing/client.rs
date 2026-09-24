@@ -103,11 +103,14 @@ pub fn router() -> Router {
             )
             .push(
                 Router::with_path(v)
-                    .hoop(hoops::limit_rate)
                     .hoop(hoops::auth_by_access_token)
                     .push(Router::with_path("search").post(search))
                     .push(Router::with_path("capabilities").get(get_capabilities))
-                    .push(Router::with_path("knock/{room_id_or_alias}").post(room::knock_room)),
+                    .push(
+                        Router::with_path("knock/{room_id_or_alias}")
+                            .hoop(hoops::limit_rate)
+                            .post(room::knock_room),
+                    ),
             )
     }
     client
@@ -351,6 +354,15 @@ mod router_tests {
         assert!(is_routed(Method::GET, FIELD).await);
         assert!(is_routed(Method::PUT, FIELD).await);
         assert!(is_routed(Method::DELETE, FIELD).await);
+    }
+
+    #[tokio::test]
+    async fn standard_profile_fields_support_delete() {
+        for field in ["displayname", "avatar_url"] {
+            let path = format!("/client/v3/profile/@alice:example.org/{field}");
+            assert!(is_routed(Method::PUT, &path).await);
+            assert!(is_routed(Method::DELETE, &path).await);
+        }
     }
 }
 

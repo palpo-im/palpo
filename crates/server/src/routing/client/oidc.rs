@@ -109,6 +109,7 @@
 //! - No username/email → `@user_123456:server`
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use cookie::time::Duration;
 use salvo::prelude::*;
@@ -117,10 +118,10 @@ use sha2::Digest;
 use url::Url;
 
 use crate::config::{self, OidcProviderConfig};
-use crate::core::{MatrixError, OwnedDeviceId, UnixMillis};
+use crate::core::{MatrixError, OwnedDeviceId, OwnedMxcUri, UnixMillis};
 use crate::data::user::DbUser;
 use crate::exts::*;
-use crate::{AppResult, JsonResult, TOKEN_LENGTH, data, json_ok, user, utils};
+use crate::{AppError, AppResult, JsonResult, TOKEN_LENGTH, json_ok, user, utils};
 
 const SSO_LOGIN_TOKEN_TTL_MS: u64 = 5_000;
 
@@ -208,6 +209,10 @@ pub struct OidcUserInfo {
     pub picture: Option<String>,
     pub email_verified: Option<bool>,
     pub preferred_username: Option<String>, // GitHub login/username
+    /// Complete UserInfo response, including provider-specific claims used by
+    /// `attribute_mapping`.
+    #[serde(default)]
+    pub claims: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Google OAuth token response
@@ -238,6 +243,10 @@ impl From<&OidcClaims> for OidcUserInfo {
             picture: claims.picture.clone(),
             email_verified: claims.email_verified,
             preferred_username: None, // Not available in JWT claims
+            claims: serde_json::to_value(claims)
+                .ok()
+                .and_then(|value| value.as_object().cloned())
+                .unwrap_or_default(),
         }
     }
 }
@@ -251,6 +260,7 @@ impl From<GoogleUserInfoResponse> for OidcUserInfo {
             picture: info.picture,
             email_verified: info.verified_email,
             preferred_username: None, // Not available from Google
+            claims: serde_json::Map::new(),
         }
     }
 }
@@ -472,10 +482,9 @@ pub(super) async fn discover_oidc_metadata(issuer: &str) -> Result<OidcMetadata,
     let metadata = response.json::<OidcMetadata>().await.map_err(|e| {
         MatrixError::unknown(format!("Failed to parse OIDC discovery document: {e}"))
     })?;
-    let expected_issuer = issuer.trim_end_matches('/');
-    if metadata.issuer != expected_issuer {
+    if metadata.issuer != issuer {
         return Err(MatrixError::unknown(format!(
-            "OIDC discovery issuer mismatch: expected {expected_issuer}, got {}",
+            "OIDC discovery issuer mismatch: expected {issuer}, got {}",
             metadata.issuer
         )));
     }
@@ -771,9 +780,27 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
     let matrix_user_id =
         generate_matrix_user_id(&user_info, oidc_config, config.server_name.as_str())?;
     let display_name = generate_display_name(&user_info, provider_config);
+    let parsed_user_id = crate::core::identifiers::UserId::parse(&matrix_user_id)
+        .map_err(|_| MatrixError::invalid_param("Invalid Matrix user ID format"))?;
+    let needs_profile = crate::data::user::get_profile(&parsed_user_id, None)
+        .await?
+        .is_none();
+    let may_create_profile =
+        oidc_config.allow_registration || crate::data::user::user_exists(&parsed_user_id).await?;
+    let avatar_url = if needs_profile && may_create_profile {
+        match generate_avatar_url(&user_info, provider_config).await {
+            Ok(avatar_url) => avatar_url,
+            Err(error) => {
+                tracing::warn!(%error, "could not import OIDC avatar");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Step 12: Create or retrieve Matrix user account
-    let user = create_or_get_user(&matrix_user_id, &display_name, &user_info, oidc_config).await?;
+    let user = create_or_get_user(&matrix_user_id, &display_name, avatar_url, oidc_config).await?;
 
     if let Some(redirect_url) = session.redirect_url.as_deref() {
         let login_token = utils::random_string(TOKEN_LENGTH);
@@ -810,7 +837,10 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
     Ok(())
 }
 
-fn append_login_token(redirect_url: &str, login_token: &str) -> Result<Url, MatrixError> {
+pub(super) fn append_login_token(
+    redirect_url: &str,
+    login_token: &str,
+) -> Result<Url, MatrixError> {
     let mut redirect_url = Url::parse(redirect_url)
         .map_err(|e| MatrixError::invalid_param(format!("Invalid redirectUrl: {e}")))?;
     let existing_pairs = redirect_url
@@ -997,6 +1027,10 @@ async fn get_user_info_from_provider(
         .json()
         .await
         .map_err(|e| MatrixError::unknown(format!("Failed to parse user info response: {}", e)))?;
+    let claims = user_info_response
+        .as_object()
+        .cloned()
+        .ok_or_else(|| MatrixError::unknown("OIDC user info response must be a JSON object"))?;
 
     // Parse user info based on provider type
     let provider_type = ProviderType::from_issuer(&provider_config.issuer);
@@ -1022,6 +1056,7 @@ async fn get_user_info_from_provider(
                 email_verified: Some(true), /* GitHub verifies primary email, but it may not be
                                              * visible */
                 preferred_username: user_info_response["login"].as_str().map(String::from), /* GitHub username */
+                claims,
             }
         }
         ProviderType::Google | ProviderType::Generic => {
@@ -1040,6 +1075,7 @@ async fn get_user_info_from_provider(
                 preferred_username: user_info_response["preferred_username"]
                     .as_str()
                     .map(String::from),
+                claims,
             }
         }
     };
@@ -1144,10 +1180,14 @@ fn generate_matrix_user_id(
 /// Generates a human-readable display name from OIDC user information,
 /// considering provider-specific attribute mappings.
 fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProviderConfig) -> String {
-    // Check for custom attribute mapping first
-    if let Some(_display_name_claim) = provider_config.attribute_mapping.get("display_name") {
-        // This would require extending the user info structure to include arbitrary claims
-        // For now, use the standard mapping
+    if let Some(display_name_claim) = provider_config.attribute_mapping.get("display_name")
+        && let Some(display_name) = user_info
+            .claims
+            .get(display_name_claim)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+    {
+        return display_name.to_owned();
     }
 
     // Standard OIDC claim priority: name > email > fallback
@@ -1163,6 +1203,128 @@ fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProvide
         })
 }
 
+/// Resolve the configured avatar claim to a Matrix Content URI. OIDC picture
+/// claims normally contain HTTPS URLs, which must be imported as Matrix media.
+async fn generate_avatar_url(
+    user_info: &OidcUserInfo,
+    provider_config: &OidcProviderConfig,
+) -> AppResult<Option<OwnedMxcUri>> {
+    let avatar_claim = provider_config
+        .attribute_mapping
+        .get("avatar_url")
+        .map(String::as_str)
+        .unwrap_or("picture");
+    let value = user_info
+        .claims
+        .get(avatar_claim)
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            (avatar_claim == "picture")
+                .then_some(user_info.picture.as_deref())
+                .flatten()
+        });
+    let Some(value) = value else { return Ok(None) };
+    let avatar_url = OwnedMxcUri::from(value);
+
+    if avatar_url.is_valid() {
+        return Ok(Some(avatar_url));
+    }
+    let mut url = parse_oidc_avatar_url(value)?;
+    let mut redirects = 0;
+    let response = loop {
+        crate::utils::url_guard::ensure_safe_outbound_url(&url)?;
+        let response = oidc_avatar_client().get(url.clone()).send().await?;
+        if !response.status().is_redirection() {
+            break response;
+        }
+        if redirects == 3 {
+            return Err(MatrixError::invalid_param("OIDC avatar redirected too many times").into());
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| MatrixError::invalid_param("OIDC avatar redirect has no location"))?;
+        let next = url
+            .join(location)
+            .map_err(|_| MatrixError::invalid_param("Invalid OIDC avatar redirect"))?;
+        url = parse_oidc_avatar_url(next.as_str())?;
+        redirects += 1;
+    };
+    if !response.status().is_success() {
+        return Err(MatrixError::unknown("OIDC avatar download failed").into());
+    }
+    const MAX_OIDC_AVATAR_SIZE: usize = 10 * 1024 * 1024;
+    let max_size = MAX_OIDC_AVATAR_SIZE.min(config::get().max_upload_size as usize);
+    let image = crate::utils::read_response_limited(response, max_size).await?;
+    let content_type = oidc_avatar_content_type(&image)?;
+    let conf = config::get();
+    let media_id = utils::random_string(crate::MXC_LENGTH);
+    let key = crate::media::media_storage_key(&conf.server_name, &media_id);
+    crate::storage::write(&key, &image).await?;
+    let metadata = crate::data::media::NewDbMetadata {
+        media_id: media_id.clone(),
+        origin_server: conf.server_name.clone(),
+        disposition_type: Some("inline".into()),
+        content_type: Some(content_type.into()),
+        file_name: None,
+        file_extension: None,
+        file_size: image.len() as i64,
+        file_hash: None,
+        created_by: None,
+        created_at: UnixMillis::now(),
+    };
+    if let Err(error) = crate::data::media::insert_metadata(&metadata).await {
+        let _ = crate::storage::delete(&key).await;
+        return Err(error.into());
+    }
+    Ok(Some(OwnedMxcUri::from(format!(
+        "mxc://{}/{}",
+        conf.server_name, media_id
+    ))))
+}
+
+fn oidc_avatar_content_type(image: &[u8]) -> Result<&'static str, MatrixError> {
+    Ok(match image::guess_format(image) {
+        Ok(image::ImageFormat::Png) => "image/png",
+        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+        Ok(image::ImageFormat::Gif) => "image/gif",
+        Ok(image::ImageFormat::WebP) => "image/webp",
+        _ => {
+            return Err(MatrixError::invalid_param(
+                "OIDC avatar is not a supported image",
+            ));
+        }
+    })
+}
+
+fn parse_oidc_avatar_url(value: &str) -> Result<Url, MatrixError> {
+    let url =
+        Url::parse(value).map_err(|_| MatrixError::invalid_param("Invalid OIDC avatar URL"))?;
+    if url.scheme() != "https" || url.username() != "" || url.password().is_some() {
+        return Err(MatrixError::invalid_param(
+            "OIDC avatar must be an HTTPS image URL or MXC URI",
+        ));
+    }
+    Ok(url)
+}
+
+fn oidc_avatar_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let tls_name_override = Arc::new(RwLock::new(crate::TlsNameMap::new()));
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(Arc::new(
+                crate::sending::resolver::Resolver::new_with_cidr_denylist(tls_name_override),
+            ))
+            .build()
+            .expect("OIDC avatar client configuration is valid")
+    })
+}
+
 /// **Matrix User Account Management**
 ///
 /// Creates a new Matrix user account or retrieves an existing one based on the
@@ -1176,11 +1338,11 @@ fn generate_display_name(user_info: &OidcUserInfo, provider_config: &OidcProvide
 async fn create_or_get_user(
     user_id: &str,
     display_name: &str,
-    user_info: &OidcUserInfo,
+    avatar_url: Option<OwnedMxcUri>,
     oidc_config: &crate::config::OidcConfig,
 ) -> AppResult<DbUser> {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use diesel_async::{AsyncConnection, RunQueryDsl};
 
     use crate::core::identifiers::UserId;
     use crate::data::connect;
@@ -1189,47 +1351,11 @@ async fn create_or_get_user(
     let parsed_user_id = UserId::parse(user_id)
         .map_err(|_| MatrixError::invalid_param("Invalid Matrix user ID format"))?;
 
-    // Check if user already exists
-    let exist_user = users::table
-        .filter(users::id.eq(&parsed_user_id))
-        .first::<DbUser>(&mut connect().await?)
-        .await;
-    if let Ok(mut exist_user) = exist_user {
-        tracing::debug!("Found existing user account: {}", user_id);
-        if exist_user.is_guest {
-            data::user::set_guest(&exist_user.id, false).await?;
-            exist_user.is_guest = false;
-        }
-
-        // Note: We intentionally do NOT update the profile for existing users
-        // to preserve any changes the user made in Matrix (like custom display names).
-        // Only update avatar if it changed on the provider side
-        //
-        // Alternative: You could add a config option to control this behavior:
-        // if oidc_config.update_profile_on_login {
-        //     if let Err(e) = set_user_profile(&exist_user.id, display_name,
-        // user_info.picture.as_deref()).await {         tracing::warn!("Failed to update
-        // profile for existing user: {}", e);     }
-        // }
-
-        return Ok(exist_user);
-    }
-
-    // Check if user registration is allowed
-    if !oidc_config.allow_registration {
-        return Err(
-            MatrixError::forbidden("New user registration via OIDC is disabled", None).into(),
-        );
-    }
-
-    tracing::info!("Creating new Matrix user account: {}", user_id);
-
-    // Create new user account
     let new_user = crate::data::user::NewDbUser {
         is_local: parsed_user_id.server_name().is_local(),
         localpart: parsed_user_id.localpart().to_string(),
         server_name: parsed_user_id.server_name().to_owned(),
-        id: parsed_user_id,
+        id: parsed_user_id.clone(),
         ty: Some("oidc".to_string()),
         is_admin: false,
         is_guest: false,
@@ -1237,24 +1363,78 @@ async fn create_or_get_user(
         created_at: UnixMillis::now(),
     };
 
-    let user = diesel::insert_into(users::table)
-        .values(&new_user)
-        .get_result::<DbUser>(&mut connect().await?)
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async move |conn| {
+            let mut user = users::table
+                .filter(users::id.eq(&parsed_user_id))
+                .for_update()
+                .first::<DbUser>(conn)
+                .await
+                .optional()?;
+
+            if user.is_none() {
+                if !oidc_config.allow_registration {
+                    return Err(MatrixError::forbidden(
+                        "New user registration via OIDC is disabled",
+                        None,
+                    )
+                    .into());
+                }
+
+                tracing::info!("Creating new Matrix user account: {}", user_id);
+                diesel::insert_into(users::table)
+                    .values(&new_user)
+                    .on_conflict(users::id)
+                    .do_nothing()
+                    .execute(conn)
+                    .await?;
+
+                // Lock the row after the conflict-safe insert. This serializes
+                // concurrent first logins before the nullable room_id profile check.
+                user = Some(
+                    users::table
+                        .filter(users::id.eq(&parsed_user_id))
+                        .for_update()
+                        .first::<DbUser>(conn)
+                        .await?,
+                );
+            }
+
+            let mut user = user.expect("OIDC user was selected or inserted");
+            if user.is_guest {
+                diesel::update(users::table.find(&user.id))
+                    .set(users::is_guest.eq(false))
+                    .execute(conn)
+                    .await?;
+                user.is_guest = false;
+            }
+
+            let profile_exists = user_profiles::table
+                .filter(user_profiles::user_id.eq(&user.id))
+                .filter(user_profiles::room_id.is_null())
+                .select(user_profiles::id)
+                .first::<i64>(conn)
+                .await
+                .optional()?
+                .is_some();
+            if !profile_exists {
+                diesel::insert_into(user_profiles::table)
+                    .values(&crate::data::user::NewDbProfile {
+                        user_id: user.id.clone(),
+                        room_id: None,
+                        display_name: Some(display_name.to_owned()),
+                        avatar_url,
+                        blurhash: None,
+                    })
+                    .execute(conn)
+                    .await?;
+            }
+
+            tracing::info!("Successfully initialized Matrix user: {}", user_id);
+            Ok(user)
+        })
         .await
-        .map_err(|e| MatrixError::unknown(format!("Failed to create user account: {}", e)))?;
-
-    // Set initial user profile
-    if let Err(e) = data::user::set_display_name(&user.id, display_name).await {
-        tracing::warn!("failed to set profile for new user (non-fatal): {}", e);
-    }
-    if let Some(picture) = user_info.picture.as_deref()
-        && let Err(e) = data::user::set_avatar_url(&user.id, picture.into()).await
-    {
-        tracing::warn!("failed to set profile for new user (non-fatal): {}", e);
-    }
-
-    tracing::info!("Successfully created new Matrix user: {}", user_id);
-    Ok(user)
 }
 
 /// **Matrix Device and Access Token Creation**
@@ -1336,9 +1516,57 @@ struct OAuthTokenResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    fn provider_with_mapping(mapping: &[(&str, &str)]) -> OidcProviderConfig {
+        OidcProviderConfig {
+            issuer: "https://idm.example.com".to_owned(),
+            client_id: "client".to_owned(),
+            client_secret: "secret".to_owned(),
+            redirect_uri: "https://matrix.example.com/oidc/callback".to_owned(),
+            scopes: vec!["openid".to_owned(), "profile".to_owned()],
+            additional_params: BTreeMap::new(),
+            skip_tls_verify: false,
+            display_name: None,
+            attribute_mapping: mapping
+                .iter()
+                .map(|(matrix_attribute, claim)| {
+                    ((*matrix_attribute).to_owned(), (*claim).to_owned())
+                })
+                .collect(),
+        }
+    }
+
+    fn user_info_with_claims(claims: serde_json::Value) -> OidcUserInfo {
+        let claims = claims.as_object().unwrap().clone();
+        OidcUserInfo {
+            sub: claims["sub"].as_str().unwrap().to_owned(),
+            email: claims
+                .get("email")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            name: claims
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            picture: claims
+                .get("picture")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            email_verified: claims
+                .get("email_verified")
+                .and_then(serde_json::Value::as_bool),
+            preferred_username: claims
+                .get("preferred_username")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            claims,
+        }
+    }
 
     #[test]
     fn matrix_callback_replaces_existing_login_tokens() {
@@ -1364,45 +1592,193 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn discovery_uses_advertised_authorization_and_token_endpoints() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let issuer = format!("http://{address}/oauth2/openid/example");
-        let expected_issuer = issuer.clone();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = vec![0; 4096];
-            let read = stream.read(&mut request).await.unwrap();
-            let request = String::from_utf8_lossy(&request[..read]);
-            assert!(request.starts_with(
-                "GET /oauth2/openid/example/.well-known/openid-configuration HTTP/1.1"
-            ));
+    #[test]
+    fn attribute_mapping_reads_provider_specific_display_name_claim() {
+        let provider = provider_with_mapping(&[("display_name", "given_name")]);
+        let user_info = user_info_with_claims(serde_json::json!({
+            "sub": "51e25ece-ecb8-4880-8380-e31ad0d3d8b0",
+            "name": "Ignored Full Name",
+            "given_name": "Tester"
+        }));
 
-            let body = serde_json::json!({
-                "issuer": expected_issuer,
-                "authorization_endpoint": "https://idm.example.com/ui/oauth2",
-                "token_endpoint": "https://idm.example.com/oauth2/token",
-                "userinfo_endpoint": "https://idm.example.com/oauth2/userinfo"
-            })
-            .to_string();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
+        assert_eq!(generate_display_name(&user_info, &provider), "Tester");
+    }
+
+    #[tokio::test]
+    async fn avatar_mapping_accepts_only_matrix_content_uris() {
+        let provider = provider_with_mapping(&[("avatar_url", "matrix_avatar")]);
+        let valid_user_info = user_info_with_claims(serde_json::json!({
+            "sub": "user-id",
+            "matrix_avatar": "mxc://matrix.example.com/media-id"
+        }));
+        assert_eq!(
+            generate_avatar_url(&valid_user_info, &provider)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("mxc://matrix.example.com/media-id".into())
+        );
+        assert!(parse_oidc_avatar_url("https://idm.example.com/avatar.png").is_ok());
+        assert!(parse_oidc_avatar_url("http://idm.example.com/avatar.png").is_err());
+        assert!(parse_oidc_avatar_url("https://user:secret@idm.example.com/avatar.png").is_err());
+        assert_eq!(
+            oidc_avatar_content_type(b"\x89PNG\r\n\x1a\n\0\0\0\0").unwrap(),
+            "image/png"
+        );
+        assert!(oidc_avatar_content_type(b"<html>not an image</html>").is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_oidc_profiles_are_created_repaired_and_preserved() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name": "oidc-profile.example",
+                "db": { "url": "unused-test-config" }
+            }))
+            .unwrap()
         });
 
-        let metadata = discover_oidc_metadata(&issuer).await.unwrap();
-        server.await.unwrap();
+        let server_name = config::server_name();
+        let oidc_config = crate::config::OidcConfig {
+            allow_registration: true,
+            ..Default::default()
+        };
+        let user_id = format!("@oidc-profile-new:{server_name}");
+        let avatar_url = OwnedMxcUri::from(format!("mxc://{server_name}/initial-avatar"));
 
+        let user = create_or_get_user(
+            &user_id,
+            "Mapped Name",
+            Some(avatar_url.clone()),
+            &oidc_config,
+        )
+        .await
+        .unwrap();
+        let profile = crate::data::user::get_profile(&user.id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(profile.display_name.as_deref(), Some("Mapped Name"));
+        assert_eq!(profile.avatar_url, Some(avatar_url));
+
+        crate::data::user::set_display_name(&user.id, "Chosen Name")
+            .await
+            .unwrap();
+        create_or_get_user(&user_id, "Provider Changed", None, &oidc_config)
+            .await
+            .unwrap();
         assert_eq!(
-            metadata.authorization_endpoint,
-            "https://idm.example.com/ui/oauth2"
+            crate::data::user::display_name(&user.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Chosen Name")
+        );
+
+        let legacy_user_id = format!("@oidc-profile-legacy:{server_name}");
+        let legacy_user_id = crate::core::identifiers::UserId::parse(legacy_user_id).unwrap();
+        let legacy_user = crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: legacy_user_id.clone(),
+            ty: Some("oidc".to_owned()),
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: legacy_user_id.localpart().to_owned(),
+            server_name: legacy_user_id.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        assert!(
+            crate::data::user::get_profile(&legacy_user.id, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        crate::data::user::set_display_name(&legacy_user.id, "Repaired Name")
+            .await
+            .unwrap();
+        crate::data::user::set_profile_field(
+            &legacy_user.id,
+            "com.example.banner",
+            serde_json::json!("mxc://example.org/banner"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::data::user::display_name(&legacy_user.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Repaired Name")
         );
         assert_eq!(
-            metadata.token_endpoint,
-            "https://idm.example.com/oauth2/token"
+            crate::data::user::profile_field(&legacy_user.id, "com.example.banner")
+                .await
+                .unwrap(),
+            Some(serde_json::json!("mxc://example.org/banner"))
         );
+    }
+
+    #[tokio::test]
+    async fn discovery_preserves_issuer_and_uses_advertised_endpoints() {
+        for (configured_suffix, advertised_suffix, should_match) in [
+            ("", "", true),
+            ("/", "/", true),
+            ("", "/", false),
+            ("/", "", false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let issuer_base = format!("http://{address}/oauth2/openid/example");
+            let issuer = format!("{issuer_base}{configured_suffix}");
+            let advertised_issuer = format!("{issuer_base}{advertised_suffix}");
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                let read = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                assert!(request.starts_with(
+                    "GET /oauth2/openid/example/.well-known/openid-configuration HTTP/1.1"
+                ));
+
+                let body = serde_json::json!({
+                    "issuer": advertised_issuer,
+                    "authorization_endpoint": "https://idm.example.com/ui/oauth2",
+                    "token_endpoint": "https://idm.example.com/oauth2/token",
+                    "userinfo_endpoint": "https://idm.example.com/oauth2/userinfo"
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+
+            let metadata = discover_oidc_metadata(&issuer).await;
+            server.await.unwrap();
+
+            if should_match {
+                let metadata = metadata.unwrap();
+                assert_eq!(metadata.issuer, issuer);
+                assert_eq!(
+                    metadata.authorization_endpoint,
+                    "https://idm.example.com/ui/oauth2"
+                );
+                assert_eq!(
+                    metadata.token_endpoint,
+                    "https://idm.example.com/oauth2/token"
+                );
+            } else {
+                assert!(
+                    metadata.is_err(),
+                    "mismatched issuer was accepted: {issuer}"
+                );
+            }
+        }
     }
 }
