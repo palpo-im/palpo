@@ -510,7 +510,7 @@ pub struct KnockReqArgs {
     /// One of the servers must be participating in the room.
     #[salvo(parameter(parameter_in = Query))]
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
-    pub server_name: Vec<OwnedServerName>,
+    pub via: Vec<OwnedServerName>,
 }
 /// Request type for the `knock_room` endpoint.
 #[derive(ToSchema, Deserialize, Debug)]

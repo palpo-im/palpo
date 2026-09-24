@@ -10,9 +10,8 @@ use reqwest::Url;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::events::AnyStrippedStateEvent;
 use crate::sending::{SendRequest, SendResult};
-use crate::serde::{RawJson, RawJsonValue};
+use crate::serde::RawJsonValue;
 use crate::{OwnedEventId, OwnedRoomId, OwnedUserId, RoomVersionId};
 // const METADATA: Metadata = metadata! {
 //     method: GET,
@@ -141,13 +140,14 @@ crate::json_body_modifier!(SendKnockReqBody);
 
 pub struct SendKnockResBody {
     /// State events providing public room metadata.
-    pub knock_room_state: Vec<RawJson<AnyStrippedStateEvent>>,
+    #[salvo(schema(value_type = Vec<Object>))]
+    pub knock_room_state: Vec<Box<RawJsonValue>>,
 }
 
 impl SendKnockResBody {
     /// Creates a new `Response` with the given public room metadata state
     /// events.
-    pub fn new(knock_room_state: Vec<RawJson<AnyStrippedStateEvent>>) -> Self {
+    pub fn new(knock_room_state: Vec<Box<RawJsonValue>>) -> Self {
         Self { knock_room_state }
     }
 }

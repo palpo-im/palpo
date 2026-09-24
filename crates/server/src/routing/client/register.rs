@@ -148,6 +148,20 @@ async fn register(
 
     if body.login_type != Some(LoginType::ApplicationService) && !is_guest {
         if let Some(auth) = &body.auth {
+            // A registration UIA attempt must continue a challenge issued by
+            // this server. A bare m.login.dummy response is not proof that a
+            // registration session was started.
+            if auth.session().is_none() {
+                let uiaa_user_id = UserId::parse_with_server_name("", &conf.server_name)
+                    .expect("we know this is valid");
+                crate::uiaa::create_challenge_session(
+                    &uiaa_user_id,
+                    &body.device_id.clone().unwrap_or_else(|| "".into()),
+                    &mut uiaa_info,
+                )
+                .await?;
+                return Err(uiaa_info.into());
+            }
             let (authed, uiaa) = crate::uiaa::try_auth(
                 &UserId::parse_with_server_name("", &conf.server_name)
                     .expect("we know this is valid"),

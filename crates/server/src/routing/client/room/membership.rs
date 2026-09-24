@@ -784,7 +784,8 @@ pub(crate) async fn knock_room(
             )
             .await?;
 
-            let mut servers = body.via.clone();
+            let mut servers = args.via.clone();
+            servers.extend(body.via.clone());
             servers.extend(
                 crate::room::lookup_servers(&room_id)
                     .await
@@ -810,8 +811,9 @@ pub(crate) async fn knock_room(
             (room_id, servers)
         }
         Err(room_alias) => {
-            let (room_id, mut servers) =
-                crate::room::resolve_alias(&room_alias, Some(body.via.clone())).await?;
+            let mut via = args.via.clone();
+            via.extend(body.via.clone());
+            let (room_id, mut servers) = crate::room::resolve_alias(&room_alias, Some(via)).await?;
 
             banned_room_check(
                 sender_id,
