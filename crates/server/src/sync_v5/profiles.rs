@@ -149,16 +149,27 @@ pub(super) async fn collect(
     if since_sn > 0 {
         let tracked =
             crate::sync_v5::tracked_profile_users(sender_id, device_id, &req_body.conn_id).await;
-        for user_id in tracked.difference(&shared) {
-            if user_id != sender_id {
-                users.insert(user_id.clone(), None);
-            }
+        for user_id in departed_users(&tracked, &shared, sender_id) {
+            users.insert(user_id, None);
         }
     }
 
     users.retain(|_, update| update.as_ref().is_none_or(|update| !update.is_empty()));
 
     Ok((Profiles { users }, snapshotted_rooms))
+}
+
+/// Users this connection acknowledged receiving a profile for who are no longer shared.
+pub(super) fn departed_users(
+    tracked: &BTreeSet<OwnedUserId>,
+    shared: &BTreeSet<OwnedUserId>,
+    sender_id: &UserId,
+) -> BTreeSet<OwnedUserId> {
+    tracked
+        .difference(shared)
+        .filter(|user_id| *user_id != sender_id)
+        .cloned()
+        .collect()
 }
 
 /// Whether the client asked for this field.

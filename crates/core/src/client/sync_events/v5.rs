@@ -88,7 +88,7 @@ pub struct SyncEventsReqArgs {
     pub timeout: Option<Duration>,
 }
 /// Request type for the `sync` endpoint.
-#[derive(ToSchema, Deserialize, Debug)]
+#[derive(ToSchema, Deserialize, Clone, Debug)]
 pub struct SyncEventsReqBody {
     /// A unique string identifier for this connection to the server.
     ///

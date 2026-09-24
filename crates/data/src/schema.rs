@@ -1228,6 +1228,7 @@ diesel::table! {
         conn_id -> Text,
         cache_data -> Jsonb,
         updated_at -> Int8,
+        version -> Int8,
     }
 }
 

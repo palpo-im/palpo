@@ -1,0 +1,2 @@
+ALTER TABLE sliding_sync_connections DROP COLUMN version;
+DROP SEQUENCE sliding_sync_connection_version_seq;
