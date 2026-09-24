@@ -755,17 +755,6 @@ impl PduEvent {
 
     #[tracing::instrument]
     pub async fn to_stripped_state_event(&self) -> RawJson<AnyStrippedStateEvent> {
-        if self.event_ty == TimelineEventType::RoomCreate {
-            let version_rules = crate::room::get_version(&self.room_id)
-                .await
-                .and_then(|version| crate::room::get_version_rules(&version));
-            if let Ok(version_rules) = version_rules
-                && version_rules.authorization.room_create_event_id_as_room_id
-            {
-                return serde_json::from_value(json!(self))
-                    .expect("RawJson::from_value always works");
-            }
-        }
         let data = json!({
             "content": self.content,
             "type": self.event_ty,

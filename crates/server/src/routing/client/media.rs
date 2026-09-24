@@ -77,11 +77,13 @@ pub async fn get_content(
             let data = storage::read(&key).await?;
             res.add_header(CONTENT_TYPE, content_type.to_string(), true)?;
             if let Some(file_name) = &metadata.file_name {
-                res.add_header(
-                    "Content-Disposition",
-                    format!(r#"attachment; filename="{file_name}""#),
-                    true,
-                )?;
+                let content_disposition =
+                    crate::utils::content_disposition::make_content_disposition(
+                        None,
+                        Some(content_type.as_ref()),
+                        Some(file_name),
+                    );
+                res.add_header("Content-Disposition", content_disposition.to_string(), true)?;
             }
             res.body = ResBody::Once(data.into());
             Ok(())
