@@ -142,12 +142,27 @@ pub struct SendKnockResBody {
     /// State events providing public room metadata.
     #[salvo(schema(value_type = Vec<Object>))]
     pub knock_room_state: Vec<Box<RawJsonValue>>,
+
+    /// The accepted knock PDU, including supplementary signatures added by the resident.
+    ///
+    /// Older servers omit this field. It is an optional backwards-compatible extension
+    /// which lets the knocking server persist Policy Server signatures transitively.
+    #[serde(
+        default,
+        rename = "org.matrix.msc4284.event",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[salvo(schema(value_type = Option<Object>))]
+    pub signed_event: Option<Box<RawJsonValue>>,
 }
 
 impl SendKnockResBody {
     /// Creates a new `Response` with the given public room metadata state
     /// events.
     pub fn new(knock_room_state: Vec<Box<RawJsonValue>>) -> Self {
-        Self { knock_room_state }
+        Self {
+            knock_room_state,
+            signed_event: None,
+        }
     }
 }

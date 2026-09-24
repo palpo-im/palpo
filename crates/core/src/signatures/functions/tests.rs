@@ -888,3 +888,59 @@ fn verify_policy_server_signature_allows_policy_configuration_event() {
         Ok(())
     );
 }
+
+/// The Policy Server signature covers the *redacted* event.
+///
+/// This is what `/_matrix/policy/v1/sign` implementations must sign; signing the event as
+/// sent would only happen to work for events whose content redaction leaves alone.
+#[test]
+fn verify_policy_server_signature_covers_the_redacted_event() {
+    let key_pair = generate_key_pair("policy_server");
+    let room_policy = RoomPolicyEventContent::new(
+        owned_server_name!("domain-policy-server"),
+        Base64::new(key_pair.public_key().to_vec()),
+    );
+
+    let mut event = policy_signature_test_event();
+    // `body` does not survive redaction for an `m.room.message`, so the redacted and
+    // unredacted signature bases differ.
+    event.insert(
+        "type".to_owned(),
+        CanonicalJsonValue::String("m.room.message".to_owned()),
+    );
+    event.insert(
+        "content".to_owned(),
+        serde_json::from_value(json!({ "msgtype": "m.text", "body": "hi" })).unwrap(),
+    );
+
+    let sign_with = |object: &CanonicalJsonObject| {
+        let canonical = to_canonical_json_string_for_signing(object).unwrap();
+        key_pair.sign(canonical.as_bytes()).base64()
+    };
+    let with_signature = |event: &CanonicalJsonObject, signature: String| {
+        let mut event = event.clone();
+        event.insert(
+            "signatures".to_owned(),
+            serde_json::from_value(json!({
+                "domain-policy-server": { "ed25519:policy_server": signature },
+            }))
+            .unwrap(),
+        );
+        event
+    };
+
+    let signed_as_sent = with_signature(&event, sign_with(&event));
+    assert_matches!(
+        verify_policy_server_signature(&room_policy, &signed_as_sent, &RoomVersionRules::V6),
+        Err(Error::Verification(VerificationError::Signature(_)))
+    );
+
+    let redacted =
+        crate::serde::canonical_json::redact(event.clone(), &RoomVersionRules::V6.redaction, None)
+            .unwrap();
+    let signed_redacted = with_signature(&event, sign_with(&redacted));
+    assert_matches!(
+        verify_policy_server_signature(&room_policy, &signed_redacted, &RoomVersionRules::V6),
+        Ok(())
+    );
+}

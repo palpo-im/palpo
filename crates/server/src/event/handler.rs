@@ -117,6 +117,10 @@ pub(crate) async fn process_incoming_pdu(
         .process_incoming(remote_server, is_backfill)
         .await?;
 
+    // An event the room's Policy Server refused (MSC4284) is persisted as rejected, so this
+    // also keeps it out of the timeline. A soft-failed event (incomplete DAG) still goes on
+    // to `process_to_timeline_pdu`, which re-authorises it and completes the deferred
+    // policy check before promoting it.
     if incoming_pdu.rejected() {
         return Ok(());
     }
@@ -287,6 +291,7 @@ pub async fn process_to_outlier_pdu(
             pdu: pdu.into_inner(),
             json_data: val,
             soft_failed: false,
+            policy_refused: false,
             remote_server: remote_server.to_owned(),
             room_id: room_id.to_owned(),
             room_version: room_version.to_owned(),
@@ -345,6 +350,7 @@ pub async fn process_to_outlier_pdu(
         "event_id".to_owned(),
         CanonicalJsonValue::String(event_id.as_str().to_owned()),
     );
+
     let mut incoming_pdu = PduEvent::from_json_value(
         room_id,
         event_id,
@@ -366,6 +372,7 @@ pub async fn process_to_outlier_pdu(
                 pdu: incoming_pdu,
                 json_data: val,
                 soft_failed: false,
+                policy_refused: false,
                 remote_server: remote_server.to_owned(),
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
@@ -436,6 +443,7 @@ pub async fn process_to_outlier_pdu(
             Some("incoming event refers to wrong create event".to_owned());
     }
 
+    let mut authorised = false;
     if incoming_pdu.rejection_reason.is_none() {
         // Remember whether soft_failed was already set due to missing prev/auth
         // events. We must NOT clear it just because the auth check happened to
@@ -455,12 +463,21 @@ pub async fn process_to_outlier_pdu(
             }
         } else if !was_soft_failed {
             soft_failed = false;
+            authorised = true;
         }
     }
+
+    // Never let an unauthorised PDU trigger a request to the Policy Server. Besides being
+    // unnecessary, the request can occupy the shared federation semaphore until its
+    // timeout. Events with missing DAG state are checked after recovery in
+    // `OutlierPdu::process_pulled` instead.
+    let policy_refused = authorised
+        && !crate::room::policy::is_event_allowed(room_id, &mut val, &version_rules).await;
 
     Ok(Some(OutlierPdu {
         pdu: incoming_pdu,
         soft_failed,
+        policy_refused,
         json_data: val,
         remote_server: remote_server.to_owned(),
         room_id: room_id.to_owned(),
@@ -471,8 +488,8 @@ pub async fn process_to_outlier_pdu(
 
 #[tracing::instrument(skip(incoming_pdu, json_data))]
 pub async fn process_to_timeline_pdu(
-    incoming_pdu: SnPduEvent,
-    json_data: CanonicalJsonObject,
+    mut incoming_pdu: SnPduEvent,
+    mut json_data: CanonicalJsonObject,
     remote_server: Option<&ServerName>,
 ) -> AppResult<()> {
     // Skip the PDU if we already have it as a timeline event
@@ -484,6 +501,10 @@ pub async fn process_to_timeline_pdu(
             "cannot process rejected event to timeline",
         ));
     }
+    // A soft-failed outlier had an incomplete DAG when it was first checked, so its
+    // policy check was deferred. It is re-authorised below and only then checked against
+    // the room's Policy Server. Policy refusals have a persisted rejection reason and
+    // never reach this point.
     debug!("process to timeline event {}", incoming_pdu.event_id);
     let room_version_id = &room::get_version(&incoming_pdu.room_id).await?;
     let version_rules = crate::room::get_version_rules(room_version_id)?;
@@ -502,11 +523,23 @@ pub async fn process_to_timeline_pdu(
                 .unwrap_or(false);
 
     if !server_joined {
-        if let Some(state_key) = incoming_pdu.state_key.as_deref()
+        if let Some(state_key) = incoming_pdu.state_key.clone().as_deref()
             && incoming_pdu.event_ty == TimelineEventType::RoomMember
             && state_key != incoming_pdu.sender().as_str() //????
             && state_key.ends_with(&*format!(":{}", crate::config::server_name()))
         {
+            if incoming_pdu.soft_failed {
+                // The outlier stage skipped the policy check for this event because its
+                // DAG was incomplete. Without joined state there is normally no usable
+                // policy, in which case this is a no-op.
+                crate::room::policy::check_recovered_event(
+                    &incoming_pdu,
+                    &mut json_data,
+                    &version_rules,
+                )
+                .await?;
+                incoming_pdu.soft_failed = false;
+            }
             // let state_at_incoming_event = state_at_incoming_degree_one(&incoming_pdu).await?;
             let state_at_incoming_event = resolve_state_at_incoming(&incoming_pdu, &version_rules)
                 .await
@@ -595,6 +628,14 @@ pub async fn process_to_timeline_pdu(
         Some(&state_at_incoming_event),
     )
     .await?;
+
+    if incoming_pdu.soft_failed {
+        // The initial outlier check defers policy enforcement when DAG state is
+        // missing. Only ask for a policy signature after the recovered auth check.
+        crate::room::policy::check_recovered_event(&incoming_pdu, &mut json_data, &version_rules)
+            .await?;
+        incoming_pdu.soft_failed = false;
+    }
 
     // Soft fail check before doing state res
     debug!("performing soft-fail check");
