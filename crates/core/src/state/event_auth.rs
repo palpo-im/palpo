@@ -213,16 +213,7 @@ where
             )));
         };
 
-        // TODO: Room Version 12
         // The auth event must be in the same room as the incoming event.
-        // if auth_event
-        //     .room_id()
-        //     .is_none_or(|auth_room_id| auth_room_id != room_id)
-        // {
-        //     return Err(StateError::other(format!(
-        //         "auth event {event_id} not in the same room"
-        //     )));
-        // }
         if auth_event.room_id() != room_id {
             tracing::error!(
                 "auth_event.room_id(): {} != {room_id}",
@@ -485,13 +476,11 @@ fn check_room_create(
     }
 
     if rules.room_create_event_id_as_room_id {
-        // TODO
-        // // Since v12, if the create event has a room_id, reject.
-        // if room_create_event.room_id().is_some() {
-        //     return Err(StateError::other(
-        //         "`m.room.create` event cannot have a `room_id` field",
-        //     ));
-        // }
+        // Since v12, if the create event has a room_id, reject.
+        //
+        // `room_id()` is always derived from the event ID for these events, so it cannot tell
+        // whether the event carried the field. The server checks the event as received,
+        // before it gets here (`crate::event::check_create_event_for_room` in `palpo`).
     } else {
         // // v1-v11, if the domain of the room_id does not match the domain of the sender, reject.
         // let Some(room_id) = room_create_event.room_id() else {

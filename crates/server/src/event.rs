@@ -15,6 +15,7 @@ use diesel_async::RunQueryDsl;
 pub use outlier::*;
 
 use crate::core::identifiers::*;
+use crate::core::room_version_rules::RoomIdFormatVersion;
 use crate::core::serde::{CanonicalJsonObject, RawJsonValue};
 use crate::core::{Direction, Seqnum, UnixMillis, signatures};
 use crate::data::connect;
@@ -284,7 +285,44 @@ pub fn parse_fetched_pdu(
             return Err(MatrixError::bad_json("could not convert event to canonical json").into());
         }
     };
+    check_create_event_for_room(room_id, room_version, &event_id, &value)?;
     Ok((event_id, value))
+}
+
+/// Rejects an `m.room.create` event that cannot be the create event of `room_id`, in room
+/// versions whose room ID is derived from the create event (v12 onwards).
+///
+/// Such a create event must not carry a `room_id` of its own, and its reference hash must be
+/// the room ID. The authorization rules cannot check the first part: by the time an event
+/// reaches them its `room_id` has been filled in from the room it was received for, so the
+/// field is checked here, on the event as received. Other events and earlier room versions
+/// pass unchanged.
+pub fn check_create_event_for_room(
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    event_id: &EventId,
+    value: &CanonicalJsonObject,
+) -> AppResult<()> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("m.room.create") {
+        return Ok(());
+    }
+    let version_rules = crate::room::get_version_rules(room_version)?;
+    if version_rules.room_id_format != RoomIdFormatVersion::V2 {
+        return Ok(());
+    }
+    if value.contains_key("room_id") {
+        return Err(MatrixError::bad_json(
+            "m.room.create event must not have a room_id in this room version",
+        )
+        .into());
+    }
+    if RoomId::new_v2(event_id.localpart()).ok().as_deref() != Some(room_id) {
+        return Err(MatrixError::bad_json(format!(
+            "m.room.create event {event_id} is not the create event of room {room_id}"
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 pub async fn parse_incoming_pdu(
@@ -377,4 +415,71 @@ pub fn is_ignored_sender_pdu_by_ignored_users(
     ignored_users: &BTreeSet<OwnedUserId>,
 ) -> bool {
     pdu.state_key.is_none() && ignored_users.contains(&pdu.sender)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn v12_create() -> CanonicalJsonObject {
+        serde_json::from_value(json!({
+            "auth_events": [],
+            "content": { "room_version": "12" },
+            "depth": 1,
+            "hashes": { "sha256": "hash" },
+            "origin_server_ts": 1,
+            "prev_events": [],
+            "sender": "@alice:example.org",
+            "signatures": { "example.org": { "ed25519:key": "sig" } },
+            "state_key": "",
+            "type": "m.room.create"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn v12_create_event_must_be_the_rooms_own_and_have_no_room_id() {
+        let create = v12_create();
+        let event_id = gen_event_id(&create, &RoomVersionId::V12).unwrap();
+        let room_id = RoomId::new_v2(event_id.localpart()).unwrap();
+        check_create_event_for_room(&room_id, &RoomVersionId::V12, &event_id, &create).unwrap();
+
+        // The create event of some other room.
+        let other_room = RoomId::new_v2("other").unwrap();
+        assert!(
+            check_create_event_for_room(&other_room, &RoomVersionId::V12, &event_id, &create)
+                .is_err()
+        );
+
+        // A `room_id` field is rejected outright, whatever it names.
+        let mut with_room_id = create.clone();
+        with_room_id.insert("room_id".to_owned(), room_id.as_str().into());
+        let with_room_id_event_id = gen_event_id(&with_room_id, &RoomVersionId::V12).unwrap();
+        assert!(
+            check_create_event_for_room(
+                &room_id,
+                &RoomVersionId::V12,
+                &with_room_id_event_id,
+                &with_room_id,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn create_event_check_leaves_other_events_and_versions_alone() {
+        let room_id = RoomId::parse("!room:example.org").unwrap();
+        let mut create = v12_create();
+        create.insert("room_id".to_owned(), room_id.as_str().into());
+        let event_id = gen_event_id(&create, &RoomVersionId::V11).unwrap();
+        check_create_event_for_room(&room_id, &RoomVersionId::V11, &event_id, &create).unwrap();
+
+        let mut member = create.clone();
+        member.insert("type".to_owned(), "m.room.member".into());
+        member.insert("state_key".to_owned(), "@alice:example.org".into());
+        let event_id = gen_event_id(&member, &RoomVersionId::V12).unwrap();
+        check_create_event_for_room(&room_id, &RoomVersionId::V12, &event_id, &member).unwrap();
+    }
 }
