@@ -292,28 +292,10 @@ pub async fn display_name(user_id: &UserId) -> DataResult<Option<String>> {
         .map_err(Into::into)
 }
 pub async fn set_display_name(user_id: &UserId, display_name: &str) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::display_name.eq(display_name))
-    .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    profile::set_global_display_name(user_id, Some(display_name)).await
 }
 pub async fn remove_display_name(user_id: &UserId) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::display_name.eq::<Option<String>>(None))
-    .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    profile::set_global_display_name(user_id, None).await
 }
 
 /// Get the avatar_url of a user.
@@ -329,38 +311,14 @@ pub async fn avatar_url(user_id: &UserId) -> DataResult<Option<OwnedMxcUri>> {
         .map_err(Into::into)
 }
 pub async fn set_avatar_url(user_id: &UserId, avatar_url: &MxcUri) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::avatar_url.eq(avatar_url.as_str()))
-    .execute(&mut connect().await?)
-    .await?;
-    Ok(())
+    profile::set_global_avatar_url(user_id, Some(avatar_url)).await
 }
 pub async fn remove_avatar_url(user_id: &UserId) -> DataResult<()> {
-    diesel::update(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .set(user_profiles::avatar_url.eq::<Option<String>>(None))
-    .execute(&mut connect().await?)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    profile::set_global_avatar_url(user_id, None).await
 }
 
 pub async fn delete_profile(user_id: &UserId) -> DataResult<()> {
-    diesel::delete(
-        user_profiles::table
-            .filter(user_profiles::user_id.eq(user_id.as_str()))
-            .filter(user_profiles::room_id.is_null()),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-    Ok(())
+    profile::delete_global_profile(user_id).await
 }
 
 /// Get the blurhash of a user.
@@ -436,6 +394,24 @@ pub async fn all_device_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> 
         .map_err(Into::into)
 }
 
+/// Every device that can receive a to-device message, including the dehydrated device.
+///
+/// A dehydrated device is not in `user_devices`, but it is a device of the user as far as
+/// senders are concerned: it appears in `/keys/query` and is meant to collect room keys
+/// while the user has nothing else logged in. Leaving it out of a `*` fan-out would lose
+/// exactly the messages dehydration exists to preserve ([MSC3814]).
+///
+/// [MSC3814]: https://github.com/matrix-org/matrix-spec-proposals/pull/3814
+pub async fn all_to_device_target_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> {
+    let mut device_ids = all_device_ids(user_id).await?;
+    if let Some((dehydrated_id, _)) = get_dehydrated_device(user_id).await?
+        && !device_ids.contains(&dehydrated_id)
+    {
+        device_ids.push(dehydrated_id);
+    }
+    Ok(device_ids)
+}
+
 pub async fn delete_access_tokens(user_id: &UserId) -> DataResult<()> {
     // Evict before the bulk revocation so cached tokens cannot keep
     // authenticating in the window before the post-delete scan runs.
@@ -474,6 +450,13 @@ pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
 
     for device_id in device_ids {
         key::delete_device_key_material(user_id, &device_id).await?;
+        // The device is gone, so nothing will ever rehydrate it and read its inbox.
+        // Without this the messages sit there for the lifetime of the account.
+        //
+        // Unless a live device now has the same ID -- logging in with an explicit device
+        // ID does not consult the dehydrated table, so the two can collide, and the
+        // inbox then belongs to the live device.
+        device::remove_to_device_events_unless_live(user_id, &device_id).await?;
     }
 
     diesel::delete(
@@ -518,6 +501,12 @@ pub async fn upsert_dehydrated_device(
 
     if let Some(current_device_id) = current_device_id {
         key::delete_device_key_material(user_id, &current_device_id).await?;
+        // Replacing the dehydrated device abandons the old one; its undelivered messages
+        // can no longer be decrypted by anything and would leak. Unless the ID is also a
+        // live device's, in which case the inbox is that device's, not the abandoned one's.
+        if current_device_id != device_id {
+            device::remove_to_device_events_unless_live(user_id, &current_device_id).await?;
+        }
     }
 
     let new_device = NewDbUserDehydratedDevice {

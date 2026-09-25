@@ -98,6 +98,23 @@ pub fn make_content_disposition(
 
 #[cfg(test)]
 mod tests {
+    use super::make_content_disposition;
+    use crate::core::http_headers::ContentDisposition;
+
+    #[test]
+    fn unicode_filename_is_safe_in_http_header_and_round_trips() {
+        let header = make_content_disposition(None, Some("image/png"), Some("🐔")).to_string();
+        assert!(header.is_ascii());
+        assert_eq!(
+            header
+                .parse::<ContentDisposition>()
+                .unwrap()
+                .filename
+                .as_deref(),
+            Some("🐔")
+        );
+    }
+
     #[test]
     fn string_sanitisation() {
         const SAMPLE: &str = "🏳️‍⚧️this\\r\\n įs \r\\n ä \\r\nstrïng 🥴that\n\r \

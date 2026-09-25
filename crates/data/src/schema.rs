@@ -35,6 +35,31 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    delayed_events (id) {
+        id -> Int8,
+        delay_id -> Text,
+        user_id -> Text,
+        device_id -> Nullable<Text>,
+        room_id -> Text,
+        event_type -> Text,
+        state_key -> Nullable<Text>,
+        content -> Jsonb,
+        delay_ms -> Int8,
+        txn_id -> Text,
+        origin_server_ts -> Nullable<Int8>,
+        running_since -> Int8,
+        send_at -> Int8,
+        event_id -> Nullable<Text>,
+        error -> Nullable<Jsonb>,
+        finalized_at -> Nullable<Int8>,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     device_inboxes (id) {
         id -> Int8,
         user_id -> Text,
@@ -295,6 +320,7 @@ diesel::table! {
         room_id -> Text,
         thread_id -> Nullable<Text>,
         frame_id -> Nullable<Int8>,
+        before_frame_id -> Nullable<Int8>,
         stripped_state -> Nullable<Json>,
     }
 }
@@ -408,6 +434,19 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    event_stickies (event_id) {
+        event_id -> Text,
+        event_sn -> Int8,
+        deliver_sn -> Nullable<Int8>,
+        room_id -> Text,
+        expires_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     events (id) {
         id -> Text,
         sn -> Int8,
@@ -508,6 +547,43 @@ diesel::table! {
         server_id -> Text,
         edu_sn -> Int8,
         updated_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    presence_recipient_streams (user_id) {
+        user_id -> Text,
+        stream_id -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    presence_recipient_sets (user_id, server_id) {
+        user_id -> Text,
+        server_id -> Text,
+        stream_id -> Int8,
+        recipients -> Jsonb,
+        pending_stream_id -> Nullable<Int8>,
+        pending_recipients -> Nullable<Jsonb>,
+        pending_edu_sn -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    remote_presence_recipients (user_id) {
+        user_id -> Text,
+        stream_id -> Nullable<Int8>,
+        recipients -> Jsonb,
+        recovery_generation -> Int8,
     }
 }
 
@@ -972,6 +1048,21 @@ diesel::table! {
         last_user_sync_at -> Nullable<Int8>,
         currently_active -> Nullable<Bool>,
         occur_sn -> Int8,
+        updated_at -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
+    user_profile_changes (id) {
+        id -> Int8,
+        occur_sn -> Int8,
+        user_id -> Text,
+        field -> Text,
+        value -> Nullable<Jsonb>,
+        removed -> Bool,
     }
 }
 
@@ -1150,6 +1241,7 @@ diesel::table! {
         conn_id -> Text,
         cache_data -> Jsonb,
         updated_at -> Int8,
+        version -> Int8,
     }
 }
 
@@ -1160,6 +1252,7 @@ diesel::joinable!(user_ratelimit_override -> users (user_id));
 diesel::allow_tables_to_appear_in_same_query!(
     appservice_registrations,
     banned_rooms,
+    delayed_events,
     device_inboxes,
     device_streams,
     e2e_cross_signing_keys,
@@ -1186,6 +1279,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     event_receipts,
     event_relations,
     event_searches,
+    event_stickies,
     events,
     lazy_load_deliveries,
     media_metadatas,
@@ -1193,6 +1287,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     media_url_previews,
     outgoing_edu_cursors,
     outgoing_requests,
+    presence_recipient_sets,
+    presence_recipient_streams,
+    remote_presence_recipients,
     room_aliases,
     room_joined_servers,
     room_lookup_servers,
@@ -1228,6 +1325,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     user_passwords,
     user_peeks,
     user_presences,
+    user_profile_changes,
     user_profiles,
     user_pushers,
     user_ratelimit_override,
@@ -1238,3 +1336,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     user_uiaa_datas,
     users,
 );
+
+diesel::table! {
+    delayed_event_deliveries (event_id) {
+        event_id -> Text,
+        room_id -> Text,
+    }
+}

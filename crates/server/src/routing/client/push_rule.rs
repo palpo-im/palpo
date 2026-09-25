@@ -1,4 +1,3 @@
-use palpo_core::events::push_rules::PushRulesEventContent;
 use salvo::oapi::extract::JsonBody;
 use salvo::prelude::*;
 
@@ -6,12 +5,17 @@ use crate::core::client::push::{
     ConditionalReqBody, PatternedReqBody, RuleActionsResBody, RuleEnabledResBody, RuleResBody,
     RulesResBody, SetRuleActionsReqBody, SetRuleEnabledReqBody, SetRuleReqArgs, SimpleReqBody,
 };
-use crate::core::events::GlobalAccountDataEventType;
 use crate::core::push::{
     InsertPushRuleError, NewConditionalPushRule, NewPatternedPushRule, NewPushRule,
     NewSimplePushRule, RemovePushRuleError, RuleKind, RuleScope, ScopeKindRuleReqArgs,
 };
-use crate::{DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, hoops, json_ok};
+use crate::{AppError, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, hoops, json_ok};
+
+fn concurrent_update_error() -> AppError {
+    let mut error = MatrixError::unknown("push rules changed concurrently; retry the request");
+    error.status_code = Some(salvo::http::StatusCode::CONFLICT);
+    error.into()
+}
 
 pub fn authed_router() -> Router {
     Router::with_path("pushrules")
@@ -44,13 +48,7 @@ pub fn authed_router() -> Router {
 async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
     let authed = depot.authed_info()?;
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     json_ok(RulesResBody {
         global: user_data_content.global,
@@ -63,12 +61,7 @@ async fn global(depot: &mut Depot) -> JsonResult<RulesResBody> {
 async fn get_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> JsonResult<RuleResBody> {
     let authed = depot.authed_info()?;
 
-    let user_data_content = crate::data::user::get_global_data::<PushRulesEventContent>(
-        authed.user_id(),
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?
-    .ok_or(MatrixError::not_found("push rule event not found."))?;
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     let rule = user_data_content
         .global
@@ -140,16 +133,17 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         );
     }
 
-    let mut user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let mut writable = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
     if let Err(error) =
-        user_data_content
+        writable
+            .content
             .global
             .insert(new_rule, args.after.as_deref(), args.before.as_deref())
     {
@@ -175,13 +169,9 @@ async fn set_rule(args: SetRuleReqArgs, req: &mut Request, depot: &mut Depot) ->
         return Err(err.into());
     }
 
-    crate::data::user::set_data(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-        serde_json::to_value(user_data_content)?,
-    )
-    .await?;
+    if !writable.save(authed.user_id()).await? {
+        return Err(concurrent_update_error());
+    }
 
     empty_ok()
 }
@@ -198,14 +188,16 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
         );
     }
 
-    let mut user_data_content = crate::data::user::get_global_data::<PushRulesEventContent>(
-        authed.user_id(),
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?
-    .ok_or(MatrixError::not_found("PushRules event not found."))?;
+    let mut writable = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
-    if let Err(error) = user_data_content
+    if let Err(error) = writable
+        .content
         .global
         .remove(args.kind.clone(), &args.rule_id)
     {
@@ -220,13 +212,9 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
         return Err(err.into());
     }
 
-    crate::data::user::set_data(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-        serde_json::to_value(user_data_content)?,
-    )
-    .await?;
+    if !writable.save(authed.user_id()).await? {
+        return Err(concurrent_update_error());
+    }
     empty_ok()
 }
 
@@ -236,13 +224,7 @@ async fn delete_rule(args: ScopeKindRuleReqArgs, depot: &mut Depot) -> EmptyResu
 async fn list_rules(depot: &mut Depot) -> JsonResult<RulesResBody> {
     let authed = depot.authed_info()?;
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     json_ok(RulesResBody {
         global: user_data_content.global,
@@ -264,13 +246,7 @@ async fn get_actions(
         );
     }
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .unwrap_or_default();
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     let actions = user_data_content
         .global
@@ -297,15 +273,16 @@ async fn set_actions(
         );
     }
 
-    let mut user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await
-    .map_err(|_| MatrixError::not_found("push rules event not found"))?;
+    let mut writable = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
-    if user_data_content
+    if writable
+        .content
         .global
         .set_actions(args.kind.clone(), &args.rule_id, body.actions.clone())
         .is_err()
@@ -313,13 +290,9 @@ async fn set_actions(
         return Err(MatrixError::not_found("push rule not found").into());
     }
 
-    crate::data::user::set_data(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-        serde_json::to_value(user_data_content).expect("to json value always works"),
-    )
-    .await?;
+    if !writable.save(authed.user_id()).await? {
+        return Err(concurrent_update_error());
+    }
 
     empty_ok()
 }
@@ -339,12 +312,7 @@ async fn get_enabled(
         );
     }
 
-    let user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?;
+    let user_data_content = crate::user::get_push_rules(authed.user_id()).await?;
 
     let enabled = user_data_content
         .global
@@ -371,14 +339,16 @@ async fn set_enabled(
         );
     }
 
-    let mut user_data_content = crate::data::user::get_data::<PushRulesEventContent>(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-    )
-    .await?;
+    let mut writable = crate::user::get_writable_push_rules(authed.user_id())
+        .await?
+        .ok_or_else(|| {
+            MatrixError::unknown(
+                "the stored push rules could not be parsed; refusing to overwrite them",
+            )
+        })?;
 
-    if user_data_content
+    if writable
+        .content
         .global
         .set_enabled(args.kind.clone(), &args.rule_id, body.enabled)
         .is_err()
@@ -386,13 +356,9 @@ async fn set_enabled(
         return Err(MatrixError::not_found("push rule not found").into());
     }
 
-    crate::data::user::set_data(
-        authed.user_id(),
-        None,
-        &GlobalAccountDataEventType::PushRules.to_string(),
-        serde_json::to_value(user_data_content)?,
-    )
-    .await?;
+    if !writable.save(authed.user_id()).await? {
+        return Err(concurrent_update_error());
+    }
 
     empty_ok()
 }

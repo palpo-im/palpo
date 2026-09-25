@@ -292,7 +292,7 @@ pub struct LeaveRoomReqBody {
 #[derive(ToParameters, Deserialize, Debug)]
 pub struct MutualRoomsReqArgs {
     /// The user to search mutual rooms for.
-    #[salvo(parameter(parameter_in = Query))]
+    #[salvo(parameter(parameter_in = Path))]
     pub user_id: OwnedUserId,
 
     /// The `next_batch_token` returned from a previous response, to get the
@@ -329,6 +329,114 @@ impl MutualRoomsResBody {
             joined,
             next_batch_token: Some(token),
         }
+    }
+}
+
+/// Request parameters for the stable Matrix v1.19 `mutual_rooms` endpoint.
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct MutualRoomsV1ReqArgs {
+    /// The user to search mutual rooms for.
+    #[salvo(parameter(parameter_in = Query))]
+    pub user_id: OwnedUserId,
+
+    /// The `next_batch` value returned by a previous response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[salvo(parameter(parameter_in = Query))]
+    pub from: Option<String>,
+}
+
+/// Response body for the stable Matrix v1.19 `mutual_rooms` endpoint.
+#[derive(ToSchema, Serialize, Debug)]
+pub struct MutualRoomsV1ResBody {
+    /// The total number of rooms shared by both users.
+    pub count: u64,
+
+    /// The current page of rooms shared by both users.
+    pub joined: Vec<OwnedRoomId>,
+
+    /// An opaque token for the next page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_batch: Option<String>,
+}
+
+impl MutualRoomsV1ResBody {
+    /// Creates a response with no following page.
+    pub fn new(count: u64, joined: Vec<OwnedRoomId>) -> Self {
+        Self {
+            count,
+            joined,
+            next_batch: None,
+        }
+    }
+
+    /// Creates a response with a token for the following page.
+    pub fn with_token(count: u64, joined: Vec<OwnedRoomId>, token: String) -> Self {
+        Self {
+            count,
+            joined,
+            next_batch: Some(token),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mutual_rooms_tests {
+    use serde_json::json;
+
+    use super::{
+        MutualRoomsReqArgs, MutualRoomsResBody, MutualRoomsV1ReqArgs, MutualRoomsV1ResBody,
+    };
+    use crate::{owned_room_id, owned_user_id};
+
+    #[test]
+    fn stable_request_and_response_use_v1_19_field_names() {
+        let request: MutualRoomsV1ReqArgs = serde_json::from_value(json!({
+            "user_id": "@alice:example.org",
+            "from": "next"
+        }))
+        .unwrap();
+        assert_eq!(request.user_id, owned_user_id!("@alice:example.org"));
+        assert_eq!(request.from.as_deref(), Some("next"));
+
+        let response = MutualRoomsV1ResBody::with_token(
+            2,
+            vec![
+                owned_room_id!("!one:example.org"),
+                owned_room_id!("!two:example.org"),
+            ],
+            "next".to_owned(),
+        );
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "count": 2,
+                "joined": ["!one:example.org", "!two:example.org"],
+                "next_batch": "next"
+            })
+        );
+    }
+
+    #[test]
+    fn unstable_request_and_response_keep_legacy_field_names() {
+        let request: MutualRoomsReqArgs = serde_json::from_value(json!({
+            "user_id": "@alice:example.org",
+            "batch_token": "legacy-next"
+        }))
+        .unwrap();
+        assert_eq!(request.user_id, owned_user_id!("@alice:example.org"));
+        assert_eq!(request.batch_token.as_deref(), Some("legacy-next"));
+
+        let response = MutualRoomsResBody::with_token(
+            vec![owned_room_id!("!one:example.org")],
+            "legacy-next".to_owned(),
+        );
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "joined": ["!one:example.org"],
+                "next_batch_token": "legacy-next"
+            })
+        );
     }
 }
 // /// `GET /_matrix/client/*/joined_rooms`

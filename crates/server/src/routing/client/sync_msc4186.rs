@@ -75,13 +75,24 @@ pub(super) async fn sync_events_v5(
         crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)
             .await?;
 
-    if since_sn > data::curr_sn().await?
-        || (args.pos.is_some()
-            && res_body.is_empty_for_long_poll()
-            && !has_list_count_changes(&res_body, &previous_list_counts))
-    {
+    let since_is_ahead = since_sn > data::curr_sn().await?;
+    if should_long_poll(
+        since_is_ahead,
+        args.pos.is_some(),
+        &res_body,
+        &previous_list_counts,
+    ) {
         let duration = long_poll_timeout(args.timeout);
-        let watcher = crate::watcher::watch(sender_id, device_id);
+        #[cfg(feature = "unstable-msc4262")]
+        let profile_updates = req_body.extensions.profiles.enabled.unwrap_or(false);
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profile_updates = false;
+        #[cfg(feature = "unstable-msc4262")]
+        let profile_after_sn = res_body.pos.parse().ok();
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profile_after_sn = None;
+        let watcher =
+            crate::watcher::watch(sender_id, device_id, profile_updates, profile_after_sn);
         _ = tokio::time::timeout(duration, watcher).await;
         res_body =
             crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)
@@ -109,12 +120,22 @@ pub(super) async fn sync_events_v5(
     json_ok(res_body)
 }
 
+fn should_long_poll(
+    since_is_ahead: bool,
+    has_pos: bool,
+    response: &SyncEventsResBody,
+    previous_list_counts: &std::collections::BTreeMap<String, usize>,
+) -> bool {
+    response.is_empty_for_long_poll()
+        && (since_is_ahead || (has_pos && !has_list_count_changes(response, previous_list_counts)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::time::Duration;
 
-    use super::{has_list_count_changes, long_poll_timeout};
+    use super::{has_list_count_changes, long_poll_timeout, should_long_poll};
     use crate::core::client::sync_events::v5::{SyncEventsResBody, SyncList};
 
     #[test]
@@ -208,6 +229,7 @@ mod tests {
         //     long-poll guard fires (the request should hang on the watcher
         //     instead of returning immediately).
         assert!(!has_list_count_changes(&step2, &cached_counts));
+        assert!(should_long_poll(true, true, &step2, &cached_counts));
 
         // (c) cache write after step 2 is idempotent.
         let cached_counts_after: BTreeMap<String, usize> = step2
@@ -227,6 +249,28 @@ mod tests {
             json.get("lists")
                 .is_some_and(|v| !v.as_object().unwrap().is_empty())
         );
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn an_idle_profile_snapshot_is_returned_without_long_polling() {
+        use crate::core::client::sync_events::v5::Profiles;
+        use crate::core::identifiers::UserId;
+        use crate::core::profile::UserProfileUpdate;
+
+        let mut response = SyncEventsResBody::new("42".to_owned());
+        let mut profile = UserProfileUpdate::new();
+        profile.set("displayname".to_owned(), "Alice".into());
+        response.extensions.profiles = Profiles {
+            users: [(
+                UserId::parse("@alice:example.org").unwrap().to_owned(),
+                Some(profile),
+            )]
+            .into(),
+        };
+
+        assert!(!response.is_empty_for_long_poll());
+        assert!(!should_long_poll(true, true, &response, &BTreeMap::new()));
     }
 
     /// When the user joins (or leaves) a room between two idle re-polls, the

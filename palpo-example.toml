@@ -19,6 +19,11 @@
 #
 # listeners =
 
+# Trust X-Forwarded-For for per-IP rate limits only when the direct peer is in
+# one of these CIDR ranges. Use the range of your reverse proxy, not the public
+# client network. Empty by default.
+# trusted_proxies = []
+
 # The server_name is the pretty name of this server. It is used as a
 # suffix for user and room IDs/aliases.
 # YOU NEED TO EDIT THIS.
@@ -199,13 +204,23 @@
 #
 # rc_registration = { per_second = 0.17, burst = 3 } (~1 per 6s, burst of 3)
 
-# Per-IP rate limiting for password change / account deactivation.
+# Username availability checks use a separate allowance.
+# rc_registration_available = { per_second = 0.5, burst = 5 }
+
+# Registration token checks match Synapse's per-IP default.
+# rc_registration_token_validity = { per_second = 0.1, burst = 5 }
+
+# Per-user rate limiting for failed password UIAA attempts during password
+# change and account deactivation.
 #
 # rc_password = { per_second = 0.17, burst = 3 }
 
-# Per-IP rate limiting for general API endpoints.
+# Per-user rate limiting for authenticated, non-read-only API endpoints.
 #
 # rc_message = { per_second = 10.0, burst = 50 }
+
+# Per-user rate limiting for user directory searches (Synapse default).
+# rc_user_directory = { per_second = 0.016, burst = 200 }
 
 # Always calls /forget on behalf of the user if leaving a room. This is a
 # part of MSC4267 "Automatically forgetting rooms on leave"
@@ -770,9 +785,22 @@
 #
 # url =
 
-# This item is undocumented. Please contribute documentation for it.
+# Maximum number of long-lived PostgreSQL connections used by this process.
+# The budget includes both ordinary queries and database-backed coordination;
+# it must be at least 2.
 #
 # pool_size =
+
+# Connections carved out of `pool_size` for operations which hold a database-backed
+# coordination lock (currently building and publishing a locally authored room
+# event) while ordinary queries keep using the remaining connections. This caps how
+# many locally authored events the process can publish concurrently, so raise it
+# together with `pool_size` on a write-heavy deployment.
+#
+# Leave unset to derive it from `pool_size` as `pool_size / 4`, clamped to 1..=16.
+# When set it must be at least 1 and smaller than `pool_size`.
+#
+# coordination_pool_size =
 
 # Number of seconds to wait for unacknowledged TCP packets before treating the connection as
 # broken. This value will determine how long crates.io stays unavailable in case of full
@@ -797,6 +825,39 @@
 # Whether to enforce that all the database connections are encrypted with TLS.
 #
 # enforce_tls =
+
+# [delayed_events]
+
+# Allow scheduling MSC4140 delayed events.
+#
+# Delayed events let clients schedule message or state events that the
+# server sends into a room after a delay, e.g. reliable MatrixRTC
+# "hang up" events. When disabled new schedules are rejected and the
+# feature is not advertised; lookup and management routes remain available
+# so existing delayed events can still be inspected or cancelled, but they
+# are not sent automatically until the feature is enabled again. Disabled
+# by default while MSC4140 is unstable.
+#
+# enable = false
+
+# The maximum delay in milliseconds a client may request for a delayed
+# event. Requests above this limit are rejected with the unstable
+# `ORG.MATRIX.MSC4140_DELAY_TOO_LARGE` error code.
+# Defaults to 24 hours.
+#
+# max_delay_ms = 86400_000
+
+# How many delayed events a user may have scheduled at once. Requests
+# above this limit are rejected with `M_LIMIT_EXCEEDED`.
+# Defaults to 100.
+#
+# max_scheduled = 100
+
+# How long finalized (sent, cancelled, or errored) delayed events are
+# retained for lookup before they are pruned, in milliseconds.
+# Defaults to 7 days.
+#
+# retention_ms = 604800_000
 
 # [federation]
 
@@ -1415,6 +1476,17 @@
 # authorization server for SSO login.
 #
 # client_id =
+
+# Public callback URL registered as an allowed redirect URI for client_id
+# at the delegated authorization server. Required for legacy Matrix SSO.
+# example: "https://matrix.example.com/_matrix/client/v3/login/sso/callback"
+# sso_callback_url =
+
+# Only these client origins may receive the short-lived Matrix login token.
+# Add your actual Matrix clients. Loopback hosts without a port accept an
+# ephemeral port used by desktop clients.
+# example: ["http://127.0.0.1", "http://localhost", "https://app.example.com"]
+# sso_allowed_redirect_origins = []
 
 # Optional URL for account management UI.
 # Included in the well-known client response under m.authentication.

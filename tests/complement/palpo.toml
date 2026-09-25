@@ -68,6 +68,11 @@ pool_size = 10
 [presence]
 allow_local = true
 
+# Complement covers the unauthenticated legacy preview endpoint explicitly.
+[media]
+allow_legacy = true
+freeze_legacy = false
+
 [url_preview]
 domain_contains_allowlist = ["*"]
 

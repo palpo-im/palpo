@@ -1,0 +1,13 @@
+{
+  "name": "palpo-web-admin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser.mjs && node test/request-readiness.browser.mjs && node test/outbound.browser.mjs && node test/accounts.browser.mjs",
+    "check": "node --check server.mjs && node --check lib/service.mjs && node --check lib/workflow.mjs && node --check lib/outbound.mjs && node --check lib/store.mjs && node --check lib/accounts.mjs && node --check public/accounts.js && node --check public/app.js"
+  }
+}

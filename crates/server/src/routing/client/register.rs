@@ -24,12 +24,10 @@ use crate::{
 };
 
 pub fn public_router() -> Router {
-    Router::with_path("register").push(
-        Router::with_hoop(hoops::limit_rate_registration)
-            .push(Router::with_path("available").get(available))
-            .post(register)
-            .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
-    )
+    Router::with_path("register")
+        .push(Router::with_path("available").get(available))
+        .post(register)
+        .push(Router::with_path("m.login.registration_token/validity").get(validate_token))
 }
 
 pub fn authed_router() -> Router {
@@ -52,6 +50,7 @@ async fn register(
     _depot: &mut Depot,
     _res: &mut Response,
 ) -> JsonResult<RegisterResBody> {
+    hoops::check_registration_rate(req)?;
     let body = body.into_inner();
     // For complement test `TestRequestEncodingFails`.
     if body.is_default() {
@@ -148,28 +147,29 @@ async fn register(
     };
 
     if body.login_type != Some(LoginType::ApplicationService) && !is_guest {
-        if let Some(auth) = &body.auth {
-            let (authed, uiaa) = crate::uiaa::try_auth(
-                &UserId::parse_with_server_name("", &conf.server_name)
-                    .expect("we know this is valid"),
-                &body.device_id.clone().unwrap_or_else(|| "".into()),
-                auth,
-                &uiaa_info,
-            )
-            .await?;
-            if !authed {
-                return Err(AppError::Uiaa(uiaa));
+        let uiaa_user_id =
+            UserId::parse_with_server_name("", &conf.server_name).expect("we know this is valid");
+        let uiaa_device_id = body.device_id.clone().unwrap_or_else(|| "".into());
+        // A registration UIA attempt must continue a challenge issued by this
+        // server. A bare m.login.dummy response is not proof that a
+        // registration session was started.
+        match body.auth.as_ref().filter(|auth| auth.session().is_some()) {
+            Some(auth) => {
+                let (authed, uiaa) =
+                    crate::uiaa::try_auth(&uiaa_user_id, &uiaa_device_id, auth, &uiaa_info).await?;
+                if !authed {
+                    return Err(AppError::Uiaa(uiaa));
+                }
             }
-        } else {
-            let uiaa_user_id = UserId::parse_with_server_name("", &config::get().server_name)
-                .expect("we know this is valid");
-            crate::uiaa::create_challenge_session(
-                &uiaa_user_id,
-                &body.device_id.clone().unwrap_or_else(|| "".into()),
-                &mut uiaa_info,
-            )
-            .await?;
-            return Err(uiaa_info.into());
+            None => {
+                crate::uiaa::create_challenge_session(
+                    &uiaa_user_id,
+                    &uiaa_device_id,
+                    &mut uiaa_info,
+                )
+                .await?;
+                return Err(uiaa_info.into());
+            }
         }
     }
 
@@ -192,6 +192,7 @@ async fn register(
             last_user_sync_at: None,
             currently_active: None,
             occur_sn: None,
+            updated_at: UnixMillis::now(),
         },
         true,
     )
@@ -202,9 +203,9 @@ async fn register(
         &user_id,
         None,
         &GlobalAccountDataEventType::PushRules.to_string(),
-        serde_json::to_value(PushRulesEventContent {
-            global: Ruleset::server_default(&user_id),
-        })
+        serde_json::to_value(PushRulesEventContent::new(Ruleset::server_default(
+            &user_id,
+        )))
         .expect("to json always works"),
     )
     .await?;
@@ -322,7 +323,11 @@ async fn register(
 /// Note: This will not reserve the username, so the username might become invalid when trying to
 /// register
 #[endpoint]
-async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableResBody> {
+async fn available(
+    username: QueryParam<String, true>,
+    req: &mut Request,
+) -> JsonResult<AvailableResBody> {
+    hoops::check_registration_available_rate(req)?;
     if config::get().enabled_delegated_auth().is_some() {
         return Err(MatrixError::forbidden(
             "Local registration is disabled while delegated authentication is enabled.",
@@ -374,9 +379,20 @@ async fn available(username: QueryParam<String, true>) -> JsonResult<AvailableRe
 // "/_matrix/client/v1/register/m.login.registration_token/validity",     }
 // };
 #[endpoint]
-async fn validate_token(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
-    let _authed = depot.authed_info()?;
-    empty_ok()
+async fn validate_token(
+    token: QueryParam<String, true>,
+    req: &mut Request,
+) -> JsonResult<ValidateTokenResBody> {
+    hoops::check_registration_token_rate(req)?;
+    let token = token.into_inner();
+    let valid = config::get()
+        .registration_token
+        .as_deref()
+        .is_some_and(|expected| {
+            let supplied = token.trim().as_bytes();
+            supplied.len() == expected.len() && supplied.ct_eq(expected.as_bytes()).into()
+        });
+    Ok(Json(ValidateTokenResBody { valid }))
 }
 
 // `POST /_matrix/client/*/register/email/requestToken`

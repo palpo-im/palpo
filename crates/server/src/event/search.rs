@@ -38,6 +38,7 @@ fn searchable_events<'a>(
 
 pub async fn search_pdus(
     user_id: &UserId,
+    device_id: Option<&DeviceId>,
     criteria: &Criteria,
     next_batch: Option<&str>,
 ) -> AppResult<ResultRoomEvents> {
@@ -125,11 +126,19 @@ pub async fn search_pdus(
             continue;
         }
         results.push(SearchResult {
-            context: calc_event_context(user_id, &pdu.room_id, pdu.event_sn, 10, 10, false)
-                .await
-                .unwrap_or_default(),
+            context: calc_event_context(
+                user_id,
+                device_id,
+                &pdu.room_id,
+                pdu.event_sn,
+                10,
+                10,
+                false,
+            )
+            .await
+            .unwrap_or_default(),
             rank: Some(rank as f64),
-            result: Some(pdu.to_room_event()),
+            result: Some(pdu.to_room_event_for(user_id, device_id)),
         });
     }
 
@@ -150,16 +159,20 @@ pub async fn search_pdus(
 // Calculates the contextual events for any search results.
 async fn calc_event_context(
     user_id: &UserId,
+    device_id: Option<&DeviceId>,
     room_id: &RoomId,
     event_sn: Seqnum,
     before_limit: usize,
     after_limit: usize,
     include_profile: bool,
 ) -> AppResult<EventContextResult> {
+    let (before_boundary, after_boundary) = context_boundaries(event_sn);
     let before_pdus = timeline::stream::load_pdus_backward(
         Some(user_id),
         room_id,
-        Some(BatchToken::new_live(event_sn - 1)),
+        // The stream loader already uses an exclusive boundary. Starting one
+        // position earlier skips the event immediately before the search hit.
+        Some(before_boundary),
         None,
         None,
         before_limit,
@@ -168,7 +181,9 @@ async fn calc_event_context(
     let after_pdus = timeline::stream::load_pdus_forward(
         Some(user_id),
         room_id,
-        Some(BatchToken::new_live(event_sn + 1)),
+        // Forward loading includes the supplied stream position, so advance once
+        // to exclude the search hit while retaining its immediate successor.
+        Some(after_boundary),
         None,
         None,
         after_limit,
@@ -200,16 +215,23 @@ async fn calc_event_context(
             .map(|(sn, _)| BatchToken::new_live(*sn).to_string()),
         events_before: before_pdus
             .into_iter()
-            .map(|(_, pdu)| pdu.to_room_event())
+            .map(|(_, pdu)| pdu.to_room_event_for(user_id, device_id))
             .collect(),
         events_after: after_pdus
             .into_iter()
-            .map(|(_, pdu)| pdu.to_room_event())
+            .map(|(_, pdu)| pdu.to_room_event_for(user_id, device_id))
             .collect(),
         profile_info: BTreeMap::new(),
     };
 
     Ok(context)
+}
+
+fn context_boundaries(event_sn: Seqnum) -> (BatchToken, BatchToken) {
+    (
+        BatchToken::new_live(event_sn),
+        BatchToken::new_live(event_sn + 1),
+    )
 }
 
 pub async fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppResult<()> {
@@ -259,8 +281,9 @@ mod tests {
     use diesel::debug_query;
     use diesel::pg::Pg;
 
-    use super::searchable_events;
+    use super::{context_boundaries, searchable_events};
     use crate::core::identifiers::RoomId;
+    use crate::event::BatchToken;
 
     #[test]
     fn search_query_excludes_redacted_events() {
@@ -272,6 +295,14 @@ mod tests {
         assert!(
             sql.contains("\"event_searches\".\"event_id\" = ANY(SELECT \"events\".\"id\""),
             "{sql}"
+        );
+    }
+
+    #[test]
+    fn search_context_respects_the_loaders_boundary_semantics() {
+        assert_eq!(
+            context_boundaries(42),
+            (BatchToken::new_live(42), BatchToken::new_live(43))
         );
     }
 }

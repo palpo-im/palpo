@@ -74,6 +74,15 @@ pub(crate) async fn process_incoming_pdu(
             {
                 warn!("failed to delete event_datas for {}: {}", event_id, e);
             }
+            // The event is about to be re-ingested and will get a fresh sequence number,
+            // so a sticky row recorded against the old one would point at nothing.
+            if let Err(e) =
+                diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
+                    .execute(&mut connect().await?)
+                    .await
+            {
+                warn!("failed to delete event_stickies for {}: {}", event_id, e);
+            }
         }
     }
 
@@ -103,7 +112,7 @@ pub(crate) async fn process_incoming_pdu(
         handler::acl_check(sender.server_name(), room_id).await?;
     }
     // 1. Skip the PDU if we already have it as a timeline event
-    if state::get_pdu_frame_id(event_id).await.is_ok() {
+    if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
         return Ok(());
     }
 
@@ -117,6 +126,10 @@ pub(crate) async fn process_incoming_pdu(
         .process_incoming(remote_server, is_backfill)
         .await?;
 
+    // An event the room's Policy Server refused (MSC4284) is persisted as rejected, so this
+    // also keeps it out of the timeline. A soft-failed event (incomplete DAG) still goes on
+    // to `process_to_timeline_pdu`, which re-authorises it and completes the deferred
+    // policy check before promoting it.
     if incoming_pdu.rejected() {
         return Ok(());
     }
@@ -179,7 +192,7 @@ pub(crate) async fn process_pulled_pdu(
     }
 
     // 1. Skip the PDU if we already have it as a timeline event
-    if state::get_pdu_frame_id(event_id).await.is_ok() {
+    if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
         return Ok(());
     }
 
@@ -287,12 +300,11 @@ pub async fn process_to_outlier_pdu(
             pdu: pdu.into_inner(),
             json_data: val,
             soft_failed: false,
+            policy_refused: false,
             remote_server: remote_server.to_owned(),
             room_id: room_id.to_owned(),
             room_version: room_version.to_owned(),
             event_sn: Some(event_sn),
-            rejected_auth_events: vec![],
-            rejected_prev_events: vec![],
         }));
     }
 
@@ -347,6 +359,7 @@ pub async fn process_to_outlier_pdu(
         "event_id".to_owned(),
         CanonicalJsonValue::String(event_id.as_str().to_owned()),
     );
+
     let mut incoming_pdu = PduEvent::from_json_value(
         room_id,
         event_id,
@@ -368,19 +381,18 @@ pub async fn process_to_outlier_pdu(
                 pdu: incoming_pdu,
                 json_data: val,
                 soft_failed: false,
+                policy_refused: false,
                 remote_server: remote_server.to_owned(),
                 room_id: room_id.to_owned(),
                 room_version: room_version.to_owned(),
                 event_sn: None,
-                rejected_auth_events: vec![],
-                rejected_prev_events: vec![],
             }));
         }
         return Ok(None);
     }
 
     let mut soft_failed = false;
-    let (prev_events, missing_prev_event_ids) =
+    let (_, missing_prev_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.prev_events).await?;
     if !missing_prev_event_ids.is_empty() {
         warn!(
@@ -389,22 +401,9 @@ pub async fn process_to_outlier_pdu(
         );
         soft_failed = true;
     }
-    let rejected_prev_events = prev_events
-        .iter()
-        .filter_map(|pdu| {
-            if pdu.rejected() {
-                Some(pdu.event_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    if !rejected_prev_events.is_empty() {
-        incoming_pdu.rejection_reason = Some(format!(
-            "event's prev events rejected: {rejected_prev_events:?}"
-        ));
-        // soft_failed = true; // Will try to fetch rejected prev events again later
-    }
+    // A rejected predecessor does not reject its descendants. State resolution
+    // skips rejected predecessors and falls back to the last accepted state, so
+    // a later valid event can reconnect the room DAG.
 
     let (auth_events, missing_auth_event_ids) =
         timeline::get_may_missing_pdus(room_id, &incoming_pdu.auth_events).await?;
@@ -453,6 +452,7 @@ pub async fn process_to_outlier_pdu(
             Some("incoming event refers to wrong create event".to_owned());
     }
 
+    let mut authorised = false;
     if incoming_pdu.rejection_reason.is_none() {
         // Remember whether soft_failed was already set due to missing prev/auth
         // events. We must NOT clear it just because the auth check happened to
@@ -463,7 +463,7 @@ pub async fn process_to_outlier_pdu(
         let was_soft_failed = soft_failed;
         if let Err(e) = auth_check(&incoming_pdu, &version_rules, None).await {
             match e {
-                AppError::State(StateError::Forbidden(brief)) => {
+                AppError::State(StateError::Forbidden(brief) | StateError::AuthEvent(brief)) => {
                     incoming_pdu.rejection_reason = Some(brief);
                 }
                 _ => {
@@ -472,26 +472,48 @@ pub async fn process_to_outlier_pdu(
             }
         } else if !was_soft_failed {
             soft_failed = false;
+            authorised = true;
         }
     }
+
+    // Never let an unauthorised PDU trigger a request to the Policy Server. Besides being
+    // unnecessary, the request can occupy the shared federation semaphore until its
+    // timeout. Events with missing DAG state are checked after recovery in
+    // `OutlierPdu::process_pulled` instead.
+    let policy_refused = authorised
+        && !crate::room::policy::is_event_allowed(room_id, &mut val, &version_rules).await;
 
     Ok(Some(OutlierPdu {
         pdu: incoming_pdu,
         soft_failed,
+        policy_refused,
         json_data: val,
         remote_server: remote_server.to_owned(),
         room_id: room_id.to_owned(),
         room_version: room_version.to_owned(),
         event_sn: None,
-        rejected_auth_events,
-        rejected_prev_events,
     }))
+}
+
+/// The soft-fail check: whether an event that passed authorisation against the state
+/// at the event fails against the room's *current* state, and so must be kept out of
+/// the timeline.
+pub(crate) async fn fails_current_state_check(
+    pdu: &PduEvent,
+    room_version_id: &RoomVersionId,
+) -> AppResult<bool> {
+    match pdu.redacts_id(room_version_id) {
+        None => Ok(false),
+        Some(redact_id) => {
+            Ok(!state::user_can_redact(&redact_id, &pdu.sender, &pdu.room_id, true).await?)
+        }
+    }
 }
 
 #[tracing::instrument(skip(incoming_pdu, json_data))]
 pub async fn process_to_timeline_pdu(
-    incoming_pdu: SnPduEvent,
-    json_data: CanonicalJsonObject,
+    mut incoming_pdu: SnPduEvent,
+    mut json_data: CanonicalJsonObject,
     remote_server: Option<&ServerName>,
 ) -> AppResult<()> {
     // Skip the PDU if we already have it as a timeline event
@@ -503,6 +525,10 @@ pub async fn process_to_timeline_pdu(
             "cannot process rejected event to timeline",
         ));
     }
+    // A soft-failed outlier had an incomplete DAG when it was first checked, so its
+    // policy check was deferred. It is re-authorised below and only then checked against
+    // the room's Policy Server. Policy refusals have a persisted rejection reason and
+    // never reach this point.
     debug!("process to timeline event {}", incoming_pdu.event_id);
     let room_version_id = &room::get_version(&incoming_pdu.room_id).await?;
     let version_rules = crate::room::get_version_rules(room_version_id)?;
@@ -521,11 +547,23 @@ pub async fn process_to_timeline_pdu(
                 .unwrap_or(false);
 
     if !server_joined {
-        if let Some(state_key) = incoming_pdu.state_key.as_deref()
+        if let Some(state_key) = incoming_pdu.state_key.clone().as_deref()
             && incoming_pdu.event_ty == TimelineEventType::RoomMember
             && state_key != incoming_pdu.sender().as_str() //????
             && state_key.ends_with(&*format!(":{}", crate::config::server_name()))
         {
+            if incoming_pdu.soft_failed {
+                // The outlier stage skipped the policy check for this event because its
+                // DAG was incomplete. Without joined state there is normally no usable
+                // policy, in which case this is a no-op.
+                crate::room::policy::check_recovered_event(
+                    &incoming_pdu,
+                    &mut json_data,
+                    &version_rules,
+                )
+                .await?;
+                incoming_pdu.soft_failed = false;
+            }
             // let state_at_incoming_event = state_at_incoming_degree_one(&incoming_pdu).await?;
             let state_at_incoming_event = resolve_state_at_incoming(&incoming_pdu, &version_rules)
                 .await
@@ -550,6 +588,15 @@ pub async fn process_to_timeline_pdu(
                 )?);
             }
             let compressed_state_ids = Arc::new(compressed_state_ids_set);
+            // Persist the exact event-time state while this PDU is still an outlier.
+            // `append_pdu` makes it queryable, so doing this afterwards would expose
+            // a provisional current-room frame to concurrent visibility checks.
+            state::set_event_state_before(
+                &incoming_pdu.event_id,
+                &incoming_pdu.room_id,
+                Arc::clone(&compressed_state_ids),
+            )
+            .await?;
             debug!("preparing for stateres to derive new room state");
 
             // We also add state after incoming event to the fork states
@@ -576,13 +623,6 @@ pub async fn process_to_timeline_pdu(
 
             debug!("appended incoming pdu");
             timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
-            state::set_event_state(
-                &incoming_pdu.event_id,
-                incoming_pdu.event_sn,
-                &incoming_pdu.room_id,
-                compressed_state_ids,
-            )
-            .await?;
             drop(state_lock);
         }
         return Ok(());
@@ -613,20 +653,17 @@ pub async fn process_to_timeline_pdu(
     )
     .await?;
 
+    if incoming_pdu.soft_failed {
+        // The initial outlier check defers policy enforcement when DAG state is
+        // missing. Only ask for a policy signature after the recovered auth check.
+        crate::room::policy::check_recovered_event(&incoming_pdu, &mut json_data, &version_rules)
+            .await?;
+        incoming_pdu.soft_failed = false;
+    }
+
     // Soft fail check before doing state res
     debug!("performing soft-fail check");
-    let soft_fail = match incoming_pdu.redacts_id(room_version_id) {
-        None => false,
-        Some(redact_id) => {
-            !state::user_can_redact(
-                &redact_id,
-                &incoming_pdu.sender,
-                &incoming_pdu.room_id,
-                true,
-            )
-            .await?
-        }
-    };
+    let soft_fail = fails_current_state_check(&incoming_pdu, room_version_id).await?;
 
     // 13. Use state resolution to find new room state
     let state_lock = crate::room::lock_state(&incoming_pdu.room_id).await;
@@ -647,6 +684,15 @@ pub async fn process_to_timeline_pdu(
         )?);
     }
     let compressed_state_ids = Arc::new(compressed_state_ids_set);
+    // Store the resolved state before the event is promoted out of outlier storage.
+    // This prevents visibility readers from ever observing the room's later resolved
+    // state as a temporary event-time snapshot.
+    state::set_event_state_before(
+        &incoming_pdu.event_id,
+        &incoming_pdu.room_id,
+        Arc::clone(&compressed_state_ids),
+    )
+    .await?;
 
     let guards = if let Some(state_key) = &incoming_pdu.state_key {
         debug!("preparing for stateres to derive new room state");
@@ -707,13 +753,6 @@ pub async fn process_to_timeline_pdu(
     } else {
         debug!("appended incoming pdu");
         timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
-        state::set_event_state(
-            &incoming_pdu.event_id,
-            incoming_pdu.event_sn,
-            &incoming_pdu.room_id,
-            compressed_state_ids,
-        )
-        .await?;
     }
     drop(guards);
 

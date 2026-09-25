@@ -4,11 +4,20 @@
 
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
+use crate::events::room::policy::POLICY_SERVER_ED25519_SIGNING_KEY_ID;
+use crate::sending::{SendRequest, SendResult};
 use crate::serde::RawJsonValue;
 use crate::{
     OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSignatures, ServerSigningKeyId,
 };
+
+/// Build a `POST /_matrix/policy/v1/sign` request for the given Policy Server origin.
+pub fn sign_event_request(origin: &str, body: PolicySignEventReqBody) -> SendResult<SendRequest> {
+    let url = Url::parse(&format!("{origin}/_matrix/policy/v1/sign"))?;
+    crate::sending::post(url).stuff(body)
+}
 
 /// Request body for the `sign_event` endpoint.
 #[derive(ToSchema, Serialize, Deserialize, Debug)]
@@ -35,7 +44,7 @@ pub struct PolicySignEventResBody {
 
 impl PolicySignEventResBody {
     /// The signing key ID that must be used by the Policy Server for the Ed25519 signature.
-    pub const POLICY_SERVER_ED25519_SIGNING_KEY_ID: &str = "ed25519:policy_server";
+    pub const POLICY_SERVER_ED25519_SIGNING_KEY_ID: &str = POLICY_SERVER_ED25519_SIGNING_KEY_ID;
 
     /// Creates a new `PolicySignEventResBody` with the given Policy Server name and signature.
     pub fn new(server_name: OwnedServerName, ed25519_signature: String) -> Self {

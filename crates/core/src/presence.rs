@@ -73,6 +73,39 @@ pub struct PresenceUpdate {
     /// Defaults to false.
     #[serde(default, skip_serializing_if = "crate::serde::is_default")]
     pub currently_active: bool,
+
+    /// Changes to the user's presence recipient list since the previous update.
+    ///
+    /// Uses the MSC4495 unstable name until the proposal is accepted.
+    #[cfg(feature = "unstable-msc4495")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4495.recipients",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub recipients: Option<PresenceRecipientListUpdates>,
+
+    /// The stream ID of the user's current presence recipient list.
+    ///
+    /// Uses the MSC4495 unstable name until the proposal is accepted.
+    #[cfg(feature = "unstable-msc4495")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4495.stream_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stream_id: Option<i64>,
+
+    /// The previous stream ID for this recipient-list delta.
+    ///
+    /// Uses the MSC4495 unstable name until the proposal is accepted.
+    #[cfg(feature = "unstable-msc4495")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4495.prev_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub prev_id: Option<i64>,
 }
 
 impl PresenceUpdate {
@@ -85,6 +118,141 @@ impl PresenceUpdate {
             last_active_ago: last_activity,
             status_msg: None,
             currently_active: false,
+            #[cfg(feature = "unstable-msc4495")]
+            recipients: None,
+            #[cfg(feature = "unstable-msc4495")]
+            stream_id: None,
+            #[cfg(feature = "unstable-msc4495")]
+            prev_id: None,
         }
+    }
+}
+
+/// Added and removed users in a presence recipient list.
+#[cfg(feature = "unstable-msc4495")]
+#[derive(ToSchema, Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PresenceRecipientListUpdates {
+    /// Users added to the recipient list.
+    pub add: Vec<OwnedUserId>,
+
+    /// Users removed from the recipient list.
+    pub delete: Vec<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4495")]
+impl PresenceRecipientListUpdates {
+    /// Creates recipient-list updates from added and removed users.
+    pub fn new(add: Vec<OwnedUserId>, delete: Vec<OwnedUserId>) -> Self {
+        Self { add, delete }
+    }
+
+    /// Whether this update contains no changes.
+    pub fn is_empty(&self) -> bool {
+        self.add.is_empty() && self.delete.is_empty()
+    }
+}
+
+#[cfg(all(test, feature = "unstable-msc4495"))]
+mod msc4495_tests {
+    use serde_json::json;
+
+    use super::{PresenceRecipientListUpdates, PresenceState, PresenceUpdate};
+    use crate::owned_user_id;
+
+    #[test]
+    fn presence_recipient_delta_round_trips() {
+        let update = PresenceUpdate {
+            user_id: owned_user_id!("@alice:example.org"),
+            presence: PresenceState::Online,
+            status_msg: None,
+            last_active_ago: 1_000,
+            currently_active: true,
+            recipients: Some(PresenceRecipientListUpdates::new(
+                vec![owned_user_id!("@bob:example.org")],
+                vec![owned_user_id!("@charlie:example.org")],
+            )),
+            stream_id: Some(321),
+            prev_id: Some(123),
+        };
+
+        let json = serde_json::to_value(&update).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "user_id": "@alice:example.org",
+                "presence": "online",
+                "last_active_ago": 1_000,
+                "currently_active": true,
+                "org.continuwuity.presence_v2.msc4495.recipients": {
+                    "add": ["@bob:example.org"],
+                    "delete": ["@charlie:example.org"]
+                },
+                "org.continuwuity.presence_v2.msc4495.stream_id": 321,
+                "org.continuwuity.presence_v2.msc4495.prev_id": 123
+            })
+        );
+
+        let parsed: PresenceUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.stream_id, Some(321));
+        assert_eq!(parsed.prev_id, Some(123));
+        let recipients = parsed.recipients.unwrap();
+        assert_eq!(recipients.add.len(), 1);
+        assert_eq!(recipients.delete.len(), 1);
+    }
+
+    #[test]
+    fn legacy_presence_update_omits_msc4495_fields() {
+        let update = PresenceUpdate::new(
+            owned_user_id!("@alice:example.org"),
+            PresenceState::Online,
+            1_000,
+        );
+
+        let json = serde_json::to_value(update).unwrap();
+        assert!(
+            json.get("org.continuwuity.presence_v2.msc4495.recipients")
+                .is_none()
+        );
+        assert!(
+            json.get("org.continuwuity.presence_v2.msc4495.stream_id")
+                .is_none()
+        );
+        assert!(
+            json.get("org.continuwuity.presence_v2.msc4495.prev_id")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn recipient_delta_keeps_both_update_arrays() {
+        let recipients =
+            PresenceRecipientListUpdates::new(vec![owned_user_id!("@bob:example.org")], Vec::new());
+
+        assert_eq!(
+            serde_json::to_value(recipients).unwrap(),
+            json!({
+                "add": ["@bob:example.org"],
+                "delete": []
+            })
+        );
+    }
+
+    #[test]
+    fn an_explicit_empty_recipient_delta_is_not_omitted() {
+        let update = PresenceUpdate {
+            user_id: owned_user_id!("@alice:example.org"),
+            presence: PresenceState::Online,
+            status_msg: None,
+            last_active_ago: 1_000,
+            currently_active: false,
+            recipients: Some(PresenceRecipientListUpdates::default()),
+            stream_id: Some(321),
+            prev_id: Some(123),
+        };
+
+        assert_eq!(
+            serde_json::to_value(update).unwrap()["org.continuwuity.presence_v2.msc4495.recipients"],
+            json!({ "add": [], "delete": [] })
+        );
     }
 }

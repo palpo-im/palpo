@@ -510,7 +510,25 @@ pub struct KnockReqArgs {
     /// One of the servers must be participating in the room.
     #[salvo(parameter(parameter_in = Query))]
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
+    pub via: Vec<OwnedServerName>,
+
+    /// Deprecated since Matrix 1.12 in favour of `via`, but still sent by
+    /// older clients. Only used when `via` is empty.
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
     pub server_name: Vec<OwnedServerName>,
+}
+
+impl KnockReqArgs {
+    /// The query servers to knock through, preferring `via` over the
+    /// deprecated `server_name`.
+    pub fn via_servers(&self) -> &[OwnedServerName] {
+        if self.via.is_empty() {
+            &self.server_name
+        } else {
+            &self.via
+        }
+    }
 }
 /// Request type for the `knock_room` endpoint.
 #[derive(ToSchema, Deserialize, Debug)]

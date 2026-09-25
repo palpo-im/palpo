@@ -5,10 +5,10 @@ use salvo::http::HeaderValue;
 use serde::Deserialize;
 
 use super::{
-    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelegatedAuthConfig,
-    FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig, OidcConfig,
-    PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig, TypingConfig,
-    UrlPreviewConfig, WellKnownConfig,
+    AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelayedEventsConfig,
+    DelegatedAuthConfig, FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig,
+    OidcConfig, PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig,
+    TypingConfig, UrlPreviewConfig, WellKnownConfig,
 };
 use crate::core::serde::{default_false, default_true};
 use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
@@ -75,12 +75,18 @@ impl ListenerConfig {
 ### https://palpo.im/guide/configuration.html
 "#,
     ignore = "federation well_known compression typing read_receipt presence \
-        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice"
+        admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice \
+        delayed_events"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "default_listener")]
     pub listeners: Vec<ListenerConfig>,
+
+    /// CIDR ranges of reverse proxies trusted to set X-Forwarded-For for
+    /// per-IP rate limits. Leave empty when Palpo is directly exposed.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 
     /// The server_name is the pretty name of this server. It is used as a
     /// suffix for user and room IDs/aliases.
@@ -319,17 +325,36 @@ pub struct ServerConfig {
     #[serde(default = "default_rc_registration")]
     pub rc_registration: RateLimitConfig,
 
-    /// Per-IP rate limiting for password change / account deactivation.
+    /// Per-IP rate limiting for username availability checks.
+    ///
+    /// default: { per_second = 0.5, burst = 5 }
+    #[serde(default = "default_rc_registration_available")]
+    pub rc_registration_available: RateLimitConfig,
+
+    /// Per-IP rate limiting for registration token validity checks.
+    ///
+    /// default: { per_second = 0.1, burst = 5 }
+    #[serde(default = "default_rc_registration_token_validity")]
+    pub rc_registration_token_validity: RateLimitConfig,
+
+    /// Per-user rate limiting for failed password UIAA attempts during password
+    /// change and account deactivation.
     ///
     /// default: { per_second = 0.17, burst = 3 }
     #[serde(default = "default_rc_password")]
     pub rc_password: RateLimitConfig,
 
-    /// Per-IP rate limiting for general API endpoints.
+    /// Per-user rate limiting for authenticated, non-read-only API endpoints.
     ///
     /// default: { per_second = 10.0, burst = 50 }
     #[serde(default = "default_rc_message")]
     pub rc_message: RateLimitConfig,
+
+    /// Per-user rate limiting for user directory searches.
+    ///
+    /// default: { per_second = 0.016, burst = 200 }
+    #[serde(default = "default_rc_user_directory")]
+    pub rc_user_directory: RateLimitConfig,
 
     /// Always calls /forget on behalf of the user if leaving a room. This is a
     /// part of MSC4267 "Automatically forgetting rooms on leave"
@@ -727,6 +752,10 @@ pub struct ServerConfig {
 
     // external structure; separate section
     #[serde(default)]
+    pub delayed_events: DelayedEventsConfig,
+
+    // external structure; separate section
+    #[serde(default)]
     pub presence: PresenceConfig,
 
     // external structure; separate section
@@ -876,6 +905,31 @@ impl ServerConfig {
     pub fn check(&self) -> AppResult<()> {
         if cfg!(debug_assertions) {
             tracing::warn!("Note: palpo was built without optimisations (i.e. debug build)");
+        }
+
+        if self.db.pool_size < 2 {
+            return Err(AppError::internal(
+                "db.pool_size must be at least 2 so query and coordination work cannot deadlock",
+            ));
+        }
+        if let Some(coordination_pool_size) = self.db.coordination_pool_size
+            && !(1..self.db.pool_size).contains(&coordination_pool_size)
+        {
+            return Err(AppError::internal(format!(
+                "db.coordination_pool_size must be at least 1 and smaller than db.pool_size ({}), but it is {coordination_pool_size}",
+                self.db.pool_size
+            )));
+        }
+
+        if self.delayed_events.enable
+            && crate::data::coordination_pool_capacity(
+                self.db.pool_size,
+                self.db.coordination_pool_size,
+            ) < 2
+        {
+            return Err(AppError::internal(
+                "MSC4140 delayed events require at least two coordination connections; increase db.pool_size or set db.coordination_pool_size",
+            ));
         }
 
         // NOTE: `check()` runs *before* `logging::init()` in main, so a
@@ -1062,6 +1116,14 @@ impl ServerConfig {
                 return Err(AppError::internal(
                     "Parsing specified IP CIDR range from string failed: {e}.",
                 ));
+            }
+        }
+
+        for cidr in &self.trusted_proxies {
+            if ipaddress::IPAddress::parse(cidr).is_err() {
+                return Err(AppError::internal(format!(
+                    "Invalid trusted proxy CIDR range: {cidr}"
+                )));
             }
         }
 
@@ -1376,6 +1438,20 @@ fn default_rc_registration() -> RateLimitConfig {
     }
 }
 
+fn default_rc_registration_available() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.5,
+        burst: 5,
+    }
+}
+
+fn default_rc_registration_token_validity() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.1,
+        burst: 5,
+    }
+}
+
 fn default_rc_password() -> RateLimitConfig {
     RateLimitConfig {
         per_second: 0.17,
@@ -1387,6 +1463,13 @@ fn default_rc_message() -> RateLimitConfig {
     RateLimitConfig {
         per_second: 10.0,
         burst: 50,
+    }
+}
+
+fn default_rc_user_directory() -> RateLimitConfig {
+    RateLimitConfig {
+        per_second: 0.016,
+        burst: 200,
     }
 }
 

@@ -34,8 +34,8 @@ pub fn self_auth_router() -> Router {
                 .push(Router::with_path("{filename}").get(get_content_with_filename)),
         )
         .push(
-            Router::with_hoop(hoops::limit_rate)
-                .hoop(hoops::auth_by_access_token)
+            Router::with_hoop(hoops::auth_by_access_token)
+                .hoop(hoops::limit_rate)
                 .push(Router::with_path("config").get(get_config))
                 .push(Router::with_path("preview_url").get(preview_url))
                 .push(Router::with_path("thumbnail/{server_name}/{media_id}").get(get_thumbnail)),
@@ -77,11 +77,13 @@ pub async fn get_content(
             let data = storage::read(&key).await?;
             res.add_header(CONTENT_TYPE, content_type.to_string(), true)?;
             if let Some(file_name) = &metadata.file_name {
-                res.add_header(
-                    "Content-Disposition",
-                    format!(r#"attachment; filename="{file_name}""#),
-                    true,
-                )?;
+                let content_disposition =
+                    crate::utils::content_disposition::make_content_disposition(
+                        None,
+                        Some(content_type.as_ref()),
+                        Some(file_name),
+                    );
+                res.add_header("Content-Disposition", content_disposition.to_string(), true)?;
             }
             res.body = ResBody::Once(data.into());
             Ok(())
@@ -89,8 +91,7 @@ pub async fn get_content(
             Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into())
         }
     } else if *args.server_name != config::get().server_name && args.allow_remote {
-        let mxc = format!("mxc://{}/{}", args.server_name, args.media_id);
-        fetch_remote_content(&mxc, &args.server_name, &args.media_id, res).await
+        fetch_remote_content(&args.server_name, &args.media_id, None, res).await
     } else {
         Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into())
     }
@@ -106,43 +107,44 @@ pub async fn get_content_with_filename(
     _req: &mut Request,
     res: &mut Response,
 ) -> AppResult<()> {
-    let Some(metadata) =
+    if let Some(metadata) =
         crate::data::media::get_metadata(&args.server_name, &args.media_id).await?
-    else {
-        return Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into());
-    };
-    let content_type = if let Some(content_type) = metadata.content_type.as_deref() {
-        content_type.to_owned()
-    } else {
-        metadata
-            .file_name
-            .as_ref()
-            .map(|name| mime_infer::from_path(name).first_or_octet_stream())
-            .unwrap_or(mime::APPLICATION_OCTET_STREAM)
-            .to_string()
-    };
-    if let Ok(content_type) = content_type.parse::<HeaderValue>() {
-        res.headers_mut().insert(CONTENT_TYPE, content_type);
-    }
+    {
+        let content_type = if let Some(content_type) = metadata.content_type.as_deref() {
+            content_type.to_owned()
+        } else {
+            metadata
+                .file_name
+                .as_ref()
+                .map(|name| mime_infer::from_path(name).first_or_octet_stream())
+                .unwrap_or(mime::APPLICATION_OCTET_STREAM)
+                .to_string()
+        };
+        if let Ok(content_type) = content_type.parse::<HeaderValue>() {
+            res.headers_mut().insert(CONTENT_TYPE, content_type);
+        }
 
-    let key = media_storage_key(&args.server_name, &args.media_id);
-    if storage::exists(&key).await? {
-        // Try presigned URL redirect for S3 storage
-        if let Some(url) = storage::presign_read(&key).await? {
-            res.render(Redirect::found(url));
+        let key = media_storage_key(&args.server_name, &args.media_id);
+        if storage::exists(&key).await? {
+            // Try presigned URL redirect for S3 storage
+            if let Some(url) = storage::presign_read(&key).await? {
+                res.render(Redirect::found(url));
+                return Ok(());
+            }
+            let data = storage::read(&key).await?;
+            let content_disposition = crate::utils::content_disposition::make_content_disposition(
+                None,
+                Some(&content_type),
+                Some(&args.filename),
+            );
+            res.add_header("Content-Disposition", content_disposition.to_string(), true)?;
+            res.body = ResBody::Once(data.into());
             return Ok(());
         }
-        let data = storage::read(&key).await?;
-        res.add_header(
-            "Content-Disposition",
-            format!(r#"attachment; filename="{}""#, args.filename),
-            true,
-        )?;
-        res.body = ResBody::Once(data.into());
-        Ok(())
-    } else if *args.server_name != config::get().server_name && args.allow_remote {
-        let mxc = format!("mxc://{}/{}", args.server_name, args.media_id);
-        fetch_remote_content(&mxc, &args.server_name, &args.media_id, res).await
+    }
+
+    if *args.server_name != config::get().server_name && args.allow_remote {
+        fetch_remote_content(&args.server_name, &args.media_id, Some(&args.filename), res).await
     } else {
         Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into())
     }
@@ -239,10 +241,9 @@ pub async fn upload_content(
         let metadata = NewDbMetadata {
             media_id: args.media_id.clone(),
             origin_server: conf.server_name.clone(),
-            disposition_type: args
-                .filename
-                .clone()
-                .map(|filename| format!(r#"inline; filename="{filename}""#)),
+            // Only the disposition type belongs here; the filename is stored in
+            // `file_name` and sanitised when the response header is built.
+            disposition_type: Some("inline".into()),
             content_type: args.content_type.clone(),
             file_name,
             file_extension,

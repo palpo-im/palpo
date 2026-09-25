@@ -6,19 +6,18 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde::Deserialize;
 
 use crate::core::Seqnum;
-use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::encrypted::Relation;
 use crate::core::events::room::member::MembershipState;
-use crate::core::events::{GlobalAccountDataEventType, StateEventType, TimelineEventType};
+use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceState;
-use crate::core::push::{Action, HighlightTweakValue, Ruleset, Tweak};
+use crate::core::push::{Action, HighlightTweakValue, Tweak};
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, to_canonical_object};
 use crate::core::state::Event;
 use crate::data::room::{DbEvent, DbEventData, NewDbEventEdge};
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
+use crate::data::{connect, coordination_connect, diesel_exists};
 use crate::event::{PduBuilder, PduEvent};
 use crate::room::{push_action, state, timeline};
 use crate::{
@@ -114,6 +113,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
         pdu.is_outlier = event.is_outlier;
         pdu.soft_failed = event.soft_failed;
         pdu.rejection_reason = event.rejection_reason;
+        pdu.load_transaction_device().await?;
     }
     Ok(pdu)
 }
@@ -135,6 +135,7 @@ pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
+    pdu.load_transaction_device().await?;
     Ok(SnPduEvent {
         pdu,
         event_sn,
@@ -163,6 +164,7 @@ pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, Cano
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
+    pdu.load_transaction_device().await?;
     Ok((
         SnPduEvent {
             pdu,
@@ -371,7 +373,7 @@ pub async fn append_pdu(
         .await?;
     }
 
-    let sync_pdu = pdu.to_sync_room_event();
+    let sync_pdu = pdu.to_sync_room_event_without_transaction_id();
     let mut notifies = Vec::new();
     let mut highlights = Vec::new();
 
@@ -384,13 +386,7 @@ pub async fn append_pdu(
             continue;
         }
 
-        let rules_for_user = data::user::get_global_data::<PushRulesEventContent>(
-            user_id,
-            &GlobalAccountDataEventType::PushRules.to_string(),
-        )
-        .await?
-        .map(|content: PushRulesEventContent| content.global)
-        .unwrap_or_else(|| Ruleset::server_default(user_id));
+        let rules_for_user = crate::user::get_push_rules(user_id).await?.global;
 
         let mut highlight = false;
         let mut notify = false;
@@ -526,7 +522,14 @@ pub async fn append_pdu(
                 // the administrator can execute commands as palpo
                 let from_palpo = pdu.sender == server_user && conf.emergency_password.is_none();
 
-                if to_palpo && !from_palpo && admin_room == pdu.room_id {
+                // Whoever controls the room, only a current local admin may
+                // drive the admin console. This is re-read from the DB so a
+                // revoked admin who is still in the room loses it at once.
+                let sender_is_admin = pdu.sender == server_user
+                    || (pdu.sender.server_name() == conf.server_name
+                        && data::user::is_admin(&pdu.sender).await.unwrap_or(false));
+
+                if to_palpo && !from_palpo && admin_room == pdu.room_id && sender_is_admin {
                     let _ = crate::admin::executor()
                         .command(body, Some(pdu.event_id.clone()))
                         .await;
@@ -564,19 +567,24 @@ pub async fn append_pdu(
         _ => {}
     }
 
-    DbEventData {
+    let event_data = DbEventData {
         event_id: pdu.event_id.clone(),
         event_sn: pdu.event_sn,
         room_id: pdu.room_id.to_owned(),
         internal_metadata: None,
         json_data: serde_json::to_value(&pdu_json)?,
         format_version: None,
-    }
-    .save()
-    .await?;
-    diesel::update(events::table.find(&*pdu.event_id))
-        .set(events::is_outlier.eq(false))
-        .execute(&mut connect().await?)
+    };
+    // Event JSON is the timeline's visibility gate. Keep it in the same transaction as
+    // promotion so feature branches can add derived visibility indexes here without
+    // exposing a partially published event to another server process.
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            event_data.save_with_conn(conn).await?;
+            crate::event::sticky::promote_to_timeline_with_conn(conn, pdu).await?;
+            Ok(())
+        })
         .await?;
 
     for prev_id in &pdu.prev_events {
@@ -605,10 +613,38 @@ pub async fn append_pdu(
     // We set the room state after inserting the pdu, so that we never have a moment in time
     // where events in the current room state do not exist
     state::set_room_state(&pdu.room_id, frame_id).await?;
+
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        if pdu.event_ty == TimelineEventType::RoomMember {
+            if let Some(state_key) = &pdu.state_key
+                && let Ok(user_id) = UserId::parse(state_key)
+            {
+                // A leaving local user is no longer returned by `local_users`, but their
+                // own recipient set changed too and still needs a final removal delta.
+                crate::user::presence::recipients::schedule_recipients_changed(&user_id);
+            }
+            crate::user::presence::recipients::schedule_room_recipients_changed(&pdu.room_id);
+        }
+        let event_type = pdu.event_ty.to_string();
+        if matches!(
+            event_type.as_str(),
+            "org.continuwuity.presence_v2.msc4495.room.presence_sharing"
+                | "m.room.presence_sharing"
+        ) {
+            crate::user::presence::recipients::schedule_room_recipients_changed(&pdu.room_id);
+        }
+    }
     if pdu.state_key.is_some()
         && let Err(e) = crate::room::update_currents(&pdu.room_id).await
     {
         error!("failed to update statistics for room {}: {e}", pdu.room_id);
+    }
+    if pdu.state_key.is_some() {
+        // MSC4354: the room's new current state may authorise sticky events that were
+        // soft failed against the previous one. Spawned only now that the state is set,
+        // so the re-evaluation sees it.
+        crate::event::sticky::reevaluate_soft_failed_later(pdu.room_id.clone());
     }
 
     if let Err(e) =
@@ -807,7 +843,87 @@ pub async fn build_and_append_pdu(
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<SnPduEvent> {
-    if let Some(state_key) = &pdu_builder.state_key
+    // The process-local state mutex held by the caller is not sufficient when several
+    // Palpo processes serve the same database. Keep a transaction-scoped PostgreSQL lock
+    // from the first current-state/prev-event read through timeline publication.
+    //
+    // The coordination pool caps how many rooms can be in this section at once, so report
+    // exhaustion as such instead of letting a bare pool timeout reach the operator.
+    let mut fence = coordination_connect().await.map_err(|e| {
+        AppError::internal(format!(
+            "no coordination connection available to fence the event append for room {room_id}; raise db.coordination_pool_size (and db.pool_size with it) if this happens under normal load: {e}"
+        ))
+    })?;
+    let (pdu, appended) = fence
+        .transaction::<_, AppError, _>(async |conn| {
+            crate::data::room::timeline::lock_event_append(conn, room_id)
+                .await
+                .map_err(|e| {
+                    AppError::internal(format!(
+                        "failed to acquire the event append lock for room {room_id}: {e}"
+                    ))
+                })?;
+            build_and_append_pdu_locked(
+                pdu_builder,
+                sender,
+                room_id,
+                room_version,
+                state_lock,
+                false,
+            )
+            .await
+        })
+        .await?;
+
+    // Deliver to participating servers only after releasing the append fence. Queueing
+    // unrelated destinations must not prevent another process from building the room's
+    // next event.
+    if appended {
+        let servers = super::participating_servers(room_id, false).await?;
+        crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
+    }
+
+    Ok(pdu)
+}
+
+/// Creates and appends a PDU even when an equivalent state event is already
+/// current. Delayed events need this so each successful delay id is observable
+/// on its own timeline event.
+/// The caller must already hold the cross-process room append lock and must queue
+/// federation delivery after its surrounding transaction commits.
+#[tracing::instrument(skip_all)]
+pub async fn build_and_append_pdu_force_locked(
+    pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+) -> AppResult<SnPduEvent> {
+    let (pdu, appended) =
+        build_and_append_pdu_locked(pdu_builder, sender, room_id, room_version, state_lock, true)
+            .await?;
+    debug_assert!(appended, "forced room event append cannot be deduplicated");
+    Ok(pdu)
+}
+
+/// Queue a locally authored PDU for participating remote servers after its room append
+/// fence has been released. Delayed-event callers invoke this after their row-locking
+/// transaction commits as well.
+pub(crate) async fn deliver_local_pdu(room_id: &RoomId, event_id: &EventId) -> AppResult<()> {
+    let servers = super::participating_servers(room_id, false).await?;
+    crate::sending::send_pdu_servers(servers.into_iter(), event_id).await
+}
+
+async fn build_and_append_pdu_locked(
+    pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+    force: bool,
+) -> AppResult<(SnPduEvent, bool)> {
+    if !force
+        && let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
             room_id,
             &pdu_builder.event_type.to_string().into(),
@@ -816,24 +932,35 @@ pub async fn build_and_append_pdu(
         )
         .await
         && curr_state.content.get() == pdu_builder.content.get()
+        && state_send_is_deduplicable(
+            pdu_builder.sticky_duration_ms,
+            curr_state.sticky_duration_ms(),
+        )
     {
-        return Ok(curr_state);
+        return Ok((curr_state, false));
     }
 
-    let (pdu, pdu_json, _event_guard) = pdu_builder
-        .hash_sign_save(sender, room_id, room_version, state_lock)
-        .await?;
-    let room_id = &pdu.room_id;
-    crate::room::ensure_room(room_id, room_version).await?;
+    let (pdu, mut pdu_json) = pdu_builder.hash_sign(sender, room_id, room_version).await?;
+    let room_id = pdu.room_id.clone();
+    crate::room::ensure_room(&room_id, room_version).await?;
+
+    // Ask the room's Policy Server (MSC4284) to vouch for the event before it goes
+    // anywhere. A refusal means the policy server considers the event spam, so the client
+    // request fails rather than the event being sent out unsigned. `append_pdu` persists
+    // the signature we obtained, so it travels with the event over federation.
+    let version_rules = crate::room::get_version_rules(room_version)?;
+    crate::room::policy::check_event(&room_id, &mut pdu_json, &version_rules).await?;
 
     // let conf = crate::config::get();
     // let admin_room = super::resolve_local_alias(
     //     <&RoomAliasId>::try_from(format!("#admins:{}", &conf.server_name).as_str())
     //         .expect("#admins:server_name is a valid room alias"),
     // )?;
-    if crate::room::is_admin_room(room_id).await? {
+    if crate::room::is_admin_room(&room_id).await? {
         check_pdu_for_admin_room(&pdu, sender).await?;
     }
+
+    let (pdu, pdu_json, _event_guard) = PduBuilder::save_as_outlier(pdu, pdu_json, sender).await?;
 
     append_pdu(&pdu, pdu_json, state_lock).await?;
 
@@ -844,12 +971,14 @@ pub async fn build_and_append_pdu(
     //     crate::room::update_currents(&room_id)?;
     // }
 
-    // Deliver to participating servers. Peeking servers are handled centrally in
-    // `append_pdu` (which also covers events received from other servers).
-    let servers = super::participating_servers(room_id, false).await?;
-    crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
+    Ok((pdu, true))
+}
 
-    Ok(pdu)
+fn state_send_is_deduplicable(
+    requested_sticky: Option<crate::core::events::sticky::StickyDurationMs>,
+    current_sticky: Option<crate::core::events::sticky::StickyDurationMs>,
+) -> bool {
+    requested_sticky.is_none() && current_sticky.is_none()
 }
 
 /// Replace a PDU with the redacted form.
@@ -875,6 +1004,11 @@ pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> 
                 .execute(conn)
                 .await?;
             diesel::delete(event_searches::table.filter(event_searches::event_id.eq(event_id)))
+                .execute(conn)
+                .await?;
+            // The redacted event no longer carries a sticky object, so stop delivering it
+            // outside the timeline.
+            diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
                 .execute(conn)
                 .await?;
 
@@ -906,7 +1040,8 @@ mod tests {
     use serde_json::value::RawValue;
     use tracing_test::traced_test;
 
-    use super::canonicalize_prev_content;
+    use super::{canonicalize_prev_content, state_send_is_deduplicable};
+    use crate::core::events::sticky::StickyDurationMs;
     use crate::core::identifiers::{EventId, OwnedEventId, OwnedRoomId, RoomId};
     use crate::core::serde::to_canonical_object;
 
@@ -931,6 +1066,16 @@ mod tests {
 
         let expected = to_canonical_object(serde_json::json!({"membership":"join"})).unwrap();
         assert_eq!(got, Some(expected));
+    }
+
+    #[test]
+    fn state_deduplication_preserves_sticky_form_changes() {
+        let sticky = Some(StickyDurationMs::new_clamped(60_000_u64));
+
+        assert!(state_send_is_deduplicable(None, None));
+        assert!(!state_send_is_deduplicable(sticky, None));
+        assert!(!state_send_is_deduplicable(None, sticky));
+        assert!(!state_send_is_deduplicable(sticky, sticky));
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub mod utils;
 pub use auth::{AuthArgs, AuthedInfo};
 pub mod admin;
 pub mod appservice;
+pub mod delayed_event;
 pub mod directory;
 pub mod event;
 pub mod exts;
@@ -251,6 +252,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
+    // MSC4140: send scheduled delayed events once their delay elapses; on
+    // startup this also recovers events that became due while the server was
+    // offline.
+    if config::get().delayed_events.enable {
+        crate::delayed_event::start();
+    }
+
     // MSC2444: periodically renew our outbound room peeks and drop lapsed inbound
     // peekers.
     tokio::spawn(async move {
@@ -258,6 +266,20 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         loop {
             interval.tick().await;
             crate::federation::peek::run_maintenance().await;
+        }
+    });
+
+    // MSC4354: reclaim the sticky-event index once events fall out of their sticky
+    // window. Delivery already filters on the expiry, so this only frees space.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            if let Err(e) =
+                crate::event::sticky::delete_expired(crate::core::UnixMillis::now()).await
+            {
+                tracing::warn!(error = ?e, "failed to reap expired sticky events");
+            }
         }
     });
 
@@ -400,3 +422,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod test_database;

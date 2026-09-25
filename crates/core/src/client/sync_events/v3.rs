@@ -295,6 +295,20 @@ pub struct JoinedRoom {
     #[serde(default)]
     pub ephemeral: Ephemeral,
 
+    /// Sticky events in the room that have not expired yet.
+    ///
+    /// Delivered outside the timeline so that they reach the client regardless of the
+    /// request's `timeline_limit`, per [MSC4354].
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    #[cfg(feature = "unstable-msc4354")]
+    #[serde(
+        default,
+        rename = "msc4354_sticky",
+        skip_serializing_if = "Sticky::is_empty"
+    )]
+    pub sticky: Sticky,
+
     /// The number of unread events since the latest read receipt.
     ///
     /// This uses the unstable prefix in [MSC2654].
@@ -322,6 +336,9 @@ impl JoinedRoom {
             && self.state.is_empty()
             && self.account_data.is_empty()
             && self.ephemeral.is_empty();
+
+        #[cfg(feature = "unstable-msc4354")]
+        let is_empty = is_empty && self.sticky.is_empty();
 
         #[cfg(not(feature = "unstable-msc2654"))]
         return is_empty;
@@ -501,6 +518,34 @@ impl Ephemeral {
     }
 
     /// Returns true if there are no ephemeral event updates.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// Unexpired sticky events in a room, as defined in [MSC4354].
+///
+/// These are ordinary timeline events; they are repeated here so that a client always
+/// receives them even when the room's timeline was truncated to `timeline_limit`. An event
+/// that already appears in `timeline.events` is not repeated here.
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+#[cfg(feature = "unstable-msc4354")]
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Sticky {
+    /// A list of sticky events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<RawJson<AnySyncTimelineEvent>>,
+}
+
+#[cfg(feature = "unstable-msc4354")]
+impl Sticky {
+    /// Creates an empty `Sticky`.
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Returns true if there are no sticky events to deliver.
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
@@ -757,3 +802,47 @@ impl ToDevice {
 //         assert_eq!(req.timeout, Some(Duration::from_millis(0)));
 //     }
 // }
+
+#[cfg(all(test, feature = "unstable-msc4354"))]
+mod sticky_tests {
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+
+    use super::{JoinedRoom, Sticky};
+
+    #[test]
+    fn sticky_section_uses_the_msc4354_unstable_name() {
+        let room: JoinedRoom = from_json_value(json!({
+            "state": { "events": [] },
+            "msc4354_sticky": {
+                "events": [{
+                    "type": "m.rtc.member",
+                    "event_id": "$event:example.org",
+                    "sender": "@alice:example.org",
+                    "origin_server_ts": 1757920344000_u64,
+                    "content": {},
+                    "msc4354_sticky": { "duration_ms": 300000 },
+                    "unsigned": { "msc4354_sticky_duration_ttl_ms": 258113 }
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(room.sticky.events.len(), 1);
+        assert!(!room.is_empty());
+        assert_eq!(
+            to_json_value(&room).unwrap()["msc4354_sticky"]["events"][0]["msc4354_sticky"]["duration_ms"],
+            json!(300000)
+        );
+    }
+
+    #[test]
+    fn a_room_with_no_sticky_events_omits_the_section() {
+        let room = JoinedRoom {
+            sticky: Sticky::default(),
+            ..JoinedRoom::new()
+        };
+
+        assert!(room.is_empty());
+        assert_eq!(to_json_value(&room).unwrap().get("msc4354_sticky"), None);
+    }
+}

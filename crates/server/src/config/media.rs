@@ -37,6 +37,15 @@ pub struct MediaConfig {
     #[serde(default = "default_max_remote_thumbnail_size")]
     pub max_remote_thumbnail_size: usize,
 
+    /// Maximum number of bytes accepted when fetching remote media content
+    /// from a remote homeserver via federation. The entire response is
+    /// buffered when the remote server returns a multipart response, so this
+    /// limit prevents unbounded memory allocation.
+    ///
+    /// default: 104857600 (100 MiB)
+    #[serde(default = "default_max_remote_media_size")]
+    pub max_remote_media_size: usize,
+
     /// Check consistency of the media directory at startup:
     /// 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
     ///    back and forth between Conduit and palpo. Both options must be enabled to handle this.
@@ -89,6 +98,7 @@ impl Default for MediaConfig {
             allow_legacy: true,
             freeze_legacy: true,
             max_remote_thumbnail_size: default_max_remote_thumbnail_size(),
+            max_remote_media_size: default_max_remote_media_size(),
             startup_check: true,
             compat_file_link: false,
             prune_missing: false,
@@ -99,4 +109,8 @@ impl Default for MediaConfig {
 
 fn default_max_remote_thumbnail_size() -> usize {
     20_000_000
+}
+
+fn default_max_remote_media_size() -> usize {
+    104_857_600
 }

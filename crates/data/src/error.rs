@@ -63,6 +63,14 @@ impl DataError {
     pub fn internal<S: Into<String>>(msg: S) -> Self {
         Self::Internal(msg.into())
     }
+
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Self::Diesel(diesel::result::Error::NotFound) => true,
+            Self::Matrix(e) => e.is_not_found(),
+            _ => false,
+        }
+    }
 }
 
 fn expose_diesel_not_found(method: &Method) -> bool {
@@ -162,6 +170,19 @@ mod tests {
     use salvo::http::Method;
 
     use super::*;
+
+    #[test]
+    fn only_missing_resources_are_classified_as_not_found() {
+        assert!(DataError::Diesel(DieselError::NotFound).is_not_found());
+        assert!(DataError::Matrix(MatrixError::not_found("missing")).is_not_found());
+        assert!(
+            !DataError::Diesel(DieselError::DatabaseError(
+                DatabaseErrorKind::Unknown,
+                Box::new(String::from("boom")),
+            ))
+            .is_not_found()
+        );
+    }
 
     #[tokio::test]
     async fn get_not_found_stays_404() {

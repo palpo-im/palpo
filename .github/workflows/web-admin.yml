@@ -1,0 +1,47 @@
+name: Web administration
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'web-admin/**'
+      - '.github/workflows/web-admin.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web-admin/**'
+      - '.github/workflows/web-admin.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web-admin
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Syntax and service tests
+        run: |
+          npm run check
+          npm test
+      - name: Install isolated browser test tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/palpo-browser" --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
+          "$RUNNER_TEMP/palpo-browser/node_modules/.bin/playwright" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/palpo-browser/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+          node -e 'const {chromium}=require(process.argv[1]);console.log("CHROME_EXECUTABLE="+chromium.executablePath())' "$RUNNER_TEMP/palpo-browser/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Chromium workflow tests
+        run: npm run test:browser
+      - name: Browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-admin-browser-evidence
+          path: web-admin/test-results/
+          if-no-files-found: ignore

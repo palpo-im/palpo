@@ -45,18 +45,31 @@ pub async fn get_content(
                     .as_ref()
                     .map(|name| mime_infer::from_path(name).first_or_octet_stream())
                     .unwrap_or(mime::APPLICATION_OCTET_STREAM)
-            });
+            })
+            .to_string();
 
         let key = media_storage_key(server_name, &args.media_id);
         if storage::exists(&key).await? {
             // Try presigned URL redirect for S3 storage
             if let Some(url) = storage::presign_read(&key).await? {
-                res.render(salvo::prelude::Redirect::found(url));
+                res.render(ContentResBody {
+                    content: FileOrLocation::Location(url),
+                    metadata: ContentMetadata::new(),
+                });
                 return Ok(());
             }
-            let data = storage::read(&key).await?;
-            res.add_header("Content-Type", content_type.to_string(), true)?;
-            res.body = salvo::http::ResBody::Once(data.into());
+            let file = storage::read(&key).await?;
+            let content_disposition =
+                make_content_disposition(None, Some(&content_type), metadata.file_name.as_deref());
+
+            res.render(ContentResBody {
+                content: FileOrLocation::File(Content {
+                    file,
+                    content_type: Some(content_type),
+                    content_disposition: Some(content_disposition),
+                }),
+                metadata: ContentMetadata::new(),
+            });
             Ok(())
         } else {
             Err(MatrixError::not_yet_uploaded("Media has not been uploaded yet").into())

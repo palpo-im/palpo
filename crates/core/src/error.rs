@@ -17,7 +17,8 @@ mod kind;
 /// Separate module because it's a lot of code.
 mod kind_serde;
 pub use kind::*;
-use kind_serde::{ErrorCode, RetryAfter};
+use kind_serde::ErrorCode;
+pub use kind_serde::RetryAfter;
 
 use crate::{MatrixVersion, OwnedUserId, RoomVersionId};
 
@@ -92,6 +93,7 @@ impl MatrixError {
         captcha_needed, CaptchaNeeded;
         connection_failed, ConnectionFailed;
         connection_timeout, ConnectionTimeout;
+        delay_too_large, DelayTooLarge;
         duplicate_annotation, DuplicateAnnotation;
         exclusive, Exclusive;
         guest_access_forbidden, GuestAccessForbidden;
@@ -225,6 +227,24 @@ impl Scribe for MatrixError {
         };
 
         let Self { kind, mut body, .. } = self;
+        if let ErrorKind::LimitExceeded {
+            retry_after: Some(RetryAfter::Delay(duration)),
+        } = &kind
+        {
+            res.add_header(
+                header::RETRY_AFTER,
+                duration
+                    .as_secs()
+                    .saturating_add(u64::from(duration.subsec_nanos() != 0))
+                    .max(1)
+                    .to_string(),
+                true,
+            )
+            .ok();
+            if let Ok(ms) = u64::try_from(duration.as_millis()) {
+                body.0.insert("retry_after_ms".to_owned(), ms.into());
+            }
+        }
         body.0
             .insert("errcode".to_owned(), kind.code().to_string().into());
 

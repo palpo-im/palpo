@@ -17,6 +17,10 @@ struct RedirectConfig {
 /// Initialize the global storage operator from configuration.
 /// Must be called once at startup after config is loaded.
 pub fn init(config: &StorageConfig) -> AppResult<()> {
+    if matches!(config, StorageConfig::S3 { .. }) {
+        opendal::install_default();
+    }
+
     let op = build_operator(config)?;
     OPERATOR
         .set(op)

@@ -1,19 +1,23 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use regex::RegexSet;
+use regex_automata::meta::Regex as MetaRegex;
 use subtle::ConstantTimeEq;
 
 use crate::core::appservice::{Namespace, Registration};
 use crate::core::identifiers::*;
 pub use crate::data::appservice::DbRegistration;
-use crate::{AppError, AppResult, data, sending};
+use crate::{AppError, AppResult, MatrixError, data, sending};
 
 /// Compiled regular expressions for a namespace.
+///
+/// Each pattern is anchored to the start of the identifier, preserving prefix
+/// matches like Synapse. The set is compiled straight from the HIR, so the
+/// source text is never rewritten and re-parsed.
 #[derive(Clone, Debug)]
 pub struct NamespaceRegex {
-    pub exclusive: Option<RegexSet>,
-    pub non_exclusive: Option<RegexSet>,
+    pub exclusive: Option<MetaRegex>,
+    pub non_exclusive: Option<MetaRegex>,
 }
 
 impl NamespaceRegex {
@@ -42,34 +46,62 @@ impl NamespaceRegex {
     }
 }
 
+fn compile_set(hirs: Vec<regex_syntax::hir::Hir>) -> Result<Option<MetaRegex>, regex::Error> {
+    if hirs.is_empty() {
+        return Ok(None);
+    }
+    MetaRegex::builder()
+        .build_many_from_hir(&hirs)
+        .map(Some)
+        .map_err(|e| match e.size_limit() {
+            Some(limit) => regex::Error::CompiledTooBig(limit),
+            None => regex::Error::Syntax(e.to_string()),
+        })
+}
+
 impl TryFrom<Vec<Namespace>> for NamespaceRegex {
     fn try_from(value: Vec<Namespace>) -> Result<Self, regex::Error> {
         let mut exclusive = vec![];
         let mut non_exclusive = vec![];
 
         for namespace in value {
+            // Match from the start, like Synapse's regex.match, rather than
+            // letting `@ac_.*` claim `prefix@ac_...`. Prefix patterns such as
+            // `@irc_` and empty match-all patterns must keep working; an end
+            // anchor is the registration author's explicit choice.
+            let anchored = anchored_namespace_hir(&namespace.regex)?;
             if namespace.exclusive {
-                exclusive.push(namespace.regex);
+                exclusive.push(anchored);
             } else {
-                non_exclusive.push(namespace.regex);
+                non_exclusive.push(anchored);
             }
         }
 
         Ok(NamespaceRegex {
-            exclusive: if exclusive.is_empty() {
-                None
-            } else {
-                Some(RegexSet::new(exclusive)?)
-            },
-            non_exclusive: if non_exclusive.is_empty() {
-                None
-            } else {
-                Some(RegexSet::new(non_exclusive)?)
-            },
+            exclusive: compile_set(exclusive)?,
+            non_exclusive: compile_set(non_exclusive)?,
         })
     }
-
     type Error = regex::Error;
+}
+
+/// Parse a registration namespace pattern and anchor it to the start of the
+/// identifier in the regex HIR.
+///
+/// Parsing preserves the original syntax diagnostic without compiling the
+/// pattern twice. The anchored HIR is compiled directly (never printed back to
+/// text): pasting `^(?:...)` around the source changes what parses, and the HIR
+/// printer does not preserve grouping for nested repetitions (`(?:[0-9]{2})?`
+/// would come back as `[0-9]{2}?`). Existing end anchors are preserved, while
+/// the added start-of-text assertion is unaffected by multiline mode.
+fn anchored_namespace_hir(pattern: &str) -> Result<regex_syntax::hir::Hir, regex::Error> {
+    let hir = regex_syntax::Parser::new()
+        .parse(pattern)
+        .map_err(|e| regex::Error::Syntax(e.to_string()))?;
+    Ok(regex_syntax::hir::Hir::concat(vec![
+        regex_syntax::hir::Hir::look(regex_syntax::hir::Look::Start),
+        hir,
+    ]))
 }
 
 /// Appservice registration combined with its compiled regular expressions.
@@ -147,6 +179,44 @@ pub async fn unregister_appservice(id: &str) -> AppResult<()> {
 /// Set the `disabled` flag on an appservice. Returns true if a row was updated.
 pub async fn set_appservice_disabled(id: &str, disabled: bool) -> AppResult<bool> {
     Ok(data::appservice::set_disabled(id, disabled).await?)
+}
+
+/// Atomically rebind an existing registration without replacing its identity.
+pub async fn update_appservice_url(
+    id: &str,
+    expected_url: Option<&str>,
+    url: &str,
+) -> AppResult<data::appservice::UpdateUrlResult> {
+    validate_appservice_url(url)?;
+    Ok(data::appservice::update_url_if_unchanged(id, expected_url, url).await?)
+}
+
+fn validate_appservice_url(value: &str) -> AppResult<()> {
+    let invalid = || {
+        MatrixError::invalid_param(
+            "url must be an absolute HTTP(S) URL without userinfo, query, or fragment",
+        )
+    };
+    let parsed = url::Url::parse(value).map_err(|_| invalid())?;
+    // Reject syntax that URL parsing would silently trim or normalize, including
+    // empty userinfo (`http://@host`) and backslashes interpreted as slashes.
+    let authority = value
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default());
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || authority.is_none_or(|authority| authority.is_empty() || authority.contains('@'))
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return Err(invalid().into());
+    }
+    Ok(())
 }
 
 /// List all registrations in the database, including disabled ones.
@@ -339,7 +409,40 @@ fn redacted_access_token_url(url: &url::Url) -> url::Url {
 
 #[cfg(test)]
 mod tests {
-    use super::redacted_access_token_url;
+    use super::{redacted_access_token_url, validate_appservice_url};
+
+    #[test]
+    fn appservice_url_cas_validates_callback_urls_without_losing_path_prefixes() {
+        for value in [
+            "http://127.0.0.1:18080/relay/fleet-a",
+            "https://relay.example/prefix/",
+            "https://[::1]:8443/relay",
+        ] {
+            validate_appservice_url(value).unwrap();
+        }
+        for value in [
+            "",
+            "/relative",
+            "ftp://relay.example/",
+            "http:relay.example",
+            "https://user:password@relay.example/",
+            "https://user@relay.example/",
+            "https://@relay.example/",
+            "https://relay.example/?",
+            "https://relay.example/?a=b",
+            "https://relay.example/#",
+            "https://relay.example/#section",
+            " https://relay.example/",
+            "https://relay.example/\n",
+            "https://relay.example/with space",
+            "https://relay.example\\path",
+        ] {
+            assert!(
+                validate_appservice_url(value).is_err(),
+                "accepted invalid URL {value:?}"
+            );
+        }
+    }
 
     #[test]
     fn redacts_access_token_query_parameter() {
@@ -354,5 +457,200 @@ mod tests {
         assert!(redacted.contains("foo=bar"));
         assert!(redacted.contains("access_token=REDACTED"));
         assert!(!redacted.contains("secret"));
+    }
+
+    use super::{NamespaceRegex, anchored_namespace_hir};
+    use crate::core::appservice::Namespace;
+
+    fn users(exclusive: bool, pattern: &str) -> NamespaceRegex {
+        NamespaceRegex::try_from(vec![Namespace::new(exclusive, pattern.to_owned())]).unwrap()
+    }
+
+    #[test]
+    fn namespace_regex_matches_from_the_start_not_a_substring() {
+        // `RegexSet::is_match` is a substring search: without anchoring
+        // `@ac_.*` also claimed `prefix@ac_alice:example.org`.
+        let ns = users(true, "@ac_.*");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(ns.is_exclusive_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("prefix@ac_alice:example.org"));
+        // Never matched, anchored or not: `@xac_` does not contain `@ac_`.
+        assert!(!ns.is_match("@xac_alice:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_explicit_end_anchor_rejects_a_longer_server_name() {
+        let ns = users(false, "!abc:example\\.org$");
+        assert!(ns.is_match("!abc:example.org"));
+        assert!(!ns.is_match("!abc:example.org.evil"));
+        assert!(!ns.is_exclusive_match("!abc:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_keeps_working_for_patterns_that_already_carry_anchors() {
+        let ns = users(true, "^@ac_[^:]+:example\\.org$");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("@ac_alice:example.org.evil"));
+    }
+
+    #[test]
+    fn namespace_regex_non_exclusive_is_anchored_too() {
+        let ns = users(false, "@bot_.*");
+        assert!(ns.is_match("@bot_x:example.org"));
+        assert!(!ns.is_match("junk@bot_x:example.org")); // substring hit before anchoring
+        assert!(!ns.is_exclusive_match("@bot_x:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_anchors_every_branch_of_an_alternation() {
+        let ns = users(true, "@a:x|@b:x");
+        assert!(ns.is_match("@a:x"));
+        assert!(ns.is_match("@b:x"));
+        assert!(ns.is_match("@a:xy"));
+        assert!(ns.is_match("@b:xy"));
+        assert!(!ns.is_match("y@a:x"));
+        assert!(!ns.is_match("y@b:x"));
+    }
+
+    #[test]
+    fn namespace_regex_preserves_prefix_patterns() {
+        for exclusive in [true, false] {
+            for (pattern, identifier) in [
+                ("@irc_", "@irc_alice:example.org"),
+                ("#irc_", "#irc_room:example.org"),
+                ("!abc:example\\.org", "!abc:example.org.evil"),
+            ] {
+                let ns = users(exclusive, pattern);
+                assert!(ns.is_match(identifier), "prefix pattern: {pattern}");
+                assert_eq!(ns.is_exclusive_match(identifier), exclusive);
+                assert!(!ns.is_match(&format!("prefix{identifier}")));
+            }
+        }
+    }
+
+    #[test]
+    fn namespace_regex_preserves_empty_match_all_patterns() {
+        for exclusive in [true, false] {
+            let ns = users(exclusive, "");
+            for identifier in [
+                "",
+                "@alice:example.org",
+                "#room:example.org",
+                "!room:example.org",
+            ] {
+                assert!(ns.is_match(identifier));
+                assert_eq!(ns.is_exclusive_match(identifier), exclusive);
+            }
+        }
+    }
+
+    #[test]
+    fn namespace_regex_preserves_prefixes_in_mixed_namespace_sets() {
+        let ns = NamespaceRegex::try_from(vec![
+            Namespace::new(true, "@irc_".to_owned()),
+            Namespace::new(true, "@other_".to_owned()),
+            Namespace::new(false, "@logger_".to_owned()),
+        ])
+        .unwrap();
+        assert!(ns.is_exclusive_match("@irc_alice:example.org"));
+        assert!(ns.is_exclusive_match("@other_alice:example.org"));
+        assert!(ns.is_match("@logger_alice:example.org"));
+        assert!(!ns.is_exclusive_match("@logger_alice:example.org"));
+        assert!(!ns.is_match("prefix@irc_alice:example.org"));
+        assert!(!ns.is_match("prefix@other_alice:example.org"));
+        assert!(!ns.is_match("prefix@logger_alice:example.org"));
+    }
+
+    #[test]
+    fn namespace_regex_preserves_syntax_error_diagnostics() {
+        for pattern in [
+            ")",
+            "(",
+            "[",
+            "a{2,1}",
+            "(?P<x>a)(?P<x>b)",
+            r"\p{Unknown}",
+            "(?P<1>a)",
+        ] {
+            let original = regex::Regex::new(pattern).unwrap_err();
+            let err = NamespaceRegex::try_from(vec![Namespace::new(true, pattern.to_owned())])
+                .expect_err("invalid namespace syntax must fail");
+            assert!(matches!(err, regex::Error::Syntax(_)));
+            assert_eq!(err.to_string(), original.to_string(), "pattern: {pattern}");
+        }
+    }
+
+    #[test]
+    fn namespace_regex_compile_set_preserves_size_limit_error() {
+        // Exercise the set compiler directly, so an earlier standalone compile
+        // cannot mask an incorrect conversion of its error kind.
+        let pattern = "(?:a{1000}){1000}";
+        let hir = regex_syntax::Parser::new().parse(pattern).unwrap();
+        let err = super::compile_set(vec![hir]).expect_err("oversized HIR must fail");
+        let original = regex::Regex::new(pattern).unwrap_err();
+        match (err, original) {
+            (regex::Error::CompiledTooBig(actual), regex::Error::CompiledTooBig(expected)) => {
+                assert_eq!(actual, expected);
+            }
+            (actual, expected) => panic!("expected {expected:?}, got {actual:?}"),
+        }
+        let err = NamespaceRegex::try_from(vec![Namespace::new(true, pattern.to_owned())])
+            .expect_err("oversized namespace must fail");
+        assert!(matches!(err, regex::Error::CompiledTooBig(_)));
+    }
+
+    #[test]
+    fn namespace_regex_rejects_an_invalid_pattern_with_its_original_diagnostic() {
+        // Pasting `^(?:...)$` around this text would have turned it into the
+        // VALID pattern `^(?:a)|(b)$` — and one that is not anchored at all.
+        // Built at runtime so clippy's `invalid_regex` lint does not reject the
+        // literal: the point of this test is that it must NOT compile.
+        let unbalanced = ["a)", "|(b"].concat();
+        let err = NamespaceRegex::try_from(vec![Namespace::new(true, unbalanced.clone())])
+            .expect_err("an unbalanced pattern must not compile");
+        let original = regex::Regex::new(&unbalanced).unwrap_err();
+        assert_eq!(err.to_string(), original.to_string());
+    }
+
+    #[test]
+    fn namespace_regex_accepts_a_verbose_pattern_with_a_trailing_comment() {
+        // In `(?x)` mode `#` starts a comment to end of line; textual wrapping
+        // would have put the closing `)$` inside that comment.
+        let ns = users(true, "(?x)^@ac_alice:example\\.org$ # exact user");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(!ns.is_match("@ac_alice:example.org.evil"));
+        assert!(anchored_namespace_hir("(?x)a # c").is_ok());
+    }
+    #[test]
+    fn optional_repeated_suffix_must_remain_optional() {
+        // regex-syntax 0.8's HIR printer renders `(?:[0-9]{2})?` as `[0-9]{2}?`,
+        // which silently requires the two digits. Compiling straight from the
+        // HIR keeps the group optional.
+        let ns = users(true, "^@bot(?:[0-9]{2})?:example\\.org$");
+        assert!(ns.is_match("@bot:example.org"));
+        assert!(ns.is_match("@bot12:example.org"));
+        assert!(!ns.is_match("@bot1:example.org"));
+        assert!(!ns.is_match("@bot123:example.org"));
+        let ns = users(true, "^@bot(?:a+)?:example\\.org$");
+        assert!(ns.is_match("@bot:example.org"));
+        assert!(ns.is_match("@botaaa:example.org"));
+    }
+
+    #[test]
+    fn anchoring_does_not_add_parser_nesting() {
+        // 249 nested groups compile as a plain regex; anchoring in the HIR must
+        // not push the compiled set over the parser's nesting limit.
+        let deep = format!("^@{}a{}:x$", "(".repeat(249), ")".repeat(249));
+        let ns = users(true, &deep);
+        assert!(ns.is_match("@a:x"));
+        assert!(!ns.is_match("@a:xy"));
+    }
+
+    #[test]
+    fn start_anchor_is_a_text_boundary_not_a_line_boundary() {
+        let ns = users(true, "(?m)^@ac_.*");
+        assert!(ns.is_match("@ac_alice:example.org"));
+        assert!(ns.is_match("@ac_alice:example.org\n"));
+        assert!(!ns.is_match("x\n@ac_alice:example.org"));
     }
 }

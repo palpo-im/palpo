@@ -41,6 +41,7 @@ mod current;
 pub mod directory;
 pub mod lazy_loading;
 pub mod pdu_metadata;
+pub mod policy;
 pub mod receipt;
 pub mod space;
 pub mod state;
@@ -230,7 +231,17 @@ pub async fn update_joined_servers(room_id: &RoomId) -> AppResult<()> {
     .await?;
 
     for joined_server in joined_servers {
-        data::room::add_joined_server(room_id, &joined_server).await?;
+        if data::room::add_joined_server(room_id, &joined_server).await?
+            && joined_server != config::get().server_name
+        {
+            // MSC4354: a newly joined server must be sent our own unexpired sticky events.
+            // They are queued durably, so a failure here is only a failure to enqueue.
+            if let Err(e) =
+                crate::event::sticky::push_own_to_new_server(room_id, &joined_server).await
+            {
+                warn!(%room_id, server = %joined_server, error = ?e, "failed to queue sticky events for newly joined server");
+            }
+        }
     }
     Ok(())
 }

@@ -4,11 +4,11 @@ use serde_json::value::to_raw_value;
 
 use crate::core::client::directory::{PublicRoomsFilteredReqBody, PublicRoomsReqArgs};
 use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
-use crate::core::events::StateEventType;
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
+use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::federation::event::{
     RoomStateAtEventReqArgs, RoomStateIdsResBody, RoomStateReqArgs, RoomStateResBody,
 };
@@ -23,7 +23,7 @@ use crate::federation::peek as fed_peek;
 use crate::room::{state, timeline};
 use crate::{
     AppResult, AuthArgs, DepotExt, EmptyResult, IsRemoteOrLocal, JsonResult, MatrixError,
-    PduBuilder, PduEvent, data, empty_ok, json_ok, room, sending,
+    PduBuilder, PduEvent, empty_ok, json_ok, room, sending,
 };
 
 pub fn router() -> Router {
@@ -254,17 +254,37 @@ const PEEK_SCAN_CAP: usize = 1000;
 /// `world_readable`. This is the only visibility a non-member peeking server is
 /// allowed to see; anything else (or an unresolvable frame/visibility) is false.
 async fn event_world_readable(event_id: &EventId) -> bool {
-    let Ok(frame_id) = state::get_pdu_frame_id(event_id).await else {
+    let Ok(pdu) = timeline::get_pdu(event_id).await else {
         return false;
     };
-    state::get_state_content::<RoomHistoryVisibilityEventContent>(
-        frame_id,
-        &StateEventType::RoomHistoryVisibility,
-        "",
-    )
-    .await
-    .map(|c| c.history_visibility == HistoryVisibility::WorldReadable)
-    .unwrap_or(false)
+    let frame_id = match state::get_pdu_before_frame_id(event_id).await {
+        Ok(frame_id) => frame_id,
+        // Before `before_frame_id` existed, a non-state event's frame was already
+        // immutable. Legacy state events must fail closed because their mutable
+        // frame may have been advanced to state from after the event.
+        Err(e) if e.is_not_found() && pdu.state_key.is_none() => {
+            let Ok(frame_id) = state::get_pdu_frame_id(event_id).await else {
+                return false;
+            };
+            frame_id
+        }
+        Err(_) => return false,
+    };
+    let Ok(state::StateBefore::Resolved(before_visibility)) =
+        state::history_visibility_before(&pdu, frame_id).await
+    else {
+        return false;
+    };
+    let after_visibility = (pdu.event_ty == TimelineEventType::RoomHistoryVisibility)
+        .then(|| {
+            pdu.get_content::<RoomHistoryVisibilityEventContent>()
+                .ok()
+                .map(|content| content.history_visibility)
+        })
+        .flatten();
+
+    before_visibility == HistoryVisibility::WorldReadable
+        || after_visibility == Some(HistoryVisibility::WorldReadable)
 }
 
 /// The room "description" state shared in a peek preview — the recommended
@@ -394,7 +414,7 @@ async fn send_knock(
         return Err(MatrixError::forbidden("room version does not support knocking", None).into());
     }
 
-    let Ok((event_id, value)) = gen_event_id_canonical_json(&body.0, &room_version) else {
+    let Ok((event_id, mut value)) = gen_event_id_canonical_json(&body.0, &room_version) else {
         // Event could not be converted to canonical json
         return Err(MatrixError::invalid_param("could not convert event to canonical json").into());
     };
@@ -483,6 +503,16 @@ async fn send_knock(
     let pdu: PduEvent = PduEvent::from_json_value(&args.room_id, &event_id, event.into())
         .map_err(|e| MatrixError::invalid_param(format!("invalid knock event pdu: {e}")))?;
 
+    // send_knock is a synchronous membership request, so a Policy Server refusal must be
+    // returned as an error instead of becoming the generic transaction-path soft failure.
+    crate::room::policy::check_federation_event(
+        &args.room_id,
+        &event_id,
+        &mut value,
+        &room_version,
+    )
+    .await?;
+
     handler::process_incoming_pdu(
         &origin,
         &event_id,
@@ -501,13 +531,19 @@ async fn send_knock(
         MatrixError::invalid_param("could not accept as timeline event".to_string())
     })?;
 
-    data::room::add_joined_server(&args.room_id, &origin).await?;
-
-    let knock_room_state = state::summary_stripped(&pdu).await?;
+    // A knocking user's server is not joined to the room. The response supplies
+    // the state it needs without adding it to the room's federation recipients.
+    let knock_room_state = state::summary_pdus(&pdu).await?;
     if let Err(e) = crate::sending::send_pdu_room(&args.room_id, &event_id, &[], &[]).await {
         error!("failed to notify knock event: {e}");
     }
-    json_ok(SendKnockResBody { knock_room_state })
+    let signed_event = Some(to_raw_value(
+        &crate::sending::convert_to_outgoing_federation_event(value).await,
+    )?);
+    json_ok(SendKnockResBody {
+        knock_room_state,
+        signed_event,
+    })
 }
 
 /// # `GET /_matrix/federation/v1/make_knock/{room_id}/{user_id}`

@@ -2,6 +2,7 @@ mod account;
 mod admin;
 mod appservice;
 mod auth;
+mod delayed_event;
 mod device;
 mod directory;
 mod key;
@@ -29,6 +30,7 @@ use std::collections::BTreeMap;
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde_json::json;
 
 use crate::config;
 use crate::core::client::discovery::capabilities::{
@@ -36,11 +38,15 @@ use crate::core::client::discovery::capabilities::{
     ProfileFieldsCapability, RoomVersionStability, RoomVersionsCapability,
     ThirdPartyIdChangesCapability,
 };
-use crate::core::client::discovery::versions::VersionsResBody;
+use crate::core::client::discovery::versions::{Server, VersionsResBody};
 use crate::core::client::search::{ResultCategories, SearchReqArgs, SearchReqBody, SearchResBody};
 use crate::routing::prelude::*;
 
 pub fn router() -> Router {
+    router_inner()
+}
+
+fn router_inner() -> Router {
     let mut client = Router::with_path("client").oapi_tag("client");
     for v in ["v3", "v1", "r0"] {
         client = client
@@ -96,27 +102,30 @@ pub fn router() -> Router {
                             .delete(device::delete_dehydrated)
                             .push(
                                 Router::with_path("{device_id}/events")
-                                    .post(to_device::for_dehydrated),
+                                    .get(to_device::for_dehydrated)
+                                    .post(to_device::for_dehydrated_legacy),
                             ),
                     ),
             )
             .push(
                 Router::with_path(v)
-                    .hoop(hoops::limit_rate)
                     .hoop(hoops::auth_by_access_token)
                     .push(Router::with_path("search").post(search))
                     .push(Router::with_path("capabilities").get(get_capabilities))
-                    .push(Router::with_path("knock/{room_id_or_alias}").post(room::knock_room)),
+                    .push(
+                        Router::with_path("knock/{room_id_or_alias}")
+                            .hoop(hoops::limit_rate)
+                            .post(room::knock_room),
+                    ),
             )
     }
     client
         .push(
-            Router::with_path("v1")
-                .hoop(hoops::auth_by_access_token)
-                .push(
-                    Router::with_path("room_summary/{room_id_or_alias}")
-                        .get(room::summary::get_summary),
-                ),
+            Router::with_path("v1").push(user::stable_v1_router()).push(
+                Router::with_path("room_summary/{room_id_or_alias}")
+                    .hoop(hoops::auth_by_access_token)
+                    .get(room::summary::get_summary),
+            ),
         )
         .push(Router::with_path("versions").get(supported_versions))
         .push(Router::with_path("v1/auth_metadata").get(unstable::auth_metadata))
@@ -146,6 +155,7 @@ async fn search(
     let search_criteria = body.search_categories.room_events.as_ref().unwrap();
     let room_events = crate::event::search::search_pdus(
         authed.user_id(),
+        Some(authed.device_id()),
         search_criteria,
         args.next_batch.as_deref(),
     )
@@ -168,21 +178,30 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
         available.insert(room_version.clone(), RoomVersionStability::Stable);
     }
     let change_password_enabled = conf.enabled_delegated_auth().is_none();
-    json_ok(CapabilitiesResBody {
-        capabilities: Capabilities {
-            room_versions: RoomVersionsCapability {
-                default: conf.default_room_version.clone(),
-                available,
-            },
-            change_password: ChangePasswordCapability {
-                enabled: change_password_enabled,
-            },
-            thirdparty_id_changes: ThirdPartyIdChangesCapability::new(false),
-            profile_fields: Some(ProfileFieldsCapability::new(true)),
-            account_moderation,
-            ..Default::default()
+    let mut capabilities = Capabilities {
+        room_versions: RoomVersionsCapability {
+            default: conf.default_room_version.clone(),
+            available,
         },
-    })
+        change_password: ChangePasswordCapability {
+            enabled: change_password_enabled,
+        },
+        thirdparty_id_changes: ThirdPartyIdChangesCapability::new(false),
+        profile_fields: Some(ProfileFieldsCapability::new(true)),
+        account_moderation,
+        ..Default::default()
+    };
+    if conf.delayed_events.enable {
+        // MSC4140 limits capability, using the unstable-prefixed name.
+        capabilities.custom_capabilities.insert(
+            "org.matrix.msc4140.delayed_events".to_owned(),
+            json!({
+                "max_delay_ms": conf.delayed_events.max_delay_ms,
+                "max_scheduled": conf.delayed_events.max_scheduled,
+            }),
+        );
+    }
+    json_ok(CapabilitiesResBody { capabilities })
 }
 
 /// #GET /_matrix/client/versions
@@ -196,41 +215,243 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 /// unstable features in their stable releases
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
-    json_ok(VersionsResBody {
-        versions: vec![
-            "r0.5.0".to_owned(),
-            "r0.6.0".to_owned(),
-            "v1.1".to_owned(),
-            "v1.2".to_owned(),
-            "v1.3".to_owned(),
-            "v1.4".to_owned(),
-            "v1.5".to_owned(),
-            "v1.6".to_owned(),
-            "v1.7".to_owned(),
-            "v1.8".to_owned(),
-            "v1.9".to_owned(),
-            "v1.10".to_owned(),
-            "v1.11".to_owned(),
-            "v1.12".to_owned(),
-        ],
-        unstable_features: BTreeMap::from_iter([
-            ("org.matrix.e2e_cross_signing".to_owned(), true),
-            ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
-            ("uk.half-shot.msc2666.query_mutual_rooms".to_owned(), true), /* query mutual rooms (https://github.com/matrix-org/matrix-spec-proposals/pull/2666) */
-            ("org.matrix.msc2836".to_owned(), true), /* threading/threads (https://github.com/matrix-org/matrix-spec-proposals/pull/2836) */
-            ("org.matrix.msc2946".to_owned(), true), /* spaces/hierarchy summaries (https://github.com/matrix-org/matrix-spec-proposals/pull/2946) */
-            ("org.matrix.msc3026.busy_presence".to_owned(), true), /* busy presence status (https://github.com/matrix-org/matrix-spec-proposals/pull/3026) */
-            ("org.matrix.msc3827".to_owned(), true), /* filtering of /publicRooms by room type (https://github.com/matrix-org/matrix-spec-proposals/pull/3827) */
-            ("org.matrix.msc3952_intentional_mentions".to_owned(), true), /* intentional mentions (https://github.com/matrix-org/matrix-spec-proposals/pull/3952) */
-            ("org.matrix.msc3575".to_owned(), true), /* sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/3575/files#r1588877046) */
-            ("org.matrix.msc3916.stable".to_owned(), true), /* authenticated media (https://github.com/matrix-org/matrix-spec-proposals/pull/3916) */
-            ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
-            ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
-            ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
-            ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
-            ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
-        ]),
-    })
+    json_ok(supported_versions_body(config::get().delayed_events.enable))
+}
+
+/// Client-Server specification versions whose behavior has been reviewed for
+/// Palpo's `/versions` advertisement.
+///
+/// Keep this declaration independent from `MatrixVersion`: understanding a
+/// protocol version for outgoing requests does not imply full server support.
+const SUPPORTED_MATRIX_VERSIONS: &[&str] = &[
+    "r0.5.0", "r0.6.0", "v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9",
+    "v1.10", "v1.11", "v1.12",
+];
+
+/// Builds the `/versions` body.
+///
+/// `delayed_events` is passed in rather than read from the global config so this stays a pure
+/// function that unit tests can drive both ways.
+fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
+    let mut unstable_features = BTreeMap::from_iter([
+        ("org.matrix.e2e_cross_signing".to_owned(), true),
+        ("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
+        ("uk.half-shot.msc2666.query_mutual_rooms".to_owned(), true), /* query mutual rooms (https://github.com/matrix-org/matrix-spec-proposals/pull/2666) */
+        (
+            "uk.half-shot.msc2666.query_mutual_rooms.stable".to_owned(),
+            true,
+        ),
+        ("org.matrix.msc2836".to_owned(), true), /* threading/threads (https://github.com/matrix-org/matrix-spec-proposals/pull/2836) */
+        ("org.matrix.msc2946".to_owned(), true), /* spaces/hierarchy summaries (https://github.com/matrix-org/matrix-spec-proposals/pull/2946) */
+        ("org.matrix.msc3026.busy_presence".to_owned(), true), /* busy presence status (https://github.com/matrix-org/matrix-spec-proposals/pull/3026) */
+        ("org.matrix.msc3827".to_owned(), true), /* filtering of /publicRooms by room type (https://github.com/matrix-org/matrix-spec-proposals/pull/3827) */
+        ("org.matrix.msc3952_intentional_mentions".to_owned(), true), /* intentional mentions (https://github.com/matrix-org/matrix-spec-proposals/pull/3952) */
+        ("org.matrix.msc3575".to_owned(), true), /* sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/3575/files#r1588877046) */
+        ("org.matrix.msc3916.stable".to_owned(), true), /* authenticated media (https://github.com/matrix-org/matrix-spec-proposals/pull/3916) */
+        ("org.matrix.msc4180".to_owned(), true), /* stable flag for 3916 (https://github.com/matrix-org/matrix-spec-proposals/pull/4180) */
+        ("uk.tcpip.msc4133".to_owned(), true), /* Extending User Profile API with Key:Value Pairs (https://github.com/matrix-org/matrix-spec-proposals/pull/4133) */
+        ("uk.tcpip.msc4133.stable".to_owned(), true), // profile fields also use stable `/v3` routes
+        ("us.cloke.msc4175".to_owned(), true), /* Profile field for user time zone (https://github.com/matrix-org/matrix-spec-proposals/pull/4175) */
+        ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
+        ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
+        ("org.matrix.msc4354".to_owned(), true), /* Sticky events (https://github.com/matrix-org/matrix-spec-proposals/pull/4354) */
+        ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
+    ]);
+
+    if delayed_events {
+        // delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140)
+        unstable_features.insert("org.matrix.msc4140".to_owned(), true);
+    }
+
+    // Selective presence is privacy-sensitive: advertising it while only part of the
+    // behaviour exists would tell clients their presence is restricted when it is not, so
+    // it is only advertised when the whole feature is compiled in.
+    #[cfg(feature = "unstable-msc4495")]
+    unstable_features.insert("org.continuwuity.presence_v2.msc4495".to_owned(), true); /* Selective presence (https://github.com/matrix-org/matrix-spec-proposals/pull/4495) */
+
+    // Only advertised when the extension is actually compiled in, so a build without it
+    // does not promise a sliding sync extension it will silently ignore.
+    #[cfg(feature = "unstable-msc4262")]
+    unstable_features.insert("org.matrix.msc4262".to_owned(), true); /* Profile updates in sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4262) */
+
+    VersionsResBody {
+        versions: SUPPORTED_MATRIX_VERSIONS
+            .iter()
+            .map(|version| (*version).to_owned())
+            .collect(),
+        unstable_features,
+        server: Some(Server::new(
+            "Palpo".to_owned(),
+            crate::info::version().to_owned(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod supported_versions_tests {
+    use serde_json::{json, to_value as to_json_value};
+
+    use super::{SUPPORTED_MATRIX_VERSIONS, supported_versions_body};
+
+    #[test]
+    fn advertised_versions_are_explicitly_reviewed() {
+        let body = supported_versions_body(false);
+
+        assert_eq!(
+            body.versions,
+            SUPPORTED_MATRIX_VERSIONS
+                .iter()
+                .map(|version| (*version).to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(!body.versions.iter().any(|version| version == "v1.19"));
+    }
+
+    #[test]
+    fn advertises_msc4133_profile_fields_on_the_stable_prefix() {
+        let body = supported_versions_body(false);
+
+        assert_eq!(body.unstable_features.get("uk.tcpip.msc4133"), Some(&true));
+        assert_eq!(
+            body.unstable_features.get("uk.tcpip.msc4133.stable"),
+            Some(&true)
+        );
+    }
+
+    #[test]
+    fn includes_msc4383_server_metadata_and_feature_flag() {
+        let body = supported_versions_body(false);
+        let server = body.server.as_ref().unwrap();
+
+        assert_eq!(body.unstable_features.get("net.zemos.msc4383"), Some(&true));
+        assert_eq!(server.name, "Palpo");
+        assert!(!server.version.is_empty());
+        assert_eq!(
+            to_json_value(server).unwrap(),
+            json!({ "name": "Palpo", "version": server.version })
+        );
+    }
+
+    /// MSC4140 is only advertised when delayed events are actually enabled.
+    #[test]
+    fn msc4140_flag_tracks_the_delayed_events_setting() {
+        assert_eq!(
+            supported_versions_body(false)
+                .unstable_features
+                .get("org.matrix.msc4140"),
+            None
+        );
+        assert_eq!(
+            supported_versions_body(true)
+                .unstable_features
+                .get("org.matrix.msc4140"),
+            Some(&true)
+        );
+    }
+
+    /// MSC4262 is only promised when the sliding sync extension is compiled in, so a build
+    /// without it does not advertise an extension it would silently ignore.
+    #[test]
+    fn msc4262_is_advertised_only_when_built_in() {
+        let advertised = supported_versions_body(false)
+            .unstable_features
+            .get("org.matrix.msc4262")
+            .copied();
+
+        #[cfg(feature = "unstable-msc4262")]
+        assert_eq!(advertised, Some(true));
+        #[cfg(not(feature = "unstable-msc4262"))]
+        assert_eq!(advertised, None);
+    }
+
+    #[test]
+    fn advertises_stable_mutual_rooms_endpoint() {
+        let body = supported_versions_body(false);
+
+        assert_eq!(
+            body.unstable_features
+                .get("uk.half-shot.msc2666.query_mutual_rooms.stable"),
+            Some(&true)
+        );
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use salvo::http::{Method, Request};
+    use salvo::routing::PathState;
+
+    use super::router_inner;
+
+    /// Resolve `path` against the client router without running any handler.
+    async fn is_routed(method: Method, path: &str) -> bool {
+        let router = router_inner();
+        let mut req = Request::default();
+        *req.method_mut() = method;
+        let mut path_state = PathState::from_owned_path(path.to_owned());
+        router.detect(&mut req, &mut path_state).await.is_some()
+    }
+
+    #[tokio::test]
+    async fn current_delayed_event_routes_are_registered() {
+        let prefix = "/client/unstable/org.matrix.msc4140";
+        assert!(
+            is_routed(
+                Method::PUT,
+                &format!("{prefix}/rooms/!room:example.org/delayed_event/m.room.message/txn")
+            )
+            .await
+        );
+        assert!(is_routed(Method::GET, &format!("{prefix}/delayed_events/delay-id")).await);
+        assert!(
+            is_routed(
+                Method::POST,
+                &format!("{prefix}/delayed_events/delay-id/cancel")
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_devices_is_a_sibling_of_devices() {
+        for version in ["v3", "r0"] {
+            assert!(is_routed(Method::POST, &format!("/client/{version}/delete_devices")).await);
+        }
+        assert!(!is_routed(Method::POST, "/client/v3/devices/delete_devices").await);
+    }
+
+    #[tokio::test]
+    async fn devices_endpoints_are_still_routed() {
+        assert!(is_routed(Method::GET, "/client/v3/devices").await);
+        assert!(is_routed(Method::GET, "/client/v3/devices/ABCDEF").await);
+        assert!(is_routed(Method::PUT, "/client/v3/devices/ABCDEF").await);
+        assert!(is_routed(Method::DELETE, "/client/v3/devices/ABCDEF").await);
+    }
+
+    #[tokio::test]
+    async fn msc4133_profile_fields_are_served_on_the_unstable_prefix() {
+        const FIELD: &str = "/client/unstable/uk.tcpip.msc4133/profile/@alice:example.org/chat.commet.profile_banner";
+
+        assert!(
+            is_routed(
+                Method::GET,
+                "/client/unstable/uk.tcpip.msc4133/profile/@alice:example.org"
+            )
+            .await
+        );
+        assert!(is_routed(Method::GET, FIELD).await);
+        assert!(is_routed(Method::PUT, FIELD).await);
+        assert!(is_routed(Method::DELETE, FIELD).await);
+    }
+
+    #[tokio::test]
+    async fn standard_profile_fields_support_delete() {
+        for field in ["displayname", "avatar_url"] {
+            let path = format!("/client/v3/profile/@alice:example.org/{field}");
+            assert!(is_routed(Method::PUT, &path).await);
+            assert!(is_routed(Method::DELETE, &path).await);
+        }
+    }
 }
 
 #[endpoint]

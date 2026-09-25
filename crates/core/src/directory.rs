@@ -88,7 +88,7 @@ impl PublicRoomFilter {
 
     /// Returns `true` if the filter is empty.
     pub fn is_empty(&self) -> bool {
-        self.generic_search_term.is_none()
+        self.generic_search_term.is_none() && self.room_types.is_empty()
     }
 }
 
@@ -270,5 +270,53 @@ impl PublicRoomsResBody {
     /// Creates an empty `Response`.
     pub fn new() -> Self {
         Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, to_value as to_json_value};
+
+    use super::{PublicRoomFilter, RoomNetwork, RoomTypeFilter};
+    use crate::federation::directory::PublicRoomsReqBody;
+
+    #[test]
+    fn room_type_only_filter_is_not_empty() {
+        let filter = PublicRoomFilter {
+            generic_search_term: None,
+            room_types: vec![RoomTypeFilter::Space],
+        };
+
+        assert!(!filter.is_empty());
+    }
+
+    #[test]
+    fn federation_request_keeps_room_type_only_filter() {
+        let body = PublicRoomsReqBody {
+            limit: None,
+            since: None,
+            filter: PublicRoomFilter {
+                generic_search_term: None,
+                room_types: vec![RoomTypeFilter::Space],
+            },
+            room_network: RoomNetwork::Matrix,
+        };
+
+        assert_eq!(
+            to_json_value(body).unwrap(),
+            json!({ "filter": { "room_types": ["m.space"] } })
+        );
+    }
+
+    #[test]
+    fn federation_request_still_omits_empty_filter() {
+        let body = PublicRoomsReqBody {
+            limit: None,
+            since: None,
+            filter: PublicRoomFilter::new(),
+            room_network: RoomNetwork::Matrix,
+        };
+
+        assert_eq!(to_json_value(body).unwrap(), json!({}));
     }
 }

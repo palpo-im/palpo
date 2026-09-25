@@ -1,3 +1,6 @@
+#[cfg(feature = "unstable-msc4354")]
+use std::time::Duration;
+
 use salvo::oapi::ToSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -33,6 +36,12 @@ pub struct MessageLikeUnsigned<C: MessageLikeEventContent> {
     #[serde(rename = "m.relations", default)]
     #[salvo(schema(value_type = Object))]
     pub relations: BundledMessageLikeRelations<OriginalSyncMessageLikeEvent<C>>,
+
+    /// Milliseconds remaining until this sticky event expires.
+    #[cfg(feature = "unstable-msc4354")]
+    #[serde(rename = "msc4354_sticky_duration_ttl_ms", default)]
+    #[serde(with = "crate::serde::duration::opt_ms")]
+    pub sticky_duration_ttl_ms: Option<Duration>,
 }
 
 impl<C: MessageLikeEventContent> MessageLikeUnsigned<C> {
@@ -42,6 +51,8 @@ impl<C: MessageLikeEventContent> MessageLikeUnsigned<C> {
             age: None,
             transaction_id: None,
             relations: BundledMessageLikeRelations::default(),
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_duration_ttl_ms: None,
         }
     }
 }
@@ -60,7 +71,11 @@ impl<C: MessageLikeEventContent> CanBeEmpty for MessageLikeUnsigned<C> {
     /// an incoming `unsigned` field was present - it could still have been
     /// present but contained none of the known fields.
     fn is_empty(&self) -> bool {
-        self.age.is_none() && self.transaction_id.is_none() && self.relations.is_empty()
+        let empty =
+            self.age.is_none() && self.transaction_id.is_none() && self.relations.is_empty();
+        #[cfg(feature = "unstable-msc4354")]
+        let empty = empty && self.sticky_duration_ttl_ms.is_none();
+        empty
     }
 }
 
@@ -88,6 +103,12 @@ pub struct StateUnsigned<C: PossiblyRedactedStateEventContent> {
     /// [Bundled aggregations]: https://spec.matrix.org/latest/client-server-api/#aggregations-of-child-events
     #[serde(rename = "m.relations", default)]
     pub relations: BundledStateRelations,
+
+    /// Milliseconds remaining until this sticky event expires.
+    #[cfg(feature = "unstable-msc4354")]
+    #[serde(rename = "msc4354_sticky_duration_ttl_ms", default)]
+    #[serde(with = "crate::serde::duration::opt_ms")]
+    pub sticky_duration_ttl_ms: Option<Duration>,
 }
 
 impl<C: PossiblyRedactedStateEventContent> StateUnsigned<C> {
@@ -98,6 +119,8 @@ impl<C: PossiblyRedactedStateEventContent> StateUnsigned<C> {
             transaction_id: None,
             prev_content: None,
             relations: Default::default(),
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_duration_ttl_ms: None,
         }
     }
 }
@@ -110,10 +133,13 @@ impl<C: PossiblyRedactedStateEventContent> CanBeEmpty for StateUnsigned<C> {
     /// an incoming `unsigned` field was present - it could still have been
     /// present but contained none of the known fields.
     fn is_empty(&self) -> bool {
-        self.age.is_none()
+        let empty = self.age.is_none()
             && self.transaction_id.is_none()
             && self.prev_content.is_none()
-            && self.relations.is_empty()
+            && self.relations.is_empty();
+        #[cfg(feature = "unstable-msc4354")]
+        let empty = empty && self.sticky_duration_ttl_ms.is_none();
+        empty
     }
 }
 

@@ -127,6 +127,11 @@ pub enum MatrixVersion {
     ///
     /// See <https://spec.matrix.org/v1.18/>.
     V1_18,
+
+    /// Version 1.19 of the Matrix specification, released in Q2 2026.
+    ///
+    /// See <https://spec.matrix.org/v1.19/>.
+    V1_19,
 }
 
 impl TryFrom<&str> for MatrixVersion {
@@ -157,6 +162,7 @@ impl TryFrom<&str> for MatrixVersion {
             "v1.16" => V1_16,
             "v1.17" => V1_17,
             "v1.18" => V1_18,
+            "v1.19" => V1_19,
             _ => return Err(UnknownVersionError),
         })
     }
@@ -221,6 +227,7 @@ impl MatrixVersion {
             MatrixVersion::V1_16 => "v1.16",
             MatrixVersion::V1_17 => "v1.17",
             MatrixVersion::V1_18 => "v1.18",
+            MatrixVersion::V1_19 => "v1.19",
         };
 
         Some(string)
@@ -248,6 +255,7 @@ impl MatrixVersion {
             MatrixVersion::V1_16 => (1, 16),
             MatrixVersion::V1_17 => (1, 17),
             MatrixVersion::V1_18 => (1, 18),
+            MatrixVersion::V1_19 => (1, 19),
         }
     }
 
@@ -274,6 +282,7 @@ impl MatrixVersion {
             (1, 16) => Ok(MatrixVersion::V1_16),
             (1, 17) => Ok(MatrixVersion::V1_17),
             (1, 18) => Ok(MatrixVersion::V1_18),
+            (1, 19) => Ok(MatrixVersion::V1_19),
             _ => Err(UnknownVersionError),
         }
     }
@@ -384,7 +393,9 @@ impl MatrixVersion {
             // <https://spec.matrix.org/v1.17/rooms/#complete-list-of-room-versions>
             | MatrixVersion::V1_17
             // <https://spec.matrix.org/v1.18/rooms/#complete-list-of-room-versions>
-            | MatrixVersion::V1_18 => RoomVersionId::V12,
+            | MatrixVersion::V1_18
+            // <https://spec.matrix.org/v1.19/rooms/#complete-list-of-room-versions>
+            | MatrixVersion::V1_19 => RoomVersionId::V12,
         }
     }
 }
@@ -393,5 +404,29 @@ impl Display for MatrixVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (major, minor) = self.into_parts();
         f.write_str(&format!("v{major}.{minor}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MatrixVersion;
+    use crate::RoomVersionId;
+
+    #[test]
+    fn matrix_1_19_round_trips() {
+        let version: MatrixVersion = "v1.19".parse().unwrap();
+
+        assert_eq!(version, MatrixVersion::V1_19);
+        assert_eq!(version.as_str(), Some("v1.19"));
+        assert_eq!(version.to_string(), "v1.19");
+        assert_eq!(version.into_parts(), (1, 19));
+        assert_eq!(MatrixVersion::from_parts(1, 19).unwrap(), version);
+        assert_eq!(version.default_room_version(), RoomVersionId::V12);
+    }
+
+    #[test]
+    fn unknown_future_matrix_version_is_rejected() {
+        assert!("v1.20".parse::<MatrixVersion>().is_err());
+        assert!(MatrixVersion::from_parts(1, 20).is_err());
     }
 }

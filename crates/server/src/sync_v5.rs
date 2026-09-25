@@ -20,12 +20,15 @@ use crate::core::events::{
 };
 use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
-use crate::data::connect;
 use crate::data::schema::*;
+use crate::data::{DataResult, connect};
 use crate::event::{BatchToken, ignored_filter_with_ignored_users};
 use crate::room::{self, filter_rooms, state, timeline};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
 use crate::{AppResult, data, extract_variant};
+
+#[cfg(feature = "unstable-msc4262")]
+mod profiles;
 
 /// Apply a sliding-sync list's filter pipeline to the candidate room sets.
 ///
@@ -122,40 +125,194 @@ struct SlidingSyncCache {
     known_rooms: KnownRooms, // For every room, the room_since_sn number
     extensions: sync_events::v5::ExtensionsConfig,
     required_state: BTreeSet<Seqnum>,
+    /// Rooms whose full member profiles this connection has acknowledged (MSC4262).
+    ///
+    /// Tracked separately from `known_rooms` because a room can have been delivered long
+    /// before the profiles extension was switched on, or before a selector started
+    /// covering it -- and in both cases it still needs its snapshot.
+    #[serde(default)]
+    profile_rooms: BTreeSet<OwnedRoomId>,
+    /// Snapshots sent in responses that the client has not acknowledged with their token.
+    #[serde(default)]
+    pending_profile_rooms: BTreeMap<Seqnum, BTreeSet<OwnedRoomId>>,
+    /// Users whose non-null profile data this client has acknowledged.
+    #[serde(default)]
+    profile_users: BTreeSet<OwnedUserId>,
+    /// User tracking changes awaiting acknowledgement of their response token.
+    #[serde(default)]
+    pending_profile_users: BTreeMap<Seqnum, PendingProfileUsers>,
+    /// The `sliding_sync_connections.version` this copy was loaded or last written at, or
+    /// `None` when no row was known to exist. Stored in its own column, not in the blob.
+    #[serde(skip)]
+    db_version: Option<i64>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct PendingProfileUsers {
+    added: BTreeSet<OwnedUserId>,
+    removed: BTreeSet<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4262")]
+fn apply_sticky_profiles_config(
+    current: &mut sync_events::v5::ProfilesConfig,
+    cached: &sync_events::v5::ProfilesConfig,
+) {
+    some_or_sticky(&mut current.enabled, cached.enabled);
+    some_or_sticky(&mut current.lists, cached.lists.clone());
+    some_or_sticky(&mut current.rooms, cached.rooms.clone());
+    some_or_sticky(&mut current.fields, cached.fields.clone());
+}
+
+#[cfg(feature = "unstable-msc4262")]
+fn profile_snapshot_config_changed(
+    previous: &sync_events::v5::ProfilesConfig,
+    current: &sync_events::v5::ProfilesConfig,
+) -> bool {
+    let enabled_now = current.enabled.unwrap_or(false);
+    let newly_enabled = enabled_now && !previous.enabled.unwrap_or(false);
+    newly_enabled || current.fields != previous.fields
+}
+
+#[cfg(feature = "unstable-msc4262")]
+fn acknowledge_profile_updates(cached: &mut SlidingSyncCache, since_sn: Seqnum) -> bool {
+    let stale_rooms: Vec<Seqnum> = cached
+        .pending_profile_rooms
+        .range(..since_sn)
+        .map(|(sn, _)| *sn)
+        .collect();
+    let stale_users: Vec<Seqnum> = cached
+        .pending_profile_users
+        .range(..since_sn)
+        .map(|(sn, _)| *sn)
+        .collect();
+    let accepted_rooms = cached.pending_profile_rooms.remove(&since_sn);
+    let accepted_users = cached.pending_profile_users.remove(&since_sn);
+    let changed = accepted_rooms.is_some()
+        || accepted_users.is_some()
+        || !stale_rooms.is_empty()
+        || !stale_users.is_empty();
+    if !changed {
+        return false;
+    }
+    for sn in stale_rooms {
+        cached.pending_profile_rooms.remove(&sn);
+    }
+    for sn in stale_users {
+        cached.pending_profile_users.remove(&sn);
+    }
+    if let Some(rooms) = accepted_rooms {
+        cached.profile_rooms.extend(rooms);
+    }
+    if let Some(users) = accepted_users {
+        cached.profile_users.extend(users.added);
+        for user_id in users.removed {
+            cached.profile_users.remove(&user_id);
+        }
+    }
+    true
+}
+
+type ConnectionKey = (OwnedUserId, OwnedDeviceId, Option<String>);
+
+fn connection_key(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+) -> ConnectionKey {
+    (user_id.to_owned(), device_id.to_owned(), conn_id.clone())
+}
+
+/// One sliding sync connection's cache as held by this process.
+///
+/// The database row is authoritative across instances; this copy is only trusted while its
+/// `db_version` matches the row's. See [`refresh_connection`] and [`update_connection`].
+struct Connection {
+    cache: Mutex<SlidingSyncCache>,
+    /// Serializes this process's writes and reloads of the connection, so that in-process
+    /// requests never conflict with each other -- only with other instances.
+    write: tokio::sync::Mutex<()>,
+}
+
+impl Connection {
+    fn new(cache: SlidingSyncCache) -> Self {
+        Self {
+            cache: Mutex::new(cache),
+            write: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, SlidingSyncCache>> {
+        self.cache.lock()
+    }
 }
 
 /// In-memory cache backed by database for cross-instance persistence.
-/// The local cache provides fast access; the database ensures failover.
-static CONNECTIONS: LazyLock<
-    Mutex<BTreeMap<(OwnedUserId, OwnedDeviceId, Option<String>), Arc<Mutex<SlidingSyncCache>>>>,
-> = LazyLock::new(Default::default);
+/// The local cache provides fast access; the versioned database row is authoritative.
+static CONNECTIONS: LazyLock<Mutex<BTreeMap<ConnectionKey, Arc<Connection>>>> =
+    LazyLock::new(Default::default);
+
+/// How many times a write that lost a race with another instance is rebased and retried.
+const MAX_CONNECTION_WRITE_ATTEMPTS: usize = 3;
+
+/// Whether this process's copy of a connection is out of date with the database.
+///
+/// Versions come from a global sequence, so any difference -- including a row that was
+/// deleted, or created, by another instance -- means someone else wrote it.
+fn connection_needs_reload(cached_version: Option<i64>, db_version: Option<i64>) -> bool {
+    cached_version != db_version
+}
+
+/// Reads a connection's persisted cache, or `None` when it has no row.
+async fn read_connection(key: &ConnectionKey) -> DataResult<Option<SlidingSyncCache>> {
+    let (user_id, device_id, conn_id) = key;
+    let row = sliding_sync_connections::table
+        .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+        .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+        .filter(sliding_sync_connections::conn_id.eq(conn_id.as_deref().unwrap_or("")))
+        .select((
+            sliding_sync_connections::cache_data,
+            sliding_sync_connections::version,
+        ))
+        .first::<(serde_json::Value, i64)>(&mut connect().await?)
+        .await
+        .optional()?;
+    Ok(row.map(|(json, version)| {
+        let mut cache = serde_json::from_value::<SlidingSyncCache>(json).unwrap_or_default();
+        cache.db_version = Some(version);
+        cache
+    }))
+}
+
+async fn read_connection_version(key: &ConnectionKey) -> DataResult<Option<i64>> {
+    let (user_id, device_id, conn_id) = key;
+    sliding_sync_connections::table
+        .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+        .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+        .filter(sliding_sync_connections::conn_id.eq(conn_id.as_deref().unwrap_or("")))
+        .select(sliding_sync_connections::version)
+        .first::<i64>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
 
 /// Load a connection cache from the database if not present in memory.
 async fn load_or_create_connection(
     user_id: &OwnedUserId,
     device_id: &OwnedDeviceId,
     conn_id: &Option<String>,
-) -> Arc<Mutex<SlidingSyncCache>> {
+) -> Arc<Connection> {
     let key = (user_id.clone(), device_id.clone(), conn_id.clone());
     if let Some(entry) = CONNECTIONS.lock().unwrap().get(&key) {
         return Arc::clone(entry);
     }
 
     // Try to load from database
-    let conn_id_str = conn_id.as_deref().unwrap_or("");
-    let db_json = match connect().await {
-        Ok(mut conn) => sliding_sync_connections::table
-            .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
-            .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
-            .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
-            .select(sliding_sync_connections::cache_data)
-            .first::<serde_json::Value>(&mut conn)
-            .await
-            .ok(),
-        Err(_) => None,
-    };
-    let db_cache = db_json
-        .and_then(|json| serde_json::from_value::<SlidingSyncCache>(json).ok())
+    let db_cache = read_connection(&key)
+        .await
+        .ok()
+        .flatten()
         .unwrap_or_default();
 
     // Re-check under the lock: another task may have loaded/created (and possibly
@@ -167,8 +324,41 @@ async fn load_or_create_connection(
     let mut cache = CONNECTIONS.lock().unwrap();
     let entry = cache
         .entry(key)
-        .or_insert_with(|| Arc::new(Mutex::new(db_cache)));
+        .or_insert_with(|| Arc::new(Connection::new(db_cache)));
     Arc::clone(entry)
+}
+
+/// Replaces this process's copy with the database's. Returns false if it could not be read.
+async fn reload_connection(key: &ConnectionKey, entry: &Connection) -> bool {
+    match read_connection(key).await {
+        Ok(stored) => {
+            *entry.lock().unwrap() = stored.unwrap_or_default();
+            true
+        }
+        Err(e) => {
+            tracing::warn!("failed to reload sliding sync connection: {e}");
+            false
+        }
+    }
+}
+
+/// Brings this process's copy of a connection up to date if another instance wrote it.
+///
+/// Called at the start of each request. Without it, an instance that served an earlier
+/// request would keep answering from its own stale copy -- for MSC4262 that means missing
+/// acknowledgements recorded elsewhere, and so missing departure `null`s.
+async fn refresh_connection(user_id: &UserId, device_id: &DeviceId, conn_id: &Option<String>) {
+    let key = connection_key(user_id, device_id, conn_id);
+    let entry = load_or_create_connection(&key.0, &key.1, &key.2).await;
+    let _write = entry.write.lock().await;
+    let cached_version = entry.lock().unwrap().db_version;
+    match read_connection_version(&key).await {
+        Ok(db_version) if connection_needs_reload(cached_version, db_version) => {
+            reload_connection(&key, &entry).await;
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("failed to check sliding sync connection version: {e}"),
+    }
 }
 
 /// Maximum age for sliding sync connections before they are expired (7 days).
@@ -265,39 +455,118 @@ async fn get_connection_updated_at(
     updated_at.unwrap_or(0)
 }
 
-/// Persist the connection cache to the database for cross-instance access.
-async fn persist_connection(
-    user_id: &OwnedUserId,
-    device_id: &OwnedDeviceId,
-    conn_id: &Option<String>,
+#[derive(QueryableByName)]
+struct WrittenVersion {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    version: i64,
+}
+
+/// Writes a connection's cache if the row is still at the version it was loaded at.
+///
+/// Returns the new version, or `None` when another instance wrote (or created, or deleted)
+/// the row in the meantime; the caller must then not overwrite it.
+async fn write_connection(
+    key: &ConnectionKey,
     cached: &SlidingSyncCache,
-) {
-    let conn_id_str = conn_id.as_deref().unwrap_or("");
-    let Ok(cache_data) = serde_json::to_value(cached) else {
-        return;
+) -> DataResult<Option<i64>> {
+    use diesel::sql_types::{BigInt, Jsonb, Text};
+
+    let (user_id, device_id, conn_id) = key;
+    let cache_data = serde_json::to_value(cached)?;
+    let now = UnixMillis::now().get() as i64;
+    let mut conn = connect().await?;
+    let written = match cached.db_version {
+        None => {
+            diesel::sql_query(
+                "INSERT INTO sliding_sync_connections \
+                 (user_id, device_id, conn_id, cache_data, updated_at, version) \
+                 VALUES ($1, $2, $3, $4, $5, nextval('sliding_sync_connection_version_seq')) \
+                 ON CONFLICT (user_id, device_id, conn_id) DO NOTHING \
+                 RETURNING version",
+            )
+            .bind::<Text, _>(user_id.as_str())
+            .bind::<Text, _>(device_id.as_str())
+            .bind::<Text, _>(conn_id.as_deref().unwrap_or(""))
+            .bind::<Jsonb, _>(&cache_data)
+            .bind::<BigInt, _>(now)
+            .get_result::<WrittenVersion>(&mut conn)
+            .await
+        }
+        Some(expected) => {
+            diesel::sql_query(
+                "UPDATE sliding_sync_connections \
+                 SET cache_data = $4, updated_at = $5, \
+                     version = nextval('sliding_sync_connection_version_seq') \
+                 WHERE user_id = $1 AND device_id = $2 AND conn_id = $3 AND version = $6 \
+                 RETURNING version",
+            )
+            .bind::<Text, _>(user_id.as_str())
+            .bind::<Text, _>(device_id.as_str())
+            .bind::<Text, _>(conn_id.as_deref().unwrap_or(""))
+            .bind::<Jsonb, _>(&cache_data)
+            .bind::<BigInt, _>(now)
+            .bind::<BigInt, _>(expected)
+            .get_result::<WrittenVersion>(&mut conn)
+            .await
+        }
     };
-    let now = UnixMillis::now();
-    if let Ok(mut conn) = connect().await {
-        let _ = diesel::insert_into(sliding_sync_connections::table)
-            .values((
-                sliding_sync_connections::user_id.eq(user_id.as_str()),
-                sliding_sync_connections::device_id.eq(device_id.as_str()),
-                sliding_sync_connections::conn_id.eq(conn_id_str),
-                sliding_sync_connections::cache_data.eq(&cache_data),
-                sliding_sync_connections::updated_at.eq(now),
-            ))
-            .on_conflict((
-                sliding_sync_connections::user_id,
-                sliding_sync_connections::device_id,
-                sliding_sync_connections::conn_id,
-            ))
-            .do_update()
-            .set((
-                sliding_sync_connections::cache_data.eq(&cache_data),
-                sliding_sync_connections::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await;
+    Ok(written.optional()?.map(|written| written.version))
+}
+
+/// Applies `mutate` to a connection's cache and persists it for cross-instance access.
+///
+/// Persistence is optimistic: if another instance wrote the connection since this copy was
+/// loaded, the newer row is never overwritten. Instead this copy is replaced by it and
+/// `mutate` is re-applied on top, so neither side's change is lost -- in particular MSC4262
+/// delivery tracking, where losing an `added` user would later suppress their departure
+/// `null`. `mutate` must therefore be safe to run again on a different base; its last
+/// result is returned.
+///
+/// Only when the rebase keeps losing ([`MAX_CONNECTION_WRITE_ATTEMPTS`]) is this change
+/// dropped in favour of the database's version, and logged.
+async fn update_connection<R>(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    mut mutate: impl FnMut(&mut SlidingSyncCache) -> R,
+) -> R {
+    let key = connection_key(user_id, device_id, conn_id);
+    let entry = load_or_create_connection(&key.0, &key.1, &key.2).await;
+    let _write = entry.write.lock().await;
+    let mut attempt = 1;
+    loop {
+        let (result, snapshot) = {
+            let mut cached = entry.lock().unwrap();
+            let result = mutate(&mut cached);
+            (result, cached.clone())
+        };
+        match write_connection(&key, &snapshot).await {
+            Ok(Some(version)) => {
+                entry.lock().unwrap().db_version = Some(version);
+                return result;
+            }
+            Ok(None) if attempt < MAX_CONNECTION_WRITE_ATTEMPTS => {
+                if !reload_connection(&key, &entry).await {
+                    return result;
+                }
+                attempt += 1;
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    "sliding sync connection kept changing on another instance; \
+                     dropping this instance's update"
+                );
+                reload_connection(&key, &entry).await;
+                return result;
+            }
+            Err(e) => {
+                // As before versioning: keep serving from memory while the database is
+                // unavailable. The unchanged `db_version` makes the next write conflict and
+                // rebase rather than overwrite anything written meanwhile.
+                tracing::warn!("failed to persist sliding sync connection: {e}");
+                return result;
+            }
+        }
     }
 }
 
@@ -329,8 +598,22 @@ pub async fn sync_events(
 ) -> AppResult<SyncEventsResBody> {
     // Periodically clean up expired connections
     maybe_cleanup_connections().await;
+    // Another instance may have served this connection since this process last did --
+    // including during the long poll that precedes a repeated call.
+    refresh_connection(sender_id, device_id, &req_body.conn_id).await;
 
-    let curr_sn = data::curr_sn().await?;
+    #[cfg(feature = "unstable-msc4262")]
+    acknowledge_profile_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
+
+    if req_body.extensions.account_data.enabled.unwrap_or(false) {
+        crate::user::get_push_rules(sender_id).await?;
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    let curr_sn =
+        data::user::curr_sn_after_presence_profile_and_inbox_writes(sender_id, device_id).await?;
+    #[cfg(not(feature = "unstable-msc4262"))]
+    let curr_sn = data::user::curr_sn_after_presence_writes(Some((sender_id, device_id))).await?;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
 
@@ -373,6 +656,12 @@ pub async fn sync_events(
     // request flood.
     if since_sn > curr_sn {
         let mut res = SyncEventsResBody::new(next_batch.to_string());
+        #[cfg(feature = "unstable-msc4262")]
+        let profiles_enabled = req_body.extensions.profiles.enabled.unwrap_or(false);
+        #[cfg(feature = "unstable-msc4262")]
+        let mut listed_rooms = BTreeMap::new();
+        #[cfg(feature = "unstable-msc4262")]
+        let mut room_subset = BTreeSet::new();
         for (list_id, list) in &req_body.lists {
             let active_rooms = compute_active_rooms(
                 list,
@@ -382,6 +671,30 @@ pub async fn sync_events(
                 &dm_rooms,
             )
             .await;
+            #[cfg(feature = "unstable-msc4262")]
+            if profiles_enabled {
+                let mut sorted_rooms = active_rooms.clone();
+                sort_rooms_by_activity(&mut sorted_rooms).await?;
+                let mut selected = BTreeSet::new();
+                let ranges = if list.ranges.is_empty() {
+                    vec![(0, 50)]
+                } else {
+                    list.ranges.clone()
+                };
+                for (start, inclusive_end) in ranges {
+                    let start = start.min(sorted_rooms.len());
+                    let end = inclusive_end.saturating_add(1).min(sorted_rooms.len());
+                    if start < end {
+                        selected.extend(
+                            sorted_rooms[start..end]
+                                .iter()
+                                .map(|room_id| (*room_id).to_owned()),
+                        );
+                    }
+                }
+                room_subset.extend(selected.iter().cloned());
+                listed_rooms.insert(list_id.clone(), selected);
+            }
             res.lists.insert(
                 list_id.clone(),
                 sync_events::v5::SyncList {
@@ -390,7 +703,34 @@ pub async fn sync_events(
                 },
             );
         }
-        return Ok(res);
+        #[cfg(feature = "unstable-msc4262")]
+        let profiles_owe_snapshot = if profiles_enabled {
+            room_subset.extend(req_body.room_subscriptions.keys().cloned());
+            let joined: BTreeSet<OwnedRoomId> = all_joined_rooms
+                .iter()
+                .map(|room_id| (*room_id).to_owned())
+                .collect();
+            let selected = profiles::config_rooms(
+                &req_body.extensions.profiles,
+                &room_subset,
+                &listed_rooms,
+                &req_body.room_subscriptions,
+            )
+            .into_iter()
+            .filter(|room_id| joined.contains(room_id))
+            .collect();
+            !unsnapshotted_profile_rooms(sender_id, device_id, &req_body.conn_id, selected)
+                .await
+                .is_empty()
+        } else {
+            false
+        };
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profiles_owe_snapshot = false;
+
+        if !profiles_owe_snapshot {
+            return Ok(res);
+        }
     }
 
     let mut todo_rooms: TodoRooms = BTreeMap::new();
@@ -412,10 +752,13 @@ pub async fn sync_events(
             to_device: collect_to_device(sync_info, next_batch).await,
             receipts: collect_receipts(sync_info),
             typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
+            #[cfg(feature = "unstable-msc4262")]
+            profiles: Default::default(),
         },
     };
 
-    process_lists(
+    #[cfg_attr(not(feature = "unstable-msc4262"), allow(unused_variables))]
+    let listed_rooms = process_lists(
         sync_info,
         &all_invited_rooms,
         &all_joined_rooms,
@@ -429,6 +772,23 @@ pub async fn sync_events(
 
     fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms).await?;
 
+    // MSC4262 profile updates need the finished room subset, so they are collected after
+    // the lists and subscriptions have been resolved rather than alongside the other
+    // extensions.
+    #[cfg(feature = "unstable-msc4262")]
+    let snapshotted_profile_rooms = {
+        let (profiles, snapshotted_rooms) = profiles::collect(
+            sync_info,
+            &all_joined_rooms,
+            &todo_rooms,
+            &listed_rooms,
+            next_batch,
+        )
+        .await?;
+        res_body.extensions.profiles = profiles;
+        snapshotted_rooms
+    };
+
     res_body.rooms = process_rooms(
         sync_info,
         &all_invited_rooms,
@@ -439,6 +799,38 @@ pub async fn sync_events(
         &mut res_body,
     )
     .await?;
+
+    // Profile delivery becomes durable only after the complete response was built and is
+    // accepted only when the client returns with this response token.
+    #[cfg(feature = "unstable-msc4262")]
+    let added_profile_users = res_body
+        .extensions
+        .profiles
+        .users
+        .iter()
+        .filter_map(|(user_id, update)| update.as_ref().map(|_| user_id.clone()))
+        .collect();
+    #[cfg(feature = "unstable-msc4262")]
+    let removed_profile_users = res_body
+        .extensions
+        .profiles
+        .users
+        .iter()
+        .filter(|(_, update)| update.is_none())
+        .map(|(user_id, _)| user_id.clone())
+        .collect();
+    #[cfg(feature = "unstable-msc4262")]
+    record_profile_updates_sent(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        &req_body.extensions.profiles.fields,
+        next_batch,
+        snapshotted_profile_rooms,
+        added_profile_users,
+        removed_profile_users,
+    )
+    .await;
     Ok(res_body)
 }
 
@@ -457,7 +849,11 @@ async fn process_lists(
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
     res_body: &mut SyncEventsResBody,
-) -> AppResult<()> {
+) -> AppResult<BTreeMap<String, BTreeSet<OwnedRoomId>>> {
+    // What each list actually resolved to in this response. The cached `known_rooms` is
+    // the previous request's answer, so it is empty on an initial sync and stale for any
+    // room that has just entered a list.
+    let mut selected: BTreeMap<String, BTreeSet<OwnedRoomId>> = BTreeMap::new();
     for (list_id, list) in &req_body.lists {
         let active_rooms = compute_active_rooms(
             list,
@@ -483,7 +879,7 @@ async fn process_lists(
         for range in &ranges {
             // Ranges are inclusive [start, end] per MSC4186
             let start = range.0.min(count);
-            let end = (range.1 + 1).min(count); // convert to exclusive for slicing
+            let end = range.1.saturating_add(1).min(count); // convert to exclusive
 
             if start >= end {
                 continue;
@@ -534,6 +930,8 @@ async fn process_lists(
             .lists
             .insert(list_id.clone(), sync_events::v5::SyncList { count, ops });
 
+        selected.insert(list_id.clone(), new_known_rooms.clone());
+
         crate::sync_v5::update_sync_known_rooms(
             sender_id.to_owned(),
             device_id.to_owned(),
@@ -544,7 +942,7 @@ async fn process_lists(
         )
         .await;
     }
-    Ok(())
+    Ok(selected)
 }
 
 async fn fetch_subscriptions(
@@ -753,7 +1151,7 @@ async fn process_rooms(
             .events
             .iter()
             .filter(|item| ignored_filter_with_ignored_users(*item, ignored_users))
-            .map(|(_, pdu)| pdu.to_sync_room_event())
+            .map(|(_, pdu)| pdu.to_sync_room_event_for(sender_id, Some(device_id)))
             .collect();
 
         for (_, pdu) in &timeline.events {
@@ -806,7 +1204,8 @@ async fn process_rooms(
                                 pdu.event_sn,
                             )
                             .await;
-                            required_state_events.push(pdu.to_sync_state_event());
+                            required_state_events
+                                .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
                         }
                     }
                 }
@@ -832,7 +1231,8 @@ async fn process_rooms(
                                     pdu.event_sn,
                                 )
                                 .await;
-                                required_state_events.push(pdu.to_sync_state_event());
+                                required_state_events
+                                    .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
                             }
                         }
                     }
@@ -856,7 +1256,8 @@ async fn process_rooms(
                             pdu.event_sn,
                         )
                         .await;
-                        required_state_events.push(pdu.to_sync_state_event());
+                        required_state_events
+                            .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
                     }
                 }
                 // Specific state key
@@ -877,7 +1278,8 @@ async fn process_rooms(
                             pdu.event_sn,
                         )
                         .await;
-                        required_state_events.push(pdu.to_sync_state_event());
+                        required_state_events
+                            .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
                     }
                 }
             }
@@ -1302,110 +1704,132 @@ pub async fn update_sync_request_with_cache(
     BTreeMap<String, BTreeMap<OwnedRoomId, i64>>,
     BTreeMap<String, usize>,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &req_body.conn_id).await;
-    let (known, list_counts, cache_snapshot) = {
-        let mut guard = entry.lock().unwrap();
-        let cached = &mut *guard;
+    refresh_connection(&user_id, &device_id, &req_body.conn_id).await;
+    // Sticky parameters are merged into a fresh copy of the request on every attempt, so a
+    // write rebased onto another instance's newer cache merges against that cache.
+    let original = req_body.clone();
+    let (merged, known, list_counts) =
+        update_connection(&user_id, &device_id, &original.conn_id, |cached| {
+            let mut req_body = original.clone();
 
-        for (list_id, list) in &mut req_body.lists {
-            if let Some(cached_list) = cached.lists.get(list_id) {
-                list_or_sticky(
-                    &mut list.room_details.required_state,
-                    &cached_list.room_details.required_state,
-                );
-                // some_or_sticky(&mut list.include_heroes, cached_list.include_heroes);
+            for (list_id, list) in &mut req_body.lists {
+                if let Some(cached_list) = cached.lists.get(list_id) {
+                    list_or_sticky(
+                        &mut list.room_details.required_state,
+                        &cached_list.room_details.required_state,
+                    );
+                    // some_or_sticky(&mut list.include_heroes, cached_list.include_heroes);
 
-                match (&mut list.filters, cached_list.filters.clone()) {
-                    (Some(filters), Some(cached_filters)) => {
-                        some_or_sticky(&mut filters.is_invite, cached_filters.is_invite);
-                        some_or_sticky(&mut filters.is_dm, cached_filters.is_dm);
-                        some_or_sticky(&mut filters.is_encrypted, cached_filters.is_encrypted);
-                        list_or_sticky(&mut filters.room_types, &cached_filters.room_types);
-                        list_or_sticky(&mut filters.not_room_types, &cached_filters.not_room_types);
+                    match (&mut list.filters, cached_list.filters.clone()) {
+                        (Some(filters), Some(cached_filters)) => {
+                            some_or_sticky(&mut filters.is_invite, cached_filters.is_invite);
+                            some_or_sticky(&mut filters.is_dm, cached_filters.is_dm);
+                            some_or_sticky(&mut filters.is_encrypted, cached_filters.is_encrypted);
+                            list_or_sticky(&mut filters.room_types, &cached_filters.room_types);
+                            list_or_sticky(
+                                &mut filters.not_room_types,
+                                &cached_filters.not_room_types,
+                            );
+                        }
+                        (_, Some(cached_filters)) => list.filters = Some(cached_filters),
+                        (Some(list_filters), _) => list.filters = Some(list_filters.clone()),
+                        (..) => {}
                     }
-                    (_, Some(cached_filters)) => list.filters = Some(cached_filters),
-                    (Some(list_filters), _) => list.filters = Some(list_filters.clone()),
-                    (..) => {}
+                }
+                cached.lists.insert(list_id.clone(), list.clone());
+            }
+
+            // Remove unsubscribed rooms from cache
+            for room_id in &req_body.unsubscribe_rooms {
+                cached.subscriptions.remove(room_id);
+            }
+
+            cached
+                .subscriptions
+                .extend(req_body.room_subscriptions.clone());
+            req_body
+                .room_subscriptions
+                .extend(cached.subscriptions.clone());
+
+            req_body.extensions.e2ee.enabled = req_body
+                .extensions
+                .e2ee
+                .enabled
+                .or(cached.extensions.e2ee.enabled);
+
+            req_body.extensions.to_device.enabled = req_body
+                .extensions
+                .to_device
+                .enabled
+                .or(cached.extensions.to_device.enabled);
+
+            req_body.extensions.account_data.enabled = req_body
+                .extensions
+                .account_data
+                .enabled
+                .or(cached.extensions.account_data.enabled);
+            req_body.extensions.account_data.lists = req_body
+                .extensions
+                .account_data
+                .lists
+                .clone()
+                .or(cached.extensions.account_data.lists.clone());
+            req_body.extensions.account_data.rooms = req_body
+                .extensions
+                .account_data
+                .rooms
+                .clone()
+                .or(cached.extensions.account_data.rooms.clone());
+
+            some_or_sticky(
+                &mut req_body.extensions.typing.enabled,
+                cached.extensions.typing.enabled,
+            );
+            some_or_sticky(
+                &mut req_body.extensions.typing.rooms,
+                cached.extensions.typing.rooms.clone(),
+            );
+            some_or_sticky(
+                &mut req_body.extensions.typing.lists,
+                cached.extensions.typing.lists.clone(),
+            );
+            some_or_sticky(
+                &mut req_body.extensions.receipts.enabled,
+                cached.extensions.receipts.enabled,
+            );
+            some_or_sticky(
+                &mut req_body.extensions.receipts.rooms,
+                cached.extensions.receipts.rooms.clone(),
+            );
+            some_or_sticky(
+                &mut req_body.extensions.receipts.lists,
+                cached.extensions.receipts.lists.clone(),
+            );
+            #[cfg(feature = "unstable-msc4262")]
+            {
+                let previous_profiles = cached.extensions.profiles.clone();
+                apply_sticky_profiles_config(
+                    &mut req_body.extensions.profiles,
+                    &cached.extensions.profiles,
+                );
+                if profile_snapshot_config_changed(
+                    &previous_profiles,
+                    &req_body.extensions.profiles,
+                ) {
+                    // Re-enabling must cover users who joined or changed profile while the
+                    // extension was off. A changed field filter likewise needs a new base.
+                    cached.profile_rooms.clear();
+                    cached.pending_profile_rooms.clear();
                 }
             }
-            cached.lists.insert(list_id.clone(), list.clone());
-        }
 
-        // Remove unsubscribed rooms from cache
-        for room_id in &req_body.unsubscribe_rooms {
-            cached.subscriptions.remove(room_id);
-        }
-
-        cached
-            .subscriptions
-            .extend(req_body.room_subscriptions.clone());
-        req_body
-            .room_subscriptions
-            .extend(cached.subscriptions.clone());
-
-        req_body.extensions.e2ee.enabled = req_body
-            .extensions
-            .e2ee
-            .enabled
-            .or(cached.extensions.e2ee.enabled);
-
-        req_body.extensions.to_device.enabled = req_body
-            .extensions
-            .to_device
-            .enabled
-            .or(cached.extensions.to_device.enabled);
-
-        req_body.extensions.account_data.enabled = req_body
-            .extensions
-            .account_data
-            .enabled
-            .or(cached.extensions.account_data.enabled);
-        req_body.extensions.account_data.lists = req_body
-            .extensions
-            .account_data
-            .lists
-            .clone()
-            .or(cached.extensions.account_data.lists.clone());
-        req_body.extensions.account_data.rooms = req_body
-            .extensions
-            .account_data
-            .rooms
-            .clone()
-            .or(cached.extensions.account_data.rooms.clone());
-
-        some_or_sticky(
-            &mut req_body.extensions.typing.enabled,
-            cached.extensions.typing.enabled,
-        );
-        some_or_sticky(
-            &mut req_body.extensions.typing.rooms,
-            cached.extensions.typing.rooms.clone(),
-        );
-        some_or_sticky(
-            &mut req_body.extensions.typing.lists,
-            cached.extensions.typing.lists.clone(),
-        );
-        some_or_sticky(
-            &mut req_body.extensions.receipts.enabled,
-            cached.extensions.receipts.enabled,
-        );
-        some_or_sticky(
-            &mut req_body.extensions.receipts.rooms,
-            cached.extensions.receipts.rooms.clone(),
-        );
-        some_or_sticky(
-            &mut req_body.extensions.receipts.lists,
-            cached.extensions.receipts.lists.clone(),
-        );
-
-        cached.extensions = req_body.extensions.clone();
-        let known = cached.known_rooms.clone();
-        let list_counts = cached.list_counts.clone();
-        // Persist to DB for cross-instance availability
-        let cache_snapshot = cached.clone();
-        (known, list_counts, cache_snapshot)
-    };
-    persist_connection(&user_id, &device_id, &req_body.conn_id, &cache_snapshot).await;
+            cached.extensions = req_body.extensions.clone();
+            let known = cached.known_rooms.clone();
+            let list_counts = cached.list_counts.clone();
+            (req_body, known, list_counts)
+        })
+        .await;
+    *req_body = merged;
     (known, list_counts)
 }
 
@@ -1415,13 +1839,10 @@ pub async fn update_sync_list_counts(
     conn_id: Option<String>,
     list_counts: BTreeMap<String, usize>,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
-    let cache_snapshot = {
-        let cached = &mut entry.lock().unwrap();
-        cached.list_counts = list_counts;
-        (*cached).clone()
-    };
-    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
+    update_connection(&user_id, &device_id, &conn_id, |cached| {
+        cached.list_counts.clone_from(&list_counts);
+    })
+    .await;
 }
 
 pub async fn update_sync_subscriptions(
@@ -1430,13 +1851,10 @@ pub async fn update_sync_subscriptions(
     conn_id: Option<String>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
-    let cache_snapshot = {
-        let cached = &mut entry.lock().unwrap();
-        cached.subscriptions = subscriptions;
-        (*cached).clone()
-    };
-    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
+    update_connection(&user_id, &device_id, &conn_id, |cached| {
+        cached.subscriptions.clone_from(&subscriptions);
+    })
+    .await;
 }
 
 pub async fn update_sync_known_rooms(
@@ -1447,10 +1865,7 @@ pub async fn update_sync_known_rooms(
     new_cached_rooms: BTreeSet<OwnedRoomId>,
     since_sn: i64,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
-    let cache_snapshot = {
-        let cached = &mut entry.lock().unwrap();
-
+    update_connection(&user_id, &device_id, &conn_id, |cached| {
         for (roomid, last_since) in cached
             .known_rooms
             .entry(list_id.clone())
@@ -1461,13 +1876,12 @@ pub async fn update_sync_known_rooms(
                 *last_since = 0;
             }
         }
-        let list = cached.known_rooms.entry(list_id).or_default();
-        for room_id in new_cached_rooms {
-            list.insert(room_id, since_sn);
+        let list = cached.known_rooms.entry(list_id.clone()).or_default();
+        for room_id in &new_cached_rooms {
+            list.insert(room_id.clone(), since_sn);
         }
-        (*cached).clone()
-    };
-    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
+    })
+    .await;
 }
 
 pub async fn mark_required_state_sent(
@@ -1476,13 +1890,10 @@ pub async fn mark_required_state_sent(
     conn_id: Option<String>,
     event_sn: Seqnum,
 ) {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
-    let cache_snapshot = {
-        let cached = &mut entry.lock().unwrap();
+    update_connection(&user_id, &device_id, &conn_id, |cached| {
         cached.required_state.insert(event_sn);
-        (*cached).clone()
-    };
-    persist_connection(&user_id, &device_id, &conn_id, &cache_snapshot).await;
+    })
+    .await;
 }
 pub async fn is_required_state_send(
     user_id: OwnedUserId,
@@ -1495,12 +1906,121 @@ pub async fn is_required_state_send(
     cached.required_state.contains(&event_sn)
 }
 
+/// Of `rooms`, those whose profiles this connection has not been sent yet.
+///
+/// [MSC4262]: https://github.com/matrix-org/matrix-spec-proposals/pull/4262
+#[cfg(feature = "unstable-msc4262")]
+pub async fn unsnapshotted_profile_rooms(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    rooms: BTreeSet<OwnedRoomId>,
+) -> BTreeSet<OwnedRoomId> {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    let cached = entry.lock().unwrap();
+    rooms
+        .into_iter()
+        .filter(|room_id| !cached.profile_rooms.contains(room_id))
+        .collect()
+}
+
+/// Records profile delivery as pending until the client acknowledges its response token.
+#[cfg(feature = "unstable-msc4262")]
+pub async fn record_profile_updates_sent(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    fields: &Option<Vec<crate::core::profile::ProfileFieldName>>,
+    response_sn: Seqnum,
+    rooms: BTreeSet<OwnedRoomId>,
+    added_users: BTreeSet<OwnedUserId>,
+    removed_users: BTreeSet<OwnedUserId>,
+) {
+    if rooms.is_empty() && added_users.is_empty() && removed_users.is_empty() {
+        return;
+    }
+    update_connection(user_id, device_id, conn_id, |cached| {
+        // Only snapshots taken under the connection's current field filter count: if a
+        // concurrent request changed the filter after this response began, its cache
+        // reset must win over this response's narrower snapshot. User tracking is
+        // independent of the field filter and remains valid either way.
+        if cached.extensions.profiles.fields == *fields {
+            cached
+                .pending_profile_rooms
+                .entry(response_sn)
+                .or_default()
+                .extend(rooms.iter().cloned());
+        }
+        let pending_users = cached.pending_profile_users.entry(response_sn).or_default();
+        pending_users.added.extend(added_users.iter().cloned());
+        pending_users.removed.extend(removed_users.iter().cloned());
+    })
+    .await;
+}
+
+/// Whether a request at `since_sn` settles any pending profile delivery.
+#[cfg(feature = "unstable-msc4262")]
+fn profile_acknowledgement_due(cached: &SlidingSyncCache, since_sn: Seqnum) -> bool {
+    cached
+        .pending_profile_rooms
+        .range(..=since_sn)
+        .next()
+        .is_some()
+        || cached
+            .pending_profile_users
+            .range(..=since_sn)
+            .next()
+            .is_some()
+}
+
+/// Accepts profile delivery only when a later request proves the client received its token.
+#[cfg(feature = "unstable-msc4262")]
+pub async fn acknowledge_profile_delivery(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    since_sn: Seqnum,
+) {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    if !profile_acknowledgement_due(&entry.lock().unwrap(), since_sn) {
+        return;
+    }
+    update_connection(user_id, device_id, conn_id, |cached| {
+        acknowledge_profile_updates(cached, since_sn);
+    })
+    .await;
+}
+
+#[cfg(feature = "unstable-msc4262")]
+pub async fn tracked_profile_users(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+) -> BTreeSet<OwnedUserId> {
+    let entry =
+        load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
+    entry.lock().unwrap().profile_users.clone()
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "unstable-msc4262")]
+    use std::collections::BTreeSet;
     use std::collections::HashSet;
 
     use super::compute_active_rooms;
+    #[cfg(feature = "unstable-msc4262")]
+    use super::{
+        PendingProfileUsers, SlidingSyncCache, acknowledge_profile_updates,
+        apply_sticky_profiles_config, profile_snapshot_config_changed,
+    };
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::core::client::sync_events::v5::ProfilesConfig;
     use crate::core::client::sync_events::v5::{ReqList, ReqListFilters};
+    #[cfg(feature = "unstable-msc4262")]
+    use crate::core::identifiers::UserId;
     use crate::core::identifiers::{OwnedRoomId, RoomId};
 
     fn rid(s: &str) -> OwnedRoomId {
@@ -1512,6 +2032,249 @@ mod tests {
             filters: Some(filters),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_connection_is_reloaded_whenever_its_version_differs_from_the_database() {
+        use super::connection_needs_reload;
+
+        assert!(!connection_needs_reload(None, None));
+        assert!(!connection_needs_reload(Some(7), Some(7)));
+        // Another instance wrote the row since this copy was loaded.
+        assert!(connection_needs_reload(Some(7), Some(9)));
+        // Another instance created the row this process has never seen.
+        assert!(connection_needs_reload(None, Some(3)));
+        // Another instance deleted (expired) the row.
+        assert!(connection_needs_reload(Some(7), None));
+    }
+
+    #[test]
+    fn the_connection_version_is_not_part_of_the_cached_blob() {
+        let cached = super::SlidingSyncCache {
+            db_version: Some(42),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&cached).unwrap();
+        assert!(json.get("db_version").is_none());
+        let restored: super::SlidingSyncCache = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.db_version, None);
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn only_a_token_at_or_after_a_pending_delivery_needs_an_acknowledgement_write() {
+        use super::profile_acknowledgement_due;
+
+        let mut cached = SlidingSyncCache::default();
+        assert!(!profile_acknowledgement_due(&cached, 100));
+        cached.pending_profile_users.insert(
+            10,
+            PendingProfileUsers {
+                added: [UserId::parse("@bob:example.org").unwrap().to_owned()].into(),
+                removed: BTreeSet::new(),
+            },
+        );
+        assert!(!profile_acknowledgement_due(&cached, 9));
+        assert!(profile_acknowledgement_due(&cached, 10));
+        cached.pending_profile_users.clear();
+        cached
+            .pending_profile_rooms
+            .insert(20, [rid("!a:example.org")].into());
+        assert!(!profile_acknowledgement_due(&cached, 19));
+        assert!(profile_acknowledgement_due(&cached, 25));
+    }
+
+    /// Two instances serving one connection, simulated by swapping this process's
+    /// in-memory copy: instance B only ever sees the database, instance A keeps its
+    /// stale copy until it notices the newer version.
+    #[cfg(feature = "unstable-msc4262")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_a_stale_instance_reloads_instead_of_overwriting_a_newer_connection() {
+        use std::sync::Arc;
+
+        use super::{
+            CONNECTIONS, Connection, acknowledge_profile_delivery, connection_key,
+            load_or_create_connection, read_connection, read_connection_version,
+            record_profile_updates_sent, refresh_connection, tracked_profile_users,
+            update_connection,
+        };
+        use crate::core::identifiers::OwnedDeviceId;
+
+        crate::test_database::init();
+        let user = UserId::parse("@occ:example.org").unwrap().to_owned();
+        let device: OwnedDeviceId = "OCCDEVICE".into();
+        let conn_id = Some("occ".to_owned());
+        let key = connection_key(&user, &device, &conn_id);
+        let bob = UserId::parse("@bob:example.org").unwrap().to_owned();
+
+        // Instance A sends bob's profile in the response carrying token 10.
+        record_profile_updates_sent(
+            &user,
+            &device,
+            &conn_id,
+            &None,
+            10,
+            BTreeSet::new(),
+            [bob.clone()].into(),
+            BTreeSet::new(),
+        )
+        .await;
+        let instance_a: Arc<Connection> = CONNECTIONS.lock().unwrap().remove(&key).unwrap();
+        assert!(instance_a.lock().unwrap().profile_users.is_empty());
+
+        // The client's next request, carrying token 10, lands on instance B.
+        acknowledge_profile_delivery(&user, &device, &conn_id, 10).await;
+        let acknowledged = read_connection(&key).await.unwrap().unwrap();
+        assert_eq!(acknowledged.profile_users, [bob.clone()].into());
+
+        // The request after that lands on A again, which must not answer from its copy.
+        CONNECTIONS
+            .lock()
+            .unwrap()
+            .insert(key.clone(), Arc::clone(&instance_a));
+        refresh_connection(&user, &device, &conn_id).await;
+        let acknowledged_version = read_connection_version(&key).await.unwrap();
+        assert_eq!(instance_a.lock().unwrap().db_version, acknowledged_version);
+        let tracked = tracked_profile_users(&user, &device, &conn_id).await;
+        assert_eq!(tracked, [bob.clone()].into());
+        // Bob no longer shares a room with the user, so this response carries his `null`.
+        assert_eq!(
+            super::profiles::departed_users(&tracked, &BTreeSet::new(), &user),
+            [bob.clone()].into()
+        );
+
+        // B writes again while A, without refreshing, writes from its now-stale copy.
+        let instance_a = CONNECTIONS.lock().unwrap().remove(&key).unwrap();
+        update_connection(&user, &device, &conn_id, |cached| {
+            cached.list_counts.insert("from_b".to_owned(), 1);
+        })
+        .await;
+        let newer = read_connection_version(&key).await.unwrap();
+        CONNECTIONS
+            .lock()
+            .unwrap()
+            .insert(key.clone(), Arc::clone(&instance_a));
+        assert_ne!(instance_a.lock().unwrap().db_version, newer);
+        update_connection(&user, &device, &conn_id, |cached| {
+            cached.list_counts.insert("from_a".to_owned(), 2);
+        })
+        .await;
+
+        // A's write was rebased onto B's row rather than replacing it.
+        let stored = read_connection(&key).await.unwrap().unwrap();
+        assert_eq!(stored.list_counts.get("from_b"), Some(&1));
+        assert_eq!(stored.list_counts.get("from_a"), Some(&2));
+        assert_eq!(stored.profile_users, [bob.clone()].into());
+        assert_ne!(stored.db_version, newer);
+        let current = load_or_create_connection(&user, &device, &conn_id).await;
+        assert_eq!(current.lock().unwrap().db_version, stored.db_version);
+        assert_eq!(current.lock().unwrap().list_counts, stored.list_counts);
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_delivery_is_accepted_only_through_the_returned_token() {
+        let room_a = rid("!a:example.org");
+        let room_b = rid("!b:example.org");
+        let stale_room = rid("!stale:example.org");
+        let alice = UserId::parse("@alice:example.org").unwrap().to_owned();
+        let bob = UserId::parse("@bob:example.org").unwrap().to_owned();
+        let stale_user = UserId::parse("@stale:example.org").unwrap().to_owned();
+        let mut cached = SlidingSyncCache::default();
+        cached
+            .pending_profile_rooms
+            .insert(10, [room_a.clone()].into());
+        cached
+            .pending_profile_rooms
+            .insert(20, [room_b.clone()].into());
+        cached.pending_profile_users.insert(
+            10,
+            PendingProfileUsers {
+                added: [alice.clone(), bob.clone()].into(),
+                removed: BTreeSet::new(),
+            },
+        );
+        cached.pending_profile_users.insert(
+            20,
+            PendingProfileUsers {
+                added: BTreeSet::new(),
+                removed: [bob.clone()].into(),
+            },
+        );
+
+        assert!(!acknowledge_profile_updates(&mut cached, 9));
+        assert!(cached.profile_rooms.is_empty());
+        assert!(cached.profile_users.is_empty());
+
+        assert!(acknowledge_profile_updates(&mut cached, 10));
+        assert_eq!(cached.profile_rooms, [room_a.clone()].into());
+        assert_eq!(cached.profile_users, [alice.clone(), bob.clone()].into());
+        assert!(cached.pending_profile_rooms.contains_key(&20));
+
+        cached
+            .pending_profile_rooms
+            .insert(15, [stale_room.clone()].into());
+        cached.pending_profile_users.insert(
+            15,
+            PendingProfileUsers {
+                added: [stale_user.clone()].into(),
+                removed: BTreeSet::new(),
+            },
+        );
+
+        assert!(acknowledge_profile_updates(&mut cached, 20));
+        assert_eq!(cached.profile_rooms, [room_a, room_b].into());
+        assert_eq!(cached.profile_users, [alice].into());
+        assert!(!cached.profile_rooms.contains(&stale_room));
+        assert!(!cached.profile_users.contains(&stale_user));
+        assert!(cached.pending_profile_rooms.is_empty());
+        assert!(cached.pending_profile_users.is_empty());
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn enabling_profiles_or_changing_fields_requires_a_new_snapshot() {
+        let disabled = ProfilesConfig {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        let enabled = ProfilesConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(profile_snapshot_config_changed(&disabled, &enabled));
+        assert!(!profile_snapshot_config_changed(&enabled, &enabled));
+
+        let filtered = ProfilesConfig {
+            enabled: Some(true),
+            fields: Some(vec![crate::core::profile::ProfileFieldName::DisplayName]),
+            ..Default::default()
+        };
+        assert!(profile_snapshot_config_changed(&enabled, &filtered));
+    }
+
+    #[cfg(feature = "unstable-msc4262")]
+    #[test]
+    fn profile_fields_are_sticky_until_explicitly_replaced() {
+        use crate::core::profile::ProfileFieldName;
+
+        let cached = ProfilesConfig {
+            enabled: Some(true),
+            fields: Some(vec![ProfileFieldName::DisplayName]),
+            ..Default::default()
+        };
+        let mut omitted = ProfilesConfig::default();
+        apply_sticky_profiles_config(&mut omitted, &cached);
+        assert_eq!(omitted, cached);
+
+        let mut replaced = ProfilesConfig {
+            fields: Some(vec![ProfileFieldName::AvatarUrl]),
+            ..Default::default()
+        };
+        apply_sticky_profiles_config(&mut replaced, &cached);
+        assert_eq!(replaced.enabled, Some(true));
+        assert_eq!(replaced.fields, Some(vec![ProfileFieldName::AvatarUrl]));
     }
 
     /// Default filter pipeline (no filters set) returns all rooms — this is

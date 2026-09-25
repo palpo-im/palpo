@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serde::Deserialize;
 
 use crate::core::events::StateEventType;
@@ -9,6 +9,7 @@ use crate::core::{MatrixError, Seqnum, UnixMillis};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
+pub mod delayed_event;
 pub mod event;
 pub mod event_report;
 pub mod lazy_loading;
@@ -215,12 +216,19 @@ pub struct DbEventData {
 
 impl DbEventData {
     pub async fn save(&self) -> DataResult<()> {
+        let mut conn = connect().await?;
+        self.save_with_conn(&mut conn).await
+    }
+
+    /// Save event JSON using the caller's connection, allowing publication and
+    /// any feature-specific visibility index to share one transaction.
+    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<()> {
         diesel::insert_into(event_datas::table)
             .values(self)
             .on_conflict(event_datas::event_id)
             .do_update()
             .set(self)
-            .execute(&mut connect().await?)
+            .execute(conn)
             .await?;
         Ok(())
     }
@@ -272,6 +280,9 @@ pub struct NewDbEvent {
     pub stream_ordering: i64,
     pub unrecognized_keys: Option<String>,
     pub origin_server_ts: UnixMillis,
+    /// When this server first received the event. Never overwritten once set; see
+    /// [`NewDbEvent::save_with_conn`].
+    #[diesel(skip_update)]
     pub received_at: Option<i64>,
     pub sender_id: Option<OwnedUserId>,
     #[serde(default = "default_false")]
@@ -346,14 +357,32 @@ impl NewDbEvent {
     }
 
     pub async fn save(&self) -> DataResult<()> {
-        diesel::insert_into(events::table)
+        let mut conn = connect().await?;
+        self.save_with_conn(&mut conn).await?;
+        Ok(())
+    }
+
+    /// Save event metadata using the caller's connection so the event row and its
+    /// JSON representation can be created atomically.
+    ///
+    /// Returns the stored `received_at`. Re-saving an existing event (an outlier received
+    /// again, for example) keeps the first non-null receipt time, so a retransmission
+    /// cannot move the event's receipt forward.
+    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<Option<i64>> {
+        use diesel::sql_types::{BigInt, Nullable};
+
+        let first_receipt = diesel::dsl::sql::<Nullable<BigInt>>(
+            "COALESCE(events.received_at, excluded.received_at)",
+        );
+        let received_at = diesel::insert_into(events::table)
             .values(self)
             .on_conflict(events::id)
             .do_update()
-            .set(self)
-            .execute(&mut connect().await?)
+            .set((self, events::received_at.eq(first_receipt)))
+            .returning(events::received_at)
+            .get_result(conn)
             .await?;
-        Ok(())
+        Ok(received_at)
     }
 }
 
@@ -392,9 +421,12 @@ pub async fn is_disabled(room_id: &RoomId) -> DataResult<bool> {
     Ok(diesel_exists!(query, &mut connect().await?)?)
 }
 
-pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<()> {
+/// Records that `server_name` has joined members in the room.
+///
+/// Returns `true` if the server was not already recorded, i.e. it has just joined.
+pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> DataResult<bool> {
     let next_sn = crate::next_sn().await?;
-    diesel::insert_into(room_joined_servers::table)
+    let inserted = diesel::insert_into(room_joined_servers::table)
         .values((
             room_joined_servers::room_id.eq(room_id),
             room_joined_servers::server_id.eq(server_name),
@@ -403,7 +435,7 @@ pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> Da
         .on_conflict_do_nothing()
         .execute(&mut connect().await?)
         .await?;
-    Ok(())
+    Ok(inserted > 0)
 }
 
 /// Return the distinct set of servers joined to any of the given rooms.
@@ -786,6 +818,18 @@ pub async fn get_pdu_frame_id(event_id: &EventId) -> DataResult<Option<i64>> {
         .map_err(Into::into)
 }
 
+/// Immutable state frame immediately before an event, if it was recorded.
+pub async fn get_pdu_before_frame_id(event_id: &EventId) -> DataResult<Option<i64>> {
+    event_points::table
+        .filter(event_points::event_id.eq(event_id))
+        .select(event_points::before_frame_id)
+        .first::<Option<i64>>(&mut connect().await?)
+        .await
+        .optional()
+        .map(Option::flatten)
+        .map_err(Into::into)
+}
+
 /// Insert a state frame for `(room_id, hash_data)` and return its id.
 pub async fn ensure_state_frame(room_id: &RoomId, hash_data: Vec<u8>) -> DataResult<i64> {
     diesel::insert_into(room_state_frames::table)
@@ -980,3 +1024,20 @@ pub async fn get_timeline_gaps(
 //         .execute(conn)?;
 //     Ok(())
 // }
+
+/// Users whose current membership became `join` in `[since_sn, until_sn)`.
+pub async fn joined_users_since(
+    room_id: &RoomId,
+    since_sn: Seqnum,
+    until_sn: Seqnum,
+) -> DataResult<Vec<OwnedUserId>> {
+    room_users::table
+        .filter(room_users::room_id.eq(room_id))
+        .filter(room_users::membership.eq("join"))
+        .filter(room_users::event_sn.ge(since_sn))
+        .filter(room_users::event_sn.lt(until_sn))
+        .select(room_users::user_id)
+        .load(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}

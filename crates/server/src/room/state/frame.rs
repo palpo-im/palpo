@@ -77,6 +77,12 @@ pub async fn get_pdu_frame_id(event_id: &EventId) -> AppResult<i64> {
         .await?
         .ok_or(MatrixError::not_found("pdu frame is not found").into())
 }
+
+pub async fn get_pdu_before_frame_id(event_id: &EventId) -> AppResult<i64> {
+    data::room::get_pdu_before_frame_id(event_id)
+        .await?
+        .ok_or(MatrixError::not_found("pdu state-before frame is not found").into())
+}
 /// Returns (state_hash, already_existed)
 pub async fn ensure_frame(room_id: &RoomId, hash_data: Vec<u8>) -> AppResult<i64> {
     Ok(data::room::ensure_state_frame(room_id, hash_data).await?)

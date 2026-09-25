@@ -6,7 +6,8 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::encryption::{DeviceKeys, OneTimeKey};
-use crate::serde::StringEnum;
+use crate::events::AnyToDeviceEvent;
+use crate::serde::{RawJson, StringEnum};
 use crate::{OwnedDeviceId, OwnedDeviceKeyId, PrivOwnedStr};
 
 /// Data for a dehydrated device.
@@ -160,6 +161,53 @@ impl GetDehydratedDeviceResBody {
     }
 }
 
+/// Path and query parameters for retrieving a dehydrated device's to-device messages.
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct DehydratedDeviceEventsReqArgs {
+    /// The ID of the dehydrated device whose messages are being retrieved.
+    #[salvo(parameter(parameter_in = Path))]
+    pub device_id: OwnedDeviceId,
+
+    /// The `next_batch` token from a previous response.
+    ///
+    /// Omitted to start from the beginning of the device's messages.
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+
+    /// The maximum number of messages to return.
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Request body for retrieving a dehydrated device's to-device messages.
+///
+/// Only used by the deprecated `POST` form of the endpoint, which an earlier draft of
+/// MSC3814 specified; the current draft uses `GET` with a `from` query parameter.
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
+pub struct DehydratedDeviceEventsReqBody {
+    /// The `next_batch` token from a previous response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_batch: Option<String>,
+}
+
+crate::json_body_modifier!(DehydratedDeviceEventsReqBody);
+
+/// Response type for retrieving a dehydrated device's to-device messages.
+#[derive(ToSchema, Clone, Debug, Default, Deserialize, Serialize)]
+pub struct DehydratedDeviceEventsResBody {
+    /// The to-device messages in this batch.
+    pub events: Vec<RawJson<AnyToDeviceEvent>>,
+
+    /// The token to pass to the next call to retrieve the following batch.
+    ///
+    /// Absent when this is the last batch. An empty `events` array does not by itself mean
+    /// the client has seen everything: it must keep calling until this is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_batch: Option<String>,
+}
+
 #[derive(Deserialize, Serialize)]
 struct Helper {
     algorithm: DeviceDehydrationAlgorithm,
@@ -268,5 +316,50 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("device_keys"));
+    }
+}
+
+#[cfg(test)]
+mod events_tests {
+    use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+
+    use super::{DehydratedDeviceEventsReqBody, DehydratedDeviceEventsResBody};
+
+    #[test]
+    fn the_final_batch_omits_next_batch() {
+        let body = DehydratedDeviceEventsResBody {
+            events: Vec::new(),
+            next_batch: None,
+        };
+
+        // Its absence is what tells the client it has everything and may replace the
+        // dehydrated device, so it must not be serialized as null.
+        assert_eq!(to_json_value(&body).unwrap(), json!({ "events": [] }));
+    }
+
+    #[test]
+    fn a_batch_with_more_to_come_carries_the_resume_token() {
+        let body: DehydratedDeviceEventsResBody = from_json_value(json!({
+            "events": [{
+                "type": "m.room_key",
+                "sender": "@alice:example.org",
+                "content": {},
+            }],
+            "next_batch": "17",
+        }))
+        .unwrap();
+
+        assert_eq!(body.events.len(), 1);
+        assert_eq!(body.next_batch.as_deref(), Some("17"));
+    }
+
+    #[test]
+    fn the_legacy_post_body_may_omit_the_token() {
+        let body: DehydratedDeviceEventsReqBody = from_json_value(json!({})).unwrap();
+        assert_eq!(body.next_batch, None);
+
+        let body: DehydratedDeviceEventsReqBody =
+            from_json_value(json!({ "next_batch": "17" })).unwrap();
+        assert_eq!(body.next_batch.as_deref(), Some("17"));
     }
 }

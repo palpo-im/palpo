@@ -1,6 +1,8 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "unstable-msc4354")]
+use crate::events::sticky::StickyDurationMs;
 use crate::events::{AnyStateEvent, AnyStateEventContent, StateEventType};
 use crate::serde::{RawJson, StringEnum};
 use crate::{OwnedEventId, OwnedRoomId, PrivOwnedStr, UnixMillis};
@@ -201,6 +203,38 @@ pub struct SendStateEventReqBody(
     pub RawJson<AnyStateEventContent>,
 );
 
+/// Path and query parameters for the `send_state_event` endpoint.
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct SendStateEventReqArgs {
+    /// The room to set the state in.
+    #[salvo(parameter(parameter_in = Path))]
+    pub room_id: OwnedRoomId,
+
+    /// The event type to send.
+    #[salvo(parameter(parameter_in = Path))]
+    pub event_type: StateEventType,
+
+    /// The state key, or the empty string when omitted from the endpoint path.
+    #[salvo(parameter(parameter_in = Path))]
+    pub state_key: Option<String>,
+
+    /// Timestamp to use for the `origin_server_ts` of the event.
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(default, rename = "ts", skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<UnixMillis>,
+
+    /// The duration for which the event should receive sticky delivery guarantees.
+    #[cfg(feature = "unstable-msc4354")]
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        deserialize_with = "crate::events::sticky::deserialize_query_duration",
+        skip_serializing_if = "Option::is_none",
+        rename = "org.matrix.msc4354.sticky_duration_ms"
+    )]
+    pub sticky_duration_ms: Option<StickyDurationMs>,
+}
+
 /// Response type for the `send_state_event` endpoint.
 #[derive(ToSchema, Serialize, Debug)]
 
@@ -212,6 +246,25 @@ impl SendStateEventResBody {
     /// Creates a new `Response` with the given event id.
     pub fn new(event_id: OwnedEventId) -> Self {
         Self { event_id }
+    }
+}
+
+#[cfg(all(test, feature = "unstable-msc4354"))]
+mod sticky_tests {
+    use super::SendStateEventReqArgs;
+
+    #[test]
+    fn sticky_duration_uses_msc4354_query_name() {
+        let args: SendStateEventReqArgs = serde_html_form::from_str(
+            "room_id=%21room%3Aexample.org&event_type=m.room.name&state_key=&\
+             org.matrix.msc4354.sticky_duration_ms=1000",
+        )
+        .unwrap();
+
+        assert_eq!(
+            args.sticky_duration_ms.map(|duration| duration.get()),
+            Some(1_000)
+        );
     }
 }
 

@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::presence::PresenceState;
 use crate::{OwnedMxcUri, OwnedUserId};
 
+#[cfg(feature = "unstable-msc4495")]
+pub mod prompted;
+#[cfg(feature = "unstable-msc4495")]
+pub mod sharing;
+
 /// Presence event.
 #[derive(ToSchema, Serialize, Deserialize, Clone, Debug)]
 #[allow(clippy::exhaustive_structs)]

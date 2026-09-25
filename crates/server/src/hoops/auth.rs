@@ -7,9 +7,7 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use salvo::http::headers::HeaderMapExt;
 use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
-use subtle::ConstantTimeEq;
 
-use crate::appservice::RegistrationInfo;
 use crate::core::federation::authentication::XMatrix;
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
@@ -27,12 +25,10 @@ pub async fn auth_by_access_token_or_signatures(
     req: &mut Request,
     depot: &mut Depot,
 ) -> AppResult<()> {
-    if let Some(authorization) = &aa.authorization {
-        if authorization.starts_with("Bearer ") {
-            auth_by_access_token_inner(aa, depot).await
-        } else {
-            auth_by_signatures_inner(req, depot).await
-        }
+    if aa.uses_access_token() {
+        auth_by_access_token_inner(aa, depot).await
+    } else if aa.authorization.is_some() {
+        auth_by_signatures_inner(req, depot).await
     } else {
         Err(MatrixError::missing_token("missing token").into())
     }
@@ -42,6 +38,23 @@ pub async fn auth_by_access_token_or_signatures(
 pub async fn auth_by_access_token(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
     auth_by_access_token_inner(aa, depot).await
 }
+
+/// Authenticates a route whose own query schema uses `user_id` for something other than
+/// application-service masquerading.
+///
+/// Matrix's stable mutual-rooms endpoint names its target-user query parameter `user_id`,
+/// which otherwise collides with the application-service impersonation parameter parsed
+/// into [`AuthArgs`]. Such a route must authenticate the application service as its sender
+/// and leave the target `user_id` for the endpoint extractor.
+#[handler]
+pub async fn auth_by_access_token_without_query_masquerade(
+    mut aa: AuthArgs,
+    depot: &mut Depot,
+) -> AppResult<()> {
+    aa.user_id = None;
+    auth_by_access_token_inner(aa, depot).await
+}
+
 #[handler]
 pub async fn auth_by_signatures(
     _aa: AuthArgs,
@@ -95,69 +108,72 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
         });
         Ok(true)
     } else {
-        let appservices = crate::appservices().await;
-        for appservice in appservices {
-            // Use constant-time comparison to prevent timing attacks
-            if appservice
-                .as_token
-                .as_bytes()
-                .ct_eq(token.as_bytes())
-                .into()
-            {
-                let appservice_info: RegistrationInfo = appservice.to_owned().try_into()?;
+        // Import file-backed registrations once, then authenticate against the
+        // enabled database registrations. The startup list excludes registrations
+        // added through the admin API and cannot reflect disable/delete changes.
+        crate::appservices().await;
+        if let Some(appservice_info) = crate::appservice::find_from_token(token).await? {
+            let appservice = &appservice_info.registration;
+            let user_id = if let Some(ref user_id_str) = aa.user_id {
+                let user_id = UserId::parse(user_id_str)
+                    .map_err(|_| MatrixError::invalid_param("Invalid user_id"))?;
+                if !appservice_info.is_user_match(&user_id) {
+                    return Err(MatrixError::forbidden(
+                        "User is not in appservice's namespace",
+                        None,
+                    )
+                    .into());
+                }
+                user_id
+            } else {
+                // A dynamically registered service may not have a sender account
+                // yet. Resolve the exact sender, never an arbitrary virtual user.
+                UserId::parse_with_server_name(
+                    appservice.sender_localpart.as_str(),
+                    &config::get().server_name,
+                )
+                .map_err(|_| MatrixError::invalid_param("Invalid appservice sender_localpart"))?
+            };
+            let user = get_or_create_appservice_user(&user_id, &appservice.id).await?;
+            let user_device =
+                get_or_create_appservice_device(&user_id, aa.device_id.as_deref()).await?;
 
-                // Check if the appservice is masquerading as another user
-                let (user, user_device) = if let Some(ref user_id_str) = aa.user_id {
-                    let user_id = UserId::parse(user_id_str)
-                        .map_err(|_| MatrixError::invalid_param("Invalid user_id"))?;
-
-                    // Verify the user is in the appservice's namespace
-                    if !appservice_info.is_user_match(&user_id) {
-                        return Err(MatrixError::forbidden(
-                            "User is not in appservice's namespace",
-                            None,
-                        )
-                        .into());
-                    }
-
-                    // Get or create the masqueraded user
-                    let user = get_or_create_appservice_user(&user_id, &appservice.id).await?;
-                    let user_device =
-                        get_or_create_appservice_device(&user_id, aa.device_id.as_deref()).await?;
-                    (user, user_device)
-                } else {
-                    // Use the appservice's main user
-                    let user = users::table
-                        .filter(users::appservice_id.eq(&appservice.id))
-                        .first::<DbUser>(&mut connect().await?)
-                        .await?;
-                    let user_device = user_devices::table
-                        .filter(user_devices::user_id.eq(&user.id))
-                        .first::<DbUserDevice>(&mut connect().await?)
-                        .await?;
-                    (user, user_device)
-                };
-
-                crate::user::ensure_account_usable(&user)?;
-                depot.insert_typed(AuthedInfo {
-                    user,
-                    user_device,
-                    access_token_id: None,
-                    appservice: Some(appservice_info),
-                });
-                return Ok(true);
-            }
+            crate::user::ensure_account_usable(&user)?;
+            depot.insert_typed(AuthedInfo {
+                user,
+                user_device,
+                access_token_id: None,
+                appservice: Some(appservice_info),
+            });
+            return Ok(true);
         }
         Ok(false)
     }
 }
 
 /// Validate a token via the external authorization server's introspection endpoint.
-async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> AppResult<()> {
+async fn auth_by_delegated_token(token: &str, _aa: &AuthArgs, depot: &mut Depot) -> AppResult<()> {
     let result = super::introspection::introspect_token(token).await?;
 
     if !result.active {
         return Err(MatrixError::unknown_token("Token is not active", true).into());
+    }
+
+    let scope = result
+        .scope
+        .as_deref()
+        .ok_or_else(|| MatrixError::unknown_token("Token has no Matrix API scope", true))?;
+    if !super::introspection::has_matrix_api_scope(scope) {
+        return Err(MatrixError::unknown_token("Token has no Matrix API scope", true).into());
+    }
+    let device_id_str = super::introspection::device_id_from_scope(scope)
+        .ok_or_else(|| MatrixError::unknown_token("Token has no unique Matrix device", true))?;
+    if result
+        .device_id
+        .as_deref()
+        .is_some_and(|device_id| device_id != device_id_str.as_str())
+    {
+        return Err(MatrixError::unknown_token("Token has mismatched Matrix device", true).into());
     }
 
     let username = result
@@ -181,35 +197,13 @@ async fn auth_by_delegated_token(token: &str, aa: &AuthArgs, depot: &mut Depot) 
     }
     crate::user::ensure_account_usable(&user)?;
 
-    // Extract device_id from introspection response, scope, or query param
-    let device_id_str = result
-        .device_id
-        .or_else(|| {
-            result
-                .scope
-                .as_deref()
-                .and_then(super::introspection::device_id_from_scope)
-        })
-        .or_else(|| aa.device_id.clone());
-
-    let user_device = if let Some(did) = &device_id_str {
-        let device_id: OwnedDeviceId = did.as_str().into();
-        user_devices::table
-            .filter(user_devices::user_id.eq(&user_id))
-            .filter(user_devices::device_id.eq(&device_id))
-            .first::<DbUserDevice>(&mut connect().await?)
-            .await
-            .map_err(|_| {
-                MatrixError::unknown_token("Device not found (not yet provisioned?)", true)
-            })?
-    } else {
-        // No device_id — use first available device for this user
-        user_devices::table
-            .filter(user_devices::user_id.eq(&user_id))
-            .first::<DbUserDevice>(&mut connect().await?)
-            .await
-            .map_err(|_| MatrixError::unknown_token("No device found for user", true))?
-    };
+    let device_id: OwnedDeviceId = device_id_str.into();
+    let user_device = user_devices::table
+        .filter(user_devices::user_id.eq(&user_id))
+        .filter(user_devices::device_id.eq(&device_id))
+        .first::<DbUserDevice>(&mut connect().await?)
+        .await
+        .map_err(|_| MatrixError::unknown_token("Device not found (not yet provisioned?)", true))?;
 
     depot.insert_typed(AuthedInfo {
         user,
@@ -418,5 +412,114 @@ async fn auth_by_signatures_inner(req: &mut Request, depot: &mut Depot) -> AppRe
     } else {
         depot.set_origin(origin.to_owned());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::appservice::Registration;
+    use crate::core::error::ErrorKind;
+
+    async fn authenticate_fixture(token: &str, user_id: Option<&str>) -> AppResult<AuthedInfo> {
+        let args = AuthArgs {
+            user_id: user_id.map(ToOwned::to_owned),
+            device_id: None,
+            access_token: None,
+            authorization: Some(format!("Bearer {token}")),
+            from_appservice: false,
+        };
+        let mut depot = Depot::new();
+        auth_by_access_token_inner(args, &mut depot).await?;
+        depot.take_authed_info()
+    }
+
+    fn assert_unknown_token(result: AppResult<AuthedInfo>) {
+        assert!(matches!(
+            result,
+            Err(AppError::Matrix(MatrixError {
+                kind: ErrorKind::UnknownToken { .. },
+                ..
+            }))
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_dynamic_appservice_auth() {
+        crate::test_database::init();
+        config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name": "dynamic.example", "db": { "url": "unused-test-config" }
+            }))
+            .unwrap()
+        });
+        // Reproduce a running server whose file registration list was initialized
+        // before an administrator installs an application service.
+        assert!(crate::appservices().await.is_empty());
+        let token = "unprefixed_base64url-fixture-token_123";
+        assert_unknown_token(authenticate_fixture(token, None).await);
+        let registration: Registration = serde_json::from_value(serde_json::json!({
+            "id": "dynamic-auth-fixture", "url": null,
+            "as_token": token, "hs_token": "fixture-homeserver-token",
+            "sender_localpart": "dynamic_sender",
+            "namespaces": { "users": [{ "exclusive": true, "regex": "^@dynamic_.*:dynamic\\.example$" }], "aliases": [], "rooms": [] }
+        })).unwrap();
+        crate::appservice::register_appservice(registration.clone())
+            .await
+            .unwrap();
+        let stored = crate::appservice::get_registration(&registration.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.as_token, token);
+
+        // Create a virtual user first: a request without user_id must still use
+        // sender_localpart, not whichever appservice user the database finds first.
+        let child = authenticate_fixture(token, Some("@dynamic_child:dynamic.example"))
+            .await
+            .unwrap();
+        assert_eq!(child.user_id().as_str(), "@dynamic_child:dynamic.example");
+        assert_eq!(child.appservice().unwrap().registration.id, registration.id);
+        let sender = authenticate_fixture(token, None).await.unwrap();
+        assert_eq!(sender.user_id().as_str(), "@dynamic_sender:dynamic.example");
+        assert_eq!(
+            sender.user.appservice_id.as_deref(),
+            Some(registration.id.as_str())
+        );
+        assert!(sender.access_token_id().is_none());
+        let repeated = authenticate_fixture(token, None).await.unwrap();
+        assert_eq!(repeated.user_device.id, sender.user_device.id);
+
+        assert_unknown_token(authenticate_fixture("wrong-fixture-token", None).await);
+        assert!(matches!(
+            authenticate_fixture(token, Some("@outside:dynamic.example")).await,
+            Err(AppError::Matrix(MatrixError {
+                kind: ErrorKind::Forbidden,
+                ..
+            }))
+        ));
+        assert!(
+            crate::appservice::set_appservice_disabled(&registration.id, true)
+                .await
+                .unwrap()
+        );
+        assert_unknown_token(authenticate_fixture(token, None).await);
+        assert_unknown_token(
+            authenticate_fixture(token, Some("@dynamic_child:dynamic.example")).await,
+        );
+        assert!(
+            crate::appservice::set_appservice_disabled(&registration.id, false)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            authenticate_fixture(token, None).await.unwrap().user_id(),
+            sender.user_id()
+        );
+        crate::appservice::unregister_appservice(&registration.id)
+            .await
+            .unwrap();
+        assert_unknown_token(authenticate_fixture(token, None).await);
     }
 }

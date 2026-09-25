@@ -89,6 +89,14 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "uk.half-shot.msc2666.query_mutual_rooms")]
     Msc2666,
 
+    /// `uk.half-shot.msc2666.query_mutual_rooms.stable` ([MSC])
+    ///
+    /// Stable version of the rooms-in-common endpoint.
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/2666
+    #[palpo_enum(rename = "uk.half-shot.msc2666.query_mutual_rooms.stable")]
+    Msc2666Stable,
+
     /// `org.matrix.msc3030` ([MSC])
     ///
     /// Jump to date API endpoint.
@@ -164,6 +172,28 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "org.matrix.msc4380")]
     Msc4380,
 
+    /// `org.continuwuity.presence_v2.msc4495` ([MSC])
+    ///
+    /// Selective Presence.
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4495
+    #[cfg(feature = "unstable-msc4495")]
+    #[palpo_enum(rename = "org.continuwuity.presence_v2.msc4495")]
+    Msc4495,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
+}
+
+#[cfg(all(test, feature = "unstable-msc4495"))]
+mod msc4495_tests {
+    use super::FeatureFlag;
+
+    #[test]
+    fn selective_presence_feature_flag_uses_unstable_identifier() {
+        assert_eq!(
+            FeatureFlag::Msc4495.as_str(),
+            "org.continuwuity.presence_v2.msc4495"
+        );
+    }
 }

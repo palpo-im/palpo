@@ -28,7 +28,12 @@ impl std::fmt::Debug for DieselPool {
 }
 
 impl DieselPool {
-    pub(crate) fn new(url: &str, config: &DbConfig) -> Result<DieselPool, PoolError> {
+    pub(crate) fn new(
+        url: &str,
+        config: &DbConfig,
+        max_size: usize,
+        purpose: &str,
+    ) -> Result<DieselPool, PoolError> {
         let conn_url = connection_url(config, url);
 
         // PostgreSQL `SET` does not support bind parameters, so the value is
@@ -57,7 +62,7 @@ impl DieselPool {
 
         let timeout = Duration::from_millis(config.connection_timeout);
         let inner = Pool::builder(manager)
-            .max_size(config.pool_size as usize)
+            .max_size(max_size)
             .runtime(Runtime::Tokio1)
             .timeouts(Timeouts {
                 wait: Some(timeout),
@@ -66,7 +71,7 @@ impl DieselPool {
             })
             .build()?;
 
-        tracing::info!("Database pool is created");
+        tracing::info!(max_size, purpose, "Database pool is created");
         Ok(DieselPool { inner })
     }
 

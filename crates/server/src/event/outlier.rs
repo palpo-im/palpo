@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
@@ -28,14 +28,29 @@ pub struct OutlierPdu {
     pub pdu: PduEvent,
     pub json_data: CanonicalJsonObject,
     pub soft_failed: bool,
+    /// The room's Policy Server (MSC4284) refused to vouch for this event.
+    ///
+    /// Kept apart from `soft_failed` because the DAG-recovery paths clear that flag once
+    /// the event turns out to be well-formed and authorised, which a policy refusal has
+    /// nothing to do with. It is folded in when the event is persisted, so no recovery
+    /// path can promote a refused event to the timeline.
+    pub policy_refused: bool,
 
     pub remote_server: OwnedServerName,
     pub room_id: OwnedRoomId,
     pub room_version: RoomVersionId,
     pub event_sn: Option<Seqnum>,
-    pub rejected_auth_events: Vec<OwnedEventId>,
-    pub rejected_prev_events: Vec<OwnedEventId>,
 }
+
+pub(crate) const POLICY_REFUSED_REASON: &str = "event refused by the room policy server";
+
+fn rejection_reason_for_storage(
+    rejection_reason: Option<String>,
+    policy_refused: bool,
+) -> Option<String> {
+    rejection_reason.or_else(|| policy_refused.then(|| POLICY_REFUSED_REASON.to_owned()))
+}
+
 impl AsRef<PduEvent> for OutlierPdu {
     fn as_ref(&self) -> &PduEvent {
         &self.pdu
@@ -113,14 +128,35 @@ impl OutlierPdu {
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let Self {
-            pdu,
+            mut pdu,
             json_data,
             soft_failed,
+            policy_refused,
             room_id,
             event_sn,
             ..
         } = self;
+        let soft_failed = soft_failed || policy_refused;
+        pdu.rejection_reason = rejection_reason_for_storage(pdu.rejection_reason, policy_refused);
         if let Some(event_sn) = event_sn {
+            if policy_refused {
+                // Existing outliers may be checked again after their auth arrives.
+                // Persist the refusal as well as carrying it on the returned PDU.
+                diesel::update(events::table.filter(events::id.eq(&pdu.event_id)))
+                    .set((
+                        events::is_rejected.eq(true),
+                        events::soft_failed.eq(true),
+                        events::rejection_reason.eq(&pdu.rejection_reason),
+                    ))
+                    .execute(&mut connect().await?)
+                    .await?;
+                // A refused event is never promoted, so its sticky window can go too.
+                diesel::delete(
+                    event_stickies::table.filter(event_stickies::event_id.eq(&pdu.event_id)),
+                )
+                .execute(&mut connect().await?)
+                .await?;
+            }
             return Ok((
                 SnPduEvent {
                     pdu,
@@ -134,6 +170,7 @@ impl OutlierPdu {
             ));
         }
         let (event_sn, event_guard) = ensure_event_sn(&room_id, &pdu.event_id).await?;
+        let received_at = UnixMillis::now();
         let mut db_event = NewDbEvent::from_canonical_json_with_room_id(
             &pdu.event_id,
             event_sn,
@@ -143,19 +180,72 @@ impl OutlierPdu {
         )?;
         db_event.is_outlier = true;
         db_event.soft_failed = soft_failed;
-        db_event.is_rejected = pdu.rejection_reason.is_some();
+        db_event.is_rejected = pdu.rejected();
         db_event.rejection_reason = pdu.rejection_reason.clone();
-        db_event.save().await?;
-        DbEventData {
+        db_event.received_at = Some(received_at.0 as i64);
+        let event_data = DbEventData {
             event_id: pdu.event_id.clone(),
             event_sn,
             room_id: pdu.room_id.clone(),
             internal_metadata: None,
             json_data: serde_json::to_value(&json_data)?,
             format_version: None,
-        }
-        .save()
-        .await?;
+        };
+        // An outlier becomes queryable as soon as its JSON row commits. Keep metadata and
+        // JSON together so feature-specific outlier indexes can share this transaction.
+        let (is_rejected, rejection_reason) = connect()
+            .await?
+            .transaction::<_, AppError, _>(async |conn| {
+                // Create the row before locking it so the lock below always has one to
+                // take. A concurrent replay of the same event serialises against this
+                // transaction either here, while the row is still uncommitted, or on the
+                // lock once it is, so neither can merge onto a verdict it cannot see.
+                diesel::insert_into(events::table)
+                    .values(&db_event)
+                    .on_conflict_do_nothing()
+                    .execute(conn)
+                    .await?;
+                // A stored rejection is durable and a replay must never lift one. Auth
+                // rejection follows from the event's immutable auth references, and an
+                // MSC4284 refusal stays refused. A replay, however, carries no verdict of
+                // its own whenever the DAG is momentarily incomplete: it leaves the event
+                // unauthorised in `process_to_outlier_pdu`, which deliberately skips the
+                // Policy Server request and so yields `policy_refused == false`. Letting
+                // that overwrite the stored row would clear `is_rejected`, the only column
+                // `timeline::stream` filters on, and hand a refused event to clients.
+                let (was_rejected, stored_reason) = events::table
+                    .find(&db_event.id)
+                    .select((events::is_rejected, events::rejection_reason))
+                    .for_update()
+                    .first::<(bool, Option<String>)>(conn)
+                    .await?;
+                db_event.is_rejected |= was_rejected;
+                // The first verdict wins; a later one can only supply a missing reason.
+                db_event.rejection_reason = stored_reason.or(db_event.rejection_reason.take());
+                // Both explicit rejection writers pair these columns, and the returned PDU
+                // below reports the same. Keep the stored row from disagreeing with either.
+                db_event.soft_failed |= db_event.is_rejected;
+                // A re-saved outlier keeps its first receipt time; the sticky window must
+                // be measured from that, not from this retransmission.
+                let received_at = db_event
+                    .save_with_conn(conn)
+                    .await?
+                    .and_then(|stored| u64::try_from(stored).ok())
+                    .map_or(received_at, UnixMillis);
+                event_data.save_with_conn(conn).await?;
+                // A rejected event, including one the Policy Server refused, can never
+                // reach the timeline, so it gets no sticky window.
+                if !db_event.is_rejected {
+                    crate::event::sticky::record_with_conn(conn, &pdu, event_sn, received_at)
+                        .await?;
+                }
+                Ok((db_event.is_rejected, db_event.rejection_reason.clone()))
+            })
+            .await?;
+        // Report what was persisted rather than what this replay believed: a caller handed
+        // a promoted PDU would append it to the timeline and undo the merge above.
+        pdu.rejection_reason = rejection_reason;
+        let soft_failed = soft_failed || is_rejected;
         let pdu = SnPduEvent {
             pdu,
             event_sn,
@@ -172,11 +262,11 @@ impl OutlierPdu {
         remote_server: &ServerName,
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
-        if (!self.soft_failed && !self.rejected())
-            || (self.rejected()
-                && self.rejected_prev_events.is_empty()
-                && self.rejected_auth_events.is_empty())
-        {
+        // A rejected event cannot become valid by fetching more predecessors:
+        // event IDs and their auth references are immutable. Persist it without
+        // issuing federation requests so later valid descendants can reconnect
+        // to the last accepted state.
+        if self.policy_refused || !self.soft_failed || self.rejected() {
             return self.save_to_database(is_backfill).await;
         }
 
@@ -213,13 +303,6 @@ impl OutlierPdu {
             .filter(events::is_rejected.eq(true));
         Ok(diesel_exists!(query, &mut connect().await?)?)
     }
-    async fn any_prev_event_rejected(&self) -> AppResult<bool> {
-        let query = events::table
-            .filter(events::id.eq_any(&self.pdu.prev_events))
-            .filter(events::is_rejected.eq(true));
-        Ok(diesel_exists!(query, &mut connect().await?)?)
-    }
-
     pub async fn process_pulled(
         mut self,
         _remote_server: &ServerName,
@@ -227,14 +310,10 @@ impl OutlierPdu {
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let version_rules = crate::room::get_version_rules(&self.room_version)?;
 
-        if !self.soft_failed || self.rejected() {
+        if self.policy_refused || !self.soft_failed || self.rejected() {
             return self.save_to_database(is_backfill).await;
         }
 
-        if self.any_prev_event_rejected().await? {
-            self.rejection_reason = Some("one or more prev events are rejected".to_string());
-            return self.save_to_database(is_backfill).await;
-        }
         if self.any_auth_event_rejected().await?
             && let Err(e) = fetch_and_process_auth_chain(
                 &self.remote_server,
@@ -323,7 +402,9 @@ impl OutlierPdu {
                 auth_check(&self.pdu, &version_rules, state_at_incoming_event.as_ref()).await
             {
                 match e {
-                    AppError::State(StateError::Forbidden(brief)) => {
+                    AppError::State(
+                        StateError::Forbidden(brief) | StateError::AuthEvent(brief),
+                    ) => {
                         self.pdu.rejection_reason = Some(brief);
                     }
                     _ => {
@@ -332,8 +413,32 @@ impl OutlierPdu {
                 }
             } else {
                 self.soft_failed = false;
+                self.policy_refused = !crate::room::policy::is_event_allowed(
+                    &self.room_id,
+                    &mut self.json_data,
+                    &version_rules,
+                )
+                .await;
             }
         }
         self.save_to_database(is_backfill).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{POLICY_REFUSED_REASON, rejection_reason_for_storage};
+
+    #[test]
+    fn policy_refusal_is_persisted_as_a_rejection() {
+        assert_eq!(
+            rejection_reason_for_storage(None, true).as_deref(),
+            Some(POLICY_REFUSED_REASON)
+        );
+        assert_eq!(
+            rejection_reason_for_storage(Some("auth rejected".to_owned()), true).as_deref(),
+            Some("auth rejected")
+        );
+        assert_eq!(rejection_reason_for_storage(None, false), None);
     }
 }

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS events_membership_server_depth_idx;

@@ -5,6 +5,10 @@ use crate::core::client::discovery::rendezvous::DiscoverRendezvousResBody;
 use crate::{JsonResult, config, hoops, json_ok};
 
 pub(super) fn router() -> Router {
+    let authed = Router::new()
+        .hoop(hoops::auth_by_access_token)
+        .hoop(hoops::limit_rate)
+        .push(super::delayed_event::authed_router());
     Router::with_path("unstable")
         // Public routes (no auth required) — MSC2965 OIDC discovery
         .push(
@@ -14,11 +18,10 @@ pub(super) fn router() -> Router {
             Router::with_path("org.matrix.msc2965/auth_metadata").get(auth_metadata),
         )
         .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
+        .push(super::profile::msc4133_public_router())
         // Authed routes
         .push(
-            Router::new()
-                .hoop(hoops::limit_rate)
-                .hoop(hoops::auth_by_access_token)
+            authed
                 .push(
                     Router::with_path(
                         "org.matrix.msc3391/user/{user_id}/account_data/{account_type}",
@@ -42,7 +45,8 @@ pub(super) fn router() -> Router {
                         .delete(super::device::delete_dehydrated)
                         .push(
                             Router::with_path("{device_id}/events")
-                                .post(super::to_device::for_dehydrated),
+                                .get(super::to_device::for_dehydrated)
+                                .post(super::to_device::for_dehydrated_legacy),
                         ),
                 )
                 .push(
@@ -58,7 +62,8 @@ pub(super) fn router() -> Router {
                     Router::with_path("uk.timedout.msc4323/admin/suspend/{user_id}")
                         .get(super::admin::is_user_suspended)
                         .put(super::admin::suspend_user),
-                ),
+                )
+                .push(super::profile::msc4133_authed_router()),
         )
 }
 

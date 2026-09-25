@@ -35,7 +35,8 @@ pub async fn require_admin(depot: &mut Depot) -> AppResult<()> {
 pub async fn auth_by_mas_secret(aa: crate::AuthArgs) -> AppResult<()> {
     let token = aa.require_access_token().map_err(crate::AppError::from)?;
     let conf = crate::config::get();
-    let Some(mas_secret) = &conf.admin.mas_secret else {
+    // An empty secret would match an empty `?access_token=`.
+    let Some(mas_secret) = conf.admin.mas_secret.as_ref().filter(|s| !s.is_empty()) else {
         return Err(MatrixError::forbidden(
             "MAS endpoints are not configured on this server",
             None,

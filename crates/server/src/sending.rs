@@ -13,20 +13,18 @@ use serde::Deserialize;
 use serde_json::value::to_raw_value;
 use tokio::sync::{Semaphore, mpsc};
 
+use crate::core::UnixMillis;
 use crate::core::appservice::Registration;
 use crate::core::appservice::event::{PushEventsReqBody, push_events_request};
-use crate::core::events::GlobalAccountDataEventType;
-use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::federation::transaction::{
     Edu, SendMessageReqBody, SendMessageResBody, send_message_request,
 };
 use crate::core::identifiers::*;
 pub use crate::core::sending::*;
 use crate::core::serde::{CanonicalJsonObject, RawJsonValue};
-use crate::core::{UnixMillis, push};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::sending::{DbOutgoingRequest, NewDbOutgoingRequest};
+use crate::data::{connect, diesel_exists};
 use crate::room::timeline;
 use crate::{AppError, AppResult, GetUrlOrigin, ServerConfig, TlsNameMap, config, data, utils};
 
@@ -361,6 +359,48 @@ pub async fn send_edu_servers<S: Iterator<Item = OwnedServerName>>(
 
     Ok(())
 }
+/// Wakes destinations so the sending guard builds and sends whatever EDUs are due.
+///
+/// Used where the EDU cannot simply be queued because its contents depend on the
+/// destination -- MSC4495 presence, where each server gets a different recipient delta.
+/// Without a wakeup those updates would sit until unrelated traffic happened to that
+/// destination.
+pub async fn wake_servers<S: Iterator<Item = OwnedServerName>>(
+    servers: S,
+    initial_edu_cursor: Option<i64>,
+) -> AppResult<()> {
+    let conf = config::get();
+    for server in servers {
+        if !should_send_federation_target(&server, &conf.server_name, &conf.federation) {
+            debug!("not waking denied server: {server}");
+            continue;
+        }
+        let outgoing_kind = OutgoingKind::Normal(server);
+        // Unlike ordinary sends, the EDU is built per destination at selection time.
+        // Persist a content-free row first so queue saturation or a process restart cannot
+        // lose the only signal that a recipient removal still needs delivery.
+        let OutgoingKind::Normal(server_id) = &outgoing_kind else {
+            unreachable!("wake_servers only constructs normal destinations");
+        };
+        if let Some(cursor) = initial_edu_cursor {
+            data::sending::initialize_edu_cursor(server_id, cursor).await?;
+        }
+        let flush_exists = outgoing_requests::table
+            .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
+            .filter(outgoing_requests::server_id.eq(server_id))
+            .filter(outgoing_requests::pdu_id.is_null())
+            .filter(outgoing_requests::edu_json.is_null())
+            // An in-flight Flush covers only the snapshot already selected. A change
+            // arriving meanwhile needs its own queued row for the next transaction.
+            .filter(outgoing_requests::state.ne("pending"));
+        if !diesel_exists!(flush_exists, &mut connect().await?)? {
+            queue_request(&outgoing_kind, &SendingEventType::Flush).await?;
+        }
+        notify(outgoing_kind)?;
+    }
+    Ok(())
+}
+
 #[tracing::instrument(skip(server, edu), level = "debug")]
 pub async fn send_edu_server(server: &ServerName, edu: &Edu) -> AppResult<()> {
     let mut serialized = EduBuf::new();
@@ -442,7 +482,7 @@ async fn send_events(
                             timeline::get_pdu(event_id)
                                 .await
                                 .map_err(|e| (kind.clone(), e))?
-                                .to_room_event(),
+                                .to_room_event_without_transaction_id(),
                         );
                     }
                     SendingEventType::Edu(_) => {
@@ -530,14 +570,10 @@ async fn send_events(
                     None => continue,
                 };
 
-                let rules_for_user = data::user::get_global_data::<PushRulesEventContent>(
-                    user_id,
-                    &GlobalAccountDataEventType::PushRules.to_string(),
-                )
-                .await
-                .unwrap_or_default()
-                .map(|content: PushRulesEventContent| content.global)
-                .unwrap_or_else(|| push::Ruleset::server_default(user_id));
+                let rules_for_user = crate::user::get_push_rules(user_id)
+                    .await
+                    .map_err(|e| (kind.clone(), e))?
+                    .global;
 
                 let notify_summary = crate::room::user::notify_summary(user_id, &pdu.room_id)
                     .await
@@ -723,8 +759,10 @@ async fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType
             };
             let event = if let Some(value) = item.edu_json {
                 SendingEventType::Edu(value)
+            } else if let Some(pdu_id) = item.pdu_id {
+                SendingEventType::Pdu(pdu_id)
             } else {
-                SendingEventType::Pdu(item.pdu_id?)
+                SendingEventType::Flush
             };
             Some((item.id, kind, event))
         })
@@ -882,13 +920,13 @@ async fn active_requests_for(
         .load::<DbOutgoingRequest>(&mut connect().await?)
         .await?
         .into_iter()
-        .filter_map(|r| {
+        .map(|r| {
             if let Some(value) = r.edu_json {
-                Some((r.id, SendingEventType::Edu(value)))
+                (r.id, SendingEventType::Edu(value))
             } else if let Some(pdu_id) = r.pdu_id {
-                Some((r.id, SendingEventType::Pdu(pdu_id)))
+                (r.id, SendingEventType::Pdu(pdu_id))
             } else {
-                None
+                (r.id, SendingEventType::Flush)
             }
         })
         .collect();
@@ -970,13 +1008,13 @@ async fn queued_requests(
         .load::<DbOutgoingRequest>(&mut connect().await?)
         .await?
         .into_iter()
-        .filter_map(|r| {
+        .map(|r| {
             if let Some(value) = r.edu_json {
-                Some((r.id, SendingEventType::Edu(value)))
+                (r.id, SendingEventType::Edu(value))
             } else if let Some(pdu_id) = r.pdu_id {
-                Some((r.id, SendingEventType::Pdu(pdu_id)))
+                (r.id, SendingEventType::Pdu(pdu_id))
             } else {
-                None
+                (r.id, SendingEventType::Flush)
             }
         })
         .collect())
@@ -1022,19 +1060,15 @@ async fn claim_queued_requests(
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
 ///
-/// Strips internal fields (`event_sn`, `transaction_id`) and conditionally removes
-/// `event_id` based on the room version. Room versions V1/V2 require `event_id` in
-/// the federation format; V3+ derive it from the event hash.
+/// Strips internal and sender-only fields (`event_sn`, `transaction_id`, MSC4140's
+/// `delay_id`) and conditionally removes `event_id` based on the room version. Room
+/// versions V1/V2 require `event_id` in the federation format; V3+ derive it from the
+/// event hash.
 #[tracing::instrument]
 pub async fn convert_to_outgoing_federation_event(
     mut pdu_json: CanonicalJsonObject,
 ) -> Box<RawJsonValue> {
-    if let Some(unsigned) = pdu_json
-        .get_mut("unsigned")
-        .and_then(|val| val.as_object_mut())
-    {
-        unsigned.remove("transaction_id");
-    }
+    crate::event::sanitize_federation_unsigned(&mut pdu_json);
 
     // Determine room version to decide whether to strip event_id.
     // V1/V2 require event_id in federation format; V3+ derive it from content hash.

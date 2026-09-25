@@ -138,7 +138,7 @@ pub async fn send_push_notice(
         user,
         &ruleset,
         &power_levels,
-        &pdu.to_sync_room_event(),
+        &pdu.to_sync_room_event_without_transaction_id(),
         &pdu.room_id,
     )
     .await?

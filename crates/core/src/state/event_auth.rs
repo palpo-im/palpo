@@ -228,20 +228,20 @@ where
                 "auth_event.room_id(): {} != {room_id}",
                 auth_event.room_id()
             );
-            return Err(StateError::other(format!(
+            return Err(StateError::auth_event(format!(
                 "auth event {event_id} not in the same room"
             )));
         }
 
         let event_type = auth_event.event_type();
-        let state_key = auth_event
-            .state_key()
-            .ok_or_else(|| format!("auth event {event_id} has no `state_key`"))?;
+        let state_key = auth_event.state_key().ok_or_else(|| {
+            StateError::auth_event(format!("auth event {event_id} has no `state_key`"))
+        })?;
         let key = (event_type.clone(), state_key.to_owned());
 
         // Since v1, if there are duplicate entries for a given type and state_key pair, reject.
         if seen_auth_types.contains(&key) {
-            return Err(StateError::other(format!(
+            return Err(StateError::auth_event(format!(
                 "duplicate auth event {event_id} for ({event_type}, {state_key}) pair"
             )));
         }
@@ -249,7 +249,7 @@ where
         // Since v1, if there are entries whose type and state_key don’t match those specified by
         // the auth events selection algorithm described in the server specification, reject.
         if !expected_auth_types.contains(&key) {
-            return Err(StateError::other(format!(
+            return Err(StateError::auth_event(format!(
                 "unexpected auth event {event_id} with ({event_type}, {state_key}) pair"
             )));
         }
@@ -257,7 +257,9 @@ where
         // Since v1, if there are entries which were themselves rejected under the checks performed
         // on receipt of a PDU, reject.
         if auth_event.rejected() {
-            return Err(StateError::other(format!("rejected auth event {event_id}")));
+            return Err(StateError::auth_event(format!(
+                "rejected auth event {event_id}"
+            )));
         }
 
         seen_auth_types.insert(key);
@@ -269,7 +271,7 @@ where
             .iter()
             .any(|(event_type, _)| *event_type == TimelineEventType::RoomCreate)
     {
-        return Err(StateError::other(
+        return Err(StateError::auth_event(
             "no `m.room.create` event in auth events".to_owned(),
         ));
     }
@@ -277,7 +279,7 @@ where
     // Since v12, the room_id must be the reference hash of an accepted m.room.create event.
     if rules.room_create_event_id_as_room_id {
         let room_create_event_id = room_id.room_create_event_id().map_err(|error| {
-            StateError::other(format!(
+            StateError::auth_event(format!(
                 "could not construct `m.room.create` event ID from room ID: {error}"
             ))
         })?;
@@ -285,7 +287,7 @@ where
         let room_create_event = fetch_event(room_create_event_id.to_owned()).await?;
 
         if room_create_event.rejected() {
-            return Err(StateError::other(format!(
+            return Err(StateError::auth_event(format!(
                 "rejected `m.room.create` event {room_create_event_id}"
             )));
         }

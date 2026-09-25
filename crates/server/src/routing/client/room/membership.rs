@@ -103,7 +103,7 @@ pub(super) async fn get_members(
         .into_iter()
         .filter(|(key, _)| key.0 == StateEventType::RoomMember)
         .filter_map(|(_, pdu)| membership_filter(pdu, membership, not_membership, until_sn))
-        .map(|pdu| pdu.to_member_event())
+        .map(|pdu| pdu.to_member_event_for(authed.user_id(), Some(authed.device_id())))
         .collect();
 
     json_ok(MembersResBody { chunk: states })
@@ -774,6 +774,8 @@ pub(crate) async fn knock_room(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
+    let mut via = args.via_servers().to_vec();
+    via.extend(body.via.iter().cloned());
     let (room_id, servers) = match OwnedRoomId::try_from(args.room_id_or_alias) {
         Ok(room_id) => {
             crate::membership::banned_room_check(
@@ -784,7 +786,7 @@ pub(crate) async fn knock_room(
             )
             .await?;
 
-            let mut servers = body.via.clone();
+            let mut servers = via;
             servers.extend(
                 crate::room::lookup_servers(&room_id)
                     .await
@@ -804,14 +806,14 @@ pub(crate) async fn knock_room(
             if let Ok(server) = room_id.server_name() {
                 servers.push(server.to_owned());
             }
+            servers.sort_unstable();
             servers.dedup();
             utils::shuffle(&mut servers);
 
             (room_id, servers)
         }
         Err(room_alias) => {
-            let (room_id, mut servers) =
-                crate::room::resolve_alias(&room_alias, Some(body.via.clone())).await?;
+            let (room_id, mut servers) = crate::room::resolve_alias(&room_alias, Some(via)).await?;
 
             banned_room_check(
                 sender_id,

@@ -71,8 +71,10 @@ pub struct ProvisionUserReqBody {
     pub set_emails: Option<Vec<String>>,
     #[serde(default)]
     pub unset_emails: bool,
+    /// Mirror of the auth server's admin flag: `true` grants, `false` revokes,
+    /// absent leaves the current value untouched.
     #[serde(default)]
-    pub admin: bool,
+    pub admin: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -175,8 +177,8 @@ pub async fn provision_user(
     } else if body.unset_emails {
         data::user::replace_threepids(&user_id, &[]).await?;
     }
-    if body.admin {
-        data::user::set_admin(&user_id, true).await?;
+    if let Some(admin) = body.admin {
+        data::user::set_admin(&user_id, admin).await?;
     }
     empty_ok()
 }
@@ -338,4 +340,23 @@ pub async fn allow_cross_signing_reset(body: JsonBody<LocalpartReqBody>) -> Empt
     let expires_ts = now_ms + 10 * 60 * 1000;
     data::user::key::set_cross_signing_replacement_allowed(&user_id, expires_ts).await?;
     empty_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProvisionUserReqBody;
+
+    #[test]
+    fn provision_admin_flag_is_tri_state() {
+        let parse = |json: &str| serde_json::from_str::<ProvisionUserReqBody>(json).unwrap();
+        assert_eq!(parse(r#"{"localpart":"alice"}"#).admin, None);
+        assert_eq!(
+            parse(r#"{"localpart":"alice","admin":true}"#).admin,
+            Some(true)
+        );
+        assert_eq!(
+            parse(r#"{"localpart":"alice","admin":false}"#).admin,
+            Some(false)
+        );
+    }
 }

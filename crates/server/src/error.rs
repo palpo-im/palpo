@@ -21,6 +21,8 @@ pub enum AppError {
     Public(String),
     #[error("internal: `{0}`")]
     Internal(String),
+    #[error("sticky sync: `{0}`")]
+    StickySync(Box<AppError>),
     #[error("state: `{0}`")]
     State(#[from] StateError),
     #[error("power levels: `{0}`")]
@@ -105,6 +107,14 @@ impl AppError {
     pub fn internal<S: Into<String>>(msg: S) -> Self {
         Self::Internal(msg.into())
     }
+
+    pub fn sticky_sync(error: Self) -> Self {
+        Self::StickySync(Box::new(error))
+    }
+
+    pub fn is_sticky_sync(&self) -> bool {
+        matches!(self, Self::StickySync(_))
+    }
     // pub fn local_unable_process<S: Into<String>>(msg: S) -> Self {
     //     Self::LocalUnableProcess(msg.into())
     // }
@@ -112,6 +122,7 @@ impl AppError {
     pub fn is_not_found(&self) -> bool {
         match self {
             Self::Diesel(diesel::result::Error::NotFound) => true,
+            Self::Data(e) => e.is_not_found(),
             Self::Matrix(e) => e.is_not_found(),
             _ => false,
         }
@@ -191,6 +202,10 @@ impl Writer for AppError {
                     // details; production clients get a stable message.
                     MatrixError::unknown("internal server error")
                 }
+            }
+            Self::StickySync(error) => {
+                error!(error = ?error, "failed to load sticky sync data");
+                MatrixError::unknown("failed to load sticky sync data")
             }
             // Self::LocalUnableProcess(msg) => MatrixError::unrecognized(msg),
             Self::Matrix(e) => e,
@@ -311,6 +326,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn data_layer_not_found_is_preserved() {
+        assert!(
+            AppError::Data(crate::data::DataError::Diesel(DieselError::NotFound)).is_not_found()
+        );
+    }
+
+    #[test]
     fn access_tokens_are_redacted_from_log_text() {
         assert_eq!(
             redact_access_tokens(
@@ -350,6 +372,13 @@ mod tests {
             .await;
 
         assert_eq!(res.status_code, Some(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn nested_data_not_found_is_recognized() {
+        let error = AppError::Data(crate::data::DataError::Diesel(DieselError::NotFound));
+
+        assert!(error.is_not_found());
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ pub use batch_token::*;
 pub use pdu::*;
 mod outlier;
 pub mod search;
+pub mod sticky;
 use std::collections::BTreeSet;
 
 use diesel::prelude::*;
@@ -233,6 +234,14 @@ pub async fn update_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()>
     // diesel::update(events::table.find(event_id))
     //     .set(events::stream_ordering.eq(frame_id))
     //     .execute(&mut connect()?)?;
+    Ok(())
+}
+
+pub async fn update_before_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()> {
+    diesel::update(event_points::table.find(event_id))
+        .set(event_points::before_frame_id.eq(frame_id))
+        .execute(&mut connect().await?)
+        .await?;
     Ok(())
 }
 

@@ -2,11 +2,14 @@
 //!
 //! [`m.push_rules`]: https://spec.matrix.org/latest/client-server-api/#mpush_rules
 
+use std::collections::BTreeMap;
+
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::macros::EventContent;
 use crate::push::Ruleset;
+use crate::serde::JsonValue;
 
 /// The content of an `m.push_rules` event.
 ///
@@ -16,6 +19,11 @@ use crate::push::Ruleset;
 pub struct PushRulesEventContent {
     /// The global ruleset.
     pub global: Ruleset,
+
+    /// Fields added by newer Matrix versions or custom extensions.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub extra: BTreeMap<String, JsonValue>,
 }
 
 impl PushRulesEventContent {
@@ -24,7 +32,10 @@ impl PushRulesEventContent {
     /// You can also construct a `PushRulesEventContent` from a global ruleset
     /// using `From` / `Into`.
     pub fn new(global: Ruleset) -> Self {
-        Self { global }
+        Self {
+            global,
+            extra: BTreeMap::new(),
+        }
     }
 }
 
@@ -38,7 +49,7 @@ impl From<Ruleset> for PushRulesEventContent {
 mod tests {
     use serde_json::{from_value as from_json_value, json};
 
-    use super::PushRulesEvent;
+    use super::{PushRulesEvent, PushRulesEventContent};
 
     #[test]
     fn sanity_check() {
@@ -232,5 +243,18 @@ mod tests {
         });
 
         from_json_value::<PushRulesEvent>(json_data).unwrap();
+    }
+
+    #[test]
+    fn unknown_content_and_ruleset_fields_round_trip() {
+        let json_data = json!({
+            "global": {
+                "org.example.ruleset_extension": {"enabled": true}
+            },
+            "org.example.content_extension": [1, 2, 3]
+        });
+
+        let content: PushRulesEventContent = from_json_value(json_data.clone()).unwrap();
+        assert_eq!(serde_json::to_value(content).unwrap(), json_data);
     }
 }
