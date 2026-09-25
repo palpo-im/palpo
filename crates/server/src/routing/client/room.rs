@@ -863,6 +863,16 @@ pub(super) async fn create_room(
         return Err(MatrixError::forbidden("room creation has been disabled", None).into());
     }
 
+    // Inviting by email or phone number needs an identity server, which this server does not
+    // support. Refuse before creating anything rather than create the room and silently drop
+    // the invites, and use the same error as the other third-party identifier endpoints.
+    if !body.invite_3pid.is_empty() {
+        return Err(MatrixError::threepid_denied(
+            "Inviting by third-party identifier is not supported",
+        )
+        .into());
+    }
+
     let alias: Option<OwnedRoomAliasId> = if let Some(localpart) = &body.room_alias_name {
         // TODO: Check for invalid characters and maximum length
         let alias = RoomAliasId::parse(format!("#{}:{}", localpart, conf.server_name))
@@ -1155,7 +1165,7 @@ pub(super) async fn create_room(
     }
     drop(state_lock);
 
-    // 8. Events implied by invite (and TODO: invite_3pid)
+    // 8. Events implied by invite (`invite_3pid` was rejected above)
     for user_id in &body.invite {
         if let Err(e) =
             crate::membership::invite_user(sender_id, user_id, &room_id, None, body.is_direct).await
