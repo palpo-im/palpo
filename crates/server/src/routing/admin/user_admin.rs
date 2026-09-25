@@ -256,6 +256,19 @@ pub struct RateLimitResponse {
 // Helper functions
 // ============================================================================
 
+/// Reject a user ID that does not belong to this server.
+///
+/// Accounts on other homeservers are owned by those servers: this server cannot
+/// create, deactivate or otherwise manage them. Without this check a write for
+/// a remote ID would create a placeholder `users` row that affects nothing.
+fn ensure_local_user(user_id: &UserId) -> AppResult<()> {
+    if user_id.is_local() {
+        Ok(())
+    } else {
+        Err(MatrixError::invalid_param("This endpoint can only be used with local users").into())
+    }
+}
+
 async fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
     let db_user = data::user::get_user(user_id)
         .await
@@ -374,6 +387,7 @@ pub async fn put_user_v2(
     res: &mut salvo::Response,
 ) -> JsonResult<UserInfoV2> {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
     let body = body.into_inner();
 
     // Refuse before touching anything so the request is all-or-nothing.
@@ -477,6 +491,7 @@ pub async fn list_users_v2(
 ) -> JsonResult<UsersListResponse> {
     let name_filter = name.into_inner().or(user_id.into_inner());
     let filter = data::user::ListUsersFilter {
+        server_name: Some(config::get().server_name.to_string()),
         from: from.into_inner(),
         limit: limit.into_inner(),
         name: name_filter,
@@ -513,6 +528,7 @@ pub async fn list_users_v3(
     // not_deactivated=None  -> deactivated=None  (show all)
     let deactivated = not_deactivated.into_inner().map(|val| !val);
     let filter = data::user::ListUsersFilter {
+        server_name: Some(config::get().server_name.to_string()),
         from: from.into_inner(),
         limit: limit.into_inner(),
         name: name_filter,
@@ -570,6 +586,7 @@ pub async fn deactivate_user(
     body: JsonBody<DeactivateReqBody>,
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
     let body = body.into_inner();
 
     // Verify user exists
@@ -601,6 +618,7 @@ pub async fn reset_password(
     body: JsonBody<ResetPasswordReqBody>,
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
     let body = body.into_inner();
 
     // Verify user exists
@@ -642,6 +660,7 @@ pub async fn set_admin_status(
     body: JsonBody<AdminStatusReqBody>,
 ) -> EmptyResult {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
     let body = body.into_inner();
 
     // Verify user exists
@@ -662,6 +681,7 @@ pub async fn set_admin_status(
 #[endpoint]
 pub async fn shadow_ban_user(user_id: PathParam<OwnedUserId>) -> EmptyResult {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
 
     // Verify user exists
     if !data::user::user_exists(&user_id).await? {
@@ -679,6 +699,7 @@ pub async fn shadow_ban_user(user_id: PathParam<OwnedUserId>) -> EmptyResult {
 #[endpoint]
 pub async fn unshadow_ban_user(user_id: PathParam<OwnedUserId>) -> EmptyResult {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
 
     // Verify user exists
     if !data::user::user_exists(&user_id).await? {
@@ -699,6 +720,7 @@ pub async fn suspend_user(
     body: JsonBody<SuspendReqBody>,
 ) -> JsonResult<SuspendResponse> {
     let user_id = user_id.into_inner();
+    ensure_local_user(&user_id)?;
     let body = body.into_inner();
 
     // Verify user exists
