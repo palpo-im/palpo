@@ -522,7 +522,14 @@ pub async fn append_pdu(
                 // the administrator can execute commands as palpo
                 let from_palpo = pdu.sender == server_user && conf.emergency_password.is_none();
 
-                if to_palpo && !from_palpo && admin_room == pdu.room_id {
+                // Whoever controls the room, only a current local admin may
+                // drive the admin console. This is re-read from the DB so a
+                // revoked admin who is still in the room loses it at once.
+                let sender_is_admin = pdu.sender == server_user
+                    || (pdu.sender.server_name() == conf.server_name
+                        && data::user::is_admin(&pdu.sender).await.unwrap_or(false));
+
+                if to_palpo && !from_palpo && admin_room == pdu.room_id && sender_is_admin {
                     let _ = crate::admin::executor()
                         .command(body, Some(pdu.event_id.clone()))
                         .await;

@@ -326,8 +326,39 @@ pub async fn valid_refresh_token(
 }
 
 pub async fn make_user_admin(user_id: &UserId) -> AppResult<()> {
-    data::user::set_admin(user_id, true).await?;
+    if ensure_local_admin_change_allowed(user_id, true).await? {
+        data::user::set_admin(user_id, true).await?;
+    }
     Ok(())
+}
+
+/// With delegated auth the authentication server is the single source of
+/// truth for the admin flag and mirrors it through
+/// `_synapse/mas/provision_user`. Changing it locally would let the two
+/// disagree (e.g. re-grant admin to a user the auth server just demoted), so
+/// any change is refused and setting the current value again is accepted as a
+/// no-op.
+///
+/// Returns whether the caller should write the flag. Under delegated auth it
+/// never should: the value already matches, and writing it anyway could undo
+/// a revocation that landed between this check and the write.
+pub async fn ensure_local_admin_change_allowed(user_id: &UserId, admin: bool) -> AppResult<bool> {
+    if crate::config::get().enabled_delegated_auth().is_none() {
+        return Ok(true);
+    }
+    let current = match data::user::is_admin(user_id).await {
+        Ok(current) => current,
+        Err(e) if e.is_not_found() => false,
+        Err(e) => return Err(e.into()),
+    };
+    if current != admin {
+        return Err(MatrixError::forbidden(
+            "The admin flag is managed by the authentication server",
+            None,
+        )
+        .into());
+    }
+    Ok(false)
 }
 
 /// Places one event in the account data of the user and removes the previous entry.

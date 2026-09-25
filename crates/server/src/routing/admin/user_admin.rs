@@ -376,6 +376,12 @@ pub async fn put_user_v2(
     let user_id = user_id.into_inner();
     let body = body.into_inner();
 
+    // Refuse before touching anything so the request is all-or-nothing.
+    let write_admin = match body.admin {
+        Some(admin) => user::ensure_local_admin_change_allowed(&user_id, admin).await?,
+        None => false,
+    };
+
     // Check if user exists
     let user_exists = data::user::user_exists(&user_id).await.unwrap_or(false);
 
@@ -416,7 +422,9 @@ pub async fn put_user_v2(
     }
 
     // Update admin status
-    if let Some(admin) = body.admin {
+    if let Some(admin) = body.admin
+        && write_admin
+    {
         data::user::set_admin(&user_id, admin).await?;
     }
 
@@ -641,7 +649,9 @@ pub async fn set_admin_status(
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    data::user::set_admin(&user_id, body.admin).await?;
+    if user::ensure_local_admin_change_allowed(&user_id, body.admin).await? {
+        data::user::set_admin(&user_id, body.admin).await?;
+    }
 
     empty_ok()
 }

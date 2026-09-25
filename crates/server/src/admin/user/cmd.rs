@@ -133,7 +133,10 @@ pub(super) async fn create_user(
 
     // if this account creation is from the CLI / --execute, invite the first user
     // to admin room
-    if let Ok(admin_room) = crate::room::get_admin_room().await {
+    // With delegated auth the admin flag comes from the auth server only.
+    if crate::config::get().enabled_delegated_auth().is_some() {
+        debug!("Not granting admin to {user_id}: the admin flag is managed by the auth server");
+    } else if let Ok(admin_room) = crate::room::get_admin_room().await {
         if crate::room::joined_member_count(&admin_room)
             .await
             .is_ok_and(|c| c == 1)

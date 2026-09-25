@@ -57,6 +57,18 @@ pub(super) async fn upsert_alias(
             .into());
     }
 
+    crate::room::alias::ensure_can_claim_alias(&alias_id, authed.user_id()).await?;
+    if authed.appservice().is_none()
+        && !authed.is_admin()
+        && !crate::room::user::is_joined(authed.user_id(), &body.room_id).await?
+    {
+        return Err(MatrixError::forbidden(
+            "You must be joined to the room to create an alias for it.",
+            None,
+        )
+        .into());
+    }
+
     crate::room::set_alias(body.room_id.clone(), alias_id, authed.user_id()).await?;
 
     empty_ok()
