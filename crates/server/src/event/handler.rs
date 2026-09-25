@@ -16,7 +16,7 @@ use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::federation::event::timestamp_to_event_request;
 use crate::core::identifiers::*;
 use crate::core::room::{TimestampToEventReqArgs, TimestampToEventResBody};
-use crate::core::room_version_rules::RoomVersionRules;
+use crate::core::room_version_rules::{AuthorizationRules, RoomVersionRules};
 use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, canonical_json};
 use crate::core::signatures::Verified;
 use crate::core::state::{Event, StateError, event_auth};
@@ -498,10 +498,23 @@ pub async fn process_to_outlier_pdu(
 /// The soft-fail check: whether an event that passed authorisation against the state
 /// at the event fails against the room's *current* state, and so must be kept out of
 /// the timeline.
+///
+/// This is step 6 of the [checks on receipt of a PDU]: failing it is not a reason to
+/// reject the event, which stays in the DAG so other events can still reference it.
+///
+/// [checks on receipt of a PDU]: https://spec.matrix.org/latest/server-server-api/#checks-performed-on-receipt-of-a-pdu
 pub(crate) async fn fails_current_state_check(
     pdu: &PduEvent,
     room_version_id: &RoomVersionId,
 ) -> AppResult<bool> {
+    let version_rules = crate::room::get_version_rules(room_version_id)?;
+    match auth_check_against_current_state(pdu, &version_rules.authorization).await {
+        Ok(()) => {}
+        Err(AppError::State(StateError::Forbidden(_) | StateError::AuthEvent(_))) => {
+            return Ok(true);
+        }
+        Err(e) => return Err(e),
+    }
     match pdu.redacts_id(room_version_id) {
         None => Ok(false),
         Some(redact_id) => {
@@ -694,7 +707,9 @@ pub async fn process_to_timeline_pdu(
     )
     .await?;
 
-    let guards = if let Some(state_key) = &incoming_pdu.state_key {
+    // A soft-failed state event must not change the room's current state: it failed
+    // authorisation against exactly that state.
+    let guards = if !soft_fail && let Some(state_key) = &incoming_pdu.state_key {
         debug!("preparing for stateres to derive new room state");
 
         // We also add state after incoming event to the fork states
@@ -814,6 +829,13 @@ pub async fn remote_timestamp_to_event(
     ))
 }
 
+/// Authorises the event against the state before it (step 5 of the [checks on receipt
+/// of a PDU]). A failure here means the event must be rejected.
+///
+/// The room's current state is deliberately not consulted: failing against it is only
+/// a soft failure, see [`fails_current_state_check`].
+///
+/// [checks on receipt of a PDU]: https://spec.matrix.org/latest/server-server-api/#checks-performed-on-receipt-of-a-pdu
 pub async fn auth_check(
     incoming_pdu: &PduEvent,
     version_rules: &RoomVersionRules,
@@ -832,65 +854,69 @@ pub async fn auth_check(
         ));
     };
 
-    // TODO: should check we need to do auth check at all based on the event type and state at
-    // event, if not then we can skip fetching auth events and just do auth check with empty
-    // state/events which should pass and be much faster  if state_at_incoming_event.is_empty()
-    // {     warn!("state_at_incoming_event is empty, cannot skip auth check");
-    //     return Err(AppError::internal(
-    //         "cannot auth check event with empty state at event",
-    //     ));
-    // }
-    if !state_at_incoming_event.is_empty() {
-        debug!("performing auth check");
-        // 11. Check the auth of the event passes based on the state of the event
-        event_auth::auth_check(
-            auth_rules,
-            incoming_pdu,
-            &async |event_id| {
-                timeline::get_pdu( &event_id).await.map(|e|e.into_inner())
-                    .map_err(|_| StateError::other("missing pdu in auth check event fetch"))
-            },
-            &async |k, s| {
-                let Ok(state_key_id) = state::ensure_field_id(&k.to_string().into(), &s).await else {
-                    warn!("missing field id for state type: {k}, state_key: {s}");
-                    return Err(StateError::other(format!(
-                        "missing field id for state type: {k}, state_key: {s}"
-                    )));
-                };
+    debug!("performing auth check");
+    // 11. Check the auth of the event passes based on the state of the event
+    event_auth::auth_check(
+        auth_rules,
+        incoming_pdu,
+        &async |event_id| {
+            timeline::get_pdu(&event_id)
+                .await
+                .map(|e| e.into_inner())
+                .map_err(|_| StateError::other("missing pdu in auth check event fetch"))
+        },
+        &async |k, s| {
+            let Ok(state_key_id) = state::ensure_field_id(&k.to_string().into(), &s).await else {
+                warn!("missing field id for state type: {k}, state_key: {s}");
+                return Err(StateError::other(format!(
+                    "missing field id for state type: {k}, state_key: {s}"
+                )));
+            };
 
-                match state_at_incoming_event.get(&state_key_id) {
-                    Some(event_id) => match timeline::get_pdu(event_id).await {
-                        Ok(pdu) => Ok(pdu.into_inner()),
-                        Err(e) => {
-                            warn!("failed to get pdu for state resolution: {}", e);
-                            Err(StateError::other(format!(
-                                "failed to get pdu for state resolution: {}",
-                                e
-                            )))
-                        }
-                    },
-                    None => {
-                        // Fallback: state_at_incoming_event resolution may be incomplete
-                        // (e.g., for events whose prev_events point to an early room frame).
-                        // Try looking up the state event directly from the room's current state.
-                        if let Ok(state_pdu) = crate::room::get_state(&incoming_pdu.room_id, &k, &s, None).await {
-                            return Ok(state_pdu.pdu);
-                        }
-                        warn!(
-                            "missing state key id {state_key_id} for state type: {k}, state_key: {s}, room: {}", incoming_pdu.room_id
-                        );
+            match state_at_incoming_event.get(&state_key_id) {
+                Some(event_id) => match timeline::get_pdu(event_id).await {
+                    Ok(pdu) => Ok(pdu.into_inner()),
+                    Err(e) => {
+                        warn!("failed to get pdu for state resolution: {}", e);
                         Err(StateError::other(format!(
-                            "missing state key id {state_key_id} for state type: {k}, state_key: {s}, room: {}", incoming_pdu.room_id
+                            "failed to get pdu for state resolution: {}",
+                            e
                         )))
                     }
+                },
+                None => {
+                    // Fallback: state_at_incoming_event resolution may be incomplete
+                    // (e.g., for events whose prev_events point to an early room frame).
+                    // Try looking up the state event directly from the room's current state.
+                    if let Ok(state_pdu) =
+                        crate::room::get_state(&incoming_pdu.room_id, &k, &s, None).await
+                    {
+                        return Ok(state_pdu.pdu);
+                    }
+                    warn!(
+                        "missing state key id {state_key_id} for state type: {k}, state_key: {s}, room: {}",
+                        incoming_pdu.room_id
+                    );
+                    Err(StateError::other(format!(
+                        "missing state key id {state_key_id} for state type: {k}, state_key: {s}, room: {}",
+                        incoming_pdu.room_id
+                    )))
                 }
-            },
-        )
-        .await?;
-        debug!("auth check succeeded");
-    }
+            }
+        },
+    )
+    .await?;
+    debug!("auth check succeeded");
+    Ok(())
+}
 
-    debug!("gathering auth events");
+/// Authorises the event against the room's current state (step 6 of the checks on
+/// receipt of a PDU).
+async fn auth_check_against_current_state(
+    incoming_pdu: &PduEvent,
+    auth_rules: &AuthorizationRules,
+) -> AppResult<()> {
+    debug!("gathering auth events from current state");
     let auth_events = state::get_auth_events(
         &incoming_pdu.room_id,
         &incoming_pdu.event_ty,
@@ -904,7 +930,10 @@ pub async fn auth_check(
         auth_rules,
         incoming_pdu,
         &async |event_id| {
-            timeline::get_pdu(&event_id).await.map(|e|e.into_inner()).map_err(|_| StateError::other("missing pdu 3"))
+            timeline::get_pdu(&event_id)
+                .await
+                .map(|e| e.into_inner())
+                .map_err(|_| StateError::other("missing pdu in current state auth check"))
         },
         &async |k, s| {
             if let Some(pdu) = auth_events.get(&(k.clone(), s.to_string())).cloned() {
@@ -921,7 +950,7 @@ pub async fn auth_check(
                 }
             } else {
                 Err(StateError::other(format!(
-                    "failed auth check when process to timeline, missing state event, event_type: {k}, state_key:{s}"
+                    "missing current state event, event_type: {k}, state_key: {s}"
                 )))
             }
         },
@@ -929,6 +958,7 @@ pub async fn auth_check(
     .await?;
     Ok(())
 }
+
 /// Returns Ok if the acl allows the server
 pub async fn acl_check(server_name: &ServerName, room_id: &RoomId) -> AppResult<()> {
     let acl_event = match room::get_state(room_id, &StateEventType::RoomServerAcl, "", None).await {
