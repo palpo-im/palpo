@@ -146,6 +146,20 @@ pub async fn admin_room_id() -> AppResult<OwnedRoomId> {
     .await
 }
 
+/// The admin room alias decides which room is the admin console, so only the
+/// server user or a current local admin may point it at a room.
+pub async fn ensure_can_claim_alias(alias_id: &RoomAliasId, user_id: &UserId) -> AppResult<()> {
+    if alias_id != config::admin_alias() || user_id == config::server_user_id() {
+        return Ok(());
+    }
+    if user_id.server_name() == config::server_name()
+        && data::user::is_admin(user_id).await.unwrap_or(false)
+    {
+        return Ok(());
+    }
+    Err(MatrixError::forbidden("This room alias is reserved.", None).into())
+}
+
 pub async fn set_alias(
     room_id: impl Into<OwnedRoomId>,
     alias_id: impl Into<OwnedRoomAliasId>,
@@ -153,11 +167,13 @@ pub async fn set_alias(
 ) -> AppResult<()> {
     let alias_id = alias_id.into();
     let room_id = room_id.into();
+    let created_by = created_by.into();
+    ensure_can_claim_alias(&alias_id, &created_by).await?;
 
     Ok(data::room::set_alias(DbRoomAlias {
         alias_id,
         room_id,
-        created_by: created_by.into(),
+        created_by,
         created_at: UnixMillis::now(),
     })
     .await?)

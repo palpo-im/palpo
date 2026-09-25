@@ -869,9 +869,9 @@ pub(super) async fn create_room(
 
         if room::resolve_local_alias(&alias).await.is_ok() {
             return Err(MatrixError::room_in_use("room alias already exists").into());
-        } else {
-            Some(alias)
         }
+        room::alias::ensure_can_claim_alias(&alias, sender_id).await?;
+        Some(alias)
     } else {
         None
     };
