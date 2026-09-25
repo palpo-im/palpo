@@ -30,9 +30,7 @@ async fn pushers(depot: &mut Depot) -> JsonResult<PushersResBody> {
 }
 
 /// #POST /_matrix/client/r0/pushers/set
-/// Adds a pusher for the sender user.
-///
-/// - TODO: Handle `append`
+/// Adds, replaces or removes a pusher for the sender user.
 #[endpoint]
 async fn set_pusher(body: JsonBody<SetPusherReqBody>, depot: &mut Depot) -> EmptyResult {
     let authed = depot.authed_info()?;

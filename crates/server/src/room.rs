@@ -404,14 +404,27 @@ pub async fn lookup_servers(room_id: &RoomId) -> AppResult<Vec<OwnedServerName>>
 }
 
 pub async fn joined_member_count(room_id: &RoomId) -> AppResult<u64> {
-    stats_room_currents::table
+    let mut conn = connect().await?;
+    let count = stats_room_currents::table
         .find(room_id)
         .select(stats_room_currents::joined_members)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut conn)
         .await
-        .optional()
-        .map(|c| c.unwrap_or_default() as u64)
-        .map_err(Into::into)
+        .optional()?;
+    // Rooms whose state has not changed since statistics were introduced have no row yet;
+    // count their members directly rather than reporting an empty room.
+    let count = match count {
+        Some(count) => count,
+        None => {
+            room_users::table
+                .filter(room_users::room_id.eq(room_id))
+                .filter(room_users::membership.eq(MembershipState::Join.as_str()))
+                .count()
+                .get_result::<i64>(&mut conn)
+                .await?
+        }
+    };
+    Ok(count.max(0) as u64)
 }
 
 #[tracing::instrument]

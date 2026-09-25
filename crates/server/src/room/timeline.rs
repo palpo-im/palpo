@@ -377,8 +377,9 @@ pub async fn append_pdu(
     let mut notifies = Vec::new();
     let mut highlights = Vec::new();
 
-    // Fetch power levels once for the room, outside the per-user loop
+    // Fetch power levels and the member count once for the room, outside the per-user loop
     let power_levels = crate::room::get_power_levels(pdu.room_id()).await.ok();
+    let member_count = crate::room::joined_member_count(pdu.room_id()).await?;
 
     for user_id in super::get_our_real_users(&pdu.room_id).await?.iter() {
         // Don't notify the user of their own events
@@ -398,6 +399,7 @@ pub async fn append_pdu(
                 power_levels,
                 &sync_pdu,
                 &pdu.room_id,
+                member_count,
             )
             .await?
             {
