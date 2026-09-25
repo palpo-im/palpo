@@ -20,7 +20,7 @@ use crate::data::connect;
 use crate::data::room::NewDbRoomUser;
 use crate::data::schema::*;
 use crate::room::state::ensure_field;
-use crate::{AppError, AppResult, MatrixError, SigningKeys, room};
+use crate::{AppError, AppResult, IsRemoteOrLocal, MatrixError, SigningKeys, room};
 
 mod banned;
 mod forget;
@@ -145,28 +145,16 @@ pub async fn update_membership(
                 {
                     // Copy user settings from predecessor to the current room:
                     // - Push rules
-                    //
-                    // TODO: finish this once push rules are implemented.
-                    //
-                    // let mut push_rules_event_content: PushRulesEvent = account_data
-                    //     .get(
-                    //         None,
-                    //         user_id,
-                    //         EventType::PushRules,
-                    //     )?;
-                    //
-                    // NOTE: find where `predecessor.room_id` match
-                    //       and update to `room_id`.
-                    //
-                    // account_data
-                    //     .update(
-                    //         None,
-                    //         user_id,
-                    //         EventType::PushRules,
-                    //         &push_rules_event_content,
-                    //         globals,
-                    //     )
-                    //     .ok();
+                    if user_id.is_local()
+                        && let Err(e) = crate::user::copy_room_push_rules(
+                            user_id,
+                            &predecessor.room_id,
+                            room_id,
+                        )
+                        .await
+                    {
+                        warn!("failed to copy push rules to upgraded room {room_id}: {e}");
+                    }
 
                     // Copy old tags to new room
                     if let Some(tag_event_content) = crate::data::user::get_room_data::<JsonValue>(

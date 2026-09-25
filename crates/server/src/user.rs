@@ -11,6 +11,7 @@ pub mod session;
 use std::collections::BTreeSet;
 use std::mem;
 
+use indexmap::IndexSet;
 pub use presence::*;
 use serde::de::DeserializeOwned;
 
@@ -20,7 +21,7 @@ use crate::core::events::ignored_user_list::IgnoredUserListEvent;
 use crate::core::events::push_rules::{PushRulesEvent, PushRulesEventContent};
 use crate::core::events::room::power_levels::RoomPowerLevelsEventContent;
 use crate::core::identifiers::*;
-use crate::core::push::Ruleset;
+use crate::core::push::{ConditionalPushRule, PushCondition, Ruleset};
 use crate::core::serde::JsonValue;
 use crate::data::DataResult;
 use crate::data::user::{DbUser, DbUserData, NewDbUser};
@@ -546,6 +547,98 @@ fn refresh_push_rules_content(
     Ok((content, changed.then_some(refreshed_json)))
 }
 
+/// Makes the user's push rules for the room `from` apply to `to` as well.
+///
+/// Called when a user joins the successor of an upgraded room, so that muting and other
+/// per-room notification settings carry over. Rules the user already has for `to` are kept.
+pub async fn copy_room_push_rules(user_id: &UserId, from: &RoomId, to: &RoomId) -> AppResult<()> {
+    // The save is a compare-and-set; retry a few times if the rules change underneath us.
+    for _ in 0..3 {
+        let Some(mut writable) = get_writable_push_rules(user_id).await? else {
+            // Unparseable rules are preserved rather than overwritten; see `get_push_rules`.
+            return Ok(());
+        };
+        if !copy_room_rules(&mut writable.content.global, from, to) {
+            return Ok(());
+        }
+        if writable.save(user_id).await? {
+            return Ok(());
+        }
+    }
+    tracing::warn!(%user_id, %from, %to, "push rules kept changing; not copied to the upgraded room");
+    Ok(())
+}
+
+/// Adds, next to each user-defined rule that targets room `from`, a copy targeting `to`.
+///
+/// Covers `room` rules, whose ID is the room ID, and `override`/`underride` rules with an
+/// `event_match` condition on `room_id`. A conditional rule is copied only if its ID contains
+/// the room ID, as the ones clients create for a room do, so that the copy's ID follows from
+/// the original's. Returns whether anything was added.
+fn copy_room_rules(ruleset: &mut Ruleset, from: &RoomId, to: &RoomId) -> bool {
+    let mut copied = false;
+
+    if let Some(rule) = ruleset.room.get(from.as_str())
+        && !rule.default
+        && !ruleset.room.contains(to.as_str())
+    {
+        let mut copy = rule.clone();
+        copy.rule_id = to.to_owned();
+        ruleset.room.insert(copy);
+        copied = true;
+    }
+
+    for rules in [&mut ruleset.override_, &mut ruleset.underride] {
+        let existing = rules
+            .iter()
+            .map(|rule| rule.rule_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut updated = IndexSet::with_capacity(rules.len());
+        for rule in rules.drain(..) {
+            let copy = copy_conditional_rule(&rule, from, to)
+                .filter(|copy| !existing.contains(&copy.rule_id));
+            updated.insert(rule);
+            if let Some(copy) = copy {
+                // Right after the original, so it keeps the same priority.
+                updated.insert(copy);
+                copied = true;
+            }
+        }
+        *rules = updated;
+    }
+
+    copied
+}
+
+fn copy_conditional_rule(
+    rule: &ConditionalPushRule,
+    from: &RoomId,
+    to: &RoomId,
+) -> Option<ConditionalPushRule> {
+    let targets_room = |condition: &PushCondition| {
+        matches!(condition, PushCondition::EventMatch(data)
+            if data.key == "room_id" && data.pattern == from.as_str())
+    };
+    if rule.default
+        || !rule.rule_id.contains(from.as_str())
+        || !rule.conditions.iter().any(targets_room)
+    {
+        return None;
+    }
+
+    let mut copy = rule.clone();
+    copy.rule_id = rule.rule_id.replace(from.as_str(), to.as_str());
+    for condition in &mut copy.conditions {
+        if let PushCondition::EventMatch(data) = condition
+            && data.key == "room_id"
+            && data.pattern == from.as_str()
+        {
+            data.pattern = to.to_string();
+        }
+    }
+    Some(copy)
+}
+
 pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
     data::user::get_global_datas(user_id).await
 }
@@ -698,5 +791,73 @@ mod push_rules_tests {
             refreshed["global"]["org.example.ruleset_extension"],
             serde_json::json!({"enabled": true})
         );
+    }
+
+    #[test]
+    fn room_push_rules_are_copied_to_the_upgraded_room() {
+        let old_room = crate::core::room_id!("!old:example.org");
+        let new_room = crate::core::room_id!("!new:example.org");
+        let room_condition = serde_json::json!([
+            {"kind": "event_match", "key": "room_id", "pattern": "!old:example.org"}
+        ]);
+        let mut ruleset: Ruleset = serde_json::from_value(serde_json::json!({
+            "override": [
+                {
+                    "rule_id": "!old:example.org",
+                    "default": false,
+                    "enabled": true,
+                    "conditions": room_condition,
+                    "actions": []
+                },
+                {
+                    "rule_id": "unrelated",
+                    "default": false,
+                    "enabled": true,
+                    "conditions": room_condition,
+                    "actions": []
+                }
+            ],
+            "room": [
+                {"rule_id": "!old:example.org", "default": false, "enabled": true, "actions": []}
+            ]
+        }))
+        .unwrap();
+
+        assert!(super::copy_room_rules(&mut ruleset, old_room, new_room));
+
+        let override_ids = ruleset
+            .override_
+            .iter()
+            .map(|rule| rule.rule_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            override_ids,
+            ["!old:example.org", "!new:example.org", "unrelated"],
+            "the copy sits next to the original; rules without the room in their ID stay put"
+        );
+        let copy = ruleset.override_.get("!new:example.org").unwrap();
+        let conditions = serde_json::to_value(&copy.conditions).unwrap();
+        assert_eq!(conditions[0]["pattern"], "!new:example.org");
+        assert!(ruleset.room.contains("!old:example.org"));
+        assert!(ruleset.room.contains("!new:example.org"));
+
+        // Running it again finds the copies already in place.
+        assert!(!super::copy_room_rules(&mut ruleset, old_room, new_room));
+    }
+
+    #[test]
+    fn existing_rules_for_the_upgraded_room_are_kept() {
+        let old_room = crate::core::room_id!("!old:example.org");
+        let new_room = crate::core::room_id!("!new:example.org");
+        let mut ruleset: Ruleset = serde_json::from_value(serde_json::json!({
+            "room": [
+                {"rule_id": "!old:example.org", "default": false, "enabled": true, "actions": []},
+                {"rule_id": "!new:example.org", "default": false, "enabled": false, "actions": []}
+            ]
+        }))
+        .unwrap();
+
+        assert!(!super::copy_room_rules(&mut ruleset, old_room, new_room));
+        assert!(!ruleset.room.get("!new:example.org").unwrap().enabled);
     }
 }
