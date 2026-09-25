@@ -30,7 +30,7 @@ use crate::{
 /// #GET /_matrix/client/r0/rooms/{room_id}/event/{event_id}
 /// Gets a single event.
 ///
-/// - You have to currently be joined to the room (TODO: Respect history visibility)
+/// - The event must be visible to the user under the room's history visibility
 #[endpoint]
 pub(super) async fn get_room_event(
     _aa: AuthArgs,

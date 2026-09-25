@@ -352,7 +352,12 @@ pub(super) async fn invite_user(
     }
 
     let InvitationRecipient::UserId(invite) = &body.recipient else {
-        return Err(MatrixError::not_found("user not found").into());
+        // Inviting by email or phone number needs an identity server, which this server does
+        // not support; say so rather than pretend the invitee does not exist.
+        return Err(MatrixError::threepid_denied(
+            "Inviting by third-party identifier is not supported",
+        )
+        .into());
     };
     crate::membership::invite_user(
         authed.user_id(),
