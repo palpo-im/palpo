@@ -1,11 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use palpo_core::Seqnum;
 
+use crate::core::client::filter::UrlFilter;
 use crate::core::client::search::{
-    Criteria, EventContextResult, OrderBy, ResultRoomEvents, SearchResult,
+    Criteria, EventContext, EventContextResult, GroupingKey, Groupings, OrderBy,
+    OwnedRoomIdOrUserId, ResultGroup, ResultRoomEvents, SearchKeys, SearchResult, UserProfile,
 };
 use crate::core::events::room::member::RoomMemberEventContent;
 use crate::core::events::{StateEventType, TimelineEventType};
@@ -17,23 +19,115 @@ use crate::data::schema::*;
 use crate::data::{self, connect};
 use crate::event::BatchToken;
 use crate::room::{state, timeline};
-use crate::{AppResult, MatrixError, SnPduEvent};
+use crate::{AppResult, MatrixError, SnPduEvent, room};
+
+/// The event types the search index covers, with the `key` their text is stored under.
+///
+/// `content.body` of `m.room.message` events is stored as `content.message`, which is what
+/// existing index rows use.
+const INDEXED_EVENT_TYPES: [(&str, &str); 3] = [
+    ("m.room.message", "content.message"),
+    ("m.room.name", "content.name"),
+    ("m.room.topic", "content.topic"),
+];
+
+/// The largest number of context events returned on either side of a result.
+const MAX_CONTEXT_LIMIT: u64 = 100;
+
+/// A search hit in result order: the event, its room and its sender.
+type Hit = (OwnedEventId, OwnedRoomId, OwnedUserId);
+
+/// The index keys a search has to look at, from the requested `keys` and the filter's
+/// `types` and `not_types`. Empty when the criteria exclude every indexed event type.
+fn searched_keys(criteria: &Criteria) -> Vec<&'static str> {
+    let filter = &criteria.filter;
+    INDEXED_EVENT_TYPES
+        .iter()
+        .filter(|(event_type, key)| {
+            if let Some(keys) = &criteria.keys
+                && !keys.iter().any(|k| index_key(k) == Some(key))
+            {
+                return false;
+            }
+            if let Some(types) = &filter.types
+                && !types.iter().any(|p| event_type_matches(p, event_type))
+            {
+                return false;
+            }
+            !filter
+                .not_types
+                .iter()
+                .any(|p| event_type_matches(p, event_type))
+        })
+        .map(|(_, key)| *key)
+        .collect()
+}
+
+fn index_key(key: &SearchKeys) -> Option<&'static str> {
+    match key {
+        SearchKeys::ContentBody => Some("content.message"),
+        SearchKeys::ContentName => Some("content.name"),
+        SearchKeys::ContentTopic => Some("content.topic"),
+        _ => None,
+    }
+}
+
+/// Matches an event type against a filter pattern, in which `*` matches any sequence of
+/// characters.
+fn event_type_matches(pattern: &str, event_type: &str) -> bool {
+    let mut segments = pattern.split('*');
+    let prefix = segments.next().unwrap_or_default();
+    let Some(mut rest) = event_type.strip_prefix(prefix) else {
+        return false;
+    };
+    let mut segments: Vec<&str> = segments.collect();
+    let Some(suffix) = segments.pop() else {
+        // No wildcard: the whole type must match.
+        return rest.is_empty();
+    };
+    for segment in segments {
+        match rest.find(segment) {
+            Some(index) => rest = &rest[index + segment.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(suffix)
+}
 
 fn searchable_events<'a>(
     room_ids: &'a [OwnedRoomId],
-    search_term: &'a str,
+    criteria: &'a Criteria,
+    keys: &'a [&'static str],
 ) -> event_searches::BoxedQuery<'a, diesel::pg::Pg> {
-    event_searches::table
+    let filter = &criteria.filter;
+    let mut visible_events = events::table
+        .filter(events::is_redacted.eq(false))
+        .into_boxed();
+    if let Some(url_filter) = &filter.url_filter {
+        visible_events = visible_events
+            .filter(events::contains_url.eq(matches!(url_filter, UrlFilter::EventsWithUrl)));
+    }
+    let mut query = event_searches::table
         .filter(event_searches::room_id.eq_any(room_ids))
-        .filter(
-            event_searches::event_id.eq_any(
-                events::table
-                    .filter(events::is_redacted.eq(false))
-                    .select(events::id),
-            ),
-        )
-        .filter(event_searches::vector.matches(websearch_to_tsquery(search_term)))
-        .into_boxed()
+        .filter(event_searches::key.eq_any(keys))
+        .filter(event_searches::event_id.eq_any(visible_events.select(events::id)))
+        .filter(event_searches::vector.matches(websearch_to_tsquery(&criteria.search_term)))
+        .into_boxed();
+    if let Some(senders) = &filter.senders {
+        query = query.filter(event_searches::sender_id.eq_any(senders));
+    }
+    if !filter.not_senders.is_empty() {
+        query = query.filter(event_searches::sender_id.ne_all(&filter.not_senders));
+    }
+    query
+}
+
+fn highlights(criteria: &Criteria) -> Vec<String> {
+    criteria
+        .search_term
+        .split_terminator(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 pub async fn search_pdus(
@@ -44,10 +138,11 @@ pub async fn search_pdus(
 ) -> AppResult<ResultRoomEvents> {
     let filter = &criteria.filter;
 
-    let room_ids = match filter.rooms.clone() {
+    let mut room_ids = match filter.rooms.clone() {
         Some(rooms) => rooms,
         None => data::user::joined_rooms(user_id).await.unwrap_or_default(),
     };
+    room_ids.retain(|room_id| !filter.not_rooms.contains(room_id));
 
     // Use limit or else 10, with maximum 100
     let limit = filter.limit.unwrap_or(10).min(100);
@@ -62,7 +157,16 @@ pub async fn search_pdus(
         }
     }
 
-    let mut data_query = searchable_events(&room_ids, &criteria.search_term);
+    let keys = searched_keys(criteria);
+    if room_ids.is_empty() || keys.is_empty() {
+        return Ok(ResultRoomEvents {
+            count: Some(0),
+            highlights: highlights(criteria),
+            ..Default::default()
+        });
+    }
+
+    let mut data_query = searchable_events(&room_ids, criteria, &keys);
     if let Some(mut next_batch) = next_batch.map(|nb| nb.split('-')) {
         let server_ts: i64 = next_batch.next().map(str::parse).transpose()?.unwrap_or(0);
         let event_sn: i64 = next_batch.next().map(str::parse).transpose()?.unwrap_or(0);
@@ -76,11 +180,9 @@ pub async fn search_pdus(
                 event_searches::vector,
                 websearch_to_tsquery(&criteria.search_term),
             ),
-            // event_searches::room_id,
             event_searches::event_id,
             event_searches::event_sn,
             event_searches::origin_server_ts,
-            // event_searches::stream_ordering,
         ))
         .limit(limit as i64);
     let items = if criteria.order_by == Some(OrderBy::Rank) {
@@ -95,10 +197,7 @@ pub async fn search_pdus(
             .load::<(f32, OwnedEventId, i64, i64)>(&mut connect().await?)
             .await?
     };
-    // let _ids: Vec<i64> = event_searches::table
-    //     .select(event_searches::id)
-    //     .load(&mut connect()?)?;
-    let count: i64 = searchable_events(&room_ids, &criteria.search_term)
+    let count: i64 = searchable_events(&room_ids, criteria, &keys)
         .count()
         .first(&mut connect().await?)
         .await?;
@@ -114,7 +213,8 @@ pub async fn search_pdus(
         None
     };
 
-    let mut results: Vec<_> = Vec::new();
+    let mut results = Vec::new();
+    let mut hits: Vec<Hit> = Vec::new();
     for (rank, event_id, ..) in items {
         let Ok(pdu) = timeline::get_pdu(&event_id).await else {
             continue;
@@ -125,85 +225,127 @@ pub async fn search_pdus(
         {
             continue;
         }
+        hits.push((
+            pdu.event_id.clone(),
+            pdu.room_id.clone(),
+            pdu.sender.clone(),
+        ));
         results.push(SearchResult {
-            context: calc_event_context(
-                user_id,
-                device_id,
-                &pdu.room_id,
-                pdu.event_sn,
-                10,
-                10,
-                false,
-            )
-            .await
-            .unwrap_or_default(),
+            context: calc_event_context(user_id, device_id, &pdu, &criteria.event_context)
+                .await
+                .unwrap_or_default(),
             rank: Some(rank as f64),
             result: Some(pdu.to_room_event_for(user_id, device_id)),
         });
     }
 
+    let mut room_state = BTreeMap::new();
+    if criteria.include_state == Some(true) {
+        let result_rooms: BTreeSet<_> = hits.iter().map(|(_, room_id, _)| room_id).collect();
+        for room_id in result_rooms {
+            let Ok(frame_id) = room::get_frame_id(room_id, None).await else {
+                continue;
+            };
+            let state_events = state::get_full_state(frame_id)
+                .await?
+                .values()
+                .map(|pdu| pdu.to_state_event_for(user_id, device_id))
+                .collect();
+            room_state.insert(room_id.clone(), state_events);
+        }
+    }
+
     Ok(ResultRoomEvents {
         count: Some(count as u64),
-        groups: BTreeMap::new(), // TODO
+        groups: group_hits(&criteria.groupings, &hits, next_batch.as_deref()),
         next_batch,
         results,
-        state: BTreeMap::new(), // TODO
-        highlights: criteria
-            .search_term
-            .split_terminator(|c: char| !c.is_alphanumeric())
-            .map(str::to_lowercase)
-            .collect(),
+        state: room_state,
+        highlights: highlights(criteria),
     })
+}
+
+/// Partitions the hits by each requested grouping key.
+///
+/// A group's `order` is the position of its first hit, so that groups sort the same way
+/// as the results do.
+fn group_hits(
+    groupings: &Groupings,
+    hits: &[Hit],
+    next_batch: Option<&str>,
+) -> BTreeMap<GroupingKey, BTreeMap<OwnedRoomIdOrUserId, ResultGroup>> {
+    let mut groups = BTreeMap::new();
+    for grouping in &groupings.group_by {
+        let Some(key) = &grouping.key else {
+            continue;
+        };
+        let group_of = |(_, room_id, sender): &Hit| match key {
+            GroupingKey::RoomId => Some(OwnedRoomIdOrUserId::RoomId(room_id.clone())),
+            GroupingKey::Sender => Some(OwnedRoomIdOrUserId::UserId(sender.clone())),
+            _ => None,
+        };
+        let groups: &mut BTreeMap<_, ResultGroup> = groups.entry(key.clone()).or_default();
+        for hit in hits {
+            let Some(group_key) = group_of(hit) else {
+                continue;
+            };
+            let order = groups.len() as u64;
+            groups
+                .entry(group_key)
+                .or_insert_with(|| ResultGroup {
+                    next_batch: next_batch.map(ToOwned::to_owned),
+                    order: Some(order),
+                    results: Vec::new(),
+                })
+                .results
+                .push(hit.0.clone());
+        }
+    }
+    groups
 }
 
 // Calculates the contextual events for any search results.
 async fn calc_event_context(
     user_id: &UserId,
     device_id: Option<&DeviceId>,
-    room_id: &RoomId,
-    event_sn: Seqnum,
-    before_limit: usize,
-    after_limit: usize,
-    include_profile: bool,
+    pdu: &SnPduEvent,
+    context: &EventContext,
 ) -> AppResult<EventContextResult> {
-    let (before_boundary, after_boundary) = context_boundaries(event_sn);
+    let (before_boundary, after_boundary) = context_boundaries(pdu.event_sn);
     let before_pdus = timeline::stream::load_pdus_backward(
         Some(user_id),
-        room_id,
+        &pdu.room_id,
         // The stream loader already uses an exclusive boundary. Starting one
         // position earlier skips the event immediately before the search hit.
         Some(before_boundary),
         None,
         None,
-        before_limit,
+        context.before_limit.min(MAX_CONTEXT_LIMIT) as usize,
     )
     .await?;
     let after_pdus = timeline::stream::load_pdus_forward(
         Some(user_id),
-        room_id,
+        &pdu.room_id,
         // Forward loading includes the supplied stream position, so advance once
         // to exclude the search hit while retaining its immediate successor.
         Some(after_boundary),
         None,
         None,
-        after_limit,
+        context.after_limit.min(MAX_CONTEXT_LIMIT) as usize,
     )
     .await?;
-    let mut profile = BTreeMap::new();
-    if include_profile && let Ok(frame_id) = crate::event::get_frame_id(room_id, event_sn).await {
-        let RoomMemberEventContent {
-            display_name,
-            avatar_url,
-            ..
-        } = state::get_state_content(frame_id, &StateEventType::RoomMember, user_id.as_str())
-            .await?;
-        if let Some(display_name) = display_name {
-            profile.insert("displayname".to_string(), display_name);
-        }
-        if let Some(avatar_url) = avatar_url {
-            profile.insert("avatar_url".to_string(), avatar_url.to_string());
-        }
-    }
+
+    let profile_info = if context.include_profile {
+        let senders: BTreeSet<&UserId> = before_pdus
+            .iter()
+            .chain(after_pdus.iter())
+            .map(|(_, pdu)| pdu.sender.as_ref())
+            .chain(std::iter::once(pdu.sender.as_ref()))
+            .collect();
+        historic_profiles(&pdu.room_id, pdu.event_sn, senders).await
+    } else {
+        BTreeMap::new()
+    };
 
     let context = EventContextResult {
         start: before_pdus
@@ -221,10 +363,47 @@ async fn calc_event_context(
             .into_iter()
             .map(|(_, pdu)| pdu.to_room_event_for(user_id, device_id))
             .collect(),
-        profile_info: BTreeMap::new(),
+        profile_info,
     };
 
     Ok(context)
+}
+
+/// The profiles of `senders` as they were at the event: the display name and avatar in
+/// their member events in the room state at `event_sn`. Users without a member event
+/// there are left out.
+async fn historic_profiles(
+    room_id: &RoomId,
+    event_sn: Seqnum,
+    senders: impl IntoIterator<Item = &UserId>,
+) -> BTreeMap<OwnedUserId, UserProfile> {
+    let mut profiles = BTreeMap::new();
+    let Ok(frame_id) = crate::event::get_frame_id(room_id, event_sn).await else {
+        return profiles;
+    };
+    for sender in senders {
+        let Ok(RoomMemberEventContent {
+            display_name,
+            avatar_url,
+            ..
+        }) = state::get_state_content::<RoomMemberEventContent>(
+            frame_id,
+            &StateEventType::RoomMember,
+            sender.as_str(),
+        )
+        .await
+        else {
+            continue;
+        };
+        profiles.insert(
+            sender.to_owned(),
+            UserProfile {
+                display_name,
+                avatar_url,
+            },
+        );
+    }
+    profiles
 }
 
 fn context_boundaries(event_sn: Seqnum) -> (BatchToken, BatchToken) {
@@ -280,15 +459,23 @@ pub async fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppRe
 mod tests {
     use diesel::debug_query;
     use diesel::pg::Pg;
+    use serde_json::json;
 
-    use super::{context_boundaries, searchable_events};
-    use crate::core::identifiers::RoomId;
-    use crate::event::BatchToken;
+    use super::*;
+
+    fn criteria(value: serde_json::Value) -> Criteria {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn room(id: &str) -> OwnedRoomId {
+        RoomId::parse(id).unwrap().to_owned()
+    }
 
     #[test]
     fn search_query_excludes_redacted_events() {
-        let room_ids = vec![RoomId::parse("!room:example.org").unwrap().to_owned()];
-        let query = searchable_events(&room_ids, "needle");
+        let room_ids = vec![room("!room:example.org")];
+        let criteria = criteria(json!({"search_term": "needle"}));
+        let query = searchable_events(&room_ids, &criteria, &["content.message"]);
         let sql = debug_query::<Pg, _>(&query).to_string();
 
         assert!(sql.contains("\"events\".\"is_redacted\" ="), "{sql}");
@@ -296,6 +483,118 @@ mod tests {
             sql.contains("\"event_searches\".\"event_id\" = ANY(SELECT \"events\".\"id\""),
             "{sql}"
         );
+        assert!(!sql.contains("contains_url"), "{sql}");
+        assert!(!sql.contains("\"sender_id\" ="), "{sql}");
+        assert!(!sql.contains("\"sender_id\" !="), "{sql}");
+    }
+
+    #[test]
+    fn search_query_applies_the_sender_and_url_filters() {
+        let room_ids = vec![room("!room:example.org")];
+        let criteria = criteria(json!({
+            "search_term": "needle",
+            "filter": {
+                "senders": ["@alice:example.org"],
+                "not_senders": ["@bob:example.org"],
+                "contains_url": true
+            }
+        }));
+        let query = searchable_events(&room_ids, &criteria, &["content.message"]);
+        let sql = debug_query::<Pg, _>(&query).to_string();
+
+        assert!(sql.contains("\"events\".\"contains_url\" ="), "{sql}");
+        assert!(
+            sql.contains("\"event_searches\".\"sender_id\" = ANY("),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("\"event_searches\".\"sender_id\" != ALL("),
+            "{sql}"
+        );
+        assert!(sql.contains("\"event_searches\".\"key\" = ANY("), "{sql}");
+    }
+
+    #[test]
+    fn searched_keys_follow_keys_and_type_filters() {
+        let all = criteria(json!({"search_term": "x"}));
+        assert_eq!(
+            searched_keys(&all),
+            ["content.message", "content.name", "content.topic"]
+        );
+
+        let body_only = criteria(json!({"search_term": "x", "keys": ["content.body"]}));
+        assert_eq!(searched_keys(&body_only), ["content.message"]);
+
+        let typed = criteria(json!({
+            "search_term": "x",
+            "filter": {"types": ["m.room.*"], "not_types": ["m.room.topic"]}
+        }));
+        assert_eq!(searched_keys(&typed), ["content.message", "content.name"]);
+
+        let unindexed = criteria(json!({
+            "search_term": "x",
+            "filter": {"types": ["m.room.member"]}
+        }));
+        assert!(searched_keys(&unindexed).is_empty());
+    }
+
+    #[test]
+    fn event_type_patterns_support_wildcards() {
+        assert!(event_type_matches("m.room.message", "m.room.message"));
+        assert!(!event_type_matches(
+            "m.room.message",
+            "m.room.message.extra"
+        ));
+        assert!(event_type_matches("m.room.*", "m.room.message"));
+        assert!(event_type_matches("*", "m.room.message"));
+        assert!(event_type_matches("*.message", "m.room.message"));
+        assert!(event_type_matches("m.*.mess*", "m.room.message"));
+        assert!(!event_type_matches("m.*.topic", "m.room.message"));
+        assert!(!event_type_matches("org.*", "m.room.message"));
+    }
+
+    #[test]
+    fn hits_are_grouped_by_room_and_sender_in_result_order() {
+        let hits: Vec<Hit> = vec![
+            (
+                EventId::parse("$1").unwrap(),
+                room("!a:example.org"),
+                UserId::parse("@alice:example.org").unwrap(),
+            ),
+            (
+                EventId::parse("$2").unwrap(),
+                room("!b:example.org"),
+                UserId::parse("@bob:example.org").unwrap(),
+            ),
+            (
+                EventId::parse("$3").unwrap(),
+                room("!a:example.org"),
+                UserId::parse("@bob:example.org").unwrap(),
+            ),
+        ];
+        let groupings: Groupings = serde_json::from_value(json!({
+            "group_by": [{"key": "room_id"}, {"key": "sender"}]
+        }))
+        .unwrap();
+
+        let groups = group_hits(&groupings, &hits, Some("token"));
+
+        let rooms = &groups[&GroupingKey::RoomId];
+        let room_a = &rooms[&OwnedRoomIdOrUserId::RoomId(room("!a:example.org"))];
+        assert_eq!(room_a.order, Some(0));
+        assert_eq!(room_a.results, ["$1", "$3"]);
+        assert_eq!(room_a.next_batch.as_deref(), Some("token"));
+        let room_b = &rooms[&OwnedRoomIdOrUserId::RoomId(room("!b:example.org"))];
+        assert_eq!(room_b.order, Some(1));
+        assert_eq!(room_b.results, ["$2"]);
+
+        let senders = &groups[&GroupingKey::Sender];
+        let bob =
+            &senders[&OwnedRoomIdOrUserId::UserId(UserId::parse("@bob:example.org").unwrap())];
+        assert_eq!(bob.order, Some(1));
+        assert_eq!(bob.results, ["$2", "$3"]);
+
+        assert!(group_hits(&Groupings::default(), &hits, None).is_empty());
     }
 
     #[test]
