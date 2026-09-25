@@ -326,7 +326,28 @@ pub async fn valid_refresh_token(
 }
 
 pub async fn make_user_admin(user_id: &UserId) -> AppResult<()> {
+    ensure_local_admin_change_allowed(user_id, true).await?;
     data::user::set_admin(user_id, true).await?;
+    Ok(())
+}
+
+/// With delegated auth the authentication server is the single source of
+/// truth for the admin flag and mirrors it through
+/// `_synapse/mas/provision_user`. Changing it locally would let the two
+/// disagree (e.g. re-grant admin to a user the auth server just demoted), so
+/// any change is refused. Setting the current value again is a no-op.
+pub async fn ensure_local_admin_change_allowed(user_id: &UserId, admin: bool) -> AppResult<()> {
+    if crate::config::get().enabled_delegated_auth().is_none() {
+        return Ok(());
+    }
+    let current = data::user::is_admin(user_id).await.unwrap_or(false);
+    if current != admin {
+        return Err(MatrixError::forbidden(
+            "The admin flag is managed by the authentication server",
+            None,
+        )
+        .into());
+    }
     Ok(())
 }
 
