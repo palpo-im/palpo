@@ -10,7 +10,7 @@ use serde_json::json;
 use serde_json::value::to_raw_value;
 use ulid::Ulid;
 
-use crate::core::client::filter::RoomEventFilter;
+use crate::core::client::filter::{RoomEventFilter, UrlFilter};
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
@@ -958,15 +958,22 @@ impl PduEvent {
         {
             return false;
         }
-        // TODO: url filter
-        // if let Some(url_filter) = &filter.url_filter {
-        //     match url_filter {
-        //         UrlFilter::EventsWithUrl => if !self.events::contains_url.eq(true)),
-        //         UrlFilter::EventsWithoutUrl => query =
-        // query.filter(events::contains_url.eq(false)),     }
-        // }
+        if let Some(url_filter) = &filter.url_filter {
+            let wants_url = matches!(url_filter, UrlFilter::EventsWithUrl);
+            if self.contains_url() != wants_url {
+                return false;
+            }
+        }
 
         true
+    }
+
+    /// Whether the event's `content` has a `url` key, which is what the `contains_url`
+    /// filter option matches on. This is the same test the `events.contains_url` column
+    /// is populated with.
+    pub fn contains_url(&self) -> bool {
+        serde_json::from_str::<BTreeMap<String, serde::de::IgnoredAny>>(self.content.get())
+            .is_ok_and(|content| content.contains_key("url"))
     }
 }
 
@@ -1752,5 +1759,66 @@ mod sender_only_unsigned_tests {
         update.save().await.unwrap();
         event.load_transaction_device().await.unwrap();
         assert_eq!(event.transaction_device.as_deref(), Some(phone));
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use serde_json::value::to_raw_value;
+
+    use super::*;
+
+    fn message(content: JsonValue) -> PduEvent {
+        PduEvent {
+            event_id: "$event:example.org".try_into().unwrap(),
+            sender: "@alice:example.org".try_into().unwrap(),
+            origin_server_ts: UnixMillis(1),
+            event_ty: TimelineEventType::RoomMessage,
+            content: to_raw_value(&content).unwrap(),
+            state_key: None,
+            room_id: "!room:example.org".try_into().unwrap(),
+            prev_events: Vec::new(),
+            depth: 1,
+            auth_events: Vec::new(),
+            redacts: None,
+            hashes: EventHash {
+                sha256: String::new(),
+            },
+            signatures: None,
+            unsigned: BTreeMap::new(),
+            extra_data: Default::default(),
+            rejection_reason: None,
+            transaction_device: None,
+        }
+    }
+
+    #[test]
+    fn contains_url_filter_matches_on_the_content_url_key() {
+        let text = message(json!({"body": "hi", "msgtype": "m.text"}));
+        let image = message(json!({
+            "body": "cat.png",
+            "msgtype": "m.image",
+            "url": "mxc://example.org/cat"
+        }));
+        assert!(!text.contains_url());
+        assert!(image.contains_url());
+
+        let no_filter = RoomEventFilter::default();
+        assert!(text.can_pass_filter(&no_filter));
+        assert!(image.can_pass_filter(&no_filter));
+
+        let with_url = RoomEventFilter {
+            url_filter: Some(UrlFilter::EventsWithUrl),
+            ..Default::default()
+        };
+        assert!(!text.can_pass_filter(&with_url));
+        assert!(image.can_pass_filter(&with_url));
+
+        let without_url = RoomEventFilter {
+            url_filter: Some(UrlFilter::EventsWithoutUrl),
+            ..Default::default()
+        };
+        assert!(text.can_pass_filter(&without_url));
+        assert!(!image.can_pass_filter(&without_url));
     }
 }
