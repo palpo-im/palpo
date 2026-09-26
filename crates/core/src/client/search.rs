@@ -85,7 +85,7 @@ pub struct Criteria {
     pub keys: Option<Vec<SearchKeys>>,
 
     /// A `Filter` to apply to the search.
-    #[serde(skip_serializing_if = "RoomEventFilter::is_empty")]
+    #[serde(default, skip_serializing_if = "RoomEventFilter::is_empty")]
     pub filter: RoomEventFilter,
 
     /// The order in which to search for results.
