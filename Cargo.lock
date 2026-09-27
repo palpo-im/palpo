@@ -198,9 +198,9 @@ checksum = "9dbc3a507a82b17ba0d98f6ce8fd6954ea0c8152e98009d36a40d8dcc8ce078a"
 
 [[package]]
 name = "assert_matches2"
-version = "0.1.2"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15832d94c458da98cac0ffa6eca52cc19c2a3c6c951058500a5ae8f01f0fdf56"
+checksum = "4b220e7e9afc9b4ebf03f061f1a3f8e09a8aeee303bfab530bff54cfdfe311d6"
 
 [[package]]
 name = "async-trait"
