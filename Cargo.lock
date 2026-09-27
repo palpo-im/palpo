@@ -1738,7 +1738,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5107,7 +5107,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5166,7 +5166,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6159,7 +6159,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6185,9 +6185,9 @@ dependencies = [
 
 [[package]]
 name = "termimad"
-version = "0.35.4"
+version = "0.35.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2374179aac8b77011a1aefe2f44d0c34eb680c9b4bd1c369a88991262c60c85a"
+checksum = "092b11fb38404fa873f019f8e5f300fa5787f381b7a58b923546d94b5a9065fd"
 dependencies = [
  "coolor",
  "crokey",
@@ -7232,7 +7232,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
