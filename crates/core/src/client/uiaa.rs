@@ -85,8 +85,11 @@ pub struct UiaaInfo {
     /// Authentication parameters required for the client to complete authentication.
     ///
     /// To create a `Box<RawJsonValue>`, use `serde_json::value::to_raw_value`.
-    // #[serde(skip_serializing_if = "Option::is_none")] // commented for complement test DELETE
-    // TestDeviceManagement/DELETE_/device/{deviceId}
+    // Always present (complement TestDeviceManagement/DELETE_/device/{deviceId}
+    // expects the key), and always an object: the spec types `params` as an
+    // object and matrix-js-sdk indexes it by stage, so `null` stalls Element's
+    // interactive auth (e.g. resetting the cross-signing identity).
+    #[serde(serialize_with = "params_object")]
     pub params: Option<Box<RawJsonValue>>,
 
     /// Session key for client to use to complete authentication.
@@ -370,3 +373,30 @@ impl AuthFlow {
 //         assert_eq!(params.url, url);
 //     }
 // }
+
+fn params_object<S: serde::Serializer>(
+    params: &Option<Box<RawJsonValue>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    match params {
+        Some(raw) => raw.serialize(serializer),
+        None => serde_json::Map::<String, serde_json::Value>::new().serialize(serializer),
+    }
+}
+
+#[cfg(test)]
+mod params_object_tests {
+    #[test]
+    fn missing_params_serialize_as_an_empty_object() {
+        let info = super::UiaaInfo {
+            flows: vec![],
+            completed: vec![],
+            params: None,
+            session: Some("s".into()),
+            auth_error: None,
+        };
+        let value = serde_json::to_value(&info).unwrap();
+        assert_eq!(value["params"], serde_json::json!({}));
+    }
+}
