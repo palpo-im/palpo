@@ -124,6 +124,10 @@ pub enum RoomKeyWithheldCodeInfo {
     #[serde(rename = "m.no_olm")]
     NoOlm,
 
+    /// `m.history_not_shared`: the megolm session is not marked for shared history.
+    #[serde(rename = "m.history_not_shared")]
+    HistoryNotShared,
+
     #[doc(hidden)]
     #[serde(untagged)]
     _Custom(Box<CustomRoomKeyWithheldCodeInfo>),
@@ -138,6 +142,7 @@ impl RoomKeyWithheldCodeInfo {
             Self::Unauthorized(_) => RoomKeyWithheldCode::Unauthorized,
             Self::Unavailable(_) => RoomKeyWithheldCode::Unavailable,
             Self::NoOlm => RoomKeyWithheldCode::NoOlm,
+            Self::HistoryNotShared => RoomKeyWithheldCode::HistoryNotShared,
             Self::_Custom(info) => info.code.as_str().into(),
         }
     }
@@ -163,6 +168,7 @@ impl<'de> Deserialize<'de> for RoomKeyWithheldCodeInfo {
             "m.unauthorised" => Self::Unauthorized(from_raw_json_value(&json)?),
             "m.unavailable" => Self::Unavailable(from_raw_json_value(&json)?),
             "m.no_olm" => Self::NoOlm,
+            "m.history_not_shared" => Self::HistoryNotShared,
             _ => Self::_Custom(from_raw_json_value(&json)?),
         })
     }
@@ -235,6 +241,9 @@ pub enum RoomKeyWithheldCode {
     /// An olm session could not be established.
     NoOlm,
 
+    /// `m.history_not_shared`: the megolm session is not marked for shared history.
+    HistoryNotShared,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
 }
@@ -252,6 +261,25 @@ mod tests {
 
     const PUBLIC_KEY: &[u8] = b"key";
     const BASE64_ENCODED_PUBLIC_KEY: &str = "a2V5";
+
+    #[test]
+    fn history_not_shared_round_trips_as_a_known_code() {
+        let json = json!({
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "code": "m.history_not_shared",
+            "sender_key": BASE64_ENCODED_PUBLIC_KEY
+        });
+        let content: ToDeviceRoomKeyWithheldEventContent = from_json_value(json.clone()).unwrap();
+        assert!(matches!(
+            content.code,
+            RoomKeyWithheldCodeInfo::HistoryNotShared
+        ));
+        assert!(matches!(
+            content.code.code(),
+            super::RoomKeyWithheldCode::HistoryNotShared
+        ));
+        assert_eq!(to_json_value(content).unwrap(), json);
+    }
 
     #[test]
     fn serialization_no_olm() {
