@@ -27,9 +27,10 @@ const signIn = async mxid => {
   await page.getByLabel('Matrix ID', { exact: true }).fill(mxid); await page.getByLabel('Password', { exact: true }).fill('correct-password');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click(); await page.locator('#login-panel').waitFor({ state: 'hidden' });
 };
+const tab = name => page.getByRole('tab', { name: new RegExp(`^${name}`) }).click(); // Sections are tabs; one is shown at a time.
 const refresh = async () => { await page.getByRole('button', { name: 'Refresh status', exact: true }).click(); await page.waitForFunction(() => !document.querySelector('#member-refresh').disabled); };
 try {
-  await page.goto(origin); await signIn('@admin:example.test');
+  await page.goto(origin); await signIn('@admin:example.test'); await tab('Hagencys');
   const form = page.locator('#fleet-form');
   assert.equal(await form.getByLabel('Connection mode').inputValue(), 'outbound');
   assert.equal(await form.locator('[name=callbackUrl]').isDisabled(), true);
@@ -54,13 +55,14 @@ try {
   for (const delivery of [matrix, work]) assert.equal((await machine('/ack', { id: delivery.id, lane: delivery.lane, token: delivery.token })).status, 200);
   assert.equal((await machine('/updates', { v: 2, generation: 1, sequence: 2, heartbeat: true, probeReceipts: [{ v: 1, received: true, ...work.payload, mode: 'edge' }] })).status, 200);
   await refresh(); await page.locator('#my-fleets').getByText('Ready to receive requests', { exact: true }).waitFor();
-  await page.locator('#project-form').getByLabel('Project name').fill('Outbound project');
+  await tab('Projects'); await page.locator('#project-form').getByLabel('Project name').fill('Outbound project');
   await page.getByRole('button', { name: 'Create project and approval room', exact: true }).click();
   await page.locator('#projects').getByRole('heading', { name: 'Outbound project', exact: true }).waitFor();
   fleet.transport.lastSeenAt = new Date(Date.now() - 100000).toISOString(); f.store.save(); await refresh();
-  await page.locator('#request-connection').getByText(/Hagency is offline/).waitFor();
+  await tab('Request an agent'); await page.locator('#request-connection').getByText(/Hagency is offline/).waitFor();
   await page.getByRole('button', { name: 'Define Agent on this resource', exact: true }).click();
   await page.locator('#request-form').getByLabel('Agent name', { exact: true }).fill('offline-browser-agent');
+  await page.locator('#request-advanced').evaluate(details => { details.open = true; }); // Advanced options hold the operation ID.
   await page.locator('#request-form').getByLabel('Request ID', { exact: true }).fill('offline-browser-request');
   assert.equal(await page.getByRole('button', { name: 'Send agent request', exact: true }).isEnabled(), true);
   await page.getByRole('button', { name: 'Send agent request', exact: true }).click();
