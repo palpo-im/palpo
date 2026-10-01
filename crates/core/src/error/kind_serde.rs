@@ -215,6 +215,8 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
                 .map_err(de::Error::custom)?,
             },
             ErrorCode::InvalidParam => ErrorKind::InvalidParam,
+            ErrorCode::KeyTooLarge => ErrorKind::KeyTooLarge,
+            ErrorCode::ProfileTooLarge => ErrorKind::ProfileTooLarge,
             ErrorCode::InvalidRoomState => ErrorKind::InvalidRoomState,
             ErrorCode::InvalidUsername => ErrorKind::InvalidUsername,
             ErrorCode::InviteBlocked => ErrorKind::InviteBlocked,
@@ -432,6 +434,12 @@ pub enum ErrorCode {
     /// A parameter that was specified has the wrong value. For example, the
     /// server expected an integer and instead received a string.
     InvalidParam,
+
+    /// `M_KEY_TOO_LARGE`: the profile key exceeds 255 bytes.
+    KeyTooLarge,
+
+    /// `M_PROFILE_TOO_LARGE`: the complete profile exceeds its size limit.
+    ProfileTooLarge,
 
     /// `M_INVALID_ROOM_STATE`
     ///

@@ -167,6 +167,12 @@ pub enum ErrorKind {
     /// been witnessed by the invitee.
     InviteBlocked,
 
+    /// `M_KEY_TOO_LARGE`: the profile key exceeds 255 bytes.
+    KeyTooLarge,
+
+    /// `M_PROFILE_TOO_LARGE`: the complete profile exceeds its size limit.
+    ProfileTooLarge,
+
     /// `M_LIMIT_EXCEEDED`
     ///
     /// The request has been refused due to [rate limiting]: too many requests
@@ -477,6 +483,8 @@ impl ErrorKind {
             ErrorKind::GuestAccessForbidden => ErrorCode::GuestAccessForbidden,
             ErrorKind::IncompatibleRoomVersion { .. } => ErrorCode::IncompatibleRoomVersion,
             ErrorKind::InvalidParam => ErrorCode::InvalidParam,
+            ErrorKind::KeyTooLarge => ErrorCode::KeyTooLarge,
+            ErrorKind::ProfileTooLarge => ErrorCode::ProfileTooLarge,
             ErrorKind::InvalidRoomState => ErrorCode::InvalidRoomState,
             ErrorKind::InvalidUsername => ErrorCode::InvalidUsername,
             ErrorKind::InviteBlocked => ErrorCode::InviteBlocked,
