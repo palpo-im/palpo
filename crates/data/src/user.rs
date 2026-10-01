@@ -188,10 +188,32 @@ pub async fn invited_rooms_for_sync(
     user_id: &UserId,
     since_sn: i64,
 ) -> DataResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
-    if invite_blocked(user_id).await? {
-        return Ok(Vec::new());
+    let config = user_datas::table
+        .filter(user_datas::user_id.eq(user_id))
+        .filter(user_datas::room_id.is_null())
+        .filter(user_datas::data_type.eq("m.invite_permission_config"))
+        .order_by(user_datas::id.desc())
+        .first::<DbUserData>(&mut connect().await?)
+        .await
+        .optional()?;
+    let mut invite_since = since_sn;
+    if let Some(config) = config {
+        if !config.is_deleted
+            && config
+                .json_data
+                .get("default_action")
+                .and_then(JsonValue::as_str)
+                == Some("block")
+        {
+            return Ok(Vec::new());
+        }
+        // An allowing update (including a tombstone) re-exposes retained invites
+        // that the client synced past while blocking was enabled.
+        if config.occur_sn >= since_sn {
+            invite_since = 0;
+        }
     }
-    invited_rooms(user_id, since_sn).await
+    invited_rooms(user_id, invite_since).await
 }
 
 /// Returns an iterator over all rooms a user was invited to.
