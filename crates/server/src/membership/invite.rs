@@ -214,7 +214,6 @@ pub async fn invite_user(
 
 #[cfg(test)]
 mod tests {
-    use diesel::prelude::*;
     use diesel_async::RunQueryDsl;
     use serde_json::json;
 

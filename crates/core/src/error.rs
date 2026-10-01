@@ -98,9 +98,9 @@ impl MatrixError {
         exclusive, Exclusive;
         guest_access_forbidden, GuestAccessForbidden;
         invalid_param, InvalidParam;
+        invite_blocked, InviteBlocked;
         invalid_room_state, InvalidRoomState;
         invalid_username, InvalidUsername;
-        invite_blocked, InviteBlocked;
         missing_param, MissingParam;
         missing_token, MissingToken;
         not_found, NotFound;
