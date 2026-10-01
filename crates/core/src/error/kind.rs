@@ -147,6 +147,9 @@ pub enum ErrorKind {
     /// server expected an integer and instead received a string.
     InvalidParam,
 
+    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
+    UnknownDevice,
+
     /// `M_INVALID_ROOM_STATE`
     ///
     /// The initial state implied by the parameters to the [`create_room`]
@@ -477,6 +480,7 @@ impl ErrorKind {
             ErrorKind::GuestAccessForbidden => ErrorCode::GuestAccessForbidden,
             ErrorKind::IncompatibleRoomVersion { .. } => ErrorCode::IncompatibleRoomVersion,
             ErrorKind::InvalidParam => ErrorCode::InvalidParam,
+            ErrorKind::UnknownDevice => ErrorCode::UnknownDevice,
             ErrorKind::InvalidRoomState => ErrorCode::InvalidRoomState,
             ErrorKind::InvalidUsername => ErrorCode::InvalidUsername,
             ErrorKind::InviteBlocked => ErrorCode::InviteBlocked,

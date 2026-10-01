@@ -169,14 +169,18 @@ async fn delete_device(
             ErrorKind::Unauthorized,
             "Missing authentication data",
         ));
-        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
-            .await?;
+        crate::uiaa::create_challenge_session(
+            authed.user_id(),
+            authed.require_device_id()?,
+            &mut uiaa_info,
+        )
+        .await?;
         return Err(uiaa_info.into());
     };
 
     let (authenticated, uiaa) = match crate::uiaa::try_auth(
         authed.user_id(),
-        authed.device_id(),
+        authed.require_device_id()?,
         &auth,
         &uiaa_info,
     )
@@ -195,7 +199,7 @@ async fn delete_device(
             ));
             crate::uiaa::create_challenge_session(
                 authed.user_id(),
-                authed.device_id(),
+                authed.require_device_id()?,
                 &mut uiaa_info,
             )
             .await?;
@@ -241,13 +245,22 @@ async fn delete_devices(
         auth_error: None,
     };
     let Some(auth) = auth else {
-        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
-            .await?;
+        crate::uiaa::create_challenge_session(
+            authed.user_id(),
+            authed.require_device_id()?,
+            &mut uiaa_info,
+        )
+        .await?;
         return Err(uiaa_info.into());
     };
 
-    let (authenticated, uiaa) =
-        crate::uiaa::try_auth(authed.user_id(), authed.device_id(), &auth, &uiaa_info).await?;
+    let (authenticated, uiaa) = crate::uiaa::try_auth(
+        authed.user_id(),
+        authed.require_device_id()?,
+        &auth,
+        &uiaa_info,
+    )
+    .await?;
     if !authenticated {
         return Err(uiaa.into());
     }

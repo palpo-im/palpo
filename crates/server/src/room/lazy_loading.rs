@@ -5,6 +5,19 @@ use palpo_core::Seqnum;
 use crate::core::{DeviceId, OwnedUserId, RoomId, UserId};
 use crate::{AppResult, data};
 
+/// Device-less appservice reads have no delivery cache and must include the members.
+pub async fn lazy_load_was_sent_before_for(
+    user_id: &UserId,
+    device_id: Option<&DeviceId>,
+    room_id: &RoomId,
+    confirmed_user_id: &UserId,
+) -> AppResult<bool> {
+    let Some(device_id) = device_id else {
+        return Ok(false);
+    };
+    lazy_load_was_sent_before(user_id, device_id, room_id, confirmed_user_id).await
+}
+
 #[tracing::instrument]
 pub async fn lazy_load_was_sent_before(
     user_id: &UserId,

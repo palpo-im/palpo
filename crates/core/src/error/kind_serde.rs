@@ -215,6 +215,7 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
                 .map_err(de::Error::custom)?,
             },
             ErrorCode::InvalidParam => ErrorKind::InvalidParam,
+            ErrorCode::UnknownDevice => ErrorKind::UnknownDevice,
             ErrorCode::InvalidRoomState => ErrorKind::InvalidRoomState,
             ErrorCode::InvalidUsername => ErrorKind::InvalidUsername,
             ErrorCode::InviteBlocked => ErrorKind::InviteBlocked,
@@ -432,6 +433,9 @@ pub enum ErrorCode {
     /// A parameter that was specified has the wrong value. For example, the
     /// server expected an integer and instead received a string.
     InvalidParam,
+
+    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
+    UnknownDevice,
 
     /// `M_INVALID_ROOM_STATE`
     ///

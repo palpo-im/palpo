@@ -38,7 +38,7 @@ pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<
                 kind: kind.name().to_owned(),
                 app_id,
                 app_display_name,
-                device_id: authed.device_id().to_owned(),
+                device_id: authed.require_device_id()?.to_owned(),
                 device_display_name,
                 access_token_id: authed.access_token_id().to_owned(),
                 pushkey,

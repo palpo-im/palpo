@@ -117,6 +117,7 @@ impl MatrixError {
         unable_to_grant_join, UnableToGrantJoin;
         unauthorized, Unauthorized;
         unknown, Unknown;
+        unknown_device, UnknownDevice;
         unrecognized, Unrecognized;
         unsupported_room_version, UnsupportedRoomVersion;
         url_not_set, UrlNotSet;

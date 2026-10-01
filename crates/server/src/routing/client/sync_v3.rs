@@ -49,7 +49,7 @@ pub(super) async fn sync_events_v3(
 ) -> JsonResult<sync_events::v3::SyncEventsResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let device_id = authed.device_id();
+    let device_id = authed.require_device_id()?;
 
     crate::user::ping_presence(sender_id, &args.set_presence).await?;
     let mut body = crate::sync_v3::sync_events(sender_id, device_id, &args).await?;
