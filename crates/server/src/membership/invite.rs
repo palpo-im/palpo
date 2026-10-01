@@ -8,6 +8,28 @@ use crate::membership::federation::membership::{InviteUserReqArgs, InviteUserReq
 use crate::room::{state, timeline};
 use crate::{AppResult, GetUrlOrigin, IsRemoteOrLocal, MatrixError, data, room, sending};
 
+pub(crate) async fn ensure_invite_allowed(invitee_id: &UserId) -> AppResult<()> {
+    if invitee_id.is_local() && data::user::invite_blocked(invitee_id).await? {
+        return Err(MatrixError::invite_blocked("This user has blocked room invites.").into());
+    }
+    Ok(())
+}
+
+/// Check local membership events before deduplication, signing or persistence.
+pub(crate) async fn ensure_membership_invite_allowed(builder: &PduBuilder) -> AppResult<()> {
+    if builder.event_type == TimelineEventType::RoomMember {
+        let content: RoomMemberEventContent = serde_json::from_str(builder.content.get())?;
+        if content.membership == MembershipState::Invite
+            && let Some(state_key) = &builder.state_key
+        {
+            let invitee_id = UserId::parse(state_key)
+                .map_err(|_| MatrixError::invalid_param("Invalid invite state_key."))?;
+            ensure_invite_allowed(&invitee_id).await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn invite_user(
     inviter_id: &UserId,
     invitee_id: &UserId,
@@ -188,4 +210,112 @@ pub async fn invite_user(
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_invite_blocking_preserves_membership_and_suppresses_sync() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user_id =
+            UserId::parse_with_server_name("blocked_invitee", &crate::config::get().server_name)
+                .unwrap();
+        let room_id: OwnedRoomId = "!blocked:example.org".try_into().unwrap();
+        let inviter: OwnedUserId = "@inviter:example.org".try_into().unwrap();
+        diesel::insert_into(data::schema::room_users::table)
+            .values(data::room::NewDbRoomUser {
+                event_id: "$invite:example.org".try_into().unwrap(),
+                event_sn: 1,
+                room_id: room_id.clone(),
+                room_server_id: None,
+                user_id: user_id.clone(),
+                user_server_id: user_id.server_name().to_owned(),
+                sender_id: inviter.clone(),
+                membership: "invite".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: Some(json!([{"type": "m.room.member",
+                "state_key": user_id.as_str(), "sender": inviter.as_str(),
+                "content": {"membership": "invite"}}])),
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let builder = PduBuilder::state(
+            user_id.to_string(),
+            &RoomMemberEventContent::new(MembershipState::Invite),
+        );
+        assert!(ensure_membership_invite_allowed(&builder).await.is_ok());
+        assert_eq!(
+            data::user::invited_rooms_for_sync(&user_id, 0)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        data::user::set_data(
+            &user_id,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "block"}),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            ensure_membership_invite_allowed(&builder).await,
+            Err(crate::AppError::Matrix(MatrixError {
+                kind: crate::core::error::ErrorKind::InviteBlocked,
+                ..
+            }))
+        ));
+        assert!(
+            data::user::invited_rooms_for_sync(&user_id, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            data::user::invited_rooms(&user_id, 0).await.unwrap().len(),
+            1,
+            "ordinary membership reads and appservice delivery must retain the invite"
+        );
+        let join = PduBuilder::state(
+            user_id.to_string(),
+            &RoomMemberEventContent::new(MembershipState::Join),
+        );
+        assert!(ensure_membership_invite_allowed(&join).await.is_ok());
+        for content in [
+            json!({}),
+            json!({"default_action": "allow"}),
+            json!({"default_action": "unknown"}),
+            json!({"default_action": false}),
+        ] {
+            data::user::set_data(&user_id, None, "m.invite_permission_config", content)
+                .await
+                .unwrap();
+            assert!(ensure_membership_invite_allowed(&builder).await.is_ok());
+            assert_eq!(
+                data::user::invited_rooms_for_sync(&user_id, 0)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
 }

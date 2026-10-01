@@ -172,6 +172,28 @@ pub async fn ignored_users(user_id: &UserId) -> DataResult<Vec<OwnedUserId>> {
         .map_err(Into::into)
 }
 
+/// Whether the user's stable invite permission account data blocks all invites.
+pub async fn invite_blocked(user_id: &UserId) -> DataResult<bool> {
+    let config = get_global_data::<JsonValue>(user_id, "m.invite_permission_config").await?;
+    Ok(config
+        .as_ref()
+        .and_then(|config| config.get("default_action"))
+        .and_then(JsonValue::as_str)
+        == Some("block"))
+}
+
+/// Invites visible to the recipient's sync. Other reads and appservice delivery
+/// retain the original membership records.
+pub async fn invited_rooms_for_sync(
+    user_id: &UserId,
+    since_sn: i64,
+) -> DataResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
+    if invite_blocked(user_id).await? {
+        return Ok(Vec::new());
+    }
+    invited_rooms(user_id, since_sn).await
+}
+
 /// Returns an iterator over all rooms a user was invited to.
 pub async fn invited_rooms(
     user_id: &UserId,

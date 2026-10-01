@@ -100,6 +100,7 @@ impl MatrixError {
         invalid_param, InvalidParam;
         invalid_room_state, InvalidRoomState;
         invalid_username, InvalidUsername;
+        invite_blocked, InviteBlocked;
         missing_param, MissingParam;
         missing_token, MissingToken;
         not_found, NotFound;
@@ -205,9 +206,8 @@ impl Scribe for MatrixError {
             let code = self.status_code.unwrap_or_else(|| {
                 use ErrorKind::*;
                 match self.kind.clone() {
-                    Forbidden | GuestAccessForbidden | ThreepidAuthFailed | ThreepidDenied => {
-                        StatusCode::FORBIDDEN
-                    }
+                    Forbidden | GuestAccessForbidden | ThreepidAuthFailed | ThreepidDenied
+                    | InviteBlocked => StatusCode::FORBIDDEN,
                     Unauthorized | UnknownToken { .. } | MissingToken => StatusCode::UNAUTHORIZED,
                     NotFound | Unrecognized => StatusCode::NOT_FOUND,
                     LimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -495,3 +495,15 @@ pub enum HeaderDeserializationError {
 // Some(AuthenticateError::InsufficientScope { scope }));         assert_eq!
 // (scope, "something_privileged");     }
 // }
+
+#[cfg(test)]
+mod invite_blocking_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_invites_use_http_forbidden() {
+        let mut response = Response::new();
+        MatrixError::invite_blocked("Invites are blocked.").render(&mut response);
+        assert_eq!(response.status_code, Some(StatusCode::FORBIDDEN));
+    }
+}

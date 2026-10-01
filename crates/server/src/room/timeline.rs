@@ -924,6 +924,7 @@ async fn build_and_append_pdu_locked(
     state_lock: &RoomMutexGuard,
     force: bool,
 ) -> AppResult<(SnPduEvent, bool)> {
+    membership::ensure_membership_invite_allowed(&pdu_builder).await?;
     if !force
         && let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(
