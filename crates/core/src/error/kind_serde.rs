@@ -215,7 +215,6 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
                 .map_err(de::Error::custom)?,
             },
             ErrorCode::InvalidParam => ErrorKind::InvalidParam,
-            ErrorCode::UnknownDevice => ErrorKind::UnknownDevice,
             ErrorCode::InvalidRoomState => ErrorKind::InvalidRoomState,
             ErrorCode::InvalidUsername => ErrorKind::InvalidUsername,
             ErrorCode::InviteBlocked => ErrorKind::InviteBlocked,
@@ -262,6 +261,7 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::Unactionable => ErrorKind::Unactionable,
             ErrorCode::Unauthorized => ErrorKind::Unauthorized,
             ErrorCode::Unknown => ErrorKind::Unknown,
+            ErrorCode::UnknownDevice => ErrorKind::UnknownDevice,
             #[cfg(feature = "unstable-msc4186")]
             ErrorCode::UnknownPos => ErrorKind::UnknownPos,
             ErrorCode::UnknownToken => ErrorKind::UnknownToken {
@@ -433,9 +433,6 @@ pub enum ErrorCode {
     /// A parameter that was specified has the wrong value. For example, the
     /// server expected an integer and instead received a string.
     InvalidParam,
-
-    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
-    UnknownDevice,
 
     /// `M_INVALID_ROOM_STATE`
     ///
@@ -623,6 +620,9 @@ pub enum ErrorCode {
     ///
     /// An unknown error has occurred.
     Unknown,
+
+    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
+    UnknownDevice,
 
     /// `M_UNKNOWN_POS`
     ///

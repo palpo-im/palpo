@@ -147,9 +147,6 @@ pub enum ErrorKind {
     /// server expected an integer and instead received a string.
     InvalidParam,
 
-    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
-    UnknownDevice,
-
     /// `M_INVALID_ROOM_STATE`
     ///
     /// The initial state implied by the parameters to the [`create_room`]
@@ -342,6 +339,9 @@ pub enum ErrorKind {
     /// An unknown error has occurred.
     Unknown,
 
+    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
+    UnknownDevice,
+
     /// `M_UNKNOWN_POS`
     ///
     /// The sliding sync ([MSC4186]) connection was expired by the server.
@@ -480,7 +480,6 @@ impl ErrorKind {
             ErrorKind::GuestAccessForbidden => ErrorCode::GuestAccessForbidden,
             ErrorKind::IncompatibleRoomVersion { .. } => ErrorCode::IncompatibleRoomVersion,
             ErrorKind::InvalidParam => ErrorCode::InvalidParam,
-            ErrorKind::UnknownDevice => ErrorCode::UnknownDevice,
             ErrorKind::InvalidRoomState => ErrorCode::InvalidRoomState,
             ErrorKind::InvalidUsername => ErrorCode::InvalidUsername,
             ErrorKind::InviteBlocked => ErrorCode::InviteBlocked,
@@ -509,6 +508,7 @@ impl ErrorKind {
             ErrorKind::Unactionable => ErrorCode::Unactionable,
             ErrorKind::Unauthorized => ErrorCode::Unauthorized,
             ErrorKind::Unknown => ErrorCode::Unknown,
+            ErrorKind::UnknownDevice => ErrorCode::UnknownDevice,
             #[cfg(feature = "unstable-msc4186")]
             ErrorKind::UnknownPos => ErrorCode::UnknownPos,
             ErrorKind::UnknownToken { .. } => ErrorCode::UnknownToken,
