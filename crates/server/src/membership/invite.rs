@@ -403,6 +403,7 @@ mod tests {
             .values((
                 room_joined_servers::room_id.eq(&room_id),
                 room_joined_servers::server_id.eq(crate::config::server_name()),
+                room_joined_servers::occur_sn.eq(1i64),
             ))
             .execute(&mut conn)
             .await
