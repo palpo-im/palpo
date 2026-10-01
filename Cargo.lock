@@ -197,12 +197,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9dbc3a507a82b17ba0d98f6ce8fd6954ea0c8152e98009d36a40d8dcc8ce078a"
 
 [[package]]
-name = "assert_matches2"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b220e7e9afc9b4ebf03f061f1a3f8e09a8aeee303bfab530bff54cfdfe311d6"
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3723,7 +3717,6 @@ name = "palpo-core"
 version = "0.4.0"
 dependencies = [
  "as_variant",
- "assert_matches2",
  "async-trait",
  "base64 0.23.1",
  "bcrypt",
@@ -3765,6 +3758,7 @@ dependencies = [
  "serde_html_form",
  "serde_json",
  "sha2 0.11.0",
+ "strass",
  "strum",
  "strum_macros",
  "subslice",
@@ -5910,6 +5904,12 @@ name = "str-buf"
 version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceb97b7225c713c2fd4db0153cb6b3cab244eb37900c3f634ed4d43310d8c34"
+
+[[package]]
+name = "strass"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17d0028ffa58c967c3401d6f3eab15f85637772139c0fd8f0ce59dabdf69a75a"
 
 [[package]]
 name = "strict"

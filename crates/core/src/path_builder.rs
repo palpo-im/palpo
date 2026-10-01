@@ -635,7 +635,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
     };
 
-    use assert_matches2::assert_matches;
+    use strass::assert_let;
 
     use super::{PathBuilder, StablePathSelector, VersionHistory};
     use crate::api::{
@@ -753,9 +753,9 @@ mod tests {
         // With version only.
         let hist =
             VersionHistory { stable_paths: &[(StablePathSelector::Version(V1_0), "/s")], ..EMPTY };
-        assert_matches!(hist.select_path(Cow::Borrowed(&version_supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&version_supported)));
         assert!(hist.is_supported(&version_supported));
-        assert_matches!(hist.select_path(Cow::Borrowed(&superset_supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&superset_supported)));
         assert!(hist.is_supported(&superset_supported));
 
         // With feature and version.
@@ -766,9 +766,9 @@ mod tests {
             )],
             ..EMPTY
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&version_supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&version_supported)));
         assert!(hist.is_supported(&version_supported));
-        assert_matches!(hist.select_path(Cow::Borrowed(&superset_supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&superset_supported)));
         assert!(hist.is_supported(&superset_supported));
 
         // Select latest stable version.
@@ -779,7 +779,7 @@ mod tests {
             ],
             ..EMPTY
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&version_supported)), Ok("/s_v2"));
+        assert_let!(Ok("/s_v2") = hist.select_path(Cow::Borrowed(&version_supported)));
         assert!(hist.is_supported(&version_supported));
 
         // With unstable feature.
@@ -792,7 +792,7 @@ mod tests {
             stable_paths: &[(StablePathSelector::Version(V1_0), "/s")],
             ..EMPTY
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&unstable_supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&unstable_supported)));
         assert!(hist.is_supported(&unstable_supported));
     }
 
@@ -809,7 +809,7 @@ mod tests {
             stable_paths: &[(StablePathSelector::Feature("org.boo.stable"), "/s")],
             ..EMPTY
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&supported)));
         assert!(hist.is_supported(&supported));
 
         // With feature and version.
@@ -821,7 +821,7 @@ mod tests {
             )],
             ..EMPTY
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&supported)));
         assert!(hist.is_supported(&supported));
     }
 
@@ -840,7 +840,7 @@ mod tests {
             )],
             ..EMPTY
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&supported)), Ok("/u"));
+        assert_let!(Ok("/u") = hist.select_path(Cow::Borrowed(&supported)));
         assert!(hist.is_supported(&supported));
     }
 
@@ -848,7 +848,7 @@ mod tests {
     fn select_unstable_fallback() {
         let supported = version_only_supported(&[V1_0]);
         let hist = VersionHistory { unstable_paths: &[(None, "/u")], ..EMPTY };
-        assert_matches!(hist.select_path(Cow::Borrowed(&supported)), Ok("/u"));
+        assert_let!(Ok("/u") = hist.select_path(Cow::Borrowed(&supported)));
         assert!(!hist.is_supported(&supported));
     }
 
@@ -857,7 +857,7 @@ mod tests {
         let supported = version_only_supported(&[V1_0]);
         let hist =
             VersionHistory { stable_paths: &[(StablePathSelector::Version(V1_0), "/r")], ..EMPTY };
-        assert_matches!(hist.select_path(Cow::Borrowed(&supported)), Ok("/r"));
+        assert_let!(Ok("/r") = hist.select_path(Cow::Borrowed(&supported)));
         assert!(hist.is_supported(&supported));
     }
 
@@ -873,10 +873,7 @@ mod tests {
             deprecated: Some(V1_2),
             removed: Some(V1_3),
         };
-        assert_matches!(
-            hist.select_path(Cow::Borrowed(&supported)),
-            Err(IntoHttpError::EndpointRemoved(V1_3))
-        );
+        assert_let!(Err(IntoHttpError::EndpointRemoved(V1_3)) = hist.select_path(Cow::Borrowed(&supported)));
         assert!(!hist.is_supported(&supported));
     }
 
@@ -892,7 +889,7 @@ mod tests {
             deprecated: Some(V1_2),
             removed: Some(V1_3),
         };
-        assert_matches!(hist.select_path(Cow::Borrowed(&supported)), Ok("/s"));
+        assert_let!(Ok("/s") = hist.select_path(Cow::Borrowed(&supported)));
         assert!(hist.is_supported(&supported));
     }
 
@@ -901,10 +898,7 @@ mod tests {
         let supported = version_only_supported(&[V1_0]);
         let hist =
             VersionHistory { stable_paths: &[(StablePathSelector::Version(V1_1), "/s")], ..EMPTY };
-        assert_matches!(
-            hist.select_path(Cow::Borrowed(&supported)),
-            Err(IntoHttpError::NoUnstablePath)
-        );
+        assert_let!(Err(IntoHttpError::NoUnstablePath) = hist.select_path(Cow::Borrowed(&supported)));
         assert!(!hist.is_supported(&supported));
     }
 
