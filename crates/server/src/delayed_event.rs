@@ -267,7 +267,9 @@ fn delayed_pdu_builder(event: &DbDelayedEvent) -> AppResult<PduBuilder> {
         unsigned,
         state_key: event.state_key.clone(),
         redacts: None,
-        // Without appservice timestamp massaging, hash_sign chooses the send time.
+        // MSC4140 preserves appservice timestamp massaging. Without it, hash_sign
+        // chooses the send time. MSC4354 still bounds sticky expiry by the earlier
+        // of receipt and origin_server_ts, including for massaged delayed events.
         timestamp: event.origin_server_ts.map(|ts| UnixMillis(ts as u64)),
         transaction_device: None,
         sticky_duration_ms: event.sticky_duration_ms.map(|duration| {
@@ -899,5 +901,99 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(delayed_event::prune_finalized(i64::MAX).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_delayed_sticky_massaging_preserves_protocol_expiry() {
+        use diesel::{OptionalExtension, QueryDsl};
+        use diesel_async::RunQueryDsl;
+
+        use super::*;
+        use crate::data::schema::{event_stickies, events};
+        use crate::event::{OutlierPdu, PduEvent};
+
+        crate::test_database::init();
+        for (label, offset) in [("past", -86_400_000i64), ("future", 86_400_000)] {
+            let origin_ts = UnixMillis::now().0 as i64 + offset;
+            let new = NewDbDelayedEvent {
+                delay_id: format!("massaged-{label}"),
+                user_id: "@massaged:example.org".try_into().unwrap(),
+                device_id: None,
+                room_id: "!massaged:example.org".try_into().unwrap(),
+                event_type: "m.room.message".into(),
+                state_key: None,
+                content: serde_json::json!({}),
+                delay_ms: 1000,
+                txn_id: format!("massaged-{label}").into(),
+                origin_server_ts: Some(origin_ts),
+                running_since: 1,
+                send_at: 1001,
+                created_at: 1,
+                sticky_duration_ms: Some(60_000),
+            };
+            let delayed_event::Scheduled::Created(row) =
+                delayed_event::create(new, 10).await.unwrap()
+            else {
+                panic!("new row")
+            };
+            let reloaded = delayed_event::get_by_delay_id(&row.user_id, &row.delay_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let builder = delayed_pdu_builder(&reloaded).unwrap();
+            assert_eq!(builder.timestamp, Some(UnixMillis(origin_ts as u64)));
+            let event_id = EventId::parse(format!("$massaged-{label}:example.org")).unwrap();
+            let pdu = PduEvent::from_json_value(
+                &row.room_id,
+                &event_id,
+                serde_json::json!({
+                    "type": builder.event_type, "sender": row.user_id,
+                    "content": serde_json::from_str::<JsonValue>(builder.content.get()).unwrap(),
+                    "origin_server_ts": builder.timestamp.unwrap(), "depth": 1,
+                    "auth_events": [], "prev_events": [], "hashes": {"sha256": ""},
+                    "msc4354_sticky": {"duration_ms": builder.sticky_duration_ms.unwrap().get()}
+                }),
+            )
+            .unwrap();
+            let outlier = OutlierPdu {
+                json_data: crate::core::serde::to_canonical_object(&pdu).unwrap(),
+                pdu,
+                soft_failed: false,
+                policy_refused: false,
+                remote_server: "example.org".try_into().unwrap(),
+                room_id: row.room_id,
+                room_version: crate::core::RoomVersionId::V11,
+                event_sn: None,
+            };
+            outlier.save_to_database(false).await.unwrap();
+            let mut conn = crate::data::connect().await.unwrap();
+            let expires_at = event_stickies::table
+                .find(&event_id)
+                .select(event_stickies::expires_at)
+                .first::<i64>(&mut conn)
+                .await
+                .optional()
+                .unwrap();
+            if label == "past" {
+                assert!(
+                    expires_at.is_none(),
+                    "massaging must not extend an expired sticky window"
+                );
+            } else {
+                let received = events::table
+                    .find(&event_id)
+                    .select(events::received_at)
+                    .first::<Option<i64>>(&mut conn)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    expires_at,
+                    Some(received + 60_000),
+                    "future massaging is bounded by receipt"
+                );
+            }
+        }
     }
 }
