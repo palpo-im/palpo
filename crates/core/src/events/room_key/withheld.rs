@@ -126,7 +126,7 @@ pub enum RoomKeyWithheldCodeInfo {
 
     /// `m.history_not_shared`: the megolm session is not marked for shared history.
     #[serde(rename = "m.history_not_shared")]
-    HistoryNotShared,
+    HistoryNotShared(Box<RoomKeyWithheldSessionData>),
 
     #[doc(hidden)]
     #[serde(untagged)]
@@ -142,7 +142,7 @@ impl RoomKeyWithheldCodeInfo {
             Self::Unauthorized(_) => RoomKeyWithheldCode::Unauthorized,
             Self::Unavailable(_) => RoomKeyWithheldCode::Unavailable,
             Self::NoOlm => RoomKeyWithheldCode::NoOlm,
-            Self::HistoryNotShared => RoomKeyWithheldCode::HistoryNotShared,
+            Self::HistoryNotShared(_) => RoomKeyWithheldCode::HistoryNotShared,
             Self::_Custom(info) => info.code.as_str().into(),
         }
     }
@@ -168,7 +168,7 @@ impl<'de> Deserialize<'de> for RoomKeyWithheldCodeInfo {
             "m.unauthorised" => Self::Unauthorized(from_raw_json_value(&json)?),
             "m.unavailable" => Self::Unavailable(from_raw_json_value(&json)?),
             "m.no_olm" => Self::NoOlm,
-            "m.history_not_shared" => Self::HistoryNotShared,
+            "m.history_not_shared" => Self::HistoryNotShared(from_raw_json_value(&json)?),
             _ => Self::_Custom(from_raw_json_value(&json)?),
         })
     }
@@ -264,21 +264,40 @@ mod tests {
 
     #[test]
     fn history_not_shared_round_trips_as_a_known_code() {
+        let room_id = owned_room_id!("!roomid:localhost");
         let json = json!({
             "algorithm": "m.megolm.v1.aes-sha2",
             "code": "m.history_not_shared",
-            "sender_key": BASE64_ENCODED_PUBLIC_KEY
+            "sender_key": BASE64_ENCODED_PUBLIC_KEY,
+            "room_id": room_id,
+            "session_id": "history_session"
         });
         let content: ToDeviceRoomKeyWithheldEventContent = from_json_value(json.clone()).unwrap();
-        assert!(matches!(
-            content.code,
-            RoomKeyWithheldCodeInfo::HistoryNotShared
-        ));
+        let RoomKeyWithheldCodeInfo::HistoryNotShared(session) = &content.code else {
+            panic!("expected history-not-shared session data");
+        };
+        assert_eq!(session.room_id, room_id);
+        assert_eq!(session.session_id, "history_session");
         assert!(matches!(
             content.code.code(),
             super::RoomKeyWithheldCode::HistoryNotShared
         ));
         assert_eq!(to_json_value(content).unwrap(), json);
+    }
+
+    #[test]
+    fn history_not_shared_requires_both_session_identifiers() {
+        for missing in ["room_id", "session_id"] {
+            let mut json = json!({
+                "algorithm": "m.megolm.v1.aes-sha2",
+                "code": "m.history_not_shared",
+                "sender_key": BASE64_ENCODED_PUBLIC_KEY,
+                "room_id": "!roomid:localhost",
+                "session_id": "history_session"
+            });
+            json.as_object_mut().unwrap().remove(missing);
+            assert!(from_json_value::<ToDeviceRoomKeyWithheldEventContent>(json).is_err());
+        }
     }
 
     #[test]
