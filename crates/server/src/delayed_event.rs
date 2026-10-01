@@ -255,6 +255,27 @@ async fn deliver_after_commit(room_id: &RoomId, event_id: &EventId) {
     }
 }
 
+fn delayed_pdu_builder(event: &DbDelayedEvent) -> AppResult<PduBuilder> {
+    let mut unsigned = BTreeMap::new();
+    unsigned.insert(
+        crate::event::DELAY_ID_UNSIGNED_KEY.to_owned(),
+        to_raw_value(&event.delay_id)?,
+    );
+    Ok(PduBuilder {
+        event_type: event.event_type.clone().into(),
+        content: to_raw_value(&event.content)?,
+        unsigned,
+        state_key: event.state_key.clone(),
+        redacts: None,
+        // Without appservice timestamp massaging, hash_sign chooses the send time.
+        timestamp: event.origin_server_ts.map(|ts| UnixMillis(ts as u64)),
+        transaction_device: None,
+        sticky_duration_ms: event.sticky_duration_ms.map(|duration| {
+            crate::core::events::sticky::StickyDurationMs::new_clamped(duration as u32)
+        }),
+    })
+}
+
 /// Build and append the PDU for a locked delayed event through the normal
 /// event authorization and timeline path. The caller queues federation delivery
 /// only after the surrounding row-locking transaction commits.
@@ -316,25 +337,8 @@ async fn send_delayed_pdu(
         .await?;
     }
 
-    let mut unsigned = BTreeMap::new();
-    unsigned.insert(
-        crate::event::DELAY_ID_UNSIGNED_KEY.to_owned(),
-        to_raw_value(&event.delay_id)?,
-    );
-
     let event_id = timeline::build_and_append_pdu_force_locked(
-        PduBuilder {
-            event_type,
-            content: to_raw_value(&event.content)?,
-            unsigned,
-            state_key: event.state_key.clone(),
-            redacts: None,
-            timestamp: event.origin_server_ts.map(|ts| UnixMillis(ts as u64)),
-            // MSC4140: delayed events carry a delay id instead of a transaction id.
-            transaction_device: None,
-            // The delayed-event endpoint has no MSC4354 sticky parameter.
-            sticky_duration_ms: None,
-        },
+        delayed_pdu_builder(event)?,
         &event.user_id,
         &event.room_id,
         &crate::room::get_version(&event.room_id).await?,
@@ -365,6 +369,7 @@ pub async fn schedule(
     event_type: &TimelineEventType,
     txn_id: &TransactionId,
     timestamp: Option<UnixMillis>,
+    sticky_duration_ms: Option<crate::core::events::sticky::StickyDurationMs>,
     delay: Duration,
     state_key: Option<String>,
     content: JsonValue,
@@ -462,6 +467,7 @@ pub async fn schedule(
         running_since: now,
         send_at: now + delay_ms,
         created_at: now,
+        sticky_duration_ms: sticky_duration_ms.map(|duration| duration.get() as i32),
     };
     // The limit is enforced inside the same transaction as the insert, so
     // concurrent requests cannot each observe a count below it and all succeed.
@@ -814,13 +820,33 @@ mod tests {
             running_since: 1,
             send_at: 1001,
             created_at: 1,
+            sticky_duration_ms: Some(123_456),
         };
         let delayed_event::Scheduled::Created(row) = delayed_event::create(new, 10).await.unwrap()
         else {
             panic!("new row")
         };
         let event = EventId::parse("$delayed:example.org").unwrap();
+        assert_eq!(row.sticky_duration_ms, Some(123_456));
+        // Read through a fresh connection after scheduling, as a restarted worker does.
+        let reloaded = delayed_event::get_by_delay_id(&row.user_id, &row.delay_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.sticky_duration_ms, Some(123_456));
+        let builder = delayed_pdu_builder(&reloaded).unwrap();
+        assert_eq!(builder.sticky_duration_ms.unwrap().get(), 123_456);
+        assert!(
+            builder.timestamp.is_none(),
+            "sticky lifetime starts at delivery, not scheduling"
+        );
+        assert!(builder.transaction_device.is_none());
         let mut conn = crate::data::connect().await.unwrap();
+        let restarted = delayed_event::restart(&mut conn, &row.user_id, &row.delay_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restarted.sticky_duration_ms, Some(123_456));
         let failed = conn
             .transaction::<(), AppError, _>(async |conn| {
                 delayed_event::set_sent_locked(conn, row.id, &event, 2000).await?;
