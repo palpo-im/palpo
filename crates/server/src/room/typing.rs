@@ -39,7 +39,8 @@ pub async fn add_typing(
 /// so that sync picks up the "typing stopped" change before cleanup.
 pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) -> AppResult<()> {
     let event_sn = data::next_sn().await?;
-    data::room::typing::stop_typing(room_id, user_id, event_sn).await?;
+    data::room::typing::stop_typing(room_id, user_id, event_sn, UnixMillis::now().get() as i64)
+        .await?;
 
     // Notify same-instance watchers immediately
     let _ = TYPING_UPDATE_SENDER.send(room_id.to_owned());
@@ -83,7 +84,8 @@ pub async fn all_typings(
     room_id: &RoomId,
 ) -> AppResult<SyncEphemeralRoomEvent<TypingEventContent>> {
     maintain_typings(room_id).await?;
-    let user_ids = data::room::typing::typing_user_ids(room_id).await?;
+    let user_ids =
+        data::room::typing::typing_user_ids(room_id, UnixMillis::now().get() as i64).await?;
 
     Ok(SyncEphemeralRoomEvent {
         content: TypingEventContent { user_ids },
