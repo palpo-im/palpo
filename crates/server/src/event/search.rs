@@ -314,7 +314,7 @@ pub async fn search_pdus(
                 room_id: cursor.as_ref().and_then(|cursor| cursor.room_id.clone()),
                 sender: cursor.as_ref().and_then(|cursor| cursor.sender.clone()),
             }
-            .encode(),
+            .encode()
         })
     };
 
