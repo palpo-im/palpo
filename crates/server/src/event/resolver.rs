@@ -209,14 +209,8 @@ fn resolve_state_at_incoming_impl<'a>(
     async move {
         debug!("calculating state at event using state resolve");
         let mut extremity_states = Vec::with_capacity(incoming_pdu.prev_events.len());
-        let mut had_prev_events = false;
-        // Rejected predecessors do not contribute room state. Truly unknown or
-        // unreconstructable predecessors return None so the caller can fetch the
-        // event-time state from federation instead of substituting current state.
-        let mut had_rejected_prev_events = false;
 
         for prev_event_id in &incoming_pdu.prev_events {
-            had_prev_events = true;
             let Ok(prev_event) = timeline::get_pdu(prev_event_id).await else {
                 // Truly unknown prev event — don't fall back to current state. The
                 // caller (e.g. process_incoming) needs to keep the event soft-failed
@@ -225,15 +219,13 @@ fn resolve_state_at_incoming_impl<'a>(
                 return Ok(None);
             };
 
-            if prev_event.rejected() {
-                // Skip rejected prev events: they don't contribute to room state.
-                had_rejected_prev_events = true;
-                continue;
-            }
-
             let mut leaf_state = match state::get_pdu_before_frame_id(prev_event_id).await {
                 Ok(frame_id) => state::get_full_state_ids(frame_id).await?,
-                Err(e) if e.is_not_found() && prev_event.state_key.is_none() => {
+                Err(e)
+                    if e.is_not_found()
+                        && prev_event.state_key.is_none()
+                        && !prev_event.rejected() =>
+                {
                     let frame_id = match state::get_pdu_frame_id(prev_event_id).await {
                         Ok(frame_id) => frame_id,
                         Err(e) if e.is_not_found() => return Ok(None),
@@ -257,7 +249,11 @@ fn resolve_state_at_incoming_impl<'a>(
                 Err(e) => return Err(e),
             };
 
-            if let Some(state_key) = &prev_event.state_key {
+            // A rejected event leaves its predecessor state unchanged. Retain that
+            // state as a fork input, but never apply the rejected state update.
+            if !prev_event.rejected()
+                && let Some(state_key) = &prev_event.state_key
+            {
                 let state_key_id =
                     state::ensure_field_id(&prev_event.event_ty.to_string().into(), state_key)
                         .await?;
@@ -266,23 +262,6 @@ fn resolve_state_at_incoming_impl<'a>(
             // Do not key this collection by frame id. Forked state predecessors can
             // legitimately share a before-frame and each must remain a separate leaf.
             extremity_states.push(leaf_state);
-        }
-
-        // If we had prev_events but every one of them is rejected or an
-        // unresolvable outlier (and crucially: nothing was truly missing), fall
-        // back to the room's current frame state. This avoids triggering federation
-        // /state requests for events like the sentinel in
-        // TestInboundFederationRejectsEventsWithRejectedAuthEvents whose prev events
-        // are in our DB but were rejected (and so don't contribute to state). For
-        // events with TRULY missing prev events, we already returned None above so
-        // the caller can run the missing-events fetch path.
-        if had_prev_events
-            && extremity_states.is_empty()
-            && had_rejected_prev_events
-            && let Ok(frame_id) = state::get_room_frame_id(&incoming_pdu.room_id, None).await
-        {
-            let state = state::get_full_state_ids(frame_id).await?;
-            return Ok(Some(state));
         }
 
         let mut fork_states = Vec::with_capacity(extremity_states.len());
@@ -375,4 +354,185 @@ fn resolve_state_at_incoming_impl<'a>(
         }
     }
     .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::UnixMillis;
+    use crate::core::events::StateEventType;
+    use crate::event::{OutlierPdu, SnPduEvent};
+
+    fn event(id: &str, ty: &str, state_key: Option<&str>, content: serde_json::Value) -> PduEvent {
+        serde_json::from_value(serde_json::json!({
+            "event_id": id, "room_id": "!auth-history:example.org", "sender": "@alice:example.org",
+            "type": ty, "state_key": state_key, "origin_server_ts": 1000,
+            "content": content, "depth": 1, "hashes": {"sha256": "test"}
+        }))
+        .unwrap()
+    }
+
+    async fn store(pdu: PduEvent) -> SnPduEvent {
+        OutlierPdu {
+            json_data: crate::core::serde::to_canonical_object(&pdu).unwrap(),
+            room_id: pdu.room_id.clone(),
+            pdu,
+            soft_failed: false,
+            policy_refused: false,
+            remote_server: "example.org".try_into().unwrap(),
+            room_version: RoomVersionId::V11,
+            event_sn: None,
+        }
+        .save_to_database(false)
+        .await
+        .unwrap()
+        .0
+    }
+
+    async fn snapshot(target: &SnPduEvent, members: &[&SnPduEvent]) -> i64 {
+        let mut compressed = CompressedState::new();
+        for pdu in members {
+            let field = state::ensure_field_id(
+                &pdu.event_ty.to_string().into(),
+                pdu.state_key.as_deref().unwrap(),
+            )
+            .await
+            .unwrap();
+            compressed.insert(state::compress_event(&pdu.room_id, field, pdu.event_sn).unwrap());
+        }
+        state::set_event_state_before(&target.event_id, &target.room_id, Arc::new(compressed))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_event_time_auth_never_substitutes_current_state() {
+        crate::test_database::init();
+        let rules = room::get_version_rules(&RoomVersionId::V11).unwrap();
+        let create = store(event(
+            "$auth-create",
+            "m.room.create",
+            Some(""),
+            serde_json::json!({"creator": "@alice:example.org", "room_version": "11"}),
+        ))
+        .await;
+        diesel::insert_into(rooms::table)
+            .values(crate::data::room::NewDbRoom {
+                id: create.room_id.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 1,
+                has_auth_chain_index: false,
+                created_at: UnixMillis(1000),
+            })
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        snapshot(&create, &[]).await;
+        let mut join = event(
+            "$auth-alice-join",
+            "m.room.member",
+            Some("@alice:example.org"),
+            serde_json::json!({"membership": "join"}),
+        );
+        join.prev_events = vec![create.event_id.clone()];
+        join.auth_events = vec![create.event_id.clone()];
+        let join = store(join).await;
+        snapshot(&join, &[&create]).await;
+        let mut rejected = event(
+            "$auth-rejected",
+            "m.room.member",
+            Some("@alice:example.org"),
+            serde_json::json!({"membership": "ban"}),
+        );
+        rejected.prev_events = vec![join.event_id.clone()];
+        rejected.auth_events = vec![create.event_id.clone(), join.event_id.clone()];
+        rejected.rejection_reason = Some("fixture rejected state event".into());
+        let rejected = store(rejected).await;
+        let mut bob = event(
+            "$auth-bob-join",
+            "m.room.member",
+            Some("@bob:example.org"),
+            serde_json::json!({"membership": "join"}),
+        );
+        bob.sender = UserId::parse("@bob:example.org").unwrap();
+        let bob = store(bob).await;
+        let current_frame = snapshot(&bob, &[&create, &join, &bob]).await;
+        diesel::update(rooms::table.find(&create.room_id))
+            .set(rooms::state_frame_id.eq(current_frame))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+
+        let mut child = event(
+            "$auth-child",
+            "m.room.message",
+            None,
+            serde_json::json!({"body": "historical", "msgtype": "m.text"}),
+        );
+        child.prev_events = vec![rejected.event_id.clone()];
+        child.auth_events = vec![create.event_id.clone(), join.event_id.clone()];
+        let old_state = resolve_state_at_incoming(&child, &rules)
+            .await
+            .unwrap()
+            .unwrap();
+        let alice_field = state::ensure_field_id(&StateEventType::RoomMember, "@alice:example.org")
+            .await
+            .unwrap();
+        let bob_field = state::ensure_field_id(&StateEventType::RoomMember, "@bob:example.org")
+            .await
+            .unwrap();
+        assert_eq!(old_state.get(&alice_field), Some(&join.event_id));
+        assert!(
+            !old_state.contains_key(&bob_field),
+            "later room state must not enter the historical fork"
+        );
+        crate::event::handler::auth_check(&child, &rules, Some(&old_state))
+            .await
+            .unwrap();
+        child.sender = bob.sender.clone();
+        child.auth_events = vec![create.event_id.clone(), bob.event_id.clone()];
+        assert!(
+            crate::event::handler::auth_check(&child, &rules, Some(&old_state))
+                .await
+                .is_err(),
+            "later joined membership cannot authorize an earlier event"
+        );
+
+        // A stored before-frame follows exactly the same rules as legacy DAG reconstruction.
+        snapshot(&rejected, &[&create, &join]).await;
+        assert_eq!(
+            resolve_state_at_incoming(&child, &rules)
+                .await
+                .unwrap()
+                .unwrap(),
+            old_state
+        );
+        // If a rejected predecessor's historical state is unavailable, request recovery.
+        let mut missing = event(
+            "$auth-rejected-missing",
+            "m.room.member",
+            Some("@alice:example.org"),
+            serde_json::json!({"membership": "ban"}),
+        );
+        missing.prev_events = vec![EventId::parse("$auth-unknown").unwrap()];
+        missing.rejection_reason = Some("fixture".into());
+        let missing = store(missing).await;
+        child.prev_events = vec![missing.event_id.clone()];
+        assert!(
+            resolve_state_at_incoming(&child, &rules)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Mixed accepted/rejected forks must retain both historic branches.
+        child.prev_events.push(join.event_id.clone());
+        assert!(
+            resolve_state_at_incoming(&child, &rules)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 }

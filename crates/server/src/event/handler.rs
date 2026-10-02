@@ -402,7 +402,7 @@ pub async fn process_to_outlier_pdu(
         soft_failed = true;
     }
     // A rejected predecessor does not reject its descendants. State resolution
-    // skips rejected predecessors and falls back to the last accepted state, so
+    // uses the state before rejected predecessors without applying their updates, so
     // a later valid event can reconnect the room DAG.
 
     let (auth_events, missing_auth_event_ids) =
@@ -456,8 +456,8 @@ pub async fn process_to_outlier_pdu(
     if incoming_pdu.rejection_reason.is_none() {
         // Remember whether soft_failed was already set due to missing prev/auth
         // events. We must NOT clear it just because the auth check happened to
-        // succeed (e.g., via the resolve_state_at_incoming current-state
-        // fallback): clearing it would cause process_incoming() to skip the
+        // succeed against the state available locally: clearing it would cause
+        // process_incoming() to skip the
         // /get_missing_events fetch and we'd never pull in the missing parts
         // of the DAG.
         let was_soft_failed = soft_failed;
@@ -885,14 +885,9 @@ pub async fn auth_check(
                     }
                 },
                 None => {
-                    // Fallback: state_at_incoming_event resolution may be incomplete
-                    // (e.g., for events whose prev_events point to an early room frame).
-                    // Try looking up the state event directly from the room's current state.
-                    if let Ok(state_pdu) =
-                        crate::room::get_state(&incoming_pdu.room_id, &k, &s, None).await
-                    {
-                        return Ok(state_pdu.pdu);
-                    }
+                    // Absence in the resolved event-time state is authoritative.
+                    // Substituting current state would apply later memberships or
+                    // power levels to historical authorization.
                     warn!(
                         "missing state key id {state_key_id} for state type: {k}, state_key: {s}, room: {}",
                         incoming_pdu.room_id
