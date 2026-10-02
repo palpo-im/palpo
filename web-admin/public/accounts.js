@@ -68,8 +68,23 @@
     finally { button.disabled = false; }
   };
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !find('account-request-panel').hidden && receipt) void refresh(); else clearTimeout(timer); });
+  let serverName = '';
+  const preview = () => {
+    const name = form.elements.username.value.trim().toLowerCase(), el = find('account-server-name');
+    if (!serverName) { el.textContent = ''; return; }
+    const id = document.createElement('code'); id.textContent = `@${name || 'alice'}:${serverName}`;
+    el.replaceChildren(document.createTextNode('Your Matrix ID will be '), id);
+  };
+  form.elements.username.addEventListener('input', preview);
+  const match = () => {
+    const a = form.elements.password.value, b = form.elements.confirmPassword.value, hint = find('password-match');
+    hint.textContent = !b ? '' : a === b ? 'Passwords match.' : 'Passwords do not match yet.';
+    hint.className = `hint field-hint ${!b ? '' : a === b ? 'ok' : 'error'}`;
+  };
+  form.elements.password.addEventListener('input', match); form.elements.confirmPassword.addEventListener('input', match);
   void call('account-access').then(config => {
     find('open-account-request').hidden = !config.enabled;
-    find('account-server-name').textContent = `Your Matrix ID will be @username:${config.serverName}`;
+    serverName = config.serverName; preview();
+    const line = find('login-server'); line.textContent = `Signing in to ${config.serverName}`; line.hidden = false;
   }).catch(() => {});
 })();

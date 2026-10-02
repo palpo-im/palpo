@@ -1627,7 +1627,9 @@ fn collect_receipts(SyncInfo { req_body, .. }: SyncInfo<'_>) -> sync_events::v5:
 }
 
 async fn collect_typing<'a, Rooms>(
-    SyncInfo { req_body, .. }: SyncInfo<'_>,
+    SyncInfo {
+        req_body, since_sn, ..
+    }: SyncInfo<'_>,
     _next_batch: Seqnum,
     rooms: Rooms,
 ) -> AppResult<sync_events::v5::Typing>
@@ -1652,8 +1654,13 @@ where
             continue;
         }
 
+        // A room whose typing changed since this connection's position is
+        // sent even when nobody is typing any more: the empty list is what
+        // clears a client's indicator (as /v3 sync does). Omitting it left
+        // "is typing" on screen forever after a stop.
+        let changed = since_sn > 0 && room::typing::last_typing_update(room_id).await? >= since_sn;
         let typing_event = room::typing::all_typings(room_id).await?;
-        if !typing_event.content.user_ids.is_empty() {
+        if changed || !typing_event.content.user_ids.is_empty() {
             typing.rooms.insert(room_id.to_owned(), typing_event);
         }
     }

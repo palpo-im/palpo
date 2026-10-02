@@ -69,11 +69,11 @@ pub(super) async fn set_global_data(
         data::user::set_ignored_users(authed.user_id(), &ignored_ids).await?;
     }
 
-    if body.as_object().is_some_and(|content| content.is_empty()) {
-        data::user::delete_global_data(authed.user_id(), &event_type).await?;
-    } else {
-        data::user::set_data(authed.user_id(), None, &event_type, body).await?;
-    }
+    // `{}` is ordinary content (as Synapse stores it), not a delete: clients
+    // clear a secret by writing `{}` and wait for that exact `{}` to come
+    // back through sync, which a delete never produces. Deletion is the
+    // separate MSC3391 DELETE endpoint.
+    data::user::set_data(authed.user_id(), None, &event_type, body).await?;
 
     // MSC4495: the recipient set is derived from this event, and deltas are only computed
     // when the user's presence row moves. Without this, removing a recipient would not

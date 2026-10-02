@@ -144,13 +144,11 @@ async fn write_data_locked(
     event_type: &str,
     json_data: JsonValue,
 ) -> DataResult<DbUserData> {
-    if let Some(existing) = &existing
-        && !existing.is_deleted
-        && existing.json_data == json_data
-    {
-        return Ok(existing.clone());
-    }
-
+    // Every write is a new change, even with identical content (as Synapse
+    // does): clients such as matrix-js-sdk wait for their own write to come
+    // back through sync, so a silently deduplicated write leaves them waiting
+    // forever (Element's "reset cryptographic identity" clears secrets by
+    // writing `{}` and hung when `{}` was already stored).
     if let Some(existing) = existing {
         diesel::update(user_datas::table.find(existing.id))
             .set((

@@ -133,8 +133,8 @@ pub(super) async fn auth_metadata(res: &mut Response) -> JsonResult<serde_json::
     let issuer = match issuer {
         Some(issuer) => issuer,
         None => {
-            return Err(MatrixError::not_found(
-                "OIDC discovery has not been configured on this homeserver.",
+            return Err(MatrixError::unrecognized(
+                "OAuth 2.0 authentication is not supported on this homeserver.",
             )
             .into());
         }

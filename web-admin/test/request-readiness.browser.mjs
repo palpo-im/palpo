@@ -30,11 +30,13 @@ const refresh = async () => {
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click(); await response;
   await page.waitForFunction(() => !document.querySelector('#member-refresh').disabled);
 };
+const tab = name => page.getByRole('tab', { name: new RegExp(`^${name}`) }).click(); // Sections are tabs; one is shown at a time.
 const signIn = async mxid => {
   await page.getByLabel('Matrix ID', { exact: true }).fill(mxid);
   await page.getByLabel('Password', { exact: true }).fill('correct-password');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.locator('#projects article').first().waitFor();
+  await page.locator('#projects article').first().waitFor({ state: 'attached' });
+  await tab('Request an agent');
 };
 const proofEvents = () => [...f.events.values()].filter(event => event.type === 'com.hagency.connection.probe.v1').length;
 const connectResponses = [];
@@ -57,6 +59,7 @@ try {
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   const loginRenewal = page.waitForResponse(r => r.url().endsWith('/connect'));
   await signIn('@owner:example.test'); assert.equal((await loginRenewal).status(), 200);
+  await page.locator('#request-advanced').evaluate(details => { details.open = true; }); // Advanced options hold the operation ID.
   await form.getByLabel('Request ID', { exact: true }).fill('retained-request-id');
   await form.getByLabel('Agent name', { exact: true }).fill('retry-one');
   await form.getByLabel('Resource', { exact: true }).selectOption(`resource_${'a'.repeat(24)}`);

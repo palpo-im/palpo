@@ -104,7 +104,7 @@ regex-syntax = "0.8"
 regex-automata = "0.4"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 ring = "0.17.14"
-salvo = { version = "0.96.0", features = ["rustls"]}
+salvo = { version = "1.0.0", features = ["rustls"]}
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"

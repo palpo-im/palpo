@@ -3,6 +3,7 @@ mod debug;
 mod event;
 mod event_report;
 mod federation;
+mod known_user;
 mod mas;
 mod media;
 mod register;
@@ -68,6 +69,7 @@ pub fn router() -> Router {
                 .push(event::router())
                 .push(event_report::router())
                 .push(federation::router())
+                .push(known_user::router())
                 .push(media::router())
                 .push(register::router())
                 .push(registration_token::router())

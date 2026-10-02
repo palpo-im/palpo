@@ -22,6 +22,7 @@ pub use key_backup::*;
 pub mod session;
 pub use session::*;
 pub mod external_id;
+pub mod known;
 pub mod login_token;
 pub mod openid_token;
 pub mod presence;
@@ -764,6 +765,9 @@ pub async fn set_suspended(user_id: &UserId, suspended: bool) -> DataResult<()> 
 /// List users with pagination and filtering
 #[derive(Debug, Clone, Default)]
 pub struct ListUsersFilter {
+    /// Only list accounts on this server name. The admin API sets it to the
+    /// local server name so rows for other servers never show up as accounts.
+    pub server_name: Option<String>,
     pub from: Option<i64>,
     pub limit: Option<i64>,
     pub name: Option<String>,
@@ -795,6 +799,11 @@ fn escape_like_pattern(value: &str) -> String {
 pub async fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i64)> {
     let mut query = users::table.into_boxed();
     let mut count_query = users::table.into_boxed();
+
+    if let Some(ref server_name) = filter.server_name {
+        query = query.filter(users::server_name.eq(server_name.clone()));
+        count_query = count_query.filter(users::server_name.eq(server_name.clone()));
+    }
 
     // Filter by name (localpart contains)
     // Escape LIKE wildcards to prevent pattern injection attacks
