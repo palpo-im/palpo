@@ -114,8 +114,8 @@ where
 mod tests {
     use std::time::Duration;
 
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json};
+    use strass::assert_let;
 
     use super::{StickyDurationMs, StickyObject};
     use crate::events::{AnyMessageLikeEvent, MessageLikeEvent};
@@ -167,10 +167,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_matches!(
-            event,
-            AnyMessageLikeEvent::RoomMessage(MessageLikeEvent::Original(event))
-        );
+        assert_let!(AnyMessageLikeEvent::RoomMessage(MessageLikeEvent::Original(event)) = event);
         assert_eq!(
             event.sticky.map(|sticky| sticky.duration_ms.get()),
             Some(3_600_000)
@@ -198,10 +195,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_matches!(
-            event,
-            AnyMessageLikeEvent::RoomMessage(MessageLikeEvent::Original(event))
-        );
+        assert_let!(AnyMessageLikeEvent::RoomMessage(MessageLikeEvent::Original(event)) = event);
         assert!(event.sticky.is_none());
     }
 }

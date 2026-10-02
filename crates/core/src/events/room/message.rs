@@ -673,8 +673,8 @@ impl MessageType {
 
 #[cfg(test)]
 mod replacement_tests {
-    use assert_matches2::assert_let;
     use serde_json::json;
+    use strass::assert_let;
 
     use super::{
         MessageType, Relation, ReplacementMetadata, RoomMessageEventContent,
