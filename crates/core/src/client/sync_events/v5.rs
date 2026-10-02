@@ -1027,11 +1027,12 @@ impl Typing {
         Self::default()
     }
 
-    /// Whether all fields are empty or `None`.
+    /// Whether no room has a typing update. A room whose list is empty is an
+    /// update ("nobody is typing any more"): the server sends one only when the
+    /// room's typing changed since the client's position, and dropping it left
+    /// clients showing a stopped user as typing forever.
     pub fn is_empty(&self) -> bool {
-        self.rooms
-            .values()
-            .all(|event| event.content.user_ids.is_empty())
+        self.rooms.is_empty()
     }
 }
 
@@ -1066,12 +1067,6 @@ mod tests {
             .account_data
             .rooms
             .insert(room_id.clone(), Vec::new());
-        response.extensions.typing.rooms.insert(
-            room_id,
-            SyncTypingEvent {
-                content: TypingEventContent::new(Vec::new()),
-            },
-        );
         response.extensions.e2ee = E2ee {
             device_one_time_keys_count: BTreeMap::from([(
                 DeviceKeyAlgorithm::SignedCurve25519,
@@ -1150,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_is_empty_when_all_rooms_have_no_typing_users() {
+    fn typing_stop_is_an_update_not_empty() {
         let room_id = RoomId::parse("!room:example.org").unwrap().to_owned();
         let typing = Typing {
             rooms: BTreeMap::from([(
@@ -1161,7 +1156,8 @@ mod tests {
             )]),
         };
 
-        assert!(typing.is_empty());
+        assert!(!typing.is_empty());
+        assert!(Typing::default().is_empty());
     }
 
     #[cfg(feature = "unstable-msc4262")]
