@@ -305,8 +305,8 @@ pub async fn search_pdus(
         .await?;
     let next_batch = if items.len() < limit {
         None
-    } else if let Some(last) = items.last() {
-        Some(
+    } else {
+        items.last().map(|last| {
             SearchCursor {
                 rank: ranked.then_some(last.0),
                 timestamp: last.3,
@@ -315,9 +315,7 @@ pub async fn search_pdus(
                 sender: cursor.as_ref().and_then(|cursor| cursor.sender.clone()),
             }
             .encode(),
-        )
-    } else {
-        None
+        })
     };
 
     let mut results = Vec::new();
