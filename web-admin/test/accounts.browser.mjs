@@ -21,6 +21,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 1100 } }),
 page.on('pageerror', error => errors.push(error.message));
 const out = new URL('../test-results/accounts/', import.meta.url); mkdirSync(out, { recursive: true });
 try {
+const tab = name => page.getByRole('tab', { name: new RegExp(`^${name}`) }).click(); // Sections are tabs; one is shown at a time.
   await page.goto(origin);
   await page.getByRole('button', { name: 'Request an account', exact: true }).click();
   const form = page.locator('#account-request-form');
@@ -52,11 +53,11 @@ try {
   const project = page.locator('#project-form'); await project.getByLabel('Project name').fill('Alice project');
   await project.getByRole('button', { name: 'Create project and approval room' }).click();
   await page.locator('#projects').getByText('Owner approval: pending', { exact: true }).waitFor();
-  await page.locator('#request-form').getByLabel('Agent name').fill('小白-01');
+  await tab('Request an agent'); await page.locator('#request-form').getByLabel('Agent name').fill('小白-01');
   const operationId = await page.locator('#request-form [name=requestId]').inputValue();
   const registeredProject = Object.values(f.store.state.projects).find(p => p.ownerMxid === '@alice:example.test');
   f.putState(f.rooms.get(registeredProject.ownerDmRoomId), 'm.room.member', '@approvalbot:example.test', { membership: 'join' }, '@approvalbot:example.test');
-  await page.locator('#projects').getByText('Owner approval: ready', { exact: true }).waitFor();
+  await tab('Projects'); await page.locator('#projects').getByText('Owner approval: ready', { exact: true }).waitFor(); await tab('Request an agent');
   const requestForm = page.locator('#request-form');
   assert.equal(await requestForm.getByLabel('Agent name').inputValue(), '小白-01');
   assert.equal(await page.locator('#request-form [name=requestId]').inputValue(), operationId);

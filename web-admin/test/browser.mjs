@@ -24,11 +24,13 @@ page.on('pageerror', error => pageErrors.push(error.message));
 page.on('response', async response => { if (response.url().includes('/api/')) apiResponses.push(await response.text().catch(() => '')); });
 const evidence = resolve('test-results'); await mkdir(evidence, { recursive: true });
 try {
+const tab = name => page.getByRole('tab', { name: new RegExp(`^${name}`) }).click(); // Sections are tabs; one is shown at a time.
   await page.goto(origin);
   await page.getByLabel('Matrix ID', { exact: true }).fill('@admin:example.test');
   await page.getByLabel('Password', { exact: true }).fill('correct-password');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('heading', { name: 'Hagency connections' }).waitFor();
+  await tab('Hagencys');
   // Regression: an AS credential failure must preserve the administrator login
   // and durable failed operation, as seen during the first real deployment.
   let denyAsOnce = true;
@@ -92,6 +94,7 @@ try {
   await projectForm.getByLabel('Project name', { exact: true }).fill('Owner UI project');
   await projectForm.getByRole('button', { name: 'Create project and approval room', exact: true }).click();
   await page.locator('#projects').getByText('Owner approval: ready', { exact: true }).waitFor();
+  await tab('Request an agent');
   const requestForm = page.locator('#request-form');
   // An event-ready provider can still have no advertised role. Keep readiness
   // truthful while guiding the requester and preventing an empty submission.
@@ -149,6 +152,7 @@ try {
   f.palpo.fetch = f.fetch;
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
   await page.locator('#request-role-hint').waitFor({ state: 'hidden' });
+  await page.locator('#request-advanced').evaluate(details => { details.open = true; }); // Advanced options hold the operation ID.
   await requestForm.getByLabel('Request ID', { exact: true }).fill('ui-request-1');
   await requestForm.getByRole('button', { name: 'Send agent request', exact: true }).click();
   await page.locator('#requests').getByText('Awaiting the Hagency owner’s resource decision.', { exact: true }).waitFor();
@@ -156,6 +160,7 @@ try {
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
   await page.getByRole('link', { name: 'Open project and use agent', exact: true }).waitFor();
   await page.locator('#requests').getByText('Configuration: codex · fixture-model · high · strong', { exact: true }).waitFor();
+  await tab('Request an agent'); // A sent request switches to the request list.
   await requestForm.getByLabel('Agent name', { exact: true }).fill('fast-two');
   await requestForm.getByLabel('Request ID', { exact: true }).fill('ui-request-2');
   await requestForm.getByRole('button', { name: 'Send agent request', exact: true }).click();
@@ -165,6 +170,7 @@ try {
   assert.equal(f.requests.size, 2);
   // Refresh removes a withdrawn resource and prevents another submission while
   // preserving the user's name/request ID for deliberate recovery.
+  await tab('Request an agent'); // A sent request switches to the request list.
   await requestForm.getByLabel('Agent name', { exact: true }).fill('retained-third');
   const retainedRequestId = await requestForm.getByLabel('Request ID', { exact: true }).inputValue();
   f.publishedOffers.set(actualFleetId, poolOffers.map(offer => ({ ...offer, resources: offer.resources.filter(r => r.id !== medium.id) })));
