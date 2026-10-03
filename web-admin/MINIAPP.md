@@ -83,16 +83,30 @@ frontend through Makepad, and cleans up. HTTP, sessions and SQLite workflows are
 real; Matrix/Hagency observations are explicit local test fixtures.
 
 This is an implementation milestone, not completed ADR acceptance. Remaining:
-real two-account deployment and owner file handoff, richer My Actions room UI,
+public deployment and native file saving/runtime import, richer My Actions room UI,
 Hagency-scoped allocation decisions/top-ups/runtime statistics/revocation,
-signup decision parity, mobile/hosted integration and publication. No live
-server configuration or accounts are changed by the tests.
+signup decision parity, mobile/hosted integration and publication. The default
+unit and native fixture suites do not change live accounts or configuration.
 
 For explicit live member checks, `test/miniapp-live-server.mjs` starts a loopback
 sidecar using a separately named SQLite file and a real loopback Palpo upstream.
 Rinx's `live_palpo.py` uploads only code to mini1, borrows the explicitly supplied
 current Rinx session in memory, tests native member submission and role denial,
 then stops the sidecar. It does not copy the production database, start notification
-workers, or deploy public routes. The 2026-10-03 live member run passed; current
-administrator credentials were unavailable, so it is not privileged approval
-acceptance.
+workers, or deploy public routes. The 2026-10-03 live member run passed.
+
+Rinx's explicit `live_palpo_admin.py` operator test adds dedicated temporary
+admin, owner and bot identities using Palpo's supported `--server false --execute`
+CLI. It does not reset existing accounts or restart Palpo. With a private fixture
+credential journal passed as the sidecar's sixth argument, it uses real Matrix
+authorization, App Service registration and private notification rooms. Only
+this test runner accelerates reminder intervals. Its workflow database stays
+separate from the production admin store, and its HTTP listener stays on loopback.
+Cleanup removes test registrations, leaves test rooms, deactivates test accounts
+and verifies their Matrix sessions no longer authenticate.
+
+The live native administrator/owner run on 2026-10-03 passed approval, rejection,
+owner-only export authorization, stale decision refusal, notification delivery,
+reminders after seen and mini-app disconnect. This verifies the contribution
+workflow on real Palpo; it does not claim runtime import, Hagency connection,
+project/agent lifecycle or OS push-notification entry acceptance.
