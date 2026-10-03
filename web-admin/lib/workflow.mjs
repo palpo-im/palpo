@@ -230,9 +230,11 @@ export class Workflow {
     const fingerprint = digest({ actor, fleetId: fleet.id, name, existingRoom });
     let project = this.store.state.projects[id];
     if (project && project.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This project operation ID is already bound to different content.');
+    const grant = this.projectGrant?.(input, actor, project);
     const capabilities = await this.capabilities(fleet);
     if (!project) {
       project = this.store.state.projects[id] = { id, requestId, fingerprint, fleetId: fleet.id, name, ownerMxid: actor, approvalBotMxid: capabilities.approvalBotMxid, authVersion: 1, createdAt: now(), roomId: existingRoom, state: 'creating', room: { aliasLocalpart: `hf_${id}` }, ownerDm: { aliasLocalpart: `hf_${id}_approvals` } };
+      if (grant) project.resourceGrant = grant;
       this.store.audit(actor, 'project.register', fleet.id, id, 'started');
     }
     try {
@@ -299,6 +301,7 @@ export class Workflow {
       }
       agentDefinition = { name, resourceId: definition.resourceId };
     }
+    this.resourceGrant?.(project, agentDefinition?.resourceId);
     const payload = { v: 1, fleetId: fleet.id, requestId, requesterMxid: actor, sourceRoomId: fleet.reception.roomId, targetProjectId: project.id, targetRoomId: project.roomId, ownerMxid: project.ownerMxid, ownerDmRoomId: project.ownerDmRoomId, role, requestedTokens, ratePerDay, authVersion: project.authVersion,
       ...(agentDefinition ? { agentDefinition } : {}) };
     const id = `${fleet.id}:${requestId}`, fingerprint = digest(payload);
