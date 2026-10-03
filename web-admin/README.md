@@ -100,6 +100,12 @@ request ID for retry. Renewal never retries an agent submission automatically.
 
 Pause/resume verify the actual App Service disabled flag. **Revoke service** is final in this release and disables that App Service credential; its API response includes `revocationScope: "appservice_credentials_only"`. It does not claim to revoke separately issued Matrix user sessions or remove every identity's room membership. Use each identity's retirement flow for that scope. Fleet-wide retirement, Hagency notification and local stop acknowledgement remain required follow-up work.
 
+## Rinx mini app
+
+The native shared-login adapter, approval Inbox and Matrix action notifications
+are documented in [MINIAPP.md](MINIAPP.md), including same-origin proxy setup,
+the optional mandatory-project-approval migration and release limitations.
+
 ## API
 
 The browser and programmatic administrator use the same `/api` endpoints. Admin mutations require a valid session cookie, exact `Origin: <PUBLIC_ORIGIN>` and `X-CSRF-Token` returned by sign-in/session. Tokens from upstream Palpo responses are never forwarded by these endpoints.

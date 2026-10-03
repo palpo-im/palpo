@@ -1,0 +1,182 @@
+import { createHash } from 'node:crypto';
+import { ApiError } from './service.mjs';
+import { canonical } from './outbound.mjs';
+import { fields } from './miniapp.mjs';
+
+const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
+const fail = (status, code, message) => { throw new ApiError(status, code, message); };
+const key = value => {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value)) fail(400, 'invalid_request_id', 'Use a stable request ID.');
+  return value;
+};
+const text = (value, name, max) => {
+  if (typeof value !== 'string' || !value.trim() || value.length > max || /[\x00-\x1f]/.test(value)) fail(400, 'invalid_input', `${name} is required (maximum ${max} characters).`);
+  return value.trim();
+};
+
+// Persist workflow, audit and notification intent in the same SQLite transaction.
+// No token, export content, or Matrix event is a workflow decision record.
+export class Inbox {
+  constructor(service, workflow, { now = Date.now, approvers = [], maxRecords = 10000, requireProjectApproval = false } = {}) {
+    Object.assign(this, { service, workflow, now, approvers, maxRecords, requireProjectApproval });
+    this.store = service.store;
+    this.store.state.actionInbox ??= { records: {}, notices: {}, rooms: {} };
+    workflow.projectGrant = (input, actor, existing) => this.projectGrant(input, actor, existing);
+    workflow.resourceGrant = (project, resource) => this.resourceGrant(project, resource);
+  }
+  get state() { return this.store.state.actionInbox; }
+  pending(row, actor, admin) {
+    if (row.state === 'requested') return admin;
+    if (row.state !== 'approved') return false;
+    if (row.kind === 'project') return row.ownerMxid === actor && row.execution !== 'done';
+    if (row.execution !== 'done') return admin;
+    const fleet = this.store.state.fleets[row.result?.fleetId];
+    return row.ownerMxid === actor && !fleet?.connection?.verifiedAt;
+  }
+  view(row, actor, admin) {
+    const { fingerprint, command, ...copy } = row;
+    return { ...copy, needsMyAction: this.pending(row, actor, admin),
+      nextAction: row.state === 'requested' ? 'review' : row.state !== 'approved' ? null
+        : row.kind === 'project' ? (row.execution === 'done' ? null : 'activate_project')
+        : row.execution !== 'done' ? 'retry_install' : this.pending(row, actor, admin) ? 'export_and_connect' : null,
+      canDecide: admin && row.state === 'requested', canContinue: this.pending(row, actor, admin) && row.state === 'approved' };
+  }
+  record(id, actor, admin) {
+    const row = this.state.records[id];
+    if (!row || (row.ownerMxid !== actor && !admin)) fail(404, 'action_not_found', 'Action not found.');
+    return row;
+  }
+  get(id, actor, admin) { return { action: this.view(this.record(id, actor, admin), actor, admin) }; }
+  list(actor, admin, { view = 'needs_action', offset = 0, limit = 50 } = {}) {
+    if (!['needs_action', 'waiting', 'history', 'all'].includes(view) || !Number.isSafeInteger(offset) || offset < 0
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(400, 'invalid_page', 'Invalid inbox page.');
+    const allowed = Object.values(this.state.records).filter(row => admin || row.ownerMxid === actor);
+    const selected = allowed.filter(row => view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
+      : view === 'waiting' ? !this.pending(row, actor, admin) && (row.state === 'requested' || (row.state === 'approved' && row.execution !== 'done'))
+        : row.state === 'rejected' || (row.state === 'approved' && row.execution === 'done' && !this.pending(row, actor, admin))));
+    selected.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    return { actions: selected.slice(offset, offset + limit).map(row => this.view(row, actor, admin)), total: selected.length,
+      pendingCount: allowed.filter(row => this.pending(row, actor, admin)).length,
+      room: this.state.rooms[actor] ? { roomId: this.state.rooms[actor].roomId, botMxid: this.state.rooms[actor].botMxid, serverName: this.service.serverName } : null };
+  }
+  notify(row) {
+    // Discard obsolete queued deliveries; already delivered cards remain links to
+    // the current record. Reminder state is per recipient, independent of read.
+    for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.revision !== row.revision) notice.cancelled = true;
+    for (const recipient of new Set([row.ownerMxid, ...this.approvers])) {
+      const id = `${row.id}_${row.revision}_${hash(recipient).slice(0, 16)}`;
+      this.state.notices[id] ??= { id, actionId: row.id, revision: row.revision, recipient, createdAt: this.now(), dueAt: this.now(), attempt: 0, delivered: 0, seenAt: null, cancelled: false };
+    }
+  }
+  async submit(input, actor) {
+    fields(input, ['requestId', 'kind', 'name', 'reason', 'fleetId', 'roomId', 'resourceIds']);
+    const requestId = key(input.requestId), kind = input.kind;
+    if (!['contribution', 'project'].includes(kind)) fail(400, 'invalid_kind', 'Choose a resource contribution or project request.');
+    const payload = { name: text(input.name, 'Name', 128), reason: text(input.reason, 'Reason', 1000) };
+    if (kind === 'project') {
+      payload.fleetId = text(input.fleetId, 'Fleet', 80);
+      const fleet = this.workflow.fleet(payload.fleetId);
+      const capabilities = await this.workflow.capabilities(fleet);
+      if (!Array.isArray(input.resourceIds) || !input.resourceIds.length || input.resourceIds.length > 32
+        || new Set(input.resourceIds).size !== input.resourceIds.length
+        || input.resourceIds.some(id => !/^resource_[a-f0-9]{24}$/.test(id) || !capabilities.offers.some(offer => offer.resources?.some(r => r.id === id)))) fail(400, 'invalid_resources', 'Select currently offered resources.');
+      payload.resourceIds = [...input.resourceIds].sort();
+      if (input.roomId) payload.roomId = text(input.roomId, 'Room ID', 255);
+    } else if (input.fleetId || input.roomId || input.resourceIds) fail(400, 'invalid_arguments', 'A contribution does not attach to an existing project.');
+    const id = `action_${hash({ actor, requestId }).slice(0, 32)}`, fingerprint = hash({ kind, payload });
+    const existing = this.state.records[id];
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID has different content.');
+      return this.get(id, actor, false);
+    }
+    if (Object.keys(this.state.records).length >= this.maxRecords || Object.values(this.state.records).filter(row => row.ownerMxid === actor && row.state === 'requested').length >= 100) fail(429, 'inbox_full', 'Too many workflow records. Contact the server administrator.');
+    this.store.atomic(() => {
+      const row = this.state.records[id] = { id, requestId, kind, payload, fingerprint, ownerMxid: actor, state: 'requested', execution: 'pending', revision: 1, createdAt: this.now(), updatedAt: this.now() };
+      this.notify(row); this.store.audit(actor, 'inbox.submit', payload.fleetId ?? null, id, 'requested');
+    });
+    return this.get(id, actor, false);
+  }
+  async decide(input, actor, token) {
+    fields(input, ['id', 'expectedRevision', 'commandId', 'decision', 'reason']);
+    const row = this.record(input.id, actor, true), commandId = key(input.commandId);
+    if (!['approve', 'reject'].includes(input.decision) || !Number.isSafeInteger(input.expectedRevision)) fail(400, 'invalid_decision', 'A decision and the reviewed revision are required.');
+    const reason = text(input.reason, 'Decision reason', 1000);
+    const command = { commandId, actor, expectedRevision: input.expectedRevision, decision: input.decision, reason };
+    if (row.command) {
+      if (canonical(row.command) !== canonical(command)) fail(409, 'decision_conflict', 'This action has already changed. Refresh its latest result.');
+    } else {
+      if (row.state !== 'requested' || row.revision !== input.expectedRevision) fail(409, 'decision_conflict', 'This action has already changed. Refresh its latest result.');
+      this.store.atomic(() => {
+        row.command = command; row.state = input.decision === 'approve' ? 'approved' : 'rejected'; row.revision++;
+        row.updatedAt = this.now(); row.decision = { by: actor, at: this.now(), reason };
+        this.notify(row); this.store.audit(actor, 'inbox.decide', row.payload.fleetId ?? null, row.id, row.state);
+      });
+    }
+    if (row.state === 'approved' && row.kind === 'contribution' && row.execution !== 'done') await this.install(row, actor, token);
+    return this.get(row.id, actor, true);
+  }
+  async install(row, actor, token) {
+    try {
+      const fleet = await this.service.create({ requestId: row.id, name: row.payload.name, ownerMxid: row.ownerMxid, transportMode: 'outbound' }, actor, token);
+      this.store.atomic(() => {
+        row.result = { fleetId: fleet.id }; row.execution = 'done'; row.lastError = null; row.updatedAt = this.now(); row.revision++;
+        this.notify(row); this.store.audit(actor, 'inbox.install', fleet.id, row.id, 'done');
+      });
+    } catch (cause) {
+      this.store.atomic(() => { row.execution = 'failed'; row.lastError = { code: cause.code ?? 'internal_error' }; row.updatedAt = this.now(); });
+      throw cause;
+    }
+  }
+  async activate(input, actor, token) {
+    fields(input, ['id']);
+    // Installation retry still requires current admin authority; project
+    // activation always uses the OWNER's current Matrix token, never the admin.
+    const candidate = this.state.records[input.id];
+    if (candidate?.kind === 'contribution') {
+      await this.service.palpo.requireAdmin(token);
+      if (candidate.state !== 'approved') fail(409, 'not_approved', 'This contribution has not been approved.');
+      if (candidate.execution !== 'done') await this.install(candidate, actor, token);
+      return this.get(candidate.id, actor, true);
+    }
+    const row = this.record(input.id, actor, false);
+    if (row.kind !== 'project' || row.state !== 'approved') fail(409, 'not_approved', 'This project has not been approved.');
+    if (row.execution === 'done') return this.get(row.id, actor, false);
+    try {
+      const project = await this.workflow.createProject({ requestId: row.id, name: row.payload.name, fleetId: row.payload.fleetId, roomId: row.payload.roomId }, actor, token);
+      this.store.atomic(() => {
+        row.result = { projectId: project.id, roomId: project.roomId }; row.execution = 'done'; row.lastError = null; row.updatedAt = this.now(); row.revision++;
+        this.notify(row); this.store.audit(actor, 'inbox.activate', row.payload.fleetId, row.id, 'done');
+      });
+      return this.get(row.id, actor, false);
+    } catch (cause) {
+      this.store.atomic(() => { row.execution = 'failed'; row.lastError = { code: cause.code ?? 'internal_error' }; row.updatedAt = this.now(); });
+      throw cause;
+    }
+  }
+  projectGrant(input, actor, existing) {
+    const row = this.state.records[input.requestId];
+    if (!row) {
+      if (this.requireProjectApproval && !existing) fail(403, 'project_approval_required', 'Request and approve a project in Palpo before creating it.');
+      return null;
+    }
+    if (row.kind !== 'project' || row.state !== 'approved' || row.ownerMxid !== actor
+      || row.payload.name !== input.name || row.payload.fleetId !== input.fleetId || (row.payload.roomId ?? null) !== (input.roomId || null)) fail(403, 'project_grant_mismatch', 'Project creation must match the approved owner and resources.');
+    return { actionId: row.id, resourceIds: [...row.payload.resourceIds] };
+  }
+  resourceGrant(project, resource) {
+    if (!project.resourceGrant) return; // Existing projects are explicitly grandfathered.
+    const row = this.state.records[project.resourceGrant.actionId];
+    if (!row || row.state !== 'approved' || !project.resourceGrant.resourceIds.includes(resource)) fail(403, 'resource_not_granted', 'Select a resource approved for this project.');
+  }
+  seen(input, actor, admin) {
+    fields(input, ['id']); const row = this.record(input.id, actor, admin);
+    this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.recipient === actor) notice.seenAt = this.now(); });
+    return this.get(row.id, actor, admin);
+  }
+  snooze(input, actor, admin) {
+    fields(input, ['id', 'minutes']); const row = this.record(input.id, actor, admin);
+    if (!this.pending(row, actor, admin) || !Number.isSafeInteger(input.minutes) || input.minutes < 1 || input.minutes > 1440) fail(400, 'invalid_snooze', 'Snooze a pending action for 1 to 1440 minutes.');
+    this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.revision === row.revision && notice.recipient === actor) notice.dueAt = this.now() + input.minutes * 60000; });
+    return { snoozedUntil: this.now() + input.minutes * 60000, action: this.view(row, actor, admin) };
+  }
+}

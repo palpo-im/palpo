@@ -62,10 +62,10 @@ export function fixture({ path = ':memory:', bypassRetirement = false, deliverPr
       if (!actor) return response(401, { errcode: 'M_UNKNOWN_TOKEN' });
       const alias = `#${body.room_alias_name}:example.test`; if (aliases.has(alias)) return response(409, { errcode: 'M_ROOM_IN_USE' });
       const roomId = `!room${rooms.size + 1}:example.test`, room = { id: roomId, state: [] }; rooms.set(roomId, room); aliases.set(alias, roomId);
-      putState(room, 'm.room.create', '', { creator: actor }, actor);
+      putState(room, 'm.room.create', '', { creator: actor, ...(body.creation_content ?? {}) }, actor);
       putState(room, 'm.room.member', actor, { membership: 'join' }, actor);
       putState(room, 'm.room.join_rules', '', { join_rule: 'invite' }, actor);
-      putState(room, 'm.room.power_levels', '', { users: { [actor]: 100 }, users_default: 0, invite: 0, state_default: 50 }, actor);
+      putState(room, 'm.room.power_levels', '', body.power_level_content_override ?? { users: { [actor]: 100 }, users_default: 0, invite: 0, state_default: 50 }, actor);
       for (const event of body.initial_state ?? []) putState(room, event.type, event.state_key, event.content, actor);
       for (const mxid of body.invite ?? []) putState(room, 'm.room.member', mxid, { membership: autoJoinBot && mxid === '@approvalbot:example.test' ? 'join' : 'invite' }, actor);
       return response(200, { room_id: roomId });
