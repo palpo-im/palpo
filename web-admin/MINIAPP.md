@@ -87,3 +87,12 @@ real two-account deployment and owner file handoff, richer My Actions room UI,
 Hagency-scoped allocation decisions/top-ups/runtime statistics/revocation,
 signup decision parity, mobile/hosted integration and publication. No live
 server configuration or accounts are changed by the tests.
+
+For explicit live member checks, `test/miniapp-live-server.mjs` starts a loopback
+sidecar using a separately named SQLite file and a real loopback Palpo upstream.
+Rinx's `live_palpo.py` uploads only code to mini1, borrows the explicitly supplied
+current Rinx session in memory, tests native member submission and role denial,
+then stops the sidecar. It does not copy the production database, start notification
+workers, or deploy public routes. The 2026-10-03 live member run passed; current
+administrator credentials were unavailable, so it is not privileged approval
+acceptance.
