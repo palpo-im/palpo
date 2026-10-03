@@ -132,8 +132,8 @@ See [installation](https://palpo.im/guide/installation/) for detailed deployment
 
 ### Enable URL Preview Cards
 
-Clients such as [Rinx](https://github.com/hagency-org/rinx) request webpage metadata
-from Palpo to display inline link cards. URL-preview allowlists are empty by
+Matrix clients request webpage metadata from Palpo to display inline link
+cards. URL-preview allowlists are empty by
 default, so previews require an operator to configure the allowed destinations.
 
 Add the following to your active `palpo.toml`, or update its existing
@@ -161,16 +161,15 @@ docker compose restart palpo
 ```
 
 To verify, make an authenticated request to
-`GET /_matrix/client/v1/media/preview_url?url=https%3A%2F%2Fgithub.com%2Fhagency-org%2Frinx`
+`GET /_matrix/client/v1/media/preview_url?url=https%3A%2F%2Fgithub.com%2Fpalpo-im%2Fpalpo`
 on your homeserver, using an existing Matrix access token in the `Authorization:
 Bearer ...` header. A successful response returns HTTP 200 with preview metadata
 such as `og:title`, `og:description`, and, when available, `og:image`.
 
 HTTP 403 with `M_FORBIDDEN` and `URL is not allowed to be previewed` means the
 requested URL failed Palpo's preview policy check. Check the effective allowlist
-and denylist before troubleshooting client rendering. After the endpoint works,
-retry the link in the client; restarting Rinx while keeping it signed in clears
-its in-memory preview results so failed previews can be requested again.
+and denylist before troubleshooting client rendering. Clients may cache a failed
+preview, so retry the link after the endpoint works.
 
 ---
 
