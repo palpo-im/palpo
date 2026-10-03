@@ -42,8 +42,6 @@ impl std::fmt::Debug for Logger {
 pub fn init() -> AppResult<()> {
     let conf = &crate::config::get().logger;
 
-    let reload_handles = LogLevelReloadHandles::default();
-
     let console_span_events =
         fmt_span::from_str(&conf.span_events).expect("failed to parse span events");
 
@@ -66,8 +64,7 @@ pub fn init() -> AppResult<()> {
     // TODO: fix https://github.com/tokio-rs/tracing/pull/2956
     // reload_handles.add("console", Box::new(console_reload_handle));
 
-    let cap_state = Arc::new(capture::State::new());
-    let cap_layer = capture::Layer::new(&cap_state);
+    let cap_layer = capture_layer();
 
     let subscriber = Registry::default()
         .with(console_layer.with_filter(console_reload_filter))
@@ -75,13 +72,18 @@ pub fn init() -> AppResult<()> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("the global default tracing subscriber failed to be initialized");
 
-    let logger = Logger {
-        reload: reload_handles,
-        capture: cap_state,
-    };
-    LOGGER.set(logger).expect("logger should be set only once");
-
     Ok(())
+}
+
+/// Initialize Palpo's admin-log capture state and return a layer that an
+/// embedding application's tracing subscriber can attach. Does not install a
+/// global subscriber or require Matrix configuration.
+pub fn capture_layer() -> capture::Layer {
+    let logger = LOGGER.get_or_init(|| Logger {
+        reload: LogLevelReloadHandles::default(),
+        capture: Arc::new(capture::State::new()),
+    });
+    capture::Layer::new(&logger.capture)
 }
 
 pub fn get() -> &'static Logger {

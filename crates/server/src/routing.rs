@@ -44,12 +44,11 @@ pub mod prelude {
     };
 }
 
-pub fn root() -> Router {
+pub fn matrix() -> Router {
     Router::new()
         .hoop(hoops::ensure_accept)
         .hoop(hoops::ensure_content_type)
         .hoop(hoops::limit_size)
-        .get(home)
         .push(
             Router::with_path("_matrix")
                 .push(client::router())
@@ -67,6 +66,13 @@ pub fn root() -> Router {
                 .push(Router::with_path("support").get(well_known_support))
                 .push(Router::with_path("server").get(well_known_server)),
         )
+}
+
+/// Standalone Palpo routes including its default homepage and static files.
+pub fn root() -> Router {
+    Router::new()
+        .get(home)
+        .push(matrix())
         .push(Router::with_path("health").get(health))
         .push(Router::with_path("healthz").get(health))
         .push(Router::with_path("{*path}").get(StaticDir::new("./static")))
@@ -275,6 +281,39 @@ fn well_known_policy_server() -> JsonResult<PolicyServerResBody> {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_HOME_PAGE_BODY, HomePageSource};
+
+    #[salvo::handler]
+    async fn embedded_page() -> &'static str {
+        "host application"
+    }
+
+    #[tokio::test]
+    async fn matrix_router_does_not_shadow_host_routes() {
+        use salvo::prelude::*;
+        use salvo::test::{ResponseExt, TestClient};
+        let conf: crate::config::ServerConfig = serde_json::from_value(serde_json::json!({
+            "server_name": "embedded.test", "db": {"url": "postgres://unused"}
+        }))
+        .unwrap();
+        let _ = crate::config::CONFIG.set(conf);
+        let service = Service::new(
+            Router::new()
+                .push(super::matrix())
+                .push(Router::with_path("api/host").get(embedded_page))
+                .get(embedded_page),
+        );
+        let mut response = TestClient::get("http://localhost/api/host")
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        assert_eq!(response.take_string().await.unwrap(), "host application");
+        let mut home = TestClient::get("http://localhost/").send(&service).await;
+        assert_eq!(home.take_string().await.unwrap(), "host application");
+        let missing = TestClient::get("http://localhost/healthz")
+            .send(&service)
+            .await;
+        assert_eq!(missing.status_code, Some(StatusCode::NOT_FOUND));
+    }
 
     #[test]
     fn home_page_classifies_https_urls_as_remote() {
