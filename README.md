@@ -130,6 +130,47 @@ docker-compose up -d
 
 See [installation](https://palpo.im/guide/installation/) for detailed deployment instructions.
 
+### Enable URL Preview Cards
+
+Matrix clients request webpage metadata from Palpo to display inline link
+cards. URL-preview allowlists are empty by
+default, so previews require an operator to configure the allowed destinations.
+
+Add the following to your active `palpo.toml`, or update its existing
+`[url_preview]` section. Replace the example hostnames with the sites you want to
+preview:
+
+```toml
+[url_preview]
+domain_explicit_allowlist = ["github.com", "example.org"]
+```
+
+Use hostnames without a scheme or path. With the default `check_root_domain =
+false`, each hostname is matched exactly; list any desired subdomains separately.
+An entry in `domain_explicit_denylist` takes precedence over the allowlist.
+Keep the deployment's outbound network restrictions in place. See
+[the full configuration example](palpo-example.toml) for the other preview options.
+
+For the Docker Compose deployment above, edit `deploy/docker/palpo.toml`, which is
+mounted at `/var/palpo/palpo.toml`. Confirm the running service uses that file and
+check for environment overrides, then restart the Palpo service to apply it:
+
+```bash
+cd deploy/docker
+docker compose restart palpo
+```
+
+To verify, make an authenticated request to
+`GET /_matrix/client/v1/media/preview_url?url=https%3A%2F%2Fgithub.com%2Fpalpo-im%2Fpalpo`
+on your homeserver, using an existing Matrix access token in the `Authorization:
+Bearer ...` header. A successful response returns HTTP 200 with preview metadata
+such as `og:title`, `og:description`, and, when available, `og:image`.
+
+HTTP 403 with `M_FORBIDDEN` and `URL is not allowed to be previewed` means the
+requested URL failed Palpo's preview policy check. Check the effective allowlist
+and denylist before troubleshooting client rendering. Clients may cache a failed
+preview, so retry the link after the endpoint works.
+
 ---
 
 ## 🧪 Current Progress
