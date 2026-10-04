@@ -533,7 +533,7 @@ impl MatrixServer {
             .hoop(Logger::new())
             .hoop(cors_handler(&conf.allowed_origins))
             .hoop(hoops::remove_json_utf8);
-        let service = if conf.compression.is_enabled() {
+        if conf.compression.is_enabled() {
             let mut compression = Compression::new();
             if conf.compression.enable_brotli {
                 compression = compression.enable_zstd(CompressionLevel::Fastest);
@@ -547,7 +547,6 @@ impl MatrixServer {
             service.hoop(compression)
         } else {
             service
-        };
-        service
+        }
     }
 }
