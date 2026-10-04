@@ -100,11 +100,13 @@ impl MatrixError {
         invalid_param, InvalidParam;
         invalid_room_state, InvalidRoomState;
         invalid_username, InvalidUsername;
+        key_too_large, KeyTooLarge;
         missing_param, MissingParam;
         missing_token, MissingToken;
         not_found, NotFound;
         not_json, NotJson;
         not_yet_uploaded, NotYetUploaded;
+        profile_too_large, ProfileTooLarge;
         room_in_use, RoomInUse;
         server_not_trusted, ServerNotTrusted;
         threepid_auth_failed, ThreepidAuthFailed;
