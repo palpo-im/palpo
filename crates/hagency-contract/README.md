@@ -46,8 +46,10 @@ allocating an agent within it must not charge the same parent reservation twice.
 1. Add independent engagement profiles, delegation proof and the durable parent/
    child reservation ledger to Hagency; materialize every delivered approved agent
    before provisioning, including failures.
-2. Port Palpo workflow persistence, sessions, authorization, Inbox/outbox, admin
-   profile export and notifications to Rust. Preserve stable IDs and role bindings.
+2. Complete the [Rust Operations service](../operations/README.md): persistence,
+   sessions and coordinator Inbox decisions are implemented; admin profile export,
+   Hagency execution, notification delivery and legacy reconciliation remain.
+   Preserve stable IDs and role bindings.
 3. Wire these checks into both adapters and all alternative request routes. Add
    transactional concurrency, replay, restart and migration tests.
 4. Add Rinx role-aware screens and verified agent/usage projections; run Makepad

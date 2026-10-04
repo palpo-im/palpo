@@ -1,0 +1,23 @@
+[package]
+name = "palpo-operations"
+description = "Rust Palpo mini-app sessions and durable coordinator workflows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+palpo-hagency-contract = { path = "../hagency-contract" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["signal", "time", "net", "sync"] }
+salvo = { workspace = true, features = ["test", "affix-state", "size-limiter"] }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile.workspace = true
