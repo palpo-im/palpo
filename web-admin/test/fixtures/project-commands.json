@@ -1,0 +1,362 @@
+{
+  "v": 1,
+  "registration": {
+    "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1,
+    "serverName": "example.test",
+    "receptionRoomId": "!reception:example.test",
+    "representativeMxid": "@hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_representative:example.test",
+    "approvalBotMxid": "@approval:example.test"
+  },
+  "vectors": [
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_reserve_project",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "reserve_project",
+          "grant": {
+            "v": 1,
+            "id": "grant_one",
+            "revision": 1,
+            "delegationId": "contribution",
+            "delegationRevision": 1,
+            "projectId": "project_one",
+            "roomId": "!project:example.test",
+            "ownerMxid": "@owner:example.test",
+            "administratorMxids": [
+              "@admin:example.test"
+            ],
+            "allowSelfApproval": false,
+            "limits": {
+              "tokens": 800,
+              "maxAgents": 4,
+              "maxRatePerDay": 1000
+            },
+            "expiresAtMs": 90000
+          }
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_reserve_project\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"grant\":{\"administratorMxids\":[\"@admin:example.test\"],\"allowSelfApproval\":false,\"delegationId\":\"contribution\",\"delegationRevision\":1,\"expiresAtMs\":90000,\"id\":\"grant_one\",\"limits\":{\"maxAgents\":4,\"maxRatePerDay\":1000,\"tokens\":800},\"ownerMxid\":\"@owner:example.test\",\"projectId\":\"project_one\",\"revision\":1,\"roomId\":\"!project:example.test\",\"v\":1},\"kind\":\"reserve_project\"},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "d6b474fc90c33f671f0f9ca7add559bfbd622407a82b0db6f76ac740b56e109d",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_reserve_project",
+        "commandDigest": "d6b474fc90c33f671f0f9ca7add559bfbd622407a82b0db6f76ac740b56e109d",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "grant",
+            "grant": {
+              "v": 1,
+              "id": "grant_one",
+              "revision": 1,
+              "delegationId": "contribution",
+              "delegationRevision": 1,
+              "projectId": "project_one",
+              "roomId": "!project:example.test",
+              "ownerMxid": "@owner:example.test",
+              "administratorMxids": [
+                "@admin:example.test"
+              ],
+              "allowSelfApproval": false,
+              "limits": {
+                "tokens": 800,
+                "maxAgents": 4,
+                "maxRatePerDay": 1000
+              },
+              "expiresAtMs": 90000
+            }
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_assign_project_admins",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "assign_project_admins",
+          "grantId": "grant_one",
+          "expectedRevision": 1,
+          "administrators": [
+            "@new:example.test"
+          ],
+          "allowSelfApproval": true
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_assign_project_admins\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"administrators\":[\"@new:example.test\"],\"allowSelfApproval\":true,\"expectedRevision\":1,\"grantId\":\"grant_one\",\"kind\":\"assign_project_admins\"},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "dac70b55b24e4ed41f5f57e68e78fe9e23b3065e8f7a3eb3be0bcc888c282216",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_assign_project_admins",
+        "commandDigest": "dac70b55b24e4ed41f5f57e68e78fe9e23b3065e8f7a3eb3be0bcc888c282216",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "grant",
+            "grant": {
+              "v": 1,
+              "id": "grant_one",
+              "revision": 2,
+              "delegationId": "contribution",
+              "delegationRevision": 1,
+              "projectId": "project_one",
+              "roomId": "!project:example.test",
+              "ownerMxid": "@owner:example.test",
+              "administratorMxids": [
+                "@new:example.test"
+              ],
+              "allowSelfApproval": true,
+              "limits": {
+                "tokens": 800,
+                "maxAgents": 4,
+                "maxRatePerDay": 1000
+              },
+              "expiresAtMs": 90000
+            }
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_approve_agent",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "approve_agent",
+          "grantId": "grant_one",
+          "grantRevision": 1,
+          "request": {
+            "v": 1,
+            "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "requestId": "agent_one",
+            "requesterMxid": "@owner:example.test",
+            "sourceRoomId": "!reception:example.test",
+            "targetProjectId": "project_one",
+            "targetRoomId": "!project:example.test",
+            "ownerMxid": "@owner:example.test",
+            "ownerDmRoomId": "!private:example.test",
+            "role": "coding",
+            "requestedTokens": 200,
+            "ratePerDay": 100,
+            "authVersion": 1,
+            "sourceEventId": "$agent_one",
+            "agentDefinition": {
+              "name": "小白_é",
+              "resourceId": "resource_bbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          "allocatedTokens": 200
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_approve_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"allocatedTokens\":200,\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"approve_agent\",\"request\":{\"agentDefinition\":{\"name\":\"小白_é\",\"resourceId\":\"resource_bbbbbbbbbbbbbbbbbbbbbbbb\"},\"authVersion\":1,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerDmRoomId\":\"!private:example.test\",\"ownerMxid\":\"@owner:example.test\",\"ratePerDay\":100,\"requestId\":\"agent_one\",\"requestedTokens\":200,\"requesterMxid\":\"@owner:example.test\",\"role\":\"coding\",\"sourceEventId\":\"$agent_one\",\"sourceRoomId\":\"!reception:example.test\",\"targetProjectId\":\"project_one\",\"targetRoomId\":\"!project:example.test\",\"v\":1}},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "00263cfb71d5904d4069e99f8acfcc897306b500ad7b574f09aaecd6055255b3",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_approve_agent",
+        "commandDigest": "00263cfb71d5904d4069e99f8acfcc897306b500ad7b574f09aaecd6055255b3",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "agent",
+            "engagementId": "en_86cc7a08dcd7aacc63a0a51629425408",
+            "state": "reserved",
+            "allocatedTokens": 200,
+            "cleanup": "not_required"
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_reject_agent",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "reject_agent",
+          "grantId": "grant_one",
+          "grantRevision": 1,
+          "request": {
+            "v": 1,
+            "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "requestId": "agent_one",
+            "requesterMxid": "@owner:example.test",
+            "sourceRoomId": "!reception:example.test",
+            "targetProjectId": "project_one",
+            "targetRoomId": "!project:example.test",
+            "ownerMxid": "@owner:example.test",
+            "ownerDmRoomId": "!private:example.test",
+            "role": "coding",
+            "requestedTokens": 200,
+            "ratePerDay": 100,
+            "authVersion": 1,
+            "sourceEventId": "$agent_one",
+            "agentDefinition": {
+              "name": "小白_é",
+              "resourceId": "resource_bbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          }
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_reject_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"reject_agent\",\"request\":{\"agentDefinition\":{\"name\":\"小白_é\",\"resourceId\":\"resource_bbbbbbbbbbbbbbbbbbbbbbbb\"},\"authVersion\":1,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerDmRoomId\":\"!private:example.test\",\"ownerMxid\":\"@owner:example.test\",\"ratePerDay\":100,\"requestId\":\"agent_one\",\"requestedTokens\":200,\"requesterMxid\":\"@owner:example.test\",\"role\":\"coding\",\"sourceEventId\":\"$agent_one\",\"sourceRoomId\":\"!reception:example.test\",\"targetProjectId\":\"project_one\",\"targetRoomId\":\"!project:example.test\",\"v\":1}},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "98bc9dad22c14d9805afa0524f3994a39a010da16fcf819ea25749e82936c7f0",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_reject_agent",
+        "commandDigest": "98bc9dad22c14d9805afa0524f3994a39a010da16fcf819ea25749e82936c7f0",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "agent",
+            "engagementId": "en_86cc7a08dcd7aacc63a0a51629425408",
+            "state": "rejected",
+            "allocatedTokens": 200,
+            "cleanup": "not_required"
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_top_up_agent",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "top_up_agent",
+          "grantId": "grant_one",
+          "grantRevision": 1,
+          "engagementId": "en_86cc7a08dcd7aacc63a0a51629425408",
+          "requesterMxid": "@owner:example.test",
+          "addTokens": 50
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_top_up_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"addTokens\":50,\"engagementId\":\"en_86cc7a08dcd7aacc63a0a51629425408\",\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"top_up_agent\",\"requesterMxid\":\"@owner:example.test\"},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "4ae4e1be321380ae8100c6a7dfe79cf7dd325be89fd1a1ab467b2006eb8ea0a5",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_top_up_agent",
+        "commandDigest": "4ae4e1be321380ae8100c6a7dfe79cf7dd325be89fd1a1ab467b2006eb8ea0a5",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "agent",
+            "engagementId": "en_86cc7a08dcd7aacc63a0a51629425408",
+            "state": "active",
+            "allocatedTokens": 250,
+            "cleanup": "not_required"
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_revoke_agent",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "revoke_agent",
+          "grantId": "grant_one",
+          "grantRevision": 1,
+          "engagementId": "en_86cc7a08dcd7aacc63a0a51629425408"
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_revoke_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"engagementId\":\"en_86cc7a08dcd7aacc63a0a51629425408\",\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"revoke_agent\"},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "88f1b42a0570e775a160669bf8068e233ba137cd3fe8bf51afb5fc726d570baf",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_revoke_agent",
+        "commandDigest": "88f1b42a0570e775a160669bf8068e233ba137cd3fe8bf51afb5fc726d570baf",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "agent",
+            "engagementId": "en_86cc7a08dcd7aacc63a0a51629425408",
+            "state": "revoked",
+            "allocatedTokens": 200,
+            "cleanup": "pending"
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_revoke_project",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "revoke_project",
+          "grantId": "grant_one",
+          "expectedRevision": 1
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_revoke_project\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"expectedRevision\":1,\"grantId\":\"grant_one\",\"kind\":\"revoke_project\"},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "65a1be26b67b476dd79ce529f4caf19a670a87c045078811d7ac31a7d160ec64",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_revoke_project",
+        "commandDigest": "65a1be26b67b476dd79ce529f4caf19a670a87c045078811d7ac31a7d160ec64",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "revoked_project",
+            "grantId": "grant_one",
+            "revision": 1
+          }
+        }
+      }
+    }
+  ]
+}

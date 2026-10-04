@@ -60,6 +60,32 @@ maintenance of existing registrations; it does not create a contribution.
 The established operator setup/import path remains available. Automatic
 Hagency-originated pairing is a separate backend feature, not added here.
 
+### Project command transport (development)
+
+`ProjectCommands` adds a closed version 1 protocol over the authenticated outbound
+work lane. Enqueue requires the same `Store.atomic` transaction as its decision.
+Transport ACKs cannot change a project to allocated. Hagency publishes immutable
+business receipts, which are checked against the original command, generation,
+digest, project and result before committing with the update sequence.
+
+The fixed machine `POST /api/fleet/v2/:id/authorize-command` route rechecks current
+Matrix identity and designated/project-admin scope, returning a ten-second lease.
+The server authority token comes from the existing private action/account config.
+Lookup outages return retryable 503; a locked or demoted decision maker cannot
+use the original queued command as continuing authority. Hagency rechecks lease
+expiry after its writer lock. This bounds the distributed authorization window;
+it does not guarantee instantaneous revocation of an already issued lease.
+
+The shared wire corpus is `test/fixtures/project-commands.json`, identical to
+Hagency `native/fixtures/project-commands.json`. Tests cover atomic enqueue,
+receipt rollback/replay, assigned-admin scope, pending reassignment, HTTP
+credentials/origin, outages and cross-language command digests.
+
+This protocol is **not enabled in the mini app yet**. Contribution capability
+publication, explicit project budgets/administrators and Inbox command/result
+projection must be wired before a peer advertises support. No implicit unlimited
+grant or legacy owner transfer is part of this change.
+
 ## My Actions notifications
 
 Inbox works without a notification bot. To enable Matrix delivery, set

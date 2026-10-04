@@ -132,6 +132,9 @@ export class Outbound {
       if (hash !== fleet.transport.updateDigest) fail(409, 'sequence_conflict', 'This update sequence already has different content.');
       return { ok: true };
     }
+    const commandReceipts = input.commandReceipts === undefined ? []
+      : this.projectCommands?.validateReceipts(fleet, input.commandReceipts);
+    if (!commandReceipts) fail(409, 'project_workflow_unavailable', 'Project command receipts are not supported.');
     const copy = structuredClone(fleet);
     if (input.capabilities !== undefined) workflow.applyCapabilities(copy, input.capabilities, false);
     const records = [];
@@ -160,6 +163,7 @@ export class Outbound {
     copy.transport.sequence = input.sequence; copy.transport.updateDigest = hash; copy.transport.lastSeenAt = new Date().toISOString();
     return this.store.atomic(() => {
       Object.assign(fleet, copy);
+      this.projectCommands?.applyReceipts(commandReceipts);
       for (const record of records) Object.assign(this.store.state.requests[record.id], record);
       return { ok: true };
     });

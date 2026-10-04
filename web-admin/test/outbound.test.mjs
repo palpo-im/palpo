@@ -343,3 +343,41 @@ test('atomic URL migration and credential rotation preserve identities and repla
   assert.throws(() => f.service.outbound.authenticate(legacy.id, stored.transport.token, 2), { code: 'transport_unauthorized' });
   assert.ok(!f.calls.some(call => call.method === 'DELETE'));
 });
+
+test('project authorization uses the authenticated machine route and a fresh current actor', async t => {
+  const f = await setup(t), fleet = f.stored(), commands = f.server.projectCommands;
+  commands.adminToken = 'admin-secret';
+  f.server.inbox.projectApprover = '@admin:example.test';
+  fleet.projectWorkflow = { v: 1, registrationGeneration: 1 };
+  const project = f.store.state.projects.project_command_http = { id: 'project_command_http', fleetId: fleet.id, ownerMxid: owner[0], roomId: '!workflow:example.test' };
+  f.server.inbox.state.records.action_command_http = { state: 'approved', ownerMxid: owner[0], decision: { by: '@admin:example.test' } };
+  const grant = { v: 1, id: 'grant_http', revision: 1, delegationId: 'contribution_http', delegationRevision: 1,
+    projectId: project.id, roomId: project.roomId, ownerMxid: owner[0], administratorMxids: ['@other:example.test'], allowSelfApproval: false,
+    limits: { tokens: 1000, maxAgents: 4, maxRatePerDay: 100 }, expiresAtMs: Date.now() + 86400000 };
+  const entry = f.store.atomic(() => commands.enqueue(fleet, '@admin:example.test', { kind: 'reserve_project', grant },
+    { commandId: 'reserve_http', projectId: project.id, actionId: 'action_command_http' }));
+  const body = { commandId: entry.command.commandId, commandDigest: entry.digest };
+  const allowed = await f.machine('/authorize-command', body);
+  assert.equal(allowed.status, 200); assert.equal(allowed.data.allowed, true);
+  assert.equal(allowed.data.commandDigest, entry.digest);
+  assert.ok(allowed.data.validUntilMs > Date.now() && allowed.data.validUntilMs <= Date.now() + 10000);
+  assert.equal((await f.machine('/authorize-command', body, { origin: browserOrigin })).status, 403);
+  assert.equal((await f.machine('/authorize-command', body, { host: 'other.test' })).status, 403);
+  assert.equal((await f.machine('/authorize-command', body, { headers: { Authorization: 'Bearer wrong', 'X-Hagency-Generation': String(fleet.transport.generation) } })).status, 401);
+  assert.equal((await f.machine('/authorize-command', { ...body, commandDigest: '0'.repeat(64) })).status, 409);
+  assert.equal((await f.machine('/authorize-command', { ...body, actorMxid: owner[0] })).status, 400);
+  // The transport ACK removes its payload, but cannot allocate a project.
+  const work = (await f.poll('work')).data.delivery;
+  assert.equal(work.kind, 'workflow'); assert.equal((await f.ack(work)).status, 200);
+  assert.equal(commands.entry(fleet, 'reserve_http').state, 'queued');
+  assert.equal(commands.state.grants.grant_http, undefined);
+  f.users.get('@admin:example.test').locked = true;
+  assert.equal((await f.machine('/authorize-command', body)).data.allowed, false);
+  f.users.get('@admin:example.test').locked = false;
+  const user = f.palpo.user.bind(f.palpo);
+  f.palpo.user = async () => { throw new Error('fixture authority unavailable'); };
+  assert.equal((await f.machine('/authorize-command', body)).status, 503);
+  f.palpo.user = user;
+  assert.equal((await f.machine('/authorize-command', body)).data.allowed, true);
+  assert.equal(commands.entry(fleet, 'reserve_http').state, 'queued');
+});
