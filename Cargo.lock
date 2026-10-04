@@ -3899,6 +3899,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "palpo-hagency-contract"
+version = "0.4.0"
+dependencies = [
+ "palpo-identifiers-validation",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "palpo-identifiers-validation"
 version = "0.4.0"
 dependencies = [
