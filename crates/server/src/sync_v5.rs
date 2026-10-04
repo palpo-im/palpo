@@ -1520,7 +1520,8 @@ async fn collect_e2ee(
                 if joined_since_last_sync || new_encrypted_room {
                     // If the user is in a new encrypted room, give them all joined users
                     let mut new_changes: Vec<OwnedUserId> = Vec::new();
-                    for user_id in room::get_members(room_id).await?
+                    for user_id in room::get_members(room_id)
+                        .await?
                         .into_iter()
                         // Don't send key updates from the sender to the sender
                         .filter(|user_id| sender_id != *user_id)
