@@ -10,7 +10,8 @@ CLI arguments, install tracing, read dotenv files, or bind HTTP listeners.
 use palpo::{MatrixServer, config::ServerConfig};
 use salvo::prelude::*;
 
-async fn embed(config: ServerConfig, host_routes: Router) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn embed(mut config: ServerConfig, host_routes: Router) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    config.well_known.client = Some("https://matrix.example.com".to_owned());
     let matrix = MatrixServer::initialize(config).await?;
     let router = host_routes.push(matrix.router());
     let acceptor = TcpListener::new("127.0.0.1:8088").bind().await;
@@ -18,6 +19,13 @@ async fn embed(config: ServerConfig, host_routes: Router) -> Result<(), Box<dyn 
     Ok(())
 }
 ```
+
+Embedded initialization requires `well_known.client` to be an absolute HTTP(S)
+URL with a host. Set it to the public base URL that Matrix clients can reach,
+including any port or path prefix. Palpo's `listeners` are unused in embedding
+mode and cannot determine the host's TLS scheme or public address. Configure
+`well_known.server` as well if federation uses an address or port different from
+the default `server_name:443`.
 
 `MatrixServer::router()` includes `/_matrix`, `/_palpo` (including the existing
 admin authentication), and `/.well-known/matrix`. It omits Palpo's homepage,

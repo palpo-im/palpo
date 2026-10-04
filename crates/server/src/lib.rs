@@ -284,6 +284,51 @@ mod tests {
         assert_eq!(args.execute, ["server show-version", "user list"]);
     }
 
+    fn embedding_config() -> ServerConfig {
+        serde_json::from_value(serde_json::json!({
+            "server_name": "matrix.example.com",
+            "db": { "url": "postgres://localhost/palpo" }
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn embedding_requires_explicit_client_discovery_before_startup() {
+        let error = MatrixServer::initialize(embedding_config())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("well_known.client"));
+    }
+
+    #[test]
+    fn embedding_rejects_invalid_client_discovery_urls() {
+        for value in [
+            "",
+            "matrix.example.com",
+            "ftp://matrix.example.com",
+            "mailto:admin@example.com",
+        ] {
+            let mut conf = embedding_config();
+            conf.well_known.client = Some(value.to_owned());
+            let error = MatrixServer::validate_config(&conf).unwrap_err();
+            assert!(error.to_string().contains("well_known.client"));
+        }
+    }
+
+    #[test]
+    fn embedding_preserves_public_client_discovery_with_unused_listeners() {
+        for value in ["https://public.example.com/matrix", "http://localhost:8088"] {
+            let mut conf = embedding_config();
+            conf.well_known.client = Some(value.to_owned());
+            assert!(conf.listeners[0].enabled_tls().is_none());
+            MatrixServer::validate_config(&conf).unwrap();
+            assert_eq!(conf.well_known_client(), value);
+            conf.listeners.clear();
+            MatrixServer::validate_config(&conf).unwrap();
+            assert_eq!(conf.well_known_client(), value);
+        }
+    }
+
     #[handler]
     async fn test_handler(res: &mut Response) {
         res.render(Text::Plain("ok"));
@@ -349,15 +394,13 @@ pub struct MatrixServer {
 
 impl MatrixServer {
     /// Initialize without parsing CLI arguments, installing tracing, or opening HTTP ports.
+    ///
+    /// Set `well_known.client` to the host's public HTTP(S) base URL. Embedded
+    /// discovery cannot infer this address from Palpo's unused listener settings.
     pub async fn initialize(
         conf: ServerConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        conf.check()?;
-        if conf.admin.console_automatic {
-            return Err(
-                "an embedded MatrixServer cannot enable the interactive admin console".into(),
-            );
-        }
+        Self::validate_config(&conf)?;
         config::CONFIG
             .set(conf)
             .map_err(|_| "MatrixServer is already initialized in this process")?;
@@ -366,6 +409,27 @@ impl MatrixServer {
         Self::start_initialized(Vec::new(), false, true)
             .await?
             .ok_or_else(|| "MatrixServer did not start".into())
+    }
+
+    fn validate_config(conf: &ServerConfig) -> AppResult<()> {
+        conf.check()?;
+        if conf.admin.console_automatic {
+            return Err(AppError::internal(
+                "an embedded MatrixServer cannot enable the interactive admin console",
+            ));
+        }
+        let client = conf.well_known.client.as_deref().ok_or_else(|| {
+            AppError::internal("an embedded MatrixServer requires well_known.client to be set to the host's public HTTP(S) base URL")
+        })?;
+        let url = url::Url::parse(client).map_err(|_| {
+            AppError::internal("well_known.client must be an absolute HTTP(S) URL with a host")
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(AppError::internal(
+                "well_known.client must be an absolute HTTP(S) URL with a host",
+            ));
+        }
+        Ok(())
     }
 
     async fn start_initialized(
