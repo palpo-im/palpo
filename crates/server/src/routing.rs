@@ -49,6 +49,7 @@ pub fn matrix() -> Router {
         .hoop(hoops::ensure_accept)
         .hoop(hoops::ensure_content_type)
         .hoop(hoops::limit_size)
+        .hoop(salvo::http::request::SecureMaxSize(8 * 1024 * 1024))
         .push(
             Router::with_path("_matrix")
                 .push(client::router())
@@ -287,15 +288,60 @@ mod tests {
         "host application"
     }
 
+    #[salvo::handler]
+    async fn body_size(req: &mut salvo::Request, res: &mut salvo::Response) {
+        match req.payload().await {
+            Ok(body) => res.render(body.len().to_string()),
+            Err(_) => {
+                res.status_code(salvo::http::StatusCode::BAD_REQUEST);
+            }
+        }
+    }
+
+    #[salvo::handler]
+    async fn body_limit(req: &mut salvo::Request) -> String {
+        req.secure_max_size().to_string()
+    }
+
+    #[tokio::test]
+    async fn embedded_body_limit_is_scoped_to_matrix_routes() {
+        use salvo::prelude::*;
+        use salvo::test::{ResponseExt, TestClient};
+        init_test_config();
+        let service = Service::new(
+            Router::new()
+                .push(super::matrix().push(Router::with_path("_matrix/body-test").post(body_size)))
+                .push(
+                    Router::with_path("api/host")
+                        .hoop(salvo::http::request::SecureMaxSize(32 * 1024))
+                        .get(body_limit),
+                ),
+        );
+        let mut response = TestClient::post("http://localhost/_matrix/body-test")
+            .body(vec![b'a'; 128 * 1024])
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            response.take_string().await.unwrap(),
+            (128 * 1024).to_string()
+        );
+        let too_large = TestClient::post("http://localhost/_matrix/body-test")
+            .body(vec![b'a'; 8 * 1024 * 1024 + 1])
+            .send(&service)
+            .await;
+        assert_eq!(too_large.status_code, Some(StatusCode::BAD_REQUEST));
+        let mut host = TestClient::get("http://localhost/api/host")
+            .send(&service)
+            .await;
+        assert_eq!(host.take_string().await.unwrap(), (32 * 1024).to_string());
+    }
+
     #[tokio::test]
     async fn matrix_router_does_not_shadow_host_routes() {
         use salvo::prelude::*;
         use salvo::test::{ResponseExt, TestClient};
-        let conf: crate::config::ServerConfig = serde_json::from_value(serde_json::json!({
-            "server_name": "embedded.test", "db": {"url": "postgres://unused"}
-        }))
-        .unwrap();
-        let _ = crate::config::CONFIG.set(conf);
+        init_test_config();
         let service = Service::new(
             Router::new()
                 .push(super::matrix())
@@ -313,6 +359,14 @@ mod tests {
             .send(&service)
             .await;
         assert_eq!(missing.status_code, Some(StatusCode::NOT_FOUND));
+    }
+
+    fn init_test_config() {
+        let conf: crate::config::ServerConfig = serde_json::from_value(serde_json::json!({
+            "server_name": "embedded.test", "db": {"url": "postgres://unused"}
+        }))
+        .unwrap();
+        let _ = crate::config::CONFIG.set(conf);
     }
 
     #[test]

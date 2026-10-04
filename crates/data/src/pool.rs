@@ -34,7 +34,7 @@ impl DieselPool {
         max_size: usize,
         purpose: &str,
     ) -> Result<DieselPool, PoolError> {
-        let conn_url = connection_url(config, url);
+        let conn_url = connection_url(config, url)?;
 
         // PostgreSQL `SET` does not support bind parameters, so the value is
         // formatted into the statement. `statement_timeout` is a `u64` clamped to
@@ -86,6 +86,8 @@ impl DieselPool {
 
 #[derive(Debug, Error)]
 pub enum PoolError {
+    #[error(transparent)]
+    Url(#[from] url::ParseError),
     #[error(transparent)]
     Build(#[from] BuildError),
     #[error(transparent)]

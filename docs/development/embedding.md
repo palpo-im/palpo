@@ -22,7 +22,8 @@ async fn embed(mut config: ServerConfig, host_routes: Router) -> Result<(), Box<
 
 Embedded initialization requires `well_known.client` to be an absolute HTTP(S)
 URL with a host. Set it to the public base URL that Matrix clients can reach,
-including any port or path prefix. Palpo's `listeners` are unused in embedding
+including any port or path prefix, without credentials, a query, or a fragment.
+Palpo's `listeners` are unused in embedding
 mode and cannot determine the host's TLS scheme or public address. Configure
 `well_known.server` as well if federation uses an address or port different from
 the default `server_name:443`.
@@ -41,8 +42,32 @@ command-scoped diagnostic logs in admin-room replies; capture state is initializ
 without replacing the host subscriber. Use Tokio
 worker stacks of 8 MiB, as the CLI does, for deep Matrix event processing.
 
+Matrix routes set their own 8 MiB parsing limit, matching standalone Palpo,
+without changing the host's global body limit or limits on other routes.
+Compression only enables the algorithms selected in `compression`.
+
+Database connectivity and migrations, storage, signing keys, and App Service
+registration are prepared before publishing global configuration and starting
+workers. Their failures return an initialization error and leave Palpo's globals
+unset, so the host can correct configuration or restore connectivity and retry.
+Synchronous database preparation runs on Tokio's blocking pool. Initializers are
+serialized, so concurrent successful attempts cannot replace each other's state.
+Migrations and registration upserts may already have committed to PostgreSQL
+before a later preparation failure; retrying uses the same idempotent operations.
+
 Palpo still uses process-wide singleton configuration, storage and database
-pools. Only one `MatrixServer` can be initialized in a process; a second call
-returns an error. Dropping the handle does not reset singleton state or stop
+pools. After global state is published, only one `MatrixServer` can be initialized
+in a process; a second call returns an error. A failure executing configured
+startup admin commands happens after publication and requires a fresh process
+to retry. Dropping the handle does not reset singleton state or stop
 workers. Workers stop when the host runtime shuts down. An interactive automatic
 admin console is rejected for embedding; admin-room commands remain active.
+
+The opt-in startup regression test requires an **empty, dedicated** PostgreSQL
+database and covers migration and App Service failures, retry, concurrent
+initializers, and mounted discovery:
+
+```sh
+PALPO_EMBEDDING_TEST_DATABASE_URL=postgres://user:password@localhost/palpo_embedding_test \
+  cargo test -p palpo --lib embedding_startup_retries_postgres -- --ignored --nocapture
+```
