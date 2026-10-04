@@ -16,7 +16,7 @@ equivalent Rust implementations and the cutover gates below pass.
 | --- | --- | --- |
 | `lib/store.mjs` | `store.rs` | Existing SQLite `state` table, complete JSON preservation, process lock, atomic transactions |
 | `lib/miniapp.mjs` | `api.rs`, `matrix.rs` | Borrowed Matrix login, scoped in-memory sessions, revalidation, disconnect |
-| `lib/inbox.mjs` | `workflow.rs` | Typed project/agent requests, coordinator decisions, visibility, seen/snooze, durable receipts |
+| `lib/inbox.mjs` | `workflow.rs` | Typed project/agent/top-up requests, coordinator decisions, visibility, seen/snooze, durable receipts |
 | `lib/action-notifications.mjs` | `workflow.rs` | Durable notification intents only; Matrix delivery is still pending |
 | `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
 | `lib/workflow.mjs`, `lib/service.mjs` | contract, decision outbox, `updates.rs` | Immutable definitions delivered to Hagency; scoped resource/project projections and execution receipts |
@@ -35,13 +35,22 @@ enqueue a second command. Current authority is still required for a mutation
 retry; retrieving the action returns its latest stored result. Seen/snoozed
 notifications do not complete the action.
 
+The existing OctoScript decision form (`id`, `expectedRevision`, `decision`,
+`commandId`, `reason`) is also accepted. Rust builds its authority envelope from
+the authenticated account and stored request; the app cannot select its actor,
+delegation, generation or grant. Its stable intent digest makes exact retries
+idempotent even after a later action revision. Agent top-ups bind the current
+allocation and cannot claim that new tokens are available before Hagency commits.
+
 **Approved is not live.** Without a definition it remains `pending`. With an
 immutable definition and a capable installed Hagency engagement, the decision
 and leased work item commit together. A custody ACK still leaves it pending.
 An authenticated execution receipt advances it to `provisioning`; current
 runtime and Matrix-membership observations are required for `ready`.
 Duplicate receipts do not execute another allocation. Old source observations
-stay stale even when delivered now. Token usage stays unknown when unreported.
+stay stale even when delivered now. Token usage stays unknown when unreported;
+measurement time, evidence, completeness and quota pause are preserved. App
+Service registration and machine credential generations are checked separately.
 Matrix room preparation, profile installation and notifications remain pending.
 
 ## Run in an isolated development environment
@@ -122,9 +131,10 @@ New files use private permissions on Unix.
 All legacy JSON (including credentials and unknown extension fields) and the
 `fleet_delivery` table are preserved. Rust data lives in `rustWorkflows`.
 Preservation is not a semantic migration: old Inbox records are **not converted**
-into new coordinator requests, and old delivery rows are **not consumed** by
-this service. Neither legacy requests nor hostnames can establish new role
-bindings. Explicit reconciliation is required before production cutover.
+into new coordinator requests. Existing delivery rows remain subject to the
+same authenticated generation/lease protocol; their payloads are not rewritten
+into coordinator commands. Neither legacy requests nor hostnames can establish
+new role bindings. Explicit reconciliation is required before production cutover.
 
 ## Remaining cutover gates
 
@@ -135,9 +145,10 @@ bindings. Explicit reconciliation is required before production cutover.
    Matrix notification workers. Relay/poll/ACK/updates are implemented;
    retirement, room preparation and legacy reconciliation still need completion.
 3. Hagency command authentication, hierarchy-aware transactional reservations,
-   provisioning and receipts. One coordinator decision must suffice; the Hagency
-   portal must not add a second approval. Agent/top-up approvals must not silently
-   enlarge their engagement or parent pool.
+   provisioning and receipts are implemented in the paired Hagency integration
+   branch and still require combined acceptance. One coordinator decision must
+   suffice; the Hagency portal must not add a second approval. Agent/top-up
+   approvals must not silently enlarge their engagement or parent pool.
 4. Persist and expose every delivered approved agent, including failed or pending
    provisioning, in Hagency and the owner's list; verify chat readiness separately.
    Usage must include freshness and unknown states. Job summaries remain future work.

@@ -299,6 +299,14 @@ impl App {
                             }
                             let decision: Decision = serde_json::from_value(input.args.clone())?;
                             let result = match decision.decision.as_str() {
+                                "approve" if decision.command.is_none() => workflows.approve_intent(
+                                    &decision.id,
+                                    decision.expected_revision.ok_or_else(||fail(400,"revision_required"))?,
+                                    &decision.command_id.ok_or_else(||fail(400,"command_id_required"))?,
+                                    decision.reason.as_deref().unwrap_or_default(),
+                                    actor,
+                                    now,
+                                )?,
                                 "approve"
                                     if decision.expected_revision.is_none()
                                         && decision.command_id.is_none()

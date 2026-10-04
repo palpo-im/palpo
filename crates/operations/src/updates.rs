@@ -167,8 +167,13 @@ fn coordinator(
         .engagements
         .get(id)
         .ok_or_else(|| fail(409, "engagement_not_registered"))?;
+    // Appservice registration and outbound credential rotations have separate
+    // generations. Legacy registrations predate this field and start at one.
     if u64::from(authority.registration_generation)
-        != fleet["transport"]["generation"].as_u64().unwrap_or(0)
+        != fleet
+            .get("registrationGeneration")
+            .map_or(Some(1), Value::as_u64)
+            .unwrap_or(0)
     {
         return Err(fail(409, "generation_conflict"));
     }
@@ -418,6 +423,10 @@ fn status(
         "observedAt",
         "consumedTokens",
         "usageObservedAt",
+        "usageObservedAtMs",
+        "usageEvidence",
+        "usageComplete",
+        "quotaPaused",
     ] {
         if let Some(value) = raw.get(field) {
             clean.insert(field.into(), value.clone());

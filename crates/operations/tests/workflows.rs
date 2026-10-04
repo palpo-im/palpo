@@ -189,11 +189,12 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
         let mut authority=authority(now);
         let mut binding=authority["engagements"]["engagement_a"].take();
         binding["id"]=json!(fleet);
+        binding["registrationGeneration"]=json!(7);
         authority["engagements"]=json!({&fleet:binding});
         authority["resources"]["grant_a"]["serverEngagementId"]=json!(fleet);
         authority["projects"]["existing_project"]["serverEngagementId"]=json!(fleet);
         Workflows{authority:serde_json::from_value(authority)?,..Default::default()}.save(state)?;
-        state["fleets"][&fleet]=json!({"id":fleet,"installation":"installed","state":"ready","ownerMxid":"@provider:example.test",
+        state["fleets"][&fleet]=json!({"id":fleet,"registrationGeneration":7,"installation":"installed","state":"ready","ownerMxid":"@provider:example.test",
             "representativeMxid":format!("@{fleet}_representative:example.test"),"transport":{"mode":"outbound","generation":1,"token":"fixture-machine","sequence":0},
             "registration":{"hs_token":"fixture-relay"},"capabilities":{"coordinatorApprovalV1":true}});
         Ok(())
@@ -215,6 +216,7 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     let id = submitted["action"]["id"].as_str().unwrap();
     let mut command = approval(&request, "decision_live");
     command["context"]["serverEngagementId"] = json!(fleet);
+    command["context"]["registrationGeneration"] = json!(7);
     let (status, decision) = f
         .call(
             &coordinator,
@@ -248,7 +250,7 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
         "pending"
     );
     let receipt = json!({"kind":"receipt","commandId":"decision_live","commandDigest":digest(&json!({"operation":"coordinator_agent_approval","command":command})).unwrap(),
-        "agentId":"en_littlewhite","state":"applied","registrationGeneration":1,"delegationRevision":1});
+        "agentId":"en_littlewhite","state":"applied","registrationGeneration":7,"delegationRevision":1});
     let update = json!({"v":2,"generation":1,"sequence":1,"heartbeat":true,"coordinatorUpdates":[{"id":"command_decision_live","digest":digest(&receipt).unwrap(),"payload":receipt}]});
     let (status, result) = f.machine(&fleet, "updates", update.clone()).await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -274,6 +276,10 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     observed["agentMxid"] = json!(format!("@{fleet}_en_littlewhite:example.test"));
     observed["allocatedTokens"] = json!(100000);
     observed["consumedTokens"] = Value::Null;
+    observed["usageObservedAtMs"] = Value::Null;
+    observed["usageEvidence"] = json!("host_attributed_lower_bound");
+    observed["usageComplete"] = json!(false);
+    observed["quotaPaused"] = json!(false);
     observed["bound"] = json!(true);
     observed["ready"] = json!(true);
     observed["fulfillment"] = json!({"phase":"complete","incomplete":false});
@@ -287,6 +293,11 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
         .1;
     assert_eq!(view["action"]["execution"], "ready", "{view}");
     assert!(view["action"]["result"]["consumedTokens"].is_null());
+    assert_eq!(view["action"]["result"]["usageComplete"], false);
+    assert_eq!(
+        view["action"]["result"]["usageEvidence"],
+        "host_attributed_lower_bound"
+    );
     // Reject changed-sequence retries and cross-engagement observations.
     let mut wrong = ready.clone();
     wrong["statuses"][0]["agentMxid"] = json!("@other:example.test");
@@ -396,6 +407,92 @@ async fn concurrent_conflicting_decisions_commit_exactly_one_outbound_command() 
     let workflows = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
     assert_eq!(workflows.outbox.len(), 1);
     assert_eq!(workflows.receipts.len(), 1);
+}
+
+#[tokio::test]
+async fn octoscript_decision_intent_builds_authority_on_the_server_and_top_up_is_replayable() {
+    let f = Fixture::new().await;
+    let manager = f.session("manager").await;
+    let coordinator = f.session("coordinator").await;
+    let admin = f.session("admin").await;
+    let (_, submitted) = f
+        .call(&manager, "palpo.inbox.submit", agent_request())
+        .await;
+    let agent_id = submitted["action"]["id"].as_str().unwrap().to_owned();
+    let args = json!({"id":agent_id,"expectedRevision":1,"decision":"approve","reason":"Within the project allocation","commandId":"miniapp_agent"});
+    for unauthorized in [&manager, &admin] {
+        let (status, _) = f
+            .call(unauthorized, "palpo.inbox.decide", args.clone())
+            .await;
+        assert!(matches!(
+            status,
+            StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ));
+    }
+    let (status, approved) = f
+        .call(&coordinator, "palpo.inbox.decide", args.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(approved["action"]["execution"], "pending");
+    assert_eq!(approved["action"]["kind"], "agent");
+    let (status, repeated) = f
+        .call(&coordinator, "palpo.inbox.decide", args.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repeated, approved);
+    let mut changed = args;
+    changed["reason"] = json!("different intent");
+    assert_eq!(
+        f.call(&coordinator, "palpo.inbox.decide", changed).await.0,
+        StatusCode::CONFLICT
+    );
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            let mut workflows = Workflows::load(state)?;
+            workflows.observations.insert(
+                agent_id.clone(),
+                json!({"engagementId":"agent_native","state":"active","allocatedTokens":100000}),
+            );
+            state["fleets"]["engagement_a"] = json!({"id":"engagement_a","installation":"installed","state":"ready",
+                "transport":{"mode":"outbound","generation":1,"token":"fixture-machine"},"capabilities":{"coordinatorApprovalV1":true}});
+            workflows.save(state)
+        })
+        .unwrap();
+    let definition = json!({"agentAllocationId":"agent_native","expectedAllocatedTokens":100000,"requestedAdditionalTokens":20000});
+    let request = json!({"kind":"token_top_up","request":{"id":"topup_one","revision":1,"serverEngagementId":"engagement_a","projectId":"existing_project","projectRevision":1,
+        "resourceAllocationId":"grant_a","projectOwner":"@manager:example.test","requester":"@manager:example.test","agentAllocationId":"agent_native",
+        "definitionDigest":palpo_operations::digest(&definition).unwrap(),"expectedAllocatedTokens":100000,"requestedAdditionalTokens":20000},"definition":definition});
+    let (status, submitted) = f
+        .call(&manager, "palpo.inbox.submit", request.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{submitted}");
+    let args = json!({"id":submitted["action"]["id"],"expectedRevision":1,"commandId":"miniapp_topup","decision":"approve","reason":"Approved"});
+    let (status, result) = f
+        .call(&coordinator, "palpo.inbox.decide", args.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        f.call(&coordinator, "palpo.inbox.decide", args).await.0,
+        StatusCode::OK
+    );
+    let state = f.app.store.lock().await.read().unwrap();
+    let workflows = Workflows::load(&state).unwrap();
+    assert_eq!(workflows.outbox.len(), 2);
+    assert_eq!(
+        workflows.outbox["miniapp_topup"]["command"]["additionalTokens"],
+        20000
+    );
+    assert_eq!(
+        workflows.outbox["miniapp_topup"]["command"]["context"]["actor"],
+        "@coordinator:example.test"
+    );
+    assert_eq!(
+        workflows.observations[&agent_id]["allocatedTokens"], 100000,
+        "only Hagency can apply the quota increase"
+    );
 }
 
 #[tokio::test]

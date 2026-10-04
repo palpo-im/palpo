@@ -345,6 +345,13 @@ impl Workflows {
             Value::Null
         };
         result["ownerMxid"] = json!(action.request.owner());
+        result["kind"] = result["request"]["kind"].clone();
+        result["fleetId"] = json!(action.request.engagement());
+        result["payload"] = self
+            .definitions
+            .get(&String::from(action.request.definition_digest().clone()))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         if let Some(observation) = self.observations.get(id) {
             result["result"] = observation.clone();
             if action.execution == "ready" && !crate::updates::status_current(observation, now) {
@@ -622,6 +629,57 @@ impl Workflows {
         );
         self.notify(id, now)?;
         self.view(id, actor, now)
+    }
+
+    /// Mini-app clients submit an intent, not an authority envelope. Bind its
+    /// command to the current authenticated actor and the stored frozen request.
+    pub fn approve_intent(
+        &mut self,
+        id: &str,
+        expected_revision: u64,
+        command_id: &str,
+        reason: &str,
+        actor: &MatrixUserId,
+        now: u64,
+    ) -> Result<Value> {
+        let _: CommandId = command_id.to_owned().try_into()?;
+        if reason.len() > 2000 {
+            return Err(fail(400, "reason_too_long"));
+        }
+        let fingerprint = digest(
+            &json!({"actionId":id,"expectedRevision":expected_revision,"commandId":command_id,"actor":actor,"reason":reason,"decision":"approve"}),
+        )?;
+        if let Some(receipt) = self.receipts.get(command_id) {
+            if receipt["intentDigest"] != fingerprint {
+                return Err(fail(409, "command_conflict"));
+            }
+            return self.view(id, actor, now);
+        }
+        let action = self
+            .actions
+            .get(id)
+            .filter(|a| self.visible(a, actor, now))
+            .ok_or_else(|| fail(404, "action_not_found"))?;
+        if action.revision != expected_revision || action.state != "requested" {
+            return Err(fail(409, "decision_conflict"));
+        }
+        let engagement = self.engagement(action.request.engagement())?;
+        let mut command = json!({"context":{"version":1,"commandId":command_id,"serverEngagementId":engagement.id,
+            "registrationGeneration":engagement.registration_generation,"delegationRevision":engagement.delegation_revision,
+            "actor":actor,"issuedAtMs":now,"expiresAtMs":now.saturating_add(600000).min(engagement.delegation_expires_at_ms)},
+            "request":serde_json::to_value(&action.request)?["request"]});
+        match &action.request {
+            Request::Agent(request) => command["allocatedTokens"] = json!(request.requested_tokens),
+            Request::TokenTopUp(request) => {
+                command["additionalTokens"] = json!(request.requested_additional_tokens)
+            }
+            Request::Project(_) => {}
+        }
+        let result = self.approve(id, command, actor, now)?;
+        self.receipts
+            .get_mut(command_id)
+            .ok_or_else(|| fail(503, "receipt_missing"))?["intentDigest"] = json!(fingerprint);
+        Ok(result)
     }
     pub fn reject(
         &mut self,
