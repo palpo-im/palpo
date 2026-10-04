@@ -34,10 +34,9 @@ pub struct ToDeviceRoomKeyEventContent {
     /// Used to mark key if allowed for shared history.
     ///
     /// Defaults to `false`.
-    #[cfg(feature = "unstable-msc3061")]
     #[serde(
         default,
-        rename = "org.matrix.msc3061.shared_history",
+        alias = "org.matrix.msc3061.shared_history",
         skip_serializing_if = "palpo_core::serde::is_default"
     )]
     pub shared_history: bool,
@@ -57,7 +56,6 @@ impl ToDeviceRoomKeyEventContent {
             room_id,
             session_id,
             session_key,
-            #[cfg(feature = "unstable-msc3061")]
             shared_history: false,
         }
     }
@@ -77,11 +75,9 @@ mod tests {
             room_id: owned_room_id!("!testroomid:example.org"),
             session_id: "SessId".into(),
             session_key: "SessKey".into(),
-            #[cfg(feature = "unstable-msc3061")]
             shared_history: true,
         };
 
-        #[cfg(not(feature = "unstable-msc3061"))]
         assert_eq!(
             to_json_value(content).unwrap(),
             json!({
@@ -89,19 +85,43 @@ mod tests {
                 "room_id": "!testroomid:example.org",
                 "session_id": "SessId",
                 "session_key": "SessKey",
+                "shared_history": true,
             })
         );
+    }
 
-        #[cfg(feature = "unstable-msc3061")]
-        assert_eq!(
-            to_json_value(content).unwrap(),
-            json!({
+    #[test]
+    fn shared_history_accepts_stable_and_legacy_input() {
+        for field in ["shared_history", "org.matrix.msc3061.shared_history"] {
+            let mut json = json!({
                 "algorithm": "m.megolm.v1.aes-sha2",
                 "room_id": "!testroomid:example.org",
                 "session_id": "SessId",
-                "session_key": "SessKey",
-                "org.matrix.msc3061.shared_history": true,
-            })
-        );
+                "session_key": "SessKey"
+            });
+            json[field] = true.into();
+            let content: ToDeviceRoomKeyEventContent = serde_json::from_value(json).unwrap();
+            assert!(content.shared_history);
+            let serialized = to_json_value(content).unwrap();
+            assert_eq!(serialized["shared_history"], true);
+            assert!(
+                serialized
+                    .get("org.matrix.msc3061.shared_history")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn shared_history_defaults_to_false_and_is_omitted() {
+        let json = json!({
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "room_id": "!testroomid:example.org",
+            "session_id": "SessId",
+            "session_key": "SessKey"
+        });
+        let content: ToDeviceRoomKeyEventContent = serde_json::from_value(json.clone()).unwrap();
+        assert!(!content.shared_history);
+        assert_eq!(to_json_value(content).unwrap(), json);
     }
 }

@@ -160,7 +160,6 @@ pub mod receipt;
 pub mod relation;
 pub mod room;
 pub mod room_key;
-#[cfg(feature = "unstable-msc4268")]
 pub mod room_key_bundle;
 pub mod room_key_request;
 #[cfg(any(feature = "unstable-msc4310", feature = "unstable-msc4075"))]
