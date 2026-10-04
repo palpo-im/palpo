@@ -24,6 +24,30 @@ pub const SERVICES: &[&str] = &[
     "palpo.inbox.snooze",
 ];
 
+// Names in the reviewed existing app contract. During migration the native
+// host may request its complete manifest; only implemented services are granted.
+const PENDING_SERVICES: &[&str] = &[
+    "palpo.catalog.list",
+    "palpo.projects.list",
+    "palpo.requests.list",
+    "palpo.requests.create",
+    "palpo.fleets.list",
+    "palpo.fleets.register",
+    "palpo.fleets.install",
+    "palpo.fleets.set_state",
+    "palpo.fleets.migrate",
+    "palpo.fleets.queue",
+    "palpo.fleets.export",
+    "palpo.fleets.connect",
+    "palpo.agents.list",
+    "palpo.agents.register",
+    "palpo.agents.rename",
+    "palpo.agents.retire",
+    "palpo.activity.list",
+    "palpo.accounts.list",
+    "palpo.inbox.activate",
+];
+
 #[derive(Clone)]
 struct Session {
     token: String,
@@ -129,11 +153,11 @@ impl App {
         let _: palpo_hagency_contract::DefinitionDigest = input.bundle_digest.try_into()?;
         if input.app_id != APP_ID
             || input.services.is_empty()
-            || input.services.len() > SERVICES.len()
+            || input.services.len() > SERVICES.len() + PENDING_SERVICES.len()
             || input
                 .services
                 .iter()
-                .any(|s| !SERVICES.contains(&s.as_str()))
+                .any(|s| !SERVICES.contains(&s.as_str()) && !PENDING_SERVICES.contains(&s.as_str()))
             || input
                 .services
                 .iter()
@@ -150,7 +174,11 @@ impl App {
         let session = Session {
             token,
             identity,
-            services: input.services,
+            services: input
+                .services
+                .into_iter()
+                .filter(|s| SERVICES.contains(&s.as_str()))
+                .collect(),
             expires_at: now + self.ttl_ms,
         };
         // Build the response before insertion so a failed store read cannot leak

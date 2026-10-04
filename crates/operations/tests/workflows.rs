@@ -496,6 +496,35 @@ async fn octoscript_decision_intent_builds_authority_on_the_server_and_top_up_is
 }
 
 #[tokio::test]
+async fn existing_manifest_negotiates_only_implemented_services() {
+    let f = Fixture::new().await;
+    let input = json!({"appId":api::APP_ID,"bundleDigest":"c".repeat(64),"services":["palpo.session.open","palpo.inbox.list","palpo.fleets.export"]});
+    let (status, opened) = f.post("session", "manager-token", input.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(
+        opened["services"],
+        json!(["palpo.session.open", "palpo.inbox.list"])
+    );
+    let token = opened["sessionToken"].as_str().unwrap();
+    assert_eq!(
+        f.call(
+            token,
+            "palpo.fleets.export",
+            json!({"fleetId":"engagement_a"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut unsupported = input;
+    unsupported["services"] = json!(["palpo.session.open", "palpo.grant_everything"]);
+    assert_eq!(
+        f.post("session", "manager-token", unsupported).await.0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
 async fn revoking_coordinator_binding_blocks_a_prepared_decision() {
     let f = Fixture::new().await;
     let manager = f.session("manager").await;

@@ -352,6 +352,15 @@ impl Workflows {
             .get(&String::from(action.request.definition_digest().clone()))
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if result["payload"]["name"].as_str().is_none() {
+            result["payload"]["name"] = result["payload"]["agentDefinition"]["name"]
+                .as_str()
+                .map(|s| json!(s))
+                .unwrap_or_else(|| json!(action.request.id()));
+        }
+        if result["payload"]["reason"].as_str().is_none() {
+            result["payload"]["reason"] = json!("");
+        }
         if let Some(observation) = self.observations.get(id) {
             result["result"] = observation.clone();
             if action.execution == "ready" && !crate::updates::status_current(observation, now) {
