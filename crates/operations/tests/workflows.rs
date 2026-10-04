@@ -470,6 +470,133 @@ async fn agent_and_project_lists_are_role_scoped_paginated_and_keep_pending_usag
 }
 
 #[tokio::test]
+async fn token_top_up_form_binds_current_allocation_and_replays_after_execution() {
+    let f = Fixture::new().await;
+    let manager = f.session("manager").await;
+    let coordinator = f.session("coordinator").await;
+    let admin = f.session("admin").await;
+    let (_, submitted) = f
+        .call(&manager, "palpo.inbox.submit", agent_request())
+        .await;
+    let agent_id = submitted["action"]["id"].as_str().unwrap().to_owned();
+    let (status, _) = f
+        .call(
+            &coordinator,
+            "palpo.inbox.decide",
+            json!({"id":agent_id,"expectedRevision":1,
+        "decision":"approve","commandId":"original_agent"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let intent = json!({"kind":"token_top_up","agentActionId":agent_id,"requestId":"more_tokens",
+        "expectedAllocatedTokens":100000,"requestedAdditionalTokens":"20000"});
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", intent.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    f.app.store.lock().await.transaction(|state| {
+        state["fleets"]["engagement_a"] = json!({"id":"engagement_a","registrationGeneration":1,
+            "state":"ready","installation":"installed","capabilities":{"coordinatorApprovalV1":true},
+            "transport":{"mode":"outbound","generation":1}});
+        let mut workflows=Workflows::load(state)?;
+        workflows.observations.insert(agent_id.clone(),json!({"state":"active","engagementId":"en_native_agent",
+            "generation":1,"allocatedTokens":100000,"quotaPaused":true,"observedAt":chrono::Utc::now().to_rfc3339(),"receivedAtMs":now_ms()}));
+        workflows.save(state)
+    }).unwrap();
+    assert_eq!(
+        f.call(&manager, "palpo.requests.list", json!({})).await.1["requests"][0]["canRequestTopUp"],
+        true
+    );
+    for other in [&coordinator, &admin] {
+        assert_eq!(
+            f.call(other, "palpo.inbox.submit", intent.clone()).await.0,
+            StatusCode::CONFLICT
+        );
+    }
+    for tokens in ["-1", "0", "1e3", "9007199254740992", "20000.0", " 20000"] {
+        let mut invalid = intent.clone();
+        invalid["requestedAdditionalTokens"] = json!(tokens);
+        assert_eq!(
+            f.call(&manager, "palpo.inbox.submit", invalid).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut too_many = intent.clone();
+    too_many["requestedAdditionalTokens"] = json!("1000000");
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", too_many).await.0,
+        StatusCode::CONFLICT
+    );
+    let (status, submitted) = f.call(&manager, "palpo.inbox.submit", intent.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{submitted}");
+    let top_up_id = submitted["action"]["id"].as_str().unwrap();
+    assert_eq!(
+        submitted["action"]["request"]["request"]["agentAllocationId"],
+        "en_native_agent"
+    );
+    assert_eq!(
+        submitted["action"]["request"]["request"]["requester"],
+        "@manager:example.test"
+    );
+    let decision = json!({"id":top_up_id,"expectedRevision":1,"decision":"approve","commandId":"top_up_decision","reason":"Within quota"});
+    let (status, approved) = f.call(&coordinator, "palpo.inbox.decide", decision).await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(approved["action"]["decision"]["reason"], "Within quota");
+    let state = f.app.store.lock().await.read().unwrap();
+    let record = &state["rustWorkflows"]["outbox"]["top_up_decision"];
+    assert_eq!(record["queued"], true);
+    assert_eq!(record["command"]["additionalTokens"], 20000);
+    assert_eq!(
+        record["command"]["request"]["expectedAllocatedTokens"],
+        100000
+    );
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            let mut workflows = Workflows::load(state)?;
+            workflows.observations.get_mut(&agent_id).unwrap()["allocatedTokens"] = json!(120000);
+            workflows.actions.get_mut(top_up_id).unwrap().execution = "done".into();
+            workflows.save(state)
+        })
+        .unwrap();
+    let (status, replayed) = f.call(&manager, "palpo.inbox.submit", intent.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(replayed["action"]["execution"], "done");
+    let mut changed = intent.clone();
+    changed["requestedAdditionalTokens"] = json!("30000");
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", changed).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut fresh = intent;
+    fresh["requestId"] = json!("another_top_up");
+    fresh["expectedAllocatedTokens"] = json!(120000);
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            let mut workflows = Workflows::load(state)?;
+            workflows.observations.get_mut(&agent_id).unwrap()["observedAt"] =
+                json!("2020-01-01T00:00:00Z");
+            workflows.save(state)
+        })
+        .unwrap();
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", fresh).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.call(&manager, "palpo.requests.list", json!({})).await.1["requests"][0]["canRequestTopUp"],
+        false
+    );
+}
+
+#[tokio::test]
 async fn real_http_sessions_project_and_agent_decisions_commit_outbox_without_claiming_ready() {
     let f = Fixture::new().await;
     let manager = f.session("manager").await;
@@ -576,6 +703,38 @@ async fn octoscript_decision_intent_builds_authority_on_the_server_and_top_up_is
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(repeated, approved);
+    // A temporarily offline Hagency must not require another human decision
+    // after ten minutes. The command is bounded by the owner's delegation.
+    let workflows = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
+    let command: AgentApproval =
+        serde_json::from_value(workflows.outbox["miniapp_agent"]["command"].clone()).unwrap();
+    let binding = &workflows.authority.engagements["engagement_a"];
+    assert_eq!(
+        command.context.expires_at_ms,
+        binding.delegation_expires_at_ms
+    );
+    assert!(
+        authorize_agent_approval(
+            &command,
+            &command.request,
+            binding,
+            &workflows.authority.projects["existing_project"],
+            &command.context.actor,
+            command.context.issued_at_ms + 601000
+        )
+        .is_ok()
+    );
+    assert!(
+        authorize_agent_approval(
+            &command,
+            &command.request,
+            binding,
+            &workflows.authority.projects["existing_project"],
+            &command.context.actor,
+            binding.delegation_expires_at_ms
+        )
+        .is_err()
+    );
     let mut changed = args;
     changed["reason"] = json!("different intent");
     assert_eq!(

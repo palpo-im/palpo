@@ -134,6 +134,8 @@ pub struct Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
     #[serde(default)]
+    pub submission_intents: BTreeMap<String, Value>,
+    #[serde(default)]
     pub observations: BTreeMap<String, Value>,
     #[serde(default)]
     pub definitions: BTreeMap<String, Value>,
@@ -360,6 +362,38 @@ impl Workflows {
         }
         if result["payload"]["reason"].as_str().is_none() {
             result["payload"]["reason"] = json!("");
+        }
+        if let Request::TokenTopUp(request) = &action.request {
+            let agent_name = self
+                .actions
+                .values()
+                .find_map(|a| {
+                    let Request::Agent(agent) = &a.request else {
+                        return None;
+                    };
+                    if agent.server_engagement_id != request.server_engagement_id
+                        || agent.project_id != request.project_id
+                        || self.observations.get(&a.id).is_none_or(|o| {
+                            o["engagementId"] != request.agent_allocation_id.as_str()
+                        })
+                    {
+                        return None;
+                    }
+                    let definition = self
+                        .definitions
+                        .get(&String::from(agent.definition_digest.clone()))?;
+                    definition["agentDefinition"]["name"].as_str()
+                })
+                .unwrap_or(request.agent_allocation_id.as_str());
+            result["payload"]["name"] = json!(format!(
+                "More tokens · {}",
+                agent_name.chars().take(160).collect::<String>()
+            ));
+            result["payload"]["reason"] = json!(format!(
+                "Request {} additional tokens; current allocation {}.",
+                u64::from(request.requested_additional_tokens),
+                u64::from(request.expected_allocated_tokens)
+            ));
         }
         if let Some(observation) = self.observations.get(id) {
             result["result"] = observation.clone();
@@ -675,7 +709,7 @@ impl Workflows {
         let engagement = self.engagement(action.request.engagement())?;
         let mut command = json!({"context":{"version":1,"commandId":command_id,"serverEngagementId":engagement.id,
             "registrationGeneration":engagement.registration_generation,"delegationRevision":engagement.delegation_revision,
-            "actor":actor,"issuedAtMs":now,"expiresAtMs":now.saturating_add(600000).min(engagement.delegation_expires_at_ms)},
+            "actor":actor,"issuedAtMs":now,"expiresAtMs":engagement.delegation_expires_at_ms},
             "request":serde_json::to_value(&action.request)?["request"]});
         match &action.request {
             Request::Agent(request) => command["allocatedTokens"] = json!(request.requested_tokens),
@@ -684,11 +718,17 @@ impl Workflows {
             }
             Request::Project(_) => {}
         }
-        let result = self.approve(id, command, actor, now)?;
+        self.approve(id, command, actor, now)?;
+        self.actions
+            .get_mut(id)
+            .ok_or_else(|| fail(503, "action_not_found"))?
+            .decision
+            .as_mut()
+            .ok_or_else(|| fail(503, "decision_missing"))?["reason"] = json!(reason);
         self.receipts
             .get_mut(command_id)
             .ok_or_else(|| fail(503, "receipt_missing"))?["intentDigest"] = json!(fingerprint);
-        Ok(result)
+        self.view(id, actor, now)
     }
     pub fn reject(
         &mut self,

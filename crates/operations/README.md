@@ -36,6 +36,11 @@ enqueue a second command. Current authority is still required for a mutation
 retry; retrieving the action returns its latest stored result. Seen/snoozed
 notifications do not complete the action.
 
+Form approvals expire with the owner's delegation, not after a ten-minute UI
+window. A temporarily offline Hagency can execute the original decision while
+the exact delegation, registration and project bindings remain valid. Revoked,
+changed or expired authority still refuses execution.
+
 The existing OctoScript decision form (`id`, `expectedRevision`, `decision`,
 `commandId`, `reason`) is also accepted. Rust builds its authority envelope from
 the authenticated account and stored request; the app cannot select its actor,
@@ -95,6 +100,16 @@ allocation or usage stays null. Usage is an attributed lower bound, never an
 exact remaining balance; old samples retain their value and are marked stale.
 Machine credential rotation invalidates the previous generation's live status.
 Project creation controls remain unavailable until room preparation is ported.
+
+An owner can submit a top-up form through `palpo.inbox.submit` with
+`kind: "token_top_up"`, `agentActionId`, a stable `requestId`,
+`expectedAllocatedTokens` and a decimal-string `requestedAdditionalTokens`.
+Rust loads the agent's project/resource bindings and current provider allocation;
+the form cannot replace those bindings. Stale observations, changed allocations,
+other users and requests already exceeding the engagement grant are refused.
+An exact retry returns its original action even after the allocation changes.
+The coordinator's normal Inbox decision queues a bounded native top-up command;
+only Hagency's atomic reservation can make the additional tokens available.
 
 The feature `rustWorkflowRequests: 1` identifies the new request schema.
 Submission takes `{ "kind": "project" | "agent" | "token_top_up", "request": <typed request>, "definition": <immutable JSON> }`.

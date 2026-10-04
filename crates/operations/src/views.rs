@@ -4,7 +4,7 @@ use palpo_hagency_contract::{EngagementState, MatrixUserId, ProjectState};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::workflow::{Request, Workflows};
+use crate::workflow::{Action, Request, Workflows};
 use crate::{Result, fail};
 
 #[derive(Deserialize)]
@@ -45,6 +45,64 @@ fn display(value: &Value, fallback: &str, limit: usize) -> String {
         .filter(|c| !c.is_control())
         .take(limit)
         .collect()
+}
+
+pub(crate) fn can_request_top_up(
+    state: &Value,
+    workflows: &Workflows,
+    action: &Action,
+    actor: &MatrixUserId,
+    now: u64,
+) -> bool {
+    let Request::Agent(agent) = &action.request else {
+        return false;
+    };
+    let Some(observed) = workflows.observations.get(&action.id) else {
+        return false;
+    };
+    let fleet = &state["fleets"][agent.server_engagement_id.as_str()];
+    action.state == "approved"
+        && agent.project_owner == *actor
+        && observed["state"] == "active"
+        && observed["engagementId"].as_str().is_some()
+        && observed["allocatedTokens"].as_u64().is_some()
+        && crate::updates::status_current(observed, now)
+        && observed["generation"].as_u64().is_some()
+        && observed["generation"] == fleet["transport"]["generation"]
+        && fleet["state"] == "ready"
+        && fleet["installation"] == "installed"
+        && workflows
+            .authority
+            .engagements
+            .get(agent.server_engagement_id.as_str())
+            .is_some_and(|e| {
+                e.state == EngagementState::Verified
+                    && e.coordinator_approval_v1
+                    && e.delegation_expires_at_ms > now
+                    && u64::from(e.registration_generation)
+                        == fleet["registrationGeneration"].as_u64().unwrap_or(1)
+            })
+        && workflows
+            .authority
+            .projects
+            .get(agent.project_id.as_str())
+            .is_some_and(|p| {
+                p.state == ProjectState::Ready
+                    && p.revision == agent.project_revision
+                    && p.owner == *actor
+                    && p.server_engagement_id == agent.server_engagement_id
+                    && p.resource_allocations
+                        .contains(&agent.resource_allocation_id)
+            })
+        && workflows
+            .authority
+            .resources
+            .get(agent.resource_allocation_id.as_str())
+            .is_some_and(|r| {
+                r.server_engagement_id == agent.server_engagement_id
+                    && u64::from(r.allocated_tokens) > 0
+                    && r.eligible_managers.contains(actor)
+            })
 }
 
 pub(crate) fn agents(
@@ -134,6 +192,8 @@ pub(crate) fn agents(
             "usage":{"state":usage_state,"consumedTokens":consumed,"observedAtMs":usage_time,
                 "evidence":if consumed.is_some(){"host_attributed_lower_bound"}else{"unknown"},"complete":false},
             "quotaPaused":observed["quotaPaused"]==true,"jobSummary":null}));
+        rows.last_mut().unwrap()["canRequestTopUp"] =
+            json!(can_request_top_up(state, workflows, action, actor, now));
     }
     page.apply("requests", rows)
 }

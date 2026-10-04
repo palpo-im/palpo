@@ -136,7 +136,7 @@ impl App {
         Ok(
             json!({"version":1,"userId":identity.user,"isAdmin":identity.admin,"canApproveProjects":can_approve,
             "serverName":self.matrix.server(),"services":session.services,"callbackOrigins":[],"outboundAvailable":false,
-            "features":{"inbox":true,"contributions":false,"projectApproval":can_approve,"remoteAgentDecisions":false,"topUps":false,
+            "features":{"inbox":true,"contributions":false,"projectApproval":can_approve,"remoteAgentDecisions":false,"topUps":true,
                 "rustWorkflowRequests":1,"coordinatorTransport":1,"runtimeExecution":self.transport_host.is_some(),"matrixNotifications":false}}),
         )
     }
@@ -319,10 +319,14 @@ impl App {
                     let before = serde_json::to_value(&workflows)?;
                     let result = match service {
                         "palpo.inbox.submit" => {
-                            let mut args=input.args.clone();
-                            let definition=args.as_object_mut().and_then(|o|o.remove("definition"));
-                            let request: WorkflowRequest =serde_json::from_value(args)?;
-                            json!({"action":match definition {Some(definition)=>workflows.submit_definition(request,definition,actor,now)?,None=>workflows.submit(request,actor,now)?}})
+                            if input.args["kind"] == "token_top_up" && input.args.get("agentActionId").is_some() {
+                                json!({"action":crate::intents::top_up(&mut workflows,state,input.args.clone(),actor,now)?})
+                            } else {
+                                let mut args=input.args.clone();
+                                let definition=args.as_object_mut().and_then(|o|o.remove("definition"));
+                                let request: WorkflowRequest =serde_json::from_value(args)?;
+                                json!({"action":match definition {Some(definition)=>workflows.submit_definition(request,definition,actor,now)?,None=>workflows.submit(request,actor,now)?}})
+                            }
                         }
                         "palpo.inbox.decide" => {
                             #[derive(Deserialize)]
