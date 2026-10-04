@@ -59,6 +59,13 @@ export class Workflow {
     if (!Array.isArray(data.offers) || data.offers.some(offer => !offer || typeof offer !== 'object' || Array.isArray(offer)
       || (Array.isArray(offer.resources) && offer.resources.some(resource => !resource || typeof resource !== 'object' || Array.isArray(resource))))
       || !data.approvalBotMxid || !/^@[^\s:]+:.+$/.test(data.approvalBotMxid)) fail(409, 'provider_capability_missing', 'Hagency has not published its roles and approval identity.');
+    if (data.projectWorkflow !== undefined) {
+      const support = data.projectWorkflow;
+      if (!isOutbound(fleet) || !support || Object.keys(support).sort().join(',') !== 'registrationGeneration,v'
+        || support.v !== 1 || !Number.isSafeInteger(support.registrationGeneration) || support.registrationGeneration < 1
+        || (fleet.projectWorkflow && support.registrationGeneration < fleet.projectWorkflow.registrationGeneration)) fail(409, 'project_workflow_mismatch', 'The project workflow capability must identify the current registration.');
+      fleet.projectWorkflow = { ...support, transportGeneration: fleet.transport.generation };
+    } else delete fleet.projectWorkflow;
     // v1 providers may return only published roles, without a flag. When a
     // provider includes configured-but-withdrawn roles, honor explicit false.
     fleet.capabilities = { v: 1, fleetId: data.fleetId, serverName: data.serverName, representativeMxid: data.representativeMxid, approvalBotMxid: data.approvalBotMxid, offers: data.offers.filter(offer => offer.published !== false).map(offer => ({ role: field(offer.role, 'Role', 80), ...(typeof offer.description === 'string' ? { description: offer.description.slice(0, 500) } : {}),
@@ -222,7 +229,7 @@ export class Workflow {
     if (digest(members) !== digest(allowed)) fail(409, 'owner_dm_join_pending', 'Waiting for the Hagency approval identity to join the private owner room.');
     return true;
   }
-  async createProject(input, actor, token) {
+  async createProject(input, actor, token, { proposal = false } = {}) {
     const fleet = this.fleet(field(input.fleetId, 'Fleet ID'));
     const requestId = key(input.requestId, 'Project operation ID'), name = field(input.name, 'Project name');
     const existingRoom = typeof input.roomId === 'string' && input.roomId.trim() ? field(input.roomId, 'Room ID', 255) : null;
@@ -230,7 +237,7 @@ export class Workflow {
     const fingerprint = digest({ actor, fleetId: fleet.id, name, existingRoom });
     let project = this.store.state.projects[id];
     if (project && project.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This project operation ID is already bound to different content.');
-    const grant = this.projectGrant?.(input, actor, project);
+    const grant = this.projectGrant?.(input, actor, project, { proposal });
     const capabilities = await this.capabilities(fleet);
     if (!project) {
       project = this.store.state.projects[id] = { id, requestId, fingerprint, fleetId: fleet.id, name, ownerMxid: actor, approvalBotMxid: capabilities.approvalBotMxid, authVersion: 1, createdAt: now(), roomId: existingRoom, state: 'creating', room: { aliasLocalpart: `hf_${id}` }, ownerDm: { aliasLocalpart: `hf_${id}_approvals` } };
@@ -249,8 +256,8 @@ export class Workflow {
       if (!['join', 'invite'].includes(repMembership)) await this.palpo.call(`/_matrix/client/v3/rooms/${enc(project.roomId)}/invite`, token, { method: 'POST', body: { user_id: fleet.representativeMxid } });
       await this.rep(fleet, `/_matrix/client/v3/join/${enc(project.roomId)}`, { method: 'POST', body: {} });
       const dm = await this.ensureRoom(project.ownerDm, { name: `${name} · Private approvals`, actor, token, invite: [project.approvalBotMxid], encrypted: true, binding: { v: 1, projectId: id, purpose: 'owner_approval', ownerMxid: actor, approvalBotMxid: project.approvalBotMxid } });
-      project.ownerDmRoomId = dm.roomId; project.state = 'registered'; project.lastError = null;
-      this.store.audit(actor, 'project.register', fleet.id, id, 'registered');
+      project.ownerDmRoomId = dm.roomId; project.state = proposal ? 'awaiting_approval' : 'registered'; project.lastError = null;
+      this.store.audit(actor, 'project.register', fleet.id, id, project.state);
       return await this.projectView(project, actor, token);
     } catch (error) { project.lastError = { code: error.code ?? 'internal_error', at: now() }; project.state = 'partial'; this.store.audit(actor, 'project.register', fleet.id, id, 'partial'); throw error; }
   }
@@ -261,7 +268,9 @@ export class Workflow {
     if (project.ownerMxid !== actor) delete view.ownerDmRoomId;
     try {
       await this.validateProjectRoom(project.roomId, actor, token, project.ownerMxid, true, signal);
-      view.canRequest = true;
+      const allocation = this.projectAllocation?.(project);
+      if (allocation) view.allocation = allocation;
+      view.canRequest = allocation ? allocation.ready : true;
       if (actor === project.ownerMxid) {
         await this.validateOwnerDm(project, token, signal); view.ownerApproval = 'ready';
       } else view.ownerApproval = 'verified_by_provider_on_submission';
@@ -301,12 +310,12 @@ export class Workflow {
       }
       agentDefinition = { name, resourceId: definition.resourceId };
     }
-    this.resourceGrant?.(project, agentDefinition?.resourceId);
     const payload = { v: 1, fleetId: fleet.id, requestId, requesterMxid: actor, sourceRoomId: fleet.reception.roomId, targetProjectId: project.id, targetRoomId: project.roomId, ownerMxid: project.ownerMxid, ownerDmRoomId: project.ownerDmRoomId, role, requestedTokens, ratePerDay, authVersion: project.authVersion,
       ...(agentDefinition ? { agentDefinition } : {}) };
     const id = `${fleet.id}:${requestId}`, fingerprint = digest(payload);
     let request = this.store.state.requests[id];
     if (request && request.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID is already bound to different content.');
+    this.resourceGrant?.(project, agentDefinition?.resourceId, request);
     if (!request) {
       const offer = capabilities.offers.find(offer => offer.role === role);
       if (!offer) fail(409, 'role_unavailable', 'This role is not currently published by the Hagency.');

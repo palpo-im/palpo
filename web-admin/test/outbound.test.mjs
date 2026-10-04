@@ -168,13 +168,17 @@ test('heartbeat and a probe whose owner left cannot establish readiness', async 
   assert.equal(publicFleet(f.stored()).readiness.ready, false); assert.equal(f.stored().connection, undefined);
 });
 
-test('offline requests queue once and outbound catalog/status reads never call Hagency', async t => {
+test('existing offline requests retry once and outbound catalog/status reads never call Hagency', async t => {
   const f = await setup(t), auth = await prove(f);
   f.palpo.fetch = (url, options) => { assert.ok(!new URL(url).pathname.startsWith('/api/fleet/v1')); return f.fetch(url, options); };
   const project = (await f.call('/api/projects', { method: 'POST', headers: auth, body: { fleetId: f.fleet.id, requestId: 'outbound-project', name: 'Project' } })).data.project;
   f.stored().transport.lastSeenAt = new Date(Date.now() - 100000).toISOString(); f.store.save();
   assert.equal(publicFleet(f.stored()).readiness.ready, false); assert.equal(publicFleet(f.stored()).readiness.canQueue, true);
   const input = { projectId: project.id, requestId: 'offline-request', agentName: 'offline-agent', resourceId: `resource_${'a'.repeat(24)}`, role: 'coding', requestedTokens: 10, ratePerDay: 2 };
+  assert.equal((await f.call('/api/requests', { method: 'POST', headers: auth, body: input })).data.code, 'project_allocation_required');
+  // Seed the historical operation through the pre-Inbox workflow, then exercise
+  // its production HTTP retry. New unallocated requests remain refused above.
+  await new Workflow(f.service).request(input, ...owner);
   const first = await f.call('/api/requests', { method: 'POST', headers: auth, body: input });
   assert.equal(first.status, 201); assert.equal(first.data.request.state, 'queued');
   const retry = await f.call('/api/requests', { method: 'POST', headers: auth, body: input });
@@ -225,6 +229,7 @@ test('published fulfillment needs the same bindings, current proof and actual jo
   const f = await setup(t), auth = await prove(f);
   const project = (await f.call('/api/projects', { method: 'POST', headers: auth, body: { fleetId: f.fleet.id, requestId: 'fulfillment-project', name: 'Project' } })).data.project;
   const input = { projectId: project.id, requestId: 'fulfilled-request', role: 'coding', requestedTokens: 10, ratePerDay: 2, agentName: 'fulfilled-agent', resourceId: `resource_${'a'.repeat(24)}` };
+  await new Workflow(f.service).request(input, ...owner); // Existing pre-grant operation.
   await f.call('/api/requests', { method: 'POST', headers: auth, body: input });
   const delivery = (await f.poll('work')).data.delivery, mxid = `@${f.fleet.id}_agent_serving:example.test`;
   const status = { ...delivery.payload, v: 1, observedAt: new Date().toISOString(), state: 'active', engagementId: 'engagement-one', agentMxid: mxid, ready: true, bound: true, serving: { framework: 'codex', model: 'fixture-model' } };
@@ -257,6 +262,7 @@ test('published fulfillment needs the same bindings, current proof and actual jo
 test('late first publication and invalid observation clocks cannot refresh an old ready status', async t => {
   const f = await setup(t), auth = await prove(f);
   const project = (await f.call('/api/projects', { method: 'POST', headers: auth, body: { fleetId: f.fleet.id, requestId: 'clock-project', name: 'Project' } })).data.project;
+  await new Workflow(f.service).request({ projectId: project.id, requestId: 'clock-request', role: 'coding', requestedTokens: 10, ratePerDay: 2 }, ...owner);
   await f.call('/api/requests', { method: 'POST', headers: auth, body: { projectId: project.id, requestId: 'clock-request', role: 'coding', requestedTokens: 10, ratePerDay: 2 } });
   const delivery = (await f.poll('work')).data.delivery, mxid = `@${f.fleet.id}_clock_agent:example.test`;
   f.putState(f.rooms.get(project.roomId), 'm.room.member', mxid, { membership: 'join' }, owner[0]);
@@ -348,7 +354,7 @@ test('project authorization uses the authenticated machine route and a fresh cur
   const f = await setup(t), fleet = f.stored(), commands = f.server.projectCommands;
   commands.adminToken = 'admin-secret';
   f.server.inbox.projectApprover = '@admin:example.test';
-  fleet.projectWorkflow = { v: 1, registrationGeneration: 1 };
+  fleet.projectWorkflow = { v: 1, registrationGeneration: 1, transportGeneration: fleet.transport.generation };
   const project = f.store.state.projects.project_command_http = { id: 'project_command_http', fleetId: fleet.id, ownerMxid: owner[0], roomId: '!workflow:example.test' };
   f.server.inbox.state.records.action_command_http = { state: 'approved', ownerMxid: owner[0], decision: { by: '@admin:example.test' } };
   const grant = { v: 1, id: 'grant_http', revision: 1, delegationId: 'contribution_http', delegationRevision: 1,

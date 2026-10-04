@@ -27,7 +27,7 @@ async function setup(t) {
   const f = fixture({ transportOrigin: 'https://transport.example.test', relayOrigin: 'http://relay.example.test' });
   const publicFleet = await f.service.create({ requestId: 'workflow-fleet', name: 'Workflow fleet', ownerMxid: '@owner:example.test' }, '@admin:example.test', 'admin-secret');
   const fleet = f.service.fleet(publicFleet.id);
-  fleet.projectWorkflow = { v: 1, registrationGeneration: 1 };
+  fleet.projectWorkflow = { v: 1, registrationGeneration: 1, transportGeneration: fleet.transport.generation };
   const workflow = new Workflow(f.service), inbox = new Inbox(f.service, workflow, { projectApprover: '@admin:example.test' });
   const commands = new ProjectCommands(f.service, inbox, { adminToken: 'admin-secret', now: () => 1000 });
   f.service.outbound.projectCommands = commands;
@@ -59,6 +59,14 @@ test('decision and outbound command are atomic; changed retries cannot replace o
   assert.throws(() => f.enqueue('reserve_project', { grant: { ...f.grant, limits: { ...f.grant.limits, tokens: 700 } } }), e => e.code === 'command_conflict');
   assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM fleet_delivery').get().n, 1);
   assert.throws(() => f.commands.enqueue(f.fleet, '@admin:example.test', { kind: 'reserve_project', grant: f.grant }, {}), /Store.atomic/);
+});
+
+test('transport rotation requires fresh workflow capability before enqueue or authorization', async t => {
+  const f = await setup(t), entry = f.enqueue();
+  f.fleet.transport.generation++;
+  assert.throws(() => f.enqueue(), e => e.code === 'project_workflow_unavailable');
+  await assert.rejects(f.authorize(entry), e => e.code === 'project_workflow_unavailable');
+  assert.equal(entry.state, 'queued');
 });
 
 test('machine authorization rechecks administrator demotion and does not treat network failure as denial', async t => {

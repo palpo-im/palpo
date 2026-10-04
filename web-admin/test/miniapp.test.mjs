@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
+import { contributedFleet, projectBudget, projectAdministrators, acceptProjectReservations } from './project-workflow-fixture.mjs';
 
 test('native HTTP boundary rejects browser context and oversized bodies; expiry requires a fresh host session', async t => {
   let now = 1000;
@@ -51,11 +52,11 @@ function setup(t, options = {}) {
   t.after(() => f.store.close());
   const login = async (token = 'owner-secret', services = Object.keys(SERVICES)) => (await app.open(`Bearer ${token}`, { appId: APP_ID, bundleDigest: 'a'.repeat(64), services })).sessionToken;
   const call = (session, service, args = {}) => app.call(`Bearer ${session}`, { service, args });
-  return { ...f, app, inbox: server.inbox, login, call };
+  return { ...f, app, inbox: server.inbox, workflow: server.inbox.workflow, login, call };
 }
 async function projectRequest(f, requestId = 'new-project') {
-  const fleet = await f.service.create({ ...fleetInput, requestId: 'hagency-registration', transportMode: 'callback' }, '@admin:example.test', 'admin-secret');
-  return { requestId, kind: 'project', name: 'Research project', reason: 'Run a research agent', fleetId: fleet.id, resourceIds: [resource] };
+  const fleet = await contributedFleet(f, f.workflow, f.inbox);
+  return { requestId, kind: 'project', name: 'Research project', reason: 'Run a research agent', fleetId: fleet.id, resourceIds: [resource], allocations: projectBudget() };
 }
 
 test('admin authority is rechecked after waiting in the shared mutation queue', async t => {
@@ -117,10 +118,10 @@ test('project decision has one winner, survives read/dismiss, and replays withou
   await f.call(admin, 'palpo.inbox.seen', { id: action.id });
   assert.equal((await f.call(admin, 'palpo.inbox.list')).pendingCount, 1);
   await assert.rejects(f.call(stranger, 'palpo.inbox.get', { id: action.id }), e => e.status === 404);
-  const decision = { id: action.id, expectedRevision: action.revision, commandId: 'decision-1', decision: 'approve', reason: 'Approved project' };
+  const decision = { id: action.id, expectedRevision: action.revision, commandId: 'decision-1', decision: 'approve', reason: 'Approved project', ...projectAdministrators };
   await assert.rejects(f.call(owner, 'palpo.inbox.decide', decision), e => e.status === 403);
   const { action: approved } = await f.call(admin, 'palpo.inbox.decide', decision);
-  assert.equal(approved.state, 'approved'); assert.equal(approved.execution, 'pending');
+  assert.equal(approved.state, 'approved'); assert.equal(approved.execution, 'awaiting_reservation');
   assert.equal((await f.call(admin, 'palpo.inbox.decide', decision)).action.id, approved.id);
   await assert.rejects(f.call(admin, 'palpo.inbox.decide', { ...decision, commandId: 'another', decision: 'reject' }), e => e.code === 'decision_conflict');
   assert.equal(Object.keys(f.store.state.fleets).length, 1);
@@ -129,12 +130,18 @@ test('project decision has one winner, survives read/dismiss, and replays withou
 
 });
 
-test('approved project activates as owner and enforces its resource grant on all request paths', async t => {
+test('the owner prepares a project, but only an applied reservation enables agent requests', async t => {
   const f = setup(t), owner = await f.login(), admin = await f.login('admin-secret');
-  const fleet = await f.service.create({ ...fleetInput, transportMode: 'callback' }, '@admin:example.test', 'admin-secret');
-  const row = await f.call(owner, 'palpo.inbox.submit', { requestId: 'project-approval', kind: 'project', name: 'Agent research', reason: 'Research agent', fleetId: fleet.id, resourceIds: [resource] });
+  const input = await projectRequest(f, 'project-approval'); input.name = 'Agent research';
+  const fleet = f.service.fleet(input.fleetId);
+  const row = await f.call(owner, 'palpo.inbox.submit', input);
   await assert.rejects(f.call(owner, 'palpo.projects.create', { requestId: 'bypass', fleetId: fleet.id, name: 'Bypass' }), e => e.code === 'project_approval_required');
-  await f.call(admin, 'palpo.inbox.decide', { id: row.action.id, expectedRevision: 1, commandId: 'project-decision', decision: 'approve', reason: 'Project approved' });
+  const draft = f.store.state.projects[row.action.result.projectId];
+  assert.equal(draft.state, 'awaiting_approval');
+  assert.throws(() => f.inbox.resourceGrant(draft, resource), e => e.code === 'project_allocation_required');
+  await f.call(admin, 'palpo.inbox.decide', { id: row.action.id, expectedRevision: row.action.revision, commandId: 'project-decision', decision: 'approve', reason: 'Project approved', ...projectAdministrators });
+  assert.throws(() => f.inbox.resourceGrant(draft, resource), e => e.code === 'project_allocation_required');
+  await acceptProjectReservations(f, f.workflow, f.inbox);
   await assert.rejects(f.call(admin, 'palpo.inbox.activate', { id: row.action.id }), e => e.status === 404);
   const active = await f.call(owner, 'palpo.inbox.activate', { id: row.action.id });
   const project = f.store.state.projects[active.action.result.projectId];
@@ -177,7 +184,7 @@ test('notifications retry a lost receipt with the same event, remind after readi
   assert.equal(ownerEvents.length, 1); assert.ok(f.events.size >= count);
   await f.call(admin, 'palpo.inbox.seen', { id: action.id });
   const before = f.events.size; now += 300; await worker.tick(); assert.ok(f.events.size > before);
-  await f.call(admin, 'palpo.inbox.decide', { id: action.id, expectedRevision: 1, commandId: 'reject', decision: 'reject', reason: 'Insufficient detail' });
+  await f.call(admin, 'palpo.inbox.decide', { id: action.id, expectedRevision: action.revision, commandId: 'reject', decision: 'reject', reason: 'Insufficient detail' });
   await worker.tick(); const resolvedCount = f.events.size; now += 10000; await worker.tick(); assert.equal(f.events.size, resolvedCount);
   for (const event of f.events.values()) assert.doesNotMatch(JSON.stringify(event.content), /Research project|Run a research agent|as_token|hs_token/);
 });
@@ -199,7 +206,7 @@ test('only the designated administrator can see and decide other managers projec
   const { action } = await f.call(owner, 'palpo.inbox.submit', await projectRequest(f));
   assert.equal((await f.call(other, 'palpo.inbox.list', { view: 'all' })).total, 0);
   await assert.rejects(f.call(other, 'palpo.inbox.get', { id: action.id }), e => e.status === 404);
-  const decision = { id: action.id, expectedRevision: 1, commandId: 'scoped', decision: 'approve', reason: 'Review' };
+  const decision = { id: action.id, expectedRevision: action.revision, commandId: 'scoped', decision: 'approve', reason: 'Review', ...projectAdministrators };
   await assert.rejects(f.call(other, 'palpo.inbox.decide', decision), e => e.code === 'project_approver_required');
   await assert.rejects(f.inbox.decide(decision, '@other:example.test', 'other-secret'), e => e.code === 'project_approver_required');
   assert.equal(f.inbox.state.records[action.id].state, 'requested');

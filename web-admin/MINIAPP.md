@@ -45,10 +45,11 @@ explicit variable before enabling a multi-recipient legacy configuration.
 
 Set `PALPO_PROJECT_APPROVAL_REQUIRED=1` to require approval for every **new**
 project, including requests through the existing browser/API. Existing projects
-are grandfathered. Without this option, legacy direct project creation remains
-enabled; do not describe that deployment as enforcing mandatory project approval.
-Projects activated from Inbox always receive a resource grant, enforced on later
-agent requests through both frontends. Activation uses the owner's live token.
+and their original owners remain in place. Without this option, legacy direct
+project creation remains enabled; do not describe that deployment as enforcing
+mandatory project approval. New agent requests through either frontend require
+an accepted finite allocation. An exact retry of an existing legacy operation
+can continue; it never creates an implicit budget or changes the original verdict.
 
 Resources originate in Hagency. Rinx project managers select resources already
 published by a connected Hagency and request projects; they cannot contribute
@@ -81,10 +82,27 @@ Hagency `native/fixtures/project-commands.json`. Tests cover atomic enqueue,
 receipt rollback/replay, assigned-admin scope, pending reassignment, HTTP
 credentials/origin, outages and cross-language command digests.
 
-This protocol is **not enabled in the mini app yet**. Contribution capability
-publication, explicit project budgets/administrators and Inbox command/result
-projection must be wired before a peer advertises support. No implicit unlimited
-grant or legacy owner transfer is part of this change.
+Project requests now specify finite `allocations` (contribution/resource IDs,
+tokens, maximum agents, aggregate daily rate and duration). Only fresh, active
+contributions in the current registration and transport generation are offered.
+Pending commands and accepted grants reduce the budget offered to other projects.
+
+Submission prepares the actual owner-bound room using the owner's current
+Matrix token and stable operation ID. This creates a proposal, not an allocated
+project. A lost Matrix response resumes the same room. The designated admin
+reviews that room and assigns active local Matrix users as project administrators,
+with an explicit self-approval policy. Current room privacy, binding and owner
+powers are rechecked before approval. The decision, reservation commands, audit
+and notification intents commit in one transaction. `awaiting_reservation`
+becomes `done` only after every exact business receipt is applied; refusals remain
+unallocated. Partial reservations stay held, with no speculative refund.
+
+The full workflow remains **development-only**. Hagency does not advertise the
+new capability until assigned-project-admin agent/top-up Inbox decisions and the
+remaining lifecycle are wired. Local fixtures explicitly supply the capability
+and business receipts; they do not prove a live agent lifecycle. Old projects
+need an explicit budget migration, and partial-refusal recovery remains work.
+There is no implicit unlimited grant or legacy owner transfer.
 
 ## My Actions notifications
 

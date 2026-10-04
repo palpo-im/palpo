@@ -126,7 +126,8 @@ export class MiniApp {
         const fleets = await this.workflow.catalog(actor, signal);
         return { fleets: fleets.filter(f => !project || f.id === project.fleetId).map(f => ({ ...f,
           capabilities: f.capabilities ? { ...f.capabilities, offers: f.capabilities.offers.map(o => ({ ...o,
-            resources: (o.resources ?? []).filter(r => !project?.resourceGrant || project.resourceGrant.resourceIds.includes(r.id)) })) } : null })) };
+            resources: (o.resources ?? []).filter(r => !project?.resourceGrant || project.resourceGrant.resourceIds.includes(r.id))
+              .map(r => ({ ...r, contributions: this.inbox.projects.catalog(this.service.fleet(f.id), r.id) })) })) } : null })) };
       }
       case 'palpo.projects.list': fields(args, []); return { projects: await this.workflow.projects(actor, token, signal) };
       case 'palpo.projects.create': fields(args, ['requestId', 'name', 'fleetId', 'roomId']); return mutate(async () => ({ project: await this.workflow.createProject(args, actor, token) }));
@@ -141,7 +142,7 @@ export class MiniApp {
       case 'palpo.fleets.connect': fields(args, ['fleetId']); return mutate(() => this.workflow.connect(id(), actor, token));
       case 'palpo.inbox.list': fields(args, ['view', 'offset', 'limit']); return this.inbox.list(actor, await this.admin(token), args);
       case 'palpo.inbox.get': fields(args, ['id']); return this.inbox.get(text(args.id, 'Action ID'), actor, await this.admin(token));
-      case 'palpo.inbox.submit': return mutate(() => this.inbox.submit(args, actor));
+      case 'palpo.inbox.submit': return mutate(() => this.inbox.submit(args, actor, token));
       case 'palpo.inbox.decide': return mutate(async () => { await this.service.palpo.requireAdmin(token); return this.inbox.decide(args, actor, token); });
       case 'palpo.inbox.activate': return mutate(() => this.inbox.activate(args, actor, token));
       case 'palpo.inbox.seen': return this.inbox.seen(args, actor, await this.admin(token));

@@ -68,6 +68,7 @@ export class ProjectCommands {
     Object.assign(this, { service, inbox, now, adminToken, maxRecords });
     this.store = service.store;
     this.store.state.projectWorkflow ??= { commands: {}, grants: {}, contributions: {} };
+    this.onReceipt = entry => inbox.projectReceipt?.(entry);
   }
   get state() { return this.store.state.projectWorkflow; }
   validateContributions(fleet, page) {
@@ -78,7 +79,8 @@ export class ProjectCommands {
     applyContributionPage(fleet, page, this.state.contributions, this.now());
   }
   requireSupport(fleet) {
-    if (!isOutbound(fleet) || fleet.projectWorkflow?.v !== 1 || !positive(fleet.projectWorkflow.registrationGeneration)) {
+    if (!isOutbound(fleet) || fleet.projectWorkflow?.v !== 1 || !positive(fleet.projectWorkflow.registrationGeneration)
+      || fleet.projectWorkflow.transportGeneration !== fleet.transport.generation) {
       fail(409, 'project_workflow_unavailable', 'This Hagency has not advertised project approval support.');
     }
   }

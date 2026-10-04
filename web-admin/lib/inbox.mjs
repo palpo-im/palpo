@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ApiError } from './service.mjs';
 import { canonical } from './outbound.mjs';
 import { fields } from './miniapp.mjs';
+import { ProjectApprovals } from './project-approvals.mjs';
 
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
@@ -27,8 +28,10 @@ export class Inbox {
     this.approvers = this.projectApprover ? [this.projectApprover] : [];
     this.store = service.store;
     this.store.state.actionInbox ??= { records: {}, notices: {}, rooms: {} };
-    workflow.projectGrant = (input, actor, existing) => this.projectGrant(input, actor, existing);
-    workflow.resourceGrant = (project, resource) => this.resourceGrant(project, resource);
+    this.projects = new ProjectApprovals(this);
+    workflow.projectGrant = (input, actor, existing, options) => this.projectGrant(input, actor, existing, options);
+    workflow.resourceGrant = (project, resource, existing) => this.resourceGrant(project, resource, existing);
+    workflow.projectAllocation = project => this.projects.allocation(project);
   }
   get state() { return this.store.state.actionInbox; }
   canApproveProjects(actor, admin) { return !!admin && actor === this.projectApprover; }
@@ -37,16 +40,21 @@ export class Inbox {
     // Legacy contribution records remain readable, but contribution now starts
     // in Hagency, not as an action for a Rinx project manager.
     if (row.kind !== 'project') return false;
+    if (row.workflowVersion === 1) return row.execution === 'preparing' ? row.ownerMxid === actor : row.state === 'requested' && row.execution === 'pending' && admin;
     if (row.state === 'requested') return admin;
     return row.state === 'approved' && row.ownerMxid === actor && row.execution !== 'done';
   }
   view(row, actor, admin) {
     admin = this.canApproveProjects(actor, admin);
-    const { fingerprint, command, ...copy } = row;
-    return { ...copy, needsMyAction: this.pending(row, actor, admin),
-      nextAction: row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
+    const { fingerprint, command, reservations, ...copy } = row;
+    return { ...copy, workflowVersion: row.workflowVersion ?? null, needsMyAction: this.pending(row, actor, admin),
+      payload: { ...row.payload, allocations: row.payload.allocations?.map(a => ({ ...a, expiresAt: new Date(a.expiresAtMs).toISOString() })) ?? null },
+      reservations: reservations?.map(({ grantId, state, code }) => ({ grantId, state, code: code ?? null })) ?? null,
+      nextAction: row.workflowVersion === 1 ? row.execution === 'preparing' ? 'prepare_project' : row.state === 'requested' ? 'review' : null
+        : row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
         : row.state === 'approved' && row.execution !== 'done' ? 'activate_project' : null,
-      canDecide: admin && row.kind === 'project' && row.state === 'requested', canContinue: this.pending(row, actor, admin) && row.state === 'approved' };
+      canDecide: admin && row.kind === 'project' && row.state === 'requested' && row.execution === 'pending',
+      canContinue: this.pending(row, actor, admin) && (row.state === 'approved' || row.execution === 'preparing') };
   }
   record(id, actor, admin) {
     admin = this.canApproveProjects(actor, admin);
@@ -77,36 +85,42 @@ export class Inbox {
       this.state.notices[id] ??= { id, actionId: row.id, revision: row.revision, recipient, createdAt: this.now(), dueAt: this.now(), attempt: 0, delivered: 0, seenAt: null, cancelled: false };
     }
   }
-  async submit(input, actor) {
-    fields(input, ['requestId', 'kind', 'name', 'reason', 'fleetId', 'roomId', 'resourceIds']);
+  async submit(input, actor, token) {
+    fields(input, ['requestId', 'kind', 'name', 'reason', 'fleetId', 'roomId', 'resourceIds', 'allocations']);
     const requestId = key(input.requestId), kind = input.kind;
     if (kind === 'contribution') fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency. Request a project using published resources in Rinx.');
     if (kind !== 'project') fail(400, 'invalid_kind', 'Choose a project request.');
     if (!this.projectApprover) fail(503, 'project_approver_unconfigured', 'The server must designate one project approval administrator.');
     const payload = { name: text(input.name, 'Name', 128), reason: text(input.reason, 'Reason', 1000) };
     payload.fleetId = text(input.fleetId, 'Fleet', 80);
+    if (input.roomId) payload.roomId = text(input.roomId, 'Room ID', 255);
+    const id = `action_${hash({ actor, requestId }).slice(0, 32)}`;
+    const fingerprint = hash({ kind, payload, resourceIds: input.resourceIds, allocations: input.allocations });
+    const existing = this.state.records[id];
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID has different content.');
+      await this.projects.prepare(existing, actor, token);
+      return this.get(id, actor, false);
+    }
+    const createdAt = this.now();
     const fleet = this.workflow.fleet(payload.fleetId);
+    payload.allocations = this.projects.allocations(input.allocations, fleet, createdAt);
     const capabilities = await this.workflow.capabilities(fleet);
     if (!Array.isArray(input.resourceIds) || !input.resourceIds.length || input.resourceIds.length > 32
       || new Set(input.resourceIds).size !== input.resourceIds.length
       || input.resourceIds.some(id => !/^resource_[a-f0-9]{24}$/.test(id) || !capabilities.offers.some(offer => offer.resources?.some(r => r.id === id)))) fail(400, 'invalid_resources', 'Select currently offered resources.');
     payload.resourceIds = [...input.resourceIds].sort();
-    if (input.roomId) payload.roomId = text(input.roomId, 'Room ID', 255);
-    const id = `action_${hash({ actor, requestId }).slice(0, 32)}`, fingerprint = hash({ kind, payload });
-    const existing = this.state.records[id];
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID has different content.');
-      return this.get(id, actor, false);
-    }
+    if (canonical(payload.resourceIds) !== canonical(payload.allocations.map(a => a.resourceId))) fail(400, 'invalid_resources', 'Every requested resource requires its own finite contribution budget.');
     if (Object.keys(this.state.records).length >= this.maxRecords || Object.values(this.state.records).filter(row => row.ownerMxid === actor && row.state === 'requested').length >= 100) fail(429, 'inbox_full', 'Too many workflow records. Contact the server administrator.');
     this.store.atomic(() => {
-      const row = this.state.records[id] = { id, requestId, kind, payload, fingerprint, ownerMxid: actor, state: 'requested', execution: 'pending', revision: 1, createdAt: this.now(), updatedAt: this.now() };
-      this.notify(row); this.store.audit(actor, 'inbox.submit', payload.fleetId ?? null, id, 'requested');
+      this.state.records[id] = { id, requestId, kind, payload, fingerprint, workflowVersion: 1, ownerMxid: actor, state: 'requested', execution: 'preparing', revision: 1, createdAt, updatedAt: createdAt };
+      this.store.audit(actor, 'inbox.submit', payload.fleetId ?? null, id, 'preparing');
     });
+    await this.projects.prepare(this.state.records[id], actor, token);
     return this.get(id, actor, false);
   }
   async decide(input, actor, token) {
-    fields(input, ['id', 'expectedRevision', 'commandId', 'decision', 'reason']);
+    fields(input, ['id', 'expectedRevision', 'commandId', 'decision', 'reason', 'administrators', 'allowSelfApproval']);
     await this.service.palpo.requireAdmin(token);
     const identity = await this.service.palpo.call('/_matrix/client/v3/account/whoami', token);
     if (identity.user_id !== actor || !this.canApproveProjects(actor, !identity.is_guest)) fail(403, 'project_approver_required', 'Only the designated Palpo administrator can approve or reject projects.');
@@ -114,14 +128,18 @@ export class Inbox {
     if (row.kind !== 'project') fail(403, 'hagency_contribution_required', 'Manage resource contribution in Hagency.');
     if (!['approve', 'reject'].includes(input.decision) || !Number.isSafeInteger(input.expectedRevision)) fail(400, 'invalid_decision', 'A decision and the reviewed revision are required.');
     const reason = text(input.reason, 'Decision reason', 1000);
-    const command = { commandId, actor, expectedRevision: input.expectedRevision, decision: input.decision, reason };
+    const command = { commandId, actor, expectedRevision: input.expectedRevision, decision: input.decision, reason,
+      ...(input.decision === 'approve' ? { administrators: this.projects.administrators(input.administrators), allowSelfApproval: input.allowSelfApproval ?? null } : {}) };
     if (row.command) {
       if (canonical(row.command) !== canonical(command)) fail(409, 'decision_conflict', 'This action has already changed. Refresh its latest result.');
     } else {
       if (row.state !== 'requested' || row.revision !== input.expectedRevision) fail(409, 'decision_conflict', 'This action has already changed. Refresh its latest result.');
+      const plan = input.decision === 'approve' ? await this.projects.plan(row, input, token) : null;
       this.store.atomic(() => {
         row.command = command; row.state = input.decision === 'approve' ? 'approved' : 'rejected'; row.revision++;
         row.updatedAt = this.now(); row.decision = { by: actor, at: this.now(), reason };
+        if (plan) this.projects.enqueue(row, actor, plan);
+        else if (row.result?.projectId && this.store.state.projects[row.result.projectId]) this.store.state.projects[row.result.projectId].state = 'rejected';
         this.notify(row); this.store.audit(actor, 'inbox.decide', row.payload.fleetId ?? null, row.id, row.state);
       });
     }
@@ -132,6 +150,10 @@ export class Inbox {
     // Activation always uses the project owner's current Matrix authority.
     const row = this.record(input.id, actor, false);
     if (row.kind !== 'project') fail(403, 'hagency_contribution_required', 'Manage resource contribution in Hagency.');
+    if (row.workflowVersion === 1) {
+      await this.projects.prepare(row, actor, token);
+      return this.get(row.id, actor, false);
+    }
     if (row.state !== 'approved') fail(409, 'not_approved', 'This project has not been approved.');
     if (row.execution === 'done') return this.get(row.id, actor, false);
     try {
@@ -146,21 +168,29 @@ export class Inbox {
       throw cause;
     }
   }
-  projectGrant(input, actor, existing) {
+  projectGrant(input, actor, existing, { proposal = false } = {}) {
     const row = this.state.records[input.requestId];
     if (!row) {
       if (this.requireProjectApproval && !existing) fail(403, 'project_approval_required', 'Request and approve a project in Palpo before creating it.');
       return null;
     }
-    if (row.kind !== 'project' || row.state !== 'approved' || row.ownerMxid !== actor
+    if (row.kind !== 'project' || (proposal ? row.workflowVersion !== 1 || row.state !== 'requested' || row.execution !== 'preparing' : row.state !== 'approved') || row.ownerMxid !== actor
       || row.payload.name !== input.name || row.payload.fleetId !== input.fleetId || (row.payload.roomId ?? null) !== (input.roomId || null)) fail(403, 'project_grant_mismatch', 'Project creation must match the approved owner and resources.');
+    if (row.workflowVersion === 1) {
+      if (!proposal && row.execution !== 'done') fail(409, 'project_reservation_pending', 'Hagency has not confirmed this project allocation.');
+      return existing?.resourceGrant ?? { v: 1, actionId: row.id, resourceIds: [...row.payload.resourceIds], grantIds: [] };
+    }
     return { actionId: row.id, resourceIds: [...row.payload.resourceIds] };
   }
-  resourceGrant(project, resource) {
-    if (!project.resourceGrant) return; // Existing projects are explicitly grandfathered.
+  resourceGrant(project, resource, existing) {
+    // Existing legacy operations may retry their exact source-bound payload;
+    // this never allocates a new grant or changes their Hagency verdict.
+    if (existing && project.resourceGrant?.v !== 1) return;
+    if (!this.projects.allocation(project).ready) fail(409, 'project_allocation_required', 'This project needs a current, accepted finite allocation before requesting another agent.');
     const row = this.state.records[project.resourceGrant.actionId];
     if (!row || row.state !== 'approved' || !project.resourceGrant.resourceIds.includes(resource)) fail(403, 'resource_not_granted', 'Select a resource approved for this project.');
   }
+  projectReceipt(entry) { this.projects.receipt(entry); }
   seen(input, actor, admin) {
     fields(input, ['id']); const row = this.record(input.id, actor, admin);
     this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.recipient === actor) notice.seenAt = this.now(); });
