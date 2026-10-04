@@ -80,9 +80,15 @@ export class ActionNotifications {
         const row = this.inbox.state.records[notice.actionId];
         const admin = this.inbox.canApproveProjects(notice.recipient, true) && await this.isAdmin(notice.recipient);
         // Recheck canonical state and recipient authority just before sending.
-        if (!row || row.revision !== notice.revision || (row.ownerMxid !== notice.recipient && !admin)
+        if (!row || row.revision !== notice.revision || !this.inbox.canRead(row, notice.recipient, admin)
           || (notice.delivered > 0 && !this.inbox.pending(row, notice.recipient, admin))) {
           this.inbox.store.atomic(() => { notice.cancelled = true; }); continue;
+        }
+        if (this.inbox.agents.manages(row)) {
+          const person = await this.palpo.user(notice.recipient, this.config.adminToken);
+          if (!person || person.deactivated || person.locked || person.appservice_id) {
+            this.inbox.store.atomic(() => { notice.cancelled = true; }); continue;
+          }
         }
         const roomId = await this.room(notice.recipient);
         const pending = this.inbox.pending(row, notice.recipient, admin);

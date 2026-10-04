@@ -1,6 +1,7 @@
 // Explicit fake Hagency for frontend/service tests. It is not live integration
 // evidence; real reservation enforcement is exercised in the Rust store suite.
 import { fleetInput } from './fixture.mjs';
+import { createHash } from 'node:crypto';
 export const projectResource = `resource_${'a'.repeat(24)}`;
 export async function contributedFleet(f, workflow, inbox, requestId = 'hagency-registration') {
   const created = await f.service.create({ ...fleetInput, requestId, transportMode: 'callback' }, '@admin:example.test', 'admin-secret');
@@ -39,5 +40,23 @@ export async function refreshContributions(f, workflow, inbox) {
       .map(r => ({ grant: r.grant, state: r.state, reserved: r.reserved }));
     await f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation, sequence: fleet.transport.sequence + 1, heartbeat: true,
       contributionPage: { v: 1, registrationGeneration: 1, observedAtMs: inbox.now(), after: '', nextAfter: null, contributions } }, workflow);
+  }
+}
+
+export async function acceptAgentDecisions(f, workflow, inbox) {
+  for (const fleet of Object.values(f.store.state.fleets)) {
+    const entries = Object.values(inbox.projectCommands.state.commands).filter(e => !e.receipt && e.command.fleetId === fleet.id
+      && ['approve_agent', 'reject_agent', 'top_up_agent'].includes(e.command.operation.kind));
+    if (!entries.length) continue;
+    const commandReceipts = entries.slice(0, 8).map(e => {
+      const op = e.command.operation;
+      const agent = op.kind === 'top_up_agent' ? inbox.state.records[e.actionId] : null;
+      const request = agent && f.store.state.requests[agent.requestKey];
+      return { v: 1, fleetId: fleet.id, registrationGeneration: 1, commandId: e.command.commandId, commandDigest: e.digest, completedAtMs: inbox.now(),
+        outcome: { status: 'applied', result: { kind: 'agent', engagementId: op.engagementId ?? `en_${createHash('sha256').update(JSON.stringify([fleet.id, op.request.requestId])).digest('hex').slice(0, 32)}`,
+          state: op.kind === 'reject_agent' ? 'rejected' : 'reserved', allocatedTokens: request ? inbox.agents.allocation(request).tokens + op.addTokens : op.allocatedTokens ?? op.request.requestedTokens,
+          cleanup: 'not_required' } } };
+    });
+    await f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation, sequence: fleet.transport.sequence + 1, heartbeat: true, commandReceipts }, workflow);
   }
 }

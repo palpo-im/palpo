@@ -97,9 +97,34 @@ and notification intents commit in one transaction. `awaiting_reservation`
 becomes `done` only after every exact business receipt is applied; refusals remain
 unallocated. Partial reservations stay held, with no speculative refund.
 
+### Assigned project-admin decisions and token increases
+
+An agent requested against an accepted finite grant creates an `agent` Inbox
+action after its original Matrix source event is acknowledged. Only explicitly
+assigned project administrators can decide it, subject to the grant's self-approval
+policy. A server-admin flag alone grants neither access nor decision authority.
+The manager can read the result; no second human approval is sent to Hagency's
+legacy console queue. Existing historical requests retain their original path.
+
+Decision, exact source-bound command, audit and notices commit atomically.
+Current identity, grant revision, room binding, contribution and remaining
+capacity are checked before admission. A refused or replayed command cannot
+invent a second allocation. An applied decision means admission/provisioning;
+agent readiness still requires actual fulfillment and verified Matrix membership.
+Because status and receipt publication are independently paginated, a status
+whose decision receipt has not arrived is deferred without rejecting the batch.
+
+Owners request additional tokens for the same approved agent through a `top_up`
+Inbox action. The assigned admin may approve a smaller positive increase or
+reject it. Rejection does not enqueue remote work. Approval references the same
+engagement and consumes the remaining project budget once; no new agent request
+or Matrix source event is created. Request projections distinguish confirmed
+tokens from increases still awaiting a business receipt. Capacity is held
+conservatively until a defined, verified lifecycle result releases it.
+
 The full workflow remains **development-only**. Hagency does not advertise the
-new capability until assigned-project-admin agent/top-up Inbox decisions and the
-remaining lifecycle are wired. Local fixtures explicitly supply the capability
+new capability until the remaining lifecycle and cross-service acceptance checks
+are complete. Local fixtures explicitly supply the capability
 and business receipts; they do not prove a live agent lifecycle. Old projects
 need an explicit budget migration, and partial-refusal recovery remains work.
 There is no implicit unlimited grant or legacy owner transfer.
@@ -127,6 +152,10 @@ They are plaintext minimal notices, not encrypted configuration delivery.
 Only the designated project administrator receives project-review notices.
 Current server-admin authority is rechecked before delivery. An old queued
 notice for another administrator is cancelled rather than treated as a grant.
+Agent and top-up notices instead target the owner/requester and explicitly
+assigned project administrators. Delivery rechecks the current grant and active
+recipient; removed assignments and locked/deactivated accounts receive no new
+notice or reminder.
 
 Workflow, audit and notification intent are committed together in SQLite. A
 lost send receipt repeats the same Matrix transaction ID. Pending actions get
@@ -146,7 +175,7 @@ real; Matrix/Hagency observations are explicit local test fixtures.
 
 This is an implementation milestone, not completed ADR acceptance. Remaining:
 public deployment and native file saving/runtime import, richer My Actions room UI,
-Hagency-scoped allocation decisions/top-ups/runtime statistics/revocation,
+actual Hagency command/receipt integration, runtime statistics and revocation,
 signup decision parity, mobile/hosted integration and publication. The default
 unit and native fixture suites do not change live accounts or configuration.
 

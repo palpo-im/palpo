@@ -317,6 +317,7 @@ export class Workflow {
     if (request && request.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID is already bound to different content.');
     this.resourceGrant?.(project, agentDefinition?.resourceId, request);
     if (!request) {
+      if (project.resourceGrant?.v === 1) this.agentRequestPlan?.(project, payload);
       const offer = capabilities.offers.find(offer => offer.role === role);
       if (!offer) fail(409, 'role_unavailable', 'This role is not currently published by the Hagency.');
       const resource = agentDefinition && offer.resources?.find(resource => resource.id === agentDefinition.resourceId);
@@ -325,7 +326,8 @@ export class Workflow {
         && !['ended', 'rejected'].includes(other.state) && other.payload.agentDefinition?.name === agentDefinition.name)) {
         fail(409, 'agent_name_conflict', 'This project already has an Agent request with that name. Use a distinct name for the next Agent.');
       }
-      request = this.store.state.requests[id] = { id, requestId, fleetId: fleet.id, projectId: project.id, requesterMxid: actor, payload, fingerprint, state: 'sending', createdAt: now() };
+      request = this.store.state.requests[id] = { id, requestId, fleetId: fleet.id, projectId: project.id, requesterMxid: actor, payload, fingerprint,
+        ...(project.resourceGrant?.v === 1 ? { workflowVersion: 1 } : {}), state: 'sending', createdAt: now() };
       if (resource) request.resource = { ...resource };
       this.store.audit(actor, 'request.submit', fleet.id, requestId, 'started');
     }
@@ -341,6 +343,10 @@ export class Workflow {
         const event = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(payload.sourceRoomId)}/send/com.hagency.engagement.request.v1/${enc(`request_${digest({ fleetId: fleet.id, actor, requestId })}`)}`, token, { method: 'PUT', body: eventContent });
         if (!event.event_id) fail(502, 'request_event_missing', 'Matrix did not acknowledge the request event.');
         request.sourceEventId = event.event_id; this.store.save();
+      }
+      if (request.workflowVersion === 1) {
+        if (!this.agentRequest) fail(503, 'project_workflow_unavailable', 'Project agent approval is unavailable.');
+        return this.agentRequest(request, project);
       }
       if (isOutbound(fleet)) {
         this.service.outbound.enqueue(fleet, 'work', 'request', requestId, { ...payload, sourceEventId: request.sourceEventId });

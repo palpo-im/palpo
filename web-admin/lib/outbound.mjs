@@ -145,6 +145,10 @@ export class Outbound {
       if (!status || typeof status !== 'object' || status.v !== 1) fail(400, 'invalid_status', 'Each status must be a version 1 request observation.');
       const request = this.store.state.requests?.[`${fleet.id}:${status.requestId}`];
       if (!request || status.fleetId !== fleet.id) fail(409, 'unknown_request', 'Updates must identify an existing request in this fleet.');
+      if (request.workflowVersion === 1) {
+        if (!workflow.agentStatus) fail(409, 'project_workflow_unavailable', 'Agent status verification is unavailable.');
+        if (!workflow.agentStatus(request, status, commandReceipts)) continue;
+      }
       const record = structuredClone(request);
       if (status.role !== request.payload.role || status.requestedTokens !== request.payload.requestedTokens) fail(409, 'request_binding_conflict', 'The status role or quota does not match the registered request.');
       workflow.applyStatus(record, status, false);

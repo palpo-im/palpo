@@ -100,14 +100,7 @@ export class ProjectApprovals {
     }
     const fleet = this.workflow.fleet(row.payload.fleetId), project = this.store.state.projects[row.result.projectId];
     if (!project || project.ownerMxid !== row.ownerMxid || project.roomId !== row.result.roomId || project.fleetId !== fleet.id) fail(409, 'project_binding_conflict', 'The prepared project binding changed.');
-    const state = await this.workflow.roomState(project.roomId, fleet.registration.as_token, fleet.representativeMxid);
-    const content = (type, key = '') => state.find(e => e.type === type && e.state_key === key)?.content;
-    const binding = content('com.hagency.admin.binding.v1', fleet.id), powers = content('m.room.power_levels');
-    if (content('m.room.join_rules')?.join_rule !== 'invite' || content('m.room.encryption')
-      || content('m.room.member', project.ownerMxid)?.membership !== 'join'
-      || Number(powers?.users?.[project.ownerMxid] ?? powers?.users_default ?? 0) < Math.max(100, Number(powers?.state_default ?? 50), Number(powers?.invite ?? 0))
-      || binding?.v !== 1 || binding.fleetId !== fleet.id || binding.projectId !== project.id
-      || binding.ownerMxid !== project.ownerMxid || binding.purpose !== 'project' || binding.authVersion !== project.authVersion) fail(409, 'project_binding_conflict', 'The owner, privacy, or project room binding changed after submission.');
+    await this.validateBinding(project, fleet);
     const grants = row.payload.allocations.map(selection => {
       const parent = this.contribution(fleet, selection.contributionId), available = this.available(fleet, parent, row.id);
       if (parent.grant.revision !== selection.contributionRevision || parent.grant.registrationGeneration !== selection.registrationGeneration
@@ -121,6 +114,16 @@ export class ProjectApprovals {
     });
     await this.service.palpo.requireAdmin(token);
     return { fleet, project, grants, administrators };
+  }
+  async validateBinding(project, fleet) {
+    const state = await this.workflow.roomState(project.roomId, fleet.registration.as_token, fleet.representativeMxid);
+    const content = (type, key = '') => state.find(e => e.type === type && e.state_key === key)?.content;
+    const binding = content('com.hagency.admin.binding.v1', fleet.id), powers = content('m.room.power_levels');
+    if (content('m.room.join_rules')?.join_rule !== 'invite' || content('m.room.encryption')
+      || content('m.room.member', project.ownerMxid)?.membership !== 'join'
+      || Number(powers?.users?.[project.ownerMxid] ?? powers?.users_default ?? 0) < Math.max(100, Number(powers?.state_default ?? 50), Number(powers?.invite ?? 0))
+      || binding?.v !== 1 || binding.fleetId !== fleet.id || binding.projectId !== project.id
+      || binding.ownerMxid !== project.ownerMxid || binding.purpose !== 'project' || binding.authVersion !== project.authVersion) fail(409, 'project_binding_conflict', 'The owner, privacy, or project room binding changed after submission.');
   }
   enqueue(row, actor, plan) {
     row.execution = 'awaiting_reservation'; row.reservations = [];

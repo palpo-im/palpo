@@ -27,9 +27,9 @@ export const SERVICES = Object.freeze({
   'palpo.activity.list': 'Read the Palpo administrator audit history',
   'palpo.accounts.list': 'Read pending account signup requests',
   'palpo.inbox.list': 'Read your pending Palpo actions and history',
-  'palpo.inbox.submit': 'Request projects using resources published by Hagency',
+  'palpo.inbox.submit': 'Request projects and additional agent tokens within your permissions',
   'palpo.inbox.get': 'Read the latest state of an authorized action',
-  'palpo.inbox.decide': 'Approve or reject projects as the designated Palpo administrator',
+  'palpo.inbox.decide': 'Approve or reject within your explicitly assigned project permissions',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
   'palpo.inbox.seen': 'Mark a notification seen without completing its action',
   'palpo.inbox.snooze': 'Snooze reminders for an action you can take',
@@ -74,10 +74,10 @@ export class MiniApp {
   }
   key(token) { return createHash('sha256').update(token).digest('hex'); }
   identity(session, isAdmin) {
-    return { version: 1, userId: session.actor, isAdmin, canApproveProjects: this.inbox.canApproveProjects(session.actor, isAdmin), serverName: this.service.serverName,
+    return { version: 1, userId: session.actor, isAdmin, canApproveProjects: this.inbox.canApproveProjects(session.actor, isAdmin), canReviewAgents: this.inbox.agents.reviewer(session.actor), serverName: this.service.serverName,
       services: session.services, callbackOrigins: isAdmin ? [...this.service.callbackOrigins] : [],
       outboundAvailable: !!(this.service.transportOrigin && this.service.relayOrigin),
-      features: { inbox: true, contributions: false, projectApproval: true, remoteAgentDecisions: false, topUps: false } };
+      features: { inbox: true, contributions: false, projectApproval: true, remoteAgentDecisions: true, topUps: true } };
   }
   async authenticate(header) {
     const bearer = credentials(header), key = bearer ? this.key(bearer) : '';
@@ -131,7 +131,8 @@ export class MiniApp {
       }
       case 'palpo.projects.list': fields(args, []); return { projects: await this.workflow.projects(actor, token, signal) };
       case 'palpo.projects.create': fields(args, ['requestId', 'name', 'fleetId', 'roomId']); return mutate(async () => ({ project: await this.workflow.createProject(args, actor, token) }));
-      case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request, agentDefinition: request.agentDefinition ?? null })) };
+      case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request,
+        agentDefinition: request.agentDefinition ?? null, canRequestTopUp: this.inbox.agents.canTopUp(request, actor), allocation: this.inbox.agents.allocation(request) })) };
       case 'palpo.requests.create': fields(args, ['requestId', 'projectId', 'role', 'requestedTokens', 'ratePerDay', 'agentDefinition']); return mutate(async () => ({ request: await this.workflow.request(args, actor, token) }));
       case 'palpo.fleets.register': fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency.');
       case 'palpo.fleets.list': {
@@ -143,7 +144,7 @@ export class MiniApp {
       case 'palpo.inbox.list': fields(args, ['view', 'offset', 'limit']); return this.inbox.list(actor, await this.admin(token), args);
       case 'palpo.inbox.get': fields(args, ['id']); return this.inbox.get(text(args.id, 'Action ID'), actor, await this.admin(token));
       case 'palpo.inbox.submit': return mutate(() => this.inbox.submit(args, actor, token));
-      case 'palpo.inbox.decide': return mutate(async () => { await this.service.palpo.requireAdmin(token); return this.inbox.decide(args, actor, token); });
+      case 'palpo.inbox.decide': return mutate(() => this.inbox.decide(args, actor, token));
       case 'palpo.inbox.activate': return mutate(() => this.inbox.activate(args, actor, token));
       case 'palpo.inbox.seen': return this.inbox.seen(args, actor, await this.admin(token));
       case 'palpo.inbox.snooze': return this.inbox.snooze(args, actor, await this.admin(token));

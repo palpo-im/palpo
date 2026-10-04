@@ -3,6 +3,7 @@ import { ApiError } from './service.mjs';
 import { canonical } from './outbound.mjs';
 import { fields } from './miniapp.mjs';
 import { ProjectApprovals } from './project-approvals.mjs';
+import { AgentApprovals } from './agent-approvals.mjs';
 
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
@@ -29,13 +30,18 @@ export class Inbox {
     this.store = service.store;
     this.store.state.actionInbox ??= { records: {}, notices: {}, rooms: {} };
     this.projects = new ProjectApprovals(this);
+    this.agents = new AgentApprovals(this);
     workflow.projectGrant = (input, actor, existing, options) => this.projectGrant(input, actor, existing, options);
     workflow.resourceGrant = (project, resource, existing) => this.resourceGrant(project, resource, existing);
     workflow.projectAllocation = project => this.projects.allocation(project);
+    workflow.agentRequest = (request, project) => this.agents.submit(request, project);
+    workflow.agentRequestPlan = (project, payload) => this.agents.select(project, payload);
+    workflow.agentStatus = (request, status, receipts) => this.agents.validateStatus(request, status, receipts);
   }
   get state() { return this.store.state.actionInbox; }
   canApproveProjects(actor, admin) { return !!admin && actor === this.projectApprover; }
   pending(row, actor, admin) {
+    if (this.agents.manages(row)) return this.agents.canDecide(row, actor);
     admin = this.canApproveProjects(actor, admin);
     // Legacy contribution records remain readable, but contribution now starts
     // in Hagency, not as an action for a Rinx project manager.
@@ -46,31 +52,35 @@ export class Inbox {
   }
   view(row, actor, admin) {
     admin = this.canApproveProjects(actor, admin);
-    const { fingerprint, command, reservations, ...copy } = row;
-    return { ...copy, workflowVersion: row.workflowVersion ?? null, needsMyAction: this.pending(row, actor, admin),
+    const { fingerprint, command, commandRef, requestKey, reservations, ...copy } = row;
+    return { ...copy, requesterMxid: row.requesterMxid ?? row.ownerMxid, workflowVersion: row.workflowVersion ?? null, needsMyAction: this.pending(row, actor, admin),
       payload: { ...row.payload, allocations: row.payload.allocations?.map(a => ({ ...a, expiresAt: new Date(a.expiresAtMs).toISOString() })) ?? null },
       reservations: reservations?.map(({ grantId, state, code }) => ({ grantId, state, code: code ?? null })) ?? null,
-      nextAction: row.workflowVersion === 1 ? row.execution === 'preparing' ? 'prepare_project' : row.state === 'requested' ? 'review' : null
+      nextAction: this.agents.manages(row) ? this.agents.canDecide(row, actor) ? 'review_agent' : null
+        : row.workflowVersion === 1 ? row.execution === 'preparing' ? 'prepare_project' : row.state === 'requested' ? 'review' : null
         : row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
         : row.state === 'approved' && row.execution !== 'done' ? 'activate_project' : null,
-      canDecide: admin && row.kind === 'project' && row.state === 'requested' && row.execution === 'pending',
+      canDecide: this.agents.manages(row) ? this.agents.canDecide(row, actor) : admin && row.kind === 'project' && row.state === 'requested' && row.execution === 'pending',
       canContinue: this.pending(row, actor, admin) && (row.state === 'approved' || row.execution === 'preparing') };
   }
   record(id, actor, admin) {
-    admin = this.canApproveProjects(actor, admin);
     const row = this.state.records[id];
-    if (!row || (row.ownerMxid !== actor && !admin)) fail(404, 'action_not_found', 'Action not found.');
+    if (!row || !this.canRead(row, actor, admin)) fail(404, 'action_not_found', 'Action not found.');
     return row;
+  }
+  canRead(row, actor, admin) {
+    return this.agents.manages(row) ? this.agents.canRead(row, actor) : row.ownerMxid === actor || this.canApproveProjects(actor, admin);
   }
   get(id, actor, admin) { return { action: this.view(this.record(id, actor, admin), actor, admin) }; }
   list(actor, admin, { view = 'needs_action', offset = 0, limit = 50 } = {}) {
     if (!['needs_action', 'waiting', 'history', 'all'].includes(view) || !Number.isSafeInteger(offset) || offset < 0
       || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(400, 'invalid_page', 'Invalid inbox page.');
     admin = this.canApproveProjects(actor, admin);
-    const allowed = Object.values(this.state.records).filter(row => admin || row.ownerMxid === actor);
+    const allowed = Object.values(this.state.records).filter(row => this.canRead(row, actor, admin));
+    const complete = row => row.state === 'rejected' ? !this.agents.manages(row) || row.execution === 'done' : row.state === 'approved' && row.execution === 'done';
     const selected = allowed.filter(row => row.kind === 'contribution' ? ['history', 'all'].includes(view) : view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
-      : view === 'waiting' ? !this.pending(row, actor, admin) && (row.state === 'requested' || (row.state === 'approved' && row.execution !== 'done'))
-        : row.state === 'rejected' || (row.state === 'approved' && row.execution === 'done' && !this.pending(row, actor, admin))));
+      : view === 'waiting' ? !this.pending(row, actor, admin) && !complete(row)
+        : complete(row) && !this.pending(row, actor, admin)));
     selected.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
     return { actions: selected.slice(offset, offset + limit).map(row => this.view(row, actor, admin)), total: selected.length,
       pendingCount: allowed.filter(row => this.pending(row, actor, admin)).length,
@@ -80,12 +90,14 @@ export class Inbox {
     // Discard obsolete queued deliveries; already delivered cards remain links to
     // the current record. Reminder state is per recipient, independent of read.
     for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.revision !== row.revision) notice.cancelled = true;
-    for (const recipient of new Set([row.ownerMxid, ...this.approvers])) {
+    const recipients = this.agents.manages(row) ? [row.ownerMxid, row.requesterMxid, ...this.agents.administrators(row)] : [row.ownerMxid, ...this.approvers];
+    for (const recipient of new Set(recipients)) {
       const id = `${row.id}_${row.revision}_${hash(recipient).slice(0, 16)}`;
       this.state.notices[id] ??= { id, actionId: row.id, revision: row.revision, recipient, createdAt: this.now(), dueAt: this.now(), attempt: 0, delivered: 0, seenAt: null, cancelled: false };
     }
   }
   async submit(input, actor, token) {
+    if (input?.kind === 'top_up') return this.agents.submitTopUp(input, actor, token);
     fields(input, ['requestId', 'kind', 'name', 'reason', 'fleetId', 'roomId', 'resourceIds', 'allocations']);
     const requestId = key(input.requestId), kind = input.kind;
     if (kind === 'contribution') fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency. Request a project using published resources in Rinx.');
@@ -120,6 +132,7 @@ export class Inbox {
     return this.get(id, actor, false);
   }
   async decide(input, actor, token) {
+    if (this.agents.manages(this.state.records[input?.id])) return this.agents.decide(input, actor, token);
     fields(input, ['id', 'expectedRevision', 'commandId', 'decision', 'reason', 'administrators', 'allowSelfApproval']);
     await this.service.palpo.requireAdmin(token);
     const identity = await this.service.palpo.call('/_matrix/client/v3/account/whoami', token);
@@ -190,7 +203,7 @@ export class Inbox {
     const row = this.state.records[project.resourceGrant.actionId];
     if (!row || row.state !== 'approved' || !project.resourceGrant.resourceIds.includes(resource)) fail(403, 'resource_not_granted', 'Select a resource approved for this project.');
   }
-  projectReceipt(entry) { this.projects.receipt(entry); }
+  projectReceipt(entry) { this.projects.receipt(entry); this.agents.receipt(entry); }
   seen(input, actor, admin) {
     fields(input, ['id']); const row = this.record(input.id, actor, admin);
     this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.recipient === actor) notice.seenAt = this.now(); });

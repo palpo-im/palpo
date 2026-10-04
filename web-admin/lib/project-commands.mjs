@@ -134,6 +134,8 @@ export class ProjectCommands {
         }
       } else allowed &&= grant?.revision === op.expectedRevision;
     }
+    if (op.kind === 'approve_agent' || op.kind === 'reject_agent') allowed &&= !!this.inbox.agents?.authorizes(entry);
+    if (op.kind === 'top_up_agent' && entry.actionKind === 'top_up') allowed &&= !!this.inbox.agents?.authorizes(entry);
     // This short lease linearizes the fresh role lookup. New decisions cannot
     // use cached authority; Hagency rechecks the deadline after its writer lock.
     return { v: 1, commandId: command.commandId, commandDigest: entry.digest, allowed: !!allowed, validUntilMs: this.now() + 10000 };
