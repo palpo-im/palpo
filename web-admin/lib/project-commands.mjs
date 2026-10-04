@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ApiError } from './service.mjs';
 import { canonical, isOutbound } from './outbound.mjs';
+import { validateContributionPage, applyContributionPage } from './project-contributions.mjs';
 
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
 export const commandDigest = value => createHash('sha256').update(canonical(value)).digest('hex');
@@ -69,6 +70,13 @@ export class ProjectCommands {
     this.store.state.projectWorkflow ??= { commands: {}, grants: {}, contributions: {} };
   }
   get state() { return this.store.state.projectWorkflow; }
+  validateContributions(fleet, page) {
+    return validateContributionPage(fleet, page, { issuer: this.service.serverName, records: this.state.contributions, now: this.now(), maxRecords: this.maxRecords });
+  }
+  applyContributions(fleet, page) {
+    if (!this.store.db.isTransaction) throw new Error('Contributions and outbound updates require one Store.atomic transaction');
+    applyContributionPage(fleet, page, this.state.contributions, this.now());
+  }
   requireSupport(fleet) {
     if (!isOutbound(fleet) || fleet.projectWorkflow?.v !== 1 || !positive(fleet.projectWorkflow.registrationGeneration)) {
       fail(409, 'project_workflow_unavailable', 'This Hagency has not advertised project approval support.');
@@ -112,7 +120,7 @@ export class ProjectCommands {
       allowed &&= op.grant.projectId === project?.id && op.grant.ownerMxid === project?.ownerMxid && op.grant.roomId === project?.roomId
         && action?.state === 'approved' && action.ownerMxid === project.ownerMxid && action.decision?.by === command.actorMxid;
     } else {
-      allowed &&= record?.fleetId === fleet.id && grant?.projectId === project?.id;
+      allowed &&= record?.fleetId === fleet.id && record?.registrationGeneration === fleet.projectWorkflow.registrationGeneration && grant?.projectId === project?.id;
       if (op.kind !== 'revoke_project' && op.kind !== 'assign_project_admins') {
         allowed &&= (record?.desiredRevision ?? grant?.revision) === op.grantRevision;
         const admins = record?.desiredAdministrators ?? grant?.administratorMxids ?? [];
@@ -171,7 +179,7 @@ export class ProjectCommands {
       if (entry.receipt) continue;
       entry.receipt = structuredClone(receipt); entry.state = receipt.outcome.status;
       const result = receipt.outcome.result;
-      if (result?.kind === 'grant') this.state.grants[result.grant.id] = { fleetId: receipt.fleetId, grant: structuredClone(result.grant), state: 'accepted' };
+      if (result?.kind === 'grant') this.state.grants[result.grant.id] = { fleetId: receipt.fleetId, registrationGeneration: receipt.registrationGeneration, grant: structuredClone(result.grant), state: 'accepted' };
       if (result?.kind === 'revoked_project' && this.state.grants[result.grantId]) this.state.grants[result.grantId].state = 'revoked';
       this.onReceipt?.(entry);
       this.store.audit(entry.command.actorMxid, 'project.command_result', receipt.fleetId, receipt.commandId, entry.state);

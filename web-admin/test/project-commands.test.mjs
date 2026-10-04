@@ -127,3 +127,11 @@ test('old assignment receipts replay after later changes without restoring old g
   assert.equal(f.commands.state.grants[f.grant.id].state, 'revoked');
   assert.deepEqual(f.commands.state.grants[f.grant.id].grant, newerGrant);
 });
+
+test('a new registration cannot authorize against an old accepted grant', async t => {
+  const f = await setup(t), reserve = f.enqueue(); f.accept(f.receipt(reserve));
+  f.fleet.projectWorkflow.registrationGeneration = 2;
+  const entry = f.enqueue('top_up_agent', { grantId: f.grant.id, grantRevision: 1,
+    engagementId: `en_${'a'.repeat(32)}`, requesterMxid: f.project.ownerMxid, addTokens: 50 }, '@other:example.test', 'rotated_topup');
+  assert.equal((await f.authorize(entry)).allowed, false);
+});
