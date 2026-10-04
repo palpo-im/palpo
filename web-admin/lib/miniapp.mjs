@@ -27,9 +27,9 @@ export const SERVICES = Object.freeze({
   'palpo.activity.list': 'Read the Palpo administrator audit history',
   'palpo.accounts.list': 'Read pending account signup requests',
   'palpo.inbox.list': 'Read your pending Palpo actions and history',
-  'palpo.inbox.submit': 'Submit resource contributions or project requests',
+  'palpo.inbox.submit': 'Request projects using resources published by Hagency',
   'palpo.inbox.get': 'Read the latest state of an authorized action',
-  'palpo.inbox.decide': 'Approve or reject within your server permissions',
+  'palpo.inbox.decide': 'Approve or reject projects as the designated Palpo administrator',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
   'palpo.inbox.seen': 'Mark a notification seen without completing its action',
   'palpo.inbox.snooze': 'Snooze reminders for an action you can take',
@@ -74,10 +74,10 @@ export class MiniApp {
   }
   key(token) { return createHash('sha256').update(token).digest('hex'); }
   identity(session, isAdmin) {
-    return { version: 1, userId: session.actor, isAdmin, serverName: this.service.serverName,
+    return { version: 1, userId: session.actor, isAdmin, canApproveProjects: this.inbox.canApproveProjects(session.actor, isAdmin), serverName: this.service.serverName,
       services: session.services, callbackOrigins: isAdmin ? [...this.service.callbackOrigins] : [],
       outboundAvailable: !!(this.service.transportOrigin && this.service.relayOrigin),
-      features: { inbox: true, contributions: true, projectApproval: true, remoteAgentDecisions: false, topUps: false } };
+      features: { inbox: true, contributions: false, projectApproval: true, remoteAgentDecisions: false, topUps: false } };
   }
   async authenticate(header) {
     const bearer = credentials(header), key = bearer ? this.key(bearer) : '';
@@ -132,6 +132,7 @@ export class MiniApp {
       case 'palpo.projects.create': fields(args, ['requestId', 'name', 'fleetId', 'roomId']); return mutate(async () => ({ project: await this.workflow.createProject(args, actor, token) }));
       case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request, agentDefinition: request.agentDefinition ?? null })) };
       case 'palpo.requests.create': fields(args, ['requestId', 'projectId', 'role', 'requestedTokens', 'ratePerDay', 'agentDefinition']); return mutate(async () => ({ request: await this.workflow.request(args, actor, token) }));
+      case 'palpo.fleets.register': fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency.');
       case 'palpo.fleets.list': {
         fields(args, []); const isAdmin = await this.admin(token);
         return { fleets: Object.values(this.service.store.state.fleets).filter(fleet => isAdmin || fleet.ownerMxid === actor).map(publicFleet) };
@@ -153,7 +154,6 @@ export class MiniApp {
     switch (service) {
       case 'palpo.activity.list': fields(args, []); return { events: this.service.store.state.audit.slice(-200).reverse() };
       case 'palpo.accounts.list': fields(args, []); return this.accounts.adminView();
-      case 'palpo.fleets.register': fields(args, ['requestId', 'name', 'ownerMxid', 'transportMode', 'callbackUrl']); return adminMutation(async () => ({ fleet: await this.service.create(args, actor, token) }));
       case 'palpo.fleets.install': fields(args, ['fleetId']); return adminMutation(async () => ({ fleet: await this.service.install(id(), actor, token) }));
       case 'palpo.fleets.set_state': {
         fields(args, ['fleetId', 'action']);

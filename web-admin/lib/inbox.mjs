@@ -17,31 +17,39 @@ const text = (value, name, max) => {
 // Persist workflow, audit and notification intent in the same SQLite transaction.
 // No token, export content, or Matrix event is a workflow decision record.
 export class Inbox {
-  constructor(service, workflow, { now = Date.now, approvers = [], maxRecords = 10000, requireProjectApproval = false } = {}) {
+  constructor(service, workflow, { now = Date.now, approvers = [], projectApprover, maxRecords = 10000, requireProjectApproval = false } = {}) {
     Object.assign(this, { service, workflow, now, approvers, maxRecords, requireProjectApproval });
+    // One business-role holder; a notification list or Matrix admin bit alone
+    // is not project approval authority. A single legacy recipient migrates
+    // unambiguously; absent/ambiguous configuration fails closed.
+    this.projectApprover = projectApprover ?? (approvers.length === 1 ? approvers[0] : null);
+    if (this.projectApprover !== null) this.projectApprover = service.owner(this.projectApprover);
+    this.approvers = this.projectApprover ? [this.projectApprover] : [];
     this.store = service.store;
     this.store.state.actionInbox ??= { records: {}, notices: {}, rooms: {} };
     workflow.projectGrant = (input, actor, existing) => this.projectGrant(input, actor, existing);
     workflow.resourceGrant = (project, resource) => this.resourceGrant(project, resource);
   }
   get state() { return this.store.state.actionInbox; }
+  canApproveProjects(actor, admin) { return !!admin && actor === this.projectApprover; }
   pending(row, actor, admin) {
+    admin = this.canApproveProjects(actor, admin);
+    // Legacy contribution records remain readable, but contribution now starts
+    // in Hagency, not as an action for a Rinx project manager.
+    if (row.kind !== 'project') return false;
     if (row.state === 'requested') return admin;
-    if (row.state !== 'approved') return false;
-    if (row.kind === 'project') return row.ownerMxid === actor && row.execution !== 'done';
-    if (row.execution !== 'done') return admin;
-    const fleet = this.store.state.fleets[row.result?.fleetId];
-    return row.ownerMxid === actor && !fleet?.connection?.verifiedAt;
+    return row.state === 'approved' && row.ownerMxid === actor && row.execution !== 'done';
   }
   view(row, actor, admin) {
+    admin = this.canApproveProjects(actor, admin);
     const { fingerprint, command, ...copy } = row;
     return { ...copy, needsMyAction: this.pending(row, actor, admin),
-      nextAction: row.state === 'requested' ? 'review' : row.state !== 'approved' ? null
-        : row.kind === 'project' ? (row.execution === 'done' ? null : 'activate_project')
-        : row.execution !== 'done' ? 'retry_install' : this.pending(row, actor, admin) ? 'export_and_connect' : null,
-      canDecide: admin && row.state === 'requested', canContinue: this.pending(row, actor, admin) && row.state === 'approved' };
+      nextAction: row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
+        : row.state === 'approved' && row.execution !== 'done' ? 'activate_project' : null,
+      canDecide: admin && row.kind === 'project' && row.state === 'requested', canContinue: this.pending(row, actor, admin) && row.state === 'approved' };
   }
   record(id, actor, admin) {
+    admin = this.canApproveProjects(actor, admin);
     const row = this.state.records[id];
     if (!row || (row.ownerMxid !== actor && !admin)) fail(404, 'action_not_found', 'Action not found.');
     return row;
@@ -50,8 +58,9 @@ export class Inbox {
   list(actor, admin, { view = 'needs_action', offset = 0, limit = 50 } = {}) {
     if (!['needs_action', 'waiting', 'history', 'all'].includes(view) || !Number.isSafeInteger(offset) || offset < 0
       || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(400, 'invalid_page', 'Invalid inbox page.');
+    admin = this.canApproveProjects(actor, admin);
     const allowed = Object.values(this.state.records).filter(row => admin || row.ownerMxid === actor);
-    const selected = allowed.filter(row => view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
+    const selected = allowed.filter(row => row.kind === 'contribution' ? ['history', 'all'].includes(view) : view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
       : view === 'waiting' ? !this.pending(row, actor, admin) && (row.state === 'requested' || (row.state === 'approved' && row.execution !== 'done'))
         : row.state === 'rejected' || (row.state === 'approved' && row.execution === 'done' && !this.pending(row, actor, admin))));
     selected.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
@@ -71,18 +80,18 @@ export class Inbox {
   async submit(input, actor) {
     fields(input, ['requestId', 'kind', 'name', 'reason', 'fleetId', 'roomId', 'resourceIds']);
     const requestId = key(input.requestId), kind = input.kind;
-    if (!['contribution', 'project'].includes(kind)) fail(400, 'invalid_kind', 'Choose a resource contribution or project request.');
+    if (kind === 'contribution') fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency. Request a project using published resources in Rinx.');
+    if (kind !== 'project') fail(400, 'invalid_kind', 'Choose a project request.');
+    if (!this.projectApprover) fail(503, 'project_approver_unconfigured', 'The server must designate one project approval administrator.');
     const payload = { name: text(input.name, 'Name', 128), reason: text(input.reason, 'Reason', 1000) };
-    if (kind === 'project') {
-      payload.fleetId = text(input.fleetId, 'Fleet', 80);
-      const fleet = this.workflow.fleet(payload.fleetId);
-      const capabilities = await this.workflow.capabilities(fleet);
-      if (!Array.isArray(input.resourceIds) || !input.resourceIds.length || input.resourceIds.length > 32
-        || new Set(input.resourceIds).size !== input.resourceIds.length
-        || input.resourceIds.some(id => !/^resource_[a-f0-9]{24}$/.test(id) || !capabilities.offers.some(offer => offer.resources?.some(r => r.id === id)))) fail(400, 'invalid_resources', 'Select currently offered resources.');
-      payload.resourceIds = [...input.resourceIds].sort();
-      if (input.roomId) payload.roomId = text(input.roomId, 'Room ID', 255);
-    } else if (input.fleetId || input.roomId || input.resourceIds) fail(400, 'invalid_arguments', 'A contribution does not attach to an existing project.');
+    payload.fleetId = text(input.fleetId, 'Fleet', 80);
+    const fleet = this.workflow.fleet(payload.fleetId);
+    const capabilities = await this.workflow.capabilities(fleet);
+    if (!Array.isArray(input.resourceIds) || !input.resourceIds.length || input.resourceIds.length > 32
+      || new Set(input.resourceIds).size !== input.resourceIds.length
+      || input.resourceIds.some(id => !/^resource_[a-f0-9]{24}$/.test(id) || !capabilities.offers.some(offer => offer.resources?.some(r => r.id === id)))) fail(400, 'invalid_resources', 'Select currently offered resources.');
+    payload.resourceIds = [...input.resourceIds].sort();
+    if (input.roomId) payload.roomId = text(input.roomId, 'Room ID', 255);
     const id = `action_${hash({ actor, requestId }).slice(0, 32)}`, fingerprint = hash({ kind, payload });
     const existing = this.state.records[id];
     if (existing) {
@@ -98,7 +107,11 @@ export class Inbox {
   }
   async decide(input, actor, token) {
     fields(input, ['id', 'expectedRevision', 'commandId', 'decision', 'reason']);
+    await this.service.palpo.requireAdmin(token);
+    const identity = await this.service.palpo.call('/_matrix/client/v3/account/whoami', token);
+    if (identity.user_id !== actor || !this.canApproveProjects(actor, !identity.is_guest)) fail(403, 'project_approver_required', 'Only the designated Palpo administrator can approve or reject projects.');
     const row = this.record(input.id, actor, true), commandId = key(input.commandId);
+    if (row.kind !== 'project') fail(403, 'hagency_contribution_required', 'Manage resource contribution in Hagency.');
     if (!['approve', 'reject'].includes(input.decision) || !Number.isSafeInteger(input.expectedRevision)) fail(400, 'invalid_decision', 'A decision and the reviewed revision are required.');
     const reason = text(input.reason, 'Decision reason', 1000);
     const command = { commandId, actor, expectedRevision: input.expectedRevision, decision: input.decision, reason };
@@ -112,34 +125,14 @@ export class Inbox {
         this.notify(row); this.store.audit(actor, 'inbox.decide', row.payload.fleetId ?? null, row.id, row.state);
       });
     }
-    if (row.state === 'approved' && row.kind === 'contribution' && row.execution !== 'done') await this.install(row, actor, token);
     return this.get(row.id, actor, true);
-  }
-  async install(row, actor, token) {
-    try {
-      const fleet = await this.service.create({ requestId: row.id, name: row.payload.name, ownerMxid: row.ownerMxid, transportMode: 'outbound' }, actor, token);
-      this.store.atomic(() => {
-        row.result = { fleetId: fleet.id }; row.execution = 'done'; row.lastError = null; row.updatedAt = this.now(); row.revision++;
-        this.notify(row); this.store.audit(actor, 'inbox.install', fleet.id, row.id, 'done');
-      });
-    } catch (cause) {
-      this.store.atomic(() => { row.execution = 'failed'; row.lastError = { code: cause.code ?? 'internal_error' }; row.updatedAt = this.now(); });
-      throw cause;
-    }
   }
   async activate(input, actor, token) {
     fields(input, ['id']);
-    // Installation retry still requires current admin authority; project
-    // activation always uses the OWNER's current Matrix token, never the admin.
-    const candidate = this.state.records[input.id];
-    if (candidate?.kind === 'contribution') {
-      await this.service.palpo.requireAdmin(token);
-      if (candidate.state !== 'approved') fail(409, 'not_approved', 'This contribution has not been approved.');
-      if (candidate.execution !== 'done') await this.install(candidate, actor, token);
-      return this.get(candidate.id, actor, true);
-    }
+    // Activation always uses the project owner's current Matrix authority.
     const row = this.record(input.id, actor, false);
-    if (row.kind !== 'project' || row.state !== 'approved') fail(409, 'not_approved', 'This project has not been approved.');
+    if (row.kind !== 'project') fail(403, 'hagency_contribution_required', 'Manage resource contribution in Hagency.');
+    if (row.state !== 'approved') fail(409, 'not_approved', 'This project has not been approved.');
     if (row.execution === 'done') return this.get(row.id, actor, false);
     try {
       const project = await this.workflow.createProject({ requestId: row.id, name: row.payload.name, fleetId: row.payload.fleetId, roomId: row.payload.roomId }, actor, token);

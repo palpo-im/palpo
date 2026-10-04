@@ -78,7 +78,7 @@ export class ActionNotifications {
     for (const notice of due) {
       try {
         const row = this.inbox.state.records[notice.actionId];
-        const admin = this.config.approvers.includes(notice.recipient) && await this.isAdmin(notice.recipient);
+        const admin = this.inbox.canApproveProjects(notice.recipient, true) && await this.isAdmin(notice.recipient);
         // Recheck canonical state and recipient authority just before sending.
         if (!row || row.revision !== notice.revision || (row.ownerMxid !== notice.recipient && !admin)
           || (notice.delivered > 0 && !this.inbox.pending(row, notice.recipient, admin))) {

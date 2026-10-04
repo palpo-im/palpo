@@ -315,7 +315,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const retirementAdminToken = process.env.PALPO_AGENT_ADMIN_TOKEN_FILE
     ? (await readFile(process.env.PALPO_AGENT_ADMIN_TOKEN_FILE, 'utf8')).trim() : accountConfig?.adminToken;
   const actionConfig = process.env.PALPO_ACTION_CONFIG ? JSON.parse(await readFile(process.env.PALPO_ACTION_CONFIG, 'utf8')) : undefined;
-  const server = createApp({ service, publicOrigin, accountConfig, actionConfig, retirementAdminToken, inboxOptions: { requireProjectApproval: process.env.PALPO_PROJECT_APPROVAL_REQUIRED === '1' } });
+  const server = createApp({ service, publicOrigin, accountConfig, actionConfig, retirementAdminToken, inboxOptions: { projectApprover: process.env.PALPO_PROJECT_APPROVER, requireProjectApproval: process.env.PALPO_PROJECT_APPROVAL_REQUIRED === '1' } });
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return; shuttingDown = true;

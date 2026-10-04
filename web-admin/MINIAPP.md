@@ -31,6 +31,18 @@ bundle; the server does not attest the caller's Rinx binary or publisher key.
 
 ## Project approval migration
 
+Set `PALPO_PROJECT_APPROVER=@admin:example.org` to designate **one** project
+approval administrator. This identity must also retain live Matrix server-admin
+authority. Other server admins and project managers cannot inspect other users'
+Inbox requests or decide their projects. The role is checked for every decision,
+including after waiting in the mutation queue. `canApproveProjects` in the app
+session drives the dedicated Project approvals screen; `isAdmin` alone does not.
+
+For migration, when this variable is absent, exactly one `approvers` entry in
+`PALPO_ACTION_CONFIG` is used. Zero or multiple entries leave project approval
+unconfigured: new requests and all approval decisions fail closed. Set the
+explicit variable before enabling a multi-recipient legacy configuration.
+
 Set `PALPO_PROJECT_APPROVAL_REQUIRED=1` to require approval for every **new**
 project, including requests through the existing browser/API. Existing projects
 are grandfathered. Without this option, legacy direct project creation remains
@@ -38,10 +50,15 @@ enabled; do not describe that deployment as enforcing mandatory project approval
 Projects activated from Inbox always receive a resource grant, enforced on later
 agent requests through both frontends. Activation uses the owner's live token.
 
-Contribution approval records the decision before attempting registration.
-Installation failures stay retryable. Configuration delivery is owner-only;
-Rinx sends it directly to native file saving and gives the script only a saved/
-cancelled result. No configuration credentials enter action cards or notifications.
+Resources originate in Hagency. Rinx project managers select resources already
+published by a connected Hagency and request projects; they cannot contribute
+resources or register a fleet. The mini-app backend rejects both contribution
+submission and direct fleet registration, including from old bundles. Existing
+contribution records remain readable and existing connections/projects are
+preserved. The Rinx admin page monitors connections and retains authorized
+maintenance of existing registrations; it does not create a contribution.
+The established operator setup/import path remains available. Automatic
+Hagency-originated pairing is a separate backend feature, not added here.
 
 ## My Actions notifications
 
@@ -63,8 +80,9 @@ them. Each delivery verifies the binding, membership and restrictive state/power
 settings; an unsafe room stops delivery and leaves the Inbox intact. Room notices
 contain only generic text, an opaque action reference and a same-origin link.
 They are plaintext minimal notices, not encrypted configuration delivery.
-Approvers are configured notification recipients; current server-admin authority
-still controls decisions and is checked again before sending admin notifications.
+Only the designated project administrator receives project-review notices.
+Current server-admin authority is rechecked before delivery. An old queued
+notice for another administrator is cancelled rather than treated as a grant.
 
 Workflow, audit and notification intent are committed together in SQLite. A
 lost send receipt repeats the same Matrix transaction ID. Pending actions get
