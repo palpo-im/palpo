@@ -195,7 +195,7 @@ async fn initial_sync(
         .await
         .unwrap_or_default()
         .into_values()
-        .map(|event| event.to_state_event_for(sender_id, Some(authed.device_id())))
+        .map(|event| event.to_state_event_for(sender_id, authed.device_id()))
         .collect::<Vec<_>>();
 
     let messages = PaginationChunk {
@@ -212,7 +212,7 @@ async fn initial_sync(
             .unwrap_or_default(),
         chunk: events
             .into_iter()
-            .map(|(_sn, event)| event.to_room_event_for(sender_id, Some(authed.device_id())))
+            .map(|(_sn, event)| event.to_room_event_for(sender_id, authed.device_id()))
             .collect(),
     };
 
@@ -350,7 +350,7 @@ async fn peek_room(
 ) -> JsonResult<JsonValue> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let device_id = authed.device_id();
+    let device_id = authed.require_device_id()?;
     let room_id = room_id.into_inner();
 
     // For a remote room, ensure a live federation peek (idempotent: it no-ops if
@@ -383,7 +383,7 @@ async fn unpeek_room(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let device_id = authed.device_id();
+    let device_id = authed.require_device_id()?;
     let room_id = room_id.into_inner();
 
     data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await?;

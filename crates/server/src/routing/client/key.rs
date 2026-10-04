@@ -72,19 +72,28 @@ async fn upload_keys(
     let authed = depot.authed_info()?;
 
     for (key_id, one_time_key) in &body.one_time_keys {
-        crate::user::add_one_time_key(authed.user_id(), authed.device_id(), key_id, one_time_key)
-            .await?;
+        crate::user::add_one_time_key(
+            authed.user_id(),
+            authed.require_device_id()?,
+            key_id,
+            one_time_key,
+        )
+        .await?;
     }
 
     if let Some(device_keys) = &body.device_keys {
-        crate::user::add_device_keys(authed.user_id(), authed.device_id(), device_keys).await?;
+        crate::user::add_device_keys(authed.user_id(), authed.require_device_id()?, device_keys)
+            .await?;
     }
 
     // TODO: fallback keys. e2e_keys.py 848
 
     json_ok(UploadKeysResBody {
-        one_time_key_counts: data::user::count_one_time_keys(authed.user_id(), authed.device_id())
-            .await?,
+        one_time_key_counts: data::user::count_one_time_keys(
+            authed.user_id(),
+            authed.require_device_id()?,
+        )
+        .await?,
     })
 }
 

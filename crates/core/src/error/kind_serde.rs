@@ -261,6 +261,7 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
             ErrorCode::Unactionable => ErrorKind::Unactionable,
             ErrorCode::Unauthorized => ErrorKind::Unauthorized,
             ErrorCode::Unknown => ErrorKind::Unknown,
+            ErrorCode::UnknownDevice => ErrorKind::UnknownDevice,
             #[cfg(feature = "unstable-msc4186")]
             ErrorCode::UnknownPos => ErrorKind::UnknownPos,
             ErrorCode::UnknownToken => ErrorKind::UnknownToken {
@@ -619,6 +620,9 @@ pub enum ErrorCode {
     ///
     /// An unknown error has occurred.
     Unknown,
+
+    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
+    UnknownDevice,
 
     /// `M_UNKNOWN_POS`
     ///

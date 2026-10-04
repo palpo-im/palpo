@@ -54,25 +54,35 @@ async fn change_password(
         auth_error: None,
     };
     let Some(auth) = &body.auth else {
-        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
-            .await?;
+        crate::uiaa::create_challenge_session(
+            authed.user_id(),
+            authed.require_device_id()?,
+            &mut uiaa_info,
+        )
+        .await?;
         return Err(uiaa_info.into());
     };
     hoops::check_password_attempt(authed.user_id().as_str())?;
-    let (authenticated, uiaa) =
-        match crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).await {
-            Ok(result) => result,
-            Err(_) => {
-                hoops::record_password_failure(authed.user_id().as_str())?;
-                crate::uiaa::create_challenge_session(
-                    authed.user_id(),
-                    authed.device_id(),
-                    &mut uiaa_info,
-                )
-                .await?;
-                return Err(uiaa_info.into());
-            }
-        };
+    let (authenticated, uiaa) = match crate::uiaa::try_auth(
+        authed.user_id(),
+        authed.require_device_id()?,
+        auth,
+        &uiaa_info,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            hoops::record_password_failure(authed.user_id().as_str())?;
+            crate::uiaa::create_challenge_session(
+                authed.user_id(),
+                authed.require_device_id()?,
+                &mut uiaa_info,
+            )
+            .await?;
+            return Err(uiaa_info.into());
+        }
+    };
     if !authenticated {
         hoops::record_password_failure(authed.user_id().as_str())?;
         return Err(uiaa.into());
@@ -93,21 +103,21 @@ async fn change_password(
         diesel::delete(
             user_devices::table
                 .filter(user_devices::user_id.eq(authed.user_id()))
-                .filter(user_devices::device_id.ne(authed.device_id())),
+                .filter(user_devices::device_id.ne(authed.require_device_id()?)),
         )
         .execute(&mut connect().await?)
         .await?;
         diesel::delete(
             user_access_tokens::table
                 .filter(user_access_tokens::user_id.eq(authed.user_id()))
-                .filter(user_access_tokens::device_id.ne(authed.device_id())),
+                .filter(user_access_tokens::device_id.ne(authed.require_device_id()?)),
         )
         .execute(&mut connect().await?)
         .await?;
         diesel::delete(
             user_refresh_tokens::table
                 .filter(user_refresh_tokens::user_id.eq(authed.user_id()))
-                .filter(user_refresh_tokens::device_id.ne(authed.device_id())),
+                .filter(user_refresh_tokens::device_id.ne(authed.require_device_id()?)),
         )
         .execute(&mut connect().await?)
         .await?;
