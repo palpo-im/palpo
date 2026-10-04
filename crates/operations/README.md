@@ -16,6 +16,7 @@ equivalent Rust implementations and the cutover gates below pass.
 | --- | --- | --- |
 | `lib/store.mjs` | `store.rs` | Existing SQLite `state` table, complete JSON preservation, process lock, atomic transactions |
 | `lib/miniapp.mjs` | `api.rs`, `matrix.rs` | Borrowed Matrix login, scoped in-memory sessions, revalidation, disconnect |
+| `lib/miniapp.mjs` project/agent reads | `views.rs` | Role-scoped pagination, distinct approval/execution state, lower-bound token observations with freshness |
 | `lib/inbox.mjs` | `workflow.rs` | Typed project/agent/top-up requests, coordinator decisions, visibility, seen/snooze, durable receipts |
 | `lib/action-notifications.mjs` | `workflow.rs` | Durable notification intents only; Matrix delivery is still pending |
 | `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
@@ -84,6 +85,16 @@ Only these services can be granted:
 - `palpo.intent.new`, `palpo.session.open`, `palpo.session.disconnect`
 - `palpo.inbox.list`, `palpo.inbox.get`, `palpo.inbox.submit`
 - `palpo.inbox.decide`, `palpo.inbox.seen`, `palpo.inbox.snooze`
+- `palpo.projects.list`, `palpo.requests.list`
+
+Project and agent reads take optional `offset` and `limit` (1–100, default 50).
+They return only records belonging to the caller or its current engagement
+authority, with no implicit server-admin access. The agent list includes every
+visible request, including approved requests awaiting Hagency execution. Missing
+allocation or usage stays null. Usage is an attributed lower bound, never an
+exact remaining balance; old samples retain their value and are marked stale.
+Machine credential rotation invalidates the previous generation's live status.
+Project creation controls remain unavailable until room preparation is ported.
 
 The feature `rustWorkflowRequests: 1` identifies the new request schema.
 Submission takes `{ "kind": "project" | "agent" | "token_top_up", "request": <typed request>, "definition": <immutable JSON> }`.
@@ -93,10 +104,11 @@ Rejection takes `id`, `decision: "reject"`, `expectedRevision`, `commandId` and
 All command identities, request contents and current registration/delegation/
 project revisions are checked against server state, not trusted from the caller.
 
-The existing complete Rinx bundle requests more services and uses the legacy
-flat submission shape. It **cannot be redirected to this server unchanged**.
-Unknown capabilities and unsupported routes fail rather than silently executing
-the old flow. A Rinx adapter must gate the new protocol on this feature.
+The reviewed existing manifest can request its full service list; the session
+grants only the implemented intersection. Unknown capabilities are refused.
+The paired [Rinx adapter](https://github.com/hagency-org/Rinx/pull/65) follows
+those grants and supports the Rust decision intent and read models. Legacy flat
+creation forms remain unavailable until their Rust preparation route is ported.
 
 ## Authority and migration
 
@@ -173,4 +185,7 @@ executable, then reopens the result with Node. It checks preserved state and
 delivery rows, process-lock exclusion, actual HTTP startup and graceful SIGTERM
 cleanup. Rust integration tests exercise a real loopback Matrix stub, permission
 denials, atomic decision conflicts, restart replay, revocation and migration.
-These are backend tests, not Makepad or live Hagency end-to-end validation.
+These are backend tests. The paired Rinx branch additionally exercises this
+executable through its production OctoScript form and Makepad instrumentation,
+using explicit Matrix and provider fixtures; it does not establish live Hagency
+provisioning or chat.

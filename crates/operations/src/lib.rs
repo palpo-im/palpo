@@ -7,6 +7,7 @@ pub mod matrix;
 pub mod outbound;
 pub mod store;
 pub mod updates;
+mod views;
 pub mod workflow;
 
 use serde_json::Value;

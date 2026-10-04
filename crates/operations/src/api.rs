@@ -22,14 +22,14 @@ pub const SERVICES: &[&str] = &[
     "palpo.inbox.decide",
     "palpo.inbox.seen",
     "palpo.inbox.snooze",
+    "palpo.projects.list",
+    "palpo.requests.list",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
 // host may request its complete manifest; only implemented services are granted.
 const PENDING_SERVICES: &[&str] = &[
     "palpo.catalog.list",
-    "palpo.projects.list",
-    "palpo.requests.list",
     "palpo.requests.create",
     "palpo.fleets.list",
     "palpo.fleets.register",
@@ -296,6 +296,16 @@ impl App {
                 Ok(
                     json!({"action":Workflows::load(&self.store.lock().await.read()?)?.view(&id.id,actor,now_ms())?}),
                 )
+            }
+            "palpo.projects.list" | "palpo.requests.list" => {
+                let page = serde_json::from_value(input.args)?;
+                let state = self.store.lock().await.read()?;
+                let workflows = Workflows::load(&state)?;
+                if input.service == "palpo.projects.list" {
+                    crate::views::projects(&workflows, actor, now_ms(), page)
+                } else {
+                    crate::views::agents(&state, &workflows, actor, now_ms(), page)
+                }
             }
             service => {
                 // Recheck borrowed identity and expiry after waiting in the same

@@ -331,6 +331,8 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                 }
                 if status["ready"] == true && status_current(status, now) {
                     "ready"
+                } else if status["ready"] == true {
+                    "unknown"
                 } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
                     "ended"
                 } else {

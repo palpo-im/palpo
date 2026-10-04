@@ -57,6 +57,7 @@ async fn matrix_stub(req: &mut salvo::Request, depot: &mut Depot, res: &mut Resp
         "manager-token" => "manager",
         "coordinator-token" => "coordinator",
         "admin-token" => "admin",
+        "provider-token" => "provider",
         _ => "",
     };
     if user.is_empty() || revoked.load(Ordering::SeqCst) {
@@ -298,6 +299,18 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
         view["action"]["result"]["usageEvidence"],
         "host_attributed_lower_bound"
     );
+    let (status, listed) = f.call(&manager, "palpo.requests.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["requests"][0]["execution"], "ready");
+    assert_eq!(listed["requests"][0]["usable"], true);
+    assert_eq!(listed["requests"][0]["usage"]["state"], "unknown");
+    assert!(listed["requests"][0]["usage"]["consumedTokens"].is_null());
+    assert_eq!(
+        listed["requests"][0]["agentDefinition"]["name"],
+        "Littlewhite"
+    );
+    assert!(!listed.to_string().contains("Assist project owner"));
+    assert!(!listed.to_string().contains("fixture-machine"));
     // Reject changed-sequence retries and cross-engagement observations.
     let mut wrong = ready.clone();
     wrong["statuses"][0]["agentMxid"] = json!("@other:example.test");
@@ -314,9 +327,45 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
         f.app.store.lock().await.read().unwrap()["fleets"][&fleet]["transport"]["sequence"],
         2
     );
+    let mut metered = ready.clone();
+    metered["sequence"] = json!(3);
+    metered["statuses"][0]["consumedTokens"] = json!(42);
+    metered["statuses"][0]["usageObservedAtMs"] = json!(now_ms());
+    assert_eq!(
+        f.machine(&fleet, "updates", metered.clone()).await.0,
+        StatusCode::OK
+    );
+    let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
+    assert_eq!(listed["requests"][0]["usage"]["state"], "current");
+    assert_eq!(listed["requests"][0]["usage"]["consumedTokens"], 42);
+    assert_eq!(listed["requests"][0]["usage"]["complete"], false);
+    assert!(listed["requests"][0].get("remainingTokens").is_none());
+    // A credential rotation cannot keep advertising a previous generation as live.
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            state["fleets"][&fleet]["transport"]["generation"] = json!(2);
+            Ok(())
+        })
+        .unwrap();
+    let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
+    assert_eq!(listed["requests"][0]["usable"], false);
+    assert_eq!(listed["requests"][0]["execution"], "unknown");
+    assert_eq!(listed["requests"][0]["usage"]["state"], "stale");
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            state["fleets"][&fleet]["transport"]["generation"] = json!(1);
+            Ok(())
+        })
+        .unwrap();
     // An old frozen observation cannot be made fresh by delivering it again.
-    let mut old = ready;
-    old["sequence"] = json!(3);
+    let mut old = metered;
+    old["sequence"] = json!(4);
     old["statuses"][0]["observedAt"] = json!("2020-01-01T00:00:00Z");
     assert_eq!(f.machine(&fleet, "updates", old).await.0, StatusCode::OK);
     let view = f
@@ -324,12 +373,99 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
         .await
         .1;
     assert_ne!(view["action"]["execution"], "ready");
+    let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
+    assert_eq!(listed["requests"][0]["usable"], false);
+    assert_eq!(listed["requests"][0]["usage"]["state"], "stale");
+    assert_eq!(listed["requests"][0]["execution"], "unknown");
     assert_eq!(
         f.app.store.lock().await.read().unwrap()["rustWorkflows"]["outbox"]
             .as_object()
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn agent_and_project_lists_are_role_scoped_paginated_and_keep_pending_usage_unknown() {
+    let f = Fixture::new().await;
+    let manager = f.session("manager").await;
+    let coordinator = f.session("coordinator").await;
+    let provider = f.session("provider").await;
+    let admin = f.session("admin").await;
+    for id in ["request_agent", "another_agent"] {
+        let mut request = agent_request();
+        request["request"]["id"] = json!(id);
+        let (status, submitted) = f
+            .call(&manager, "palpo.inbox.submit", request.clone())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{submitted}");
+        let (status, result) = f.call(&coordinator, "palpo.inbox.decide", json!({
+            "id":submitted["action"]["id"],"expectedRevision":1,"decision":"approve","commandId":format!("approve_{id}")
+        })).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+    }
+    for token in [&manager, &coordinator, &provider] {
+        let (status, first) = f
+            .call(token, "palpo.requests.list", json!({"limit":1}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["total"], 2);
+        assert_eq!(first["requests"].as_array().unwrap().len(), 1);
+        let row = &first["requests"][0];
+        assert_eq!(row["state"], "approved");
+        assert_eq!(row["execution"], "pending");
+        assert_eq!(row["usable"], false);
+        assert!(row["allocatedTokens"].is_null());
+        assert_eq!(row["usage"]["state"], "unknown");
+        assert!(row["usage"]["consumedTokens"].is_null());
+        let second = f
+            .call(token, "palpo.requests.list", json!({"limit":1,"offset":1}))
+            .await
+            .1;
+        assert_ne!(first["requests"][0]["id"], second["requests"][0]["id"]);
+        let projects = f.call(token, "palpo.projects.list", json!({})).await.1;
+        assert_eq!(projects["total"], 1);
+        assert_eq!(projects["projects"][0]["canRequest"], false);
+    }
+    for service in ["palpo.projects.list", "palpo.requests.list"] {
+        assert_eq!(f.call(&admin, service, json!({})).await.1["total"], 0);
+        for args in [
+            json!({"limit":0}),
+            json!({"limit":101}),
+            json!({"owner":"@manager:example.test"}),
+        ] {
+            assert_eq!(
+                f.call(&manager, service, args).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+    // Delegation removal revokes coordinator access without erasing the owner's history.
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            let mut workflows = Workflows::load(state)?;
+            workflows
+                .authority
+                .engagements
+                .get_mut("engagement_a")
+                .unwrap()
+                .delegation_expires_at_ms = 0;
+            workflows.save(state)
+        })
+        .unwrap();
+    assert_eq!(
+        f.call(&coordinator, "palpo.requests.list", json!({}))
+            .await
+            .1["total"],
+        0
+    );
+    assert_eq!(
+        f.call(&manager, "palpo.requests.list", json!({})).await.1["total"],
+        2
     );
 }
 
