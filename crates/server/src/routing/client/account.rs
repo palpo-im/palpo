@@ -46,10 +46,7 @@ pub fn authed_router() -> Router {
                 .hoop(hoops::limit_rate)
                 .get(whoami),
         )
-        .push(
-            Router::with_path("deactivate")
-                .post(deactivate),
-        )
+        .push(Router::with_path("deactivate").post(deactivate))
         .push(password::authed_router())
         .push(threepid::authed_router())
 }
