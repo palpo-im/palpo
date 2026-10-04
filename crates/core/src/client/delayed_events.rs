@@ -149,6 +149,43 @@ pub struct SendDelayedEventReqArgs {
     #[salvo(parameter(parameter_in = Query))]
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "ts")]
     pub timestamp: Option<UnixMillis>,
+
+    /// The duration of sticky delivery guarantees, starting when the event is sent.
+    #[cfg(feature = "unstable-msc4354")]
+    #[salvo(parameter(parameter_in = Query))]
+    #[serde(
+        default,
+        deserialize_with = "crate::events::sticky::deserialize_query_duration",
+        rename = "org.matrix.msc4354.sticky_duration_ms"
+    )]
+    pub sticky_duration_ms: Option<crate::events::sticky::StickyDurationMs>,
+}
+
+#[cfg(all(test, feature = "unstable-msc4354"))]
+mod sticky_tests {
+    use super::SendDelayedEventReqArgs;
+
+    #[test]
+    fn delayed_sticky_query_validates_the_full_range() {
+        let query = "room_id=%21room%3Aexample.org&event_type=m.room.message&txn_id=1";
+        let absent: SendDelayedEventReqArgs = serde_html_form::from_str(query).unwrap();
+        assert!(absent.sticky_duration_ms.is_none());
+        for value in ["0", "123456", "3600000"] {
+            let args: SendDelayedEventReqArgs = serde_html_form::from_str(&format!(
+                "{query}&org.matrix.msc4354.sticky_duration_ms={value}"
+            ))
+            .unwrap();
+            assert_eq!(args.sticky_duration_ms.unwrap().get().to_string(), value);
+        }
+        for value in ["-1", "3600001", "1.5", "invalid"] {
+            assert!(
+                serde_html_form::from_str::<SendDelayedEventReqArgs>(&format!(
+                    "{query}&org.matrix.msc4354.sticky_duration_ms={value}"
+                ))
+                .is_err()
+            );
+        }
+    }
 }
 
 /// Request body for the `send_delayed_event` endpoint.
