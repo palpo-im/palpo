@@ -41,3 +41,11 @@ pub fn stable_v1_router() -> Router {
         .hoop(hoops::auth_by_access_token_without_query_masquerade)
         .get(room::get_mutual_rooms_v1)
 }
+
+pub(super) fn current_unstable_router() -> Router {
+    Router::with_path("uk.half-shot.msc2666/user/mutual_rooms")
+        // Here `user_id` selects the other user, not an appservice identity assertion.
+        .hoop(hoops::auth_by_access_token_without_query_masquerade)
+        .hoop(hoops::limit_rate)
+        .get(room::get_mutual_rooms_unstable)
+}
