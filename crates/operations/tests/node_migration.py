@@ -86,7 +86,7 @@ def main():
         run([args.node, "--input-type=module", "-e", SEED, node_store, node_service, str(database)])
         original, delivery_rows = snapshot(database)
         env = {
-            **os.environ,
+            **{key: value for key, value in os.environ.items() if not key.startswith("PALPO_")},
             "PALPO_SERVER_NAME": "example.test",
             "PALPO_URL": "https://matrix.example.test",
             "PALPO_ADMIN_DATABASE": str(database),

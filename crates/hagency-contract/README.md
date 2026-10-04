@@ -32,7 +32,14 @@ Do not advertise `hagency.coordinator_approval.v1` merely because this crate bui
   revoked work again. Crash-safe outbox and receipt storage are integration work.
 - The first approval can grant a positive amount no greater than requested.
   An increase is a separate top-up request against the existing agent allocation.
-  Top-up commands and the scoped usage/provisioning projection are subsequent work.
+  `TokenTopUpApproval` freezes the existing agent, expected allocation and
+  requested addition. The same coordinator/owner policy applies; adapters must
+  compare the actual allocation and remaining parent capacity atomically.
+
+The shared canonical encoder matches JavaScript UTF-16 object ordering,
+array-index keys and finite transport numbers. Signed operation definitions
+permit only exact JSON integers; transport events additionally allow finite
+floating-point values.
 
 `BudgetSnapshot` describes one explicit account/resource/period scope selected by
 the trusted writer. Available = allocated - consumed - reserved unused. It does

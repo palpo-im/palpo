@@ -2,12 +2,14 @@
 //! Existing Node state is preserved; production cutover requires the remaining
 //! fleet/Matrix workflow and notification integrations listed in the README.
 pub mod api;
+pub mod machine;
 pub mod matrix;
+pub mod outbound;
 pub mod store;
+pub mod updates;
 pub mod workflow;
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{code}")]
@@ -51,27 +53,8 @@ impl From<palpo_hagency_contract::Error> for Error {
     }
 }
 
-/// Recursively sort object keys. This matches Node's canonical object encoding
-/// for the bounded, integer-valued workflow structures used by this service.
-pub fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), canonical(v)))
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
-        _ => value.clone(),
-    }
-}
-
 pub fn digest(value: &Value) -> Result<String> {
-    Ok(Sha256::digest(serde_json::to_vec(&canonical(value))?)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    Ok(palpo_hagency_contract::canonical::digest(value)?)
 }
 
 pub fn secret() -> String {

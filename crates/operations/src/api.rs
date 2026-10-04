@@ -36,8 +36,10 @@ pub struct App {
     pub matrix: Matrix,
     pub store: Mutex<Store>,
     sessions: Mutex<BTreeMap<String, Session>>,
-    mutation: Mutex<()>,
+    pub(crate) mutation: Mutex<()>,
     host: String,
+    pub(crate) transport_host: Option<String>,
+    pub(crate) relay_host: Option<String>,
     ttl_ms: u64,
 }
 
@@ -74,8 +76,29 @@ impl App {
             sessions: Mutex::new(BTreeMap::new()),
             mutation: Mutex::new(()),
             host,
+            transport_host: None,
+            relay_host: None,
             ttl_ms,
         }))
+    }
+
+    pub fn with_transport(mut self: Arc<Self>, transport: &str, relay: &str) -> Result<Arc<Self>> {
+        let host = |origin: &str| -> Result<String> {
+            let checked = Matrix::new(origin, self.matrix.server().clone())?;
+            let url = reqwest::Url::parse(&checked.origin())
+                .map_err(|_| fail(400, "invalid_transport_origin"))?;
+            Ok(match url.port() {
+                Some(p) => format!("{}:{p}", url.host_str().unwrap_or_default()),
+                None => url.host_str().unwrap_or_default().to_owned(),
+            })
+        };
+        let transport = host(transport)?;
+        let relay = host(relay)?;
+        let app =
+            Arc::get_mut(&mut self).ok_or_else(|| fail(409, "transport_configuration_locked"))?;
+        app.transport_host = Some(transport);
+        app.relay_host = Some(relay);
+        Ok(self)
     }
 
     async fn identity(&self, session: &Session, identity: &Identity) -> Result<Value> {
@@ -90,7 +113,7 @@ impl App {
             json!({"version":1,"userId":identity.user,"isAdmin":identity.admin,"canApproveProjects":can_approve,
             "serverName":self.matrix.server(),"services":session.services,"callbackOrigins":[],"outboundAvailable":false,
             "features":{"inbox":true,"contributions":false,"projectApproval":can_approve,"remoteAgentDecisions":false,"topUps":false,
-                "rustWorkflowRequests":1,"runtimeExecution":false,"matrixNotifications":false}}),
+                "rustWorkflowRequests":1,"coordinatorTransport":1,"runtimeExecution":self.transport_host.is_some(),"matrixNotifications":false}}),
         )
     }
 
@@ -253,14 +276,15 @@ impl App {
                 let (_, _, identity) = self.authenticate(bearer).await?;
                 let actor = &identity.user;
                 let now = now_ms();
-                self.store.lock().await.transaction(|state| {
+                self.store.lock().await.transaction_sql(|state,tx| {
                     let mut workflows = Workflows::load(state)?;
                     let before = serde_json::to_value(&workflows)?;
                     let result = match service {
                         "palpo.inbox.submit" => {
-                            let request: WorkflowRequest =
-                                serde_json::from_value(input.args.clone())?;
-                            json!({"action":workflows.submit(request,actor,now)?})
+                            let mut args=input.args.clone();
+                            let definition=args.as_object_mut().and_then(|o|o.remove("definition"));
+                            let request: WorkflowRequest =serde_json::from_value(args)?;
+                            json!({"action":match definition {Some(definition)=>workflows.submit_definition(request,definition,actor,now)?,None=>workflows.submit(request,actor,now)?}})
                         }
                         "palpo.inbox.decide" => {
                             #[derive(Deserialize)]
@@ -323,6 +347,7 @@ impl App {
                         }
                         _ => return Err(fail(501, "service_not_implemented")),
                     };
+                    workflows.enqueue_commands(state,tx)?;
                     if serde_json::to_value(&workflows)? != before {
                         workflows.save(state)?;
                         if !state["audit"].is_array() {
@@ -356,6 +381,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .hoop(affix_state::inject(app))
         .push(Router::with_path("healthz").get(health))
+        .push(crate::machine::router())
         .push(
             Router::with_path("_palpo/miniapp/v1/{operation}")
                 .hoop(salvo::size_limiter::max_size(16384))

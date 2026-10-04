@@ -76,31 +76,43 @@ impl AuthoritySnapshot {
 pub enum Request {
     Project(ProjectRequest),
     Agent(AgentRequest),
+    TokenTopUp(TokenTopUpRequest),
 }
 
 impl Request {
-    fn id(&self) -> &RequestId {
+    pub(crate) fn definition_digest(&self) -> &DefinitionDigest {
+        match self {
+            Self::Project(r) => &r.definition_digest,
+            Self::Agent(r) => &r.definition_digest,
+            Self::TokenTopUp(r) => &r.definition_digest,
+        }
+    }
+    pub(crate) fn id(&self) -> &RequestId {
         match self {
             Self::Project(r) => &r.id,
             Self::Agent(r) => &r.id,
+            Self::TokenTopUp(r) => &r.id,
         }
     }
-    fn engagement(&self) -> &ServerEngagementId {
+    pub(crate) fn engagement(&self) -> &ServerEngagementId {
         match self {
             Self::Project(r) => &r.server_engagement_id,
             Self::Agent(r) => &r.server_engagement_id,
+            Self::TokenTopUp(r) => &r.server_engagement_id,
         }
     }
     fn owner(&self) -> &MatrixUserId {
         match self {
             Self::Project(r) => &r.owner,
             Self::Agent(r) => &r.project_owner,
+            Self::TokenTopUp(r) => &r.project_owner,
         }
     }
     fn requester(&self) -> &MatrixUserId {
         match self {
             Self::Project(r) => &r.requester,
             Self::Agent(r) => &r.requester,
+            Self::TokenTopUp(r) => &r.requester,
         }
     }
 }
@@ -121,6 +133,10 @@ pub struct Action {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
+    #[serde(default)]
+    pub observations: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub definitions: BTreeMap<String, Value>,
     pub authority: AuthoritySnapshot,
     pub actions: BTreeMap<String, Action>,
     pub receipts: BTreeMap<String, Value>,
@@ -129,6 +145,87 @@ pub struct Workflows {
 }
 
 impl Workflows {
+    pub fn submit_definition(
+        &mut self,
+        request: Request,
+        definition: Value,
+        actor: &MatrixUserId,
+        now: u64,
+    ) -> Result<Value> {
+        let expected: String = request.definition_digest().clone().into();
+        if !definition.is_object()
+            || serde_json::to_vec(&definition)?.len() > 16384
+            || digest(&definition)? != expected
+        {
+            return Err(fail(400, "definition_digest_mismatch"));
+        }
+        let result = self.submit(request, actor, now)?;
+        self.definitions.insert(expected, definition);
+        Ok(result)
+    }
+
+    pub(crate) fn enqueue_commands(
+        &mut self,
+        state: &Value,
+        tx: &rusqlite::Transaction<'_>,
+    ) -> Result<()> {
+        for record in self
+            .outbox
+            .values_mut()
+            .filter(|r| r["state"] == "pending" && r["queued"].is_null())
+        {
+            let id = record["actionId"]
+                .as_str()
+                .ok_or_else(|| fail(503, "workflow_state_invalid"))?;
+            let action = self
+                .actions
+                .get(id)
+                .ok_or_else(|| fail(503, "workflow_state_invalid"))?;
+            let key: String = action.request.definition_digest().clone().into();
+            let Some(definition) = self.definitions.get(&key) else {
+                continue;
+            };
+            let fleet = &state["fleets"][action.request.engagement().as_str()];
+            if fleet["installation"] != "installed"
+                || fleet["state"] != "ready"
+                || fleet["transport"]["mode"] != "outbound"
+                || fleet["capabilities"]["coordinatorApprovalV1"] != true
+            {
+                return Err(fail(501, "coordinator_protocol_unavailable"));
+            }
+            let mut payload = match &action.request {
+                Request::Project(_) => {
+                    json!({"operation":"coordinator_project_approval","command":record["command"],"definition":definition})
+                }
+                Request::TokenTopUp(_) => {
+                    json!({"operation":"coordinator_token_top_up","command":record["command"],"definition":definition})
+                }
+                Request::Agent(_) => {
+                    let mut payload = definition.clone();
+                    if payload["fleetId"] != fleet["id"] {
+                        return Err(fail(409, "definition_binding_mismatch"));
+                    }
+                    payload["coordinatorApproval"] = record["command"].clone();
+                    payload
+                }
+            };
+            payload["coordinatorCommandId"] = record["id"].clone();
+            crate::outbound::enqueue(
+                tx,
+                fleet,
+                "work",
+                "request",
+                record["id"]
+                    .as_str()
+                    .ok_or_else(|| fail(503, "workflow_state_invalid"))?,
+                &payload,
+                crate::outbound::Limits::default(),
+            )?;
+            record["queued"] = json!(true);
+            record["transportGeneration"] = fleet["transport"]["generation"].clone();
+        }
+        Ok(())
+    }
     /// Offline operator migration, not an app-callable permission grant. The
     /// future authenticated Hagency projection worker must apply these same
     /// monotonic checks after verifying the source and registration binding.
@@ -188,7 +285,7 @@ impl Workflows {
                 && (old.server_engagement_id != next.server_engagement_id
                     || old.owner != next.owner
                     || next.revision < old.revision
-                    || (next.revision == old.revision && old != next))
+                    || (next.revision == old.revision && !project_progress(old, next)))
             {
                 return Err(fail(409, "authority_revision_conflict"));
             }
@@ -220,7 +317,8 @@ impl Workflows {
                 && e.coordinator_approval_v1
                 && e.delegation_expires_at_ms > now
                 && (actor == &e.coordinator
-                    || matches!(request, Request::Agent(_)) && actor == &e.owner)
+                    || matches!(request, Request::Agent(_) | Request::TokenTopUp(_))
+                        && actor == &e.owner)
                 && (e.allow_self_approval || actor != request.requester())
         })
     }
@@ -247,6 +345,12 @@ impl Workflows {
             Value::Null
         };
         result["ownerMxid"] = json!(action.request.owner());
+        if let Some(observation) = self.observations.get(id) {
+            result["result"] = observation.clone();
+            if action.execution == "ready" && !crate::updates::status_current(observation, now) {
+                result["execution"] = json!("unknown");
+            }
+        }
         Ok(result)
     }
     pub fn list(
@@ -357,6 +461,26 @@ impl Workflows {
                 }
                 self.resource(&r.resource_allocation_id, &r.server_engagement_id, actor)?;
             }
+            Request::TokenTopUp(r) => {
+                let project = self
+                    .authority
+                    .projects
+                    .get(r.project_id.as_str())
+                    .ok_or_else(|| fail(404, "project_not_found"))?;
+                if project.state != ProjectState::Ready
+                    || project.owner != *actor
+                    || project.server_engagement_id != r.server_engagement_id
+                    || project.revision != r.project_revision
+                    || !project
+                        .resource_allocations
+                        .contains(&r.resource_allocation_id)
+                    || u64::from(r.requested_additional_tokens) == 0
+                {
+                    return Err(fail(409, "project_not_ready"));
+                }
+                self.resource(&r.resource_allocation_id, &r.server_engagement_id, actor)?;
+                self.top_up_agent(r)?;
+            }
         }
         let id = format!(
             "action_{}",
@@ -394,11 +518,11 @@ impl Workflows {
         self.notify(&id, now)?;
         self.view(&id, actor, now)
     }
-    fn notify(&mut self, id: &str, now: u64) -> Result<()> {
+    pub(crate) fn notify(&mut self, id: &str, now: u64) -> Result<()> {
         let a = &self.actions[id];
         let e = self.engagement(a.request.engagement())?;
         let mut recipients = vec![a.request.owner().clone(), e.coordinator.clone()];
-        if matches!(a.request, Request::Agent(_)) {
+        if matches!(a.request, Request::Agent(_) | Request::TokenTopUp(_)) {
             recipients.push(e.owner.clone());
         }
         for notice in self
@@ -455,6 +579,22 @@ impl Workflows {
                     &current.server_engagement_id,
                     &current.project_owner,
                 )?;
+                c.context
+            }
+            Request::TokenTopUp(current) => {
+                let c: TokenTopUpApproval = serde_json::from_value(command.clone())?;
+                let project = self
+                    .authority
+                    .projects
+                    .get(current.project_id.as_str())
+                    .ok_or_else(|| fail(404, "project_not_found"))?;
+                authorize_token_top_up(&c, current, engagement, project, actor, now)?;
+                self.resource(
+                    &current.resource_allocation_id,
+                    &current.server_engagement_id,
+                    &current.project_owner,
+                )?;
+                self.top_up_agent(current)?;
                 c.context
             }
         };
@@ -529,6 +669,29 @@ impl Workflows {
         self.notify(id, now)?;
         self.view(id, actor, now)
     }
+
+    fn top_up_agent(&self, request: &TokenTopUpRequest) -> Result<()> {
+        let allowed = self.actions.values().any(|action| {
+            let Request::Agent(agent) = &action.request else {
+                return false;
+            };
+            let observation = self.observations.get(&action.id);
+            agent.server_engagement_id == request.server_engagement_id
+                && agent.project_id == request.project_id
+                && agent.resource_allocation_id == request.resource_allocation_id
+                && agent.project_owner == request.project_owner
+                && action.state == "approved"
+                && observation.is_some_and(|o| {
+                    o["engagementId"] == request.agent_allocation_id.as_str()
+                        && o["state"] == "active"
+                        && o["allocatedTokens"] == json!(request.expected_allocated_tokens)
+                })
+        });
+        if !allowed {
+            return Err(fail(409, "agent_allocation_changed"));
+        }
+        Ok(())
+    }
     pub fn seen(&mut self, id: &str, actor: &MatrixUserId, now: u64) -> Result<Value> {
         let result = self.view(id, actor, now)?;
         for n in self
@@ -563,4 +726,18 @@ impl Workflows {
         }
         Ok(json!({"snoozedUntil":until,"action":action}))
     }
+}
+
+fn project_progress(old: &ProjectGrant, next: &ProjectGrant) -> bool {
+    let mut compare = next.clone();
+    compare.state = old.state;
+    compare == *old
+        && (old.state == next.state
+            || matches!(
+                (old.state, next.state),
+                (
+                    ProjectState::Approved,
+                    ProjectState::Ready | ProjectState::Revoked
+                ) | (ProjectState::Ready, ProjectState::Revoked)
+            ))
 }

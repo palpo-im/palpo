@@ -36,7 +36,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let public = std::env::var("PUBLIC_ORIGIN")?;
-    let app = App::new(matrix, store, &public, 900000)?;
+    let mut app = App::new(matrix, store, &public, 900000)?;
+    match (
+        std::env::var("PALPO_TRANSPORT_ORIGIN"),
+        std::env::var("PALPO_RELAY_ORIGIN"),
+    ) {
+        (Ok(transport), Ok(relay)) => {
+            app = app.with_transport(&transport, &relay)?;
+        }
+        (Err(_), Err(_)) => {}
+        _ => {
+            return Err(
+                "PALPO_TRANSPORT_ORIGIN and PALPO_RELAY_ORIGIN must be configured together".into(),
+            );
+        }
+    }
     let address =
         std::env::var("PALPO_OPERATIONS_LISTEN").unwrap_or_else(|_| "127.0.0.1:8091".into());
     let acceptor = TcpListener::new(address).try_bind().await?;

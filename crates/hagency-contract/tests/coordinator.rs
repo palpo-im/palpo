@@ -95,6 +95,107 @@ fn coordinator_decision_suffices_without_console_approval_data() {
 }
 
 #[test]
+fn top_up_requires_current_delegation_frozen_intent_and_bounded_addition() {
+    let mut request = serde_json::to_value(approval().request).unwrap();
+    request.as_object_mut().unwrap().remove("requestedTokens");
+    request["agentAllocationId"] = json!("en_littlewhite");
+    request["expectedAllocatedTokens"] = json!(100000);
+    request["requestedAdditionalTokens"] = json!(50000);
+    let command = TokenTopUpApproval {
+        context: approval().context,
+        request: parse(request),
+        additional_tokens: 50000.try_into().unwrap(),
+    };
+    assert_eq!(
+        authorize_token_top_up(
+            &command,
+            &command.request,
+            &engagement(),
+            &project(),
+            &user("coordinator"),
+            2000
+        ),
+        Ok(())
+    );
+    let mut changed = command.clone();
+    changed.request.agent_allocation_id = "different".to_owned().try_into().unwrap();
+    assert_eq!(
+        authorize_token_top_up(
+            &changed,
+            &command.request,
+            &engagement(),
+            &project(),
+            &user("coordinator"),
+            2000
+        ),
+        Err(Error::BindingMismatch)
+    );
+    changed = command.clone();
+    changed.additional_tokens = 50001.try_into().unwrap();
+    assert_eq!(
+        authorize_token_top_up(
+            &changed,
+            &command.request,
+            &engagement(),
+            &project(),
+            &user("coordinator"),
+            2000
+        ),
+        Err(Error::InvalidNumber)
+    );
+    changed = command.clone();
+    changed.context.actor = user("admin");
+    assert_eq!(
+        authorize_token_top_up(
+            &changed,
+            &command.request,
+            &engagement(),
+            &project(),
+            &user("admin"),
+            2000
+        ),
+        Err(Error::Forbidden)
+    );
+    let mut authority = engagement();
+    authority.delegation_revision = 4.try_into().unwrap();
+    assert_eq!(
+        authorize_token_top_up(
+            &command,
+            &command.request,
+            &authority,
+            &project(),
+            &user("coordinator"),
+            2000
+        ),
+        Err(Error::BindingMismatch)
+    );
+    assert_eq!(
+        authorize_token_top_up(
+            &command,
+            &command.request,
+            &engagement(),
+            &project(),
+            &user("coordinator"),
+            3000
+        ),
+        Err(Error::Expired)
+    );
+    changed = command;
+    changed.request.expected_allocated_tokens = MAX_EXACT_JSON_INTEGER.try_into().unwrap();
+    assert!(
+        authorize_token_top_up(
+            &changed,
+            &changed.request,
+            &engagement(),
+            &project(),
+            &user("coordinator"),
+            2000
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn server_admin_association_authority_does_not_confer_resource_authority() {
     let admin = user("admin");
     let server: ServerName = "example.test".to_owned().try_into().unwrap();

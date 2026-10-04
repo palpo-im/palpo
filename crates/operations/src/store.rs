@@ -132,6 +132,14 @@ impl Store {
     /// No external I/O is allowed in this synchronous closure. Read current state
     /// under BEGIN IMMEDIATE and persist the entire decision/outbox atomically.
     pub fn transaction<T>(&mut self, operation: impl FnOnce(&mut Value) -> Result<T>) -> Result<T> {
+        self.transaction_sql(|state, _| operation(state))
+    }
+
+    /// Commit workflow state and delivery rows under the same SQLite writer.
+    pub(crate) fn transaction_sql<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Value, &rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -146,7 +154,7 @@ impl Store {
         if state["version"] != 1 {
             return Err(fail(503, "unsupported_workflow_database_version"));
         }
-        let result = operation(&mut state)?;
+        let result = operation(&mut state, &tx)?;
         tx.execute("INSERT INTO state(id,body) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
             params![serde_json::to_string(&state)?])?;
         tx.commit()?;

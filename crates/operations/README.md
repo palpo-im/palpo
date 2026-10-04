@@ -18,7 +18,8 @@ equivalent Rust implementations and the cutover gates below pass.
 | `lib/miniapp.mjs` | `api.rs`, `matrix.rs` | Borrowed Matrix login, scoped in-memory sessions, revalidation, disconnect |
 | `lib/inbox.mjs` | `workflow.rs` | Typed project/agent requests, coordinator decisions, visibility, seen/snooze, durable receipts |
 | `lib/action-notifications.mjs` | `workflow.rs` | Durable notification intents only; Matrix delivery is still pending |
-| `lib/workflow.mjs`, `lib/service.mjs` | `palpo-hagency-contract` and decision outbox | Current authority checks and commands; Matrix/Hagency execution is still pending |
+| `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
+| `lib/workflow.mjs`, `lib/service.mjs` | contract, decision outbox, `updates.rs` | Immutable definitions delivered to Hagency; scoped resource/project projections and execution receipts |
 
 An authenticated project owner can submit a project against an engagement's
 allocated resources. Its designated coordinator can approve. For an agent on a
@@ -34,11 +35,14 @@ enqueue a second command. Current authority is still required for a mutation
 retry; retrieving the action returns its latest stored result. Seen/snoozed
 notifications do not complete the action.
 
-**Approved is not live.** Execution remains `pending`; this service has no
-Hagency worker, ledger reservation or provisioning receipt yet. It cannot claim
-capacity is reserved, deduct tokens, create rooms, announce a live agent, or
-deliver Matrix notifications. These capabilities are explicitly false in the
-session feature response.
+**Approved is not live.** Without a definition it remains `pending`. With an
+immutable definition and a capable installed Hagency engagement, the decision
+and leased work item commit together. A custody ACK still leaves it pending.
+An authenticated execution receipt advances it to `provisioning`; current
+runtime and Matrix-membership observations are required for `ready`.
+Duplicate receipts do not execute another allocation. Old source observations
+stay stale even when delivered now. Token usage stays unknown when unreported.
+Matrix room preparation, profile installation and notifications remain pending.
 
 ## Run in an isolated development environment
 
@@ -49,6 +53,9 @@ export PALPO_URL=https://matrix.example.test
 export PALPO_ADMIN_DATABASE=/tmp/palpo-operations-dev/admin.sqlite
 export PUBLIC_ORIGIN=http://127.0.0.1:8091
 export PALPO_OPERATIONS_LISTEN=127.0.0.1:8091
+# Optional; configure both to enable machine routes:
+export PALPO_TRANSPORT_ORIGIN=https://operations.example.test
+export PALPO_RELAY_ORIGIN=http://127.0.0.1:8092
 ./target/debug/palpo-operations
 ```
 
@@ -70,7 +77,7 @@ Only these services can be granted:
 - `palpo.inbox.decide`, `palpo.inbox.seen`, `palpo.inbox.snooze`
 
 The feature `rustWorkflowRequests: 1` identifies the new request schema.
-Submission takes `{ "kind": "project" | "agent", "request": <typed request> }`.
+Submission takes `{ "kind": "project" | "agent" | "token_top_up", "request": <typed request>, "definition": <immutable JSON> }`.
 Approval takes `{ "id": <action>, "decision": "approve", "command": <typed approval> }`.
 Rejection takes `id`, `decision: "reject"`, `expectedRevision`, `commandId` and
 `reason`. See [HTTP integration tests](tests/workflows.rs) for complete payloads.
@@ -99,8 +106,11 @@ map IDs, engagement bindings and monotonic revisions. It rejects authority remov
 that could reset revision history: retain revoked engagements/project tombstones
 and zero-capacity withdrawn resources. A replaced coordinator requires a new
 delegation revision; a revoked engagement requires a new registration generation
-before reactivation. The future authenticated Hagency projection worker must
-verify provenance and use these same monotonic checks.
+before reactivation. Authenticated Hagency `coordinatorUpdates` now apply the
+same monotonic checks for funded resources, authorized projects and decision
+receipts. They cannot assign a coordinator or create an association. Native
+publication ACKs compare the exact stored digest so a newer grant or ready
+state queued during a retry is preserved.
 
 Migration checks use a **copy** of an existing database. Both executables must
 never own the same database concurrently. The Rust executable honors the Node
@@ -121,8 +131,9 @@ bindings. Explicit reconciliation is required before production cutover.
 1. Rust engagement association, designated-admin approval/profile export,
    coordinator delegation and real connection proof; independent registrations
    for multiple engagements, including those with the same Matrix hostname.
-2. Rust equivalents for fleet/admin routes, durable outbound transport,
-   retry/reconciliation, account operations and Matrix notification workers.
+2. Rust equivalents for remaining fleet/admin routes, account operations and
+   Matrix notification workers. Relay/poll/ACK/updates are implemented;
+   retirement, room preparation and legacy reconciliation still need completion.
 3. Hagency command authentication, hierarchy-aware transactional reservations,
    provisioning and receipts. One coordinator decision must suffice; the Hagency
    portal must not add a second approval. Agent/top-up approvals must not silently

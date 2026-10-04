@@ -229,6 +229,76 @@ pub struct AgentApproval {
     pub allocated_tokens: Tokens,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TokenTopUpRequest {
+    pub id: RequestId,
+    pub revision: Revision,
+    pub server_engagement_id: ServerEngagementId,
+    pub project_id: ProjectId,
+    pub project_revision: Revision,
+    pub resource_allocation_id: ResourceAllocationId,
+    pub agent_allocation_id: AgentAllocationId,
+    pub project_owner: MatrixUserId,
+    pub requester: MatrixUserId,
+    pub definition_digest: DefinitionDigest,
+    pub expected_allocated_tokens: Tokens,
+    pub requested_additional_tokens: Tokens,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TokenTopUpApproval {
+    pub context: CommandContext,
+    pub request: TokenTopUpRequest,
+    pub additional_tokens: Tokens,
+}
+
+/// The adapter also checks the current agent's immutable project/resource/owner
+/// binding and allocation under its writer. This policy does not reserve tokens.
+pub fn authorize_token_top_up(
+    approval: &TokenTopUpApproval,
+    current_request: &TokenTopUpRequest,
+    engagement: &ServerEngagement,
+    project: &ProjectGrant,
+    authenticated_actor: &MatrixUserId,
+    now_ms: u64,
+) -> Result<(), Error> {
+    if &approval.request != current_request {
+        return Err(Error::BindingMismatch);
+    }
+    let request = &approval.request;
+    let proposed = AgentApproval {
+        context: approval.context.clone(),
+        request: AgentRequest {
+            id: request.id.clone(),
+            revision: request.revision,
+            server_engagement_id: request.server_engagement_id.clone(),
+            project_id: request.project_id.clone(),
+            project_revision: request.project_revision,
+            resource_allocation_id: request.resource_allocation_id.clone(),
+            project_owner: request.project_owner.clone(),
+            requester: request.requester.clone(),
+            definition_digest: request.definition_digest.clone(),
+            requested_tokens: request.requested_additional_tokens,
+        },
+        allocated_tokens: approval.additional_tokens,
+    };
+    authorize_agent_approval(
+        &proposed,
+        &proposed.request,
+        engagement,
+        project,
+        authenticated_actor,
+        now_ms,
+    )?;
+    let total = u64::from(request.expected_allocated_tokens)
+        .checked_add(u64::from(approval.additional_tokens))
+        .ok_or(Error::Overflow)?;
+    Tokens::try_from(total)?;
+    Ok(())
+}
+
 /// A policy result constructed only by the current-state check. It is not a
 /// durable decision or a capacity reservation and cannot be deserialized.
 #[derive(Debug)]

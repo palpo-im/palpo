@@ -67,6 +67,26 @@ impl Matrix {
         {
             return Err(fail(400, "invalid_matrix_path"));
         }
+        self.send(method, url, token, body).await
+    }
+
+    pub async fn room_state(&self, room: &str, token: &str, user: &str) -> Result<Value> {
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| fail(400, "invalid_matrix_path"))?
+            .clear()
+            .extend(["_matrix", "client", "v3", "rooms", room, "state"]);
+        url.query_pairs_mut().append_pair("user_id", user);
+        self.send(Method::GET, url, token, None).await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        url: Url,
+        token: &str,
+        body: Option<&Value>,
+    ) -> Result<Value> {
         let mut request = self.client.request(method, url).bearer_auth(token);
         if let Some(body) = body {
             request = request.json(body);

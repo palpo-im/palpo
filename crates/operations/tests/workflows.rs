@@ -46,6 +46,13 @@ async fn matrix_stub(req: &mut salvo::Request, depot: &mut Depot, res: &mut Resp
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or_default();
+    if token == "fixture-as" {
+        res.render(Json(json!([
+            {"type":"m.room.member","state_key":"@provider:example.test","content":{"membership":"join"}},
+            {"type":"m.room.member","state_key":req.query::<String>("user_id"),"content":{"membership":"join"}}
+        ])));
+        return;
+    }
     let user = match token {
         "manager-token" => "manager",
         "coordinator-token" => "coordinator",
@@ -82,6 +89,21 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    async fn machine(&self, fleet: &str, operation: &str, body: Value) -> (StatusCode, Value) {
+        let mut response = TestClient::post(format!(
+            "https://operations.test/api/fleet/v2/{fleet}/{operation}"
+        ))
+        .add_header("host", "operations.test", true)
+        .add_header("authorization", "Bearer fixture-machine", true)
+        .add_header("x-hagency-generation", "1", true)
+        .json(&body)
+        .send(&self.service)
+        .await;
+        (
+            response.status_code.unwrap_or(StatusCode::OK),
+            response.take_json::<Value>().await.unwrap(),
+        )
+    }
     async fn new() -> Self {
         let revoked = Arc::new(AtomicBool::new(false));
         let router = Router::new()
@@ -113,7 +135,10 @@ impl Fixture {
                 workflows.save(state)
             })
             .unwrap();
-        let app = api::App::new(matrix, store, "https://operations.test", 900000).unwrap();
+        let app = api::App::new(matrix, store, "https://operations.test", 900000)
+            .unwrap()
+            .with_transport("https://operations.test", "https://relay.test")
+            .unwrap();
         let service = Service::new(api::router(app.clone()));
         Self {
             app,
@@ -151,6 +176,150 @@ impl Fixture {
         self.post("call", token, json!({"service":service,"args":args}))
             .await
     }
+}
+
+#[tokio::test]
+async fn coordinator_decision_delivers_definition_and_runtime_observations_without_a_second_approval()
+ {
+    use palpo_operations::digest;
+    let f = Fixture::new().await;
+    let fleet = format!("hf_{}", "b".repeat(32));
+    let now = now_ms();
+    f.app.store.lock().await.transaction(|state|{
+        let mut authority=authority(now);
+        let mut binding=authority["engagements"]["engagement_a"].take();
+        binding["id"]=json!(fleet);
+        authority["engagements"]=json!({&fleet:binding});
+        authority["resources"]["grant_a"]["serverEngagementId"]=json!(fleet);
+        authority["projects"]["existing_project"]["serverEngagementId"]=json!(fleet);
+        Workflows{authority:serde_json::from_value(authority)?,..Default::default()}.save(state)?;
+        state["fleets"][&fleet]=json!({"id":fleet,"installation":"installed","state":"ready","ownerMxid":"@provider:example.test",
+            "representativeMxid":format!("@{fleet}_representative:example.test"),"transport":{"mode":"outbound","generation":1,"token":"fixture-machine","sequence":0},
+            "registration":{"hs_token":"fixture-relay"},"capabilities":{"coordinatorApprovalV1":true}});
+        Ok(())
+    }).unwrap();
+    let definition = json!({"v":1,"fleetId":fleet,"requestId":"request_agent","targetProjectId":"existing_project",
+        "targetRoomId":"!project:example.test","sourceRoomId":"!reception:example.test","sourceEventId":"$request",
+        "ownerMxid":"@manager:example.test","requesterMxid":"@manager:example.test","ownerDmRoomId":"!private:example.test",
+        "role":"developer","requestedTokens":100000,"agentDefinition":{"name":"Littlewhite","instructions":"Assist project owner"}});
+    let mut request = agent_request();
+    request["request"]["serverEngagementId"] = json!(fleet);
+    request["request"]["definitionDigest"] = json!(digest(&definition).unwrap());
+    request["definition"] = definition.clone();
+    let manager = f.session("manager").await;
+    let coordinator = f.session("coordinator").await;
+    let (status, submitted) = f
+        .call(&manager, "palpo.inbox.submit", request.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{submitted}");
+    let id = submitted["action"]["id"].as_str().unwrap();
+    let mut command = approval(&request, "decision_live");
+    command["context"]["serverEngagementId"] = json!(fleet);
+    let (status, decision) = f
+        .call(
+            &coordinator,
+            "palpo.inbox.decide",
+            json!({"id":id,"decision":"approve","command":command}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{decision}");
+    let mut polled=TestClient::get(format!("https://operations.test/api/fleet/v2/{fleet}/poll?lane=work&consumer=01234567-0123-0123-0123-0123456789ab&wait=0"))
+        .add_header("host","operations.test",true).add_header("authorization","Bearer fixture-machine",true).add_header("x-hagency-generation","1",true).send(&f.service).await;
+    let lease = polled.take_json::<Value>().await.unwrap();
+    assert_eq!(lease["delivery"]["payload"]["coordinatorApproval"], command);
+    assert_eq!(
+        lease["delivery"]["payload"]["agentDefinition"],
+        definition["agentDefinition"]
+    );
+    assert_eq!(
+        f.machine(
+            &fleet,
+            "ack",
+            json!({"lane":"work","id":lease["delivery"]["id"],"token":lease["delivery"]["token"]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.get", json!({"id":id}))
+            .await
+            .1["action"]["execution"],
+        "pending"
+    );
+    let receipt = json!({"kind":"receipt","commandId":"decision_live","commandDigest":digest(&json!({"operation":"coordinator_agent_approval","command":command})).unwrap(),
+        "agentId":"en_littlewhite","state":"applied","registrationGeneration":1,"delegationRevision":1});
+    let update = json!({"v":2,"generation":1,"sequence":1,"heartbeat":true,"coordinatorUpdates":[{"id":"command_decision_live","digest":digest(&receipt).unwrap(),"payload":receipt}]});
+    let (status, result) = f.machine(&fleet, "updates", update.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.get", json!({"id":id}))
+            .await
+            .1["action"]["execution"],
+        "provisioning"
+    );
+    assert_eq!(
+        f.machine(&fleet, "updates", update.clone()).await.0,
+        StatusCode::OK
+    );
+    let mut altered = update.clone();
+    altered["heartbeat"] = json!(false);
+    assert_eq!(
+        f.machine(&fleet, "updates", altered).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut observed = definition.clone();
+    observed["engagementId"] = json!("en_littlewhite");
+    observed["state"] = json!("active");
+    observed["agentMxid"] = json!(format!("@{fleet}_en_littlewhite:example.test"));
+    observed["allocatedTokens"] = json!(100000);
+    observed["consumedTokens"] = Value::Null;
+    observed["bound"] = json!(true);
+    observed["ready"] = json!(true);
+    observed["fulfillment"] = json!({"phase":"complete","incomplete":false});
+    observed["observedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let ready = json!({"v":2,"generation":1,"sequence":2,"heartbeat":true,"statuses":[observed]});
+    let (status, result) = f.machine(&fleet, "updates", ready.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let view = f
+        .call(&manager, "palpo.inbox.get", json!({"id":id}))
+        .await
+        .1;
+    assert_eq!(view["action"]["execution"], "ready", "{view}");
+    assert!(view["action"]["result"]["consumedTokens"].is_null());
+    // Reject changed-sequence retries and cross-engagement observations.
+    let mut wrong = ready.clone();
+    wrong["statuses"][0]["agentMxid"] = json!("@other:example.test");
+    assert_eq!(
+        f.machine(&fleet, "updates", wrong.clone()).await.0,
+        StatusCode::CONFLICT
+    );
+    wrong["sequence"] = json!(3);
+    assert_eq!(
+        f.machine(&fleet, "updates", wrong).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.app.store.lock().await.read().unwrap()["fleets"][&fleet]["transport"]["sequence"],
+        2
+    );
+    // An old frozen observation cannot be made fresh by delivering it again.
+    let mut old = ready;
+    old["sequence"] = json!(3);
+    old["statuses"][0]["observedAt"] = json!("2020-01-01T00:00:00Z");
+    assert_eq!(f.machine(&fleet, "updates", old).await.0, StatusCode::OK);
+    let view = f
+        .call(&manager, "palpo.inbox.get", json!({"id":id}))
+        .await
+        .1;
+    assert_ne!(view["action"]["execution"], "ready");
+    assert_eq!(
+        f.app.store.lock().await.read().unwrap()["rustWorkflows"]["outbox"]
+            .as_object()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -585,4 +754,140 @@ fn origins_require_tls_except_loopback_and_never_accept_credentials_or_paths() {
         let matrix = Matrix::new(origin, "example.test".to_owned().try_into().unwrap()).unwrap();
         assert!(api::App::new(matrix, Store::memory().unwrap(), origin, 900000).is_ok());
     }
+}
+
+#[tokio::test]
+async fn matrix_relay_poll_and_ack_use_the_real_rust_http_routes() {
+    let f = Fixture::new().await;
+    let id = format!("hf_{}", "a".repeat(32));
+    f.app.store.lock().await.transaction(|state|{
+        state["fleets"][&id]=json!({"id":id,"installation":"installed","state":"pending_connection","transport":{"mode":"outbound","generation":1,"token":"fixture-machine"},"registration":{"hs_token":"fixture-relay"}});Ok(())
+    }).unwrap();
+    let mut relay=TestClient::put(format!("https://relay.test/api/relay/v2/{id}/_matrix/app/v1/transactions/t1"))
+        .add_header("host","relay.test",true).add_header("authorization","Bearer fixture-relay",true)
+        .json(&json!({"events":[{"type":"test.event","content":{"a":0.5,"10":10,"2":2,"😀":true,"":false}}]})).send(&f.service).await;
+    assert_eq!(relay.status_code.unwrap_or(StatusCode::OK), StatusCode::OK);
+    assert_eq!(relay.take_json::<Value>().await.unwrap(), json!({}));
+    let url = format!(
+        "https://operations.test/api/fleet/v2/{id}/poll?lane=matrix&consumer=01234567-0123-0123-0123-0123456789ab&wait=0"
+    );
+    let mut response = TestClient::get(&url)
+        .add_header("host", "operations.test", true)
+        .add_header("authorization", "Bearer fixture-machine", true)
+        .add_header("x-hagency-generation", "1", true)
+        .send(&f.service)
+        .await;
+    assert_eq!(
+        response.status_code.unwrap_or(StatusCode::OK),
+        StatusCode::OK
+    );
+    let lease = response.take_json::<Value>().await.unwrap();
+    assert_eq!(lease["delivery"]["id"], "t1");
+    assert_eq!(
+        lease["delivery"]["payload"]["body"]["events"][0]["content"]["a"],
+        0.5
+    );
+    let ack = json!({"lane":"matrix","id":"t1","token":lease["delivery"]["token"]});
+    let response = TestClient::post(format!("https://operations.test/api/fleet/v2/{id}/ack"))
+        .add_header("host", "operations.test", true)
+        .add_header("authorization", "Bearer fixture-machine", true)
+        .add_header("x-hagency-generation", "1", true)
+        .json(&ack)
+        .send(&f.service)
+        .await;
+    assert_eq!(
+        response.status_code.unwrap_or(StatusCode::OK),
+        StatusCode::OK
+    );
+    let mut response = TestClient::get(&url)
+        .add_header("host", "operations.test", true)
+        .add_header("authorization", "Bearer fixture-machine", true)
+        .add_header("x-hagency-generation", "1", true)
+        .send(&f.service)
+        .await;
+    assert!(response.take_json::<Value>().await.unwrap()["delivery"].is_null());
+    assert_eq!(
+        f.app.store.lock().await.read().unwrap()["fleets"][&id]["state"],
+        "pending_connection"
+    );
+    // A human mini-app bearer and a browser Origin confer no machine authority.
+    let human = f.session("manager").await;
+    let response = TestClient::get(&url)
+        .add_header("host", "operations.test", true)
+        .add_header("authorization", format!("Bearer {human}"), true)
+        .add_header("x-hagency-generation", "1", true)
+        .send(&f.service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+    let response = TestClient::get(&url)
+        .add_header("host", "operations.test", true)
+        .add_header("origin", "https://operations.test", true)
+        .add_header("authorization", "Bearer fixture-machine", true)
+        .add_header("x-hagency-generation", "1", true)
+        .send(&f.service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::FORBIDDEN));
+}
+
+#[tokio::test]
+async fn connection_verified_requires_exact_probe_original_matrix_ack_and_current_membership() {
+    let f = Fixture::new().await;
+    let fleet = format!("hf_{}", "c".repeat(32));
+    let representative = format!("@{fleet}_representative:example.test");
+    f.app.store.lock().await.transaction(|state|{
+        state["fleets"][&fleet]=json!({"id":fleet,"state":"pending_connection","installation":"installed",
+            "ownerMxid":"@provider:example.test","representativeMxid":representative,
+            "transport":{"mode":"outbound","generation":1,"token":"fixture-machine","sequence":0},
+            "registration":{"as_token":"fixture-as","hs_token":"fixture-relay"},
+            "probe":{"roomId":"!reception:example.test","eventId":"$probe","challenge":"challenge_one"}});
+        Ok(())
+    }).unwrap();
+    let event = json!({"type":"com.hagency.connection.probe.v1","sender":representative,"room_id":"!reception:example.test","event_id":"$probe",
+        "content":{"fleetId":fleet,"challenge":"challenge_one"}});
+    let response = TestClient::put(format!(
+        "https://relay.test/api/relay/v2/{fleet}/transactions/probe_tx"
+    ))
+    .add_header("host", "relay.test", true)
+    .add_header("authorization", "Bearer fixture-relay", true)
+    .json(&json!({"events":[event]}))
+    .send(&f.service)
+    .await;
+    assert_eq!(
+        response.status_code.unwrap_or(StatusCode::OK),
+        StatusCode::OK
+    );
+    let update = json!({"v":2,"generation":1,"sequence":1,"heartbeat":true,"probeReceipts":[{
+        "received":true,"fleetId":fleet,"sourceRoomId":"!reception:example.test","sourceEventId":"$probe","challenge":"challenge_one"}]});
+    let (status, body) = f.machine(&fleet, "updates", update.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "matrix_receipt_pending");
+    let mut response=TestClient::get(format!("https://operations.test/api/fleet/v2/{fleet}/poll?lane=matrix&consumer=01234567-0123-0123-0123-0123456789ab&wait=0"))
+        .add_header("host","operations.test",true).add_header("authorization","Bearer fixture-machine",true).add_header("x-hagency-generation","1",true).send(&f.service).await;
+    let lease = response.take_json::<Value>().await.unwrap();
+    assert_eq!(
+        f.machine(
+            &fleet,
+            "ack",
+            json!({"lane":"matrix","id":"probe_tx","token":lease["delivery"]["token"]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let mut wrong = update.clone();
+    wrong["probeReceipts"][0]["challenge"] = json!("different");
+    assert_eq!(
+        f.machine(&fleet, "updates", wrong).await.0,
+        StatusCode::CONFLICT
+    );
+    let (status, body) = f.machine(&fleet, "updates", update.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let state = f.app.store.lock().await.read().unwrap();
+    assert_eq!(state["fleets"][&fleet]["state"], "ready");
+    assert_eq!(
+        state["fleets"][&fleet]["connection"]["sourceEventId"],
+        "$probe"
+    );
+    assert_eq!(state["fleets"][&fleet]["connection"]["generation"], 1);
+    assert_eq!(f.machine(&fleet, "updates", update).await.0, StatusCode::OK);
 }

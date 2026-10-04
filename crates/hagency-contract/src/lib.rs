@@ -11,6 +11,7 @@
 //! required. See the crate README for the remaining integration boundaries.
 
 pub mod budget;
+pub mod canonical;
 pub mod ids;
 pub mod policy;
 
@@ -26,6 +27,8 @@ pub enum Error {
     InvalidIdentifier,
     #[error("invalid token count or revision")]
     InvalidNumber,
+    #[error("invalid canonical JSON encoding")]
+    InvalidEncoding,
     #[error("unsupported contract version or capability")]
     Unsupported,
     #[error("actor is not authorized for this decision")]

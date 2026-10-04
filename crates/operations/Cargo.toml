@@ -12,8 +12,9 @@ palpo-hagency-contract = { version = "0.4.0", path = "../hagency-contract" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-sha2.workspace = true
 rand.workspace = true
+chrono.workspace = true
+subtle = "2.6.1"
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["signal", "time", "net", "sync"] }
 salvo = { workspace = true, features = ["test", "affix-state", "size-limiter"] }
