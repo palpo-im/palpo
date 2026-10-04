@@ -72,11 +72,11 @@ pub async fn advance_stream(user_id: &UserId) -> AppResult<Seqnum> {
         // Sequence values are allocated before this write. Concurrent policy changes can
         // therefore commit out of allocation order; assigning `excluded.stream_id`
         // directly would let the later commit move the durable position backwards.
-        .set(presence_recipient_streams::stream_id.eq(diesel::dsl::sql::<
-            diesel::sql_types::BigInt,
-        >(
-            "GREATEST(presence_recipient_streams.stream_id, excluded.stream_id)",
-        )))
+        .set(presence_recipient_streams::stream_id.eq(
+            diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "GREATEST(presence_recipient_streams.stream_id, excluded.stream_id)",
+            ),
+        ))
         .execute(&mut connect().await?)
         .await?;
     // Return the value allocated for this state, not the row's possibly higher maximum.

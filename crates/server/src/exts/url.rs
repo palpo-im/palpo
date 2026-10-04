@@ -424,12 +424,14 @@ async fn request_well_known(destination: &str) -> Option<(String, Instant)> {
     let cache_for = CacheControl::decode(&mut headers)
         .ok()
         .and_then(|cc| {
-            // Servers should respect the cache control headers present on the response, or use a sensible default when headers are not present.
+            // Servers should respect the cache control headers present on the response, or use a
+            // sensible default when headers are not present.
             if cc.no_store() || cc.no_cache() {
                 Some(Duration::ZERO)
             } else {
                 cc.max_age()
-                    // Servers should additionally impose a maximum cache time for responses: 48 hours is recommended.
+                    // Servers should additionally impose a maximum cache time for responses: 48
+                    // hours is recommended.
                     .map(|age| age.min(Duration::from_secs(60 * 60 * 48)))
             }
         })

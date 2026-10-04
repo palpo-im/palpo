@@ -29,9 +29,9 @@ pub fn authed_router() -> Router {
                 .get(list_devices)
                 // .push(
                 //     Router::with_hoop(hoops::limit_rate)
-                //         .push(Router::new().post(register).push(Router::with_path("available").get(available)))
-                //         .push(Router::with_path("m.login.registration_token/validity").get(validate_token)),
-                // )
+                //         .push(Router::new().post(register).push(Router::with_path("available").
+                // get(available)))         .push(Router::with_path("m.login.
+                // registration_token/validity").get(validate_token)), )
                 .push(
                     Router::with_path("{device_id}")
                         .get(get_device)
