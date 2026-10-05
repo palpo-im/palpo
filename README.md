@@ -92,6 +92,12 @@ Our test server is for **evaluation and testing purposes only**:
 
 ## 📦 Installation
 
+Palpo provides the Matrix homeserver and its management APIs. The Hagency project,
+fleet, Agent approval and Inbox application has moved to
+[hagency-server](https://github.com/chrislearn/hagency-server).
+See the [migration and ownership guide](docs/HAGENCY_MIGRATION.md) before replacing
+an existing `web-admin` deployment.
+
 ### Prerequisites
 - Rust 1.94 or higher
 - PostgreSQL 16 or higher
