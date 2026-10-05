@@ -382,6 +382,13 @@ impl Workflows {
             action.state == "requested" && self.can_review(&action.request, actor, now);
         let mut result = serde_json::to_value(action)?;
         result["agentControl"] = crate::lifecycle::latest(self,id).map(|r|json!({"operation":r["command"]["operation"],"execution":r["execution"],"reason":r["result"]["reason"]})).unwrap_or(Value::Null);
+        if let Some(reason) = match action.execution.as_str() {
+            "provisioning_unknown" => Some("provisioning_outcome_unknown"),
+            "provisioning_failed" => Some("provisioning_failed"),
+            _ => None,
+        } {
+            result["failureReason"] = json!(reason);
+        }
         result["needsMyAction"] = json!(can_decide);
         result["canDecide"] = json!(can_decide);
         result["canContinue"] = json!(
@@ -488,7 +495,7 @@ impl Workflows {
                     && (action.state == "requested"
                         || matches!(
                             action.execution.as_str(),
-                            "pending" | "provisioning" | "setup_pending" | "setup_failed"
+                            "pending" | "provisioning" | "provisioning_unknown" | "provisioning_failed" | "setup_pending" | "setup_failed"
                         ))
                 || view == "history"
                     && (action.state == "rejected"

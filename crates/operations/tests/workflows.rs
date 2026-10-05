@@ -480,6 +480,28 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     assert_eq!(listed["requests"][0]["usable"], false);
     assert_eq!(listed["requests"][0]["usage"]["state"], "stale");
     assert_eq!(listed["requests"][0]["execution"], "unknown");
+    // A created Matrix account is not a successful runtime start. Preserve
+    // the uncertain effect in both audiences and reject contradictory Ready.
+    let mut uncertain = ready.clone();
+    uncertain["sequence"] = json!(5);
+    uncertain["statuses"][0]["lifecycle"] = json!({"provisionEffect":"uncertain","runtimeState":"reserved"});
+    assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::CONFLICT);
+    uncertain["statuses"][0]["ready"] = json!(false);
+    uncertain["statuses"][0]["bound"] = json!(false);
+    uncertain["statuses"][0]["fulfillment"] = json!({"phase":"provisioning","incomplete":true});
+    assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::OK);
+    assert_eq!(f.machine(&fleet, "updates", uncertain).await.0, StatusCode::OK);
+    for actor in [&manager, &coordinator] {
+        let view = f.call(actor, "palpo.inbox.get", json!({"id":id})).await.1;
+        assert_eq!(view["action"]["execution"], "provisioning_unknown");
+        assert_eq!(view["action"]["failureReason"], "provisioning_outcome_unknown");
+    }
+    let waiting = f.call(&manager, "palpo.inbox.list", json!({"view":"waiting"})).await.1;
+    assert!(waiting["actions"].as_array().unwrap().iter().any(|a| a["id"] == id));
+    let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
+    assert_eq!(listed["requests"][0]["usable"], false);
+    assert_eq!(listed["requests"][0]["allocatedTokens"], 100000);
+    assert_eq!(listed["requests"][0]["failureReason"], "provisioning_outcome_unknown");
     assert_eq!(
         f.app.store.lock().await.read().unwrap()["rustWorkflows"]["outbox"]
             .as_object()

@@ -491,6 +491,10 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                     "unknown"
                 } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
                     "ended"
+                } else if status["lifecycle"]["provisionEffect"] == "uncertain" {
+                    "provisioning_unknown"
+                } else if status["lifecycle"]["provisionEffect"] == "failed" {
+                    "provisioning_failed"
                 } else {
                     "provisioning"
                 }
@@ -515,6 +519,10 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                 "unknown"
             } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
                 "ended"
+            } else if status["lifecycle"]["provisionEffect"] == "uncertain" {
+                "provisioning_unknown"
+            } else if status["lifecycle"]["provisionEffect"] == "failed" {
+                "provisioning_failed"
             } else {
                 "provisioning"
             };
@@ -643,7 +651,8 @@ fn status(
             || raw["bound"] != true
             || raw["agentMxid"].as_str().is_none()
             || raw["fulfillment"]["phase"] != "complete"
-            || raw["fulfillment"]["incomplete"] == true)
+            || raw["fulfillment"]["incomplete"] == true
+            || raw["lifecycle"]["provisionEffect"].as_str().is_some_and(|state| state != "complete"))
     {
         return Err(fail(409, "readiness_conflict"));
     }
