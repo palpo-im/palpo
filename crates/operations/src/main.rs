@@ -80,6 +80,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .parse()?,
         })?;
     }
+    if let Ok(path) = std::env::var("PALPO_ACCOUNT_CONFIG") {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.is_file() || metadata.len() > 65536 {
+            return Err("account configuration must be a bounded regular file".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err("account configuration must be private (0600)".into());
+            }
+        }
+        app = app.with_accounts(serde_json::from_slice(&std::fs::read(path)?)?)?;
+    }
     let acceptor = TcpListener::new(address).try_bind().await?;
     let server = Server::new(acceptor);
     let handle = server.handle();
@@ -101,8 +115,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         handle.stop_graceful(Some(std::time::Duration::from_secs(10)));
     });
     let notifications = palpo_operations::notifications::start(app.clone());
+    let accounts = palpo_operations::accounts::start(app.clone());
     server.serve(router(app)).await;
     notifications.abort();
+    accounts.abort();
     let _ = notifications.await;
+    let _ = accounts.await;
     Ok(())
 }

@@ -1,6 +1,7 @@
 //! Rust replacement slices for web-admin's store, mini-app sessions and Inbox.
 //! Existing Node state is preserved; production cutover requires the remaining
 //! fleet/Matrix workflow and notification integrations listed in the README.
+pub mod accounts;
 pub mod api;
 pub mod associations;
 mod connections;

@@ -128,6 +128,56 @@ impl Matrix {
         token: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
+        let (status, value) = self.send_status(method, url, token, body).await?;
+        if !(200..300).contains(&status) {
+            return Err(fail(
+                match status {
+                    401 | 403 | 404 => status,
+                    _ => 502,
+                },
+                "matrix_request_failed",
+            ));
+        }
+        Ok(value)
+    }
+
+    /// Registration alone needs the bounded UIAA challenge from an HTTP 401.
+    /// The endpoint is fixed; neither an applicant nor a challenge can redirect it.
+    pub(crate) async fn register(&self, body: &Value) -> Result<(u16, Value)> {
+        let url = self
+            .origin
+            .join("/_matrix/client/v3/register")
+            .map_err(|_| fail(400, "invalid_matrix_path"))?;
+        self.send_status(Method::POST, url, "", Some(body)).await
+    }
+
+    pub(crate) async fn forward_messages(
+        &self,
+        room: &str,
+        token: &str,
+        from: Option<&str>,
+    ) -> Result<Value> {
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| fail(400, "invalid_matrix_path"))?
+            .clear()
+            .extend(["_matrix", "client", "v3", "rooms", room, "messages"]);
+        url.query_pairs_mut()
+            .append_pair("dir", "f")
+            .append_pair("limit", "100");
+        if let Some(from) = from {
+            url.query_pairs_mut().append_pair("from", from);
+        }
+        self.send(Method::GET, url, token, None).await
+    }
+
+    async fn send_status(
+        &self,
+        method: Method,
+        url: Url,
+        token: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value)> {
         let mut request = self.client.request(method, url).bearer_auth(token);
         if let Some(body) = body {
             request = request.json(body);
@@ -137,17 +187,6 @@ impl Matrix {
             .await
             .map_err(|_| fail(502, "palpo_unreachable"))?;
         let status = response.status();
-        if !status.is_success() {
-            return Err(fail(
-                match status.as_u16() {
-                    401 => 401,
-                    403 => 403,
-                    404 => 404,
-                    _ => 502,
-                },
-                "matrix_request_failed",
-            ));
-        }
         let mut raw = Vec::new();
         while let Some(chunk) = response
             .chunk()
@@ -159,7 +198,13 @@ impl Matrix {
             }
             raw.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&raw).map_err(|_| fail(502, "matrix_response_invalid"))
+        // Ordinary authorization/404 responses need not contain JSON.
+        let value = match serde_json::from_slice(&raw) {
+            Ok(value) => value,
+            Err(_) if !status.is_success() => Value::Null,
+            Err(_) => return Err(fail(502, "matrix_response_invalid")),
+        };
+        Ok((status.as_u16(), value))
     }
 
     pub async fn authenticate(&self, token: &str) -> Result<Identity> {

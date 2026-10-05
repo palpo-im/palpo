@@ -36,6 +36,8 @@ pub const SERVICES: &[&str] = &[
     "palpo.actions.room.get",
     "palpo.actions.room.ensure",
     "palpo.requests.open",
+    "palpo.accounts.list",
+    "palpo.accounts.open",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
@@ -50,7 +52,6 @@ const PENDING_SERVICES: &[&str] = &[
     "palpo.agents.rename",
     "palpo.agents.retire",
     "palpo.activity.list",
-    "palpo.accounts.list",
     "palpo.inbox.activate",
 ];
 
@@ -67,7 +68,7 @@ pub struct App {
     pub store: Mutex<Store>,
     sessions: Mutex<BTreeMap<String, Session>>,
     pub(crate) mutation: Mutex<()>,
-    host: String,
+    pub(crate) host: String,
     pub(crate) public_origin: String,
     pub(crate) transport_origin: Option<String>,
     pub(crate) relay_origin: Option<String>,
@@ -75,6 +76,8 @@ pub struct App {
     pub(crate) transport_host: Option<String>,
     pub(crate) relay_host: Option<String>,
     pub(crate) notifications: Option<crate::notifications::Configuration>,
+    pub(crate) accounts: Option<crate::accounts::Configuration>,
+    pub(crate) account_limits: Mutex<crate::accounts::Limits>,
     ttl_ms: u64,
 }
 
@@ -118,6 +121,8 @@ impl App {
             transport_host: None,
             relay_host: None,
             notifications: None,
+            accounts: None,
+            account_limits: Mutex::new(crate::accounts::Limits::default()),
             ttl_ms,
         }))
     }
@@ -306,6 +311,10 @@ impl App {
             }
         }
         match input.service.as_str() {
+            "palpo.accounts.list" | "palpo.accounts.open" => {
+                self.account_service(bearer, &input.service, input.args)
+                    .await
+            }
             "palpo.requests.open" => self.open_agent_chat(bearer, input.args).await,
             "palpo.actions.room.get" | "palpo.actions.room.ensure" => {
                 self.actions_room(bearer, &input.service, input.args).await
@@ -517,6 +526,7 @@ pub fn router(app: Arc<App>) -> Router {
         .hoop(affix_state::inject(app))
         .push(Router::with_path("healthz").get(health))
         .push(crate::machine::router())
+        .push(crate::accounts::router())
         .push(
             Router::with_path("_palpo/miniapp/v1/{operation}")
                 .hoop(salvo::size_limiter::max_size(16384))

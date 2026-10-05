@@ -20,6 +20,7 @@ equivalent Rust implementations and the cutover gates below pass.
 | `lib/inbox.mjs` | `workflow.rs` | Typed project/agent/top-up requests, coordinator decisions, visibility, seen/snooze, durable receipts |
 | `lib/action-notifications.mjs` | `notifications.rs` | Durable private My Actions rooms, idempotent delivery, reminders, quiet hours and pinned Inbox board |
 | `lib/notification-preferences.mjs` | `preferences.rs` | Account-scoped revisions, replay-safe settings, daylight-saving quiet hours, overdue reminder coalescing |
+| `lib/accounts.mjs` | `accounts.rs`, `accounts/` | Private signup receipts, legacy AES-GCM password sealing, bound Matrix verdicts, UIAA registration and original-device crash reconciliation |
 | `lib/workflow.mjs` creation forms | `creation.rs`, `rooms.rs` | Funded catalog, owner room preparation, frozen project/agent submissions and lost-reply reconciliation |
 | Association setup/export | `associations.rs`, `engagement_setup.rs`, `connections.rs` | Owner request, designated admin decision, recoverable appservice installation, scoped native profile export and authenticated connection probe |
 | `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
@@ -99,12 +100,32 @@ Only these services can be granted:
 - `palpo.agents.control`
 - `palpo.notifications.get`, `palpo.notifications.set`
 - `palpo.actions.room.get`, `palpo.actions.room.ensure`
+- `palpo.requests.open`, `palpo.accounts.list`, `palpo.accounts.open`
 
 Notification preferences retain the legacy account-keyed representation for
 rollback compatibility. Muting notices never resolves an action. Explicit room
 setup can join the owner's invitation or replace an invalid private room with a
 new revision. The read operation never creates or joins a room, and validates
 membership, bot identity, privacy and the complete binding before returning it.
+
+Set `PALPO_ACCOUNT_CONFIG` to the existing private (0600) account worker JSON
+configuration to enable signup. Its bot/admin credentials, approver list,
+password key and registration token stay in the Rust worker. The public
+`GET /api/account-access`, `POST /api/account-requests` and
+`POST /api/account-requests/status` retain the receipt-based protocol, with exact
+origin/Host checks and bounded socket-peer rate limits. The mini-app can inspect
+signup metadata and open a verified original Matrix approval event; it cannot
+submit a verdict through the signup navigation service.
+
+The worker preserves legacy request IDs, ciphertext/AAD, key/approver binding,
+cursor, source events, history upgrades, registration device proof and terminal
+decisions. Every start and pass verifies live bot/admin authority and private
+room membership. Lost room creation and notice replies use stable aliases and
+Matrix transaction IDs. Registration is durably marked before sending; after a
+lost response, only the original random device proves ownership of an existing
+ordinary account. Passwords are erased on terminal outcomes and registration
+session tokens are never persisted. Approved registration retries do not expire
+as if they were undecided requests.
 
 Set `PALPO_ASSOCIATION_ADMIN` to the designated local Matrix administrator and
 configure the transport/relay origins to enable owner association requests at
@@ -218,12 +239,14 @@ new role bindings. Explicit reconciliation is required before production cutover
 
 ## Remaining cutover gates
 
-1. Owner delegation changes/revocation and rotation reconciliation. Association,
+1. Registration/transport rotation reconciliation. Owner delegation revisions,
+   suspension/revocation, association,
    designated-admin approval, scoped export and native connection proof now run
    through the Rust services; same-server profiles have separate credentials.
-2. Rust equivalents for remaining fleet/admin routes and account operations.
+2. Rust equivalents for remaining fleet/admin routes and identity management.
    Relay/poll/ACK/updates, room preparation and Matrix action notifications are
-   implemented; retirement and legacy reconciliation still need completion.
+   implemented, along with signup approvals and scoped lifecycle requests;
+   semantic legacy reconciliation still needs completion.
 3. Hagency command authentication, hierarchy-aware transactional reservations,
    provisioning and receipts are implemented in the paired Hagency integration
    branch and still require combined acceptance. One coordinator decision must
