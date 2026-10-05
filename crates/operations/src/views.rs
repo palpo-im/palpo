@@ -141,6 +141,13 @@ pub(crate) fn agents(
             && observed["ready"] == true
             && observed["bound"] == true
             && observed["quotaPaused"] != true
+            && observed["lifecycle"]["paused"] != true
+            && crate::lifecycle::latest(workflows, &action.id).is_none_or(|r| {
+                matches!(
+                    r["execution"].as_str(),
+                    Some("control_applied" | "control_refused")
+                )
+            })
             && fleet["installation"] == "installed"
             && fleet["state"] == "ready"
             && workflows
@@ -154,7 +161,9 @@ pub(crate) fn agents(
                         && p.server_engagement_id == request.server_engagement_id
                 });
         let execution = if view["execution"] == "ready" && !usable {
-            if current && observed["quotaPaused"] == true {
+            if current
+                && (observed["quotaPaused"] == true || observed["lifecycle"]["paused"] == true)
+            {
                 "paused"
             } else {
                 "unknown"
@@ -173,7 +182,10 @@ pub(crate) fn agents(
         let consumed = observed["consumedTokens"].as_u64().filter(|n| {
             *n <= 9_007_199_254_740_991
                 && usage_time.is_some()
-                && observed["usageEvidence"] == "host_attributed_lower_bound"
+                && matches!(
+                    observed["usageEvidence"].as_str(),
+                    Some("host_attributed_lower_bound" | "owner_account_reconciliation")
+                )
         });
         let usage_state = if consumed.is_none() {
             "unknown"
@@ -190,8 +202,33 @@ pub(crate) fn agents(
             "allocatedTokens":observed["allocatedTokens"].as_u64(),
             "agentMxid":observed["agentMxid"].as_str(),
             "usage":{"state":usage_state,"consumedTokens":consumed,"observedAtMs":usage_time,
-                "evidence":if consumed.is_some(){"host_attributed_lower_bound"}else{"unknown"},"complete":false},
+                "evidence":if consumed.is_some(){observed["usageEvidence"].clone()}else{json!("unknown")},
+                "complete":consumed.is_some() && observed["usageComplete"]==true && observed["usageEvidence"]=="owner_account_reconciliation"},
             "quotaPaused":observed["quotaPaused"]==true,"jobSummary":null}));
+        let row = rows.last_mut().unwrap();
+        let control = crate::lifecycle::latest(workflows, &action.id);
+        row["agentControl"] = view["agentControl"].clone();
+        row["lifecycle"] = observed["lifecycle"].clone();
+        let can_manage = crate::lifecycle::allowed(workflows, state, &action.id, actor, now)
+            && control.is_none_or(|r| {
+                !matches!(
+                    r["execution"].as_str(),
+                    Some("control_pending" | "retiring" | "inspection_required")
+                )
+            });
+        row["canRetire"] =
+            json!(can_manage && matches!(observed["state"].as_str(), Some("pending" | "active")));
+        row["canPause"] = json!(
+            can_manage && observed["state"] == "active" && observed["lifecycle"]["paused"] != true
+        );
+        row["canResume"] = json!(
+            can_manage && observed["state"] == "active" && observed["lifecycle"]["paused"] == true
+        );
+        row["canRetryCleanup"] =
+            json!(can_manage && observed["lifecycle"]["cleanupEffect"] == "failed");
+        if let Some(control) = control.filter(|r| r["execution"] != "control_applied") {
+            row["execution"] = control["execution"].clone();
+        }
         rows.last_mut().unwrap()["canRequestTopUp"] =
             json!(can_request_top_up(state, workflows, action, actor, now));
     }

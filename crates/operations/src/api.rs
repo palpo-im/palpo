@@ -30,6 +30,7 @@ pub const SERVICES: &[&str] = &[
     "palpo.fleets.export",
     "palpo.fleets.list",
     "palpo.fleets.connect",
+    "palpo.agents.control",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
@@ -387,6 +388,7 @@ impl App {
                     let mut workflows = Workflows::load(state)?;
                     let before = serde_json::to_value(&workflows)?;
                     let result = match service {
+                        "palpo.agents.control" => json!({"action":crate::lifecycle::submit(&mut workflows,state,tx,input.args.clone(),actor,now)?}),
                         "palpo.inbox.submit" => {
                             if input.args["kind"] == "token_top_up" && input.args.get("agentActionId").is_some() {
                                 json!({"action":crate::intents::top_up(&mut workflows,state,input.args.clone(),actor,now)?})

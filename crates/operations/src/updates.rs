@@ -126,7 +126,8 @@ fn capabilities(fleet: &mut Value, input: &Value, server: &ServerName, now: u64)
         clean.push(json!({"role":role,"resources":resources,"description":offer["description"].as_str().map(|s| s.chars().take(500).collect::<String>())}));
     }
     fleet["capabilities"] = json!({"v":1,"fleetId":fleet["id"],"serverName":server,"representativeMxid":fleet["representativeMxid"],
-        "approvalBotMxid":bot,"offers":clean,"coordinatorApprovalV1":input["coordinatorApprovalV1"]==true,"observedAt":iso(now)?});
+        "approvalBotMxid":bot,"offers":clean,"coordinatorApprovalV1":input["coordinatorApprovalV1"]==true,
+        "coordinatorAgentControlV1":input["coordinatorAgentControlV1"]==true,"observedAt":iso(now)?});
     fleet["capabilityRead"] = json!({"state":"current","observedAt":iso(now)?});
     Ok(())
 }
@@ -330,6 +331,9 @@ fn coordinator(
         }
     }
     for update in updates.iter().filter(|u| u["payload"]["kind"] == "receipt") {
+        if crate::lifecycle::receipt(workflows, fleet, update, now)? {
+            continue;
+        }
         let receipt = &update["payload"];
         let command_id = text(receipt, "commandId")?;
         let record = workflows
@@ -475,7 +479,7 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
     for (id, next) in changes {
         execution(workflows, &id, next, now)?;
     }
-    Ok(())
+    crate::lifecycle::refresh(workflows, now)
 }
 
 fn status(
@@ -558,6 +562,7 @@ fn status(
         "usageEvidence",
         "usageComplete",
         "quotaPaused",
+        "lifecycle",
     ] {
         if let Some(value) = raw.get(field) {
             clean.insert(field.into(), value.clone());

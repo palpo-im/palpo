@@ -134,6 +134,8 @@ pub struct Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
     #[serde(default)]
+    pub agent_controls: BTreeMap<String, Value>,
+    #[serde(default)]
     pub engagement_exports: BTreeMap<String, Vec<MatrixUserId>>,
     #[serde(default)]
     pub associations: BTreeMap<String, crate::associations::Association>,
@@ -366,6 +368,7 @@ impl Workflows {
         let can_decide =
             action.state == "requested" && self.can_review(&action.request, actor, now);
         let mut result = serde_json::to_value(action)?;
+        result["agentControl"] = crate::lifecycle::latest(self,id).map(|r|json!({"operation":r["command"]["operation"],"execution":r["execution"],"reason":r["result"]["reason"]})).unwrap_or(Value::Null);
         result["needsMyAction"] = json!(can_decide);
         result["canDecide"] = json!(can_decide);
         result["canContinue"] = json!(false);

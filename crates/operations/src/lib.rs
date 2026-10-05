@@ -7,6 +7,7 @@ mod connections;
 mod creation;
 mod engagement_setup;
 mod intents;
+mod lifecycle;
 pub mod machine;
 pub mod matrix;
 pub mod notifications;
