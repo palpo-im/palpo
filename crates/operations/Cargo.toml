@@ -21,7 +21,7 @@ subtle = "2.6.1"
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["signal", "time", "net", "sync"] }
 salvo = { workspace = true, features = ["test", "affix-state", "size-limiter"] }
-rusqlite = { version = "=0.37.0", features = ["bundled"] }
+rusqlite = { version = "=0.37.0", features = ["bundled", "functions"] }
 
 [dev-dependencies]
 tempfile.workspace = true

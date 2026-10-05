@@ -105,6 +105,16 @@ impl Store {
 
     fn initialize(db: Connection, owner: Option<OwnerLock>) -> Result<Self> {
         db.busy_timeout(Duration::from_secs(5))?;
+        // A persistent cutover trigger calls this connection-local function.
+        // Old Node/Rust binaries do not register it and cannot write through
+        // the migrated database even after its process lock has been released.
+        db.create_scalar_function(
+            "palpo_rust_workflow_writer_v1",
+            0,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            |_| Ok(1i64),
+        )?;
         db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);")?;
         let store = Self { db, _owner: owner };
@@ -133,6 +143,25 @@ impl Store {
     /// under BEGIN IMMEDIATE and persist the entire decision/outbox atomically.
     pub fn transaction<T>(&mut self, operation: impl FnOnce(&mut Value) -> Result<T>) -> Result<T> {
         self.transaction_sql(|state, _| operation(state))
+    }
+
+    pub(crate) fn inspect_sql<T>(
+        &mut self,
+        inspect: impl FnOnce(&Value, &rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let body: Option<String> = tx
+            .query_row("SELECT body FROM state WHERE id=1", [], |r| r.get(0))
+            .optional()?;
+        let state = body
+            .map(|body| serde_json::from_str::<Value>(&body))
+            .transpose()?
+            .unwrap_or_else(|| json!({"version":1,"fleets":{},"audit":[]}));
+        let result = inspect(&state, &tx)?;
+        tx.rollback()?;
+        Ok(result)
     }
 
     /// Commit workflow state and delivery rows under the same SQLite writer.
@@ -170,5 +199,101 @@ impl Store {
             state["serverBinding"] = binding;
             Ok(())
         })
+    }
+}
+
+/// Install only inside the semantic migration transaction. The marker and
+/// triggers roll back with the import; failed validation never strands Node.
+pub(crate) fn fence_legacy_writers(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(crate::outbound::SCHEMA)?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workflow_writer (
+        id INTEGER PRIMARY KEY CHECK(id=1),
+        engine TEXT NOT NULL CHECK(engine='rust'),
+        version INTEGER NOT NULL CHECK(version=1));
+        INSERT OR IGNORE INTO workflow_writer VALUES(1,'rust',1);",
+    )?;
+    for table in [
+        "state",
+        "fleet_delivery",
+        "workflow_writer",
+        "workflow_migrations",
+    ] {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            tx.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS rust_writer_{table}_{operation}
+                BEFORE {operation} ON {table}
+                WHEN palpo_rust_workflow_writer_v1() != 1
+                BEGIN SELECT RAISE(ABORT,'Rust owns workflow writes'); END;"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cutover_fences_old_connections_and_retains_current_decisions_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("admin.sqlite");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .transaction(|state| {
+                state["history"] = json!(["legacy"]);
+                Ok(())
+            })
+            .unwrap();
+        let old = Connection::open(&path).unwrap();
+        // A rejected migration does not claim the database.
+        let refused: Result<()> = store.transaction_sql(|_, tx| {
+            fence_legacy_writers(tx)?;
+            Err(fail(409, "fixture_validation_failed"))
+        });
+        assert!(refused.is_err());
+        old.execute("UPDATE state SET body=body", []).unwrap();
+        store
+            .transaction_sql(|state, tx| {
+                fence_legacy_writers(tx)?;
+                state["history"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("rust decision"));
+                Ok(())
+            })
+            .unwrap();
+        assert!(old.execute("UPDATE state SET body=body", []).is_err());
+        assert!(old.execute("DELETE FROM fleet_delivery", []).is_err());
+        assert!(old.execute("DELETE FROM workflow_writer", []).is_err());
+        let checkpoint = store.read().unwrap();
+        drop(store);
+        // Inspection is possible. Releasing the service lock never transfers
+        // decision authority back to a stale writer or snapshot.
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &old.query_row("SELECT body FROM state", [], |row| row.get::<_, String>(0))
+                    .unwrap()
+            )
+            .unwrap(),
+            checkpoint
+        );
+        assert!(old.execute("DELETE FROM state", []).is_err());
+        let mut reopened = Store::open(&path).unwrap();
+        reopened
+            .transaction(|state| {
+                assert_eq!(*state, checkpoint);
+                Ok(())
+            })
+            .unwrap();
     }
 }

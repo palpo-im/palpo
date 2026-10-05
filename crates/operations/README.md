@@ -229,6 +229,29 @@ symlinks, and releases its lock on graceful shutdown. It never steals stale
 locks; recovery requires confirming that the previous process has stopped.
 New files use private permissions on Unix.
 
+`migration-inventory` emits a private-content-free inventory from a rollback-only
+read transaction: record counts, source and delivery digests, and explicit stable
+fleet/project/agent-allocation mappings. A legacy `provider.engagementId` remains
+an **agent allocation**; the fleet ID identifies its server engagement. The
+inventory contains no credential values or signup ciphertext.
+
+After semantic reconciliation and the native accounting audit, the offline
+`handoff-store <reviewed-handoff.json>` command accepts `{version:1,id,inventory,
+nativeAuditDigest}`. It compares the complete current state and delivery digest
+with the reviewed inventory and atomically records a receipt plus permanent
+writer fences. The native audit digest is provenance, never a resource grant.
+Changed source data or a reused operation ID with different content is refused.
+An identical replay returns the original receipt without restoring old state.
+
+The fence covers workflow JSON, custody delivery rows, ownership and migration
+receipts. Old binaries lack its connection-local SQLite writer function, so
+their writes fail even after the Rust service releases its process lock. Updated
+Node startup refuses the database before serving traffic and removes its failed
+startup lock. `new Store(path, {readOnly:true})` remains available for inspection.
+Rollback uses a compatible Rust executable and the **current** database; never
+restore a snapshot that predates post-cutover decisions. A current SQLite backup
+retains the fences and original handoff receipts across restore/replay.
+
 All legacy JSON (including credentials and unknown extension fields) and the
 `fleet_delivery` table are preserved. Rust data lives in `rustWorkflows`.
 Preservation is not a semantic migration: old Inbox records are **not converted**

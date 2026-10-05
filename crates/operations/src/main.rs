@@ -13,10 +13,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = std::env::var("PALPO_ADMIN_DATABASE")?;
     let mut store = Store::open(Path::new(&database))?;
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.as_slice() == ["migration-inventory"] {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&store.migration_inventory()?)?
+        );
+        return Ok(());
+    }
+    if args.len() == 2 && args[0] == "handoff-store" {
+        let raw = std::fs::read(&args[1])?;
+        if raw.len() > 16 * 1024 * 1024 {
+            return Err("migration handoff exceeds 16 MiB".into());
+        }
+        let handoff = serde_json::from_slice(&raw)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &store.handoff_legacy(&handoff, palpo_operations::now_ms())?
+            )?
+        );
+        return Ok(());
+    }
     if !args.is_empty() {
         if args.len() != 2 || args[0] != "import-authority" {
             return Err(
-                "usage: palpo-operations [import-authority <reviewed-snapshot.json>]".into(),
+                "usage: palpo-operations [import-authority <reviewed-snapshot.json> | migration-inventory | handoff-store <reviewed-handoff.json>]".into(),
             );
         }
         let raw = std::fs::read(&args[1])?;
