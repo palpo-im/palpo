@@ -1,14 +1,16 @@
 # Rust Operations service
 
-`palpo-operations` begins the backend JavaScript migration required by
+`palpo-operations` implements the Rust workflow backend required by
 [Rinx ADR 0011](https://github.com/hagency-org/Rinx/blob/main/docs/adr/0011-hagency-server-engagements.md).
 It is a Rust executable and a mountable Salvo router. It never invokes Node,
 serves JavaScript, or proxies business decisions to the old service. Rinx's
 native host remains Rust and the mini-app presentation remains OctoScript.
 
-This is an integration slice, **not a production replacement for `web-admin`**.
-The legacy server stays available until the remaining routes and workers have
-equivalent Rust implementations and the cutover gates below pass.
+The ADR workflow paths are implemented, including migration and scoped lifecycle
+operations. Production cutover still requires the deployment and device gates
+below. General homeserver diagnostics outside the ADR lifecycle are not claimed
+as browser-admin parity. The historical Node code remains for migration checks;
+it must not write a database handed to Rust.
 
 ## Implemented
 
@@ -61,7 +63,8 @@ Duplicate receipts do not execute another allocation. Old source observations
 stay stale even when delivered now. Token usage stays unknown when unreported;
 measurement time, evidence, completeness and quota pause are preserved. App
 Service registration and machine credential generations are checked separately.
-Profile installation and association approval remain pending.
+Profile installation, association approval and connection verification have
+separate persisted states and recovery paths.
 
 ## Run in an isolated development environment
 
@@ -97,7 +100,9 @@ Only these services can be granted:
 - `palpo.projects.list`, `palpo.requests.list`
 - `palpo.catalog.list`, `palpo.requests.create`
 - `palpo.fleets.list`, `palpo.fleets.install`, `palpo.fleets.export`, `palpo.fleets.connect`
-- `palpo.agents.control`
+- `palpo.agents.control`, `palpo.inbox.activate`
+- `palpo.fleets.set_state`, `palpo.fleets.migrate`, `palpo.fleets.queue`
+- `palpo.activity.list`
 - `palpo.notifications.get`, `palpo.notifications.set`
 - `palpo.actions.room.get`, `palpo.actions.room.ensure`
 - `palpo.requests.open`, `palpo.accounts.list`, `palpo.accounts.open`
@@ -202,8 +207,10 @@ retryable pinned board projects the latest authorized pending count.
 ## Authority and migration
 
 The service requires a trusted projection of verified engagements, funded
-resources, eligible managers and ready projects. At this stage it is imported
-through an explicit **offline operator command**, not from an app request:
+resources, eligible managers and ready projects. Normal setup obtains these
+through the approved association and authenticated runtime publications. Audited
+legacy state can also be imported with an **offline operator command**, never an
+app request:
 
 ```sh
 ./target/debug/palpo-operations import-authority /path/to/reviewed-authority.json
@@ -260,7 +267,7 @@ same authenticated generation/lease protocol; their payloads are not rewritten
 into coordinator commands. Neither legacy requests nor hostnames can establish
 new role bindings. Explicit reconciliation is required before production cutover.
 
-## Remaining cutover gates
+## Retirement and deployment acceptance
 
 Whole-agent Matrix retirement is served at the authenticated fleet endpoint
 `POST /api/fleet/v2/{fleet}/retire-agent`. Configure
@@ -278,29 +285,21 @@ partial native provisioning, scope/generation denial, other live allocations,
 room removal and appservice denial. Rinx chat navigation is fenced as soon as
 retirement starts. These are Matrix-fixture tests, not live deployment evidence.
 
-1. Live deployment acceptance of registration/transport rotation. Native Rinx,
-   Rust Palpo and Hagency now pass 16 combined fixture checks, including pause,
-   resume, transport rotation, stale-profile rejection and two simultaneous
-   same-server profiles. Lost Matrix replies reconcile the frozen operation;
-   admissions are fenced before effects and current proof is required afterward.
-   Owner Inbox states and notices follow credential changes. Credential controls
-   never claim that an offline runtime or its work has stopped.
-2. Rust equivalents for remaining fleet/admin routes and identity management.
-   Relay/poll/ACK/updates, room preparation and Matrix action notifications are
-   implemented, along with signup approvals and scoped lifecycle requests;
-   semantic legacy reconciliation still needs completion.
-3. Hagency command authentication, hierarchy-aware transactional reservations,
-   provisioning and receipts are implemented in the paired Hagency integration
-   branch and still require combined acceptance. One coordinator decision must
-   suffice; the Hagency portal must not add a second approval. Agent/top-up
-   approvals must not silently enlarge their engagement or parent pool.
-4. Persist and expose every delivered approved agent, including failed or pending
-   provisioning, in Hagency and the owner's list; verify chat readiness separately.
-   Usage must include freshness and unknown states. Job summaries remain future work.
-5. Rinx Rust-host/OctoScript schema and role screens, real Makepad instrumentation,
-   then end-to-end testing with isolated accounts before a deployment cutover.
-6. Reconcile old requests/roles/queues; remove migrated `.mjs` backend modules and
-   the Node production image only after all supported routes and workers pass.
+The isolated live acceptance on 2026-10-05 ran Rust Palpo, the real Matrix
+homeserver and native Hagency with two independent TLS engagements on the same
+server. Actual Rinx forms approved projects/agents; both agents replied in DM and
+project rooms from Android. Live transport rotation reattached the second agent
+while the first stayed available. Top-up replay preserved one increase; retirement
+verified runtime and Matrix cleanup while retaining unknown usage reservations.
+The native execution peer was deterministic and supplied no paid-provider usage
+measurement. Rinx's validation document records screenshots and run identifiers.
+
+Before production cutover, audit the deployment's own copied database and native
+ledger, complete each claimed platform's device checks, and deploy with only the
+Rust writer. The migration tests establish preservation, adoption, rollback/replay
+and fencing; they do not authorize replacing a real deployment. Rollback uses the
+current database with a compatible Rust binary. Future job summaries and general
+homeserver diagnostic administration are outside this first lifecycle release.
 
 ## Validation
 
@@ -320,8 +319,8 @@ cleanup. Rust integration tests exercise a real loopback Matrix stub, permission
 denials, atomic decision conflicts, restart replay, revocation and migration.
 These are backend tests. The paired Rinx branch additionally exercises this
 executable through its production OctoScript form and Makepad instrumentation,
-using explicit Matrix and provider fixtures; it does not establish live Hagency
-provisioning or chat.
+using explicit Matrix and provider fixtures. The separate isolated live acceptance
+above additionally exercises native Hagency provisioning and Matrix chat.
 
 Agent display names use the existing scoped `palpo.agents.control` service with
 `operation: rename` and a bounded `displayName`. The provider must advertise
@@ -368,9 +367,8 @@ Run `tests/legacy_adoption.py --node NODE24 --binary target/debug/palpo-operatio
 --native-fixture FILE` with the isolated artifact emitted by Hagency's
 `coordinator_migration` integration test through
 `HAGENCY_MIGRATION_FIXTURE_OUTPUT`. This exercises the actual Node store and both
-Rust CLIs. It does not replace remaining migration support for legacy pending
-projects/contributions or legacy profile delegation, nor live deployment/device
-acceptance.
+Rust CLIs, including restored-copy and post-adoption replay checks. Deployment
+and device acceptance remain separate.
 
 An installed outbound legacy fleet can upgrade in place through the authenticated
 Hagency owner setup command, adding `--existing-fleet-id hf_…`. Its recorded owner
@@ -380,5 +378,14 @@ retains its registration, transport generation/token, namespace and agent map.
 It clears the old connection proof; import the exported profile into the same
 Hagency installation and complete a new native probe before adopting capacity.
 A second competing upgrade or another owner's request is refused. This supplies
-the legacy profile/delegation transition described above; pending legacy project
-and contribution workflow conversion remains separate.
+the legacy profile/delegation transition described above.
+
+Legacy project, contribution and agent requests remain visible as immutable
+history under current account scope. Old raw request links resolve to an adopted
+canonical action without duplicating it in lists. Continuing an eligible legacy
+project retains its original request/decision history and binds current explicit
+engagement allocations; neither historical approval nor server administration
+creates a resource grant. Legacy contribution creation is replaced by owner-led
+association setup, and direct agent identity registration is replaced by native
+coordinator-approved provisioning. Their old capabilities are deliberately never
+granted; they are not unfinished authority-bypass routes.
