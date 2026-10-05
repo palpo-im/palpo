@@ -1,7 +1,10 @@
-use super::*;
-use crate::{api::App, now_ms};
-use reqwest::Method;
 use std::sync::Arc;
+
+use reqwest::Method;
+
+use super::*;
+use crate::api::App;
+use crate::now_ms;
 
 pub fn start(app: Arc<App>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {

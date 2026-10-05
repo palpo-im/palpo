@@ -1,6 +1,7 @@
 //! Explicit room setup may join or repair a private room. Reads never do either.
-use super::*;
 use serde::Deserialize;
+
+use super::*;
 
 impl App {
     pub(crate) async fn actions_room(

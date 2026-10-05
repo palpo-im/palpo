@@ -1,13 +1,11 @@
 //! Native destinations are resolved from current server state, never script URLs.
-use crate::{
-    Result,
-    api::App,
-    digest, fail, now_ms,
-    workflow::{Request, Workflows},
-};
 use palpo_hagency_contract::MatrixUserId;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::api::App;
+use crate::workflow::{Request, Workflows};
+use crate::{Result, digest, fail, now_ms};
 
 fn destination(state: &Value, id: &str, actor: &MatrixUserId, now: u64) -> Result<(Value, String)> {
     let mut w = Workflows::load(state)?;

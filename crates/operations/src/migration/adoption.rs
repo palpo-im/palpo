@@ -1,8 +1,9 @@
 //! Explicit local-owner receipt import. Legacy records remain immutable evidence;
 //! native adoption grants capacity and current delegation governs future actions.
+use palpo_hagency_contract::*;
+
 use super::*;
 use crate::workflow::{Action, Request, Resource, Workflows};
-use palpo_hagency_contract::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -75,22 +75,32 @@ impl App {
     /// Attach only the room the owner selected. The durable preparation binds
     /// retries to this exact room and project before any Matrix mutation.
     pub(crate) async fn attach_room(
-        &self, key: &str, room: &str, token: &str, owner: &str,
+        &self,
+        key: &str,
+        room: &str,
+        token: &str,
+        owner: &str,
     ) -> Result<String> {
         let plan = self.store.lock().await.read()?["preparations"][key].clone();
         if plan["input"]["roomId"] != room || plan["actor"] != owner {
             return Err(fail(409, "workflow_binding_changed"));
         }
-        let fleet = plan["fleetId"].as_str().ok_or_else(|| fail(503, "invalid_room_plan"))?;
+        let fleet = plan["fleetId"]
+            .as_str()
+            .ok_or_else(|| fail(503, "invalid_room_plan"))?;
         let binding = json!({"v":1,"fleetId":fleet,"purpose":"project","projectId":plan["projectId"],"ownerMxid":owner,"authVersion":1});
         let events = self.matrix.room_state(room, token, owner).await?;
-        let state = events.as_array().filter(|s| s.len() <= 1000)
+        let state = events
+            .as_array()
+            .filter(|s| s.len() <= 1000)
             .ok_or_else(|| fail(502, "invalid_room_state"))?;
         // Validate before writing: never adopt a different project's binding,
         // disclose a private encrypted chat, or convert a space/retired room.
-        if state.iter().any(|e| (e["type"] == BINDING && (e["state_key"] != fleet || e["content"] != binding))
-            || e["type"] == "m.room.tombstone"
-            || (e["type"] == "m.room.create" && !e["content"]["type"].is_null())) {
+        if state.iter().any(|e| {
+            (e["type"] == BINDING && (e["state_key"] != fleet || e["content"] != binding))
+                || e["type"] == "m.room.tombstone"
+                || (e["type"] == "m.room.create" && !e["content"]["type"].is_null())
+        }) {
             return Err(fail(409, "room_already_bound"));
         }
         let mut checked = state.clone();
@@ -98,30 +108,69 @@ impl App {
             checked.push(json!({"type":BINDING,"state_key":fleet,"content":binding}));
         }
         validate(&json!(checked), &binding, owner, false)?;
-        if content(state, "m.room.power_levels", "").and_then(|l| l["invite"].as_i64()).unwrap_or(0) > 50 {
+        if content(state, "m.room.power_levels", "")
+            .and_then(|l| l["invite"].as_i64())
+            .unwrap_or(0)
+            > 50
+        {
             return Err(fail(409, "room_authority_changed"));
         }
         if content(state, BINDING, fleet).is_none() {
-            self.matrix.segments(Method::PUT,
-                &["_matrix","client","v3","rooms",room,"state",BINDING,fleet],
-                token, None, Some(&binding)).await?;
+            self.matrix
+                .segments(
+                    Method::PUT,
+                    &[
+                        "_matrix", "client", "v3", "rooms", room, "state", BINDING, fleet,
+                    ],
+                    token,
+                    None,
+                    Some(&binding),
+                )
+                .await?;
         }
         let representative = format!("@{fleet}_representative:{}", self.matrix.server().as_str());
         let mut levels = content(state, "m.room.power_levels", "").unwrap().clone();
         let invite_level = 50;
         if levels["users"][&representative].as_i64().unwrap_or(0) < invite_level {
             levels["users"][&representative] = json!(invite_level);
-            self.matrix.segments(Method::PUT,
-                &["_matrix","client","v3","rooms",room,"state","m.room.power_levels",""],
-                token, None, Some(&levels)).await?;
+            self.matrix
+                .segments(
+                    Method::PUT,
+                    &[
+                        "_matrix",
+                        "client",
+                        "v3",
+                        "rooms",
+                        room,
+                        "state",
+                        "m.room.power_levels",
+                        "",
+                    ],
+                    token,
+                    None,
+                    Some(&levels),
+                )
+                .await?;
         }
         if content(state, "m.room.member", &representative)
-            .is_none_or(|m| !matches!(m["membership"].as_str(), Some("join" | "invite"))) {
-            self.matrix.segments(Method::POST,
-                &["_matrix","client","v3","rooms",room,"invite"],
-                token, None, Some(&json!({"user_id":representative}))).await?;
+            .is_none_or(|m| !matches!(m["membership"].as_str(), Some("join" | "invite")))
+        {
+            self.matrix
+                .segments(
+                    Method::POST,
+                    &["_matrix", "client", "v3", "rooms", room, "invite"],
+                    token,
+                    None,
+                    Some(&json!({"user_id":representative})),
+                )
+                .await?;
         }
-        validate(&self.matrix.room_state(room, token, owner).await?, &binding, owner, false)?;
+        validate(
+            &self.matrix.room_state(room, token, owner).await?,
+            &binding,
+            owner,
+            false,
+        )?;
         self.store.lock().await.transaction(|state| {
             if !state["preparations"][key]["rooms"].is_object() {
                 state["preparations"][key]["rooms"] = json!({});

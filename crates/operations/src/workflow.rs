@@ -343,9 +343,15 @@ impl Workflows {
             None => Ok(Self::default()),
         }?;
         if let Some(records) = state["actionInbox"]["records"].as_object() {
-            result.legacy_records = records.iter().filter(|(id, row)|
-                !result.actions.contains_key(*id) && !result.associations.contains_key(*id)
-                && row["id"] == id.as_str()).map(|(id,row)|(id.clone(),row.clone())).collect();
+            result.legacy_records = records
+                .iter()
+                .filter(|(id, row)| {
+                    !result.actions.contains_key(*id)
+                        && !result.associations.contains_key(*id)
+                        && row["id"] == id.as_str()
+                })
+                .map(|(id, row)| (id.clone(), row.clone()))
+                .collect();
         }
         crate::legacy::load_agents(&mut result, state);
         Ok(result)
@@ -389,7 +395,7 @@ impl Workflows {
             return self.association_view(association, actor, now);
         }
         if !self.actions.contains_key(id) && self.legacy_records.contains_key(id) {
-            return crate::legacy::view(self,id,actor,now);
+            return crate::legacy::view(self, id, actor, now);
         }
         let action = self
             .actions
@@ -399,10 +405,16 @@ impl Workflows {
         let can_decide =
             action.state == "requested" && self.can_review(&action.request, actor, now);
         let mut result = serde_json::to_value(action)?;
-        let previous = self.legacy_sources.get(id).map(|v| &v["originalAction"]["decision"]).unwrap_or(&Value::Null);
+        let previous = self
+            .legacy_sources
+            .get(id)
+            .map(|v| &v["originalAction"]["decision"])
+            .unwrap_or(&Value::Null);
         result["previousDecision"] = if previous.is_object() {
             json!({"by":previous["by"],"at":previous["at"],"reason":previous["reason"]})
-        } else { Value::Null };
+        } else {
+            Value::Null
+        };
         result["agentControl"] = crate::lifecycle::latest(self,id).map(|r|json!({"operation":r["command"]["operation"],"execution":r["execution"],"reason":r["result"]["reason"]})).unwrap_or(Value::Null);
         if let Some(reason) = match action.execution.as_str() {
             "provisioning_unknown" => Some("provisioning_outcome_unknown"),
@@ -556,11 +568,19 @@ impl Workflows {
             }
         }
         for id in self.legacy_records.keys() {
-            let Ok(row) = crate::legacy::view(self,id,actor,now) else { continue; };
+            let Ok(row) = crate::legacy::view(self, id, actor, now) else {
+                continue;
+            };
             let needs = row["needsMyAction"] == true;
             pending += usize::from(needs);
-            let terminal = row["state"] == "rejected" || row["execution"] == "done" || row["execution"] == "ended";
-            if view == "all" || view == "needs_action" && needs || view == "waiting" && !needs && !terminal || view == "history" && terminal {
+            let terminal = row["state"] == "rejected"
+                || row["execution"] == "done"
+                || row["execution"] == "ended";
+            if view == "all"
+                || view == "needs_action" && needs
+                || view == "waiting" && !needs && !terminal
+                || view == "history" && terminal
+            {
                 rows.push(row);
             }
         }

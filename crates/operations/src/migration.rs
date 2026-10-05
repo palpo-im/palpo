@@ -1,12 +1,14 @@
 mod adoption;
+use std::collections::BTreeMap;
+
 pub use adoption::Adoption;
-// Offline, digest-bound workflow handoff. No role or token grant is inferred
-// from a legacy administrator verdict, catalog entry or hostname.
-use crate::{Result, digest, fail, store::Store};
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+
+// Offline, digest-bound workflow handoff. No role or token grant is inferred
+// from a legacy administrator verdict, catalog entry or hostname.
+use crate::{Result, digest, fail, store::Store};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

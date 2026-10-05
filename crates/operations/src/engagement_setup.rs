@@ -477,18 +477,28 @@ mod registration_tests {
         let expected = json!({"id":"fleet","url":"https://relay.test/relay","as_token":"appservice","hs_token":"homeserver",
             "sender_localpart":"fleet_representative","rate_limited":true,
             "namespaces":{"users":[{"exclusive":true,"regex":"^@fleet_.*:example\\.test$"}],"rooms":[],"aliases":[]}});
-        let mut actual=expected.clone();
-        actual["namespaces"].as_object_mut().unwrap().remove("rooms");
-        actual["namespaces"].as_object_mut().unwrap().remove("aliases");
-        assert!(registration_matches(&actual,&expected));
-        actual["namespaces"]["rooms"]=json!([{"exclusive":true,"regex":".*"}]);
-        assert!(!registration_matches(&actual,&expected));
-        actual["namespaces"]["rooms"]=Value::Null;
-        assert!(!registration_matches(&actual,&expected));
-        actual["namespaces"].as_object_mut().unwrap().remove("rooms");
-        actual["namespaces"]["unknown"]=json!([]);
-        assert!(!registration_matches(&actual,&expected));
-        actual=expected.clone();actual["as_token"]=json!("changed");
-        assert!(!registration_matches(&actual,&expected));
+        let mut actual = expected.clone();
+        actual["namespaces"]
+            .as_object_mut()
+            .unwrap()
+            .remove("rooms");
+        actual["namespaces"]
+            .as_object_mut()
+            .unwrap()
+            .remove("aliases");
+        assert!(registration_matches(&actual, &expected));
+        actual["namespaces"]["rooms"] = json!([{"exclusive":true,"regex":".*"}]);
+        assert!(!registration_matches(&actual, &expected));
+        actual["namespaces"]["rooms"] = Value::Null;
+        assert!(!registration_matches(&actual, &expected));
+        actual["namespaces"]
+            .as_object_mut()
+            .unwrap()
+            .remove("rooms");
+        actual["namespaces"]["unknown"] = json!([]);
+        assert!(!registration_matches(&actual, &expected));
+        actual = expected.clone();
+        actual["as_token"] = json!("changed");
+        assert!(!registration_matches(&actual, &expected));
     }
 }

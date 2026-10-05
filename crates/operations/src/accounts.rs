@@ -1,15 +1,14 @@
 //! Signup approval is separate from project and resource authority. Its legacy
 //! IDs, sealed passwords and registration-device proof survive Rust cutover.
-use crate::{Result, fail};
-use aes_gcm::{
-    Aes256Gcm, KeyInit, Nonce,
-    aead::{Aead, Payload},
-};
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use palpo_hagency_contract::{MatrixUserId, ServerName};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+
+use crate::{Result, fail};
 
 mod api;
 mod worker;

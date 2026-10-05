@@ -1,5 +1,6 @@
-use super::*;
 use palpo_operations::digest;
+
+use super::*;
 
 #[tokio::test]
 async fn scoped_agent_control_waits_for_cleanup_and_retries_only_definitive_failure() {

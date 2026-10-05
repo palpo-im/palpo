@@ -1,11 +1,10 @@
 //! Recovery of already-approved project rooms, with no new allocation decision.
-use crate::{
-    Result, digest, fail,
-    workflow::{Request, Workflows},
-};
 use palpo_hagency_contract::{CommandId, EngagementState, MatrixUserId, ProjectState};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::workflow::{Request, Workflows};
+use crate::{Result, digest, fail};
 
 pub(crate) fn allowed(w: &Workflows, id: &str, actor: &MatrixUserId, now: u64) -> bool {
     let Some(action) = w.actions.get(id) else {

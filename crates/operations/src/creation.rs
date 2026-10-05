@@ -166,7 +166,8 @@ impl App {
             }
             legacy_source = w.legacy_records.get(&legacy_id).cloned();
             if let Some(source) = &legacy_source
-                && crate::legacy::continuation(&w, source, actor, now_ms()).as_ref() != Some(&input) {
+                && crate::legacy::continuation(&w, source, actor, now_ms()).as_ref() != Some(&input)
+            {
                 return Err(fail(409, "legacy_continuation_mismatch"));
             }
             project_resources(&state, &w, actor, &intent)?;
@@ -175,9 +176,11 @@ impl App {
                 "fleetId":intent.fleet_id,"projectId":project_id,"registrationGeneration":e.registration_generation,"delegationRevision":e.delegation_revision})))?;
         }
         let room = if let Some(room) = &intent.room_id {
-            self.attach_room(&key, room, &session.token, actor.as_str()).await?
+            self.attach_room(&key, room, &session.token, actor.as_str())
+                .await?
         } else {
-            self.prepare_room(&key, "project", &session.token, actor.as_str()).await?
+            self.prepare_room(&key, "project", &session.token, actor.as_str())
+                .await?
         };
         let dm = self
             .prepare_room(&key, "approvals", &session.token, actor.as_str())
@@ -208,8 +211,11 @@ impl App {
             let mut view =
                 w.submit_definition(Request::Project(request), definition, actor, now_ms())?;
             if let Some(source) = &legacy_source {
-                w.legacy_sources.insert(legacy_id.clone(),json!({"source":"actionInbox","sourceId":legacy_id,
-                    "digest":digest(source)?,"originalAction":source,"continuedAtMs":now_ms()}));
+                w.legacy_sources.insert(
+                    legacy_id.clone(),
+                    json!({"source":"actionInbox","sourceId":legacy_id,
+                    "digest":digest(source)?,"originalAction":source,"continuedAtMs":now_ms()}),
+                );
                 w.legacy_records.remove(&legacy_id);
                 view = w.view(&legacy_id, actor, now_ms())?;
             }

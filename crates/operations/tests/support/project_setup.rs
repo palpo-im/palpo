@@ -1,5 +1,6 @@
-use super::*;
 use palpo_operations::digest;
+
+use super::*;
 
 #[tokio::test]
 async fn project_setup_recovery_keeps_approval_and_replays_one_scoped_command() {

@@ -1,15 +1,14 @@
-use palpo_operations::{accounts, api, matrix::Matrix, now_ms, store::Store};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use palpo_operations::matrix::Matrix;
+use palpo_operations::store::Store;
+use palpo_operations::{accounts, api, now_ms};
 use reqwest::Method;
-use salvo::{
-    conn::Acceptor,
-    prelude::*,
-    test::{ResponseExt, TestClient},
-};
+use salvo::conn::Acceptor;
+use salvo::prelude::*;
+use salvo::test::{ResponseExt, TestClient};
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
 
 #[derive(Default)]
 struct Homeserver {

@@ -227,7 +227,12 @@ async fn transport_rotation_reconciles_url_and_isolates_same_server_profiles_and
     let result = f.call(&admin, "palpo.fleets.migrate", args.clone()).await;
     assert_eq!(result.0, StatusCode::OK, "{result:?}");
     let listed = f.call(&admin, "palpo.fleets.list", json!({})).await.1;
-    let projected = listed["fleets"].as_array().unwrap().iter().find(|row| row["id"] == first).unwrap();
+    let projected = listed["fleets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == first)
+        .unwrap();
     assert_eq!(projected["transportGeneration"], 2);
     assert_eq!(projected["registrationGeneration"], 1);
     let state = f.app.store.lock().await.read().unwrap();

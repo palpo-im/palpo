@@ -162,28 +162,44 @@ pub(super) async fn matrix(
     }
     if req.method() == reqwest::Method::PUT && path.contains("/state/") {
         for (room, state) in rooms.states.iter_mut() {
-            for (kind, key) in [("com.hagency.admin.binding.v1", "engagement_a"), ("m.room.power_levels", "")] {
-                if path == self::path(&["_matrix", "client", "v3", "rooms", room, "state", kind, key]) {
+            for (kind, key) in [
+                ("com.hagency.admin.binding.v1", "engagement_a"),
+                ("m.room.power_levels", ""),
+            ] {
+                if path
+                    == self::path(&["_matrix", "client", "v3", "rooms", room, "state", kind, key])
+                {
                     let entries = state.as_array_mut().unwrap();
-                    if let Some(event) = entries.iter_mut().find(|e| e["type"] == kind && e["state_key"] == key) {
+                    if let Some(event) = entries
+                        .iter_mut()
+                        .find(|e| e["type"] == kind && e["state_key"] == key)
+                    {
                         event["content"] = body.clone();
                     } else {
                         entries.push(json!({"type":kind,"state_key":key,"content":body}));
                     }
-                    if kind == "com.hagency.admin.binding.v1" && std::mem::take(&mut rooms.lose_binding_reply) {
+                    if kind == "com.hagency.admin.binding.v1"
+                        && std::mem::take(&mut rooms.lose_binding_reply)
+                    {
                         res.status_code(StatusCode::BAD_GATEWAY);
                         res.render(Json(json!({"errcode":"M_UNKNOWN"})));
-                    } else { res.render(Json(json!({}))); }
+                    } else {
+                        res.render(Json(json!({})));
+                    }
                     return true;
                 }
             }
         }
     }
     if path.ends_with("/invite")
-        && let Some((_, state)) = rooms.states.iter_mut().find(|(id, _)| self::path(&["_matrix","client","v3","rooms",id,"invite"]) == path) {
-            state.as_array_mut().unwrap().push(json!({"type":"m.room.member","state_key":body["user_id"],"content":{"membership":"invite"}}));
-            res.render(Json(json!({})));
-            return true;
+        && let Some((_, state)) = rooms
+            .states
+            .iter_mut()
+            .find(|(id, _)| self::path(&["_matrix", "client", "v3", "rooms", id, "invite"]) == path)
+    {
+        state.as_array_mut().unwrap().push(json!({"type":"m.room.member","state_key":body["user_id"],"content":{"membership":"invite"}}));
+        res.render(Json(json!({})));
+        return true;
     }
     if let Some(state) = rooms
         .states
@@ -462,16 +478,27 @@ async fn selected_project_room_is_owner_checked_and_recovered_after_lost_binding
         {"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}},
         {"type":"m.room.power_levels","state_key":"","content":{"users":{"@manager:example.test":100},"invite":50}}
     ]);
-    let mut intent = project(); intent["roomId"] = json!(room);
+    let mut intent = project();
+    intent["roomId"] = json!(room);
     for bad in [
         json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
         json!({"type":"com.hagency.admin.binding.v1","state_key":"other_fleet","content":{"projectId":"other"}}),
         json!({"type":"m.room.tombstone","state_key":"","content":{"replacement_room":"!new:example.test"}}),
     ] {
-        let mut invalid = state.clone(); invalid.as_array_mut().unwrap().push(bad);
-        f.rooms.lock().unwrap().states.insert(room.into(), invalid.clone());
-        assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::CONFLICT);
-        assert_eq!(f.rooms.lock().unwrap().states[room],invalid);
+        let mut invalid = state.clone();
+        invalid.as_array_mut().unwrap().push(bad);
+        f.rooms
+            .lock()
+            .unwrap()
+            .states
+            .insert(room.into(), invalid.clone());
+        assert_eq!(
+            f.call(&manager, "palpo.inbox.submit", intent.clone())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(f.rooms.lock().unwrap().states[room], invalid);
     }
     for field in ["creator", "power", "membership", "join_rule"] {
         let mut invalid = state.clone();
@@ -481,22 +508,57 @@ async fn selected_project_room_is_owner_checked_and_recovered_after_lost_binding
             "membership" => invalid[1]["content"]["membership"] = json!("leave"),
             _ => invalid[2]["content"]["join_rule"] = json!("public"),
         }
-        f.rooms.lock().unwrap().states.insert(room.into(), invalid.clone());
-        assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::CONFLICT);
-        assert_eq!(f.rooms.lock().unwrap().states[room],invalid);
+        f.rooms
+            .lock()
+            .unwrap()
+            .states
+            .insert(room.into(), invalid.clone());
+        assert_eq!(
+            f.call(&manager, "palpo.inbox.submit", intent.clone())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(f.rooms.lock().unwrap().states[room], invalid);
     }
-    { let mut rooms=f.rooms.lock().unwrap(); rooms.states.insert(room.into(),state); rooms.lose_binding_reply=true; }
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::BAD_GATEWAY);
-    assert_eq!(f.rooms.lock().unwrap().create_count,0);
-    let (status,created)=f.call(&manager,"palpo.inbox.submit",intent.clone()).await;
-    assert_eq!(status,StatusCode::OK,"{created}");
-    assert_eq!(created["action"]["payload"]["roomId"],room);
-    assert_eq!(f.rooms.lock().unwrap().create_count,1,"only private approval room is created");
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.1,created);
-    intent["roomId"]=json!("!different:example.test");
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent).await.0,StatusCode::CONFLICT);
-    let mut other=project();other["requestId"]=json!("other_project");other["roomId"]=json!(room);
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",other).await.0,StatusCode::CONFLICT);
+    {
+        let mut rooms = f.rooms.lock().unwrap();
+        rooms.states.insert(room.into(), state);
+        rooms.lose_binding_reply = true;
+    }
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", intent.clone())
+            .await
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+    assert_eq!(f.rooms.lock().unwrap().create_count, 0);
+    let (status, created) = f.call(&manager, "palpo.inbox.submit", intent.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["action"]["payload"]["roomId"], room);
+    assert_eq!(
+        f.rooms.lock().unwrap().create_count,
+        1,
+        "only private approval room is created"
+    );
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", intent.clone())
+            .await
+            .1,
+        created
+    );
+    intent["roomId"] = json!("!different:example.test");
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", intent).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut other = project();
+    other["requestId"] = json!("other_project");
+    other["roomId"] = json!(room);
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", other).await.0,
+        StatusCode::CONFLICT
+    );
 }
 
 #[tokio::test]
@@ -505,7 +567,10 @@ async fn legacy_inbox_continuation_preserves_identity_history_and_current_author
     funded(&f).await;
     let actor = "@manager:example.test";
     let request = "legacy_pending_project";
-    let id = format!("action_{}", &palpo_operations::digest(&json!({"actor":actor,"requestId":request})).unwrap()[..32]);
+    let id = format!(
+        "action_{}",
+        &palpo_operations::digest(&json!({"actor":actor,"requestId":request})).unwrap()[..32]
+    );
     let old = json!({"id":id,"requestId":request,"kind":"project","ownerMxid":actor,"state":"approved","execution":"pending","revision":2,
         "createdAt":10,"updatedAt":11,"decision":{"by":"@admin:example.test","at":11,"reason":"Original admin decision"},
         "payload":{"name":"Original project","reason":"Original purpose","fleetId":"engagement_a","resourceIds":[RESOURCE]},"command":{"private":"never expose"}});
@@ -514,42 +579,90 @@ async fn legacy_inbox_continuation_preserves_identity_history_and_current_author
             "state":"rejected","execution":"pending","revision":2,"payload":{"name":"Earlier capacity"},"decision":{"by":"@admin:example.test","reason":"Original refusal"}}}});
         Ok(())
     }).unwrap();
-    let manager=f.session("manager").await;
-    let coordinator=f.session("coordinator").await;
-    let admin=f.session("admin").await;
-    let (status,opened)=f.call(&manager,"palpo.inbox.get",json!({"id":id})).await;
-    assert_eq!(status,StatusCode::OK,"{opened}");
-    assert_eq!(opened["action"]["nextAction"],"continue_legacy_project");
-    assert_eq!(opened["action"]["decision"],old["decision"]);
+    let manager = f.session("manager").await;
+    let coordinator = f.session("coordinator").await;
+    let admin = f.session("admin").await;
+    let (status, opened) = f.call(&manager, "palpo.inbox.get", json!({"id":id})).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["action"]["nextAction"], "continue_legacy_project");
+    assert_eq!(opened["action"]["decision"], old["decision"]);
     assert!(opened["action"].get("command").is_none());
-    assert_eq!(f.call(&admin,"palpo.inbox.get",json!({"id":id})).await.0,StatusCode::NOT_FOUND);
-    let history=f.call(&manager,"palpo.inbox.list",json!({"view":"history"})).await.1;
-    assert!(history["actions"].as_array().unwrap().iter().any(|a|a["id"]=="old_contribution"));
-    let intent=opened["action"]["continuation"].clone();
-    assert_eq!(intent["requestId"],request);
-    assert_eq!(intent["resourceIds"],json!(["grant_a"]));
-    let mut forged=intent.clone();forged["name"]=json!("Changed name");
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",forged).await.0,StatusCode::CONFLICT);
-    assert_eq!(f.call(&coordinator,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::FORBIDDEN);
-    assert_eq!(f.rooms.lock().unwrap().create_count,0);
-    f.rooms.lock().unwrap().lose_create_reply=true;
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::BAD_GATEWAY);
-    let (status,continued)=f.call(&manager,"palpo.inbox.submit",intent.clone()).await;
-    assert_eq!(status,StatusCode::OK,"{continued}");
-    assert_eq!(continued["action"]["id"],id);
-    assert_eq!(continued["action"]["state"],"requested");
-    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.1,continued);
-    let decision=json!({"id":id,"decision":"approve","expectedRevision":1,"commandId":"continue_legacy_approval","reason":"Current coordinator decision"});
-    assert_eq!(f.call(&admin,"palpo.inbox.decide",decision.clone()).await.0,StatusCode::NOT_FOUND);
-    assert_eq!(f.call(&coordinator,"palpo.inbox.decide",decision.clone()).await.0,StatusCode::OK);
-    assert_eq!(f.call(&coordinator,"palpo.inbox.decide",decision).await.0,StatusCode::OK);
-    let state=f.app.store.lock().await.read().unwrap();
-    let w=Workflows::load(&state).unwrap();
-    assert_eq!(state["actionInbox"]["records"][&id],old);
-    assert_eq!(w.legacy_sources[&id]["originalAction"],old);
-    assert_eq!(w.outbox.len(),1);
-    assert_eq!(f.rooms.lock().unwrap().create_count,2);
-    assert_eq!(w.view(&id,&actor.to_owned().try_into().unwrap(),now_ms()).unwrap()["state"],"approved");
+    assert_eq!(
+        f.call(&admin, "palpo.inbox.get", json!({"id":id})).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let history = f
+        .call(&manager, "palpo.inbox.list", json!({"view":"history"}))
+        .await
+        .1;
+    assert!(
+        history["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "old_contribution")
+    );
+    let intent = opened["action"]["continuation"].clone();
+    assert_eq!(intent["requestId"], request);
+    assert_eq!(intent["resourceIds"], json!(["grant_a"]));
+    let mut forged = intent.clone();
+    forged["name"] = json!("Changed name");
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", forged).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.call(&coordinator, "palpo.inbox.submit", intent.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(f.rooms.lock().unwrap().create_count, 0);
+    f.rooms.lock().unwrap().lose_create_reply = true;
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", intent.clone())
+            .await
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+    let (status, continued) = f.call(&manager, "palpo.inbox.submit", intent.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{continued}");
+    assert_eq!(continued["action"]["id"], id);
+    assert_eq!(continued["action"]["state"], "requested");
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.submit", intent.clone())
+            .await
+            .1,
+        continued
+    );
+    let decision = json!({"id":id,"decision":"approve","expectedRevision":1,"commandId":"continue_legacy_approval","reason":"Current coordinator decision"});
+    assert_eq!(
+        f.call(&admin, "palpo.inbox.decide", decision.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        f.call(&coordinator, "palpo.inbox.decide", decision.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.call(&coordinator, "palpo.inbox.decide", decision).await.0,
+        StatusCode::OK
+    );
+    let state = f.app.store.lock().await.read().unwrap();
+    let w = Workflows::load(&state).unwrap();
+    assert_eq!(state["actionInbox"]["records"][&id], old);
+    assert_eq!(w.legacy_sources[&id]["originalAction"], old);
+    assert_eq!(w.outbox.len(), 1);
+    assert_eq!(f.rooms.lock().unwrap().create_count, 2);
+    assert_eq!(
+        w.view(&id, &actor.to_owned().try_into().unwrap(), now_ms())
+            .unwrap()["state"],
+        "approved"
+    );
 }
 
 #[tokio::test]
@@ -569,24 +682,67 @@ async fn legacy_agent_history_is_scoped_and_old_links_follow_adoption() {
     let admin = f.session("admin").await;
     let coordinator = f.session("coordinator").await;
     for session in [&manager, &coordinator] {
-        let (status, list) = f.call(session,"palpo.requests.list",json!({})).await;
-        assert_eq!(status,StatusCode::OK);
-        assert_eq!(list["requests"][0]["agentDefinition"]["name"],"Earlier agent");
-        assert_eq!(list["requests"][0]["canRetire"],false);
-        assert_eq!(list["requests"][0]["usable"],false);
+        let (status, list) = f.call(session, "palpo.requests.list", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            list["requests"][0]["agentDefinition"]["name"],
+            "Earlier agent"
+        );
+        assert_eq!(list["requests"][0]["canRetire"], false);
+        assert_eq!(list["requests"][0]["usable"], false);
         assert!(!list.to_string().contains("PRIVATE"));
     }
-    assert_eq!(f.call(&admin,"palpo.requests.list",json!({})).await.1["total"],0);
-    let opened = f.call(&manager,"palpo.inbox.get",json!({"id":"engagement_a:request_agent"})).await.1;
-    assert_eq!(opened["action"]["decision"],json!({"by":"@provider:example.test","at":null,"reason":"Old decision"}));
-    let history = f.call(&manager,"palpo.inbox.list",json!({"view":"history"})).await.1;
-    assert!(history["actions"].as_array().unwrap().iter().any(|a| a["id"]=="engagement_a:request_agent"));
+    assert_eq!(
+        f.call(&admin, "palpo.requests.list", json!({})).await.1["total"],
+        0
+    );
+    let opened = f
+        .call(
+            &manager,
+            "palpo.inbox.get",
+            json!({"id":"engagement_a:request_agent"}),
+        )
+        .await
+        .1;
+    assert_eq!(
+        opened["action"]["decision"],
+        json!({"by":"@provider:example.test","at":null,"reason":"Old decision"})
+    );
+    let history = f
+        .call(&manager, "palpo.inbox.list", json!({"view":"history"}))
+        .await
+        .1;
+    assert!(
+        history["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "engagement_a:request_agent")
+    );
     // Simulate the already-audited adoption's current action, never a second
     // runtime or new identifier. The old link resolves the current authority.
-    let created = f.call(&manager,"palpo.inbox.submit",agent_request()).await.1;
+    let created = f
+        .call(&manager, "palpo.inbox.submit", agent_request())
+        .await
+        .1;
     let current = &created["action"]["id"];
-    assert!(current.is_string(),"{created}");
-    assert_eq!(f.call(&manager,"palpo.inbox.get",json!({"id":"engagement_a:request_agent"})).await.1["action"]["id"],*current);
-    assert_eq!(f.call(&manager,"palpo.requests.list",json!({})).await.1["total"],1);
-    assert_eq!(f.app.store.lock().await.read().unwrap()["requests"]["engagement_a:request_agent"],old);
+    assert!(current.is_string(), "{created}");
+    assert_eq!(
+        f.call(
+            &manager,
+            "palpo.inbox.get",
+            json!({"id":"engagement_a:request_agent"})
+        )
+        .await
+        .1["action"]["id"],
+        *current
+    );
+    assert_eq!(
+        f.call(&manager, "palpo.requests.list", json!({})).await.1["total"],
+        1
+    );
+    assert_eq!(
+        f.app.store.lock().await.read().unwrap()["requests"]["engagement_a:request_agent"],
+        old
+    );
 }

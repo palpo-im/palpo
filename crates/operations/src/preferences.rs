@@ -1,10 +1,13 @@
 //! Account-owned preferences, compatible with the legacy Inbox representation.
 //! A preference changes delivery, never the action or its business authority.
-use crate::{Result, digest, fail, workflow::Workflows};
-use jiff::{Timestamp, tz::TimeZone};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use palpo_hagency_contract::MatrixUserId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::workflow::Workflows;
+use crate::{Result, digest, fail};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

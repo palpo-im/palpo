@@ -1,16 +1,15 @@
 //! Exact fleet-request retirement. This never asserts runtime termination or
 //! settles usage; it proves deactivation, room removal and appservice denial.
-use crate::{
-    Result,
-    api::App,
-    digest, fail, now_ms, outbound,
-    workflow::{Request, Workflows},
-};
+use std::sync::Arc;
+
 use palpo_hagency_contract::{MatrixUserId, RequestId};
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
+
+use crate::api::App;
+use crate::workflow::{Request, Workflows};
+use crate::{Result, digest, fail, now_ms, outbound};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

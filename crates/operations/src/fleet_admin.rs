@@ -1,14 +1,15 @@
 //! Matrix administrators manage registration credentials. This never grants
 //! coordinator authority or claims that an offline runtime has stopped.
-use crate::{
-    Result, api::App, connections, digest, engagement_setup::registration_matches, fail, now_ms,
-    outbound, secret, workflow::Workflows,
-};
 use palpo_hagency_contract::{MatrixUserId, RequestId};
 use reqwest::Method;
 use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::api::App;
+use crate::engagement_setup::registration_matches;
+use crate::workflow::Workflows;
+use crate::{Result, connections, digest, fail, now_ms, outbound, secret};
 
 pub(crate) fn ensure_active(state: &Value, id: &str) -> Result<()> {
     let f = &state["fleets"][id];

@@ -1,11 +1,10 @@
 //! Scoped runtime controls. A transport ACK is never a cleanup receipt.
-use crate::{
-    Result, digest, fail,
-    workflow::{Request, Workflows},
-};
 use palpo_hagency_contract::{CommandId, EngagementState, MatrixUserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::workflow::{Request, Workflows};
+use crate::{Result, digest, fail};
 
 pub(crate) fn allowed(
     w: &Workflows,
