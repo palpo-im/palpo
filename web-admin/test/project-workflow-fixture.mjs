@@ -95,3 +95,20 @@ export async function publishAgentCleanup(f, workflow, inbox, stage) {
     }
   }
 }
+
+// Explicit readiness fixture: business receipts alone never call this helper.
+// Publishes a provider observation AND puts the identity in the fake Matrix room.
+export async function publishReadyAgent(f, workflow, inbox, request) {
+  const action = inbox.state.records[request.actionId];
+  if (action?.execution !== 'done' || !action.result?.engagementId || request.removalActionId) return;
+  const fleet = f.service.fleet(request.fleetId), agentMxid = `@${fleet.id}_${action.result.engagementId}:example.test`;
+  f.users.set(agentMxid, { name: agentMxid, appservice_id: fleet.id, deactivated: false, displayname: request.payload.agentDefinition.name, rooms: [request.payload.targetRoomId] });
+  f.putState(f.rooms.get(request.payload.targetRoomId), 'm.room.member', agentMxid, { membership: 'join' }, agentMxid);
+  const status = { ...request.payload, sourceEventId: request.sourceEventId, engagementId: action.result.engagementId,
+    state: 'active', agentMxid, ready: true, bound: true, allocatedTokens: inbox.agents.allocation(request).tokens,
+    observedAt: new Date().toISOString(), serving: { framework: 'codex', model: 'fixture-model' },
+    fulfillment: { phase: 'ready', incomplete: false } };
+  await f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation,
+    sequence: fleet.transport.sequence + 1, heartbeat: true, statuses: [status] }, workflow);
+  return agentMxid;
+}

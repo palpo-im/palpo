@@ -1,7 +1,7 @@
 // Explicit local-only Matrix fixture for the Rinx native instrument test.
 // Runs the actual Palpo HTTP/session/workflow service. No deployed server calls.
 import { accountFixture, applicant } from './accounts.fixture.mjs';
-import { contributedFleet, acceptProjectReservations, refreshContributions, acceptAgentDecisions, acceptAgentRemovals, publishAgentCleanup, projectResource, projectAdministrators } from './project-workflow-fixture.mjs';
+import { contributedFleet, acceptProjectReservations, refreshContributions, acceptAgentDecisions, acceptAgentRemovals, publishAgentCleanup, publishReadyAgent, projectResource, projectAdministrators } from './project-workflow-fixture.mjs';
 import { createApp } from '../server.mjs';
 import { existsSync, writeFileSync } from 'node:fs';
 const port = Number(process.argv[2]), directory = process.argv[3];
@@ -61,6 +61,9 @@ const consumer = setInterval(() => {
       await publishAgentCleanup(f, workflow, server.inbox, existsSync(directory + '/release-agent-cleanup') ? 'complete'
         : existsSync(directory + '/fail-agent-cleanup') ? 'failed' : 'pending');
     }
+    if (existsSync(directory + '/publish-ready-agent')) {
+      for (const request of Object.values(f.store.state.requests)) await publishReadyAgent(f, workflow, server.inbox, request);
+    }
     await seedRecovery('retry'); await seedRecovery('release'); await releaseUnused();
   }).catch(error => console.error(error.code ?? error.name)).finally(() => { consuming = false; });
 }, 1000);
@@ -70,6 +73,8 @@ const report = () => writeFileSync(directory + '/backend.json', JSON.stringify({
   fleets: Object.keys(f.store.state.fleets).length, projects: Object.keys(f.store.state.projects).length,
   requests: Object.keys(f.store.state.requests).length, logouts: f.calls.filter(c => c.path.endsWith('/logout')).length,
   requestStates: Object.values(f.store.state.requests).map(({state, usable}) => ({state, usable})),
+  agentChats: Object.values(f.store.state.requests).filter(r => r.provider?.agentMxid).map(r => ({
+    account: r.requesterMxid, roomId: r.payload.targetRoomId, agentMxid: r.provider.agentMxid })),
   allocations: Object.values(f.store.state.requests).map(r => server.inbox.agents.allocation(r)),
   removalCommands: Object.values(server.projectCommands.state.commands).filter(e => e.command.operation.kind === 'revoke_agent').length,
   recoveries: Object.values(server.inbox.state.records).filter(r => r.requestId?.startsWith('recovery_')).map(r => ({ name: r.payload.name, state: r.state, execution: r.execution,

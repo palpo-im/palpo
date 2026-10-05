@@ -10,6 +10,7 @@ export const SERVICES = Object.freeze({
   'palpo.catalog.list': 'Browse published Hagency resources',
   'palpo.projects.list': 'Read projects your Matrix account can access',
   'palpo.projects.create': 'Create projects as your Matrix account',
+  'palpo.requests.open': 'Open a ready agent’s project room in Rinx',
   'palpo.requests.list': 'Read your agent requests and their progress',
   'palpo.requests.create': 'Request agents for projects you can access',
   'palpo.fleets.list': 'Read fleets you own or administer',
@@ -50,6 +51,22 @@ export class MiniApp {
   constructor(service, workflow, accounts, inbox, { ttlMs = 15 * 60 * 1000, now = Date.now, maxSessions = 512 } = {}) {
     Object.assign(this, { service, workflow, accounts, inbox, ttlMs, now, maxSessions });
     this.sessions = new Map();
+  }
+  agentChat(request, actor) {
+    const current = this.service.store.state.requests[request?.id];
+    const project = this.service.store.state.projects[current?.projectId];
+    if (!current || !project || (current.requesterMxid !== actor && project.ownerMxid !== actor)
+      || request.usable !== true || request.statusVerified !== true || request.agentJoined !== true
+      || current.removalActionId || current.retirement || !['active', 'ready'].includes(request.state)
+      || request.provider?.ready !== true || request.provider.bound !== true
+      || request.provider.targetRoomId !== project.roomId || current.payload.ownerMxid !== project.ownerMxid) return null;
+    if (current.workflowVersion === 1) {
+      const action = this.inbox.state.records[current.actionId], value = this.inbox.agents.grant(action?.grantId);
+      if (!value || action.state !== 'approved' || action.execution !== 'done'
+        || action.result?.engagementId !== request.provider.engagementId
+        || (value.record.desiredRevision ?? value.grant.revision) !== value.grant.revision) return null;
+    }
+    return { v: 1, requestId: current.id, account: actor, roomId: project.roomId, agentMxid: request.provider.agentMxid };
   }
   async admin(token) {
     try { await this.service.palpo.requireAdmin(token); return true; }
@@ -131,10 +148,18 @@ export class MiniApp {
             resources: (o.resources ?? []).filter(r => !project?.resourceGrant || project.resourceGrant.resourceIds.includes(r.id))
               .map(r => ({ ...r, contributions: this.inbox.projects.catalog(this.service.fleet(f.id), r.id) })) })) } : null })) };
       }
+      case 'palpo.requests.open': {
+        fields(args, ['requestId']);
+        const requestId = text(args.requestId, 'Request ID');
+        const [request] = await this.workflow.requests(actor, token, signal, requestId);
+        const target = this.agentChat(request, actor);
+        if (!target) fail(409, 'agent_chat_unavailable', 'This agent is not ready in your project room. Refresh My Agents and try again.');
+        return target;
+      }
       case 'palpo.projects.list': fields(args, []); return { projects: await this.workflow.projects(actor, token, signal) };
       case 'palpo.projects.create': fields(args, ['requestId', 'name', 'fleetId', 'roomId']); return mutate(async () => ({ project: await this.workflow.createProject(args, actor, token) }));
       case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request,
-        agentDefinition: request.agentDefinition ?? null, canRequestTopUp: this.inbox.agents.canTopUp(request, actor), allocation: this.inbox.agents.allocation(request),
+        agentDefinition: request.agentDefinition ?? null, canOpenChat: !!this.agentChat(request, actor), canRequestTopUp: this.inbox.agents.canTopUp(request, actor), allocation: this.inbox.agents.allocation(request),
         canRemove: this.inbox.lifecycle.canRemove(request, actor), lifecycle: this.inbox.lifecycle.view(request) })) };
       case 'palpo.requests.create': fields(args, ['requestId', 'projectId', 'role', 'requestedTokens', 'ratePerDay', 'agentDefinition']); return mutate(async () => ({ request: await this.workflow.request(args, actor, token) }));
       case 'palpo.fleets.register': fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency.');

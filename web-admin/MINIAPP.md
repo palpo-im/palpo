@@ -295,3 +295,21 @@ owner-only export authorization, stale decision refusal, notification delivery,
 reminders after seen and mini-app disconnect. This verifies the contribution
 workflow on real Palpo; it does not claim runtime import, Hagency connection,
 project/agent lifecycle or OS push-notification entry acceptance.
+
+## Ready agent chat navigation
+
+`palpo.requests.list` adds `canOpenChat`. The exact `palpo.requests.open`
+service accepts only `{requestId}` and refreshes that request's actual provider
+status and Matrix room membership. It returns a closed v1 destination containing
+`requestId`, current `account`, `roomId` and `agentMxid`; scripts cannot nominate
+a room or URL. Approval receipts alone do not enable navigation. Paused fleets,
+stale observations, missing membership, expired/revoked grants, changed scope
+and removal disable it. The native host validates the account and joined room
+again; opening chat never sends an approval, message or join request.
+
+The companion App Hub `palpo-agent-navigation-v1` feature is required so an older
+host refuses this bundle instead of discarding navigation. Tests in
+`test/agent-navigation.test.mjs` cover the current-owner and exact-grant boundary,
+readiness, stale data, removal and concurrent authority changes. The native
+fixture explicitly publishes readiness separately from its business receipt;
+it does not run a real model or Matrix homeserver.

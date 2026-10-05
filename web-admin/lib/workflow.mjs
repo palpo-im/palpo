@@ -390,7 +390,7 @@ export class Workflow {
       ...(payload.agentDefinition ? { agentDefinition: payload.agentDefinition } : {}),
       ...(actor === payload.ownerMxid ? { ownerDmRoomId: payload.ownerDmRoomId } : {}) };
   }
-  async requests(actor, token, signal = AbortSignal.timeout(this.readTimeoutMs)) {
+  async requests(actor, token, signal = AbortSignal.timeout(this.readTimeoutMs), onlyRequestId = null) {
     const version = this.service.mutationVersion;
     // Poll copies outside the mutation queue. Commit synchronously only while no
     // mutation is running and all authority/status bindings still match. No
@@ -398,7 +398,8 @@ export class Workflow {
     const authority = fleet => fleet && { id: fleet.id, ownerMxid: fleet.ownerMxid, state: fleet.state,
       installation: fleet.installation, callbackUrl: fleet.callbackUrl, registration: fleet.registration,
       connection: fleet.connection, representativeMxid: fleet.representativeMxid };
-    const snapshots = Object.values(this.store.state.requests).filter(request => request.requesterMxid === actor || this.store.state.projects[request.projectId]?.ownerMxid === actor)
+    const snapshots = Object.values(this.store.state.requests).filter(request => (onlyRequestId === null || request.id === onlyRequestId)
+      && (request.requesterMxid === actor || this.store.state.projects[request.projectId]?.ownerMxid === actor))
       .map(request => ({ request: structuredClone(request), requestBefore: digest(request),
         project: structuredClone(this.store.state.projects[request.projectId]), fleet: structuredClone(this.store.state.fleets[request.fleetId]) }));
     const poll = async ({ request, requestBefore, project, fleet }) => {
