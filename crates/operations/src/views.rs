@@ -265,6 +265,7 @@ pub(crate) fn agents(
         rows.last_mut().unwrap()["canRequestTopUp"] =
             json!(can_request_top_up(state, workflows, action, actor, now));
     }
+    rows.extend(crate::legacy::agent_rows(workflows, actor, now));
     page.apply("requests", rows)
 }
 

@@ -551,3 +551,42 @@ async fn legacy_inbox_continuation_preserves_identity_history_and_current_author
     assert_eq!(f.rooms.lock().unwrap().create_count,2);
     assert_eq!(w.view(&id,&actor.to_owned().try_into().unwrap(),now_ms()).unwrap()["state"],"approved");
 }
+
+#[tokio::test]
+async fn legacy_agent_history_is_scoped_and_old_links_follow_adoption() {
+    let f = Fixture::new().await;
+    funded(&f).await;
+    let old = json!({"id":"engagement_a:request_agent","requestId":"request_agent","fleetId":"engagement_a",
+        "projectId":"existing_project","state":"retired","decision":{"by":"@provider:example.test","reason":"Old decision"},
+        "payload":{"agentDefinition":{"name":"Earlier agent","secret":"PRIVATE"},"role":"coding","requestedTokens":100000},
+        "provider":{"credential":"PRIVATE"}});
+    f.app.store.lock().await.transaction(|state| {
+        state["projects"]["existing_project"] = json!({"id":"existing_project","fleetId":"engagement_a","ownerMxid":"@manager:example.test"});
+        state["requests"] = json!({"engagement_a:request_agent":old.clone()});
+        Ok(())
+    }).unwrap();
+    let manager = f.session("manager").await;
+    let admin = f.session("admin").await;
+    let coordinator = f.session("coordinator").await;
+    for session in [&manager, &coordinator] {
+        let (status, list) = f.call(session,"palpo.requests.list",json!({})).await;
+        assert_eq!(status,StatusCode::OK);
+        assert_eq!(list["requests"][0]["agentDefinition"]["name"],"Earlier agent");
+        assert_eq!(list["requests"][0]["canRetire"],false);
+        assert_eq!(list["requests"][0]["usable"],false);
+        assert!(!list.to_string().contains("PRIVATE"));
+    }
+    assert_eq!(f.call(&admin,"palpo.requests.list",json!({})).await.1["total"],0);
+    let opened = f.call(&manager,"palpo.inbox.get",json!({"id":"engagement_a:request_agent"})).await.1;
+    assert_eq!(opened["action"]["decision"],json!({"by":"@provider:example.test","at":null,"reason":"Old decision"}));
+    let history = f.call(&manager,"palpo.inbox.list",json!({"view":"history"})).await.1;
+    assert!(history["actions"].as_array().unwrap().iter().any(|a| a["id"]=="engagement_a:request_agent"));
+    // Simulate the already-audited adoption's current action, never a second
+    // runtime or new identifier. The old link resolves the current authority.
+    let created = f.call(&manager,"palpo.inbox.submit",agent_request()).await.1;
+    let current = &created["action"]["id"];
+    assert!(current.is_string(),"{created}");
+    assert_eq!(f.call(&manager,"palpo.inbox.get",json!({"id":"engagement_a:request_agent"})).await.1["action"]["id"],*current);
+    assert_eq!(f.call(&manager,"palpo.requests.list",json!({})).await.1["total"],1);
+    assert_eq!(f.app.store.lock().await.read().unwrap()["requests"]["engagement_a:request_agent"],old);
+}

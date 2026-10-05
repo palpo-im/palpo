@@ -136,6 +136,8 @@ pub struct Workflows {
     /// Read from the unchanged Node source; never serialized as a second owner.
     #[serde(skip)]
     pub legacy_records: BTreeMap<String, Value>,
+    #[serde(skip)]
+    pub legacy_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub legacy_sources: BTreeMap<String, Value>,
     #[serde(default)]
@@ -345,6 +347,7 @@ impl Workflows {
                 !result.actions.contains_key(*id) && !result.associations.contains_key(*id)
                 && row["id"] == id.as_str()).map(|(id,row)|(id.clone(),row.clone())).collect();
         }
+        crate::legacy::load_agents(&mut result, state);
         Ok(result)
     }
     pub fn save(&self, state: &mut Value) -> Result<()> {
@@ -379,6 +382,9 @@ impl Workflows {
             || self.can_review(&action.request, actor, now)
     }
     pub fn view(&self, id: &str, actor: &MatrixUserId, now: u64) -> Result<Value> {
+        if let Some(current) = self.legacy_aliases.get(id) {
+            return self.view(current, actor, now);
+        }
         if let Some(association) = self.associations.get(id) {
             return self.association_view(association, actor, now);
         }

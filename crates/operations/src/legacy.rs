@@ -4,6 +4,47 @@ use crate::{Result, digest, fail, workflow::Workflows};
 use palpo_hagency_contract::MatrixUserId;
 use serde_json::{Value, json};
 
+/// Historical requests are still readable before owner-audited adoption. They
+/// carry no current grant, readiness or permission to operate the old runtime.
+pub(crate) fn load_agents(w: &mut Workflows, state: &Value) {
+    for (id, row) in state["requests"].as_object().into_iter().flatten() {
+        let (Some(fleet), Some(request), Some(project)) =
+            (row["fleetId"].as_str(), row["requestId"].as_str(), row["projectId"].as_str()) else { continue };
+        if *id != format!("{fleet}:{request}") || row["id"] != *id
+            || state["projects"][project]["fleetId"] != fleet { continue; }
+        if let Some(action) = w.actions.values().find(|a| matches!(&a.request,
+            crate::workflow::Request::Agent(a) if a.server_engagement_id.as_str() == fleet && a.id.as_str() == request)) {
+            w.legacy_aliases.insert(id.clone(), action.id.clone());
+            continue;
+        }
+        let Some(owner) = state["projects"][project]["ownerMxid"].as_str() else { continue };
+        let terminal = matches!(row["state"].as_str(), Some("rejected" | "refused" | "retired" | "ended"));
+        w.legacy_records.entry(id.clone()).or_insert_with(|| json!({
+            "id":id,"requestId":request,"kind":"agent","ownerMxid":owner,
+            "state":row["state"],"execution":if terminal {"ended"} else {"migration_pending"},
+            "revision":row["revision"].as_u64().unwrap_or(1),"createdAt":row["createdAt"],"updatedAt":row["updatedAt"],
+            "decision":row["decision"],"payload":{"fleetId":fleet,"projectId":project,
+                "name":row["payload"]["agentDefinition"]["name"].as_str().unwrap_or(request),
+                "reason":row["payload"]["reason"],"role":row["payload"]["role"],
+                "requestedTokens":row["payload"]["requestedTokens"]}}));
+    }
+}
+
+pub(crate) fn agent_rows(w: &Workflows, actor: &MatrixUserId, now: u64) -> Vec<Value> {
+    w.legacy_records.iter().filter(|(_, row)| row["kind"] == "agent").filter_map(|(id, row)| {
+        let view = view(w, id, actor, now).ok()?;
+        Some(json!({"id":id,"requestId":row["requestId"],"projectId":row["payload"]["projectId"],
+            "fleetId":row["payload"]["fleetId"],"ownerMxid":row["ownerMxid"],"state":row["state"],
+            "execution":row["execution"],"legacy":true,"migrationNote":view["migrationNote"],
+            "agentDefinition":{"name":row["payload"]["name"]},"role":row["payload"]["role"].as_str().unwrap_or("agent"),
+            "requestedTokens":row["payload"]["requestedTokens"],"allocatedTokens":null,"agentMxid":null,
+            "usable":false,"statusFresh":false,"canOpenChat":false,"canRequestTopUp":false,
+            "canRename":false,"canPause":false,"canResume":false,"canRetire":false,"canRetryCleanup":false,
+            "agentControl":null,"lifecycle":null,"jobSummary":null,
+            "usage":{"state":"unknown","consumedTokens":null,"observedAtMs":null,"evidence":"unknown","complete":false}}))
+    }).collect()
+}
+
 pub(crate) fn continuation(w: &Workflows, row: &Value, actor: &MatrixUserId, now: u64) -> Option<Value> {
     if row["kind"] != "project" || row["ownerMxid"] != actor.as_str()
         || !matches!(row["state"].as_str(), Some("requested" | "approved"))
@@ -20,7 +61,7 @@ pub(crate) fn continuation(w: &Workflows, row: &Value, actor: &MatrixUserId, now
     for parent in row["payload"]["resourceIds"].as_array()? {
         let choices: Vec<_> = w.authority.resources.values().filter(|r|
             r.server_engagement_id.as_str() == fleet && r.eligible_managers.contains(actor)
-            && u64::from(r.allocated_tokens) > 0 && w.resource_details[r.id.as_str()]["resourceId"] == *parent
+            && u64::from(r.allocated_tokens) > 0 && w.resource_details.get(r.id.as_str()).is_some_and(|detail| detail["resourceId"] == *parent)
         ).collect();
         if choices.len() != 1 { return None; }
         allocations.push(choices[0].id.clone());
