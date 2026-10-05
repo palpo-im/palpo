@@ -129,6 +129,29 @@ and business receipts; they do not prove a live agent lifecycle. Old projects
 need an explicit budget migration, and partial-refusal recovery remains work.
 There is no implicit unlimited grant or legacy owner transfer.
 
+### Agent removal and usage
+
+An owner or currently assigned project administrator can submit `agent_removal`
+through the existing scoped Inbox service. This is an immediate revocation intent,
+with a reason and stable request ID; it does not introduce another human approval.
+Cleanup is permitted after grant expiry/revocation, with the same fleet, project,
+owner, registration and current administrator checks. Queue, audit, action and
+notice writes are atomic. Top-ups stop while removal is outstanding.
+
+An applied `revoke_agent` receipt means removal has started. Completion requires
+both runtime custody/local cleanup evidence and Palpo's verified Matrix account
+deactivation/App Service denial. The runtime uses the recorded agent identity.
+A provider's `matrixRetired` claim alone is insufficient. Never-provisioned agents
+need explicit `not_required` local cleanup and no Matrix identity. Old status
+cannot revive completed removal, and an older action link opens its latest retry.
+
+Definite cleanup failure permits a fresh command; an uncertain effect requires
+operator inspection. The physical cleanup attempt fence prevents an old failure
+page from offering another retry after a new command. Verified removal releases
+concurrency and daily-rate allowance. Allocated tokens remain lifetime debits;
+the observed usage lower bound cannot justify a refund. Rinx shows unknown usage
+and stale observations explicitly, and keeps removal progress in the Inbox.
+
 ## My Actions notifications
 
 Inbox works without a notification bot. To enable Matrix delivery, set
@@ -175,7 +198,7 @@ real; Matrix/Hagency observations are explicit local test fixtures.
 
 This is an implementation milestone, not completed ADR acceptance. Remaining:
 public deployment and native file saving/runtime import, richer My Actions room UI,
-actual Hagency command/receipt integration, runtime statistics and revocation,
+actual Hagency command/receipt and runtime/Matrix cleanup integration,
 signup decision parity, mobile/hosted integration and publication. The default
 unit and native fixture suites do not change live accounts or configuration.
 

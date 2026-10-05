@@ -14,21 +14,21 @@ const amount = v => typeof v === 'number' ? v : typeof v === 'string' && /^[1-9]
 export class AgentApprovals {
   constructor(inbox) { this.inbox = inbox; this.store = inbox.store; this.service = inbox.service; this.workflow = inbox.workflow; }
   get commands() { return this.inbox.projects.commands; }
-  manages(row) { return ['agent', 'top_up'].includes(row?.kind); }
-  grant(id) {
+  manages(row) { return ['agent', 'top_up', 'agent_removal'].includes(row?.kind); }
+  grant(id, cleanup = false) {
     const record = this.inbox.projectCommands?.state.grants[id], grant = record?.grant;
     const project = this.store.state.projects[grant?.projectId], fleet = this.store.state.fleets[record?.fleetId];
-    if (!record || record.state !== 'accepted' || !project || !fleet || project.fleetId !== fleet.id
+    if (!record || !(cleanup ? ['accepted', 'revoked'].includes(record.state) : record.state === 'accepted') || !project || !fleet || project.fleetId !== fleet.id
       || project.ownerMxid !== grant.ownerMxid || project.roomId !== grant.roomId
       || project.resourceGrant?.v !== 1 || !project.resourceGrant.grantIds.includes(grant.id)
       || record.registrationGeneration !== fleet.projectWorkflow?.registrationGeneration
-      || grant.expiresAtMs <= this.inbox.now()) return null;
+      || (!cleanup && grant.expiresAtMs <= this.inbox.now())) return null;
     const root = this.commands.state.contributions[contributionKey(fleet.id, record.registrationGeneration, grant.delegationId)];
-    if (root?.state !== 'active' || root.grant.expiresAtMs <= this.inbox.now()) return null;
+    if (!cleanup && (root?.state !== 'active' || root.grant.expiresAtMs <= this.inbox.now())) return null;
     return { record, grant, project, fleet, root };
   }
   administrators(row) {
-    const value = this.grant(row.grantId);
+    const value = this.grant(row.grantId, row.kind === 'agent_removal');
     if (!value) return [];
     const { record, grant } = value;
     return grant.administratorMxids.filter(id => !record.desiredAdministrators || record.desiredAdministrators.includes(id));
@@ -37,6 +37,7 @@ export class AgentApprovals {
     return row.ownerMxid === actor || row.requesterMxid === actor || this.administrators(row).includes(actor);
   }
   canDecide(row, actor) {
+    if (row.kind === 'agent_removal') return false;
     const value = this.grant(row.grantId);
     return !!value && row.state === 'requested' && row.execution === 'pending'
       && value.grant.revision === row.grantRevision && (value.record.desiredRevision ?? value.grant.revision) === row.grantRevision
@@ -82,7 +83,7 @@ export class AgentApprovals {
   canTopUp(request, actor) {
     const original = this.inbox.state.records[request.actionId];
     return original?.kind === 'agent' && original.ownerMxid === actor && original.state === 'approved'
-      && original.execution === 'done' && !!this.grant(original.grantId) && !request.retirement
+      && original.execution === 'done' && !!this.grant(original.grantId) && !request.retirement && !request.removalActionId
       && !['ended', 'rejected', 'decision_refused'].includes(request.state);
   }
   allocation(request) {
@@ -141,10 +142,16 @@ export class AgentApprovals {
     const agents = entries.filter(e => e.command.operation.kind === 'approve_agent');
     const tokens = agents.reduce((n, e) => n + e.command.operation.allocatedTokens, 0)
       + entries.filter(e => e.command.operation.kind === 'top_up_agent').reduce((n, e) => n + e.command.operation.addTokens, 0);
-    // Conservative admission: held capacity is released only by a defined,
-    // verified lifecycle result, never just because a status temporarily vanishes.
-    return { tokens: Math.max(0, grant.limits.tokens - tokens), maxAgents: Math.max(0, grant.limits.maxAgents - agents.length),
-      maxRatePerDay: Math.max(0, grant.limits.maxRatePerDay - agents.reduce((n, e) => n + e.command.operation.request.ratePerDay, 0)) };
+    const held = agents.filter(entry => {
+      const request = this.store.state.requests[this.inbox.state.records[entry.actionId]?.requestKey];
+      const removal = this.inbox.state.records[request?.removalActionId];
+      return removal?.kind !== 'agent_removal' || removal.execution !== 'done'
+        || removal.engagementId !== entry.receipt?.outcome.result?.engagementId;
+    });
+    // Verified retirement releases concurrency and daily rate. Allocated tokens
+    // remain lifetime debits: a usage lower bound cannot justify a token refund.
+    return { tokens: Math.max(0, grant.limits.tokens - tokens), maxAgents: Math.max(0, grant.limits.maxAgents - held.length),
+      maxRatePerDay: Math.max(0, grant.limits.maxRatePerDay - held.reduce((n, e) => n + e.command.operation.request.ratePerDay, 0)) };
   }
   async decide(input, actor, token) {
     fields(input, ['id', 'expectedRevision', 'commandId', 'decision', 'reason', 'allocatedTokens']);
@@ -200,7 +207,7 @@ export class AgentApprovals {
   }
   receipt(entry) {
     const row = this.inbox.state.records[entry.actionId];
-    if (!this.manages(row) || row.commandRef !== entry.command.commandId) return;
+    if (!this.manages(row) || row.kind === 'agent_removal' || row.commandRef !== entry.command.commandId) return;
     const request = this.store.state.requests[row.requestKey];
     row.execution = entry.state === 'applied' ? 'done' : 'command_refused';
     row.result = entry.receipt.outcome.result ?? { code: entry.receipt.outcome.code };

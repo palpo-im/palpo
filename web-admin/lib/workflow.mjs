@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ApiError, Palpo, publicFleet } from './service.mjs';
+import { lifecycleStatus } from './agent-lifecycle.mjs';
 import { isOutbound, outboundProven, outboundOnline, outboundStatusCurrent } from './outbound.mjs';
 
 const now = () => new Date().toISOString();
@@ -370,6 +371,7 @@ export class Workflow {
     const fields = ['v', 'fleetId', 'requestId', 'engagementId', 'state', 'targetProjectId', 'targetRoomId', 'sourceRoomId', 'sourceEventId', 'role', 'requestedTokens', 'allocatedTokens', 'agentMxid', 'bound', 'ready', 'decidedAt', 'endedAt'];
     request.provider = Object.fromEntries(fields.filter(key => result[key] !== undefined).map(key => [key, result[key]]));
     if (request.payload.agentDefinition) request.provider.agentDefinition = structuredClone(request.payload.agentDefinition);
+    request.provider.lifecycle = lifecycleStatus(result.lifecycle, result);
     request.provider.serving = result.serving && typeof result.serving === 'object' ? Object.fromEntries(['framework', 'model', 'reasoning', 'tier'].filter(key => typeof result.serving[key] === 'string').map(key => [key, result.serving[key].slice(0, 128)])) : null;
     if (result.fulfillment) request.provider.fulfillment = { phase: result.fulfillment.phase, incomplete: result.fulfillment.incomplete, ...(typeof result.fulfillment.error === 'string' ? { error: result.fulfillment.error.slice(0, 500) } : {}) };
     request.state = result.state;
@@ -378,6 +380,7 @@ export class Workflow {
       request.state = 'ended'; request.provider.state = 'ended'; request.provider.ready = false;
       request.provider.bound = false; request.provider.endedAt = request.retirement.endedAt;
     }
+    if (request.removalActionId) { request.state = 'retiring'; request.usable = false; request.provider.ready = false; }
     request.observedAt = now(); if (persist) this.store.save();
   }
   requestView(request, actor) {
@@ -440,9 +443,11 @@ export class Workflow {
         || digest(currentProject) !== digest(project) || digest(authority(currentFleet)) !== digest(authority(fleet))) {
         return this.requestView(failed(current, signal.aborted ? 'read_timeout' : 'status_refresh_pending'), actor);
       }
-      Object.assign(current, request);
-      if (managedAgent && request.usable) currentFleet.agents[managedAgent.id] ??= managedAgent;
-      this.store.save();
+      this.store.atomic(() => {
+        Object.assign(current, request);
+        if (managedAgent && request.usable) currentFleet.agents[managedAgent.id] ??= managedAgent;
+        this.agentLifecycle?.(current);
+      });
       return this.requestView(current, actor);
     };
     const output = [];

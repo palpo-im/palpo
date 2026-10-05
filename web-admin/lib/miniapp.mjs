@@ -27,7 +27,7 @@ export const SERVICES = Object.freeze({
   'palpo.activity.list': 'Read the Palpo administrator audit history',
   'palpo.accounts.list': 'Read pending account signup requests',
   'palpo.inbox.list': 'Read your pending Palpo actions and history',
-  'palpo.inbox.submit': 'Request projects and additional agent tokens within your permissions',
+  'palpo.inbox.submit': 'Request projects, additional tokens and agent removal within your permissions',
   'palpo.inbox.get': 'Read the latest state of an authorized action',
   'palpo.inbox.decide': 'Approve or reject within your explicitly assigned project permissions',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
@@ -77,7 +77,7 @@ export class MiniApp {
     return { version: 1, userId: session.actor, isAdmin, canApproveProjects: this.inbox.canApproveProjects(session.actor, isAdmin), canReviewAgents: this.inbox.agents.reviewer(session.actor), serverName: this.service.serverName,
       services: session.services, callbackOrigins: isAdmin ? [...this.service.callbackOrigins] : [],
       outboundAvailable: !!(this.service.transportOrigin && this.service.relayOrigin),
-      features: { inbox: true, contributions: false, projectApproval: true, remoteAgentDecisions: true, topUps: true } };
+      features: { inbox: true, contributions: false, projectApproval: true, remoteAgentDecisions: true, topUps: true, agentRemoval: true } };
   }
   async authenticate(header) {
     const bearer = credentials(header), key = bearer ? this.key(bearer) : '';
@@ -132,7 +132,8 @@ export class MiniApp {
       case 'palpo.projects.list': fields(args, []); return { projects: await this.workflow.projects(actor, token, signal) };
       case 'palpo.projects.create': fields(args, ['requestId', 'name', 'fleetId', 'roomId']); return mutate(async () => ({ project: await this.workflow.createProject(args, actor, token) }));
       case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request,
-        agentDefinition: request.agentDefinition ?? null, canRequestTopUp: this.inbox.agents.canTopUp(request, actor), allocation: this.inbox.agents.allocation(request) })) };
+        agentDefinition: request.agentDefinition ?? null, canRequestTopUp: this.inbox.agents.canTopUp(request, actor), allocation: this.inbox.agents.allocation(request),
+        canRemove: this.inbox.lifecycle.canRemove(request, actor), lifecycle: this.inbox.lifecycle.view(request) })) };
       case 'palpo.requests.create': fields(args, ['requestId', 'projectId', 'role', 'requestedTokens', 'ratePerDay', 'agentDefinition']); return mutate(async () => ({ request: await this.workflow.request(args, actor, token) }));
       case 'palpo.fleets.register': fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency.');
       case 'palpo.fleets.list': {

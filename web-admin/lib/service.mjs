@@ -357,14 +357,20 @@ export class Service {
   async retireAllocatedAgent(fleet, input, token) {
     if (!token) fail(503, 'retirement_unconfigured', 'The server operator must configure an administrator credential for Agent retirement.');
     const request = this.store.state.requests?.[`${fleet.id}:${input.requestId}`];
-    const prefix = `@${fleet.id}_agent_`, suffix = `:${this.serverName}`;
+    const prefix = `@${fleet.id}_`, suffix = `:${this.serverName}`;
     if (!request || request.fleetId !== fleet.id || typeof input.agentMxid !== 'string'
       || request.provider?.agentMxid !== input.agentMxid || !input.agentMxid.startsWith(prefix)
       || !input.agentMxid.endsWith(suffix) || !Number.isSafeInteger(input.endedAt) || input.endedAt <= 0) {
       fail(403, 'retirement_scope_mismatch', 'Retirement must identify the exact Agent of a confirmed fleet request.');
     }
-    const localpart = input.agentMxid.slice(prefix.length, -suffix.length);
-    if (!/^[a-z0-9_]+$/.test(localpart)) fail(403, 'retirement_scope_mismatch', 'Invalid managed Agent identity.');
+    const observedLocalpart = input.agentMxid.slice(prefix.length, -suffix.length);
+    // Support both established agent identities and native engagement IDs.
+    // The exact previously observed identity, fleet ownership and other live
+    // allocations are still checked; never admit the representative or bot.
+    if (!/^(agent_[a-z0-9_]+|en_[a-f0-9]{32})$/.test(observedLocalpart)
+      || [fleet.representativeMxid, fleet.capabilities?.approvalBotMxid].includes(input.agentMxid))
+      fail(403, 'retirement_scope_mismatch', 'Invalid managed Agent identity.');
+    const localpart = observedLocalpart.replace(/^agent_/, '');
     // Fulfilled requests use a request-derived management key. Matrix localpart
     // and management key need not be equal; preserve existing history links.
     const agentId = Object.entries(fleet.agents).find(([, agent]) => agent.mxid === input.agentMxid)?.[0] ?? localpart;

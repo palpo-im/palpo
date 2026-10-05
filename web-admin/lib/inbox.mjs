@@ -4,6 +4,7 @@ import { canonical } from './outbound.mjs';
 import { fields } from './miniapp.mjs';
 import { ProjectApprovals } from './project-approvals.mjs';
 import { AgentApprovals } from './agent-approvals.mjs';
+import { AgentLifecycle } from './agent-lifecycle.mjs';
 
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
@@ -31,16 +32,19 @@ export class Inbox {
     this.store.state.actionInbox ??= { records: {}, notices: {}, rooms: {} };
     this.projects = new ProjectApprovals(this);
     this.agents = new AgentApprovals(this);
+    this.lifecycle = new AgentLifecycle(this);
     workflow.projectGrant = (input, actor, existing, options) => this.projectGrant(input, actor, existing, options);
     workflow.resourceGrant = (project, resource, existing) => this.resourceGrant(project, resource, existing);
     workflow.projectAllocation = project => this.projects.allocation(project);
     workflow.agentRequest = (request, project) => this.agents.submit(request, project);
     workflow.agentRequestPlan = (project, payload) => this.agents.select(project, payload);
     workflow.agentStatus = (request, status, receipts) => this.agents.validateStatus(request, status, receipts);
+    workflow.agentLifecycle = request => this.lifecycle.observe(request);
   }
   get state() { return this.store.state.actionInbox; }
   canApproveProjects(actor, admin) { return !!admin && actor === this.projectApprover; }
   pending(row, actor, admin) {
+    if (row.kind === 'agent_removal') return this.lifecycle.canRetry(row, actor) || (row.execution === 'inspection_required' && row.requesterMxid === actor);
     if (this.agents.manages(row)) return this.agents.canDecide(row, actor);
     admin = this.canApproveProjects(actor, admin);
     // Legacy contribution records remain readable, but contribution now starts
@@ -60,8 +64,9 @@ export class Inbox {
         : row.workflowVersion === 1 ? row.execution === 'preparing' ? 'prepare_project' : row.state === 'requested' ? 'review' : null
         : row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
         : row.state === 'approved' && row.execution !== 'done' ? 'activate_project' : null,
+      canRetry: this.lifecycle.canRetry(row, actor),
       canDecide: this.agents.manages(row) ? this.agents.canDecide(row, actor) : admin && row.kind === 'project' && row.state === 'requested' && row.execution === 'pending',
-      canContinue: this.pending(row, actor, admin) && (row.state === 'approved' || row.execution === 'preparing') };
+      canContinue: !this.agents.manages(row) && this.pending(row, actor, admin) && (row.state === 'approved' || row.execution === 'preparing') };
   }
   record(id, actor, admin) {
     const row = this.state.records[id];
@@ -71,13 +76,18 @@ export class Inbox {
   canRead(row, actor, admin) {
     return this.agents.manages(row) ? this.agents.canRead(row, actor) : row.ownerMxid === actor || this.canApproveProjects(actor, admin);
   }
-  get(id, actor, admin) { return { action: this.view(this.record(id, actor, admin), actor, admin) }; }
+  get(id, actor, admin) {
+    let row = this.record(id, actor, admin);
+    const latest = row.kind === 'agent_removal' && this.store.state.requests[row.requestKey]?.removalActionId;
+    if (latest && latest !== row.id) row = this.record(latest, actor, admin);
+    return { action: this.view(row, actor, admin) };
+  }
   list(actor, admin, { view = 'needs_action', offset = 0, limit = 50 } = {}) {
     if (!['needs_action', 'waiting', 'history', 'all'].includes(view) || !Number.isSafeInteger(offset) || offset < 0
       || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(400, 'invalid_page', 'Invalid inbox page.');
     admin = this.canApproveProjects(actor, admin);
     const allowed = Object.values(this.state.records).filter(row => this.canRead(row, actor, admin));
-    const complete = row => row.state === 'rejected' ? !this.agents.manages(row) || row.execution === 'done' : row.state === 'approved' && row.execution === 'done';
+    const complete = row => row.execution === 'superseded' || (row.state === 'rejected' ? !this.agents.manages(row) || row.execution === 'done' : row.state === 'approved' && row.execution === 'done');
     const selected = allowed.filter(row => row.kind === 'contribution' ? ['history', 'all'].includes(view) : view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
       : view === 'waiting' ? !this.pending(row, actor, admin) && !complete(row)
         : complete(row) && !this.pending(row, actor, admin)));
@@ -97,6 +107,7 @@ export class Inbox {
     }
   }
   async submit(input, actor, token) {
+    if (input?.kind === 'agent_removal') return this.lifecycle.submit(input, actor, token);
     if (input?.kind === 'top_up') return this.agents.submitTopUp(input, actor, token);
     fields(input, ['requestId', 'kind', 'name', 'reason', 'fleetId', 'roomId', 'resourceIds', 'allocations']);
     const requestId = key(input.requestId), kind = input.kind;
@@ -203,7 +214,7 @@ export class Inbox {
     const row = this.state.records[project.resourceGrant.actionId];
     if (!row || row.state !== 'approved' || !project.resourceGrant.resourceIds.includes(resource)) fail(403, 'resource_not_granted', 'Select a resource approved for this project.');
   }
-  projectReceipt(entry) { this.projects.receipt(entry); this.agents.receipt(entry); }
+  projectReceipt(entry) { this.projects.receipt(entry); this.agents.receipt(entry); this.lifecycle.receipt(entry); }
   seen(input, actor, admin) {
     fields(input, ['id']); const row = this.record(input.id, actor, admin);
     this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.recipient === actor) notice.seenAt = this.now(); });

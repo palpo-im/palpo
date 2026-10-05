@@ -1,7 +1,7 @@
 // Explicit local-only Matrix fixture for the Rinx native instrument test.
 // Runs the actual Palpo HTTP/session/workflow service. No deployed server calls.
 import { fixture } from './fixture.mjs';
-import { contributedFleet, acceptProjectReservations, refreshContributions, acceptAgentDecisions } from './project-workflow-fixture.mjs';
+import { contributedFleet, acceptProjectReservations, refreshContributions, acceptAgentDecisions, acceptAgentRemovals, publishAgentCleanup } from './project-workflow-fixture.mjs';
 import { createApp } from '../server.mjs';
 import { existsSync, writeFileSync } from 'node:fs';
 const port = Number(process.argv[2]), directory = process.argv[3];
@@ -22,6 +22,11 @@ const consumer = setInterval(() => {
     // the pending state. UI/CI speed must not determine what this test proves.
     if (existsSync(directory + '/release-reservations')) await acceptProjectReservations(f, workflow, server.inbox);
     if (existsSync(directory + '/release-agent-decisions')) await acceptAgentDecisions(f, workflow, server.inbox);
+    if (existsSync(directory + '/release-agent-removals')) {
+      await acceptAgentRemovals(f, workflow, server.inbox);
+      await publishAgentCleanup(f, workflow, server.inbox, existsSync(directory + '/release-agent-cleanup') ? 'complete'
+        : existsSync(directory + '/fail-agent-cleanup') ? 'failed' : 'pending');
+    }
   }).catch(error => console.error(error.code ?? error.name)).finally(() => { consuming = false; });
 }, 1000);
 consumer.unref();
@@ -31,6 +36,7 @@ const report = () => writeFileSync(directory + '/backend.json', JSON.stringify({
   requests: Object.keys(f.store.state.requests).length, logouts: f.calls.filter(c => c.path.endsWith('/logout')).length,
   requestStates: Object.values(f.store.state.requests).map(({state, usable}) => ({state, usable})),
   allocations: Object.values(f.store.state.requests).map(r => server.inbox.agents.allocation(r)),
+  removalCommands: Object.values(server.projectCommands.state.commands).filter(e => e.command.operation.kind === 'revoke_agent').length,
   matrixMutations: f.calls.filter(c => c.method !== 'GET').length,
 }));
 const timer = setInterval(report, 100); timer.unref();

@@ -60,3 +60,38 @@ export async function acceptAgentDecisions(f, workflow, inbox) {
     await f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation, sequence: fleet.transport.sequence + 1, heartbeat: true, commandReceipts }, workflow);
   }
 }
+
+export async function acceptAgentRemovals(f, workflow, inbox) {
+  for (const fleet of Object.values(f.store.state.fleets)) {
+    const entries = Object.values(inbox.projectCommands.state.commands).filter(e => !e.receipt && e.command.fleetId === fleet.id && e.command.operation.kind === 'revoke_agent');
+    if (!entries.length) continue;
+    const commandReceipts = entries.slice(0, 8).map(e => ({ v: 1, fleetId: fleet.id, registrationGeneration: 1,
+      commandId: e.command.commandId, commandDigest: e.digest, completedAtMs: inbox.now(), outcome: { status: 'applied', result: {
+        kind: 'agent', engagementId: e.command.operation.engagementId, state: 'revoked', cleanup: 'pending',
+        allocatedTokens: inbox.agents.allocation(f.store.state.requests[inbox.state.records[e.actionId].requestKey]).tokens } } }));
+    await f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation, sequence: fleet.transport.sequence + 1, heartbeat: true, commandReceipts }, workflow);
+  }
+}
+
+export async function publishAgentCleanup(f, workflow, inbox, stage) {
+  for (const request of Object.values(f.store.state.requests)) {
+    const row = inbox.state.records[request.removalActionId];
+    if (!row || !['retiring', 'cleanup_failed'].includes(row.execution)) continue;
+    const fleet = f.service.fleet(request.fleetId), agentMxid = `@${fleet.id}_${row.engagementId}:example.test`;
+    f.users.set(agentMxid, f.users.get(agentMxid) ?? { name: agentMxid, appservice_id: fleet.id, deactivated: false, displayname: row.payload.name, rooms: [request.payload.targetRoomId] });
+    const attempts = Object.values(inbox.projectCommands.state.commands).filter(e => e.command.operation.kind === 'revoke_agent' && e.command.operation.engagementId === row.engagementId).length;
+    const failed = stage === 'failed' && attempts === 1;
+    const lifecycle = { v: 1, agentMxid, localCleanup: stage === 'complete' ? 'complete' : 'pending', runtimeStopped: stage === 'complete',
+      cleanupRetryable: failed, cleanupAttempt: attempts, matrixRetired: false, endedAtMs: Date.now(), allocatedTokens: inbox.agents.allocation(request).tokens,
+      spentTokensLowerBound: null, quotaPaused: false };
+    const status = { ...request.payload, sourceEventId: request.sourceEventId, engagementId: row.engagementId, state: 'ended',
+      agentMxid, ready: false, bound: false, observedAt: new Date().toISOString(), lifecycle };
+    const publish = () => f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation,
+      sequence: fleet.transport.sequence + 1, heartbeat: true, statuses: [status] }, workflow);
+    await publish(); // The real retirement handler first needs the exact identity observation.
+    if (stage === 'complete') {
+      await f.service.retireAllocatedAgent(fleet, { requestId: request.requestId, agentMxid, endedAt: lifecycle.endedAtMs, localStopped: true }, 'admin-secret');
+      lifecycle.matrixRetired = true; await publish();
+    }
+  }
+}

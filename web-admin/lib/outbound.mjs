@@ -172,7 +172,11 @@ export class Outbound {
       Object.assign(fleet, copy);
       this.projectCommands?.applyContributions(fleet, contributionPage);
       this.projectCommands?.applyReceipts(commandReceipts);
-      for (const record of records) Object.assign(this.store.state.requests[record.id], record);
+      for (const record of records) {
+        const current = this.store.state.requests[record.id];
+        Object.assign(current, record);
+        workflow.agentLifecycle?.(current);
+      }
       return { ok: true };
     });
   }
