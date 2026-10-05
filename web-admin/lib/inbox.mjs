@@ -8,6 +8,7 @@ import { NotificationPreferences } from './notification-preferences.mjs';
 import { AgentLifecycle } from './agent-lifecycle.mjs';
 
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
+const noticeId = (row, recipient) => `${row.id}_${row.revision}_${hash(recipient).slice(0, 16)}`;
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
 const key = value => {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value)) fail(400, 'invalid_request_id', 'Use a stable request ID.');
@@ -60,7 +61,7 @@ export class Inbox {
   }
   reminderStatus(row, actor, admin) {
     if (!this.pending(row, actor, admin)) return null;
-    const notice = Object.values(this.state.notices).find(n => n.actionId === row.id && n.revision === row.revision && n.recipient === actor);
+    const notice = this.state.notices[noticeId(row, actor)];
     if (!notice) return null;
     const prefs = this.preferences.get(actor);
     return { enabled: prefs.enabled && prefs.remindersEnabled,
@@ -123,7 +124,7 @@ export class Inbox {
     for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.revision !== row.revision) notice.cancelled = true;
     const recipients = this.agents.manages(row) ? [row.ownerMxid, row.requesterMxid, ...this.agents.administrators(row)] : [row.ownerMxid, ...this.approvers];
     for (const recipient of new Set(recipients)) {
-      const id = `${row.id}_${row.revision}_${hash(recipient).slice(0, 16)}`;
+      const id = noticeId(row, recipient);
       this.state.notices[id] ??= { id, actionId: row.id, revision: row.revision, recipient, createdAt: this.now(), dueAt: this.now(), attempt: 0, delivered: 0, seenAt: null, cancelled: false };
     }
   }
