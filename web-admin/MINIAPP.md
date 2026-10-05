@@ -97,6 +97,40 @@ and notification intents commit in one transaction. `awaiting_reservation`
 becomes `done` only after every exact business receipt is applied; refusals remain
 unallocated. Partial reservations stay held, with no speculative refund.
 
+### Recovering a refused project reservation
+
+The designated project administrator receives the failed allocation in Needs my
+action once every reservation has a business receipt. `palpo.inbox.recover` is a
+separate app grant. Retry rechecks the original room, current contribution,
+remaining capacity and original administrator assignment, then sends new commands
+only for refused reservations. It preserves the reviewed limits, owner, room and
+expiry. Exact command retries return the latest action without adding work.
+
+Release closes a failed allocation, preserving the project room and history.
+Accepted reservations remain held until Hagency returns an exact
+`released_unused_project` receipt. The machine operation
+`release_unused_project` requires the advertised `projectWorkflow.unusedRelease:
+true` extension. Hagency must prove there has never been an agent debit against
+the grant. Ordinary revocation, an expired grant, a missing status row, or a
+transport ACK does not prove release. If all original reservations were refused,
+their immutable receipts suffice to close the failed request without a refund.
+Pending results cannot be guessed. A refused release remains visible and permits
+a fresh reviewed retry; stale receipts cannot revive it after completion.
+
+Contribution pages optionally carry cumulative `released` counters alongside
+cumulative `reserved` counters. Both only increase, released never exceeds
+reserved, and their difference fits the immutable contribution limits. Older
+pages imply zero released, and cannot erase an observed release. Availability
+uses the larger of the published held amount and locally accepted, unreleased
+grants, plus outstanding commands. This can conservatively lag a release until
+the next publication; it does not manufacture capacity from a missing receipt.
+
+After closure, the owner can request a new project against current resources.
+This creates a new request and room; the failed project's identity and history
+remain intact. Extending or editing an already accepted allocation, migration
+of legacy projects, and general cancellation/resubmission still need their own
+workflows.
+
 ### Assigned project-admin decisions and token increases
 
 An agent requested against an accepted finite grant creates an `agent` Inbox

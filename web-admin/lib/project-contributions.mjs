@@ -10,6 +10,8 @@ const positive = v => Number.isSafeInteger(v) && v > 0;
 const count = v => Number.isSafeInteger(v) && v >= 0;
 const dimensions = ['tokens', 'maxAgents', 'maxRatePerDay'];
 const limits = (v, zero = false) => closed(v, dimensions) && dimensions.every(k => (zero ? count : positive)(v[k])) && v.maxAgents <= 10000;
+const counters = v => closed(v, dimensions) && dimensions.every(k => count(v[k]));
+const zero = () => ({ tokens: 0, maxAgents: 0, maxRatePerDay: 0 });
 export const contributionKey = (fleetId, generation, id) => `${fleetId}:${generation}:${id}`;
 
 export function validateContributionPage(fleet, page, { issuer, records, now, maxRecords }) {
@@ -22,11 +24,13 @@ export function validateContributionPage(fleet, page, { issuer, records, now, ma
   let after = page.after, added = 0;
   for (const row of page.contributions) {
     const g = row?.grant;
-    if (!closed(row, ['grant', 'state', 'reserved'])
+    const released = row && Object.hasOwn(row, 'released') ? row.released : zero();
+    if (!(closed(row, ['grant', 'state', 'reserved']) || closed(row, ['grant', 'state', 'reserved', 'released']))
       || !closed(g, ['v', 'id', 'revision', 'fleetId', 'registrationGeneration', 'issuer', 'resourceId', 'limits', 'expiresAtMs'])
       || g.v !== 1 || !id(g.id) || g.id <= after || !positive(g.revision) || g.fleetId !== fleet.id
       || g.registrationGeneration !== page.registrationGeneration || g.issuer !== issuer || !/^resource_[a-f0-9]{24}$/.test(g.resourceId)
-      || !limits(g.limits) || !limits(row.reserved, true) || !dimensions.every(k => row.reserved[k] <= g.limits[k]) || !positive(g.expiresAtMs)
+      || !limits(g.limits) || !counters(row.reserved) || !counters(released)
+      || !dimensions.every(k => released[k] <= row.reserved[k] && row.reserved[k] - released[k] <= g.limits[k]) || !positive(g.expiresAtMs)
       || !['active', 'expired', 'revoked'].includes(row.state)
       || (row.state === 'active' && g.expiresAtMs <= page.observedAtMs)
       || (row.state === 'expired' && g.expiresAtMs > page.observedAtMs)) fail('invalid_contribution_page', 'Contribution identity, finite limits, or state is invalid.');
@@ -34,6 +38,7 @@ export function validateContributionPage(fleet, page, { issuer, records, now, ma
     if (old) {
       if (canonical(old.grant) !== canonical(g) || page.observedAtMs < old.observedAtMs
         || !dimensions.every(k => row.reserved[k] >= old.reserved[k])
+        || !dimensions.every(k => released[k] >= (old.released?.[k] ?? 0))
         || (old.state === 'revoked' && row.state !== 'revoked')
         || (old.state === 'expired' && row.state === 'active')) fail('contribution_conflict', 'A contribution cannot change its original budget, refund reservations, or restore retired authority.');
     } else added++;

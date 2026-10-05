@@ -31,6 +31,7 @@ export const SERVICES = Object.freeze({
   'palpo.inbox.submit': 'Request projects, additional tokens and agent removal within your permissions',
   'palpo.inbox.get': 'Read the latest state of an authorized action',
   'palpo.inbox.decide': 'Approve or reject within your explicitly assigned project permissions',
+  'palpo.inbox.recover': 'Retry a failed project reservation or release its never-used allocation as the designated administrator',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
   'palpo.inbox.seen': 'Mark a notification seen without completing its action',
   'palpo.inbox.snooze': 'Snooze reminders for an action you can take',
@@ -147,6 +148,7 @@ export class MiniApp {
       case 'palpo.inbox.get': fields(args, ['id']); return this.inbox.get(text(args.id, 'Action ID'), actor, await this.admin(token));
       case 'palpo.inbox.submit': return mutate(() => this.inbox.submit(args, actor, token));
       case 'palpo.inbox.decide': return mutate(() => this.inbox.decide(args, actor, token));
+      case 'palpo.inbox.recover': return mutate(() => this.inbox.recover(args, actor, token));
       case 'palpo.inbox.activate': return mutate(() => this.inbox.activate(args, actor, token));
       case 'palpo.inbox.seen': return this.inbox.seen(args, actor, await this.admin(token));
       case 'palpo.inbox.snooze': return this.inbox.snooze(args, actor, await this.admin(token));

@@ -32,12 +32,12 @@ export class ProjectApprovals {
   }
   available(fleet, row, excludeAction = null) {
     const accepted = Object.values(this.commands.state.grants).filter(r => r.fleetId === fleet.id
-      && r.registrationGeneration === fleet.projectWorkflow.registrationGeneration && r.grant.delegationId === row.grant.id);
+      && r.state !== 'released' && r.registrationGeneration === fleet.projectWorkflow.registrationGeneration && r.grant.delegationId === row.grant.id);
     const pending = Object.values(this.commands.state.commands).filter(e => !e.receipt && !e.cancelled && e.actionId !== excludeAction
       && e.command.fleetId === fleet.id && e.command.registrationGeneration === fleet.projectWorkflow.registrationGeneration
       && e.command.operation.kind === 'reserve_project' && e.command.operation.grant.delegationId === row.grant.id);
     return Object.fromEntries(dimensions.map(k => {
-      const used = Math.max(row.reserved[k], accepted.reduce((n, r) => n + r.grant.limits[k], 0));
+      const used = Math.max(row.reserved[k] - (row.released?.[k] ?? 0), accepted.reduce((n, r) => n + r.grant.limits[k], 0));
       const queued = pending.reduce((n, e) => n + e.command.operation.grant.limits[k], 0);
       return [k, Math.max(0, row.grant.limits[k] - used - queued)];
     }));
@@ -137,7 +137,103 @@ export class ProjectApprovals {
     plan.project.state = 'awaiting_reservation';
     plan.project.resourceGrant = { v: 1, actionId: row.id, resourceIds: [...row.payload.resourceIds], grantIds: plan.grants.map(g => g.id) };
   }
+  recoveryOptions(row, actor, admin) {
+    const permitted = row.kind === 'project' && row.workflowVersion === 1 && row.state === 'approved' && this.inbox.canApproveProjects(actor, admin);
+    const failed = permitted && row.execution === 'reservation_refused' && row.reservations?.length > 0
+      && row.reservations.every(r => ['applied', 'refused'].includes(r.state));
+    const releaseFailed = permitted && row.execution === 'release_refused' && row.releases?.length > 0
+      && row.releases.every(r => ['applied', 'refused'].includes(r.state));
+    const fleet = this.store.state.fleets[row.payload?.fleetId];
+    return { canRetryReservation: !!failed && row.payload.allocations.every(a => a.expiresAtMs > this.inbox.now()),
+      canReleaseReservation: !!(failed || releaseFailed) && (fleet?.projectWorkflow?.unusedRelease === true || row.reservations.every(r => r.state === 'refused')) };
+  }
+  authorizesRecovery(entry) {
+    const row = this.inbox.state.records[entry.actionId], recovery = row?.recovery;
+    if (entry.actionKind !== 'project_recovery' || !recovery || row.state !== 'approved'
+      || recovery.commandId !== entry.recoveryId || recovery.actor !== entry.command.actorMxid
+      || row.result?.projectId !== entry.projectId) return false;
+    return recovery.operation === 'retry' ? ['awaiting_reservation', 'reservation_refused'].includes(row.execution)
+      && row.reservations.some(r => r.commandId === entry.command.commandId)
+      : ['releasing_reservations', 'release_refused'].includes(row.execution)
+        && row.releases.some(r => r.commandId === entry.command.commandId);
+  }
+  async recover(row, command, token) {
+    const recoveryKey = hash(command.commandId), prior = row.recoveryHistory?.[recoveryKey];
+    if (prior) {
+      if (canonical(prior) !== canonical(command)) fail(409, 'recovery_conflict', 'This recovery command already has different content.');
+      return;
+    }
+    const options = this.recoveryOptions(row, command.actor, true);
+    if (row.revision !== command.expectedRevision || !(command.operation === 'retry' ? options.canRetryReservation : options.canReleaseReservation))
+      fail(409, 'recovery_conflict', 'Wait for all reservation results, then review the latest failed allocation.');
+    if (Object.keys(row.recoveryHistory ?? {}).length >= 64) fail(409, 'recovery_limit', 'This allocation needs operator review after repeated recovery attempts.');
+    const fleet = this.workflow.fleet(row.payload.fleetId), project = this.store.state.projects[row.result.projectId];
+    this.commands.requireSupport(fleet);
+    const plan = [];
+    if (command.operation === 'retry') {
+      await this.validateBinding(project, fleet);
+      for (const reservation of row.reservations.filter(r => r.state === 'refused')) {
+        const original = this.commands.entry(fleet, reservation.commandId), grant = original?.command.operation.grant;
+        if (!grant || original.state !== 'refused') fail(409, 'recovery_conflict', 'The original reservation result is unavailable in this registration.');
+        const parent = this.contribution(fleet, grant.delegationId), available = this.available(fleet, parent);
+        if (grant.delegationRevision !== parent.grant.revision || grant.expiresAtMs <= this.inbox.now()
+          || grant.expiresAtMs > parent.grant.expiresAtMs || !dimensions.every(k => grant.limits[k] <= available[k]))
+          fail(409, 'project_capacity_unavailable', 'The original approved budget cannot be retried. Release this failed allocation and submit a revised request.');
+        for (const mxid of grant.administratorMxids) {
+          const account = await this.service.palpo.user(mxid, token);
+          if (!account || account.deactivated || account.locked || account.appservice_id) fail(409, 'project_administrator_unavailable', 'The original administrator assignment is no longer active.');
+        }
+        plan.push({ reservation, operation: { kind: 'reserve_project', grant }, expiresAtMs: Math.min(grant.expiresAtMs, this.inbox.now() + 7 * 86400000) });
+      }
+    } else {
+      for (const reservation of row.reservations.filter(r => r.state === 'applied')) {
+        const record = this.commands.state.grants[reservation.grantId];
+        if (!record || record.fleetId !== fleet.id || record.registrationGeneration !== fleet.projectWorkflow.registrationGeneration
+          || record.grant.projectId !== project.id) fail(409, 'recovery_conflict', 'The original accepted grant is unavailable in this registration.');
+        if (record.state === 'released') continue;
+        this.commands.requireUnusedRelease(fleet);
+        plan.push({ reservation, operation: { kind: 'release_unused_project', grantId: record.grant.id, expectedRevision: record.grant.revision }, expiresAtMs: this.inbox.now() + 7 * 86400000 });
+      }
+    }
+    await this.service.palpo.requireAdmin(token);
+    const reviewer = await this.service.palpo.user(command.actor, token);
+    if (!reviewer?.admin || reviewer.deactivated || reviewer.locked || reviewer.is_guest || reviewer.appservice_id
+      || !this.inbox.canApproveProjects(command.actor, true)) fail(403, 'project_approver_required', 'The designated administrator is no longer active.');
+    if (row.revision !== command.expectedRevision) fail(409, 'recovery_conflict', 'This action changed while preparing recovery.');
+    for (const item of plan) if (item.operation.kind === 'reserve_project') {
+      const grant = item.operation.grant, parent = this.contribution(fleet, grant.delegationId), available = this.available(fleet, parent);
+      if (grant.expiresAtMs <= this.inbox.now() || grant.delegationRevision !== parent.grant.revision
+        || !dimensions.every(k => grant.limits[k] <= available[k])) fail(409, 'project_capacity_unavailable', 'The original approved capacity changed during recovery.');
+    }
+    this.store.atomic(() => {
+      row.recoveryHistory ??= {}; row.recoveryHistory[recoveryKey] = command; row.recovery = command;
+      if (command.operation === 'release') row.releases = [];
+      for (const item of plan) {
+        const commandId = `recover_${hash({ action: row.id, command, grant: item.reservation.grantId }).slice(0, 40)}`;
+        const entry = this.commands.enqueue(fleet, command.actor, item.operation, { commandId, actionId: row.id, projectId: project.id, expiresAtMs: item.expiresAtMs });
+        entry.actionKind = 'project_recovery'; entry.recoveryId = command.commandId;
+        if (command.operation === 'retry') Object.assign(item.reservation, { commandId, state: 'queued', code: null });
+        else row.releases.push({ grantId: item.reservation.grantId, commandId, state: 'queued', code: null });
+      }
+      row.execution = command.operation === 'retry' ? 'awaiting_reservation' : plan.length ? 'releasing_reservations' : 'released';
+      if (row.execution === 'released') row.state = 'cancelled';
+      project.state = row.execution;
+      row.updatedAt = this.inbox.now(); row.revision++;
+      this.inbox.notify(row); this.store.audit(command.actor, 'inbox.recover_project', fleet.id, row.id, row.execution);
+    });
+  }
   receipt(entry) {
+    if (entry.command.operation.kind === 'release_unused_project') {
+      const row = this.inbox.state.records[entry.actionId];
+      const release = row?.releases?.find(r => r.commandId === entry.command.commandId);
+      if (!release || row.result?.projectId !== entry.projectId || row.state !== 'approved') return;
+      release.state = entry.state; release.code = entry.receipt.outcome.code ?? null;
+      row.execution = row.releases.some(r => r.state === 'refused') ? 'release_refused' : row.releases.every(r => r.state === 'applied') ? 'released' : 'releasing_reservations';
+      if (row.execution === 'released') row.state = 'cancelled';
+      const project = this.store.state.projects[entry.projectId]; if (project) project.state = row.execution;
+      row.updatedAt = this.inbox.now(); row.revision++; this.inbox.notify(row);
+      return;
+    }
     if (entry.command.operation.kind !== 'reserve_project') return;
     const row = this.inbox.state.records[entry.actionId];
     if (!row || row.workflowVersion !== 1 || row.result?.projectId !== entry.projectId) return;

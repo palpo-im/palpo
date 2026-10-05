@@ -164,14 +164,14 @@
             "authVersion": 1,
             "sourceEventId": "$agent_one",
             "agentDefinition": {
-              "name": "小白_é",
+              "name": "\u5c0f\u767d_\u00e9",
               "resourceId": "resource_bbbbbbbbbbbbbbbbbbbbbbbb"
             }
           },
           "allocatedTokens": 200
         }
       },
-      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_approve_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"allocatedTokens\":200,\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"approve_agent\",\"request\":{\"agentDefinition\":{\"name\":\"小白_é\",\"resourceId\":\"resource_bbbbbbbbbbbbbbbbbbbbbbbb\"},\"authVersion\":1,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerDmRoomId\":\"!private:example.test\",\"ownerMxid\":\"@owner:example.test\",\"ratePerDay\":100,\"requestId\":\"agent_one\",\"requestedTokens\":200,\"requesterMxid\":\"@owner:example.test\",\"role\":\"coding\",\"sourceEventId\":\"$agent_one\",\"sourceRoomId\":\"!reception:example.test\",\"targetProjectId\":\"project_one\",\"targetRoomId\":\"!project:example.test\",\"v\":1}},\"registrationGeneration\":1,\"v\":1}",
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_approve_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"allocatedTokens\":200,\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"approve_agent\",\"request\":{\"agentDefinition\":{\"name\":\"\u5c0f\u767d_\u00e9\",\"resourceId\":\"resource_bbbbbbbbbbbbbbbbbbbbbbbb\"},\"authVersion\":1,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerDmRoomId\":\"!private:example.test\",\"ownerMxid\":\"@owner:example.test\",\"ratePerDay\":100,\"requestId\":\"agent_one\",\"requestedTokens\":200,\"requesterMxid\":\"@owner:example.test\",\"role\":\"coding\",\"sourceEventId\":\"$agent_one\",\"sourceRoomId\":\"!reception:example.test\",\"targetProjectId\":\"project_one\",\"targetRoomId\":\"!project:example.test\",\"v\":1}},\"registrationGeneration\":1,\"v\":1}",
       "sha256": "00263cfb71d5904d4069e99f8acfcc897306b500ad7b574f09aaecd6055255b3",
       "receipt": {
         "v": 1,
@@ -221,13 +221,13 @@
             "authVersion": 1,
             "sourceEventId": "$agent_one",
             "agentDefinition": {
-              "name": "小白_é",
+              "name": "\u5c0f\u767d_\u00e9",
               "resourceId": "resource_bbbbbbbbbbbbbbbbbbbbbbbb"
             }
           }
         }
       },
-      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_reject_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"reject_agent\",\"request\":{\"agentDefinition\":{\"name\":\"小白_é\",\"resourceId\":\"resource_bbbbbbbbbbbbbbbbbbbbbbbb\"},\"authVersion\":1,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerDmRoomId\":\"!private:example.test\",\"ownerMxid\":\"@owner:example.test\",\"ratePerDay\":100,\"requestId\":\"agent_one\",\"requestedTokens\":200,\"requesterMxid\":\"@owner:example.test\",\"role\":\"coding\",\"sourceEventId\":\"$agent_one\",\"sourceRoomId\":\"!reception:example.test\",\"targetProjectId\":\"project_one\",\"targetRoomId\":\"!project:example.test\",\"v\":1}},\"registrationGeneration\":1,\"v\":1}",
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_reject_agent\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"grantId\":\"grant_one\",\"grantRevision\":1,\"kind\":\"reject_agent\",\"request\":{\"agentDefinition\":{\"name\":\"\u5c0f\u767d_\u00e9\",\"resourceId\":\"resource_bbbbbbbbbbbbbbbbbbbbbbbb\"},\"authVersion\":1,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerDmRoomId\":\"!private:example.test\",\"ownerMxid\":\"@owner:example.test\",\"ratePerDay\":100,\"requestId\":\"agent_one\",\"requestedTokens\":200,\"requesterMxid\":\"@owner:example.test\",\"role\":\"coding\",\"sourceEventId\":\"$agent_one\",\"sourceRoomId\":\"!reception:example.test\",\"targetProjectId\":\"project_one\",\"targetRoomId\":\"!project:example.test\",\"v\":1}},\"registrationGeneration\":1,\"v\":1}",
       "sha256": "98bc9dad22c14d9805afa0524f3994a39a010da16fcf819ea25749e82936c7f0",
       "receipt": {
         "v": 1,
@@ -352,6 +352,40 @@
           "status": "applied",
           "result": {
             "kind": "revoked_project",
+            "grantId": "grant_one",
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "v": 1,
+        "commandId": "cmd_release_unused_project",
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "issuer": "example.test",
+        "actorMxid": "@admin:example.test",
+        "expiresAtMs": 9007199254740991,
+        "operation": {
+          "kind": "release_unused_project",
+          "grantId": "grant_one",
+          "expectedRevision": 1
+        }
+      },
+      "canonical": "{\"actorMxid\":\"@admin:example.test\",\"commandId\":\"cmd_release_unused_project\",\"expiresAtMs\":9007199254740991,\"fleetId\":\"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuer\":\"example.test\",\"operation\":{\"expectedRevision\":1,\"grantId\":\"grant_one\",\"kind\":\"release_unused_project\"},\"registrationGeneration\":1,\"v\":1}",
+      "sha256": "0e458e594f36d264fe4539a864a52e77c8f60337de3893a941e2366dda0b023e",
+      "receipt": {
+        "v": 1,
+        "fleetId": "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registrationGeneration": 1,
+        "commandId": "cmd_release_unused_project",
+        "commandDigest": "0e458e594f36d264fe4539a864a52e77c8f60337de3893a941e2366dda0b023e",
+        "completedAtMs": 1001,
+        "outcome": {
+          "status": "applied",
+          "result": {
+            "kind": "released_unused_project",
             "grantId": "grant_one",
             "revision": 1
           }

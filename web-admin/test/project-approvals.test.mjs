@@ -21,7 +21,7 @@ async function setup(t) {
   const submit = (body = input) => call(owner, 'palpo.inbox.submit', body);
   const decide = (action, extra = {}) => call(admin, 'palpo.inbox.decide', { id: action.id, expectedRevision: action.revision,
     commandId: 'project_approval', decision: 'approve', reason: 'Reviewed finite budget', ...projectAdministrators, ...extra });
-  return { ...f, inbox, workflow, commands, fleet, owner, admin, call, input, submit, decide };
+  return { ...f, server, inbox, workflow, commands, fleet, owner, admin, call, input, submit, decide };
 }
 
 test('catalog publication, missing budgets, stale contributions and invalid limits cannot prepare an allocated project', async t => {
@@ -133,4 +133,113 @@ test('a refused reservation remains unallocated and legacy projects never gain a
   assert.equal(f.inbox.get(action.id, '@owner:example.test', false).action.execution, 'reservation_refused');
   assert.equal((await f.workflow.projectView(project, '@owner:example.test', 'owner-secret')).canRequest, false);
   assert.throws(() => f.inbox.resourceGrant({ ...project, resourceGrant: undefined }, projectResource), e => e.code === 'project_allocation_required');
+});
+
+async function partial(t) {
+  const f = await setup(t), resourceId = `resource_${'b'.repeat(24)}`;
+  f.fleet.capabilities.offers[0].resources.push({ ...f.fleet.capabilities.offers[0].resources[0], id: resourceId, name: 'Recovery analysis resource' });
+  const original = Object.values(f.commands.state.contributions)[0];
+  const second = { grant: { ...original.grant, id: 'contribution_second', resourceId }, state: 'active', reserved: { tokens: 0, maxAgents: 0, maxRatePerDay: 0 } };
+  await f.service.outbound.updates(f.fleet, { v: 2, generation: f.fleet.transport.generation, sequence: f.fleet.transport.sequence + 1, heartbeat: true,
+    contributionPage: { v: 1, registrationGeneration: 1, observedAtMs: f.inbox.now(), after: '', nextAfter: null, contributions: [second] } }, f.workflow);
+  const input = structuredClone(f.input); input.resourceIds.push(resourceId);
+  input.allocations.push({ ...structuredClone(input.allocations[0]), contributionId: second.grant.id, resourceId });
+  const { action } = await f.submit(input); await f.decide(action);
+  const entries = Object.values(f.commands.state.commands);
+  const publish = async (entry, status, code = 'insufficient_capacity') => {
+    const op = entry.command.operation;
+    const outcome = status === 'refused' ? { status, code } : { status, result: op.kind === 'reserve_project'
+      ? { kind: 'grant', grant: op.grant } : { kind: 'released_unused_project', grantId: op.grantId, revision: op.expectedRevision } };
+    const receipt = { v: 1, fleetId: f.fleet.id, registrationGeneration: 1, commandId: entry.command.commandId, commandDigest: entry.digest, completedAtMs: f.inbox.now(), outcome };
+    await f.service.outbound.updates(f.fleet, { v: 2, generation: f.fleet.transport.generation, sequence: f.fleet.transport.sequence + 1, heartbeat: true, commandReceipts: [receipt] }, f.workflow);
+    return receipt;
+  };
+  await publish(entries[0], 'applied'); await publish(entries[1], 'refused');
+  const latest = () => f.inbox.get(action.id, '@admin:example.test', true).action;
+  const body = (operation = 'retry', commandId = 'recover') => ({ id: action.id, expectedRevision: latest().revision, commandId, operation, reason: 'Recover the failed allocation' });
+  const recover = (input = body(), session = f.admin) => f.call(session, 'palpo.inbox.recover', input);
+  return { ...f, action, entries, publish, latest, body, recover };
+}
+
+test('partial refusal retries only the failed budget with current designated authority and exact replay', async t => {
+  const f = await partial(t), before = structuredClone(f.entries[0].command), input = f.body();
+  const old = (await f.server.miniapp.open('Bearer admin-secret', { appId: APP_ID, bundleDigest: 'a'.repeat(64), services: ['palpo.inbox.decide'] })).sessionToken;
+  await assert.rejects(f.recover(input, old), e => e.code === 'service_not_granted');
+  assert.equal(f.latest().needsMyAction, true); assert.equal(f.latest().canContinue, false);
+  assert.equal(f.latest().payload.allocations[1].resourceName, 'Recovery analysis resource');
+  assert.equal(f.latest().reservations[1].resourceName, 'Recovery analysis resource');
+  assert.notEqual(f.latest().reservations[0].resourceName, f.latest().reservations[1].resourceName);
+  await assert.rejects(f.recover(input, f.owner), e => e.status === 403);
+  f.users.get('@other:example.test').admin = true;
+  // The base Matrix fixture has one admin token; explicitly model a second
+  // server admin here to exercise the separate designated business role.
+  const requireAdmin = f.palpo.requireAdmin.bind(f.palpo);
+  f.palpo.requireAdmin = token => token === 'other-secret' ? Promise.resolve() : requireAdmin(token);
+  const otherAdmin = (await f.server.miniapp.open('Bearer other-secret', { appId: APP_ID, bundleDigest: 'a'.repeat(64), services: ['palpo.inbox.recover'] })).sessionToken;
+  await assert.rejects(f.recover(input, otherAdmin), e => e.code === 'project_approver_required');
+  await assert.rejects(f.recover({ ...input, expectedRevision: input.expectedRevision - 1 }), e => e.code === 'recovery_conflict');
+  await f.recover(input); await f.recover(input);
+  const entries = Object.values(f.commands.state.commands), retry = entries.at(-1);
+  assert.equal(entries.length, 3); assert.deepEqual(f.entries[0].command, before);
+  assert.deepEqual(retry.command.operation, f.entries[1].command.operation);
+  assert.notEqual(retry.command.commandId, f.entries[1].command.commandId);
+  assert.equal((await f.commands.authorize(f.fleet, { commandId: retry.command.commandId, commandDigest: retry.digest })).allowed, true);
+  await assert.rejects(f.recover({ ...input, reason: 'Changed retry' }), e => e.code === 'recovery_conflict');
+  await f.publish(retry, 'applied');
+  assert.equal(f.latest().execution, 'done');
+  assert.equal(f.inbox.projects.allocation(f.store.state.projects[f.action.result.projectId]).ready, true);
+  const revision = f.latest().revision;
+  f.store.atomic(() => f.commands.applyReceipts(f.commands.validateReceipts(f.fleet, [f.entries[1].receipt])));
+  await f.recover(input); assert.equal(f.latest().revision, revision); assert.equal(f.latest().execution, 'done');
+});
+
+test('failed allocation release waits for exact unused proof and never revives from old receipts', async t => {
+  const f = await partial(t), input = f.body('release');
+  await f.recover(input); await f.recover(input);
+  const release = Object.values(f.commands.state.commands).at(-1);
+  assert.equal(release.command.operation.kind, 'release_unused_project');
+  assert.equal(f.latest().execution, 'releasing_reservations');
+  assert.equal(f.latest().releases[0].resourceName, f.latest().reservations[0].resourceName);
+  assert.equal(f.commands.state.grants[release.command.operation.grantId].state, 'accepted');
+  assert.equal((await f.commands.authorize(f.fleet, { commandId: release.command.commandId, commandDigest: release.digest })).allowed, true);
+  await f.publish(release, 'refused', 'authority');
+  assert.equal(f.latest().execution, 'release_refused'); assert.equal(f.latest().canReleaseReservation, true);
+  const retryInput = f.body('release', 'release_retry'); await f.recover(retryInput);
+  const retry = Object.values(f.commands.state.commands).at(-1); await f.publish(retry, 'applied');
+  assert.equal(f.latest().state, 'cancelled'); assert.equal(f.latest().execution, 'released');
+  assert.equal(f.latest().canReleaseReservation, false);
+  assert.equal(f.inbox.list('@admin:example.test', true).pendingCount, 0);
+  assert.equal(f.inbox.list('@owner:example.test', false, { view: 'history' }).total, 1);
+  assert.equal(f.commands.state.grants[retry.command.operation.grantId].state, 'released');
+  f.store.atomic(() => f.commands.applyReceipts(f.commands.validateReceipts(f.fleet, [f.entries[0].receipt, release.receipt])));
+  assert.equal(f.commands.state.grants[retry.command.operation.grantId].state, 'released');
+  assert.equal(f.latest().execution, 'released');
+  assert.equal(f.inbox.projects.allocation(f.store.state.projects[f.action.result.projectId]).ready, false);
+  assert.equal(f.store.state.projects[f.action.result.projectId].ownerMxid, '@owner:example.test');
+});
+
+test('recovery refuses pending results, unsupported release, expiry, demotion and changed room binding', async t => {
+  const f = await partial(t), input = f.body();
+  delete f.fleet.projectWorkflow.unusedRelease;
+  assert.equal(f.latest().canReleaseReservation, false);
+  await assert.rejects(f.recover(f.body('release')), e => e.code === 'recovery_conflict');
+  f.fleet.projectWorkflow.unusedRelease = true;
+  const row = f.inbox.state.records[f.action.id]; row.reservations[1].state = 'queued';
+  await assert.rejects(f.recover(input), e => e.code === 'recovery_conflict'); row.reservations[1].state = 'refused';
+  f.users.get('@admin:example.test').locked = true;
+  await assert.rejects(f.recover(input), e => e.status === 403); f.users.get('@admin:example.test').locked = false;
+  const room = f.rooms.get(f.action.result.roomId), member = room.state.find(e => e.type === 'm.room.member' && e.state_key === '@owner:example.test');
+  member.content.membership = 'leave';
+  await assert.rejects(f.recover(input), e => e.code === 'project_binding_conflict'); member.content.membership = 'join';
+  row.payload.allocations[0].expiresAtMs = f.inbox.now() - 1;
+  assert.equal(f.latest().canRetryReservation, false); assert.equal(f.latest().canReleaseReservation, true);
+  await assert.rejects(f.recover(input), e => e.code === 'recovery_conflict');
+  assert.equal(Object.keys(f.commands.state.commands).length, 2);
+});
+
+test('recovery enqueue failure rolls back action, commands, notices and release state', async t => {
+  const f = await partial(t), before = structuredClone(f.store.state);
+  f.service.outbound.maxPending = f.service.outbound.usage(f.fleet).pending;
+  await assert.rejects(f.recover(f.body('release')), e => e.code === 'queue_full');
+  assert.deepEqual(f.store.state, before);
 });

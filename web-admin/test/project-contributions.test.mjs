@@ -39,6 +39,7 @@ test('changed grants, foreign fleets, unknown fields, overdraw and bad cursors l
     p => p.contributions[0].grant.issuer = 'other.test',
     p => p.contributions[0].grant.limits.tokens = 0,
     p => p.contributions[0].reserved.tokens = 401,
+    p => p.contributions[0].released = null,
     p => p.contributions[0].grant.as_token = 'unwanted_secret',
     p => p.nextAfter = 'contribution_one',
     p => p.contributions.push(structuredClone(p.contributions[0])),
@@ -79,4 +80,21 @@ test('a failed SQLite commit rolls back contributions and the sequence together'
   assert.deepEqual(f.store.state.projectWorkflow.contributions, {});
   assert.equal(f.store.state.fleets[f.fleet.id].transport.sequence, 0);
   f.store.save = save;
+});
+
+test('cumulative reservation and verified release counters preserve monotonic history across reuse', async t => {
+  const f = await setup(t);
+  f.row.reserved = { tokens: 400, maxAgents: 4, maxRatePerDay: 100 }; await f.update(1);
+  f.row.released = { ...f.row.reserved }; await f.update(2);
+  f.row.reserved = { tokens: 800, maxAgents: 8, maxRatePerDay: 200 }; await f.update(3);
+  assert.equal(f.commands.state.contributions[f.key].reserved.tokens - f.commands.state.contributions[f.key].released.tokens, 400);
+  for (const mutate of [
+    r => { r.released.tokens = 801; },
+    r => { r.released.tokens = 399; },
+    r => { r.reserved.tokens = 801; },
+    r => { delete r.released; },
+  ]) {
+    const page = structuredClone(f.page); mutate(page.contributions[0]);
+    await assert.rejects(f.update(4, page)); assert.equal(f.fleet.transport.sequence, 3);
+  }
 });

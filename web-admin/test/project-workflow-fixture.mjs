@@ -10,7 +10,7 @@ export async function contributedFleet(f, workflow, inbox, requestId = 'hagency-
   fleet.transport = f.service.outbound.transport(fleet.id);
   fleet.connection = { ...fleet.connection, verifiedAt: new Date(at).toISOString(), generation: fleet.transport.generation };
   fleet.state = 'ready';
-  const capabilities = { ...fleet.capabilities, projectWorkflow: { v: 1, registrationGeneration: 1 } };
+  const capabilities = { ...fleet.capabilities, projectWorkflow: { v: 1, registrationGeneration: 1, unusedRelease: true } };
   const grant = { v: 1, id: 'contribution_native', revision: 1, fleetId: fleet.id, registrationGeneration: 1,
     issuer: 'example.test', resourceId: projectResource, limits: { tokens: 2000000, maxAgents: 10, maxRatePerDay: 200000 }, expiresAtMs: at + 30 * 86400000 };
   // Fixture clocks can be deterministic, so keep both adapter clocks aligned.
@@ -37,7 +37,7 @@ export async function acceptProjectReservations(f, workflow, inbox, minAgeMs = 0
 export async function refreshContributions(f, workflow, inbox) {
   for (const fleet of Object.values(f.store.state.fleets)) {
     const contributions = Object.values(inbox.projectCommands.state.contributions).filter(r => r.grant.fleetId === fleet.id)
-      .map(r => ({ grant: r.grant, state: r.state, reserved: r.reserved }));
+      .map(r => ({ grant: r.grant, state: r.state, reserved: r.reserved, ...(r.released ? { released: r.released } : {}) }));
     await f.service.outbound.updates(fleet, { v: 2, generation: fleet.transport.generation, sequence: fleet.transport.sequence + 1, heartbeat: true,
       contributionPage: { v: 1, registrationGeneration: 1, observedAtMs: inbox.now(), after: '', nextAfter: null, contributions } }, workflow);
   }

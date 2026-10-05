@@ -50,23 +50,31 @@ export class Inbox {
     // Legacy contribution records remain readable, but contribution now starts
     // in Hagency, not as an action for a Rinx project manager.
     if (row.kind !== 'project') return false;
+    const recovery = this.projects.recoveryOptions(row, actor, admin);
+    if (recovery.canRetryReservation || recovery.canReleaseReservation) return true;
     if (row.workflowVersion === 1) return row.execution === 'preparing' ? row.ownerMxid === actor : row.state === 'requested' && row.execution === 'pending' && admin;
     if (row.state === 'requested') return admin;
     return row.state === 'approved' && row.ownerMxid === actor && row.execution !== 'done';
   }
   view(row, actor, admin) {
     admin = this.canApproveProjects(actor, admin);
-    const { fingerprint, command, commandRef, requestKey, reservations, ...copy } = row;
+    const { fingerprint, command, commandRef, requestKey, reservations, releases, recoveryHistory, recovery, ...copy } = row;
+    const resourceResult = ({ grantId, state, code }) => {
+      const allocation = row.payload.allocations?.[reservations?.findIndex(r => r.grantId === grantId) ?? -1];
+      return { grantId, state, code: code ?? null, resourceName: allocation?.resourceName ?? allocation?.resourceId ?? 'Project resource' };
+    };
     return { ...copy, requesterMxid: row.requesterMxid ?? row.ownerMxid, workflowVersion: row.workflowVersion ?? null, needsMyAction: this.pending(row, actor, admin),
-      payload: { ...row.payload, allocations: row.payload.allocations?.map(a => ({ ...a, expiresAt: new Date(a.expiresAtMs).toISOString() })) ?? null },
-      reservations: reservations?.map(({ grantId, state, code }) => ({ grantId, state, code: code ?? null })) ?? null,
+      payload: { ...row.payload, allocations: row.payload.allocations?.map(a => ({ ...a, resourceName: a.resourceName ?? a.resourceId, expiresAt: new Date(a.expiresAtMs).toISOString() })) ?? null },
+      reservations: reservations?.map(resourceResult) ?? null,
+      releases: releases?.map(resourceResult) ?? null,
+      ...this.projects.recoveryOptions(row, actor, admin),
       nextAction: this.agents.manages(row) ? this.agents.canDecide(row, actor) ? 'review_agent' : null
         : row.workflowVersion === 1 ? row.execution === 'preparing' ? 'prepare_project' : row.state === 'requested' ? 'review' : null
         : row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
         : row.state === 'approved' && row.execution !== 'done' ? 'activate_project' : null,
       canRetry: this.lifecycle.canRetry(row, actor),
       canDecide: this.agents.manages(row) ? this.agents.canDecide(row, actor) : admin && row.kind === 'project' && row.state === 'requested' && row.execution === 'pending',
-      canContinue: !this.agents.manages(row) && this.pending(row, actor, admin) && (row.state === 'approved' || row.execution === 'preparing') };
+      canContinue: !this.agents.manages(row) && this.pending(row, actor, admin) && (row.execution === 'preparing' || row.workflowVersion !== 1 && row.state === 'approved') };
   }
   record(id, actor, admin) {
     const row = this.state.records[id];
@@ -87,7 +95,7 @@ export class Inbox {
       || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(400, 'invalid_page', 'Invalid inbox page.');
     admin = this.canApproveProjects(actor, admin);
     const allowed = Object.values(this.state.records).filter(row => this.canRead(row, actor, admin));
-    const complete = row => row.execution === 'superseded' || (row.state === 'rejected' ? !this.agents.manages(row) || row.execution === 'done' : row.state === 'approved' && row.execution === 'done');
+    const complete = row => row.state === 'cancelled' || row.execution === 'superseded' || (row.state === 'rejected' ? !this.agents.manages(row) || row.execution === 'done' : row.state === 'approved' && row.execution === 'done');
     const selected = allowed.filter(row => row.kind === 'contribution' ? ['history', 'all'].includes(view) : view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
       : view === 'waiting' ? !this.pending(row, actor, admin) && !complete(row)
         : complete(row) && !this.pending(row, actor, admin)));
@@ -134,6 +142,10 @@ export class Inbox {
       || input.resourceIds.some(id => !/^resource_[a-f0-9]{24}$/.test(id) || !capabilities.offers.some(offer => offer.resources?.some(r => r.id === id)))) fail(400, 'invalid_resources', 'Select currently offered resources.');
     payload.resourceIds = [...input.resourceIds].sort();
     if (canonical(payload.resourceIds) !== canonical(payload.allocations.map(a => a.resourceId))) fail(400, 'invalid_resources', 'Every requested resource requires its own finite contribution budget.');
+    for (const allocation of payload.allocations) {
+      const resource = capabilities.offers.flatMap(o => o.resources ?? []).find(r => r.id === allocation.resourceId);
+      allocation.resourceName = typeof resource?.name === 'string' && resource.name.trim() ? resource.name.trim() : allocation.resourceId;
+    }
     if (Object.keys(this.state.records).length >= this.maxRecords || Object.values(this.state.records).filter(row => row.ownerMxid === actor && row.state === 'requested').length >= 100) fail(429, 'inbox_full', 'Too many workflow records. Contact the server administrator.');
     this.store.atomic(() => {
       this.state.records[id] = { id, requestId, kind, payload, fingerprint, workflowVersion: 1, ownerMxid: actor, state: 'requested', execution: 'preparing', revision: 1, createdAt, updatedAt: createdAt };
@@ -167,6 +179,17 @@ export class Inbox {
         this.notify(row); this.store.audit(actor, 'inbox.decide', row.payload.fleetId ?? null, row.id, row.state);
       });
     }
+    return this.get(row.id, actor, true);
+  }
+  async recover(input, actor, token) {
+    fields(input, ['id', 'expectedRevision', 'commandId', 'operation', 'reason']);
+    await this.service.palpo.requireAdmin(token);
+    const identity = await this.service.palpo.call('/_matrix/client/v3/account/whoami', token);
+    if (identity.user_id !== actor || !this.canApproveProjects(actor, !identity.is_guest)) fail(403, 'project_approver_required', 'Only the designated Palpo administrator can recover a failed project allocation.');
+    if (!['retry', 'release'].includes(input.operation) || !Number.isSafeInteger(input.expectedRevision)) fail(400, 'invalid_recovery', 'Review the current revision and choose retry or release.');
+    const row = this.record(input.id, actor, true);
+    await this.projects.recover(row, { commandId: key(input.commandId), actor, expectedRevision: input.expectedRevision,
+      operation: input.operation, reason: text(input.reason, 'Recovery reason', 1000) }, token);
     return this.get(row.id, actor, true);
   }
   async activate(input, actor, token) {

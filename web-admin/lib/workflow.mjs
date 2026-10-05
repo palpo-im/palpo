@@ -62,7 +62,8 @@ export class Workflow {
       || !data.approvalBotMxid || !/^@[^\s:]+:.+$/.test(data.approvalBotMxid)) fail(409, 'provider_capability_missing', 'Hagency has not published its roles and approval identity.');
     if (data.projectWorkflow !== undefined) {
       const support = data.projectWorkflow;
-      if (!isOutbound(fleet) || !support || Object.keys(support).sort().join(',') !== 'registrationGeneration,v'
+      if (!isOutbound(fleet) || !support || !['registrationGeneration,v', 'registrationGeneration,unusedRelease,v'].includes(Object.keys(support).sort().join(','))
+        || (Object.hasOwn(support, 'unusedRelease') && support.unusedRelease !== true)
         || support.v !== 1 || !Number.isSafeInteger(support.registrationGeneration) || support.registrationGeneration < 1
         || (fleet.projectWorkflow && support.registrationGeneration < fleet.projectWorkflow.registrationGeneration)) fail(409, 'project_workflow_mismatch', 'The project workflow capability must identify the current registration.');
       fleet.projectWorkflow = { ...support, transportGeneration: fleet.transport.generation };

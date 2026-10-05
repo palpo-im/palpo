@@ -54,14 +54,14 @@ export function validateProjectCommand(command, fleet, issuer) {
       && id(op.grantId) && positive(op.grantRevision) && /^en_[a-f0-9]{32}$/.test(op.engagementId) && user(op.requesterMxid, issuer) && positive(op.addTokens); break;
     case 'revoke_agent': valid &&= closed(op, ['kind', 'grantId', 'grantRevision', 'engagementId'])
       && id(op.grantId) && positive(op.grantRevision) && /^en_[a-f0-9]{32}$/.test(op.engagementId); break;
-    case 'revoke_project': valid &&= closed(op, ['kind', 'grantId', 'expectedRevision']) && id(op.grantId) && positive(op.expectedRevision); break;
+    case 'revoke_project': case 'release_unused_project': valid &&= closed(op, ['kind', 'grantId', 'expectedRevision']) && id(op.grantId) && positive(op.expectedRevision); break;
     default: valid = false;
   }
   if (!valid || Buffer.byteLength(canonical(command)) > 48 * 1024) fail(400, 'invalid_project_command', 'Use a supported, bounded project operation.');
   return command;
 }
 const refusalCodes = new Set(['expired', 'grant_expired', 'grant_revoked', 'authority', 'conflict', 'not_found', 'insufficient_capacity', 'resource_unavailable', 'invalid', 'state']);
-const projectOperations = new Set(['reserve_project', 'assign_project_admins', 'revoke_project']);
+const projectOperations = new Set(['reserve_project', 'assign_project_admins', 'revoke_project', 'release_unused_project']);
 
 export class ProjectCommands {
   constructor(service, inbox, { now = Date.now, adminToken, maxRecords = 100000 } = {}) {
@@ -84,10 +84,15 @@ export class ProjectCommands {
       fail(409, 'project_workflow_unavailable', 'This Hagency has not advertised project approval support.');
     }
   }
+  requireUnusedRelease(fleet) {
+    this.requireSupport(fleet);
+    if (fleet.projectWorkflow.unusedRelease !== true) fail(409, 'project_release_unavailable', 'This Hagency needs unused-reservation release support before this allocation can be released.');
+  }
   // Called within the same Store.atomic transaction as the human decision.
   enqueue(fleet, actor, operation, { commandId, projectId, actionId = null, expiresAtMs = this.now() + 7 * 86400000 } = {}) {
     if (!this.store.db.isTransaction) throw new Error('Project decisions and outbound commands require one Store.atomic transaction');
     this.requireSupport(fleet);
+    if (operation.kind === 'release_unused_project') this.requireUnusedRelease(fleet);
     const command = validateProjectCommand({ v: 1, commandId, fleetId: fleet.id, registrationGeneration: fleet.projectWorkflow.registrationGeneration,
       issuer: this.service.serverName, actorMxid: actor, expiresAtMs, operation }, fleet, this.service.serverName);
     if (expiresAtMs > this.now() + 7 * 86400000 || !id(projectId) || (actionId !== null && !id(actionId))) fail(400, 'invalid_project_command', 'A project and action binding are required.');
@@ -113,17 +118,18 @@ export class ProjectCommands {
     try { identity = await this.service.palpo.user(entry.command.actorMxid, this.adminToken); }
     catch { fail(503, 'workflow_authority_unavailable', 'Current Matrix authority is unavailable. Retry this command.'); }
     const { command } = entry, op = command.operation, project = this.store.state.projects?.[entry.projectId];
-    let allowed = !!identity && !identity.deactivated && !identity.locked && !identity.appservice_id && !entry.cancelled
+    let allowed = !!identity && !identity.deactivated && !identity.locked && !identity.is_guest && !identity.appservice_id && !entry.cancelled
       && command.expiresAtMs > this.now() && !!project && project.fleetId === fleet.id;
     if (projectOperations.has(op.kind)) allowed &&= !!identity?.admin && this.inbox.canApproveProjects(command.actorMxid, true);
     const record = op.grantId ? this.state.grants[op.grantId] : null, grant = record?.grant;
     if (op.kind === 'reserve_project') {
       const action = this.inbox.state.records[entry.actionId];
       allowed &&= op.grant.projectId === project?.id && op.grant.ownerMxid === project?.ownerMxid && op.grant.roomId === project?.roomId
-        && action?.state === 'approved' && action.ownerMxid === project.ownerMxid && action.decision?.by === command.actorMxid;
+        && action?.state === 'approved' && action.ownerMxid === project.ownerMxid
+        && (entry.actionKind === 'project_recovery' ? !!this.inbox.projects?.authorizesRecovery(entry) : action.decision?.by === command.actorMxid);
     } else {
       allowed &&= record?.fleetId === fleet.id && record?.registrationGeneration === fleet.projectWorkflow.registrationGeneration && grant?.projectId === project?.id;
-      if (op.kind !== 'revoke_project' && op.kind !== 'assign_project_admins') {
+      if (!['revoke_project', 'assign_project_admins', 'release_unused_project'].includes(op.kind)) {
         allowed &&= (record?.desiredRevision ?? grant?.revision) === op.grantRevision;
         const admins = record?.desiredAdministrators ?? grant?.administratorMxids ?? [];
         if (op.kind === 'revoke_agent') allowed &&= command.actorMxid === grant?.ownerMxid || admins.includes(command.actorMxid);
@@ -134,6 +140,7 @@ export class ProjectCommands {
         }
       } else allowed &&= grant?.revision === op.expectedRevision;
     }
+    if (op.kind === 'release_unused_project') allowed &&= fleet.projectWorkflow.unusedRelease === true && !!this.inbox.projects?.authorizesRecovery(entry);
     if (op.kind === 'approve_agent' || op.kind === 'reject_agent') allowed &&= !!this.inbox.agents?.authorizes(entry);
     if (op.kind === 'top_up_agent' && entry.actionKind === 'top_up') allowed &&= !!this.inbox.agents?.authorizes(entry);
     if (op.kind === 'revoke_agent' && entry.actionKind === 'agent_removal') allowed &&= !!this.inbox.lifecycle?.authorizes(entry);
@@ -164,6 +171,7 @@ export class ProjectCommands {
         const expected = existing && { ...existing, revision: op.expectedRevision + 1, administratorMxids: op.administrators, allowSelfApproval: op.allowSelfApproval };
         valid = closed(result, ['kind', 'grant']) && result.kind === 'grant' && expected && canonical(result.grant) === canonical(expected);
       } else if (op.kind === 'revoke_project') valid = closed(result, ['kind', 'grantId', 'revision']) && result.kind === 'revoked_project' && result.grantId === op.grantId && result.revision === op.expectedRevision;
+      else if (op.kind === 'release_unused_project') valid = closed(result, ['kind', 'grantId', 'revision']) && result.kind === 'released_unused_project' && result.grantId === op.grantId && result.revision === op.expectedRevision;
       else {
         const engagementId = op.engagementId ?? `en_${createHash('sha256').update(JSON.stringify([fleet.id, op.request.requestId])).digest('hex').slice(0, 32)}`;
         const states = { approve_agent: ['reserved'], reject_agent: ['rejected'], top_up_agent: ['reserved', 'active'], revoke_agent: ['revoked'] };
@@ -186,6 +194,7 @@ export class ProjectCommands {
       const result = receipt.outcome.result;
       if (result?.kind === 'grant') this.state.grants[result.grant.id] = { fleetId: receipt.fleetId, registrationGeneration: receipt.registrationGeneration, grant: structuredClone(result.grant), state: 'accepted' };
       if (result?.kind === 'revoked_project' && this.state.grants[result.grantId]) this.state.grants[result.grantId].state = 'revoked';
+      if (result?.kind === 'released_unused_project' && this.state.grants[result.grantId]) this.state.grants[result.grantId].state = 'released';
       this.onReceipt?.(entry);
       this.store.audit(entry.command.actorMxid, 'project.command_result', receipt.fleetId, receipt.commandId, entry.state);
     }
