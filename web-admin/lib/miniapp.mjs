@@ -26,6 +26,7 @@ export const SERVICES = Object.freeze({
   'palpo.agents.retire': 'Retire a managed Matrix identity',
   'palpo.activity.list': 'Read the Palpo administrator audit history',
   'palpo.accounts.list': 'Read pending account signup requests',
+  'palpo.accounts.open': "Open an authorized signup request in Rinx's trusted approval room",
   'palpo.inbox.list': 'Read your pending Palpo actions and history',
   'palpo.inbox.submit': 'Request projects, additional tokens and agent removal within your permissions',
   'palpo.inbox.get': 'Read the latest state of an authorized action',
@@ -156,7 +157,8 @@ export class MiniApp {
     const adminMutation = fn => mutate(async () => { await this.service.palpo.requireAdmin(token); return fn(); });
     switch (service) {
       case 'palpo.activity.list': fields(args, []); return { events: this.service.store.state.audit.slice(-200).reverse() };
-      case 'palpo.accounts.list': fields(args, []); return this.accounts.adminView();
+      case 'palpo.accounts.list': fields(args, []); return this.accounts.miniappView(actor);
+      case 'palpo.accounts.open': fields(args, ['requestId']); return this.accounts.openApproval(text(args.requestId, 'Request ID'), actor);
       case 'palpo.fleets.install': fields(args, ['fleetId']); return adminMutation(async () => ({ fleet: await this.service.install(id(), actor, token) }));
       case 'palpo.fleets.set_state': {
         fields(args, ['fleetId', 'action']);

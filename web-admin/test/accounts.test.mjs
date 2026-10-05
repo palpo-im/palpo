@@ -20,6 +20,68 @@ async function pending(f, input = applicant()) {
   const row = f.accounts.state.requests[input.id]; assert.equal(row.status, 'pending'); return row;
 }
 
+test('signup navigation resolves only the original authorized event and sends no verdict', async t => {
+  const f = await prepared(t), row = await pending(f);
+  const before = f.events.size;
+  assert.equal(f.accounts.miniappView('@admin:example.test').requests[0].canOpen, true);
+  assert.equal(f.accounts.miniappView('@other:example.test').requests[0].canOpen, false);
+  assert.deepEqual(await f.accounts.openApproval(row.id, '@admin:example.test'), {
+    v: 1, requestId: row.id, account: '@admin:example.test', roomId: f.accounts.state.roomId, eventId: row.sourceEventId,
+  });
+  assert.equal(f.events.size, before); assert.equal(row.status, 'pending'); assert.equal(f.credentials.size, 0);
+  await assert.rejects(f.accounts.openApproval(row.id, '@other:example.test'), { code: 'account_approver_required' });
+  f.users.get('@admin:example.test').locked = true;
+  await assert.rejects(f.accounts.openApproval(row.id, '@admin:example.test'), { code: 'account_approver_required' });
+});
+
+test('native signup navigation requires its exact grant, current admin and bounded request arguments', async t => {
+  const f = await prepared(t), row = await pending(f);
+  const server = createApp({ service: f.service, accountConfig: f.config, publicOrigin: 'http://admin.example.test', startAccountWorker: false, startActionWorker: false });
+  t.after(() => server.accounts.stop());
+  const open = async (token, services) => (await server.miniapp.open(`Bearer ${token}`, {
+    appId: 'im.palpo.operations', bundleDigest: 'a'.repeat(64), services,
+  })).sessionToken;
+  const call = (session, args) => server.miniapp.call(`Bearer ${session}`, { service: 'palpo.accounts.open', args });
+  const readOnly = await open('admin-secret', ['palpo.accounts.list']);
+  await assert.rejects(call(readOnly, { requestId: row.id }), e => e.status === 403);
+  const owner = await open('owner-secret', ['palpo.accounts.open']);
+  await assert.rejects(call(owner, { requestId: row.id }), e => e.status === 403);
+  const admin = await open('admin-secret', ['palpo.accounts.open']);
+  await assert.rejects(call(admin, { requestId: row.id, roomId: '!chosen:example.test' }), e => e.status === 400);
+  assert.equal((await call(admin, { requestId: row.id })).eventId, row.sourceEventId);
+  f.users.get('@admin:example.test').admin = false;
+  await assert.rejects(call(admin, { requestId: row.id }), e => e.status === 403);
+});
+
+test('signup navigation refuses changed source, room privacy and stale notification targets', async t => {
+  const f = await prepared(t), row = await pending(f), original = structuredClone(f.events.get(row.sourceEventId));
+  for (const mutate of [
+    e => { e.sender = '@other:example.test'; },
+    e => { e.type = 'm.room.topic'; },
+    e => { e.event_id = '$replacement'; },
+    e => { e.content['org.octos.approval_request'].tool_args_digest = '0'.repeat(64); },
+    e => { e.content['org.octos.approval_request'].request_id = '0'.repeat(32); },
+    e => { e.content['org.octos.approval_request'].tool_name = 'hagency.approve_agent'; },
+    e => { e.content['org.octos.approval_request'].authorized_approvers = []; },
+  ]) {
+    const changed = structuredClone(original); mutate(changed); f.events.set(row.sourceEventId, changed);
+    await assert.rejects(f.accounts.openApproval(row.id, '@admin:example.test'), { code: 'account_source_changed' });
+  }
+  f.events.set(row.sourceEventId, original);
+  const room = f.rooms.get(f.accounts.state.roomId);
+  f.putState(room, 'm.room.join_rules', '', { join_rule: 'public' }, f.config.botMxid);
+  await assert.rejects(f.accounts.openApproval(row.id, '@admin:example.test'), { code: 'account_room_not_private' });
+  f.putState(room, 'm.room.join_rules', '', { join_rule: 'invite' }, f.config.botMxid);
+  const fetch = f.palpo.fetch;
+  f.palpo.fetch = async (url, options) => {
+    const result = await fetch(url, options);
+    if (new URL(url).pathname.includes('/event/')) row.sourceEventId = '$new_source';
+    return result;
+  };
+  await assert.rejects(f.accounts.openApproval(row.id, '@admin:example.test'), { code: 'account_source_changed' });
+  assert.equal(row.status, 'pending'); assert.equal(f.credentials.size, 0);
+});
+
 test('request waits for real administrator verdict, then creates an ordinary account and erases password', async t => {
   const f = await prepared(t), input = applicant(), row = await pending(f, input);
   assert.equal(f.credentials.size, 0);

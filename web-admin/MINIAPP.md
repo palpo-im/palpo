@@ -188,6 +188,27 @@ reminders. Snooze postpones delivery. A changed revision cancels obsolete notice
 The room's older messages remain history and their links open the latest result.
 Quiet hours and the Glance-style room board are not implemented in this revision.
 
+## Signup navigation
+
+The Signups page uses `palpo.accounts.list` for its existing administrator list.
+Its Open signup request action requires the separate `palpo.accounts.open` grant
+and the host feature `palpo-account-navigation-v1`. Only a configured, currently
+active account approver receives an authorized destination. Project approval
+authority does not grant account approval authority.
+
+The service accepts only a request ID. It verifies the private approval room,
+the approver's invitation/membership, the original bot message, request digest,
+tool and authorized approvers, then rechecks current administrator authority and
+that the source has not been replaced. Rinx binds the result to its current
+account and navigates to that exact Matrix event; it preserves the event while
+the user accepts an invitation. Opening neither joins automatically nor decides
+the request. Approve/reject still uses the existing trusted Matrix controls and
+account worker's original-source/verdict checks.
+
+The native fixture exercises the real page and adapter, recording the authorized
+handoff without an SDK login. It proves no account or verdict is created by
+opening, but does not prove timeline rendering or a real Matrix signup decision.
+
 ## Validation and release limits
 
 Run Node 24+: `cd web-admin && node --test test/*.test.mjs`.
