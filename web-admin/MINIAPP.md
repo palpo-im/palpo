@@ -82,6 +82,22 @@ Hagency `native/fixtures/project-commands.json`. Tests cover atomic enqueue,
 receipt rollback/replay, assigned-admin scope, pending reassignment, HTTP
 credentials/origin, outages and cross-language command digests.
 
+The companion Hagency opt-in test
+`actual_palpo_worker_receipts_and_restart_recovery` launches
+`test/hagency-workflow-peer.mjs` against an explicitly pinned Palpo checkout.
+It uses this service's actual HTTP sessions, SQLite, workflow and outbound queue,
+plus Hagency's production work consumer, authorization calls, domain ledger,
+status publisher and business receipts. It checks reservation, assigned-admin
+admission/rejection, same-agent top-up, revocation before provisioning, partial
+retry/unused release, duplicate deliveries and a lost committed publication
+response followed by a Hagency restart. No Hagency business result is fabricated.
+
+The peer serves explicit Matrix fixtures over loopback HTTP and enables the
+withheld workflow capability for the test only. It does not start a model process,
+prove a live Matrix room or retire a running agent. Production services and
+workflow capability advertisement remain unchanged. The command and source pin
+are recorded in Hagency's project-grants review document.
+
 Project requests now specify finite `allocations` (contribution/resource IDs,
 tokens, maximum agents, aggregate daily rate and duration). Only fresh, active
 contributions in the current registration and transport generation are offered.
