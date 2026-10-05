@@ -9,6 +9,10 @@ pub(super) struct Registrations {
     users: BTreeMap<String, Value>,
     lose_install_reply: bool,
     installs: usize,
+    pub(super) lose_control_reply: bool,
+    pub(super) lose_url_reply: bool,
+    pub(super) control_calls: usize,
+    pub(super) url_calls: usize,
 }
 fn path(segments: &[&str]) -> String {
     let mut url = reqwest::Url::parse("https://fixture.test").unwrap();
@@ -28,7 +32,9 @@ pub(super) async fn matrix(
         .unwrap_or_default()
         .to_owned();
     let path = req.uri().path().to_owned();
-    let body = if req.method() == reqwest::Method::POST && path == "/_palpo/admin/v1/appservices" {
+    let body = if matches!(*req.method(), reqwest::Method::POST | reqwest::Method::PUT)
+        && path.starts_with("/_palpo/admin/v1/appservices")
+    {
         req.parse_json::<Value>().await.unwrap_or(Value::Null)
     } else {
         Value::Null
@@ -77,6 +83,34 @@ pub(super) async fn matrix(
         return true;
     }
     if let Some(id) = path.strip_prefix("/_palpo/admin/v1/appservices/") {
+        if let Some((id, operation)) = id.split_once('/') {
+            if !registrations.values.contains_key(id) {
+                res.status_code(StatusCode::NOT_FOUND);
+                res.render(Json(json!({})));
+                return true;
+            }
+            match operation {
+                "disable" | "enable" => {
+                    registrations.control_calls += 1;
+                    registrations.values.get_mut(id).unwrap()["disabled"] =
+                        json!(operation == "disable");
+                    if std::mem::take(&mut registrations.lose_control_reply) {
+                        res.status_code(StatusCode::BAD_GATEWAY);
+                    }
+                }
+                "url" => {
+                    assert_eq!(registrations.values[id]["url"], body["expected_url"]);
+                    registrations.url_calls += 1;
+                    registrations.values.get_mut(id).unwrap()["url"] = body["url"].clone();
+                    if std::mem::take(&mut registrations.lose_url_reply) {
+                        res.status_code(StatusCode::BAD_GATEWAY);
+                    }
+                }
+                _ => panic!("unexpected appservice mutation"),
+            }
+            res.render(Json(json!({})));
+            return true;
+        }
         if let Some(value) = registrations.values.get(id) {
             res.render(Json(value.clone()));
         } else {

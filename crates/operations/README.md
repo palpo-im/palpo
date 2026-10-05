@@ -239,10 +239,13 @@ new role bindings. Explicit reconciliation is required before production cutover
 
 ## Remaining cutover gates
 
-1. Registration/transport rotation reconciliation. Owner delegation revisions,
-   suspension/revocation, association,
-   designated-admin approval, scoped export and native connection proof now run
-   through the Rust services; same-server profiles have separate credentials.
+1. Live deployment acceptance of registration/transport rotation. Native Rinx,
+   Rust Palpo and Hagency now pass 16 combined fixture checks, including pause,
+   resume, transport rotation, stale-profile rejection and two simultaneous
+   same-server profiles. Lost Matrix replies reconcile the frozen operation;
+   admissions are fenced before effects and current proof is required afterward.
+   Owner Inbox states and notices follow credential changes. Credential controls
+   never claim that an offline runtime or its work has stopped.
 2. Rust equivalents for remaining fleet/admin routes and identity management.
    Relay/poll/ACK/updates, room preparation and Matrix action notifications are
    implemented, along with signup approvals and scoped lifecycle requests;

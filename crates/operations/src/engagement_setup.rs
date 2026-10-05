@@ -127,7 +127,9 @@ impl App {
 
     async fn install_association(&self, a: &Association, admin_token: &str) -> Result<()> {
         let fleet = self.store.lock().await.read()?["fleets"][&a.fleet_id].clone();
-        if matches!(fleet["state"].as_str(), Some("paused" | "revoked")) {
+        if fleet["pendingAdminOperation"].is_string()
+            || matches!(fleet["state"].as_str(), Some("paused" | "revoked"))
+        {
             return Err(fail(409, "engagement_unavailable"));
         }
         let result = async {
@@ -377,7 +379,10 @@ impl App {
         let fleet = &state["fleets"][&input.fleet_id];
         if a.state != "approved"
             || fleet["installation"] != "installed"
-            || matches!(fleet["state"].as_str(), Some("paused" | "revoked"))
+            || !matches!(
+                fleet["state"].as_str(),
+                Some("ready" | "pending_connection")
+            )
         {
             return Err(fail(409, "profile_unavailable"));
         }
@@ -420,7 +425,7 @@ fn registration(a: &Association, server: &str, relay: &str) -> Value {
         "sender_localpart":format!("{}_representative",a.fleet_id),"namespaces":{"users":[{"exclusive":true,"regex":format!("^@{}_[a-z0-9_]+:{escaped}$",a.fleet_id)}],"aliases":[],"rooms":[]},
         "rate_limited":true,"receive_ephemeral":false})
 }
-fn registration_matches(actual: &Value, expected: &Value) -> bool {
+pub(crate) fn registration_matches(actual: &Value, expected: &Value) -> bool {
     [
         "id",
         "url",

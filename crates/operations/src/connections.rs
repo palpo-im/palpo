@@ -33,7 +33,7 @@ pub(crate) fn view(
     let designated = admin && a.is_some_and(|a| a.administrator_mxid == *actor);
     let owner = e.owner == *actor;
     let coordinator = e.coordinator == *actor && e.delegation_expires_at_ms > now;
-    if !owner && !coordinator && !designated {
+    if !owner && !coordinator && !admin {
         return Err(fail(404, "engagement_not_found"));
     }
     let f = &state["fleets"][id];
@@ -42,8 +42,10 @@ pub(crate) fn view(
         EngagementState::Suspended | EngagementState::Revoked
     ) && e.delegation_expires_at_ms > now
         && f["installation"] == "installed"
-        && !matches!(f["state"].as_str(), Some("paused" | "revoked"));
-    let verified = e.state == EngagementState::Verified
+        && matches!(f["state"].as_str(), Some("ready" | "pending_connection"));
+    let verified = active
+        && f["state"] == "ready"
+        && e.state == EngagementState::Verified
         && f["connection"]["generation"] == f["transport"]["generation"]
         && f["connection"]["verifiedAt"].is_string();
     let last_seen = f["transport"]["lastSeenAt"]
@@ -55,11 +57,18 @@ pub(crate) fn view(
             .is_some_and(|at| at <= now.saturating_add(5000) && now.saturating_sub(at) < 90000);
     Ok(
         json!({"id":id,"name":f["name"].as_str().unwrap_or(id),"ownerMxid":e.owner,"coordinatorMxid":e.coordinator,
-        "serverName":e.server,"state":e.state,"installation":f["installation"],"registrationGeneration":e.registration_generation,
+        "serverName":e.server,"state":if matches!(f["state"].as_str(),Some("paused"|"revoked"|"resuming"|"rotating")){f["state"].clone()}else if e.state==EngagementState::Verified && f["state"]=="pending_connection" {json!("verifying")}else{json!(e.state)},"installation":f["installation"],"registrationGeneration":e.registration_generation,
         "delegationRevision":e.delegation_revision,"delegationExpiresAtMs":e.delegation_expires_at_ms,
         "connectionVerified":verified,"lastVerifiedAt":f["connection"]["verifiedAt"],"lastSeenAt":f["transport"]["lastSeenAt"],
         "connectivity":if online {"online"}else{"offline"},"canConnect":owner&&active,"canExport":active&&(designated||w.may_export_profile(id,actor)),
-        "canInstall":designated&&a.is_some_and(|a|a.state=="approved"),"lastError":f["lastError"],"localTaskStop":f["localTaskStop"]}),
+        "canInstall":designated&&f["pendingAdminOperation"].is_null()&&!matches!(f["state"].as_str(),Some("paused"|"revoked"))&&a.is_some_and(|a|a.state=="approved"),
+        "canPause":admin&&f["pendingAdminOperation"].is_null()&&matches!(f["state"].as_str(),Some("ready"|"pending_connection")),
+        "canResume":admin&&f["pendingAdminOperation"].is_null()&&f["state"]=="paused",
+        "canRevoke":admin&&f["pendingAdminOperation"].is_null()&&f["installation"]=="installed"&&f["state"]!="revoked",
+        "canRotate":admin&&f["pendingAdminOperation"].is_null()&&matches!(f["state"].as_str(),Some("ready"|"pending_connection")),
+        "canInspectQueue":admin,
+        "pendingCredentialChange":if admin { f["pendingAdminOperation"].as_str().map(|key| {let op=&state["fleetAdminOperations"][key];json!({"requestId":key,"kind":op["kind"],"action":op["action"],"rotate":op["rotate"]})}) }else{None},
+        "lastError":f["lastError"],"localTaskStop":f["localTaskStop"],"revocationScope":f["revocationScope"]}),
     )
 }
 

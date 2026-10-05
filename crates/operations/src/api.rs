@@ -38,20 +38,20 @@ pub const SERVICES: &[&str] = &[
     "palpo.requests.open",
     "palpo.accounts.list",
     "palpo.accounts.open",
+    "palpo.fleets.set_state",
+    "palpo.fleets.migrate",
+    "palpo.fleets.queue",
+    "palpo.activity.list",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
 // host may request its complete manifest; only implemented services are granted.
 const PENDING_SERVICES: &[&str] = &[
     "palpo.fleets.register",
-    "palpo.fleets.set_state",
-    "palpo.fleets.migrate",
-    "palpo.fleets.queue",
     "palpo.agents.list",
     "palpo.agents.register",
     "palpo.agents.rename",
     "palpo.agents.retire",
-    "palpo.activity.list",
     "palpo.inbox.activate",
 ];
 
@@ -311,6 +311,10 @@ impl App {
             }
         }
         match input.service.as_str() {
+            "palpo.fleets.set_state"
+            | "palpo.fleets.migrate"
+            | "palpo.fleets.queue"
+            | "palpo.activity.list" => self.fleet_admin(bearer, &input.service, input.args).await,
             "palpo.accounts.list" | "palpo.accounts.open" => {
                 self.account_service(bearer, &input.service, input.args)
                     .await
@@ -409,6 +413,10 @@ impl App {
                 self.store.lock().await.transaction_sql(|state,tx| {
                     let mut workflows = Workflows::load(state)?;
                     let before = serde_json::to_value(&workflows)?;
+                    if service=="palpo.inbox.decide" && input.args["decision"]=="approve"
+                        && let Some(action)=workflows.actions.get(input.args["id"].as_str().unwrap_or_default()) {
+                        crate::fleet_admin::ensure_active(state,action.request.engagement().as_str())?;
+                    }
                     let result = match service {
                         "palpo.notifications.set" => crate::preferences::set(state,&mut workflows,input.args.clone(),actor,now)?,
                         "palpo.agents.control" => json!({"action":crate::lifecycle::submit(&mut workflows,state,tx,input.args.clone(),actor,now)?}),
@@ -419,6 +427,7 @@ impl App {
                                 let mut args=input.args.clone();
                                 let definition=args.as_object_mut().and_then(|o|o.remove("definition"));
                                 let request: WorkflowRequest =serde_json::from_value(args)?;
+                                crate::fleet_admin::ensure_active(state,request.engagement().as_str())?;
                                 json!({"action":match definition {Some(definition)=>workflows.submit_definition(request,definition,actor,now)?,None=>workflows.submit(request,actor,now)?}})
                             }
                         }

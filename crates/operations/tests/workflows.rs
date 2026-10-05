@@ -15,6 +15,8 @@ use serde_json::{Value, json};
 mod association_cases;
 #[path = "support/creation.rs"]
 mod creation_cases;
+#[path = "support/fleet_admin.rs"]
+mod fleet_admin_cases;
 #[path = "support/lifecycle.rs"]
 mod lifecycle_cases;
 #[path = "support/notifications.rs"]

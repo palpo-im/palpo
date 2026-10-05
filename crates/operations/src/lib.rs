@@ -7,6 +7,7 @@ pub mod associations;
 mod connections;
 mod creation;
 mod engagement_setup;
+mod fleet_admin;
 mod intents;
 mod lifecycle;
 pub mod machine;
