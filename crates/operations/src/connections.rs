@@ -58,6 +58,7 @@ pub(crate) fn view(
     Ok(
         json!({"id":id,"name":f["name"].as_str().unwrap_or(id),"ownerMxid":e.owner,"coordinatorMxid":e.coordinator,
         "serverName":e.server,"state":if matches!(f["state"].as_str(),Some("paused"|"revoked"|"resuming"|"rotating")){f["state"].clone()}else if e.state==EngagementState::Verified && f["state"]=="pending_connection" {json!("verifying")}else{json!(e.state)},"installation":f["installation"],"registrationGeneration":e.registration_generation,
+        "transportGeneration":f["transport"]["generation"],
         "delegationRevision":e.delegation_revision,"delegationExpiresAtMs":e.delegation_expires_at_ms,
         "connectionVerified":verified,"lastVerifiedAt":f["connection"]["verifiedAt"],"lastSeenAt":f["transport"]["lastSeenAt"],
         "connectivity":if online {"online"}else{"offline"},"canConnect":owner&&active,"canExport":active&&(designated||w.may_export_profile(id,actor)),
