@@ -356,6 +356,13 @@ impl Workflows {
         result["needsMyAction"] = json!(can_decide);
         result["canDecide"] = json!(can_decide);
         result["canContinue"] = json!(false);
+        if let Some(receipt) = self
+            .outbox
+            .values()
+            .find(|r| r["actionId"] == id && r["state"] == "refused")
+        {
+            result["failureReason"] = receipt["result"]["reason"].clone();
+        }
         result["nextAction"] = if can_decide {
             json!("review")
         } else {
@@ -446,7 +453,12 @@ impl Workflows {
                 || view == "waiting"
                     && !needs
                     && (action.state == "requested" || action.execution == "pending")
-                || view == "history" && (action.state == "rejected" || action.execution == "done")
+                || view == "history"
+                    && (action.state == "rejected"
+                        || matches!(
+                            action.execution.as_str(),
+                            "done" | "ended" | "allocation_refused"
+                        ))
             {
                 rows.push(row);
             }

@@ -241,7 +241,7 @@ fn coordinator(
             || record["serverEngagementId"] != id
             || record["queued"] != true
             || record["transportGeneration"] != fleet["transport"]["generation"]
-            || receipt["state"] != "applied"
+            || !matches!(receipt["state"].as_str(), Some("applied" | "refused"))
         {
             return Err(fail(409, "receipt_binding_conflict"));
         }
@@ -262,8 +262,10 @@ fn coordinator(
                 )?
             }
             Request::Agent(_) => {
-                let agent = text(receipt, "agentId")?;
-                if agent.len() > 128 || !receipt["projectId"].is_null() {
+                if receipt["state"] == "applied" && text(receipt, "agentId")?.len() > 128
+                    || receipt["state"] == "refused" && !receipt["agentId"].is_null()
+                    || !receipt["projectId"].is_null()
+                {
                     return Err(fail(409, "receipt_binding_conflict"));
                 }
                 digest(
@@ -286,7 +288,22 @@ fn coordinator(
         {
             return Err(fail(409, "receipt_digest_conflict"));
         }
-        record["state"] = json!("applied");
+        if receipt["state"] == "refused"
+            && !matches!(
+                receipt["reason"].as_str(),
+                Some(
+                    "insufficient_capacity"
+                        | "authority_changed"
+                        | "invalid_request"
+                        | "project_unavailable"
+                        | "resource_unavailable"
+                        | "request_conflict"
+                )
+            )
+        {
+            return Err(fail(409, "invalid_refusal"));
+        }
+        record["state"] = receipt["state"].clone();
         record["result"] = receipt.clone();
     }
     refresh_executions(workflows, now)
@@ -310,12 +327,16 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
     for record in workflows
         .outbox
         .values()
-        .filter(|r| r["state"] == "applied")
+        .filter(|r| matches!(r["state"].as_str(), Some("applied" | "refused")))
     {
         let id = record["actionId"]
             .as_str()
             .ok_or_else(|| fail(409, "action_not_found"))?;
         let action = &workflows.actions[id];
+        if record["state"] == "refused" {
+            changes.push((id.to_owned(), "allocation_refused"));
+            continue;
+        }
         let next = match &action.request {
             Request::Project(p) => {
                 if workflows

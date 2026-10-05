@@ -184,7 +184,7 @@ pub(crate) fn agents(
         };
         rows.push(json!({"id":action.id,"requestId":request.id,"projectId":request.project_id,
             "fleetId":request.server_engagement_id,"ownerMxid":request.project_owner,"state":action.state,
-            "execution":execution,"usable":usable,"statusFresh":current,
+            "execution":execution,"failureReason":view["failureReason"],"usable":usable,"statusFresh":current,
             "agentDefinition":{"name":display(&view["payload"]["name"],request.id.as_str(),160)},
             "role":display(&view["payload"]["role"],"agent",80),"requestedTokens":request.requested_tokens,
             "allocatedTokens":observed["allocatedTokens"].as_u64(),

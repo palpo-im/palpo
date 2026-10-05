@@ -17,6 +17,8 @@ mod association_cases;
 mod creation_cases;
 #[path = "support/notifications.rs"]
 mod notification_cases;
+#[path = "support/refusals.rs"]
+mod refusal_cases;
 
 fn authority(now: u64) -> Value {
     json!({
