@@ -35,6 +35,8 @@ export const SERVICES = Object.freeze({
   'palpo.inbox.recover': 'Retry a failed project reservation or release its never-used allocation as the designated administrator',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
   'palpo.inbox.seen': 'Mark a notification seen without completing its action',
+  'palpo.actions.room.get': 'Verify your private My Actions room without joining it',
+  'palpo.actions.room.ensure': 'Set up and open your private My Actions room',
   'palpo.notifications.get': 'Read your Palpo notification preferences',
   'palpo.notifications.set': 'Change your Palpo reminders and quiet hours',
   'palpo.inbox.snooze': 'Snooze reminders for an action you can take',
@@ -178,6 +180,8 @@ export class MiniApp {
       case 'palpo.inbox.recover': return mutate(() => this.inbox.recover(args, actor, token));
       case 'palpo.inbox.activate': return mutate(() => this.inbox.activate(args, actor, token));
       case 'palpo.inbox.seen': return this.inbox.seen(args, actor, await this.admin(token));
+      case 'palpo.actions.room.get': fields(args, ['roomId']); return this.actionNotifications.get(actor, args.roomId === undefined ? undefined : text(args.roomId, 'Room ID'));
+      case 'palpo.actions.room.ensure': fields(args, []); return mutate(() => this.actionNotifications.ensure(actor, token));
       case 'palpo.notifications.get': fields(args, []); return this.inbox.preferences.get(actor);
       case 'palpo.notifications.set': return mutate(() => this.inbox.preferences.set(args, actor));
       case 'palpo.inbox.snooze': return mutate(async () => this.inbox.snooze(args, actor, await this.admin(token)));

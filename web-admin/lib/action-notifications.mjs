@@ -25,14 +25,19 @@ export class ActionNotifications {
     const user = await this.palpo.user(actor, this.config.adminToken);
     return !!user?.admin && !user.deactivated && !user.locked && !user.appservice_id;
   }
-  async room(actor) {
+  async room(actor, { create = true, joined = false } = {}) {
+    if (!this.config) throw new ApiError(503, 'action_room_unavailable', 'My Actions rooms are not configured. Use the Inbox.');
     const { botMxid, botToken } = this.config;
-    const identity = await this.palpo.call('/_matrix/client/v3/account/whoami', botToken);
-    if (identity.user_id !== botMxid || identity.is_guest) fail('The notification bot identity could not be verified.');
+    const identity = await this.palpo.call('/_matrix/client/v3/account/whoami', botToken).catch(() => {
+      throw new ApiError(503, 'action_bot_unavailable', 'The notification bot identity could not be verified.');
+    });
+    if (identity.user_id !== botMxid || identity.is_guest) throw new ApiError(503, 'action_bot_unavailable', 'The notification bot identity could not be verified.');
     let binding = this.inbox.state.rooms[actor];
-    const expected = { v: 1, purpose: 'my_actions', ownerMxid: actor, botMxid, serverName: this.service.serverName };
+    const expected = { v: 1, purpose: 'my_actions', ownerMxid: actor, botMxid, serverName: this.service.serverName,
+      ...(binding?.revision ? { revision: binding.revision } : {}) };
     if (binding && binding.botMxid !== botMxid) fail('The saved My Actions room belongs to a different bot.');
-    if (!binding) {
+    if (!binding?.roomId && !create) return null;
+    if (!binding?.roomId) {
       const alias = `palpo_actions_${hash(JSON.stringify(expected)).slice(0, 24)}`;
       let roomId;
       try { roomId = (await this.palpo.call(`/_matrix/client/v3/directory/room/${enc('#' + alias + ':' + this.service.serverName)}`, botToken)).room_id; }
@@ -70,7 +75,43 @@ export class ActionNotifications {
       || get('m.room.member', botMxid)?.membership !== 'join'
       || !['join', 'invite'].includes(get('m.room.member', actor)?.membership)
       || state.some(e => e.type === 'm.room.member' && ['join', 'invite'].includes(e.content?.membership) && ![actor, botMxid].includes(e.state_key))) fail('Restore the private My Actions room settings and membership. Pending actions remain in the Inbox.');
+    if (joined && get('m.room.member', actor)?.membership !== 'join') fail('Join My Actions to open its board. Pending actions remain in the Inbox.');
     return binding.roomId;
+  }
+  // Read-only lookup. A matching name, Matrix event or cached binding is never
+  // sufficient to mount a board. Revalidate bot identity, privacy and membership.
+  async get(actor, roomId) {
+    if (!this.config || !this.inbox.state.rooms[actor] || (roomId && this.inbox.state.rooms[actor].roomId !== roomId)) return { room: null };
+    const binding = this.inbox.state.rooms[actor];
+    const verified = await this.room(actor, { create: false, joined: true });
+    if (this.inbox.state.rooms[actor] !== binding) fail('My Actions changed during verification. Reopen the room.');
+    if (!verified) return { room: null };
+    return { room: { v: 1, purpose: 'my_actions', revision: this.inbox.state.rooms[actor].revision ?? 1, account: actor, roomId: verified,
+      botMxid: this.config.botMxid, serverName: this.service.serverName } };
+  }
+  // Only an explicit app operation may join the account to its private room.
+  // Repeating it recovers a lost reply and never creates a second valid room.
+  async ensure(actor, token) {
+    let roomId;
+    try { roomId = await this.room(actor); }
+    catch (cause) {
+      if (!this.inbox.state.rooms[actor]?.roomId || !(cause.code === 'action_room_not_private' || [403, 404].includes(cause.status))) throw cause;
+      // Leaving disables delivery. Only this explicit setup creates a new private
+      // room; never re-invite into a room whose privacy could have been lost.
+      this.inbox.store.atomic(() => {
+        const previous = this.inbox.state.rooms[actor];
+        this.inbox.state.rooms[actor] = { botMxid: this.config.botMxid, revision: (previous.revision ?? 1) + 1, roomId: null };
+        for (const notice of Object.values(this.inbox.state.notices)) if (notice.recipient === actor && notice.delivery) {
+          notice.delivery = null; notice.dueAt = this.now();
+        }
+      });
+      roomId = await this.room(actor);
+    }
+    const state = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/state`, this.config.botToken);
+    if (state.find(e => e.type === 'm.room.member' && e.state_key === actor)?.content?.membership !== 'join') {
+      await this.palpo.call(`/_matrix/client/v3/join/${enc(roomId)}`, token, { method: 'POST', body: {} });
+    }
+    return (await this.get(actor, roomId)).room;
   }
   async tick() {
     if (!this.config) return;
@@ -113,7 +154,7 @@ export class ActionNotifications {
           const label = pending ? 'A Palpo action needs your attention.' : 'A Palpo action has an update.';
           const route = `${new URL(this.config.homeserverOrigin).origin}/_palpo/miniapp/action/${row.id}`;
           this.inbox.store.atomic(() => {
-            notice.delivery = { roomId, transactionId: notice.id + '_' + notice.delivered, content: {
+            notice.delivery = { roomId, transactionId: notice.id + '_' + notice.delivered + '_room_' + (this.inbox.state.rooms[notice.recipient].revision ?? 1), content: {
               msgtype: pending ? 'm.text' : 'm.notice', body: `${label}\nOpen in Rinx: ${route}`,
               format: 'org.matrix.custom.html', formatted_body: `${label} <a href="${route}">Open action</a>`,
               'm.mentions': { user_ids: pending ? [notice.recipient] : [] },

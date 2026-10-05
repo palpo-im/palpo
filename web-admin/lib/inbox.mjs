@@ -113,7 +113,11 @@ export class Inbox {
     const selected = allowed.filter(row => row.kind === 'contribution' ? ['history', 'all'].includes(view) : view === 'all' || (view === 'needs_action' ? this.pending(row, actor, admin)
       : view === 'waiting' ? !this.pending(row, actor, admin) && !complete(row)
         : complete(row) && !this.pending(row, actor, admin)));
-    selected.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    // Durable pending work has no display cap or expiry inherited from Glance.
+    // Explicit deadlines first, then oldest requests; history stays recent-first.
+    const deadline = row => Number.isFinite(row.deadlineAt) ? row.deadlineAt : Number.MAX_SAFE_INTEGER;
+    selected.sort((a, b) => (view === 'needs_action' ? deadline(a) - deadline(b) || a.createdAt - b.createdAt
+      : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
     return { actions: selected.slice(offset, offset + limit).map(row => this.view(row, actor, admin)), total: selected.length,
       pendingCount: allowed.filter(row => this.pending(row, actor, admin)).length,
       room: this.state.rooms[actor] ? { roomId: this.state.rooms[actor].roomId, botMxid: this.state.rooms[actor].botMxid, serverName: this.service.serverName } : null };

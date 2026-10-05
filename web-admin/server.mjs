@@ -50,6 +50,7 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
   inbox.projectCommands = projectCommands;
   const miniapp = new MiniApp(service, workflow, accounts, inbox, miniappOptions);
   const actionNotifications = new ActionNotifications(inbox, actionConfig);
+  miniapp.actionNotifications = actionNotifications;
   const cookie = (value, clear = false) => `palpo_admin=${value}; Path=/; HttpOnly; SameSite=Strict${origin.protocol === 'https:' ? '; Secure' : ''}; Max-Age=${clear ? 0 : Math.floor(sessionTtl / 1000)}`;
   const error = (status, code, message) => { throw new ApiError(status, code, message); };
   const server = createServer(async (req, res) => {

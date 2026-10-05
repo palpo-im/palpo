@@ -9,6 +9,7 @@ if (!Number.isSafeInteger(port) || port < 1024 || !directory) throw new Error('p
 const f = accountFixture({ path: directory + '/palpo.sqlite', transportOrigin: 'https://transport.example.test', relayOrigin: 'http://relay.example.test' });
 const server = createApp({ service: f.service, publicOrigin: `http://127.0.0.1:${port}`, startAccountWorker: false, startActionWorker: false,
   accountConfig: f.config,
+  actionConfig: { homeserverOrigin: 'https://matrix.example.test', botMxid: '@other:example.test', botToken: 'other-secret', adminToken: 'admin-secret', approvers: ['@admin:example.test'] },
   inboxOptions: { requireProjectApproval: true, approvers: ['@admin:example.test'] } });
 const workflow = server.inbox.workflow;
 await server.accounts.tick(); f.joinAdmin();
