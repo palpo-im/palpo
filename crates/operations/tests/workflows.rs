@@ -490,7 +490,7 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     uncertain["statuses"][0]["bound"] = json!(false);
     uncertain["statuses"][0]["fulfillment"] = json!({"phase":"provisioning","incomplete":true});
     assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::OK);
-    assert_eq!(f.machine(&fleet, "updates", uncertain).await.0, StatusCode::OK);
+    assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::OK);
     for actor in [&manager, &coordinator] {
         let view = f.call(actor, "palpo.inbox.get", json!({"id":id})).await.1;
         assert_eq!(view["action"]["execution"], "provisioning_unknown");
@@ -502,6 +502,23 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     assert_eq!(listed["requests"][0]["usable"], false);
     assert_eq!(listed["requests"][0]["allocatedTokens"], 100000);
     assert_eq!(listed["requests"][0]["failureReason"], "provisioning_outcome_unknown");
+    // Native terminal failure is projected as ended; the original failed
+    // provisioning effect still identifies the setup failure to both audiences.
+    let mut failed = uncertain;
+    failed["sequence"] = json!(6);
+    failed["statuses"][0]["state"] = json!("ended");
+    failed["statuses"][0]["lifecycle"]["provisionEffect"] = json!("failed");
+    failed["statuses"][0]["lifecycle"]["runtimeState"] = json!("failed");
+    assert_eq!(f.machine(&fleet, "updates", failed.clone()).await.0, StatusCode::OK);
+    assert_eq!(f.machine(&fleet, "updates", failed).await.0, StatusCode::OK);
+    for actor in [&manager, &coordinator] {
+        let view = f.call(actor, "palpo.inbox.get", json!({"id":id})).await.1;
+        assert_eq!(view["action"]["execution"], "provisioning_failed");
+        assert_eq!(view["action"]["failureReason"], "provisioning_failed");
+    }
+    let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
+    assert_eq!(listed["requests"][0]["usable"], false);
+    assert_eq!(listed["requests"][0]["allocatedTokens"], 100000);
     assert_eq!(
         f.app.store.lock().await.read().unwrap()["rustWorkflows"]["outbox"]
             .as_object()

@@ -489,12 +489,12 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                     "ready"
                 } else if status["ready"] == true {
                     "unknown"
-                } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
-                    "ended"
                 } else if status["lifecycle"]["provisionEffect"] == "uncertain" {
                     "provisioning_unknown"
                 } else if status["lifecycle"]["provisionEffect"] == "failed" {
                     "provisioning_failed"
+                } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
+                    "ended"
                 } else {
                     "provisioning"
                 }
@@ -517,12 +517,12 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                 "ready"
             } else if status["ready"] == true || status["receivedAtMs"] == 0 {
                 "unknown"
-            } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
-                "ended"
             } else if status["lifecycle"]["provisionEffect"] == "uncertain" {
                 "provisioning_unknown"
             } else if status["lifecycle"]["provisionEffect"] == "failed" {
                 "provisioning_failed"
+            } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
+                "ended"
             } else {
                 "provisioning"
             };
