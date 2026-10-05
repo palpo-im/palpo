@@ -196,6 +196,15 @@ fn coordinator(
                 {
                     return Err(fail(409, "projection_binding_conflict"));
                 }
+                if let Some(previous) = workflows.resource_details.get(grant.id.as_str())
+                    && (previous["resourceId"] != body["resourceId"]
+                        || previous["period"] != body["period"]
+                        || previous["periodKey"] != body["periodKey"])
+                {
+                    return Err(fail(409, "resource_binding_conflict"));
+                }
+                workflows.resource_details.insert(grant.id.as_str().into(),
+                    json!({"resourceId":body["resourceId"],"period":body["period"],"periodKey":body["periodKey"]}));
                 snapshot.resources.insert(grant.id.as_str().into(), grant);
             }
             Some("project" | "receipt") => {}

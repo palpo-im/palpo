@@ -80,6 +80,47 @@ impl Matrix {
         self.send(Method::GET, url, token, None).await
     }
 
+    /// Build paths from encoded segments; Matrix IDs are never URL fragments or queries.
+    pub async fn segments(
+        &self,
+        method: Method,
+        path: &[&str],
+        token: &str,
+        user: Option<&str>,
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| fail(400, "invalid_matrix_path"))?
+            .clear()
+            .extend(path);
+        if let Some(user) = user {
+            url.query_pairs_mut().append_pair("user_id", user);
+        }
+        self.send(method, url, token, body).await
+    }
+
+    pub(crate) async fn messages(
+        &self,
+        room: &str,
+        token: &str,
+        from: Option<&str>,
+        limit: u16,
+    ) -> Result<Value> {
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| fail(400, "invalid_matrix_path"))?
+            .clear()
+            .extend(["_matrix", "client", "v3", "rooms", room, "messages"]);
+        url.query_pairs_mut()
+            .append_pair("dir", "b")
+            .append_pair("limit", &limit.to_string());
+        if let Some(from) = from {
+            url.query_pairs_mut().append_pair("from", from);
+        }
+        self.send(Method::GET, url, token, None).await
+    }
+
     async fn send(
         &self,
         method: Method,

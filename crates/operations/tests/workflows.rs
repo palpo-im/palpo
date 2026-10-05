@@ -11,6 +11,11 @@ use salvo::prelude::*;
 use salvo::test::{ResponseExt, TestClient};
 use serde_json::{Value, json};
 
+#[path = "support/creation.rs"]
+mod creation_cases;
+#[path = "support/notifications.rs"]
+mod notification_cases;
+
 fn authority(now: u64) -> Value {
     json!({
         "engagements":{"engagement_a":{"id":"engagement_a","server":"example.test","owner":"@provider:example.test","coordinator":"@coordinator:example.test",
@@ -39,6 +44,9 @@ fn approval(request: &Value, command_id: &str) -> Value {
 
 #[handler]
 async fn matrix_stub(req: &mut salvo::Request, depot: &mut Depot, res: &mut Response) {
+    if creation_cases::matrix(req, depot, res).await {
+        return;
+    }
     let revoked = depot.get_typed::<Arc<AtomicBool>>().unwrap();
     let token = req
         .headers()
@@ -54,10 +62,11 @@ async fn matrix_stub(req: &mut salvo::Request, depot: &mut Depot, res: &mut Resp
         return;
     }
     let user = match token {
-        "manager-token" => "manager",
+        "manager-token" | "manager-new-token" => "manager",
         "coordinator-token" => "coordinator",
         "admin-token" => "admin",
         "provider-token" => "provider",
+        "notices-token" => "notices",
         _ => "",
     };
     if user.is_empty() || revoked.load(Ordering::SeqCst) {
@@ -82,6 +91,7 @@ struct Fixture {
     service: Service,
     matrix_task: tokio::task::JoinHandle<()>,
     revoked: Arc<AtomicBool>,
+    rooms: Arc<std::sync::Mutex<creation_cases::Rooms>>,
     _directory: tempfile::TempDir,
 }
 impl Drop for Fixture {
@@ -107,9 +117,16 @@ impl Fixture {
     }
     async fn new() -> Self {
         let revoked = Arc::new(AtomicBool::new(false));
+        let rooms = Arc::new(std::sync::Mutex::new(creation_cases::Rooms::default()));
         let router = Router::new()
             .hoop(affix_state::inject(revoked.clone()))
-            .push(Router::with_path("{**rest}").get(matrix_stub));
+            .hoop(affix_state::inject(rooms.clone()))
+            .push(
+                Router::with_path("{**rest}")
+                    .get(matrix_stub)
+                    .post(matrix_stub)
+                    .put(matrix_stub),
+            );
         let acceptor = TcpListener::new("127.0.0.1:0").bind().await;
         let addr = acceptor.holdings()[0]
             .local_addr
@@ -146,6 +163,7 @@ impl Fixture {
             service,
             matrix_task,
             revoked,
+            rooms,
             _directory: directory,
         }
     }

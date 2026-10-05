@@ -53,6 +53,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let address =
         std::env::var("PALPO_OPERATIONS_LISTEN").unwrap_or_else(|_| "127.0.0.1:8091".into());
+    if let Ok(path) = std::env::var("PALPO_ACTIONS_BOT_TOKEN_FILE") {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.is_file() || metadata.len() > 8192 {
+            return Err("notification token must be a bounded regular file".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err("notification token file must be private (0600)".into());
+            }
+        }
+        app = app.with_notifications(palpo_operations::notifications::Configuration {
+            bot: std::env::var("PALPO_ACTIONS_BOT_MXID")?.try_into()?,
+            token: std::fs::read_to_string(path)?.trim().to_owned(),
+            public_origin: std::env::var("PALPO_ACTIONS_PUBLIC_ORIGIN")?,
+            quiet_start: std::env::var("PALPO_ACTIONS_QUIET_START_UTC")
+                .unwrap_or_else(|_| "0".into())
+                .parse()?,
+            quiet_end: std::env::var("PALPO_ACTIONS_QUIET_END_UTC")
+                .unwrap_or_else(|_| "0".into())
+                .parse()?,
+        })?;
+    }
     let acceptor = TcpListener::new(address).try_bind().await?;
     let server = Server::new(acceptor);
     let handle = server.handle();
@@ -73,6 +97,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         handle.stop_graceful(Some(std::time::Duration::from_secs(10)));
     });
+    let notifications = palpo_operations::notifications::start(app.clone());
     server.serve(router(app)).await;
+    notifications.abort();
+    let _ = notifications.await;
     Ok(())
 }

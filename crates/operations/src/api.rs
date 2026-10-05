@@ -24,13 +24,13 @@ pub const SERVICES: &[&str] = &[
     "palpo.inbox.snooze",
     "palpo.projects.list",
     "palpo.requests.list",
+    "palpo.catalog.list",
+    "palpo.requests.create",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
 // host may request its complete manifest; only implemented services are granted.
 const PENDING_SERVICES: &[&str] = &[
-    "palpo.catalog.list",
-    "palpo.requests.create",
     "palpo.fleets.list",
     "palpo.fleets.register",
     "palpo.fleets.install",
@@ -49,8 +49,8 @@ const PENDING_SERVICES: &[&str] = &[
 ];
 
 #[derive(Clone)]
-struct Session {
-    token: String,
+pub(crate) struct Session {
+    pub(crate) token: String,
     identity: Identity,
     services: Vec<String>,
     expires_at: u64,
@@ -64,6 +64,7 @@ pub struct App {
     host: String,
     pub(crate) transport_host: Option<String>,
     pub(crate) relay_host: Option<String>,
+    pub(crate) notifications: Option<crate::notifications::Configuration>,
     ttl_ms: u64,
 }
 
@@ -102,6 +103,7 @@ impl App {
             host,
             transport_host: None,
             relay_host: None,
+            notifications: None,
             ttl_ms,
         }))
     }
@@ -125,6 +127,17 @@ impl App {
         Ok(self)
     }
 
+    pub fn with_notifications(
+        mut self: Arc<Self>,
+        config: crate::notifications::Configuration,
+    ) -> Result<Arc<Self>> {
+        config.validate(&self)?;
+        Arc::get_mut(&mut self)
+            .ok_or_else(|| fail(409, "notification_configuration_locked"))?
+            .notifications = Some(config);
+        Ok(self)
+    }
+
     async fn identity(&self, session: &Session, identity: &Identity) -> Result<Value> {
         let workflows = Workflows::load(&self.store.lock().await.read()?)?;
         let can_approve = workflows.authority.engagements.values().any(|e| {
@@ -137,7 +150,7 @@ impl App {
             json!({"version":1,"userId":identity.user,"isAdmin":identity.admin,"canApproveProjects":can_approve,
             "serverName":self.matrix.server(),"services":session.services,"callbackOrigins":[],"outboundAvailable":false,
             "features":{"inbox":true,"contributions":false,"projectApproval":can_approve,"remoteAgentDecisions":false,"topUps":true,
-                "rustWorkflowRequests":1,"coordinatorTransport":1,"runtimeExecution":self.transport_host.is_some(),"matrixNotifications":false}}),
+                "rustWorkflowRequests":1,"coordinatorTransport":1,"runtimeExecution":self.transport_host.is_some(),"matrixNotifications":self.notifications.is_some()}}),
         )
     }
 
@@ -195,7 +208,7 @@ impl App {
         Ok(response)
     }
 
-    async fn authenticate(&self, bearer: &str) -> Result<(String, Session, Identity)> {
+    pub(crate) async fn authenticate(&self, bearer: &str) -> Result<(String, Session, Identity)> {
         let key = digest(&json!(bearer))?;
         let session = self
             .sessions
@@ -302,10 +315,26 @@ impl App {
                 let state = self.store.lock().await.read()?;
                 let workflows = Workflows::load(&state)?;
                 if input.service == "palpo.projects.list" {
-                    crate::views::projects(&workflows, actor, now_ms(), page)
+                    crate::views::projects(&state, &workflows, actor, now_ms(), page)
                 } else {
                     crate::views::agents(&state, &workflows, actor, now_ms(), page)
                 }
+            }
+            "palpo.catalog.list" => {
+                let state = self.store.lock().await.read()?;
+                crate::views::catalog(
+                    &state,
+                    &Workflows::load(&state)?,
+                    actor,
+                    now_ms(),
+                    input.args,
+                )
+            }
+            "palpo.requests.create" => self.create_agent(bearer, input.args).await,
+            "palpo.inbox.submit"
+                if input.args["kind"] == "project" && input.args.get("fleetId").is_some() =>
+            {
+                self.create_project(bearer, input.args).await
             }
             service => {
                 // Recheck borrowed identity and expiry after waiting in the same

@@ -133,6 +133,10 @@ pub struct Action {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
+    /// Runtime-published parent resource and accounting period for each grant.
+    /// The allocation ID is the authority; a catalog resource alone grants none.
+    #[serde(default)]
+    pub resource_details: BTreeMap<String, Value>,
     #[serde(default)]
     pub submission_intents: BTreeMap<String, Value>,
     #[serde(default)]
@@ -163,7 +167,13 @@ impl Workflows {
         }
         let result = self.submit(request, actor, now)?;
         self.definitions.insert(expected, definition);
-        Ok(result)
+        self.view(
+            result["id"]
+                .as_str()
+                .ok_or_else(|| fail(503, "workflow_state_invalid"))?,
+            actor,
+            now,
+        )
     }
 
     pub(crate) fn enqueue_commands(

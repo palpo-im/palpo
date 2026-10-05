@@ -18,7 +18,8 @@ equivalent Rust implementations and the cutover gates below pass.
 | `lib/miniapp.mjs` | `api.rs`, `matrix.rs` | Borrowed Matrix login, scoped in-memory sessions, revalidation, disconnect |
 | `lib/miniapp.mjs` project/agent reads | `views.rs` | Role-scoped pagination, distinct approval/execution state, lower-bound token observations with freshness |
 | `lib/inbox.mjs` | `workflow.rs` | Typed project/agent/top-up requests, coordinator decisions, visibility, seen/snooze, durable receipts |
-| `lib/action-notifications.mjs` | `workflow.rs` | Durable notification intents only; Matrix delivery is still pending |
+| `lib/action-notifications.mjs` | `notifications.rs` | Durable private My Actions rooms, idempotent delivery, reminders, quiet hours and pinned Inbox board |
+| `lib/workflow.mjs` creation forms | `creation.rs`, `rooms.rs` | Funded catalog, owner room preparation, frozen project/agent submissions and lost-reply reconciliation |
 | `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
 | `lib/workflow.mjs`, `lib/service.mjs` | contract, decision outbox, `updates.rs` | Immutable definitions delivered to Hagency; scoped resource/project projections and execution receipts |
 
@@ -57,7 +58,7 @@ Duplicate receipts do not execute another allocation. Old source observations
 stay stale even when delivered now. Token usage stays unknown when unreported;
 measurement time, evidence, completeness and quota pause are preserved. App
 Service registration and machine credential generations are checked separately.
-Matrix room preparation, profile installation and notifications remain pending.
+Profile installation and association approval remain pending.
 
 ## Run in an isolated development environment
 
@@ -91,6 +92,7 @@ Only these services can be granted:
 - `palpo.inbox.list`, `palpo.inbox.get`, `palpo.inbox.submit`
 - `palpo.inbox.decide`, `palpo.inbox.seen`, `palpo.inbox.snooze`
 - `palpo.projects.list`, `palpo.requests.list`
+- `palpo.catalog.list`, `palpo.requests.create`
 
 Project and agent reads take optional `offset` and `limit` (1–100, default 50).
 They return only records belonging to the caller or its current engagement
@@ -99,7 +101,13 @@ visible request, including approved requests awaiting Hagency execution. Missing
 allocation or usage stays null. Usage is an attributed lower bound, never an
 exact remaining balance; old samples retain their value and are marked stale.
 Machine credential rotation invalidates the previous generation's live status.
-Project creation controls remain unavailable until room preparation is ported.
+Project creation selects published, funded resource allocation IDs. The manager
+prepares its private project and encrypted approval rooms before submitting the
+frozen definition. This creates no capacity grant; the coordinator decides the
+request and Hagency rechecks room membership before reporting readiness. Room
+plans persist before creation and reconcile aliases/creation bindings after lost
+replies. Agent forms derive every actor, room and authority binding server-side.
+An access-token change reconciles the original Matrix request event before retry.
 
 An owner can submit a top-up form through `palpo.inbox.submit` with
 `kind: "token_top_up"`, `agentActionId`, a stable `requestId`,
@@ -122,8 +130,26 @@ project revisions are checked against server state, not trusted from the caller.
 The reviewed existing manifest can request its full service list; the session
 grants only the implemented intersection. Unknown capabilities are refused.
 The paired [Rinx adapter](https://github.com/hagency-org/Rinx/pull/65) follows
-those grants and supports the Rust decision intent and read models. Legacy flat
-creation forms remain unavailable until their Rust preparation route is ported.
+those grants and supports the Rust decision intent and read models. Project forms
+send allocation IDs in `resourceIds`; agent forms additionally bind
+`resourceAllocationId` while `agentDefinition.resourceId` identifies its parent
+resource. A global catalog resource without a funded grant is never requestable.
+
+## My Actions delivery
+
+Configure `PALPO_ACTIONS_BOT_MXID`, `PALPO_ACTIONS_BOT_TOKEN_FILE` (a private
+0600 regular file) and `PALPO_ACTIONS_PUBLIC_ORIGIN` to enable the Rust worker.
+The token belongs only to a dedicated Matrix notification bot. It is never
+stored in workflow JSON, returned to the mini-app, or included in cards.
+`PALPO_ACTIONS_QUIET_START_UTC` and `PALPO_ACTIONS_QUIET_END_UTC` are minutes after
+midnight (0–1439); equal values disable quiet hours. The worker runs every 30
+seconds, checks canonical revisions and current visibility, verifies private
+room membership/settings, and retries the same Matrix transaction after a lost
+reply. Reminders occur after one hour, one day and two days while action remains
+required. Seen/dismissed messages do not complete requests; snooze delays the
+recipient's reminder. Notices contain an action route and identity binding,
+never definitions, credentials or private project room details. A separately
+retryable pinned board projects the latest authorized pending count.
 
 ## Authority and migration
 
@@ -168,9 +194,9 @@ new role bindings. Explicit reconciliation is required before production cutover
 1. Rust engagement association, designated-admin approval/profile export,
    coordinator delegation and real connection proof; independent registrations
    for multiple engagements, including those with the same Matrix hostname.
-2. Rust equivalents for remaining fleet/admin routes, account operations and
-   Matrix notification workers. Relay/poll/ACK/updates are implemented;
-   retirement, room preparation and legacy reconciliation still need completion.
+2. Rust equivalents for remaining fleet/admin routes and account operations.
+   Relay/poll/ACK/updates, room preparation and Matrix action notifications are
+   implemented; retirement and legacy reconciliation still need completion.
 3. Hagency command authentication, hierarchy-aware transactional reservations,
    provisioning and receipts are implemented in the paired Hagency integration
    branch and still require combined acceptance. One coordinator decision must
