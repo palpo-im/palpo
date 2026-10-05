@@ -2,7 +2,7 @@ use palpo_operations::notifications::{Configuration, tick};
 
 use super::*;
 
-fn config() -> Configuration {
+pub(super) fn config() -> Configuration {
     Configuration {
         bot: "@notices:example.test".to_owned().try_into().unwrap(),
         token: "notices-token".into(),
@@ -11,6 +11,77 @@ fn config() -> Configuration {
         quiet_end: 0,
     }
 }
+
+#[tokio::test]
+async fn explicit_action_room_setup_joins_once_and_repairs_only_on_owner_request() {
+    let f = Fixture::configured(true).await;
+    let manager = f.session("manager").await;
+    assert!(
+        f.call(&manager, "palpo.actions.room.get", json!({}))
+            .await
+            .1["room"]
+            .is_null()
+    );
+    assert_eq!(f.rooms.lock().unwrap().create_count, 0);
+    let (code, room) = f
+        .call(&manager, "palpo.actions.room.ensure", json!({}))
+        .await;
+    assert_eq!(code, StatusCode::OK, "{room}");
+    assert_eq!(room["account"], "@manager:example.test");
+    assert_eq!(room["revision"], 1);
+    assert_eq!(
+        f.call(&manager, "palpo.actions.room.ensure", json!({}))
+            .await
+            .1,
+        room
+    );
+    assert_eq!(f.rooms.lock().unwrap().create_count, 1);
+    let id = room["roomId"].as_str().unwrap();
+    assert_eq!(
+        f.call(&manager, "palpo.actions.room.get", json!({"roomId":id}))
+            .await
+            .1["room"],
+        room
+    );
+    let provider = f.session("provider").await;
+    assert!(
+        f.call(&provider, "palpo.actions.room.get", json!({"roomId":id}))
+            .await
+            .1["room"]
+            .is_null()
+    );
+    f.rooms.lock().unwrap().states.get_mut(id).unwrap().as_array_mut().unwrap().push(json!({"type":"m.room.member","state_key":"@intruder:example.test","content":{"membership":"join"}}));
+    assert_eq!(
+        f.call(&manager, "palpo.actions.room.get", json!({"roomId":id}))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.rooms.lock().unwrap().create_count,
+        1,
+        "read cannot repair or re-invite"
+    );
+    let (code, repaired) = f
+        .call(&manager, "palpo.actions.room.ensure", json!({}))
+        .await;
+    assert_eq!(code, StatusCode::OK, "{repaired}");
+    assert_eq!(repaired["revision"], 2);
+    assert_ne!(repaired["roomId"], room["roomId"]);
+    assert_eq!(
+        f.call(&manager, "palpo.actions.room.ensure", json!({}))
+            .await
+            .1,
+        repaired
+    );
+    assert_eq!(f.rooms.lock().unwrap().create_count, 2);
+    assert!(
+        f.call(&manager, "palpo.actions.room.get", json!({"roomId":id}))
+            .await
+            .1["room"]
+            .is_null()
+    );
+}
 async fn request(f: &Fixture) -> String {
     let manager = f.session("manager").await;
     let (status, created) = f
@@ -18,6 +89,106 @@ async fn request(f: &Fixture) -> String {
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     created["action"]["id"].as_str().unwrap().into()
+}
+
+#[tokio::test]
+async fn account_preferences_replay_conflict_and_pause_delivery_without_resolving_actions() {
+    let f = Fixture::new().await;
+    let id = request(&f).await;
+    let actor = f.session("coordinator").await;
+    let manager = f.session("manager").await;
+    let body = json!({"expectedRevision":0,"enabled":false,"remindersEnabled":false,
+        "reminderMinutes":["15","30"],"quietHours":null});
+    let (code, saved) = f
+        .call(&actor, "palpo.notifications.set", body.clone())
+        .await;
+    assert_eq!(code, StatusCode::OK, "{saved}");
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(
+        f.call(&actor, "palpo.notifications.set", body.clone())
+            .await
+            .1,
+        saved
+    );
+    assert_eq!(
+        f.call(&manager, "palpo.notifications.get", json!({}))
+            .await
+            .1["revision"],
+        0
+    );
+    let mut conflict = body.clone();
+    conflict["enabled"] = json!(true);
+    assert_eq!(
+        f.call(&actor, "palpo.notifications.set", conflict.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let now = now_ms();
+    tick(&f.app, &config(), now).await.unwrap();
+    let w = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
+    assert_eq!(w.actions[&id].state, "requested");
+    assert!(
+        w.notices
+            .values()
+            .filter(|n| n["recipient"] == "@coordinator:example.test")
+            .all(|n| n["delivered"] == 0)
+    );
+    // Settings persist outside the borrowed app session. Reopening cannot reset
+    // a disabled preference or grant a different actor access to it.
+    let renewed = f.session("coordinator").await;
+    assert_eq!(
+        f.call(&renewed, "palpo.notifications.get", json!({}))
+            .await
+            .1,
+        saved
+    );
+    conflict["expectedRevision"] = json!(1);
+    assert_eq!(
+        f.call(&renewed, "palpo.notifications.set", conflict.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    tick(&f.app, &config(), now + 1000).await.unwrap();
+    tick(&f.app, &config(), now + 901000).await.unwrap();
+    let w = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
+    assert!(
+        w.notices
+            .values()
+            .filter(|n| n["recipient"] == "@coordinator:example.test")
+            .all(|n| n["delivered"] == 1)
+    );
+    conflict["expectedRevision"] = json!(2);
+    conflict["remindersEnabled"] = json!(true);
+    assert_eq!(
+        f.call(&renewed, "palpo.notifications.set", conflict.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    tick(&f.app, &config(), now + 902000).await.unwrap();
+    let w = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
+    assert!(
+        w.notices
+            .values()
+            .filter(|n| n["recipient"] == "@coordinator:example.test")
+            .all(|n| n["delivered"] == 2)
+    );
+    conflict["expectedRevision"] = json!(3);
+    conflict["quietHours"] = json!({"start":"22:00","end":"08:00","timeZone":"No/Such_Zone"});
+    assert_eq!(
+        f.call(&renewed, "palpo.notifications.set", conflict)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        f.call(&renewed, "palpo.notifications.get", json!({}))
+            .await
+            .1["revision"],
+        3
+    );
 }
 
 #[tokio::test]
@@ -73,6 +244,40 @@ async fn notices_retry_lost_reply_pin_board_and_seen_does_not_end_reminders() {
         .unwrap();
     // The test delegation expires at one hour; stale coordinators receive no reminder.
     assert_eq!(notice["cancelled"], true);
+    assert_eq!(w.actions[&id].state, "requested");
+}
+
+#[tokio::test]
+async fn overdue_reminders_collapse_into_one_delivery_after_quiet_hours() {
+    let f = Fixture::new().await;
+    let id = request(&f).await;
+    let now = now_ms();
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            let mut w = Workflows::load(state)?;
+            w.authority
+                .engagements
+                .get_mut("engagement_a")
+                .unwrap()
+                .delegation_expires_at_ms = now + 7 * 86400000;
+            w.save(state)
+        })
+        .unwrap();
+    tick(&f.app, &config(), now + 3 * 86400000).await.unwrap();
+    tick(&f.app, &config(), now + 3 * 86400000 + 60001)
+        .await
+        .unwrap();
+    let w = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
+    let notice = w
+        .notices
+        .values()
+        .find(|n| n["recipient"] == "@coordinator:example.test")
+        .unwrap();
+    assert_eq!(notice["delivered"], 1);
+    assert_eq!(notice["finished"], true);
     assert_eq!(w.actions[&id].state, "requested");
 }
 

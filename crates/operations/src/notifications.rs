@@ -10,6 +10,8 @@ use crate::api::App;
 use crate::workflow::Workflows;
 use crate::{Result, digest, fail};
 
+mod room_api;
+
 pub struct Configuration {
     pub bot: MatrixUserId,
     pub token: String,
@@ -125,18 +127,39 @@ pub async fn tick(app: &App, config: &Configuration, now: u64) -> Result<()> {
             update(app, &id, |n| n["cancelled"] = json!(true)).await?;
             continue;
         }
+        let prefs = crate::preferences::load(&app.store.lock().await.read()?, &recipient)?;
+        let delivered = n["delivered"].as_u64().unwrap_or(0);
+        if !prefs.enabled || delivered > 0 && !prefs.reminders_enabled {
+            update(app, &id, |n| n["dueAt"] = json!(now.saturating_add(60000))).await?;
+            continue;
+        }
+        // Check wall time each minute so daylight-saving gaps and repeated hours
+        // cannot silently shorten the recipient's quiet window.
+        if prefs.quiet(now)? {
+            update(app, &id, |n| n["dueAt"] = json!(now.saturating_add(60000))).await?;
+            continue;
+        }
         if let Some(until) = config.quiet_until(now) {
             update(app, &id, |n| n["dueAt"] = json!(until)).await?;
             continue;
         }
-        let delivered = n["delivered"].as_u64().unwrap_or(0);
         let result=async {
             let room=room(app,config,&recipient).await?;
             let label=if pending {"A Palpo action needs your attention."}else{"A Palpo action has an update."};
             let route=format!("{}/_palpo/miniapp/action/{action_id}",config.public_origin.trim_end_matches('/'));
-            let message=json!({"msgtype":"m.notice","body":format!("{label}\nOpen in Rinx: {route}"),
+            let message=json!({"msgtype":if pending {"m.text"}else{"m.notice"},"body":format!("{label}\nOpen in Rinx: {route}"),
+                "m.mentions":{"user_ids":if pending {vec![recipient.as_str()]}else{vec![]}},
                 "im.palpo.action.v1":{"v":1,"id":action_id,"revision":n["revision"],"appId":crate::api::APP_ID,"ownerMxid":recipient,"serverName":app.matrix.server()}});
-            let sent=app.matrix.segments(Method::PUT,&["_matrix","client","v3","rooms",&room,"send","m.room.message",&format!("{id}_{delivered}")],&config.token,None,Some(&message)).await?;
+            // Freeze the exact transaction before its first send. Preference,
+            // clock or process changes cannot alter an ambiguous retry.
+            let envelope=if n["delivery"].is_null() {
+                let envelope=json!({"roomId":room,"transactionId":format!("{id}_{delivered}"),"content":message});
+                update(app,&id,|n|n["delivery"]=envelope.clone()).await?;
+                envelope
+            }else{n["delivery"].clone()};
+            if envelope["roomId"]!=room {return Err(fail(409,"notice_room_changed"));}
+            let transaction=envelope["transactionId"].as_str().ok_or_else(||fail(503,"invalid_notice"))?;
+            let sent=app.matrix.segments(Method::PUT,&["_matrix","client","v3","rooms",&room,"send","m.room.message",transaction],&config.token,None,Some(&envelope["content"])).await?;
             let event=sent["event_id"].as_str().filter(|id|id.starts_with('$') && id.len()<=255).ok_or_else(||fail(502,"invalid_notice_receipt"))?;
             Ok::<_,crate::Error>((room,event.to_owned()))
         }.await;
@@ -149,11 +172,18 @@ pub async fn tick(app: &App, config: &Configuration, now: u64) -> Result<()> {
                     n["delivered"] = json!(next);
                     n["attempt"] = json!(0);
                     n["lastError"] = Value::Null;
-                    n["finished"] = json!(!pending || next > 3);
-                    let delay = [3600000u64, 86400000, 172800000]
-                        .get(delivered as usize)
-                        .copied()
-                        .unwrap_or(0);
+                    n["delivery"] = Value::Null;
+                    let created = n["createdAt"].as_u64().unwrap_or(now);
+                    let cursor = prefs
+                        .reminder_minutes
+                        .iter()
+                        .filter(|m| created.saturating_add(**m * 60000) <= now)
+                        .count()
+                        .max(n["reminderCursor"].as_u64().unwrap_or(0) as usize);
+                    n["reminderCursor"] = json!(cursor);
+                    n["snoozedUntil"] = Value::Null;
+                    n["finished"] = json!(!pending || cursor >= prefs.reminder_minutes.len());
+                    let delay = prefs.reminder_minutes.get(cursor).copied().unwrap_or(0) * 60000;
                     n["dueAt"] = json!(
                         n["createdAt"]
                             .as_u64()
@@ -207,6 +237,10 @@ pub async fn tick(app: &App, config: &Configuration, now: u64) -> Result<()> {
         }
         let _queue = app.mutation.lock().await;
         let actor: MatrixUserId = actor.try_into()?;
+        let prefs = crate::preferences::load(&app.store.lock().await.read()?, &actor)?;
+        if !prefs.enabled || prefs.quiet(now)? {
+            continue;
+        }
         if room(app, config, &actor).await.is_ok() {
             let _ = board(app, config, &actor, &id, now).await;
         }
@@ -295,8 +329,8 @@ fn private_room(events: &Value, expected: &Value) -> Result<()> {
 }
 
 async fn room(app: &App, config: &Configuration, actor: &MatrixUserId) -> Result<String> {
-    let expected = json!({"v":1,"purpose":"my_actions","ownerMxid":actor,"botMxid":config.bot,"serverName":app.matrix.server()});
     let state = app.store.lock().await.read()?;
+    let expected = room_binding(app, config, actor, &state);
     let saved = &state["notificationRooms"][actor.as_str()];
     if saved["botMxid"]
         .as_str()
@@ -313,7 +347,7 @@ async fn room(app: &App, config: &Configuration, actor: &MatrixUserId) -> Result
     }
     let mut id = saved["roomId"]
         .as_str()
-        .or_else(|| legacy["roomId"].as_str())
+        .or_else(|| saved.is_null().then(|| legacy["roomId"].as_str()).flatten())
         .map(str::to_owned);
     let alias = format!("palpo_actions_{}", &digest(&expected)?[..24]);
     if id.is_none() {
@@ -376,8 +410,9 @@ async fn room(app: &App, config: &Configuration, actor: &MatrixUserId) -> Result
             if !state["notificationRooms"].is_object() {
                 state["notificationRooms"] = json!({});
             }
+            let revision = room_revision(state, actor);
             state["notificationRooms"][actor.as_str()] =
-                json!({"botMxid":config.bot,"attempted":true});
+                json!({"botMxid":config.bot,"attempted":true,"revision":revision});
             Ok(())
         })?;
         let created=app.matrix.call(Method::POST,"/_matrix/client/v3/createRoom",&config.token,Some(&json!({
@@ -408,6 +443,20 @@ async fn room(app: &App, config: &Configuration, actor: &MatrixUserId) -> Result
         Ok(())
     })?;
     Ok(id)
+}
+fn room_revision(state: &Value, actor: &MatrixUserId) -> u64 {
+    state["notificationRooms"][actor.as_str()]["revision"]
+        .as_u64()
+        .or_else(|| state["actionInbox"]["rooms"][actor.as_str()]["revision"].as_u64())
+        .unwrap_or(1)
+}
+fn room_binding(app: &App, config: &Configuration, actor: &MatrixUserId, state: &Value) -> Value {
+    let mut binding = json!({"v":1,"purpose":"my_actions","ownerMxid":actor,"botMxid":config.bot,"serverName":app.matrix.server()});
+    let revision = room_revision(state, actor);
+    if revision > 1 {
+        binding["revision"] = json!(revision);
+    }
+    binding
 }
 fn matrix_room(value: &Value) -> Result<String> {
     value["room_id"]

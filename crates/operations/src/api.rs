@@ -31,6 +31,10 @@ pub const SERVICES: &[&str] = &[
     "palpo.fleets.list",
     "palpo.fleets.connect",
     "palpo.agents.control",
+    "palpo.notifications.get",
+    "palpo.notifications.set",
+    "palpo.actions.room.get",
+    "palpo.actions.room.ensure",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
@@ -301,6 +305,9 @@ impl App {
             }
         }
         match input.service.as_str() {
+            "palpo.actions.room.get" | "palpo.actions.room.ensure" => {
+                self.actions_room(bearer, &input.service, input.args).await
+            }
             "palpo.fleets.list" => self.list_fleets(bearer, input.args).await,
             "palpo.fleets.connect" => self.connect_fleet(bearer, input.args).await,
             "palpo.fleets.install" | "palpo.fleets.export" => {
@@ -310,6 +317,10 @@ impl App {
             "palpo.intent.new" => {
                 empty_args(&input.args)?;
                 Ok(json!({"requestId":&secret()[..40]}))
+            }
+            "palpo.notifications.get" => {
+                empty_args(&input.args)?;
+                crate::preferences::get(&self.store.lock().await.read()?, actor)
             }
             "palpo.session.open" => {
                 empty_args(&input.args)?;
@@ -388,6 +399,7 @@ impl App {
                     let mut workflows = Workflows::load(state)?;
                     let before = serde_json::to_value(&workflows)?;
                     let result = match service {
+                        "palpo.notifications.set" => crate::preferences::set(state,&mut workflows,input.args.clone(),actor,now)?,
                         "palpo.agents.control" => json!({"action":crate::lifecycle::submit(&mut workflows,state,tx,input.args.clone(),actor,now)?}),
                         "palpo.inbox.submit" => {
                             if input.args["kind"] == "token_top_up" && input.args.get("agentActionId").is_some() {

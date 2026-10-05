@@ -122,8 +122,14 @@ pub(super) async fn matrix(
         }
         return true;
     }
-    if path.contains("/join/") && appservice {
-        let user = req.query::<String>("user_id").unwrap();
+    if path.contains("/join/")
+        && (appservice || token == "Bearer manager-token" || token == "Bearer manager-new-token")
+    {
+        let user = if appservice {
+            req.query::<String>("user_id").unwrap()
+        } else {
+            "@manager:example.test".into()
+        };
         let (room, state) = rooms
             .states
             .iter_mut()

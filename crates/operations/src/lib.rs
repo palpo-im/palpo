@@ -12,6 +12,7 @@ pub mod machine;
 pub mod matrix;
 pub mod notifications;
 pub mod outbound;
+mod preferences;
 mod rooms;
 pub mod store;
 pub mod updates;

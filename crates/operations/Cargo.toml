@@ -14,6 +14,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 chrono.workspace = true
+jiff = "=0.2.32"
 subtle = "2.6.1"
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["signal", "time", "net", "sync"] }

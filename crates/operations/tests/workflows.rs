@@ -126,6 +126,9 @@ impl Fixture {
         )
     }
     async fn new() -> Self {
+        Self::configured(false).await
+    }
+    async fn configured(notices: bool) -> Self {
         let revoked = Arc::new(AtomicBool::new(false));
         let rooms = Arc::new(std::sync::Mutex::new(creation_cases::Rooms::default()));
         let registrations = Arc::new(std::sync::Mutex::new(
@@ -173,6 +176,12 @@ impl Fixture {
             .unwrap()
             .with_association_admin("@admin:example.test".to_owned().try_into().unwrap())
             .unwrap();
+        let app = if notices {
+            app.with_notifications(notification_cases::config())
+                .unwrap()
+        } else {
+            app
+        };
         let service = Service::new(api::router(app.clone()));
         Self {
             app,

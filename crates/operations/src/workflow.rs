@@ -892,6 +892,7 @@ impl Workflows {
                 && n["revision"] == action["revision"]
         }) {
             n["dueAt"] = json!(until);
+            n["snoozedUntil"] = json!(until);
         }
         Ok(json!({"snoozedUntil":until,"action":action}))
     }

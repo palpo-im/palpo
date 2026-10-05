@@ -19,6 +19,7 @@ equivalent Rust implementations and the cutover gates below pass.
 | `lib/miniapp.mjs` project/agent reads | `views.rs` | Role-scoped pagination, distinct approval/execution state, lower-bound token observations with freshness |
 | `lib/inbox.mjs` | `workflow.rs` | Typed project/agent/top-up requests, coordinator decisions, visibility, seen/snooze, durable receipts |
 | `lib/action-notifications.mjs` | `notifications.rs` | Durable private My Actions rooms, idempotent delivery, reminders, quiet hours and pinned Inbox board |
+| `lib/notification-preferences.mjs` | `preferences.rs` | Account-scoped revisions, replay-safe settings, daylight-saving quiet hours, overdue reminder coalescing |
 | `lib/workflow.mjs` creation forms | `creation.rs`, `rooms.rs` | Funded catalog, owner room preparation, frozen project/agent submissions and lost-reply reconciliation |
 | Association setup/export | `associations.rs`, `engagement_setup.rs`, `connections.rs` | Owner request, designated admin decision, recoverable appservice installation, scoped native profile export and authenticated connection probe |
 | `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
@@ -95,6 +96,15 @@ Only these services can be granted:
 - `palpo.projects.list`, `palpo.requests.list`
 - `palpo.catalog.list`, `palpo.requests.create`
 - `palpo.fleets.list`, `palpo.fleets.install`, `palpo.fleets.export`, `palpo.fleets.connect`
+- `palpo.agents.control`
+- `palpo.notifications.get`, `palpo.notifications.set`
+- `palpo.actions.room.get`, `palpo.actions.room.ensure`
+
+Notification preferences retain the legacy account-keyed representation for
+rollback compatibility. Muting notices never resolves an action. Explicit room
+setup can join the owner's invitation or replace an invalid private room with a
+new revision. The read operation never creates or joins a room, and validates
+membership, bot identity, privacy and the complete binding before returning it.
 
 Set `PALPO_ASSOCIATION_ADMIN` to the designated local Matrix administrator and
 configure the transport/relay origins to enable owner association requests at
