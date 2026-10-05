@@ -259,7 +259,7 @@ impl App {
                 })
                 .ok_or_else(|| fail(409, "project_rooms_unavailable"))?;
             let payload = json!({"v":1,"fleetId":fleet_id,"requestId":intent.request_id,"requesterMxid":actor,
-                "sourceRoomId":fleet["reception"]["roomId"],"targetProjectId":project.project_id,"targetRoomId":project_definition["roomId"],
+                "sourceRoomId":fleet["receptionRoomId"],"targetProjectId":project.project_id,"targetRoomId":project_definition["roomId"],
                 "ownerMxid":actor,"ownerDmRoomId":project_definition["ownerDmRoomId"],"role":intent.role,"requestedTokens":amount,"ratePerDay":rate,
                 "authVersion":1,"agentDefinition":{"name":name,"resourceId":intent.agent_definition.resource_id}});
             for field in ["sourceRoomId", "targetRoomId", "ownerDmRoomId"] {

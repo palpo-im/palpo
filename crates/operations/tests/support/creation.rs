@@ -254,7 +254,7 @@ async fn funded(f: &Fixture) {
         w.resource_details.insert("grant_a".into(),json!({"resourceId":RESOURCE,"period":"monthly","periodKey":"2026-10"}));
         state["fleets"]["engagement_a"]=json!({"id":"engagement_a","name":"Provider","installation":"installed","state":"ready","registrationGeneration":1,
             "registration":{"as_token":"fixture-as","hs_token":"fixture-relay"},"representativeMxid":"@engagement_a_representative:example.test",
-            "reception":{"roomId":"!reception:example.test"},"transport":{"mode":"outbound","generation":1,"token":"fixture-machine"},
+            "receptionRoomId":"!reception:example.test","transport":{"mode":"outbound","generation":1,"token":"fixture-machine"},
             "capabilities":{"coordinatorApprovalV1":true,"offers":[{"role":"developer","resources":[{"id":RESOURCE,"name":"Code resource","model":"model-a","framework":"fixture"}]}]}});
         w.save(state)
     }).unwrap();
