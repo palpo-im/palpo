@@ -1,5 +1,7 @@
-//! Offline, digest-bound workflow handoff. No role or token grant is inferred
-//! from a legacy administrator verdict, catalog entry or hostname.
+mod adoption;
+pub use adoption::Adoption;
+// Offline, digest-bound workflow handoff. No role or token grant is inferred
+// from a legacy administrator verdict, catalog entry or hostname.
 use crate::{Result, digest, fail, store::Store};
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -185,7 +187,6 @@ fn inventory(state: &Value, tx: &Transaction<'_>) -> Result<Inventory> {
         delivery_count: deliveries.len(),
     })
 }
-
 
 impl Store {
     /// A rollback-only transaction: inventory cannot normalize or rewrite any

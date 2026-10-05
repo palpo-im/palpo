@@ -34,10 +34,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+    if args.len() == 2 && args[0] == "adopt-legacy" {
+        let raw = std::fs::read(&args[1])?;
+        if raw.len() > 16 * 1024 * 1024 {
+            return Err("legacy adoption exceeds 16 MiB".into());
+        }
+        let plan = serde_json::from_slice(&raw)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&store.adopt_legacy(
+                &plan,
+                matrix.server(),
+                palpo_operations::now_ms()
+            )?)?
+        );
+        return Ok(());
+    }
     if !args.is_empty() {
         if args.len() != 2 || args[0] != "import-authority" {
             return Err(
-                "usage: palpo-operations [import-authority <reviewed-snapshot.json> | migration-inventory | handoff-store <reviewed-handoff.json>]".into(),
+                "usage: palpo-operations [import-authority <reviewed-snapshot.json> | migration-inventory | adopt-legacy <reviewed-native-adoption.json> | handoff-store <reviewed-handoff.json>]".into(),
             );
         }
         let raw = std::fs::read(&args[1])?;

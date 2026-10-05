@@ -342,3 +342,32 @@ original decision and queue one command; superseded or conflicting observations
 are refused. Native Rinx acceptance `0a97a9126f214590a91825d332085946` passed
 22 checks using Rust Palpo and explicit Matrix/provider fixtures; the actual
 Hagency process has a separate restart/join-repair test.
+
+Legacy allocation adoption follows the storage handoff. Stop both runtime
+writers, create complete SQLite backups (including committed WAL), and use the
+native `hagency coordinator-migration --state-dir DIR inventory` / `adopt --file`
+commands to authorize an explicit owner mapping against the audited native
+ledger. Keep the resulting native receipt. With the verified engagement already
+imported, obtain a fresh `palpo-operations migration-inventory`, then invoke
+`palpo-operations adopt-legacy reviewed-adoption.json` with:
+
+```json
+{"version":1,"id":"migration_one","inventory":{},"nativeReceipt":{},"pendingAgents":{}}
+```
+
+Replace the empty inventory/receipt with their complete reviewed outputs.
+`pendingAgents` maps original `fleetId:requestId` keys to explicit native resource
+allocation IDs; these requests remain undecided and require current delegated
+approval. Existing native allocations retain their IDs and original receipts.
+Original Node records, project verdicts and unknown extensions remain unchanged.
+No imported historical status grants readiness: a fresh authenticated observation
+and the existing Matrix navigation checks are required. Exact replay survives
+later decisions and complete-database restore without resetting them.
+
+Run `tests/legacy_adoption.py --node NODE24 --binary target/debug/palpo-operations
+--native-fixture FILE` with the isolated artifact emitted by Hagency's
+`coordinator_migration` integration test through
+`HAGENCY_MIGRATION_FIXTURE_OUTPUT`. This exercises the actual Node store and both
+Rust CLIs. It does not replace remaining migration support for legacy pending
+projects/contributions or legacy profile delegation, nor live deployment/device
+acceptance.

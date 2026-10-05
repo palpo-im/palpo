@@ -134,6 +134,10 @@ pub struct Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
     #[serde(default)]
+    pub legacy_sources: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub legacy_adoptions: BTreeMap<String, Value>,
+    #[serde(default)]
     pub project_setups: BTreeMap<String, Value>,
     #[serde(default)]
     pub project_retries: BTreeMap<String, Value>,

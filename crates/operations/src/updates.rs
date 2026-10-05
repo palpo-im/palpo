@@ -290,7 +290,13 @@ fn coordinator(
         let authorized = workflows.outbox.values().any(|r| r["serverEngagementId"]==id && r["queued"]==true && r["command"]["request"]["projectId"]==grant.project_id.as_str()
             && workflows.actions.get(r["actionId"].as_str().unwrap_or_default()).is_some_and(|a| matches!(&a.request, Request::Project(p)
                 if p.owner==grant.owner && p.revision==grant.revision && p.resource_allocations==grant.resource_allocations)));
-        if !authorized {
+        let adopted = workflows.actions.values().any(|a| {
+            workflows.legacy_sources.get(&a.id).is_some_and(|s| s["source"] == "projects")
+                && matches!(&a.request, Request::Project(p) if p.project_id == grant.project_id
+                    && p.server_engagement_id == grant.server_engagement_id && p.owner == grant.owner
+                    && p.revision == grant.revision && p.resource_allocations == grant.resource_allocations)
+        });
+        if !authorized && !adopted {
             return Err(fail(409, "project_decision_missing"));
         }
         snapshot
@@ -493,6 +499,28 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
         };
         changes.push((id.to_owned(), next));
     }
+    for (id, source) in &workflows.legacy_sources {
+        if let Some(agent) = source["agentAllocationId"].as_str() {
+            let status = workflows
+                .observations
+                .get(id)
+                .cloned()
+                .unwrap_or(Value::Null);
+            if !status.is_null() && status["engagementId"] != agent {
+                return Err(fail(409, "agent_binding_conflict"));
+            }
+            let next = if status["ready"] == true && status_current(&status, now) {
+                "ready"
+            } else if status["ready"] == true || status["receivedAtMs"] == 0 {
+                "unknown"
+            } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
+                "ended"
+            } else {
+                "provisioning"
+            };
+            changes.push((id.clone(), next));
+        }
+    }
     for (id, next) in changes {
         execution(workflows, &id, next, now)?;
     }
@@ -534,10 +562,12 @@ fn status(
             .cloned()
             .ok_or_else(|| fail(409, "request_definition_missing"))?
     } else {
-        state["requests"][&legacy_id]["payload"]
+        let mut definition = state["requests"][&legacy_id]["payload"]
             .as_object()
             .map(|o| Value::Object(o.clone()))
-            .ok_or_else(|| fail(409, "unknown_request"))?
+            .ok_or_else(|| fail(409, "unknown_request"))?;
+        definition["sourceEventId"] = state["requests"][&legacy_id]["sourceEventId"].clone();
+        definition
     };
     for field in [
         "requestId",
@@ -621,7 +651,25 @@ fn status(
     clean["generation"] = fleet["transport"]["generation"].clone();
     if let Some(a) = action {
         if a.state != "approved" {
-            return Err(fail(409, "agent_decision_missing"));
+            // An admitted legacy request may still be awaiting its first
+            // coordinator verdict. A pending observation grants no capacity.
+            if a.state != "requested"
+                || !workflows.legacy_sources.contains_key(&a.id)
+                || raw["state"] != "pending"
+                || raw["ready"] == true
+                || raw["bound"] == true
+                || raw["allocatedTokens"].as_u64().is_some_and(|n| n > 0)
+            {
+                return Err(fail(409, "agent_decision_missing"));
+            }
+        }
+        if let Some(agent) = workflows
+            .legacy_sources
+            .get(&a.id)
+            .and_then(|s| s["agentAllocationId"].as_str())
+            && raw["engagementId"] != agent
+        {
+            return Err(fail(409, "agent_binding_conflict"));
         }
         workflows.observations.insert(a.id, clean);
     } else {
