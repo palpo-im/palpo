@@ -355,6 +355,58 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     );
     assert!(!listed.to_string().contains("Assist project owner"));
     assert!(!listed.to_string().contains("fixture-machine"));
+    let chat = json!({"requestId":format!("{fleet}:request_agent")});
+    f.rooms.lock().unwrap().states.insert("!project:example.test".into(),json!([
+        {"type":"m.room.member","state_key":"@manager:example.test","content":{"membership":"join"}},
+        {"type":"m.room.member","state_key":observed["agentMxid"],"content":{"membership":"invite"}}
+    ]));
+    assert_eq!(
+        f.call(&manager, "palpo.requests.open", chat.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    f.rooms
+        .lock()
+        .unwrap()
+        .states
+        .get_mut("!project:example.test")
+        .unwrap()[1]["content"]["membership"] = json!("join");
+    let (code, target) = f.call(&manager, "palpo.requests.open", chat.clone()).await;
+    assert_eq!(code, StatusCode::OK, "{target}");
+    assert_eq!(
+        target,
+        json!({"v":1,"requestId":format!("{fleet}:request_agent"),"account":"@manager:example.test","roomId":"!project:example.test","agentMxid":observed["agentMxid"]})
+    );
+    let mut forged = chat.clone();
+    forged["roomId"] = json!("!other:example.test");
+    assert_eq!(
+        f.call(&manager, "palpo.requests.open", forged).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let admin = f.session("admin").await;
+    assert!(matches!(
+        f.call(&admin, "palpo.requests.open", chat.clone()).await.0,
+        StatusCode::CONFLICT | StatusCode::NOT_FOUND
+    ));
+    f.rooms
+        .lock()
+        .unwrap()
+        .states
+        .get_mut("!project:example.test")
+        .unwrap()[0]["content"]["membership"] = json!("leave");
+    assert_eq!(
+        f.call(&manager, "palpo.requests.open", chat.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    f.rooms
+        .lock()
+        .unwrap()
+        .states
+        .get_mut("!project:example.test")
+        .unwrap()[0]["content"]["membership"] = json!("join");
     // Reject changed-sequence retries and cross-engagement observations.
     let mut wrong = ready.clone();
     wrong["statuses"][0]["agentMxid"] = json!("@other:example.test");

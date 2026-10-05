@@ -35,6 +35,7 @@ pub const SERVICES: &[&str] = &[
     "palpo.notifications.set",
     "palpo.actions.room.get",
     "palpo.actions.room.ensure",
+    "palpo.requests.open",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
@@ -305,6 +306,7 @@ impl App {
             }
         }
         match input.service.as_str() {
+            "palpo.requests.open" => self.open_agent_chat(bearer, input.args).await,
             "palpo.actions.room.get" | "palpo.actions.room.ensure" => {
                 self.actions_room(bearer, &input.service, input.args).await
             }

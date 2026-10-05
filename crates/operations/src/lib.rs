@@ -10,6 +10,7 @@ mod intents;
 mod lifecycle;
 pub mod machine;
 pub mod matrix;
+mod navigation;
 pub mod notifications;
 pub mod outbound;
 mod preferences;

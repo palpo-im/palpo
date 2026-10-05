@@ -195,6 +195,7 @@ pub(crate) fn agents(
             "current"
         };
         rows.push(json!({"id":action.id,"requestId":request.id,"projectId":request.project_id,
+            "chatRequestId":format!("{}:{}",request.server_engagement_id.as_str(),request.id.as_str()),"canOpenChat":usable,
             "fleetId":request.server_engagement_id,"ownerMxid":request.project_owner,"state":action.state,
             "execution":execution,"failureReason":view["failureReason"],"usable":usable,"statusFresh":current,
             "agentDefinition":{"name":display(&view["payload"]["name"],request.id.as_str(),160)},
