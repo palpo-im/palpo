@@ -160,3 +160,138 @@ async fn scoped_agent_control_waits_for_cleanup_and_retries_only_definitive_fail
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn scoped_agent_rename_requires_capability_and_observed_matrix_name() {
+    let f = Fixture::new().await;
+    let fleet = format!("hf_{}", "e".repeat(32));
+    f.app.store.lock().await.transaction(|state| {
+        let mut snapshot=authority(now_ms());
+        let mut e=snapshot["engagements"]["engagement_a"].take();e["id"]=json!(fleet);
+        snapshot["engagements"]=json!({&fleet:e});
+        snapshot["resources"]["grant_a"]["serverEngagementId"]=json!(fleet);
+        snapshot["projects"]["existing_project"]["serverEngagementId"]=json!(fleet);
+        Workflows{authority:serde_json::from_value(snapshot)?,..Default::default()}.save(state)?;
+        state["fleets"][&fleet]=json!({"id":fleet,"registrationGeneration":1,"state":"ready","installation":"installed",
+            "representativeMxid":format!("@{fleet}_representative:example.test"),
+            "transport":{"mode":"outbound","generation":1,"token":"fixture-machine"},"capabilities":{"coordinatorApprovalV1":true,"coordinatorAgentControlV1":true,"coordinatorAgentProfileV1":true}});Ok(())
+    }).unwrap();
+    let owner = f.session("manager").await;
+    let coordinator = f.session("coordinator").await;
+    let admin = f.session("admin").await;
+    let mut request = agent_request();
+    request["request"]["serverEngagementId"] = json!(fleet);
+    let definition = json!({"v":1,"fleetId":fleet,"requestId":"request_agent","targetProjectId":"existing_project","agentDefinition":{"name":"Managed"}});
+    request["request"]["definitionDigest"] = json!(digest(&definition).unwrap());
+    request["definition"] = definition.clone();
+    let (code, submitted) = f.call(&owner, "palpo.inbox.submit", request.clone()).await;
+    assert_eq!(code, StatusCode::OK, "{submitted}");
+    let id = submitted["action"]["id"].as_str().unwrap();
+    let mut approve = approval(&request, "allocation");
+    approve["context"]["serverEngagementId"] = json!(fleet);
+    let (code, result) = f
+        .call(
+            &coordinator,
+            "palpo.inbox.decide",
+            json!({"id":id,"decision":"approve","command":approve}),
+        )
+        .await;
+    assert_eq!(code, StatusCode::OK, "{result}");
+    let mut status = json!({"v":1,"fleetId":fleet,"requestId":"request_agent","engagementId":"agent_one","state":"active",
+        "targetProjectId":"existing_project","agentDefinition":{"name":"Managed"},"allocatedTokens":100000,
+        "bound":false,"ready":false,"observedAt":"2026-10-04T00:00:00Z","lifecycle":{"runtimeState":"active","paused":false,"cleanup":"not_required","cleanupEffect":null}});
+    assert_eq!(
+        f.machine(
+            &fleet,
+            "updates",
+            json!({"v":2,"generation":1,"sequence":1,"heartbeat":true,"statuses":[status]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let rename = json!({"agentActionId":id,"commandId":"rename_one","operation":"rename","displayName":"Friendly"});
+    assert_eq!(
+        f.call(&admin, "palpo.agents.control", rename.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut invalid = rename.clone();
+    invalid["displayName"] = json!("Bad\nName");
+    assert_eq!(
+        f.call(&owner, "palpo.agents.control", invalid).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|s| {
+            s["fleets"][&fleet]["capabilities"]["coordinatorAgentProfileV1"] = json!(false);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        f.call(&owner, "palpo.agents.control", rename.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|s| {
+            s["fleets"][&fleet]["capabilities"]["coordinatorAgentProfileV1"] = json!(true);
+            Ok(())
+        })
+        .unwrap();
+    let (code, result) = f.call(&owner, "palpo.agents.control", rename.clone()).await;
+    assert_eq!(code, StatusCode::OK, "{result}");
+    let record =
+        f.app.store.lock().await.read().unwrap()["rustWorkflows"]["agentControls"]["rename_one"]
+            .clone();
+    assert_eq!(record["command"]["displayName"], "Friendly");
+    let receipt = json!({"kind":"receipt","registrationGeneration":1,"delegationRevision":1,"commandId":"rename_one","commandDigest":record["commandDigest"],"agentId":"agent_one","operation":"rename","state":"applied"});
+    let (code,result)=f.machine(&fleet,"updates",json!({"v":2,"generation":1,"sequence":2,"heartbeat":true,"coordinatorUpdates":[{"id":"command_rename_one","payload":receipt,"digest":digest(&receipt).unwrap()}]})).await;
+    assert_eq!(code, StatusCode::OK, "{result}");
+    assert_eq!(
+        f.call(&owner, "palpo.requests.list", json!({})).await.1["requests"][0]["agentControl"]["execution"],
+        "rename_pending"
+    );
+    for (seq, state, observed_name, execution) in [
+        (3, "failed", "Original", "rename_failed"),
+        (4, "verified", "Friendly", "control_applied"),
+    ] {
+        status["lifecycle"]["matrixProfile"] =
+            json!({"desiredName":"Friendly","observedName":observed_name,"state":state});
+        assert_eq!(
+            f.machine(
+                &fleet,
+                "updates",
+                json!({"v":2,"generation":1,"sequence":seq,"heartbeat":true,"statuses":[status]})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let row = f.call(&owner, "palpo.requests.list", json!({})).await.1["requests"][0].clone();
+        assert_eq!(row["agentControl"]["execution"], execution);
+        assert_eq!(row["agentDefinition"]["name"], observed_name);
+        assert_eq!(row["allocatedTokens"], 100000);
+    }
+    assert_eq!(
+        f.call(&owner, "palpo.agents.control", rename.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let mut conflict = rename;
+    conflict["displayName"] = json!("Another");
+    assert_eq!(
+        f.call(&owner, "palpo.agents.control", conflict).await.0,
+        StatusCode::CONFLICT
+    );
+}

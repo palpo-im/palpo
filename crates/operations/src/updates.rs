@@ -127,7 +127,8 @@ fn capabilities(fleet: &mut Value, input: &Value, server: &ServerName, now: u64)
     }
     fleet["capabilities"] = json!({"v":1,"fleetId":fleet["id"],"serverName":server,"representativeMxid":fleet["representativeMxid"],
         "approvalBotMxid":bot,"offers":clean,"coordinatorApprovalV1":input["coordinatorApprovalV1"]==true,
-        "coordinatorAgentControlV1":input["coordinatorAgentControlV1"]==true,"observedAt":iso(now)?});
+        "coordinatorAgentControlV1":input["coordinatorAgentControlV1"]==true,
+        "coordinatorAgentProfileV1":input["coordinatorAgentProfileV1"]==true,"observedAt":iso(now)?});
     fleet["capabilityRead"] = json!({"state":"current","observedAt":iso(now)?});
     Ok(())
 }

@@ -149,10 +149,16 @@ pub(crate) fn agents(
             && observed["quotaPaused"] != true
             && observed["lifecycle"]["paused"] != true
             && crate::lifecycle::latest(workflows, &action.id).is_none_or(|r| {
-                matches!(
-                    r["execution"].as_str(),
-                    Some("control_applied" | "control_refused")
-                )
+                r["command"]["operation"] == "rename"
+                    || matches!(
+                        r["execution"].as_str(),
+                        Some(
+                            "control_applied"
+                                | "control_refused"
+                                | "rename_pending"
+                                | "rename_failed"
+                        )
+                    )
             })
             && fleet["installation"] == "installed"
             && fleet["state"] == "ready"
@@ -216,6 +222,12 @@ pub(crate) fn agents(
         let control = crate::lifecycle::latest(workflows, &action.id);
         row["agentControl"] = view["agentControl"].clone();
         row["lifecycle"] = observed["lifecycle"].clone();
+        if let Some(name) = observed["lifecycle"]["matrixProfile"]["observedName"]
+            .as_str()
+            .filter(|n| !n.is_empty() && n.chars().count() <= 128)
+        {
+            row["agentDefinition"]["name"] = json!(name);
+        }
         row["matrixRetirement"] = retirement["state"].clone();
         let can_manage = crate::lifecycle::allowed(workflows, state, &action.id, actor, now)
             && control.is_none_or(|r| {
@@ -234,7 +246,20 @@ pub(crate) fn agents(
         );
         row["canRetryCleanup"] =
             json!(can_manage && observed["lifecycle"]["cleanupEffect"] == "failed");
-        if let Some(control) = control.filter(|r| r["execution"] != "control_applied") {
+        row["canRename"] = json!(
+            can_manage
+                && observed["state"] == "active"
+                && fleet["capabilities"]["coordinatorAgentProfileV1"] == true
+                && workflows
+                    .authority
+                    .engagements
+                    .get(request.server_engagement_id.as_str())
+                    .is_some_and(|e| e.state == EngagementState::Verified
+                        && e.delegation_expires_at_ms > now)
+        );
+        if let Some(control) = control.filter(|r| {
+            r["execution"] != "control_applied" && r["command"]["operation"] != "rename"
+        }) {
             row["execution"] = control["execution"].clone();
         }
         rows.last_mut().unwrap()["canRequestTopUp"] =

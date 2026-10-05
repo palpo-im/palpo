@@ -64,11 +64,23 @@ pub(crate) fn submit(
         agent_action_id: String,
         command_id: CommandId,
         operation: String,
+        #[serde(default)]
+        display_name: Option<String>,
     }
     let fingerprint = digest(&json!({"actor":actor,"intent":input}))?;
     let input: Intent = serde_json::from_value(input)?;
     if input.kind.as_deref().is_some_and(|k| k != "agent_control") {
         return Err(fail(400, "invalid_control_kind"));
+    }
+    if (input.operation == "rename") != input.display_name.is_some()
+        || input.display_name.as_ref().is_some_and(|name| {
+            name.trim() != name
+                || name.is_empty()
+                || name.chars().count() > 128
+                || name.chars().any(char::is_control)
+        })
+    {
+        return Err(fail(400, "invalid_display_name"));
     }
     if !allowed(w, state, &input.agent_action_id, actor, now) {
         return Err(fail(403, "agent_control_forbidden"));
@@ -104,6 +116,12 @@ pub(crate) fn submit(
             if observation["state"] == "active"
                 && authority.state == EngagementState::Verified
                 && authority.delegation_expires_at_ms > now => {}
+        "rename"
+            if observation["state"] == "active"
+                && authority.state == EngagementState::Verified
+                && authority.delegation_expires_at_ms > now
+                && state["fleets"][authority.id.as_str()]["capabilities"]["coordinatorAgentProfileV1"]
+                    == true => {}
         "retry_cleanup" if observation["lifecycle"]["cleanupEffect"] == "failed" => {}
         _ => return Err(fail(409, "agent_control_unavailable")),
     }
@@ -111,10 +129,13 @@ pub(crate) fn submit(
         return Err(fail(429, "agent_control_history_full"));
     }
     let sequence = prior.and_then(|r| r["sequence"].as_u64()).unwrap_or(0) + 1;
-    let command = json!({"context":{"version":1,"commandId":input.command_id,"serverEngagementId":authority.id,
+    let mut command = json!({"context":{"version":1,"commandId":input.command_id,"serverEngagementId":authority.id,
         "registrationGeneration":authority.registration_generation,"delegationRevision":authority.delegation_revision,"actor":actor,
         "issuedAtMs":now,"expiresAtMs":now+600000},"agentAllocationId":observation["engagementId"],
         "projectId":agent.project_id,"projectRevision":agent.project_revision,"resourceAllocationId":agent.resource_allocation_id,"operation":input.operation});
+    if let Some(name) = input.display_name {
+        command["displayName"] = json!(name);
+    }
     let payload = json!({"operation":"coordinator_agent_control","command":command});
     let fleet = &state["fleets"][authority.id.as_str()];
     crate::outbound::enqueue(
@@ -206,6 +227,19 @@ pub(crate) fn refresh(w: &mut Workflows, now: u64) -> Result<()> {
                     "retired"
                 }
                 _ => "retiring",
+            }
+        } else if row["command"]["operation"] == "rename" {
+            let profile = &status["lifecycle"]["matrixProfile"];
+            if profile["desiredName"] != row["command"]["displayName"] {
+                "rename_pending"
+            } else if profile["state"] == "failed" {
+                "rename_failed"
+            } else if profile["state"] == "verified"
+                && profile["observedName"] == row["command"]["displayName"]
+            {
+                "control_applied"
+            } else {
+                "rename_pending"
             }
         } else {
             "control_applied"

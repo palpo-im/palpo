@@ -299,3 +299,11 @@ These are backend tests. The paired Rinx branch additionally exercises this
 executable through its production OctoScript form and Makepad instrumentation,
 using explicit Matrix and provider fixtures; it does not establish live Hagency
 provisioning or chat.
+
+Agent display names use the existing scoped `palpo.agents.control` service with
+`operation: rename` and a bounded `displayName`. The provider must advertise
+`coordinatorAgentProfileV1`. Receipt means the desired name was stored; only an
+exact authenticated `lifecycle.matrixProfile` read-back marks it verified. Names
+do not change allocation identity/history or block otherwise-ready chat. API
+regressions cover role denial, capability negotiation, invalid labels, frozen
+retries, verification failure and confirmation.
