@@ -29,6 +29,34 @@ shared serial queue. The bundle's grant can narrow authority, never create it.
 These endpoints trust an authenticated native client to describe its reviewed
 bundle; the server does not attest the caller's Rinx binary or publisher key.
 
+## Private My Actions room
+
+`palpo.actions.room.get` takes an optional `roomId` and returns `{room: null}`
+when this account has no matching binding. It does not create or join rooms.
+For a match it rechecks the configured bot identity, room marker, invite-only
+membership, non-federated plaintext policy, power levels and the account's
+joined membership. Room names and arbitrary Matrix events do not authorize a
+board. A binding changed during verification is refused.
+
+`palpo.actions.room.ensure` takes no arguments and requires a separate grant.
+It explicitly sets up and joins the current account's private room, returning
+`{v, revision, purpose, account, roomId, botMxid, serverName}` for trusted host
+navigation. Repeating setup reuses a valid room. Leaving stops automatic
+notification delivery; explicit setup can replace an invalid room. Revisioned
+deterministic aliases recover ambiguous create responses without losing Inbox
+records. Undelivered frozen envelopes are detached from an abandoned binding;
+subsequent delivery uses a transaction specific to the new room revision.
+Neither operation accepts another account, a bot token or an arbitrary room to
+join. If `PALPO_ACTION_CONFIG` is absent, reads return no binding and setup
+reports that rooms are unavailable; the ordinary Inbox remains available.
+
+Rinx mounts only its installed Palpo bundle after consent for the current
+account and exact digest. An embedded board revalidates this binding before
+operations; the backend still applies each operation's business permissions.
+The existing Inbox provides paginated Needs my action, Waiting and History
+views. Pending records sort by explicit deadline, then creation time; reading
+or deleting a Matrix notice does not alter those records.
+
 ## Project approval migration
 
 Set `PALPO_PROJECT_APPROVER=@admin:example.org` to designate **one** project
