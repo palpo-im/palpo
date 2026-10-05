@@ -21,6 +21,8 @@ struct ProjectIntent {
     resource_ids: Vec<ResourceAllocationId>,
     name: String,
     #[serde(default)]
+    room_id: Option<String>,
+    #[serde(default)]
     reason: String,
 }
 #[derive(Deserialize)]
@@ -147,6 +149,9 @@ impl App {
         {
             return Err(fail(400, "invalid_project"));
         }
+        if let Some(room) = &intent.room_id {
+            crate::rooms::selected_room_id(room, self.matrix.server().as_str())?;
+        }
         let fingerprint = digest(&json!({"actor":actor,"intent":input}))?;
         let key = digest(&json!({"actor":actor,"requestId":intent.request_id}))?;
         let project_id = format!("project_{}", &key[..24]);
@@ -162,9 +167,11 @@ impl App {
             store.transaction(|state|Self::plan(state,&key,json!({"digest":fingerprint,"input":input,"actor":actor,
                 "fleetId":intent.fleet_id,"projectId":project_id,"registrationGeneration":e.registration_generation,"delegationRevision":e.delegation_revision})))?;
         }
-        let room = self
-            .prepare_room(&key, "project", &session.token, actor.as_str())
-            .await?;
+        let room = if let Some(room) = &intent.room_id {
+            self.attach_room(&key, room, &session.token, actor.as_str()).await?
+        } else {
+            self.prepare_room(&key, "project", &session.token, actor.as_str()).await?
+        };
         let dm = self
             .prepare_room(&key, "approvals", &session.token, actor.as_str())
             .await?;

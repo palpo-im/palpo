@@ -437,6 +437,21 @@ fn registration(a: &Association, server: &str, relay: &str) -> Value {
         "rate_limited":true,"receive_ephemeral":false})
 }
 pub(crate) fn registration_matches(actual: &Value, expected: &Value) -> bool {
+    // Matrix omits empty namespace arrays when serializing a registration.
+    // Compare their meaning while still refusing additional namespace grants.
+    #[derive(serde::Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct Namespaces {
+        #[serde(default)]
+        users: Vec<Value>,
+        #[serde(default)]
+        aliases: Vec<Value>,
+        #[serde(default)]
+        rooms: Vec<Value>,
+    }
+    let namespaces = |value: &Value| serde_json::from_value::<Namespaces>(value.clone()).ok();
+    let actual_namespaces = namespaces(&actual["namespaces"]);
+    let expected_namespaces = namespaces(&expected["namespaces"]);
     [
         "id",
         "url",
@@ -444,11 +459,36 @@ pub(crate) fn registration_matches(actual: &Value, expected: &Value) -> bool {
         "hs_token",
         "sender_localpart",
         "rate_limited",
-        "namespaces",
     ]
     .iter()
     .all(|key| actual[*key] == expected[*key])
+        && actual_namespaces.is_some()
+        && actual_namespaces == expected_namespaces
         && actual["receive_ephemeral"] != true
         && actual["io.element.msc4190"] != true
         && actual["protocols"].as_array().is_none_or(Vec::is_empty)
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    #[test]
+    fn registration_readback_accepts_omitted_empty_namespaces_but_refuses_changed_grants() {
+        let expected = json!({"id":"fleet","url":"https://relay.test/relay","as_token":"appservice","hs_token":"homeserver",
+            "sender_localpart":"fleet_representative","rate_limited":true,
+            "namespaces":{"users":[{"exclusive":true,"regex":"^@fleet_.*:example\\.test$"}],"rooms":[],"aliases":[]}});
+        let mut actual=expected.clone();
+        actual["namespaces"].as_object_mut().unwrap().remove("rooms");
+        actual["namespaces"].as_object_mut().unwrap().remove("aliases");
+        assert!(registration_matches(&actual,&expected));
+        actual["namespaces"]["rooms"]=json!([{"exclusive":true,"regex":".*"}]);
+        assert!(!registration_matches(&actual,&expected));
+        actual["namespaces"]["rooms"]=Value::Null;
+        assert!(!registration_matches(&actual,&expected));
+        actual["namespaces"].as_object_mut().unwrap().remove("rooms");
+        actual["namespaces"]["unknown"]=json!([]);
+        assert!(!registration_matches(&actual,&expected));
+        actual=expected.clone();actual["as_token"]=json!("changed");
+        assert!(!registration_matches(&actual,&expected));
+    }
 }

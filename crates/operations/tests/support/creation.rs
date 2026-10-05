@@ -13,6 +13,7 @@ pub(super) struct Rooms {
     aliases: BTreeMap<String, String>,
     pub(super) events: BTreeMap<String, Value>,
     pub(super) lose_create_reply: bool,
+    lose_binding_reply: bool,
     pub(super) lose_event_reply: bool,
     pub(super) create_count: usize,
     pub(super) pins: BTreeMap<String, Value>,
@@ -158,6 +159,31 @@ pub(super) async fn matrix(
         }
         res.render(Json(json!({"event_id":"$connection-probe"})));
         return true;
+    }
+    if req.method() == reqwest::Method::PUT && path.contains("/state/") {
+        for (room, state) in rooms.states.iter_mut() {
+            for (kind, key) in [("com.hagency.admin.binding.v1", "engagement_a"), ("m.room.power_levels", "")] {
+                if path == self::path(&["_matrix", "client", "v3", "rooms", room, "state", kind, key]) {
+                    let entries = state.as_array_mut().unwrap();
+                    if let Some(event) = entries.iter_mut().find(|e| e["type"] == kind && e["state_key"] == key) {
+                        event["content"] = body.clone();
+                    } else {
+                        entries.push(json!({"type":kind,"state_key":key,"content":body}));
+                    }
+                    if kind == "com.hagency.admin.binding.v1" && std::mem::take(&mut rooms.lose_binding_reply) {
+                        res.status_code(StatusCode::BAD_GATEWAY);
+                        res.render(Json(json!({"errcode":"M_UNKNOWN"})));
+                    } else { res.render(Json(json!({}))); }
+                    return true;
+                }
+            }
+        }
+    }
+    if path.ends_with("/invite")
+        && let Some((_, state)) = rooms.states.iter_mut().find(|(id, _)| self::path(&["_matrix","client","v3","rooms",id,"invite"]) == path) {
+            state.as_array_mut().unwrap().push(json!({"type":"m.room.member","state_key":body["user_id"],"content":{"membership":"invite"}}));
+            res.render(Json(json!({})));
+            return true;
     }
     if let Some(state) = rooms
         .states
@@ -422,4 +448,53 @@ async fn agent_form_uses_current_project_and_exact_idempotent_matrix_event() {
     assert_eq!(approved.0, StatusCode::OK, "{:?}", approved);
     let w = Workflows::load(&f.app.store.lock().await.read().unwrap()).unwrap();
     assert_eq!(w.outbox["agent_approval"]["queued"], true);
+}
+
+#[tokio::test]
+async fn selected_project_room_is_owner_checked_and_recovered_after_lost_binding_reply() {
+    let f = Fixture::new().await;
+    funded(&f).await;
+    let manager = f.session("manager").await;
+    let room = "!selected:example.test";
+    let state = json!([
+        {"type":"m.room.create","state_key":"","sender":"@manager:example.test","content":{"room_version":"11"}},
+        {"type":"m.room.member","state_key":"@manager:example.test","content":{"membership":"join"}},
+        {"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}},
+        {"type":"m.room.power_levels","state_key":"","content":{"users":{"@manager:example.test":100},"invite":50}}
+    ]);
+    let mut intent = project(); intent["roomId"] = json!(room);
+    for bad in [
+        json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
+        json!({"type":"com.hagency.admin.binding.v1","state_key":"other_fleet","content":{"projectId":"other"}}),
+        json!({"type":"m.room.tombstone","state_key":"","content":{"replacement_room":"!new:example.test"}}),
+    ] {
+        let mut invalid = state.clone(); invalid.as_array_mut().unwrap().push(bad);
+        f.rooms.lock().unwrap().states.insert(room.into(), invalid.clone());
+        assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::CONFLICT);
+        assert_eq!(f.rooms.lock().unwrap().states[room],invalid);
+    }
+    for field in ["creator", "power", "membership", "join_rule"] {
+        let mut invalid = state.clone();
+        match field {
+            "creator" => invalid[0]["sender"] = json!("@other:example.test"),
+            "power" => invalid[3]["content"]["users"]["@manager:example.test"] = json!(50),
+            "membership" => invalid[1]["content"]["membership"] = json!("leave"),
+            _ => invalid[2]["content"]["join_rule"] = json!("public"),
+        }
+        f.rooms.lock().unwrap().states.insert(room.into(), invalid.clone());
+        assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::CONFLICT);
+        assert_eq!(f.rooms.lock().unwrap().states[room],invalid);
+    }
+    { let mut rooms=f.rooms.lock().unwrap(); rooms.states.insert(room.into(),state); rooms.lose_binding_reply=true; }
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::BAD_GATEWAY);
+    assert_eq!(f.rooms.lock().unwrap().create_count,0);
+    let (status,created)=f.call(&manager,"palpo.inbox.submit",intent.clone()).await;
+    assert_eq!(status,StatusCode::OK,"{created}");
+    assert_eq!(created["action"]["payload"]["roomId"],room);
+    assert_eq!(f.rooms.lock().unwrap().create_count,1,"only private approval room is created");
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.1,created);
+    intent["roomId"]=json!("!different:example.test");
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent).await.0,StatusCode::CONFLICT);
+    let mut other=project();other["requestId"]=json!("other_project");other["roomId"]=json!(room);
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",other).await.0,StatusCode::CONFLICT);
 }
