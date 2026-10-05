@@ -482,3 +482,102 @@ async fn two_same_server_associations_keep_distinct_profiles_and_owners_cannot_s
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn legacy_connection_upgrade_keeps_namespace_credentials_agents_and_requires_new_probe() {
+    let f = Fixture::new().await;
+    let admin = f.session("admin").await;
+    let (_, original) = f
+        .post(
+            "association-request",
+            "provider-token",
+            intent("legacy_seed", "coordinator"),
+        )
+        .await;
+    let fleet = original["action"]["fleetId"].as_str().unwrap().to_owned();
+    let result=f.call(&admin,"palpo.inbox.decide",json!({"id":original["action"]["id"],"decision":"approve","commandId":"legacy_install","expectedRevision":1})).await;
+    assert_eq!(result.0, StatusCode::OK, "{result:?}");
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|s| {
+            let mut w = Workflows::load(s)?;
+            w.associations
+                .remove(original["action"]["id"].as_str().unwrap());
+            w.authority.engagements.remove(&fleet);
+            w.save(s)?;
+            let legacy = &mut s["fleets"][&fleet];
+            legacy.as_object_mut().unwrap().remove("associationId");
+            legacy.as_object_mut().unwrap().remove("runtimeId");
+            legacy["state"] = json!("ready");
+            legacy["connection"] = json!({"verifiedAt":"2026-01-01T00:00:00Z","generation":1});
+            legacy["agents"] =
+                json!({"original_agent":{"state":"approved","engagementId":"original_native_id"}});
+            Ok(())
+        })
+        .unwrap();
+    let before = f.app.store.lock().await.read().unwrap()["fleets"][&fleet].clone();
+    let mut input = intent("upgrade_legacy", "coordinator");
+    input["existingFleetId"] = json!(fleet);
+    assert_eq!(
+        f.post("association-request", "manager-token", input.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, requested) = f
+        .post("association-request", "provider-token", input.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{requested}");
+    assert_eq!(requested["action"]["fleetId"], fleet);
+    let manager = f.session("manager").await;
+    let decision = json!({"id":requested["action"]["id"],"decision":"approve","commandId":"upgrade_approval","expectedRevision":1});
+    assert_eq!(
+        f.call(&manager, "palpo.inbox.decide", decision.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let result = f.call(&admin, "palpo.inbox.decide", decision.clone()).await;
+    assert_eq!(result.0, StatusCode::OK, "{result:?}");
+    assert_eq!(result.1["action"]["execution"], "verifying");
+    assert_eq!(
+        f.call(&admin, "palpo.inbox.decide", decision).await.0,
+        StatusCode::OK
+    );
+    let replay = f
+        .post("association-request", "provider-token", input.clone())
+        .await;
+    assert_eq!(replay.0, StatusCode::OK, "{replay:?}");
+    assert_eq!(replay.1["action"]["id"], requested["action"]["id"]);
+    let after = f.app.store.lock().await.read().unwrap();
+    let legacy = &after["fleets"][&fleet];
+    for key in [
+        "registration",
+        "transport",
+        "agents",
+        "representativeMxid",
+        "ownerMxid",
+    ] {
+        assert_eq!(legacy[key], before[key], "{key}");
+    }
+    assert!(legacy["connection"].is_null());
+    assert!(legacy["probe"].is_null());
+    assert_eq!(
+        after["rustWorkflows"]["authority"]["engagements"][&fleet]["state"],
+        "verifying"
+    );
+    assert_eq!(
+        f.registrations.lock().unwrap().installs,
+        1,
+        "Upgrade must not register another namespace"
+    );
+    input["requestId"] = json!("second_upgrade");
+    assert_eq!(
+        f.post("association-request", "provider-token", input)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+}

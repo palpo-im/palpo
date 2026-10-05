@@ -1,7 +1,9 @@
 //! Hagency owner initiated server associations. These share the durable Inbox
 //! and notification projection with project requests, but have distinct admin
 //! authority and never confer a resource or project approval role.
-use palpo_hagency_contract::{DefinitionDigest, MatrixUserId, RequestId, ServerName};
+use palpo_hagency_contract::{
+    DefinitionDigest, MatrixUserId, RequestId, ServerEngagementId, ServerName,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -13,6 +15,9 @@ use crate::{Result, digest, fail};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Intent {
     pub request_id: RequestId,
+    /// Owner-initiated protocol upgrade preserves an installed legacy namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_fleet_id: Option<ServerEngagementId>,
     pub name: String,
     pub runtime_id: DefinitionDigest,
     pub coordinator_mxid: MatrixUserId,
@@ -66,7 +71,7 @@ impl Association {
             "canConnect":self.state=="approved" && matches!(self.execution.as_str(),"verifying"|"verified") && actor==&self.owner_mxid && self.intent.delegation_expires_at_ms>now,
             "canRetrySetup":self.state=="approved" && self.execution=="setup_failed" && actor==&self.administrator_mxid,
             "nextAction":if review {Some("review")}else if export {Some("export_and_connect")}else{None},
-            "payload":{"name":self.intent.name,"reason":"Authorize this Hagency runtime to connect to the homeserver. Resource allocations and project decisions remain separate.",
+            "payload":{"name":self.intent.name,"reason":if self.intent.existing_fleet_id.is_some() {"Upgrade the existing Hagency connection to coordinator approvals. Keep its Matrix identity, credentials and agent history."}else{"Authorize this Hagency runtime to connect to the homeserver. Resource allocations and project decisions remain separate."},"existingFleetId":self.intent.existing_fleet_id,
                 "coordinatorMxid":self.intent.coordinator_mxid,"runtimeId":self.intent.runtime_id,"exportMxids":self.intent.export_mxids,
                 "delegationExpiresAtMs":self.intent.delegation_expires_at_ms,"allowSelfApproval":self.intent.allow_self_approval},
             "result":{"fleetId":self.fleet_id,"lastError":self.last_error}}),
@@ -155,7 +160,16 @@ impl Workflows {
         {
             return Err(fail(429, "association_limit"));
         }
-        let fleet_id = format!("hf_{}", &key[..32]);
+        let fleet_id = intent
+            .existing_fleet_id
+            .as_ref()
+            .map(|id| id.as_str().to_owned())
+            .unwrap_or_else(|| format!("hf_{}", &key[..32]));
+        if !valid_legacy_fleet_id(&fleet_id)
+            || self.associations.values().any(|a| a.fleet_id == fleet_id)
+        {
+            return Err(fail(409, "engagement_already_registered"));
+        }
         if self.authority.engagements.contains_key(&fleet_id) {
             return Err(fail(409, "engagement_already_registered"));
         }
@@ -233,9 +247,47 @@ impl App {
         let actor = self.matrix.authenticate(matrix_token).await?.user;
         self.store.lock().await.transaction(|state|{
             let mut w=Workflows::load(state)?;
+            if let Some(fleet)=&intent.existing_fleet_id {
+                let legacy=&state["fleets"][fleet.as_str()];
+                if legacy["ownerMxid"]!=actor.as_str() {return Err(fail(404,"engagement_not_found"));}
+                let replay=w.associations.values().any(|a|a.fleet_id==fleet.as_str() && a.owner_mxid==actor && a.intent.request_id==intent.request_id);
+                if !replay { validate_legacy_fleet(legacy,fleet.as_str(),&actor,self.transport_origin.as_deref().unwrap_or_default())?; }
+            }
             let view=w.request_association(intent,&actor,admin,self.matrix.server(),crate::now_ms())?;
             w.save(state)?;
             Ok(json!({"action":view,"serverName":self.matrix.server(),"serverOrigin":self.public_origin}))
         })
     }
+}
+
+fn valid_legacy_fleet_id(id: &str) -> bool {
+    id.len() == 35 && id.starts_with("hf_") && id[3..].bytes().all(|c| c.is_ascii_hexdigit())
+}
+pub(crate) fn validate_legacy_fleet(
+    fleet: &Value,
+    id: &str,
+    owner: &MatrixUserId,
+    origin: &str,
+) -> Result<()> {
+    if !valid_legacy_fleet_id(id)
+        || fleet["id"] != id
+        || fleet["ownerMxid"] != owner.as_str()
+        || fleet["installation"] != "installed"
+        || !matches!(
+            fleet["state"].as_str(),
+            Some("ready" | "registered" | "verifying" | "offline")
+        )
+        || fleet["transport"]["mode"] != "outbound"
+        || fleet["transport"]["url"] != format!("{origin}/api/fleet/v2/{id}")
+        || fleet["transport"]["generation"]
+            .as_u64()
+            .is_none_or(|v| v == 0)
+        || fleet["transport"]["token"].as_str().is_none()
+        || fleet["registration"]["id"] != id
+        || fleet["pendingAdminOperation"].is_string()
+        || fleet["associationId"].is_string()
+    {
+        return Err(fail(409, "legacy_engagement_unavailable"));
+    }
+    Ok(())
 }

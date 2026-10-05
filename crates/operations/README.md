@@ -371,3 +371,14 @@ Run `tests/legacy_adoption.py --node NODE24 --binary target/debug/palpo-operatio
 Rust CLIs. It does not replace remaining migration support for legacy pending
 projects/contributions or legacy profile delegation, nor live deployment/device
 acceptance.
+
+An installed outbound legacy fleet can upgrade in place through the authenticated
+Hagency owner setup command, adding `--existing-fleet-id hf_…`. Its recorded owner
+must initiate the request and the designated Matrix administrator reviews the
+new runtime/delegation binding. Approval verifies the existing appservice and
+retains its registration, transport generation/token, namespace and agent map.
+It clears the old connection proof; import the exported profile into the same
+Hagency installation and complete a new native probe before adopting capacity.
+A second competing upgrade or another owner's request is refused. This supplies
+the legacy profile/delegation transition described above; pending legacy project
+and contribution workflow conversion remains separate.

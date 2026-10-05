@@ -79,6 +79,16 @@ impl App {
             a.execution=if approved {"configuring"}else{"done"}.into();a.revision+=1;a.updated_at=now;
             a.decision=Some(json!({"by":identity.user,"at":now,"commandId":decision.command_id,"reason":decision.reason}));
             if approved {
+                if a.intent.existing_fleet_id.is_some() {
+                    let fleet=&mut state["fleets"][&a.fleet_id];
+                    crate::associations::validate_legacy_fleet(fleet,&a.fleet_id,&a.owner_mxid,transport)?;
+                    // Preserve registration/transport credentials, namespace,
+                    // agents and all legacy receipts. A fresh native probe is
+                    // required before the new delegation can grant resources.
+                    fleet["associationId"]=json!(a.id); fleet["runtimeId"]=json!(a.intent.runtime_id);
+                    fleet["registrationGeneration"]=json!(fleet["registrationGeneration"].as_u64().unwrap_or(1));
+                    fleet["state"]=json!("authorized"); fleet["connection"]=Value::Null; fleet["probe"]=Value::Null;
+                } else {
                 if state["fleets"].get(&a.fleet_id).is_some() {return Err(fail(409,"engagement_already_registered"));}
                 let registration=registration(a,self.matrix.server().as_str(),relay);
                 state["fleets"][&a.fleet_id]=json!({"id":a.fleet_id,"name":a.intent.name,"ownerMxid":a.owner_mxid,"associationId":a.id,
@@ -86,8 +96,9 @@ impl App {
                     "registration":registration,"agents":{},"representativeMxid":format!("@{}_representative:{}",a.fleet_id,self.matrix.server().as_str()),
                     "transport":{"mode":"outbound","url":format!("{transport}/api/fleet/v2/{}",a.fleet_id),"token":secret(),"generation":1},
                     "localTaskStop":"unknown","createdAtMs":now});
+                }
                 let e:ServerEngagement=serde_json::from_value(json!({"id":a.fleet_id,"server":self.matrix.server(),"owner":a.owner_mxid,
-                    "coordinator":a.intent.coordinator_mxid,"registrationGeneration":1,"delegationRevision":1,"delegationExpiresAtMs":a.intent.delegation_expires_at_ms,
+                    "coordinator":a.intent.coordinator_mxid,"registrationGeneration":state["fleets"][&a.fleet_id]["registrationGeneration"],"delegationRevision":1,"delegationExpiresAtMs":a.intent.delegation_expires_at_ms,
                     "state":"configuring","allowSelfApproval":a.intent.allow_self_approval,"coordinatorApprovalV1":false}))?;
                 w.authority.engagements.insert(a.fleet_id.clone(),e);
             }
