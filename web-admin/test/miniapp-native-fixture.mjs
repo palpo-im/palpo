@@ -82,6 +82,7 @@ const report = () => writeFileSync(directory + '/backend.json', JSON.stringify({
     commands: Object.values(server.projectCommands.state.commands).filter(e => e.actionId === r.id).map(e => e.command.operation.kind) })),
   signup: { status: server.accounts.state.requests[signup.id].status, roomId: server.accounts.state.roomId,
     eventId: server.accounts.state.requests[signup.id].sourceEventId, registrations: f.credentials.size },
+  notificationPreferences: Object.fromEntries(['@owner:example.test', '@admin:example.test', '@other:example.test'].map(actor => [actor, server.inbox.preferences.get(actor)])),
   matrixMutations: f.calls.filter(c => c.method !== 'GET').length,
 }));
 const timer = setInterval(report, 100); timer.unref();

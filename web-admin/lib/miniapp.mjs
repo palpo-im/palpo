@@ -35,6 +35,8 @@ export const SERVICES = Object.freeze({
   'palpo.inbox.recover': 'Retry a failed project reservation or release its never-used allocation as the designated administrator',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
   'palpo.inbox.seen': 'Mark a notification seen without completing its action',
+  'palpo.notifications.get': 'Read your Palpo notification preferences',
+  'palpo.notifications.set': 'Change your Palpo reminders and quiet hours',
   'palpo.inbox.snooze': 'Snooze reminders for an action you can take',
 });
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
@@ -176,7 +178,9 @@ export class MiniApp {
       case 'palpo.inbox.recover': return mutate(() => this.inbox.recover(args, actor, token));
       case 'palpo.inbox.activate': return mutate(() => this.inbox.activate(args, actor, token));
       case 'palpo.inbox.seen': return this.inbox.seen(args, actor, await this.admin(token));
-      case 'palpo.inbox.snooze': return this.inbox.snooze(args, actor, await this.admin(token));
+      case 'palpo.notifications.get': fields(args, []); return this.inbox.preferences.get(actor);
+      case 'palpo.notifications.set': return mutate(() => this.inbox.preferences.set(args, actor));
+      case 'palpo.inbox.snooze': return mutate(async () => this.inbox.snooze(args, actor, await this.admin(token)));
     }
     // These existing operations are server-administrator operations, exactly as
     // in the browser. A package grant never makes an ordinary account an admin.

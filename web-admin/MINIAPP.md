@@ -313,3 +313,32 @@ host refuses this bundle instead of discarding navigation. Tests in
 readiness, stale data, removal and concurrent authority changes. The native
 fixture explicitly publishes readiness separately from its business receipt;
 it does not run a real model or Matrix homeserver.
+
+## Notification preferences and reminder delivery
+
+`palpo.notifications.get` reads only the authenticated account's preferences.
+The separate `palpo.notifications.set` grant saves `{expectedRevision, enabled,
+remindersEnabled, reminderMinutes, quietHours}`. `reminderMinutes` contains one
+to three increasing whole-minute offsets from when an action becomes pending
+(15–10080 minutes); defaults are 60, 1440 and 2880. `quietHours` is null or
+`{start:"22:00", end:"08:00", timeZone:"America/Los_Angeles"}`. The server validates
+local clock times and the IANA zone. Settings persist across sessions and server
+restarts; a stale revision conflicts, while the same lost-response retry is
+idempotent. No argument can select another account.
+
+Notification and reminder switches never resolve, delete or hide Inbox actions.
+Quiet hours defer all workflow deliveries and follow local daylight-saving
+transitions. The worker rechecks the boundary after asynchronous room validation.
+Disabled recipients cannot occupy the delivery batch ahead of enabled users.
+After downtime, retries, quiet hours or snooze, one delivery covers missed cadence
+points. Settings toggles preserve the completed schedule. An explicit snooze can
+schedule another reminder, subject to the account's notification preferences.
+
+Before a Matrix send, the worker durably freezes its generic content, destination
+and transaction ID. An ambiguous reply retries that same envelope. Action-required
+messages use `m.text` and recipient mentions; informational updates use `m.notice`.
+Both contain only minimal routing metadata. Inbox details expose snooze and
+reminder-overdue status separately from completion or a workflow deadline. A read
+receipt never resolves an action. Matrix pushers and actual platform delivery are
+still needed for background device notifications; these settings alone do not
+prove Android/OpenHarmony OS alerts.

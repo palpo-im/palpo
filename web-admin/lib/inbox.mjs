@@ -4,6 +4,7 @@ import { canonical } from './outbound.mjs';
 import { fields } from './miniapp.mjs';
 import { ProjectApprovals } from './project-approvals.mjs';
 import { AgentApprovals } from './agent-approvals.mjs';
+import { NotificationPreferences } from './notification-preferences.mjs';
 import { AgentLifecycle } from './agent-lifecycle.mjs';
 
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
@@ -30,6 +31,7 @@ export class Inbox {
     this.approvers = this.projectApprover ? [this.projectApprover] : [];
     this.store = service.store;
     this.store.state.actionInbox ??= { records: {}, notices: {}, rooms: {} };
+    this.preferences = new NotificationPreferences(this);
     this.projects = new ProjectApprovals(this);
     this.agents = new AgentApprovals(this);
     this.lifecycle = new AgentLifecycle(this);
@@ -56,6 +58,16 @@ export class Inbox {
     if (row.state === 'requested') return admin;
     return row.state === 'approved' && row.ownerMxid === actor && row.execution !== 'done';
   }
+  reminderStatus(row, actor, admin) {
+    if (!this.pending(row, actor, admin)) return null;
+    const notice = Object.values(this.state.notices).find(n => n.actionId === row.id && n.revision === row.revision && n.recipient === actor);
+    if (!notice) return null;
+    const prefs = this.preferences.get(actor);
+    return { enabled: prefs.enabled && prefs.remindersEnabled,
+      overdue: this.now() >= notice.createdAt + prefs.reminderMinutes.at(-1) * 60000,
+      remindersSent: Math.max(0, notice.delivered - 1),
+      snoozedUntil: (notice.snoozedUntil ?? 0) > this.now() ? new Date(notice.snoozedUntil).toISOString() : null };
+  }
   view(row, actor, admin) {
     admin = this.canApproveProjects(actor, admin);
     const { fingerprint, command, commandRef, requestKey, reservations, releases, recoveryHistory, recovery, ...copy } = row;
@@ -72,6 +84,7 @@ export class Inbox {
         : row.workflowVersion === 1 ? row.execution === 'preparing' ? 'prepare_project' : row.state === 'requested' ? 'review' : null
         : row.kind !== 'project' ? null : row.state === 'requested' ? 'review'
         : row.state === 'approved' && row.execution !== 'done' ? 'activate_project' : null,
+      reminderStatus: this.reminderStatus(row, actor, admin),
       canRetry: this.lifecycle.canRetry(row, actor),
       canDecide: this.agents.manages(row) ? this.agents.canDecide(row, actor) : admin && row.kind === 'project' && row.state === 'requested' && row.execution === 'pending',
       canContinue: !this.agents.manages(row) && this.pending(row, actor, admin) && (row.execution === 'preparing' || row.workflowVersion !== 1 && row.state === 'approved') };
@@ -246,7 +259,7 @@ export class Inbox {
   snooze(input, actor, admin) {
     fields(input, ['id', 'minutes']); const row = this.record(input.id, actor, admin);
     if (!this.pending(row, actor, admin) || !Number.isSafeInteger(input.minutes) || input.minutes < 1 || input.minutes > 1440) fail(400, 'invalid_snooze', 'Snooze a pending action for 1 to 1440 minutes.');
-    this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.revision === row.revision && notice.recipient === actor) notice.dueAt = this.now() + input.minutes * 60000; });
+    this.store.atomic(() => { for (const notice of Object.values(this.state.notices)) if (notice.actionId === row.id && notice.revision === row.revision && notice.recipient === actor) { notice.snoozedUntil = this.now() + input.minutes * 60000; notice.dueAt = notice.snoozedUntil; notice.finished = false; } });
     return { snoozedUntil: this.now() + input.minutes * 60000, action: this.view(row, actor, admin) };
   }
 }

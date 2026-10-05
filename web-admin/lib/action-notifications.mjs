@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ApiError } from './service.mjs';
+import { isQuietAt } from './notification-preferences.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const enc = encodeURIComponent;
@@ -74,7 +75,16 @@ export class ActionNotifications {
   async tick() {
     if (!this.config) return;
     await this.service.palpo.requireAdmin(this.config.adminToken);
-    const due = Object.values(this.inbox.state.notices).filter(n => !n.cancelled && !n.finished && n.dueAt <= this.now()).slice(0, 20);
+    const at = this.now(), settings = new Map();
+    const due = Object.values(this.inbox.state.notices).filter(n => {
+      if (n.cancelled || n.finished || n.dueAt > at || (n.snoozedUntil ?? 0) > at) return false;
+      if (!settings.has(n.recipient)) {
+        const prefs = this.inbox.preferences.get(n.recipient);
+        settings.set(n.recipient, { ...prefs, quiet: isQuietAt(prefs.quietHours, at) });
+      }
+      const prefs = settings.get(n.recipient);
+      return prefs.enabled && !prefs.quiet && (n.delivered === 0 || prefs.remindersEnabled);
+    }).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, 20);
     for (const notice of due) {
       try {
         const row = this.inbox.state.records[notice.actionId];
@@ -91,19 +101,39 @@ export class ActionNotifications {
           }
         }
         const roomId = await this.room(notice.recipient);
+        // Room/authority checks await Matrix; a quiet-hours boundary may have
+        // passed since this tick selected its batch.
+        const prefs = this.inbox.preferences.get(notice.recipient);
+        if (!prefs.enabled || (notice.delivered > 0 && !prefs.remindersEnabled) || isQuietAt(prefs.quietHours, this.now())) continue;
         const pending = this.inbox.pending(row, notice.recipient, admin);
-        const label = pending ? 'A Palpo action needs your attention.' : 'A Palpo action has an update.';
-        const route = `${new URL(this.config.homeserverOrigin).origin}/_palpo/miniapp/action/${row.id}`;
-        const result = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/send/m.room.message/${enc(notice.id + '_' + notice.delivered)}`, this.config.botToken, { method: 'PUT', body: {
-          msgtype: 'm.notice', body: `${label}\nOpen in Rinx: ${route}`,
-          format: 'org.matrix.custom.html', formatted_body: `${label} <a href="${route}">Open action</a>`,
-          'im.palpo.action.v1': { v: 1, id: row.id, revision: row.revision, appId: 'im.palpo.operations', ownerMxid: notice.recipient, serverName: this.service.serverName },
-        } });
+        const intervals = this.inbox.preferences.intervals(notice.recipient, this.intervals);
+        // Persist the exact envelope before attempting delivery. An ambiguous
+        // response retry cannot change its body or transaction across a restart.
+        if (!notice.delivery) {
+          const label = pending ? 'A Palpo action needs your attention.' : 'A Palpo action has an update.';
+          const route = `${new URL(this.config.homeserverOrigin).origin}/_palpo/miniapp/action/${row.id}`;
+          this.inbox.store.atomic(() => {
+            notice.delivery = { roomId, transactionId: notice.id + '_' + notice.delivered, content: {
+              msgtype: pending ? 'm.text' : 'm.notice', body: `${label}\nOpen in Rinx: ${route}`,
+              format: 'org.matrix.custom.html', formatted_body: `${label} <a href="${route}">Open action</a>`,
+              'm.mentions': { user_ids: pending ? [notice.recipient] : [] },
+              'im.palpo.action.v1': { v: 1, id: row.id, revision: row.revision, appId: 'im.palpo.operations', ownerMxid: notice.recipient, serverName: this.service.serverName },
+            } };
+          });
+        }
+        if (notice.delivery.roomId !== roomId) fail('The action room changed during a pending delivery.');
+        const result = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/send/m.room.message/${enc(notice.delivery.transactionId)}`,
+          this.config.botToken, { method: 'PUT', body: notice.delivery.content });
         if (typeof result.event_id !== 'string') throw new Error('No Matrix receipt');
         this.inbox.store.atomic(() => {
           notice.eventId = result.event_id; notice.roomId = roomId; notice.delivered++; notice.attempt = 0; notice.lastError = null;
-          notice.finished = !pending || notice.delivered > this.intervals.length;
-          notice.dueAt = notice.createdAt + (this.intervals[notice.delivered - 1] ?? 0);
+          notice.lastDeliveredAt = this.now(); notice.snoozedUntil = null; notice.delivery = null;
+          // One delivery covers every cadence point missed during downtime,
+          // retries, snooze or quiet hours. Never replay an overdue burst.
+          notice.reminderCursor = Math.max(notice.reminderCursor ?? 0,
+            intervals.filter(delay => notice.createdAt + delay <= this.now()).length);
+          notice.finished = !pending || notice.reminderCursor >= intervals.length;
+          notice.dueAt = notice.createdAt + (intervals[notice.reminderCursor] ?? 0);
         });
       } catch (cause) {
         this.inbox.store.atomic(() => {

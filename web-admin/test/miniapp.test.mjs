@@ -178,12 +178,13 @@ test('notifications retry a lost receipt with the same event, remind after readi
   f.palpo.fetch = async (url, options) => { const result = await original(url, options); if (failOnce && new URL(url).pathname.includes('/send/m.room.message/')) { failOnce = false; throw new Error('lost receipt'); } return result; };
   await worker.tick();
   const count = f.events.size;
+  await f.call(admin, 'palpo.inbox.seen', { id: action.id });
   now += 3000; await worker.tick();
   // Existing transaction was replayed, not duplicated; admin may also get a reminder.
   const ownerEvents = [...f.events.values()].filter(event => event.content['im.palpo.action.v1']?.ownerMxid === '@owner:example.test');
   assert.equal(ownerEvents.length, 1); assert.ok(f.events.size >= count);
   await f.call(admin, 'palpo.inbox.seen', { id: action.id });
-  const before = f.events.size; now += 300; await worker.tick(); assert.ok(f.events.size > before);
+  const before = f.events.size; now += 300; await worker.tick(); assert.equal(f.events.size, before, 'missed reminders are coalesced rather than delivered in a burst');
   await f.call(admin, 'palpo.inbox.decide', { id: action.id, expectedRevision: action.revision, commandId: 'reject', decision: 'reject', reason: 'Insufficient detail' });
   await worker.tick(); const resolvedCount = f.events.size; now += 10000; await worker.tick(); assert.equal(f.events.size, resolvedCount);
   for (const event of f.events.values()) assert.doesNotMatch(JSON.stringify(event.content), /Research project|Run a research agent|as_token|hs_token/);
