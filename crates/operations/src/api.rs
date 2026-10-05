@@ -18,6 +18,7 @@ pub const SERVICES: &[&str] = &[
     "palpo.session.disconnect",
     "palpo.inbox.list",
     "palpo.inbox.get",
+    "palpo.inbox.activate",
     "palpo.inbox.submit",
     "palpo.inbox.decide",
     "palpo.inbox.seen",
@@ -52,7 +53,6 @@ const PENDING_SERVICES: &[&str] = &[
     "palpo.agents.register",
     "palpo.agents.rename",
     "palpo.agents.retire",
-    "palpo.inbox.activate",
 ];
 
 #[derive(Clone)]
@@ -421,6 +421,7 @@ impl App {
                     }
                     let result = match service {
                         "palpo.notifications.set" => crate::preferences::set(state,&mut workflows,input.args.clone(),actor,now)?,
+                        "palpo.inbox.activate" => json!({"action":crate::project_setup::submit(&mut workflows,state,tx,input.args.clone(),actor,now)?}),
                         "palpo.agents.control" => json!({"action":crate::lifecycle::submit(&mut workflows,state,tx,input.args.clone(),actor,now)?}),
                         "palpo.inbox.submit" => {
                             if input.args["kind"] == "token_top_up" && input.args.get("agentActionId").is_some() {

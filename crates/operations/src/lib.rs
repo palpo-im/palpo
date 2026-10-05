@@ -16,6 +16,7 @@ mod navigation;
 pub mod notifications;
 pub mod outbound;
 mod preferences;
+mod project_setup;
 mod retirement;
 mod rooms;
 pub mod store;

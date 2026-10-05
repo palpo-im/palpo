@@ -128,6 +128,7 @@ fn capabilities(fleet: &mut Value, input: &Value, server: &ServerName, now: u64)
     fleet["capabilities"] = json!({"v":1,"fleetId":fleet["id"],"serverName":server,"representativeMxid":fleet["representativeMxid"],
         "approvalBotMxid":bot,"offers":clean,"coordinatorApprovalV1":input["coordinatorApprovalV1"]==true,
         "coordinatorAgentControlV1":input["coordinatorAgentControlV1"]==true,
+        "coordinatorProjectSetupV1":input["coordinatorProjectSetupV1"]==true,
         "coordinatorAgentProfileV1":input["coordinatorAgentProfileV1"]==true,"observedAt":iso(now)?});
     fleet["capabilityRead"] = json!({"state":"current","observedAt":iso(now)?});
     Ok(())
@@ -274,7 +275,7 @@ fn coordinator(
                     json!({"resourceId":body["resourceId"],"period":body["period"],"periodKey":body["periodKey"]}));
                 snapshot.resources.insert(grant.id.as_str().into(), grant);
             }
-            Some("project" | "receipt" | "engagement") => {}
+            Some("project" | "receipt" | "engagement" | "project_setup") => {}
             _ => return Err(fail(400, "invalid_projection")),
         }
     }
@@ -331,7 +332,16 @@ fn coordinator(
             workflows.notify_association(&action, now)?;
         }
     }
+    for update in updates
+        .iter()
+        .filter(|u| u["payload"]["kind"] == "project_setup")
+    {
+        crate::project_setup::observation(workflows, fleet, update, now)?;
+    }
     for update in updates.iter().filter(|u| u["payload"]["kind"] == "receipt") {
+        if crate::project_setup::refusal(workflows, fleet, update, now)? {
+            continue;
+        }
         if crate::lifecycle::receipt(workflows, fleet, update, now)? {
             continue;
         }
@@ -450,8 +460,14 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                     .is_some_and(|p| p.state == ProjectState::Ready)
                 {
                     "ready"
+                } else if workflows
+                    .project_setups
+                    .get(id)
+                    .is_some_and(|s| s["state"] == "failed")
+                {
+                    "setup_failed"
                 } else {
-                    "provisioning"
+                    "setup_pending"
                 }
             }
             Request::Agent(_) => {

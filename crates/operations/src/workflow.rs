@@ -134,6 +134,10 @@ pub struct Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
     #[serde(default)]
+    pub project_setups: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub project_retries: BTreeMap<String, Value>,
+    #[serde(default)]
     pub agent_controls: BTreeMap<String, Value>,
     #[serde(default)]
     pub engagement_exports: BTreeMap<String, Vec<MatrixUserId>>,
@@ -354,6 +358,11 @@ impl Workflows {
     fn visible(&self, action: &Action, actor: &MatrixUserId, now: u64) -> bool {
         action.request.owner() == actor
             || action.request.requester() == actor
+            || self
+                .authority
+                .engagements
+                .get(action.request.engagement().as_str())
+                .is_some_and(|e| &e.owner == actor)
             || self.can_review(&action.request, actor, now)
     }
     pub fn view(&self, id: &str, actor: &MatrixUserId, now: u64) -> Result<Value> {
@@ -371,7 +380,11 @@ impl Workflows {
         result["agentControl"] = crate::lifecycle::latest(self,id).map(|r|json!({"operation":r["command"]["operation"],"execution":r["execution"],"reason":r["result"]["reason"]})).unwrap_or(Value::Null);
         result["needsMyAction"] = json!(can_decide);
         result["canDecide"] = json!(can_decide);
-        result["canContinue"] = json!(false);
+        result["canContinue"] = json!(
+            crate::project_setup::allowed(self, id, actor, now)
+                && !crate::project_setup::pending(self, id, now)
+        );
+        result["projectSetup"] = crate::project_setup::view(self, id);
         if let Some(receipt) = self
             .outbox
             .values()
@@ -468,7 +481,11 @@ impl Workflows {
                 || view == "needs_action" && needs
                 || view == "waiting"
                     && !needs
-                    && (action.state == "requested" || action.execution == "pending")
+                    && (action.state == "requested"
+                        || matches!(
+                            action.execution.as_str(),
+                            "pending" | "provisioning" | "setup_pending" | "setup_failed"
+                        ))
                 || view == "history"
                     && (action.state == "rejected"
                         || matches!(
@@ -711,6 +728,9 @@ impl Workflows {
             }
         };
         let key = context.command_id.as_str().to_owned();
+        if self.project_retries.contains_key(&key) || self.agent_controls.contains_key(&key) {
+            return Err(fail(409, "command_id_conflict"));
+        }
         let fingerprint = digest(&json!({"operation":"approve","actionId":id,"command":command}))?;
         if let Some(receipt) = self.receipts.get(&key) {
             if receipt["digest"] != fingerprint {
@@ -748,6 +768,11 @@ impl Workflows {
         now: u64,
     ) -> Result<Value> {
         let _: CommandId = command_id.to_owned().try_into()?;
+        if self.project_retries.contains_key(command_id)
+            || self.agent_controls.contains_key(command_id)
+        {
+            return Err(fail(409, "command_id_conflict"));
+        }
         if reason.len() > 2000 {
             return Err(fail(400, "reason_too_long"));
         }
@@ -802,6 +827,11 @@ impl Workflows {
         now: u64,
     ) -> Result<Value> {
         let _: CommandId = command_id.to_owned().try_into()?;
+        if self.project_retries.contains_key(command_id)
+            || self.agent_controls.contains_key(command_id)
+        {
+            return Err(fail(409, "command_id_conflict"));
+        }
         if reason.trim().is_empty() || reason.len() > 1000 || reason.chars().any(char::is_control) {
             return Err(fail(400, "invalid_reason"));
         }

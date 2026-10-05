@@ -92,7 +92,10 @@ pub(crate) fn submit(
         }
         return w.view(&input.agent_action_id, actor, now);
     }
-    if w.receipts.contains_key(key) || w.outbox.contains_key(key) {
+    if w.receipts.contains_key(key)
+        || w.outbox.contains_key(key)
+        || w.project_retries.contains_key(key)
+    {
         return Err(fail(409, "command_id_conflict"));
     }
     let action = &w.actions[&input.agent_action_id];

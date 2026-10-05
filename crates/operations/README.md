@@ -307,3 +307,15 @@ exact authenticated `lifecycle.matrixProfile` read-back marks it verified. Names
 do not change allocation identity/history or block otherwise-ready chat. API
 regressions cover role denial, capability negotiation, invalid labels, frozen
 retries, verification failure and confirmation.
+
+Approved project recovery uses `palpo.inbox.activate` with the action ID, a
+frozen command ID and expected revision. It requires the project owner,
+resource owner or current coordinator and `coordinatorProjectSetupV1`. The
+runtime receives an immutable reference to the original approval; recovery
+cannot create or change its resource grant. Current-generation observations
+separately report pending, failed (with bounded room/authority reasons), or
+ready. Transport ACK never establishes readiness. Matching retries preserve the
+original decision and queue one command; superseded or conflicting observations
+are refused. Native Rinx acceptance `0a97a9126f214590a91825d332085946` passed
+22 checks using Rust Palpo and explicit Matrix/provider fixtures; the actual
+Hagency process has a separate restart/join-repair test.

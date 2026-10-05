@@ -302,10 +302,19 @@ pub(crate) fn projects(
             _ => None,
         });
         rows.push(json!({"id":project.project_id,"fleetId":project.server_engagement_id,"state":project.state,
+            "projectSetup":null,"canRetrySetup":false,"actionId":null,"revision":null,
             "ownerMxid":project.owner,"name":display(&definition.map_or(Value::Null, |d|d["name"].clone()),project.project_id.as_str(),160),
             "resourceAllocationIds":project.resource_allocations,
             "canRequest":project.owner==*actor && project.state==ProjectState::Ready && definition.is_some()
                 && engagement_available(state,workflows,project.server_engagement_id.as_str(),now)}));
+        if let Some(action)=workflows.actions.values().find(|a|matches!(&a.request,Request::Project(p) if p.project_id==project.project_id && p.server_engagement_id==project.server_engagement_id && p.revision==project.revision)) {
+            let row=rows.last_mut().unwrap();
+            row["actionId"]=json!(action.id);row["revision"]=json!(action.revision);
+            row["projectSetup"]=crate::project_setup::view(workflows,&action.id);
+            row["canRetrySetup"]=json!(crate::project_setup::allowed(workflows,&action.id,actor,now)
+                && !crate::project_setup::pending(workflows,&action.id,now)
+                && state["fleets"][project.server_engagement_id.as_str()]["capabilities"]["coordinatorProjectSetupV1"]==true);
+        }
     }
     page.apply("projects", rows)
 }

@@ -418,6 +418,9 @@ impl App {
                 for record in w.agent_controls.values_mut(){
                     if record["command"]["context"]["serverEngagementId"]==id.as_str(){record["transportGeneration"]=json!(generation);}
                 }
+                for record in w.project_retries.values_mut(){
+                    if record["command"]["context"]["serverEngagementId"]==id.as_str(){record["transportGeneration"]=json!(generation);}
+                }
                 w.save(s)?;
                 association_status(s,id,"verifying")?;
                 s["fleetAdminOperations"][request]["state"]=json!("done");s["fleetAdminOperations"][request]["finishedAt"]=json!(now_ms());
