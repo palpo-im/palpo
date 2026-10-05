@@ -9,6 +9,7 @@ mod creation;
 mod engagement_setup;
 mod fleet_admin;
 mod intents;
+mod legacy;
 mod lifecycle;
 pub mod machine;
 pub mod matrix;

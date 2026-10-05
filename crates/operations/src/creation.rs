@@ -155,12 +155,19 @@ impl App {
         let fingerprint = digest(&json!({"actor":actor,"intent":input}))?;
         let key = digest(&json!({"actor":actor,"requestId":intent.request_id}))?;
         let project_id = format!("project_{}", &key[..24]);
+        let legacy_id = format!("action_{}", &key[..32]);
+        let legacy_source;
         {
             let mut store = self.store.lock().await;
             let state = store.read()?;
             let w = Workflows::load(&state)?;
             if let Some(view) = receipt(&w, &key, &fingerprint, actor)? {
                 return Ok(json!({"action":view}));
+            }
+            legacy_source = w.legacy_records.get(&legacy_id).cloned();
+            if let Some(source) = &legacy_source
+                && crate::legacy::continuation(&w, source, actor, now_ms()).as_ref() != Some(&input) {
+                return Err(fail(409, "legacy_continuation_mismatch"));
             }
             project_resources(&state, &w, actor, &intent)?;
             let e = &w.authority.engagements[&intent.fleet_id];
@@ -183,6 +190,9 @@ impl App {
         }
         self.store.lock().await.transaction(|state| {
             let mut w = Workflows::load(state)?;
+            if legacy_source != w.legacy_records.get(&legacy_id).cloned() {
+                return Err(fail(409, "legacy_source_changed"));
+            }
             project_resources(state, &w, actor, &intent)?;
             check_plan(state, &w, &key, &intent.fleet_id)?;
             let request = ProjectRequest {
@@ -195,8 +205,14 @@ impl App {
                 definition_digest: digest(&definition)?.try_into()?,
                 resource_allocations: intent.resource_ids,
             };
-            let view =
+            let mut view =
                 w.submit_definition(Request::Project(request), definition, actor, now_ms())?;
+            if let Some(source) = &legacy_source {
+                w.legacy_sources.insert(legacy_id.clone(),json!({"source":"actionInbox","sourceId":legacy_id,
+                    "digest":digest(source)?,"originalAction":source,"continuedAtMs":now_ms()}));
+                w.legacy_records.remove(&legacy_id);
+                view = w.view(&legacy_id, actor, now_ms())?;
+            }
             finish(
                 state,
                 &mut w,

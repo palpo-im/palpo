@@ -498,3 +498,56 @@ async fn selected_project_room_is_owner_checked_and_recovered_after_lost_binding
     let mut other=project();other["requestId"]=json!("other_project");other["roomId"]=json!(room);
     assert_eq!(f.call(&manager,"palpo.inbox.submit",other).await.0,StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn legacy_inbox_continuation_preserves_identity_history_and_current_authority() {
+    let f = Fixture::new().await;
+    funded(&f).await;
+    let actor = "@manager:example.test";
+    let request = "legacy_pending_project";
+    let id = format!("action_{}", &palpo_operations::digest(&json!({"actor":actor,"requestId":request})).unwrap()[..32]);
+    let old = json!({"id":id,"requestId":request,"kind":"project","ownerMxid":actor,"state":"approved","execution":"pending","revision":2,
+        "createdAt":10,"updatedAt":11,"decision":{"by":"@admin:example.test","at":11,"reason":"Original admin decision"},
+        "payload":{"name":"Original project","reason":"Original purpose","fleetId":"engagement_a","resourceIds":[RESOURCE]},"command":{"private":"never expose"}});
+    f.app.store.lock().await.transaction(|s| {
+        s["actionInbox"]=json!({"records":{id.clone():old.clone(),"old_contribution":{"id":"old_contribution","requestId":"old_contribution","kind":"contribution","ownerMxid":actor,
+            "state":"rejected","execution":"pending","revision":2,"payload":{"name":"Earlier capacity"},"decision":{"by":"@admin:example.test","reason":"Original refusal"}}}});
+        Ok(())
+    }).unwrap();
+    let manager=f.session("manager").await;
+    let coordinator=f.session("coordinator").await;
+    let admin=f.session("admin").await;
+    let (status,opened)=f.call(&manager,"palpo.inbox.get",json!({"id":id})).await;
+    assert_eq!(status,StatusCode::OK,"{opened}");
+    assert_eq!(opened["action"]["nextAction"],"continue_legacy_project");
+    assert_eq!(opened["action"]["decision"],old["decision"]);
+    assert!(opened["action"].get("command").is_none());
+    assert_eq!(f.call(&admin,"palpo.inbox.get",json!({"id":id})).await.0,StatusCode::NOT_FOUND);
+    let history=f.call(&manager,"palpo.inbox.list",json!({"view":"history"})).await.1;
+    assert!(history["actions"].as_array().unwrap().iter().any(|a|a["id"]=="old_contribution"));
+    let intent=opened["action"]["continuation"].clone();
+    assert_eq!(intent["requestId"],request);
+    assert_eq!(intent["resourceIds"],json!(["grant_a"]));
+    let mut forged=intent.clone();forged["name"]=json!("Changed name");
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",forged).await.0,StatusCode::CONFLICT);
+    assert_eq!(f.call(&coordinator,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::FORBIDDEN);
+    assert_eq!(f.rooms.lock().unwrap().create_count,0);
+    f.rooms.lock().unwrap().lose_create_reply=true;
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.0,StatusCode::BAD_GATEWAY);
+    let (status,continued)=f.call(&manager,"palpo.inbox.submit",intent.clone()).await;
+    assert_eq!(status,StatusCode::OK,"{continued}");
+    assert_eq!(continued["action"]["id"],id);
+    assert_eq!(continued["action"]["state"],"requested");
+    assert_eq!(f.call(&manager,"palpo.inbox.submit",intent.clone()).await.1,continued);
+    let decision=json!({"id":id,"decision":"approve","expectedRevision":1,"commandId":"continue_legacy_approval","reason":"Current coordinator decision"});
+    assert_eq!(f.call(&admin,"palpo.inbox.decide",decision.clone()).await.0,StatusCode::NOT_FOUND);
+    assert_eq!(f.call(&coordinator,"palpo.inbox.decide",decision.clone()).await.0,StatusCode::OK);
+    assert_eq!(f.call(&coordinator,"palpo.inbox.decide",decision).await.0,StatusCode::OK);
+    let state=f.app.store.lock().await.read().unwrap();
+    let w=Workflows::load(&state).unwrap();
+    assert_eq!(state["actionInbox"]["records"][&id],old);
+    assert_eq!(w.legacy_sources[&id]["originalAction"],old);
+    assert_eq!(w.outbox.len(),1);
+    assert_eq!(f.rooms.lock().unwrap().create_count,2);
+    assert_eq!(w.view(&id,&actor.to_owned().try_into().unwrap(),now_ms()).unwrap()["state"],"approved");
+}
