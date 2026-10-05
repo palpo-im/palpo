@@ -134,6 +134,8 @@ pub struct Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
     #[serde(default)]
+    pub engagement_exports: BTreeMap<String, Vec<MatrixUserId>>,
+    #[serde(default)]
     pub associations: BTreeMap<String, crate::associations::Association>,
     /// Runtime-published parent resource and accounting period for each grant.
     /// The allocation ID is the authority; a catalog resource alone grants none.
@@ -153,6 +155,17 @@ pub struct Workflows {
 }
 
 impl Workflows {
+    pub(crate) fn may_export_profile(&self, fleet: &str, actor: &MatrixUserId) -> bool {
+        self.engagement_exports.get(fleet).map_or_else(
+            || {
+                self.associations
+                    .values()
+                    .find(|a| a.fleet_id == fleet)
+                    .is_some_and(|a| a.intent.export_mxids.contains(actor))
+            },
+            |recipients| recipients.contains(actor),
+        )
+    }
     pub fn submit_definition(
         &mut self,
         request: Request,
@@ -343,7 +356,7 @@ impl Workflows {
     }
     pub fn view(&self, id: &str, actor: &MatrixUserId, now: u64) -> Result<Value> {
         if let Some(association) = self.associations.get(id) {
-            return association.view(actor, now);
+            return self.association_view(association, actor, now);
         }
         let action = self
             .actions
@@ -464,7 +477,7 @@ impl Workflows {
             }
         }
         for association in self.associations.values() {
-            let row = match association.view(actor, now) {
+            let row = match self.association_view(association, actor, now) {
                 Ok(row) => row,
                 Err(e) if e.status == 404 => continue,
                 Err(e) => return Err(e),

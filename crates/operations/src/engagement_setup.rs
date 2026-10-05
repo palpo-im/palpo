@@ -371,12 +371,11 @@ impl App {
                 json!({"action":Workflows::load(&self.store.lock().await.read()?)?.view(&a.id,&identity.user,now_ms())?}),
             );
         }
-        if !admin && !a.intent.export_mxids.contains(&identity.user) {
+        if !admin && !w.may_export_profile(&input.fleet_id, &identity.user) {
             return Err(fail(403, "profile_export_forbidden"));
         }
         let fleet = &state["fleets"][&input.fleet_id];
         if a.state != "approved"
-            || a.intent.delegation_expires_at_ms <= now_ms()
             || fleet["installation"] != "installed"
             || matches!(fleet["state"].as_str(), Some("paused" | "revoked"))
         {

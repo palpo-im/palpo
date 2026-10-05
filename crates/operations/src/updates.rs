@@ -163,6 +163,69 @@ fn coordinator(
 ) -> Result<()> {
     let id = text(fleet, "id")?;
     let mut snapshot = workflows.authority.clone();
+    let mut changed_delegation = false;
+    // Only this engagement's authenticated runtime can publish an owner change.
+    // It cannot advance registration, invent a probe or grant itself capability.
+    for update in updates
+        .iter()
+        .filter(|u| u["payload"]["kind"] == "engagement")
+    {
+        let body = &update["payload"];
+        let next: palpo_hagency_contract::ServerEngagement =
+            serde_json::from_value(body["engagement"].clone())?;
+        let previous = snapshot
+            .engagements
+            .get(id)
+            .ok_or_else(|| fail(409, "engagement_not_registered"))?;
+        let exports: Vec<MatrixUserId> = serde_json::from_value(body["exportMxids"].clone())?;
+        if update["id"] != "engagement_authority"
+            || update["digest"] != digest(body)?
+            || next.id.as_str() != id
+            || next.owner != previous.owner
+            || next.server != previous.server
+            || next.registration_generation != previous.registration_generation
+            || next.coordinator_approval_v1 != previous.coordinator_approval_v1
+            || next.delegation_revision < previous.delegation_revision
+            || body["registrationGeneration"] != json!(next.registration_generation)
+            || body["delegationRevision"] != json!(next.delegation_revision)
+            || body["observedAtMs"]
+                .as_u64()
+                .is_none_or(|n| n > now.saturating_add(5000))
+            || exports.len() > 2
+            || exports
+                .iter()
+                .any(|u| u != &next.owner && u != &next.coordinator)
+            || exports
+                .iter()
+                .map(|u| u.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != exports.len()
+            || !next.coordinator.belongs_to(server)
+            || !matches!(
+                next.state,
+                palpo_hagency_contract::EngagementState::Verified
+                    | palpo_hagency_contract::EngagementState::Suspended
+                    | palpo_hagency_contract::EngagementState::Revoked
+            )
+            || next.state == palpo_hagency_contract::EngagementState::Verified
+                && !matches!(
+                    previous.state,
+                    palpo_hagency_contract::EngagementState::Verified
+                        | palpo_hagency_contract::EngagementState::Suspended
+                )
+        {
+            return Err(fail(409, "delegation_binding_conflict"));
+        }
+        if next.delegation_revision == previous.delegation_revision
+            && (next != *previous || workflows.engagement_exports.get(id) != Some(&exports))
+        {
+            return Err(fail(409, "delegation_revision_conflict"));
+        }
+        changed_delegation |= next != *previous;
+        snapshot.engagements.insert(id.into(), next);
+        workflows.engagement_exports.insert(id.into(), exports);
+    }
     let authority = snapshot
         .engagements
         .get(id)
@@ -184,7 +247,9 @@ fn coordinator(
         }
         let body = &update["payload"];
         if body["registrationGeneration"] != json!(authority.registration_generation)
-            || body["delegationRevision"] != json!(authority.delegation_revision)
+            || body["delegationRevision"]
+                .as_u64()
+                .is_none_or(|r| r == 0 || r > u64::from(authority.delegation_revision))
         {
             return Err(fail(409, "projection_authority_changed"));
         }
@@ -207,7 +272,7 @@ fn coordinator(
                     json!({"resourceId":body["resourceId"],"period":body["period"],"periodKey":body["periodKey"]}));
                 snapshot.resources.insert(grant.id.as_str().into(), grant);
             }
-            Some("project" | "receipt") => {}
+            Some("project" | "receipt" | "engagement") => {}
             _ => return Err(fail(400, "invalid_projection")),
         }
     }
@@ -230,6 +295,40 @@ fn coordinator(
             .insert(grant.project_id.as_str().into(), grant);
     }
     workflows.import_authority(snapshot, server)?;
+    if changed_delegation {
+        let actions = workflows
+            .actions
+            .values()
+            .filter(|a| a.request.engagement().as_str() == id && a.state == "requested")
+            .map(|a| a.id.clone())
+            .collect::<Vec<_>>();
+        for action in actions {
+            let row = workflows
+                .actions
+                .get_mut(&action)
+                .ok_or_else(|| fail(409, "action_not_found"))?;
+            row.revision += 1;
+            row.updated_at = now;
+            workflows.notify(&action, now)?;
+        }
+        let association = workflows
+            .associations
+            .values_mut()
+            .find(|a| a.fleet_id == id)
+            .map(|action| {
+                action.execution = serde_json::to_value(workflows.authority.engagements[id].state)?
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .into();
+                action.revision += 1;
+                action.updated_at = now;
+                Ok::<_, crate::Error>(action.id.clone())
+            })
+            .transpose()?;
+        if let Some(action) = association {
+            workflows.notify_association(&action, now)?;
+        }
+    }
     for update in updates.iter().filter(|u| u["payload"]["kind"] == "receipt") {
         let receipt = &update["payload"];
         let command_id = text(receipt, "commandId")?;

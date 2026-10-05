@@ -58,7 +58,7 @@ pub(crate) fn view(
         "serverName":e.server,"state":e.state,"installation":f["installation"],"registrationGeneration":e.registration_generation,
         "delegationRevision":e.delegation_revision,"delegationExpiresAtMs":e.delegation_expires_at_ms,
         "connectionVerified":verified,"lastVerifiedAt":f["connection"]["verifiedAt"],"lastSeenAt":f["transport"]["lastSeenAt"],
-        "connectivity":if online {"online"}else{"offline"},"canConnect":owner&&active,"canExport":active&&(designated||a.is_some_and(|a|a.intent.export_mxids.contains(actor))),
+        "connectivity":if online {"online"}else{"offline"},"canConnect":owner&&active,"canExport":active&&(designated||w.may_export_profile(id,actor)),
         "canInstall":designated&&a.is_some_and(|a|a.state=="approved"),"lastError":f["lastError"],"localTaskStop":f["localTaskStop"]}),
     )
 }

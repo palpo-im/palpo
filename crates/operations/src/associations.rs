@@ -56,6 +56,7 @@ impl Association {
             && actor == &self.administrator_mxid
             && self.intent.delegation_expires_at_ms > now;
         let export = self.state == "approved"
+            && self.intent.delegation_expires_at_ms > now
             && matches!(self.execution.as_str(), "verifying" | "verified")
             && (actor == &self.administrator_mxid || self.intent.export_mxids.contains(actor));
         Ok(
@@ -74,6 +75,33 @@ impl Association {
 }
 
 impl Workflows {
+    pub(crate) fn association_view(
+        &self,
+        association: &Association,
+        actor: &MatrixUserId,
+        now: u64,
+    ) -> Result<Value> {
+        let mut current = association.clone();
+        if let Some(e) = self.authority.engagements.get(&association.fleet_id) {
+            current.intent.coordinator_mxid = e.coordinator.clone();
+            current.intent.delegation_expires_at_ms = e.delegation_expires_at_ms;
+            current.intent.allow_self_approval = e.allow_self_approval;
+            if let Some(exports) = self.engagement_exports.get(&association.fleet_id) {
+                current.intent.export_mxids = exports.clone();
+            }
+            if matches!(
+                e.state,
+                palpo_hagency_contract::EngagementState::Suspended
+                    | palpo_hagency_contract::EngagementState::Revoked
+            ) {
+                current.execution = serde_json::to_value(e.state)?
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .into();
+            }
+        }
+        current.view(actor, now)
+    }
     /// Invoked only by the native owner setup route after Matrix authentication.
     /// No caller-supplied owner/admin or approval state crosses this boundary.
     pub fn request_association(
@@ -115,7 +143,7 @@ impl Workflows {
             if existing.fingerprint != fingerprint {
                 return Err(fail(409, "idempotency_conflict"));
             }
-            return existing.view(owner, now);
+            return self.association_view(existing, owner, now);
         }
         if self.associations.len() >= 10000
             || self
@@ -168,7 +196,10 @@ impl Workflows {
         for recipient in [
             &a.owner_mxid,
             &a.administrator_mxid,
-            &a.intent.coordinator_mxid,
+            self.authority
+                .engagements
+                .get(&a.fleet_id)
+                .map_or(&a.intent.coordinator_mxid, |e| &e.coordinator),
         ] {
             let key = format!(
                 "{}_{}_{}",
