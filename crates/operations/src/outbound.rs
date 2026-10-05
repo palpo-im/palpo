@@ -53,6 +53,24 @@ pub fn authenticate(
     generation: Option<u64>,
     relay: bool,
 ) -> Result<Value> {
+    authenticate_scope(state, id, token, generation, relay, false)
+}
+pub(crate) fn authenticate_cleanup(
+    state: &Value,
+    id: &str,
+    token: &str,
+    generation: Option<u64>,
+) -> Result<Value> {
+    authenticate_scope(state, id, token, generation, false, true)
+}
+fn authenticate_scope(
+    state: &Value,
+    id: &str,
+    token: &str,
+    generation: Option<u64>,
+    relay: bool,
+    cleanup: bool,
+) -> Result<Value> {
     let fleet = &state["fleets"][id];
     let expected = if relay {
         fleet.pointer("/registration/hs_token")
@@ -63,10 +81,10 @@ pub fn authenticate(
         || token.len() > 8192
         || fleet["id"] != id
         || fleet.pointer("/transport/mode") != Some(&json!("outbound"))
-        || !matches!(
+        || !(matches!(
             fleet["state"].as_str(),
             Some("pending_connection" | "ready")
-        )
+        ) || cleanup && matches!(fleet["state"].as_str(), Some("paused" | "revoked")))
         || fleet["installation"] != "installed"
         || !same_secret(expected.and_then(Value::as_str).unwrap_or_default(), token)?
     {

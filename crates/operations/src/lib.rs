@@ -16,6 +16,7 @@ mod navigation;
 pub mod notifications;
 pub mod outbound;
 mod preferences;
+mod retirement;
 mod rooms;
 pub mod store;
 pub mod updates;

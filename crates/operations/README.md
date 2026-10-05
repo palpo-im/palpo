@@ -239,6 +239,22 @@ new role bindings. Explicit reconciliation is required before production cutover
 
 ## Remaining cutover gates
 
+Whole-agent Matrix retirement is served at the authenticated fleet endpoint
+`POST /api/fleet/v2/{fleet}/retire-agent`. Configure
+`PALPO_RETIREMENT_ADMIN_TOKEN_FILE` with an operator-owned 0600 token file;
+borrowed Rinx sessions are never retained for this worker. Each call rechecks
+current administrator authority and exact request, namespace and appservice
+ownership, rejects another live allocation of that identity, then verifies
+deactivation, empty joined rooms and denied appservice authentication. Lost
+replies retry the original identity. Paused/revoked fleets retain only this
+restricted cleanup route under their current transport generation. Receipts do
+not assert local process termination or settle token usage.
+
+Four retirement HTTP scenarios cover lost replies/replay, changed server state,
+partial native provisioning, scope/generation denial, other live allocations,
+room removal and appservice denial. Rinx chat navigation is fenced as soon as
+retirement starts. These are Matrix-fixture tests, not live deployment evidence.
+
 1. Live deployment acceptance of registration/transport rotation. Native Rinx,
    Rust Palpo and Hagency now pass 16 combined fixture checks, including pause,
    resume, transport rotation, stale-profile rejection and two simultaneous

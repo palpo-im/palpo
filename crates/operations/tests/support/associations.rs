@@ -6,7 +6,11 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Registrations {
     pub(super) values: BTreeMap<String, Value>,
-    users: BTreeMap<String, Value>,
+    pub(super) users: BTreeMap<String, Value>,
+    pub(super) lose_retirement_reply: bool,
+    pub(super) retirement_calls: usize,
+    pub(super) retirement_rooms: Vec<String>,
+    pub(super) allow_retired_auth: bool,
     lose_install_reply: bool,
     installs: usize,
     pub(super) lose_control_reply: bool,
@@ -53,6 +57,16 @@ pub(super) async fn matrix(
         {
             let user = req.query::<String>("user_id").unwrap_or_default();
             assert!(user.starts_with(&format!("@{}_", fleet["id"].as_str().unwrap())));
+            if !registrations.allow_retired_auth
+                && registrations
+                    .users
+                    .get(&self::path(&["_palpo", "admin", "v2", "users", &user]))
+                    .is_some_and(|u| u["deactivated"] == true)
+            {
+                res.status_code(StatusCode::UNAUTHORIZED);
+                res.render(Json(json!({"errcode":"M_UNKNOWN_TOKEN"})));
+                return true;
+            }
             registrations.users.insert(
                 self::path(&["_palpo", "admin", "v2", "users", &user]),
                 json!({"name":user,"appservice_id":fleet["id"],"deactivated":false,"locked":false}),
@@ -64,6 +78,26 @@ pub(super) async fn matrix(
     }
     if token != "admin-token" {
         return false;
+    }
+    if let Some(encoded) = path.strip_prefix("/_palpo/admin/v1/deactivate/") {
+        let user_path = format!("/_palpo/admin/v2/users/{encoded}");
+        if let Some(user) = registrations.users.get_mut(&user_path) {
+            user["deactivated"] = json!(true);
+        } else {
+            res.status_code(StatusCode::NOT_FOUND);
+            res.render(Json(json!({})));
+            return true;
+        }
+        registrations.retirement_calls += 1;
+        if std::mem::take(&mut registrations.lose_retirement_reply) {
+            res.status_code(StatusCode::BAD_GATEWAY);
+        }
+        res.render(Json(json!({})));
+        return true;
+    }
+    if path.starts_with("/_palpo/admin/v1/users/") && path.ends_with("/joined_rooms") {
+        res.render(Json(json!({"joined_rooms":registrations.retirement_rooms})));
+        return true;
     }
     if path == "/_palpo/admin/v1/appservices" {
         if req.method() == reqwest::Method::POST {

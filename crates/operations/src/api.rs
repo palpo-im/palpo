@@ -77,6 +77,7 @@ pub struct App {
     pub(crate) relay_host: Option<String>,
     pub(crate) notifications: Option<crate::notifications::Configuration>,
     pub(crate) accounts: Option<crate::accounts::Configuration>,
+    pub(crate) retirement_token: Option<String>,
     pub(crate) account_limits: Mutex<crate::accounts::Limits>,
     ttl_ms: u64,
 }
@@ -122,6 +123,7 @@ impl App {
             relay_host: None,
             notifications: None,
             accounts: None,
+            retirement_token: None,
             account_limits: Mutex::new(crate::accounts::Limits::default()),
             ttl_ms,
         }))

@@ -136,7 +136,13 @@ pub(crate) fn agents(
             && observed["generation"].as_u64().is_some()
             && observed["generation"] == fleet["transport"]["generation"];
         let current = current_binding && crate::updates::status_current(observed, now);
-        let usable = current
+        let retirement = &state["identityRetirements"][format!(
+            "{}:{}",
+            request.server_engagement_id.as_str(),
+            request.id.as_str()
+        )];
+        let usable = retirement.is_null()
+            && current
             && view["execution"] == "ready"
             && observed["ready"] == true
             && observed["bound"] == true
@@ -210,6 +216,7 @@ pub(crate) fn agents(
         let control = crate::lifecycle::latest(workflows, &action.id);
         row["agentControl"] = view["agentControl"].clone();
         row["lifecycle"] = observed["lifecycle"].clone();
+        row["matrixRetirement"] = retirement["state"].clone();
         let can_manage = crate::lifecycle::allowed(workflows, state, &action.id, actor, now)
             && control.is_none_or(|r| {
                 !matches!(

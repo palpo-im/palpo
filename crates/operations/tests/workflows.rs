@@ -23,6 +23,8 @@ mod lifecycle_cases;
 mod notification_cases;
 #[path = "support/refusals.rs"]
 mod refusal_cases;
+#[path = "support/retirement.rs"]
+mod retirement_cases;
 
 fn authority(now: u64) -> Value {
     json!({
@@ -184,6 +186,7 @@ impl Fixture {
         } else {
             app
         };
+        let app = app.with_retirement("admin-token".into()).unwrap();
         let service = Service::new(api::router(app.clone()));
         Self {
             app,

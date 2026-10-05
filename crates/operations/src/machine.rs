@@ -122,6 +122,13 @@ async fn machine(req: &mut Request, depot: &mut Depot, res: &mut Response) {
             .map_err(|_| fail(503, "service_unavailable"))?;
         let (id, token, generation) = headers(req, app, false)?;
         let operation = req.param::<String>("operation").unwrap_or_default();
+        if operation == "retire-agent" && req.method() == Method::POST {
+            let input = req
+                .parse_json::<Value>()
+                .await
+                .map_err(|_| fail(400, "invalid_retirement"))?;
+            return app.retire_identity(&id, &token, generation, input).await;
+        }
         if operation == "poll" && req.method() == Method::GET {
             let lane = req.query::<String>("lane").unwrap_or_default();
             let consumer = req.query::<String>("consumer").unwrap_or_default();
