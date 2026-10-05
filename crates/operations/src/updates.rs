@@ -495,6 +495,13 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                     "provisioning_failed"
                 } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
                     "ended"
+                } else if status["lifecycle"]["provisionEffect"] == "complete"
+                    && (status["lifecycle"]["matrixReady"] == false
+                        || status["lifecycle"]["runtimeAvailability"]
+                            .as_str()
+                            .is_some_and(|s| s != "available"))
+                {
+                    "unavailable"
                 } else {
                     "provisioning"
                 }
@@ -523,6 +530,13 @@ fn refresh_executions(workflows: &mut Workflows, now: u64) -> Result<()> {
                 "provisioning_failed"
             } else if matches!(status["state"].as_str(), Some("ended" | "rejected")) {
                 "ended"
+            } else if status["lifecycle"]["provisionEffect"] == "complete"
+                && (status["lifecycle"]["matrixReady"] == false
+                    || status["lifecycle"]["runtimeAvailability"]
+                        .as_str()
+                        .is_some_and(|s| s != "available"))
+            {
+                "unavailable"
             } else {
                 "provisioning"
             };
@@ -652,7 +666,13 @@ fn status(
             || raw["agentMxid"].as_str().is_none()
             || raw["fulfillment"]["phase"] != "complete"
             || raw["fulfillment"]["incomplete"] == true
-            || raw["lifecycle"]["provisionEffect"].as_str().is_some_and(|state| state != "complete"))
+            || raw["lifecycle"]["provisionEffect"]
+                .as_str()
+                .is_some_and(|state| state != "complete")
+            || raw["lifecycle"]["matrixReady"] == false
+            || raw["lifecycle"]["runtimeAvailability"]
+                .as_str()
+                .is_some_and(|state| state != "available"))
     {
         return Err(fail(409, "readiness_conflict"));
     }

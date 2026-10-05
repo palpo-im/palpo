@@ -480,36 +480,90 @@ async fn coordinator_decision_delivers_definition_and_runtime_observations_witho
     assert_eq!(listed["requests"][0]["usable"], false);
     assert_eq!(listed["requests"][0]["usage"]["state"], "stale");
     assert_eq!(listed["requests"][0]["execution"], "unknown");
+    // Original provisioning cannot attest current worker or DM availability.
+    for (runtime, matrix) in [
+        ("not_attached", true),
+        ("blocked", true),
+        ("available", false),
+    ] {
+        let mut unavailable = ready.clone();
+        unavailable["sequence"] = json!(5);
+        unavailable["statuses"][0]["lifecycle"] = json!({"provisionEffect":"complete","runtimeAvailability":runtime,"matrixReady":matrix});
+        assert_eq!(
+            f.machine(&fleet, "updates", unavailable).await.0,
+            StatusCode::CONFLICT
+        );
+    }
+    let mut unavailable = ready.clone();
+    unavailable["sequence"] = json!(5);
+    unavailable["statuses"][0]["ready"] = json!(false);
+    unavailable["statuses"][0]["lifecycle"] = json!({"provisionEffect":"complete","runtimeAvailability":"not_attached","matrixReady":true});
+    assert_eq!(
+        f.machine(&fleet, "updates", unavailable).await.0,
+        StatusCode::OK
+    );
+    let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
+    assert_eq!(listed["requests"][0]["execution"], "unavailable");
+    assert_eq!(listed["requests"][0]["usable"], false);
+    assert_eq!(listed["requests"][0]["failureReason"], "agent_unavailable");
     // A created Matrix account is not a successful runtime start. Preserve
     // the uncertain effect in both audiences and reject contradictory Ready.
     let mut uncertain = ready.clone();
-    uncertain["sequence"] = json!(5);
-    uncertain["statuses"][0]["lifecycle"] = json!({"provisionEffect":"uncertain","runtimeState":"reserved"});
-    assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::CONFLICT);
+    uncertain["sequence"] = json!(6);
+    uncertain["statuses"][0]["lifecycle"] =
+        json!({"provisionEffect":"uncertain","runtimeState":"reserved"});
+    assert_eq!(
+        f.machine(&fleet, "updates", uncertain.clone()).await.0,
+        StatusCode::CONFLICT
+    );
     uncertain["statuses"][0]["ready"] = json!(false);
     uncertain["statuses"][0]["bound"] = json!(false);
     uncertain["statuses"][0]["fulfillment"] = json!({"phase":"provisioning","incomplete":true});
-    assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::OK);
-    assert_eq!(f.machine(&fleet, "updates", uncertain.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        f.machine(&fleet, "updates", uncertain.clone()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.machine(&fleet, "updates", uncertain.clone()).await.0,
+        StatusCode::OK
+    );
     for actor in [&manager, &coordinator] {
         let view = f.call(actor, "palpo.inbox.get", json!({"id":id})).await.1;
         assert_eq!(view["action"]["execution"], "provisioning_unknown");
-        assert_eq!(view["action"]["failureReason"], "provisioning_outcome_unknown");
+        assert_eq!(
+            view["action"]["failureReason"],
+            "provisioning_outcome_unknown"
+        );
     }
-    let waiting = f.call(&manager, "palpo.inbox.list", json!({"view":"waiting"})).await.1;
-    assert!(waiting["actions"].as_array().unwrap().iter().any(|a| a["id"] == id));
+    let waiting = f
+        .call(&manager, "palpo.inbox.list", json!({"view":"waiting"}))
+        .await
+        .1;
+    assert!(
+        waiting["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == id)
+    );
     let listed = f.call(&manager, "palpo.requests.list", json!({})).await.1;
     assert_eq!(listed["requests"][0]["usable"], false);
     assert_eq!(listed["requests"][0]["allocatedTokens"], 100000);
-    assert_eq!(listed["requests"][0]["failureReason"], "provisioning_outcome_unknown");
+    assert_eq!(
+        listed["requests"][0]["failureReason"],
+        "provisioning_outcome_unknown"
+    );
     // Native terminal failure is projected as ended; the original failed
     // provisioning effect still identifies the setup failure to both audiences.
     let mut failed = uncertain;
-    failed["sequence"] = json!(6);
+    failed["sequence"] = json!(7);
     failed["statuses"][0]["state"] = json!("ended");
     failed["statuses"][0]["lifecycle"]["provisionEffect"] = json!("failed");
     failed["statuses"][0]["lifecycle"]["runtimeState"] = json!("failed");
-    assert_eq!(f.machine(&fleet, "updates", failed.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        f.machine(&fleet, "updates", failed.clone()).await.0,
+        StatusCode::OK
+    );
     assert_eq!(f.machine(&fleet, "updates", failed).await.0, StatusCode::OK);
     for actor in [&manager, &coordinator] {
         let view = f.call(actor, "palpo.inbox.get", json!({"id":id})).await.1;

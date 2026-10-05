@@ -385,6 +385,7 @@ impl Workflows {
         if let Some(reason) = match action.execution.as_str() {
             "provisioning_unknown" => Some("provisioning_outcome_unknown"),
             "provisioning_failed" => Some("provisioning_failed"),
+            "unavailable" => Some("agent_unavailable"),
             _ => None,
         } {
             result["failureReason"] = json!(reason);
@@ -495,7 +496,13 @@ impl Workflows {
                     && (action.state == "requested"
                         || matches!(
                             action.execution.as_str(),
-                            "pending" | "provisioning" | "provisioning_unknown" | "provisioning_failed" | "setup_pending" | "setup_failed"
+                            "pending"
+                                | "provisioning"
+                                | "provisioning_unknown"
+                                | "provisioning_failed"
+                                | "unavailable"
+                                | "setup_pending"
+                                | "setup_failed"
                         ))
                 || view == "history"
                     && (action.state == "rejected"
