@@ -428,6 +428,7 @@ async fn board(
     let items: Vec<Value> = w
         .actions
         .keys()
+        .chain(w.associations.keys())
         .filter_map(|id| w.view(id, actor, now).ok())
         .filter(|v| v["needsMyAction"] == true)
         .map(|v| json!({"id":v["id"],"revision":v["revision"]}))

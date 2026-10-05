@@ -541,6 +541,43 @@ pub fn apply(
         fleet["lastError"] = Value::Null;
     }
     let mut workflows = Workflows::load(state)?;
+    if !receipts.is_empty() {
+        let id = text(&fleet, "id")?;
+        if let Some(action_id) = workflows
+            .associations
+            .values()
+            .find(|a| a.fleet_id == id && a.state == "approved")
+            .map(|a| a.id.clone())
+        {
+            let e = workflows
+                .authority
+                .engagements
+                .get_mut(id)
+                .ok_or_else(|| fail(409, "engagement_not_registered"))?;
+            if u64::from(e.registration_generation)
+                != fleet["registrationGeneration"].as_u64().unwrap_or(0)
+                || matches!(
+                    e.state,
+                    palpo_hagency_contract::EngagementState::Suspended
+                        | palpo_hagency_contract::EngagementState::Revoked
+                )
+            {
+                return Err(fail(409, "engagement_unavailable"));
+            }
+            e.state = palpo_hagency_contract::EngagementState::Verified;
+            e.coordinator_approval_v1 = fleet["capabilities"]["coordinatorApprovalV1"] == true;
+            let a = workflows
+                .associations
+                .get_mut(&action_id)
+                .ok_or_else(|| fail(409, "action_not_found"))?;
+            if a.execution != "verified" {
+                a.execution = "verified".into();
+                a.revision += 1;
+                a.updated_at = now;
+                workflows.notify_association(&action_id, now)?;
+            }
+        }
+    }
     if let Some(updates) = input["coordinatorUpdates"]
         .as_array()
         .filter(|v| !v.is_empty())

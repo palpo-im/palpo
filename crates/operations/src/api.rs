@@ -26,19 +26,19 @@ pub const SERVICES: &[&str] = &[
     "palpo.requests.list",
     "palpo.catalog.list",
     "palpo.requests.create",
+    "palpo.fleets.install",
+    "palpo.fleets.export",
+    "palpo.fleets.list",
+    "palpo.fleets.connect",
 ];
 
 // Names in the reviewed existing app contract. During migration the native
 // host may request its complete manifest; only implemented services are granted.
 const PENDING_SERVICES: &[&str] = &[
-    "palpo.fleets.list",
     "palpo.fleets.register",
-    "palpo.fleets.install",
     "palpo.fleets.set_state",
     "palpo.fleets.migrate",
     "palpo.fleets.queue",
-    "palpo.fleets.export",
-    "palpo.fleets.connect",
     "palpo.agents.list",
     "palpo.agents.register",
     "palpo.agents.rename",
@@ -62,6 +62,10 @@ pub struct App {
     sessions: Mutex<BTreeMap<String, Session>>,
     pub(crate) mutation: Mutex<()>,
     host: String,
+    pub(crate) public_origin: String,
+    pub(crate) transport_origin: Option<String>,
+    pub(crate) relay_origin: Option<String>,
+    pub(crate) association_admin: Option<palpo_hagency_contract::MatrixUserId>,
     pub(crate) transport_host: Option<String>,
     pub(crate) relay_host: Option<String>,
     pub(crate) notifications: Option<crate::notifications::Configuration>,
@@ -101,6 +105,10 @@ impl App {
             sessions: Mutex::new(BTreeMap::new()),
             mutation: Mutex::new(()),
             host,
+            public_origin: origin.origin().ascii_serialization(),
+            transport_origin: None,
+            relay_origin: None,
+            association_admin: None,
             transport_host: None,
             relay_host: None,
             notifications: None,
@@ -118,12 +126,27 @@ impl App {
                 None => url.host_str().unwrap_or_default().to_owned(),
             })
         };
-        let transport = host(transport)?;
-        let relay = host(relay)?;
+        let transport_host = host(transport)?;
+        let relay_host = host(relay)?;
         let app =
             Arc::get_mut(&mut self).ok_or_else(|| fail(409, "transport_configuration_locked"))?;
-        app.transport_host = Some(transport);
-        app.relay_host = Some(relay);
+        app.transport_host = Some(transport_host);
+        app.relay_host = Some(relay_host);
+        app.transport_origin = Some(transport.trim_end_matches('/').into());
+        app.relay_origin = Some(relay.trim_end_matches('/').into());
+        Ok(self)
+    }
+
+    pub fn with_association_admin(
+        mut self: Arc<Self>,
+        admin: palpo_hagency_contract::MatrixUserId,
+    ) -> Result<Arc<Self>> {
+        if !admin.belongs_to(self.matrix.server()) {
+            return Err(fail(400, "local_admin_required"));
+        }
+        Arc::get_mut(&mut self)
+            .ok_or_else(|| fail(409, "association_configuration_locked"))?
+            .association_admin = Some(admin);
         Ok(self)
     }
 
@@ -148,9 +171,10 @@ impl App {
         });
         Ok(
             json!({"version":1,"userId":identity.user,"isAdmin":identity.admin,"canApproveProjects":can_approve,
-            "serverName":self.matrix.server(),"services":session.services,"callbackOrigins":[],"outboundAvailable":false,
+            "isResourceOwner":workflows.authority.engagements.values().any(|e|e.owner==identity.user),
+            "serverName":self.matrix.server(),"services":session.services,"callbackOrigins":[],"outboundAvailable":self.transport_origin.is_some(),
             "features":{"inbox":true,"contributions":false,"projectApproval":can_approve,"remoteAgentDecisions":false,"topUps":true,
-                "rustWorkflowRequests":1,"coordinatorTransport":1,"runtimeExecution":self.transport_host.is_some(),"matrixNotifications":self.notifications.is_some()}}),
+                "rustWorkflowRequests":1,"coordinatorTransport":1,"runtimeExecution":self.transport_host.is_some(),"matrixNotifications":self.notifications.is_some(),"associations":self.association_admin.is_some()}}),
         )
     }
 
@@ -265,7 +289,23 @@ impl App {
             return Err(fail(403, "service_not_granted"));
         }
         let actor = &identity.user;
+        if input.service == "palpo.inbox.decide"
+            && input.args["id"].as_str().is_some_and(|id| !id.is_empty())
+        {
+            let w = Workflows::load(&self.store.lock().await.read()?)?;
+            if w.associations
+                .contains_key(input.args["id"].as_str().unwrap_or_default())
+            {
+                return self.decide_association(bearer, input.args).await;
+            }
+        }
         match input.service.as_str() {
+            "palpo.fleets.list" => self.list_fleets(bearer, input.args).await,
+            "palpo.fleets.connect" => self.connect_fleet(bearer, input.args).await,
+            "palpo.fleets.install" | "palpo.fleets.export" => {
+                self.association_fleet(bearer, &input.service, input.args)
+                    .await
+            }
             "palpo.intent.new" => {
                 empty_args(&input.args)?;
                 Ok(json!({"requestId":&secret()[..40]}))
@@ -521,6 +561,7 @@ async fn dispatch(req: &mut salvo::Request, depot: &mut Depot, res: &mut Respons
             .await
             .map_err(|_| fail(400, "invalid_json"))?;
         match operation.as_str() {
+            "association-request" => app.request_association(&token, input).await,
             "session" => app.open(token, input).await,
             "call" => app.call(&token, input).await,
             "disconnect" => {

@@ -20,6 +20,7 @@ equivalent Rust implementations and the cutover gates below pass.
 | `lib/inbox.mjs` | `workflow.rs` | Typed project/agent/top-up requests, coordinator decisions, visibility, seen/snooze, durable receipts |
 | `lib/action-notifications.mjs` | `notifications.rs` | Durable private My Actions rooms, idempotent delivery, reminders, quiet hours and pinned Inbox board |
 | `lib/workflow.mjs` creation forms | `creation.rs`, `rooms.rs` | Funded catalog, owner room preparation, frozen project/agent submissions and lost-reply reconciliation |
+| Association setup/export | `associations.rs`, `engagement_setup.rs`, `connections.rs` | Owner request, designated admin decision, recoverable appservice installation, scoped native profile export and authenticated connection probe |
 | `lib/outbound.mjs` | `outbound.rs`, `machine.rs`, `updates.rs` | Existing SQL lease queue, relay/poll/ACK/update routes, generations, probe receipts and bounded runtime observations |
 | `lib/workflow.mjs`, `lib/service.mjs` | contract, decision outbox, `updates.rs` | Immutable definitions delivered to Hagency; scoped resource/project projections and execution receipts |
 
@@ -93,6 +94,22 @@ Only these services can be granted:
 - `palpo.inbox.decide`, `palpo.inbox.seen`, `palpo.inbox.snooze`
 - `palpo.projects.list`, `palpo.requests.list`
 - `palpo.catalog.list`, `palpo.requests.create`
+- `palpo.fleets.list`, `palpo.fleets.install`, `palpo.fleets.export`, `palpo.fleets.connect`
+
+Set `PALPO_ASSOCIATION_ADMIN` to the designated local Matrix administrator and
+configure the transport/relay origins to enable owner association requests at
+`POST /_palpo/miniapp/v1/association-request`. Hagency's authenticated native
+`association` command verifies its owner account and persists the runtime/intent
+before calling this route. Approval rechecks current admin authority and active
+human owner/coordinator accounts. Installation failure retains the approval and
+credentials; retry reconciles the existing appservice rather than reapproving.
+Only the designated current admin and explicitly listed owner/coordinator may
+export. The Rinx host writes secrets through its native save dialog.
+
+Owner connection setup persists a stable room/probe before Matrix writes. A
+current generation's exact relayed Matrix event, custody ACK and authenticated
+Hagency receipt are required to verify it. `lastVerifiedAt` and heartbeat-derived
+`connectivity` are separate; an old successful proof does not mean online.
 
 Project and agent reads take optional `offset` and `limit` (1–100, default 50).
 They return only records belonging to the caller or its current engagement
@@ -191,9 +208,9 @@ new role bindings. Explicit reconciliation is required before production cutover
 
 ## Remaining cutover gates
 
-1. Rust engagement association, designated-admin approval/profile export,
-   coordinator delegation and real connection proof; independent registrations
-   for multiple engagements, including those with the same Matrix hostname.
+1. Owner delegation changes/revocation and rotation reconciliation. Association,
+   designated-admin approval, scoped export and native connection proof now run
+   through the Rust services; same-server profiles have separate credentials.
 2. Rust equivalents for remaining fleet/admin routes and account operations.
    Relay/poll/ACK/updates, room preparation and Matrix action notifications are
    implemented; retirement and legacy reconciliation still need completion.

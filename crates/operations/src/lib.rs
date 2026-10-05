@@ -2,7 +2,10 @@
 //! Existing Node state is preserved; production cutover requires the remaining
 //! fleet/Matrix workflow and notification integrations listed in the README.
 pub mod api;
+pub mod associations;
+mod connections;
 mod creation;
+mod engagement_setup;
 mod intents;
 pub mod machine;
 pub mod matrix;

@@ -37,6 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let public = std::env::var("PUBLIC_ORIGIN")?;
     let mut app = App::new(matrix, store, &public, 900000)?;
+    if let Ok(admin) = std::env::var("PALPO_ASSOCIATION_ADMIN") {
+        app = app.with_association_admin(admin.try_into()?)?;
+    }
     match (
         std::env::var("PALPO_TRANSPORT_ORIGIN"),
         std::env::var("PALPO_RELAY_ORIGIN"),

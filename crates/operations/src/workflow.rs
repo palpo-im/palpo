@@ -133,6 +133,8 @@ pub struct Action {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workflows {
+    #[serde(default)]
+    pub associations: BTreeMap<String, crate::associations::Association>,
     /// Runtime-published parent resource and accounting period for each grant.
     /// The allocation ID is the authority; a catalog resource alone grants none.
     #[serde(default)]
@@ -340,6 +342,9 @@ impl Workflows {
             || self.can_review(&action.request, actor, now)
     }
     pub fn view(&self, id: &str, actor: &MatrixUserId, now: u64) -> Result<Value> {
+        if let Some(association) = self.associations.get(id) {
+            return association.view(actor, now);
+        }
         let action = self
             .actions
             .get(id)
@@ -442,6 +447,25 @@ impl Workflows {
                     && !needs
                     && (action.state == "requested" || action.execution == "pending")
                 || view == "history" && (action.state == "rejected" || action.execution == "done")
+            {
+                rows.push(row);
+            }
+        }
+        for association in self.associations.values() {
+            let row = match association.view(actor, now) {
+                Ok(row) => row,
+                Err(e) if e.status == 404 => continue,
+                Err(e) => return Err(e),
+            };
+            let needs = row["needsMyAction"] == true;
+            pending += usize::from(needs);
+            if view == "all"
+                || view == "needs_action" && needs
+                || view == "waiting"
+                    && !needs
+                    && (association.state == "requested" || association.execution == "pending")
+                || view == "history"
+                    && (association.state == "rejected" || association.execution == "done")
             {
                 rows.push(row);
             }

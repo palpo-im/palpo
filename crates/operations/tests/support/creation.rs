@@ -43,10 +43,20 @@ pub(super) async fn matrix(
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default()
         .to_owned();
+    let appservice = depot
+        .get_typed::<Arc<Mutex<association_cases::Registrations>>>()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .values
+        .values()
+        .any(|v| format!("Bearer {}", v["as_token"].as_str().unwrap()) == token);
     if token != "Bearer manager-token"
         && token != "Bearer manager-new-token"
         && token != "Bearer fixture-as"
         && token != "Bearer notices-token"
+        && token != "Bearer provider-token"
+        && !appservice
     {
         return false;
     }
@@ -63,6 +73,8 @@ pub(super) async fn matrix(
     if path.ends_with("/createRoom") {
         let creator = if token == "Bearer notices-token" {
             "@notices:example.test"
+        } else if token == "Bearer provider-token" {
+            "@provider:example.test"
         } else {
             "@manager:example.test"
         };
@@ -108,6 +120,37 @@ pub(super) async fn matrix(
             res.status_code(StatusCode::NOT_FOUND);
             res.render(Json(json!({"errcode":"M_NOT_FOUND"})));
         }
+        return true;
+    }
+    if path.contains("/join/") && appservice {
+        let user = req.query::<String>("user_id").unwrap();
+        let (room, state) = rooms
+            .states
+            .iter_mut()
+            .find(|(id, _)| self::path(&["_matrix", "client", "v3", "join", id]) == path)
+            .unwrap();
+        let member = state
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e["type"] == "m.room.member" && e["state_key"] == user)
+            .unwrap();
+        member["content"]["membership"] = json!("join");
+        res.render(Json(json!({"room_id":room})));
+        return true;
+    }
+    if path.contains("/send/com.hagency.connection.probe.v1/") && appservice {
+        if let Some(existing) = rooms.events.get(&path) {
+            assert_eq!(existing, &body);
+        } else {
+            rooms.events.insert(path.clone(), body);
+        }
+        if std::mem::take(&mut rooms.lose_event_reply) {
+            res.status_code(StatusCode::BAD_GATEWAY);
+            res.render(Json(json!({"errcode":"M_UNKNOWN"})));
+            return true;
+        }
+        res.render(Json(json!({"event_id":"$connection-probe"})));
         return true;
     }
     if let Some(state) = rooms

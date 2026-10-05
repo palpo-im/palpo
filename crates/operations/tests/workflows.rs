@@ -11,6 +11,8 @@ use salvo::prelude::*;
 use salvo::test::{ResponseExt, TestClient};
 use serde_json::{Value, json};
 
+#[path = "support/associations.rs"]
+mod association_cases;
 #[path = "support/creation.rs"]
 mod creation_cases;
 #[path = "support/notifications.rs"]
@@ -44,6 +46,9 @@ fn approval(request: &Value, command_id: &str) -> Value {
 
 #[handler]
 async fn matrix_stub(req: &mut salvo::Request, depot: &mut Depot, res: &mut Response) {
+    if association_cases::matrix(req, depot, res).await {
+        return;
+    }
     if creation_cases::matrix(req, depot, res).await {
         return;
     }
@@ -92,6 +97,7 @@ struct Fixture {
     matrix_task: tokio::task::JoinHandle<()>,
     revoked: Arc<AtomicBool>,
     rooms: Arc<std::sync::Mutex<creation_cases::Rooms>>,
+    registrations: Arc<std::sync::Mutex<association_cases::Registrations>>,
     _directory: tempfile::TempDir,
 }
 impl Drop for Fixture {
@@ -118,9 +124,13 @@ impl Fixture {
     async fn new() -> Self {
         let revoked = Arc::new(AtomicBool::new(false));
         let rooms = Arc::new(std::sync::Mutex::new(creation_cases::Rooms::default()));
+        let registrations = Arc::new(std::sync::Mutex::new(
+            association_cases::Registrations::default(),
+        ));
         let router = Router::new()
             .hoop(affix_state::inject(revoked.clone()))
             .hoop(affix_state::inject(rooms.clone()))
+            .hoop(affix_state::inject(registrations.clone()))
             .push(
                 Router::with_path("{**rest}")
                     .get(matrix_stub)
@@ -156,6 +166,8 @@ impl Fixture {
         let app = api::App::new(matrix, store, "https://operations.test", 900000)
             .unwrap()
             .with_transport("https://operations.test", "https://relay.test")
+            .unwrap()
+            .with_association_admin("@admin:example.test".to_owned().try_into().unwrap())
             .unwrap();
         let service = Service::new(api::router(app.clone()));
         Self {
@@ -164,6 +176,7 @@ impl Fixture {
             matrix_task,
             revoked,
             rooms,
+            registrations,
             _directory: directory,
         }
     }
@@ -811,7 +824,7 @@ async fn octoscript_decision_intent_builds_authority_on_the_server_and_top_up_is
 #[tokio::test]
 async fn existing_manifest_negotiates_only_implemented_services() {
     let f = Fixture::new().await;
-    let input = json!({"appId":api::APP_ID,"bundleDigest":"c".repeat(64),"services":["palpo.session.open","palpo.inbox.list","palpo.fleets.export"]});
+    let input = json!({"appId":api::APP_ID,"bundleDigest":"c".repeat(64),"services":["palpo.session.open","palpo.inbox.list","palpo.fleets.register"]});
     let (status, opened) = f.post("session", "manager-token", input.clone()).await;
     assert_eq!(status, StatusCode::OK, "{opened}");
     assert_eq!(
@@ -822,7 +835,7 @@ async fn existing_manifest_negotiates_only_implemented_services() {
     assert_eq!(
         f.call(
             token,
-            "palpo.fleets.export",
+            "palpo.fleets.register",
             json!({"fleetId":"engagement_a"})
         )
         .await
