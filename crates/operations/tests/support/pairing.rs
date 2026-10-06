@@ -95,6 +95,19 @@ async fn native_pairing_requires_owner_then_admin_and_delivers_only_to_bound_run
     assert_eq!(approved["phase"], "awaiting_connection");
     assert_eq!(approved["profile"]["runtimeId"], "d".repeat(64));
     assert!(approved["profile"]["registration"]["as_token"].is_string());
+    // Approval removes the owner decision, but connection verification is
+    // still available from the owner's Waiting inbox until a probe is proven.
+    let waiting = f
+        .call(&owner, "palpo.inbox.list", json!({"view":"waiting"}))
+        .await;
+    assert_eq!(waiting.0, StatusCode::OK, "{waiting:?}");
+    assert!(
+        waiting.1["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == id && row["canConnect"] == true)
+    );
     // A process restart reloads the same pairing authority from the private store.
     let state = f.app.store.lock().await.read().unwrap();
     let serialized = serde_json::to_value(Workflows::load(&state).unwrap()).unwrap();
