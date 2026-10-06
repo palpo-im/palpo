@@ -19,9 +19,9 @@
 #
 # listeners =
 
-# Trust X-Forwarded-For for per-IP rate limits only when the direct peer is in
-# one of these CIDR ranges. Use the range of your reverse proxy, not the public
-# client network. Empty by default.
+# CIDR ranges of reverse proxies trusted to set X-Forwarded-For for
+# per-IP rate limits. Leave empty when Palpo is directly exposed.
+#
 # trusted_proxies = []
 
 # The server_name is the pretty name of this server. It is used as a
@@ -53,13 +53,13 @@
 # Seconds to cache native (non-delegated) access-token authentications in
 # memory, avoiding a per-request database lookup on the auth hot path.
 #
-# The cache is process-local and is only invalidated within the process that
-# performs a logout / token rotation / account-state change. In a multi-instance
-# deployment sharing one database, another instance could keep accepting a
-# just-revoked token for up to this many seconds. Leave at 0 (disabled) unless
-# you run a single instance.
+# The cache is process-local and only invalidated within the process that
+# performs a logout / token rotation / account-state change. In a
+# multi-instance deployment sharing one database, another instance could
+# keep accepting a just-revoked token for up to this many seconds. Leave at
+# 0 (disabled) unless you run a single instance.
 #
-# native_token_cache_ttl = 0
+# native_token_cache_ttl = 0 (disabled)
 
 # Text which will be added to the end of the user's displayname upon
 # registration with a space before the text. In Conduit, this was the
@@ -204,10 +204,12 @@
 #
 # rc_registration = { per_second = 0.17, burst = 3 } (~1 per 6s, burst of 3)
 
-# Username availability checks use a separate allowance.
+# Per-IP rate limiting for username availability checks.
+#
 # rc_registration_available = { per_second = 0.5, burst = 5 }
 
-# Registration token checks match Synapse's per-IP default.
+# Per-IP rate limiting for registration token validity checks.
+#
 # rc_registration_token_validity = { per_second = 0.1, burst = 5 }
 
 # Per-user rate limiting for failed password UIAA attempts during password
@@ -219,7 +221,8 @@
 #
 # rc_message = { per_second = 10.0, burst = 50 }
 
-# Per-user rate limiting for user directory searches (Synapse default).
+# Per-user rate limiting for user directory searches.
+#
 # rc_user_directory = { per_second = 0.016, burst = 200 }
 
 # Always calls /forget on behalf of the user if leaving a room. This is a
@@ -468,8 +471,8 @@
 #
 # Currently this does not account for proxies in use like Synapse does.
 #
-# To disable, set this to be an empty vector (`[]`) or omit the field.
-# If omitted, no IP range filtering is performed (use a firewall instead).
+# To disable, set this to be an empty vector (`[]`). If omitted, the
+# default denylist below is used.
 #
 # A safer recommended set is:
 # ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
@@ -478,7 +481,7 @@
 # "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
 # "2001:db8::/32", "ff00::/8", "fec0::/10"]
 #
-# ip_range_denylist = []
+# ip_range_denylist =
 
 # Whether to query the servers listed in trusted_servers first or query
 # the origin server first. For best security, querying the origin server
@@ -992,9 +995,25 @@
 #
 # allow_legacy =
 
-# This item is undocumented. Please contribute documentation for it.
+# Withhold the outbound-fetching legacy `preview_url` endpoint. When
+# enabled, download, thumbnail, config, create, and upload stay available
+# (upload is the only media upload path on this server); only the legacy
+# `preview_url` endpoint is not mounted.
 #
 # freeze_legacy =
+
+# Maximum number of bytes accepted when fetching a thumbnail from a
+# remote homeserver. Both authenticated and legacy thumbnail responses
+# are subject to this streamed hard limit.
+#
+# max_remote_thumbnail_size = 20000000
+
+# Maximum number of bytes accepted when fetching remote media content
+# from a remote homeserver via federation. The entire response is
+# buffered when the remote server returns a multipart response, so this
+# limit prevents unbounded memory allocation.
+#
+# max_remote_media_size = 104857600 (100 MiB)
 
 # Check consistency of the media directory at startup:
 # 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
@@ -1244,6 +1263,12 @@
 #
 # max_spider_size = 256000
 
+# Maximum number of bytes accepted for an image fetched while building a
+# URL preview. `Content-Length` is checked early and the response stream
+# is also counted so chunked responses cannot bypass this limit.
+#
+# max_image_size = 10000000
+
 # Option to decide whether you would like to run the domain allowlist
 # checks (contains and explicit) on the root domain or not. Does not apply
 # to URL contains allowlist. Defaults to false.
@@ -1465,28 +1490,27 @@
 #
 # introspection_endpoint =
 
-# Internal endpoint that accepts a Matrix password login exchange.
-# Palpo authenticates with `admin.mas_secret` as a Bearer token and expects
-# a delegated access token in response. When unset, `m.login.password` is
-# not advertised while delegated auth is enabled.
-#
-# password_login_endpoint = "http://localhost:8080/api/internal/matrix/password-login"
-
 # The OAuth2 client_id that Palpo uses when redirecting users to the
 # authorization server for SSO login.
 #
 # client_id =
 
-# Public callback URL registered as an allowed redirect URI for client_id
-# at the delegated authorization server. Required for legacy Matrix SSO.
-# example: "https://matrix.example.com/_matrix/client/v3/login/sso/callback"
+# Public Palpo callback URL registered as a redirect URI for `client_id`
+# at the authorization server. Required for legacy Matrix SSO login.
+#
 # sso_callback_url =
 
-# Only these client origins may receive the short-lived Matrix login token.
-# Add your actual Matrix clients. Loopback hosts without a port accept an
-# ephemeral port used by desktop clients.
-# example: ["http://127.0.0.1", "http://localhost", "https://app.example.com"]
+# Origins allowed to receive a legacy SSO login token. A loopback origin
+# without a port allows the client's ephemeral loopback port.
+#
 # sso_allowed_redirect_origins = []
+
+# Internal endpoint that accepts a Matrix password login exchange.
+# Palpo authenticates with `admin.mas_secret` as a Bearer token and expects
+# a delegated access token in response. When unset, `m.login.password` is
+# not advertised while delegated auth is enabled.
+#
+# password_login_endpoint =
 
 # Optional URL for account management UI.
 # Included in the well-known client response under m.authentication.
