@@ -21,6 +21,8 @@ mod fleet_admin_cases;
 mod lifecycle_cases;
 #[path = "support/notifications.rs"]
 mod notification_cases;
+#[path = "support/pairing.rs"]
+mod pairing_cases;
 #[path = "support/project_setup.rs"]
 mod project_setup_cases;
 #[path = "support/refusals.rs"]

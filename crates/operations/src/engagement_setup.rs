@@ -41,12 +41,6 @@ impl App {
             .get(&decision.id)
             .cloned()
             .ok_or_else(|| fail(404, "action_not_found"))?;
-        authorize_association(
-            &identity.user,
-            &association.administrator_mxid,
-            self.matrix.server(),
-            identity.admin,
-        )?;
         if !matches!(decision.decision.as_str(), "approve" | "reject")
             || decision.reason.len() > 2000
             || decision.reason.chars().any(char::is_control)
@@ -54,6 +48,45 @@ impl App {
         {
             return Err(fail(400, "invalid_decision"));
         }
+        // A staged native request has no Matrix authority until its named owner
+        // confirms in the authenticated host. Admin approval is a later revision.
+        if association.pairing.is_some()
+            && identity.user == association.owner_mxid
+            && decision.expected_revision == 1
+        {
+            self.authenticate(bearer).await?;
+            return self.store.lock().await.transaction(|state| {
+                let mut w = Workflows::load(state)?;
+                let key = format!("pairing_owner_{}", decision.command_id.as_str());
+                if let Some(receipt) = w.receipts.get(&key) {
+                    if receipt["digest"] != digest { return Err(fail(409, "idempotency_conflict")); }
+                    return Ok(json!({"action":w.view(&decision.id, &identity.user, now)?}));
+                }
+                let a = w.associations.get_mut(&decision.id).ok_or_else(||fail(404,"action_not_found"))?;
+                if a.state != "awaiting_owner" || a.revision != 1
+                    || a.pairing.as_ref().is_none_or(|p| p.owner_expires_at_ms <= now)
+                    || a.intent.delegation_expires_at_ms <= now {
+                    return Err(fail(409, "association_revision_changed"));
+                }
+                let approved = decision.decision == "approve";
+                a.state = if approved { "requested" } else { "rejected" }.into();
+                a.execution = if approved { "pending" } else { "done" }.into();
+                a.revision += 1; a.updated_at = now;
+                a.pairing.as_mut().unwrap().owner_confirmed_at_ms = approved.then_some(now);
+                a.decision = Some(json!({"by":identity.user,"at":now,"commandId":decision.command_id,"reason":decision.reason}));
+                w.receipts.insert(key, json!({"digest":digest}));
+                w.notify_association(&decision.id, now)?;
+                let view = w.view(&decision.id, &identity.user, now)?;
+                w.save(state)?;
+                Ok(json!({"action":view}))
+            });
+        }
+        authorize_association(
+            &identity.user,
+            &association.administrator_mxid,
+            self.matrix.server(),
+            identity.admin,
+        )?;
         if decision.decision == "approve" {
             for user in [
                 &association.owner_mxid,
@@ -71,7 +104,8 @@ impl App {
                 return Ok(w.associations[&decision.id].state=="approved");
             }
             let a=w.associations.get_mut(&decision.id).ok_or_else(||fail(404,"action_not_found"))?;
-            if a.revision!=decision.expected_revision || a.state!="requested" || a.intent.delegation_expires_at_ms<=now {
+            if a.revision!=decision.expected_revision || a.state!="requested" || a.intent.delegation_expires_at_ms<=now
+                || a.pairing.as_ref().is_some_and(|p| p.expires_at_ms <= now || p.owner_confirmed_at_ms.is_none()) {
                 return Err(fail(409,"association_revision_changed"));
             }
             let approved=decision.decision=="approve";

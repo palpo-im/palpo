@@ -375,9 +375,28 @@ impl App {
             }
             "palpo.inbox.get" => {
                 let id: Id = serde_json::from_value(input.args)?;
-                Ok(
-                    json!({"action":Workflows::load(&self.store.lock().await.read()?)?.view(&id.id,actor,now_ms())?}),
-                )
+                let state = self.store.lock().await.read()?;
+                let workflows = Workflows::load(&state)?;
+                let now = now_ms();
+                let mut action = workflows.view(&id.id, actor, now)?;
+                if action["kind"] == "association" {
+                    action["connectionVerification"] = json!("unavailable");
+                    if action["state"] == "approved" {
+                        let fleet = action["fleetId"].as_str().unwrap_or_default();
+                        let connection = crate::connections::view(
+                            &state,
+                            &workflows,
+                            fleet,
+                            actor,
+                            identity.admin,
+                            now,
+                        )?;
+                        action["connectionVerification"] =
+                            connection["connectionVerification"].clone();
+                        action["canConnect"] = connection["canConnect"].clone();
+                    }
+                }
+                Ok(json!({"action":action}))
             }
             "palpo.projects.list" | "palpo.requests.list" => {
                 let page = serde_json::from_value(input.args)?;
@@ -599,6 +618,8 @@ async fn dispatch(req: &mut salvo::Request, depot: &mut Depot, res: &mut Respons
             .await
             .map_err(|_| fail(400, "invalid_json"))?;
         match operation.as_str() {
+            "association-start" => app.start_pairing(&token, input).await,
+            "association-status" => app.pairing_status(&token, input).await,
             "association-request" => app.request_association(&token, input).await,
             "session" => app.open(token, input).await,
             "call" => app.call(&token, input).await,

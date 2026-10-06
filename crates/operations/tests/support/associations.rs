@@ -223,6 +223,9 @@ async fn connection_retries_keep_one_probe_and_do_not_confuse_verification_with_
         .0,
         StatusCode::FORBIDDEN
     );
+    let action = f.call(&owner, "palpo.inbox.get", json!({"id":id})).await.1;
+    assert_eq!(action["action"]["connectionVerification"], "unverified");
+    assert_eq!(action["action"]["canConnect"], true);
     f.rooms.lock().unwrap().lose_create_reply = true;
     assert_eq!(
         f.call(&owner, "palpo.fleets.connect", json!({"fleetId":fleet}))
@@ -242,12 +245,36 @@ async fn connection_retries_keep_one_probe_and_do_not_confuse_verification_with_
         .await;
     assert_eq!(result.0, StatusCode::OK, "{result:?}");
     assert_eq!(result.1["fleet"]["connectionVerified"], false);
+    assert_eq!(result.1["fleet"]["connectionVerification"], "verifying");
+    assert_eq!(
+        f.call(&owner, "palpo.inbox.get", json!({"id":id})).await.1["action"]["connectionVerification"],
+        "verifying"
+    );
     assert_eq!(result.1["fleet"]["connectivity"], "offline");
     assert_eq!(
         f.call(&owner, "palpo.fleets.connect", json!({"fleetId":fleet}))
             .await
             .1,
         result.1
+    );
+    f.app
+        .store
+        .lock()
+        .await
+        .transaction(|state| {
+            state["fleets"][fleet]["probe"]["lastRequestedAtMs"] = json!(now_ms() - 120_001);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        f.call(&owner, "palpo.inbox.get", json!({"id":id})).await.1["action"]["connectionVerification"],
+        "retry"
+    );
+    assert_eq!(
+        f.call(&owner, "palpo.fleets.connect", json!({"fleetId":fleet}))
+            .await
+            .1["fleet"]["connectionVerification"],
+        "verifying"
     );
     assert_eq!(f.rooms.lock().unwrap().create_count, 1);
     assert_eq!(f.rooms.lock().unwrap().events.len(), 1);
@@ -307,6 +334,11 @@ async fn connection_retries_keep_one_probe_and_do_not_confuse_verification_with_
         .find(|r| r["id"] == fleet)
         .unwrap();
     assert_eq!(row["connectionVerified"], true);
+    assert_eq!(row["connectionVerification"], "verified");
+    assert_eq!(
+        f.call(&owner, "palpo.inbox.get", json!({"id":id})).await.1["action"]["connectionVerification"],
+        "verified"
+    );
     assert_eq!(row["connectivity"], "online");
     assert!(row["lastVerifiedAt"].is_string());
     assert!(!list.to_string().contains(machine));

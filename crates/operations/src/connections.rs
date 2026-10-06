@@ -16,6 +16,29 @@ struct Input {
     fleet_id: String,
 }
 
+fn verification(fleet: &Value, active: bool, verified: bool, now: u64) -> &'static str {
+    if !active {
+        "unavailable"
+    } else if verified {
+        "verified"
+    } else if fleet["probe"]["generation"] == fleet["transport"]["generation"]
+        && fleet["probe"]["eventId"].is_string()
+    {
+        if fleet["probe"]
+            .get("lastRequestedAtMs")
+            .unwrap_or(&fleet["probe"]["startedAtMs"])
+            .as_u64()
+            .is_some_and(|at| now < at.saturating_add(120_000))
+        {
+            "verifying"
+        } else {
+            "retry"
+        }
+    } else {
+        "unverified"
+    }
+}
+
 pub(crate) fn view(
     state: &Value,
     w: &Workflows,
@@ -60,7 +83,7 @@ pub(crate) fn view(
         "serverName":e.server,"state":if matches!(f["state"].as_str(),Some("paused"|"revoked"|"resuming"|"rotating")){f["state"].clone()}else if e.state==EngagementState::Verified && f["state"]=="pending_connection" {json!("verifying")}else{json!(e.state)},"installation":f["installation"],"registrationGeneration":e.registration_generation,
         "transportGeneration":f["transport"]["generation"],
         "delegationRevision":e.delegation_revision,"delegationExpiresAtMs":e.delegation_expires_at_ms,
-        "connectionVerified":verified,"lastVerifiedAt":f["connection"]["verifiedAt"],"lastSeenAt":f["transport"]["lastSeenAt"],
+        "connectionVerified":verified,"connectionVerification":verification(f,active,verified,now),"lastVerifiedAt":f["connection"]["verifiedAt"],"lastSeenAt":f["transport"]["lastSeenAt"],
         "connectivity":if online {"online"}else{"offline"},"canConnect":owner&&active,"canExport":active&&(designated||w.may_export_profile(id,actor)),
         "canInstall":designated&&f["pendingAdminOperation"].is_null()&&!matches!(f["state"].as_str(),Some("paused"|"revoked"))&&a.is_some_and(|a|a.state=="approved"),
         "canPause":admin&&f["pendingAdminOperation"].is_null()&&matches!(f["state"].as_str(),Some("ready"|"pending_connection")),
@@ -190,6 +213,7 @@ impl App {
             let f=&mut state["fleets"][&input.fleet_id];
             if f["transport"]["generation"]!=generation {return Err(fail(409,"generation_conflict"));}
             f["receptionRoomId"]=json!(room);f["probe"]["eventId"]=json!(event);
+            f["probe"]["lastRequestedAtMs"]=json!(now_ms());
             outbound::enqueue(tx,f,"work","probe",&format!("probe_{challenge}"),&json!({"fleetId":input.fleet_id,"sourceRoomId":room,"sourceEventId":event,"challenge":challenge}),Limits::default())?;
             Ok(json!({"fleet":view(state,&Workflows::load(state)?,&input.fleet_id,&identity.user,identity.admin,now_ms())?}))
         })

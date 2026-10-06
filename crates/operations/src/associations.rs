@@ -48,6 +48,9 @@ pub struct Association {
     pub decision: Option<Value>,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Native pairing capability hash. Never included in an Inbox projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pairing: Option<crate::pairing::Pairing>,
 }
 impl Association {
     pub fn view(&self, actor: &MatrixUserId, now: u64) -> Result<Value> {
@@ -57,10 +60,21 @@ impl Association {
         {
             return Err(fail(404, "action_not_found"));
         }
-        let review = self.state == "requested"
-            && actor == &self.administrator_mxid
-            && self.intent.delegation_expires_at_ms > now;
-        let export = self.state == "approved"
+        if self.state == "awaiting_owner" && actor != &self.owner_mxid {
+            return Err(fail(404, "action_not_found"));
+        }
+        let owner_review = self.state == "awaiting_owner"
+            && actor == &self.owner_mxid
+            && self
+                .pairing
+                .as_ref()
+                .is_some_and(|p| p.owner_expires_at_ms > now);
+        let review = (owner_review
+            || self.state == "requested" && actor == &self.administrator_mxid)
+            && self.intent.delegation_expires_at_ms > now
+            && self.pairing.as_ref().is_none_or(|p| p.expires_at_ms > now);
+        let export = self.pairing.is_none()
+            && self.state == "approved"
             && self.intent.delegation_expires_at_ms > now
             && matches!(self.execution.as_str(), "verifying" | "verified")
             && (actor == &self.administrator_mxid || self.intent.export_mxids.contains(actor));
@@ -71,7 +85,7 @@ impl Association {
             "canConnect":self.state=="approved" && matches!(self.execution.as_str(),"verifying"|"verified") && actor==&self.owner_mxid && self.intent.delegation_expires_at_ms>now,
             "canRetrySetup":self.state=="approved" && self.execution=="setup_failed" && actor==&self.administrator_mxid,
             "nextAction":if review {Some("review")}else if export {Some("export_and_connect")}else{None},
-            "payload":{"name":self.intent.name,"reason":if self.intent.existing_fleet_id.is_some() {"Upgrade the existing Hagency connection to coordinator approvals. Keep its Matrix identity, credentials and agent history."}else{"Authorize this Hagency runtime to connect to the homeserver. Resource allocations and project decisions remain separate."},"existingFleetId":self.intent.existing_fleet_id,
+            "payload":{"name":self.intent.name,"reason":if self.state == "awaiting_owner" {"Confirm that you initiated this connection from your Hagency installation. Approval authorizes delivery of the approved configuration directly to that runtime; the server administrator must approve separately. Reject an unexpected request."}else if self.pairing.is_some() {"Hagency will receive the approved configuration automatically. After administrator approval, the owner verifies the connection here in Rinx. No configuration file is needed."}else if self.intent.existing_fleet_id.is_some() {"Upgrade the existing Hagency connection to coordinator approvals. Keep its Matrix identity, credentials and agent history."}else{"Authorize this Hagency runtime to connect to the homeserver. Resource allocations and project decisions remain separate."},"existingFleetId":self.intent.existing_fleet_id,
                 "coordinatorMxid":self.intent.coordinator_mxid,"runtimeId":self.intent.runtime_id,"exportMxids":self.intent.export_mxids,
                 "delegationExpiresAtMs":self.intent.delegation_expires_at_ms,"allowSelfApproval":self.intent.allow_self_approval},
             "result":{"fleetId":self.fleet_id,"lastError":self.last_error}}),
@@ -154,7 +168,10 @@ impl Workflows {
             || self
                 .associations
                 .values()
-                .filter(|a| a.owner_mxid == *owner && a.state == "requested")
+                .filter(|a| {
+                    a.owner_mxid == *owner
+                        && matches!(a.state.as_str(), "requested" | "awaiting_owner")
+                })
                 .count()
                 >= 20
         {
@@ -190,6 +207,7 @@ impl Workflows {
                 updated_at: now,
                 decision: None,
                 last_error: None,
+                pairing: None,
             },
         );
         self.notify_association(&id, now)?;
@@ -215,6 +233,9 @@ impl Workflows {
                 .get(&a.fleet_id)
                 .map_or(&a.intent.coordinator_mxid, |e| &e.coordinator),
         ] {
+            if a.state == "awaiting_owner" && recipient != &a.owner_mxid {
+                continue;
+            }
             let key = format!(
                 "{}_{}_{}",
                 id,

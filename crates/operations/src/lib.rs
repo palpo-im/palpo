@@ -17,6 +17,7 @@ pub mod migration;
 mod navigation;
 pub mod notifications;
 pub mod outbound;
+mod pairing;
 mod preferences;
 mod project_setup;
 mod retirement;
