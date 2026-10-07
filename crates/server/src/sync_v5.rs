@@ -620,8 +620,9 @@ pub async fn sync_events(
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     let ignored_users = crate::user::ignored_users(sender_id).await;
 
-    let all_invited_rooms = crate::membership::invited_rooms_for_sync(sender_id, 0).await?;
-    let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(|r| r.0.as_ref()).collect();
+    let invite_snapshot = crate::membership::invited_rooms_for_sync(sender_id, 0).await?;
+    let all_invited_rooms: Vec<&RoomId> =
+        invite_snapshot.rooms.iter().map(|r| r.0.as_ref()).collect();
 
     let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0).await?;
     let all_knocked_rooms: Vec<&RoomId> = all_knocked_rooms.iter().map(|r| r.0.as_ref()).collect();
@@ -831,7 +832,21 @@ pub async fn sync_events(
         removed_profile_users,
     )
     .await;
+    record_returned_invites(&invite_snapshot, &res_body).await?;
     Ok(res_body)
+}
+
+async fn record_returned_invites(
+    snapshot: &crate::membership::InviteSyncSnapshot,
+    response: &SyncEventsResBody,
+) -> AppResult<()> {
+    let returned: Vec<_> = response
+        .rooms
+        .iter()
+        .filter(|(_, room)| room.invite_state.is_some())
+        .map(|(room_id, _)| room_id.as_ref())
+        .collect();
+    snapshot.record_returned(&returned).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2096,7 +2111,7 @@ mod tests {
         let invites = crate::membership::invited_rooms_for_sync(&recipient, 0)
             .await
             .unwrap();
-        assert!(invites.is_empty());
+        assert!(invites.rooms.is_empty());
         let body: SyncEventsReqBody = serde_json::from_value(json!({})).unwrap();
         let device: OwnedDeviceId = "SUBSCRIPTION".into();
         let mut response = SyncEventsResBody::new("2".into());
@@ -2118,6 +2133,179 @@ mod tests {
         .unwrap();
         assert!(rooms.is_empty());
         assert!(response.extensions.account_data.rooms.is_empty());
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_sliding_sync_admits_only_returned_invites() {
+        use serde_json::json;
+
+        use super::*;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let inviter: OwnedUserId = "@sliding_admission_sender:example.org".try_into().unwrap();
+        let device: OwnedDeviceId = "ADMISSION".into();
+        for mode in [
+            "joined",
+            "range",
+            "subscription",
+            "idle",
+            "outside",
+            "empty",
+            "stale",
+        ] {
+            let recipient: OwnedUserId = format!("@sliding_admission_{mode}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let mut targets = Vec::new();
+            for i in 0..3 {
+                let room = rid(&format!("!sliding_admission_{mode}_{i}:example.org"));
+                diesel::insert_into(rooms::table)
+                    .values(data::room::NewDbRoom {
+                        id: room.clone(),
+                        version: "11".into(),
+                        is_public: false,
+                        min_depth: 0,
+                        has_auth_chain_index: false,
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(data::room::NewDbRoomUser {
+                        event_id: format!("$sliding_admission_{mode}_{i}:example.org")
+                            .try_into()
+                            .unwrap(),
+                        event_sn: data::next_sn().await.unwrap(),
+                        room_id: room.clone(),
+                        room_server_id: None,
+                        user_id: recipient.clone(),
+                        user_server_id: recipient.server_name().to_owned(),
+                        sender_id: inviter.clone(),
+                        membership: "invite".into(),
+                        forgotten: false,
+                        display_name: None,
+                        avatar_url: None,
+                        state_data: Some(json!([])),
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                targets.push(room);
+            }
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "allow"}),
+            )
+            .await
+            .unwrap();
+            let body: SyncEventsReqBody = serde_json::from_value(match mode {
+                "joined" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": false}}}}),
+                "range" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[1, 1]], "filters": {"is_invite": true}}}}),
+                "subscription" => json!({"room_subscriptions": {targets[0].as_str(): {"timeline_limit": 0}}}),
+                "outside" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[3, 3]], "filters": {"is_invite": true}}}}),
+                "empty" | "stale" => json!({}),
+                "idle" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": true}}}}),
+                _ => unreachable!(),
+            }).unwrap();
+            let since = if mode == "idle" {
+                data::curr_sn().await.unwrap() + 1
+            } else {
+                0
+            };
+            let response = sync_events(&recipient, &device, since, &body, &KnownRooms::new())
+                .await
+                .unwrap();
+            let returned: BTreeSet<_> = response
+                .rooms
+                .iter()
+                .filter(|(_, room)| room.invite_state.is_some())
+                .map(|(id, _)| id.clone())
+                .collect();
+            assert_eq!(
+                returned.len(),
+                usize::from(matches!(mode, "range" | "subscription")),
+                "{mode}"
+            );
+            if mode == "stale" {
+                // Preparing an invite must not authorize its replacement while rendering.
+                let snapshot = crate::membership::invited_rooms_for_sync(&recipient, 0)
+                    .await
+                    .unwrap();
+                let mut replacement = room_users::table
+                    .filter(room_users::user_id.eq(&recipient))
+                    .filter(room_users::room_id.eq(&targets[0]))
+                    .first::<data::room::DbRoomUser>(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::delete(room_users::table.find(replacement.id))
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
+                )
+                .get_result(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+                replacement.event_sn = data::next_sn().await.unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(replacement)
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                snapshot
+                    .record_returned(&[targets[0].as_ref()])
+                    .await
+                    .unwrap();
+            }
+            let admitted: BTreeSet<_> = room_users::table
+                .inner_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(&recipient))
+                .select(room_users::room_id)
+                .load::<OwnedRoomId>(&mut connect().await.unwrap())
+                .await
+                .unwrap()
+                .into_iter()
+                .collect();
+            assert_eq!(
+                admitted, returned,
+                "only invitations returned in {mode} may be admitted"
+            );
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let invite_list: SyncEventsReqBody = serde_json::from_value(json!({
+                "lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": true}}}
+            })).unwrap();
+            let restricted = sync_events(&recipient, &device, 0, &invite_list, &KnownRooms::new())
+                .await
+                .unwrap();
+            let visible: BTreeSet<_> = restricted.rooms.keys().cloned().collect();
+            assert_eq!(
+                visible, returned,
+                "unseen invitations must stay hidden after enabling deny_public ({mode})"
+            );
+        }
     }
 
     #[test]

@@ -219,19 +219,22 @@ pub async fn sync_events(
         left_rooms.insert(room_id.to_owned(), left_room);
     }
 
-    let invited_rooms: BTreeMap<_, _> = crate::membership::invited_rooms_for_sync(
+    let invite_snapshot = crate::membership::invited_rooms_for_sync(
         sender_id,
         since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
     )
-    .await?
-    .into_iter()
-    .map(|(room_id, invite_state_events)| {
-        (
-            room_id,
-            InvitedRoom::new(InviteState::new(invite_state_events)),
-        )
-    })
-    .collect();
+    .await?;
+    let invited_rooms: BTreeMap<_, _> = invite_snapshot
+        .rooms
+        .iter()
+        .cloned()
+        .map(|(room_id, invite_state_events)| {
+            (
+                room_id,
+                InvitedRoom::new(InviteState::new(invite_state_events)),
+            )
+        })
+        .collect();
 
     for left_room in left_rooms.keys() {
         for user_id in room::joined_users(left_room, None).await? {
@@ -404,6 +407,16 @@ pub async fn sync_events(
         // Fallback keys are not yet supported
         device_unused_fallback_key_types: None,
     };
+    invite_snapshot
+        .record_returned(
+            &res_body
+                .rooms
+                .invite
+                .keys()
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>(),
+        )
+        .await?;
     Ok(res_body)
 }
 
