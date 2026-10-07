@@ -19,6 +19,7 @@ pub(super) fn router() -> Router {
         )
         .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
         .push(super::profile::msc4133_public_router())
+        .push(super::user::current_unstable_router())
         // Authed routes
         .push(
             authed
