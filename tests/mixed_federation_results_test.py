@@ -2,6 +2,9 @@
 
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -85,6 +88,30 @@ class ResultsGateTest(unittest.TestCase):
     def test_missing_results_fail(self):
         with self.assertRaises(OSError):
             evaluate(self.directory)
+
+    def test_cli_requires_both_directions(self):
+        self.passing()
+        one_direction = self.directory / "palpo-synapse"
+        one_direction.mkdir()
+        for path in list(self.directory.iterdir()):
+            if path.is_file():
+                path.rename(one_direction / path.name)
+        script = Path(__file__).with_name("mixed_federation_results.py")
+        result = subprocess.run([sys.executable, str(script), str(self.directory)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("synapse-palpo", result.stderr)
+
+    def test_cli_accepts_two_complete_directions(self):
+        self.passing()
+        one_direction = self.directory / "palpo-synapse"
+        one_direction.mkdir()
+        for path in list(self.directory.iterdir()):
+            if path.is_file():
+                path.rename(one_direction / path.name)
+        shutil.copytree(one_direction, self.directory / "synapse-palpo")
+        script = Path(__file__).with_name("mixed_federation_results.py")
+        result = subprocess.run([sys.executable, str(script), str(self.directory)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
