@@ -61,3 +61,9 @@ pool_size = 10
 # what a reverse-proxy deployment on 443 wants.
 server = "matrix.palpo.im:443"
 client = "https://matrix.palpo.im"
+
+# URL previews are disabled by default because their allowlists are empty.
+# Uncomment this section and replace the examples with the exact hostnames
+# you want clients to preview. Restart Palpo after changing the active config.
+# [url_preview]
+# domain_explicit_allowlist = ["github.com", "example.org"]
