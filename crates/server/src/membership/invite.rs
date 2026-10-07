@@ -43,25 +43,72 @@ async fn denies_public_invites(user_id: &UserId) -> AppResult<bool> {
 
 #[cfg(feature = "unstable-msc4494")]
 async fn shares_non_public_room(invitee: &UserId, inviter: &UserId) -> AppResult<bool> {
-    // shared_rooms includes historical memberships; use only current joins here.
-    let invitee_rooms = data::user::joined_rooms(invitee).await?;
-    let inviter_rooms: std::collections::HashSet<_> = data::user::joined_rooms(inviter)
-        .await?
+    Ok(shared_invite_room_change(invitee, inviter).await?.is_some())
+}
+
+#[cfg(feature = "unstable-msc4494")]
+async fn current_join_positions(
+    user_id: &UserId,
+) -> AppResult<std::collections::HashMap<OwnedRoomId, i64>> {
+    use data::schema::room_users;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    // Match joined_rooms: historical memberships must not establish a relationship.
+    let memberships = room_users::table
+        .filter(room_users::user_id.eq(user_id))
+        .distinct_on(room_users::room_id)
+        .select((
+            room_users::room_id,
+            room_users::membership,
+            room_users::event_sn,
+        ))
+        .order_by((room_users::room_id.desc(), room_users::id.desc()))
+        .load::<(OwnedRoomId, String, i64)>(&mut data::connect().await?)
+        .await?;
+    Ok(memberships
         .into_iter()
-        .collect();
-    for room_id in invitee_rooms {
-        if !inviter_rooms.contains(&room_id) {
+        .filter_map(|(room_id, membership, sn)| (membership == "join").then_some((room_id, sn)))
+        .collect())
+}
+
+/// Latest stream position establishing a currently qualifying shared room.
+#[cfg(feature = "unstable-msc4494")]
+async fn shared_invite_room_change(invitee: &UserId, inviter: &UserId) -> AppResult<Option<i64>> {
+    use crate::core::events::StateEventType;
+    use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
+    use crate::core::room::JoinRule;
+
+    let invitee_rooms = current_join_positions(invitee).await?;
+    let inviter_rooms = current_join_positions(inviter).await?;
+    let mut latest = None;
+    for (room_id, invitee_sn) in invitee_rooms {
+        let Some(inviter_sn) = inviter_rooms.get(&room_id) else {
             continue;
-        }
-        match room::get_join_rule(&room_id).await {
-            Ok(rule) if rule != crate::core::room::JoinRule::Public => return Ok(true),
-            Ok(_) => {}
+        };
+        match room::get_state(&room_id, &StateEventType::RoomJoinRules, "", None).await {
+            Ok(pdu) => {
+                let content: RoomJoinRulesEventContent = serde_json::from_str(pdu.content.get())?;
+                // Only proposal-listed rules establish trust. Reserved and custom rules
+                // have no supported admission policy and must fail closed.
+                if matches!(
+                    content.join_rule,
+                    JoinRule::Invite
+                        | JoinRule::Knock
+                        | JoinRule::Restricted(_)
+                        | JoinRule::KnockRestricted(_)
+                ) {
+                    let change_sn = invitee_sn.max(*inviter_sn).max(pdu.event_sn);
+                    latest =
+                        Some(latest.map_or(change_sn, |previous: i64| previous.max(change_sn)));
+                }
+            }
             // Without known room state there is no evidence of a qualifying room.
             Err(e) if e.is_not_found() => {}
             Err(e) => return Err(e),
         }
     }
-    Ok(false)
+    Ok(latest)
 }
 
 /// Apply membership-based filtering to retained invites in both sync versions.
@@ -75,8 +122,14 @@ pub(crate) async fn invited_rooms_for_sync(
         use data::schema::room_users;
         use diesel::prelude::*;
         use diesel_async::RunQueryDsl;
+        // The invitation can predate a newly qualifying membership or join rule.
+        // Reconsider retained invites, but replay them only after relevant changes,
+        // including the account-data replay already handled by the data layer.
+        let incremental_rooms: std::collections::HashSet<_> =
+            invites.into_iter().map(|(room_id, _)| room_id).collect();
+        let retained = data::user::invited_rooms_for_sync(user_id, 0).await?;
         let mut allowed = Vec::new();
-        for (room_id, state) in invites {
+        for (room_id, state) in retained {
             let inviter = room_users::table
                 .filter(room_users::user_id.eq(user_id))
                 .filter(room_users::room_id.eq(&room_id))
@@ -87,7 +140,8 @@ pub(crate) async fn invited_rooms_for_sync(
                 .await
                 .optional()?;
             if let Some(inviter) = inviter
-                && shares_non_public_room(user_id, &inviter).await?
+                && let Some(change_sn) = shared_invite_room_change(user_id, &inviter).await?
+                && (incremental_rooms.contains(&room_id) || change_sn >= since_sn)
             {
                 allowed.push((room_id, state));
             }
@@ -574,6 +628,8 @@ mod tests {
 
         for (i, rule) in [
             "public",
+            "private",
+            "example.custom",
             "invite",
             "knock",
             "restricted",
@@ -608,7 +664,10 @@ mod tests {
                 .await
                 .unwrap();
             drop(guard);
-            let allowed = *rule != "public";
+            let allowed = matches!(
+                *rule,
+                "invite" | "knock" | "restricted" | "knock_restricted"
+            );
             assert_eq!(
                 ensure_membership_invite_allowed(&builder, &inviter)
                     .await
@@ -631,6 +690,29 @@ mod tests {
                 1
             );
             if allowed {
+                // This invitation predates the setting and the join-rule update.
+                // An incremental sync must replay it when the relationship becomes eligible.
+                let rule_sn = stored.event_sn;
+                assert!(
+                    data::user::invited_rooms_for_sync(&invitee, rule_sn)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    invited_rooms_for_sync(&invitee, rule_sn)
+                        .await
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                // It must not repeat on every subsequent empty incremental sync.
+                assert!(
+                    invited_rooms_for_sync(&invitee, rule_sn + 1)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
                 for member in [&invitee, &inviter] {
                     diesel::update(
                         room_users::table
@@ -648,15 +730,32 @@ mod tests {
                             .unwrap()
                             .is_empty()
                     );
+                    let join_sn = data::next_sn().await.unwrap();
                     diesel::update(
                         room_users::table
                             .filter(room_users::room_id.eq(&mutual))
                             .filter(room_users::user_id.eq(member)),
                     )
-                    .set(room_users::membership.eq("join"))
+                    .set((
+                        room_users::membership.eq("join"),
+                        room_users::event_sn.eq(join_sn),
+                    ))
                     .execute(&mut data::connect().await.unwrap())
                     .await
                     .unwrap();
+                    assert_eq!(
+                        invited_rooms_for_sync(&invitee, join_sn)
+                            .await
+                            .unwrap()
+                            .len(),
+                        1
+                    );
+                    assert!(
+                        invited_rooms_for_sync(&invitee, join_sn + 1)
+                            .await
+                            .unwrap()
+                            .is_empty()
+                    );
                 }
             }
         }
