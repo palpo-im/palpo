@@ -256,6 +256,7 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
         ("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
         ("uk.timedout.msc4323".to_owned(), true),           // Account suspension and locking.
         ("org.matrix.msc4354".to_owned(), true), /* Sticky events (https://github.com/matrix-org/matrix-spec-proposals/pull/4354) */
+        ("org.matrix.msc4380.stable".to_owned(), true), // Stable invite blocking.
         ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
     ]);
 
