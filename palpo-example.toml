@@ -996,6 +996,11 @@
 #
 # freeze_legacy =
 
+# Maximum number of bytes accepted when fetching remote media content
+# from a remote homeserver via federation. Defaults to 100 MiB.
+#
+# max_remote_media_size = 104857600
+
 # Check consistency of the media directory at startup:
 # 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
 #    back and forth between Conduit and palpo. Both options must be enabled to handle this.

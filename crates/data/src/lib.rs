@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use diesel::{Connection, PgConnection};
 use diesel_async::RunQueryDsl;
@@ -36,6 +36,7 @@ pub type DataResult<T> = Result<T, DataError>;
 pub static DIESEL_POOL: OnceLock<DieselPool> = OnceLock::new();
 pub static COORDINATION_POOL: OnceLock<DieselPool> = OnceLock::new();
 pub static REPLICA_POOL: OnceLock<Option<DieselPool>> = OnceLock::new();
+static INIT_LOCK: Mutex<()> = Mutex::new(());
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
@@ -46,27 +47,74 @@ pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 /// operator who needs a higher ceiling sets `db.coordination_pool_size` explicitly.
 const MAX_DERIVED_COORDINATION_POOL_SIZE: usize = 16;
 
-pub fn init(config: &DbConfig) {
-    assert!(
-        config.pool_size >= 2,
-        "db.pool_size must be at least 2 so database-backed coordination cannot starve query work"
-    );
-    let (query_pool_size, coordination_pool_size) = split_pool_size(config);
+/// Pools prepared after successful migrations, without publishing global state.
+pub struct PreparedDatabase {
+    queries: DieselPool,
+    coordination: DieselPool,
+}
 
-    // Migrations run on a one-off synchronous connection, and the pools below only open
-    // connections on demand. Migrating first still keeps startup single-connection, which
-    // matters when `db.pool_size` is already sized against `max_connections`.
-    migrate(config);
+impl PreparedDatabase {
+    /// Connect using the prepared query pool before publishing global pools.
+    pub async fn connect(&self) -> Result<PgPooledConnection, PoolError> {
+        self.queries.get().await
+    }
 
-    let pool = DieselPool::new(&config.url, config, query_pool_size, "queries")
-        .expect("diesel query pool should be created");
-    DIESEL_POOL.set(pool).expect("diesel pool should be set");
-    let coordination_pool =
-        DieselPool::new(&config.url, config, coordination_pool_size, "coordination")
-            .expect("diesel coordination pool should be created");
-    COORDINATION_POOL
-        .set(coordination_pool)
-        .expect("diesel coordination pool should be set");
+    /// Validate configuration, build lazy pools, and run migrations. Failures leave
+    /// global pools unset, allowing an embedding host to correct the cause and retry.
+    /// This performs synchronous database I/O; call it on a blocking thread.
+    pub fn prepare(config: &DbConfig) -> DataResult<Self> {
+        if is_initialized() {
+            return Err(DataError::internal(
+                "database pools are already initialized",
+            ));
+        }
+        if config.pool_size < 2 {
+            return Err(DataError::internal("db.pool_size must be at least 2"));
+        }
+        if let Some(size) = config.coordination_pool_size
+            && !(1..config.pool_size).contains(&size)
+        {
+            return Err(DataError::internal(
+                "db.coordination_pool_size must be at least 1 and smaller than db.pool_size",
+            ));
+        }
+        let (query_size, coordination_size) = split_pool_size(config);
+        let queries = DieselPool::new(&config.url, config, query_size, "queries")?;
+        let coordination = DieselPool::new(&config.url, config, coordination_size, "coordination")?;
+        // Pools connect lazily, so migrations still use the only startup connection.
+        migrate(config)?;
+        Ok(Self {
+            queries,
+            coordination,
+        })
+    }
+
+    /// Publish both prepared pools once all fallible preparation has succeeded.
+    pub fn install(self) -> DataResult<()> {
+        let _guard = INIT_LOCK
+            .lock()
+            .map_err(|_| DataError::internal("database initialization lock is poisoned"))?;
+        if is_initialized() {
+            return Err(DataError::internal(
+                "database pools are already initialized",
+            ));
+        }
+        DIESEL_POOL
+            .set(self.queries)
+            .map_err(|_| DataError::internal("query pool is already initialized"))?;
+        COORDINATION_POOL
+            .set(self.coordination)
+            .map_err(|_| DataError::internal("coordination pool is already initialized"))?;
+        Ok(())
+    }
+}
+
+pub fn is_initialized() -> bool {
+    DIESEL_POOL.get().is_some() || COORDINATION_POOL.get().is_some()
+}
+
+pub fn init(config: &DbConfig) -> DataResult<()> {
+    PreparedDatabase::prepare(config)?.install()
 }
 
 fn split_pool_size(config: &DbConfig) -> (usize, usize) {
@@ -99,11 +147,13 @@ pub fn coordination_pool_capacity(total: u32, configured: Option<u32>) -> usize 
 /// `diesel_migrations` only operates on synchronous connections, so this
 /// establishes a dedicated `PgConnection` separate from the async pool. It also
 /// doubles as a fail-fast connectivity check at startup.
-pub fn migrate(config: &DbConfig) {
-    let url = connection_url(config, &config.url);
-    let mut conn = PgConnection::establish(&url).expect("db connect should worked");
+pub fn migrate(config: &DbConfig) -> DataResult<()> {
+    let url = connection_url(config, &config.url)?;
+    let mut conn = PgConnection::establish(&url)
+        .map_err(|error| DataError::internal(format!("database connection failed: {error}")))?;
     conn.run_pending_migrations(MIGRATIONS)
-        .expect("migrate db should worked");
+        .map_err(|error| DataError::internal(format!("database migration failed: {error}")))?;
+    Ok(())
 }
 
 pub async fn connect() -> Result<PgPooledConnection, PoolError> {
@@ -154,8 +204,8 @@ pub fn coordination_status() -> deadpool::managed::Status {
         .status()
 }
 
-pub fn connection_url(config: &DbConfig, url: &str) -> String {
-    let mut url = Url::parse(url).expect("Invalid database URL");
+pub fn connection_url(config: &DbConfig, url: &str) -> Result<String, url::ParseError> {
+    let mut url = Url::parse(url)?;
 
     if config.enforce_tls {
         maybe_append_url_param(&mut url, "sslmode", "require");
@@ -169,7 +219,7 @@ pub fn connection_url(config: &DbConfig, url: &str) -> String {
         &config.tcp_timeout.to_string(),
     );
 
-    url.into()
+    Ok(url.into())
 }
 
 fn maybe_append_url_param(url: &mut Url, key: &str, value: &str) {
@@ -214,6 +264,22 @@ mod migration_tests {
             connection_timeout: 0,
             statement_timeout: 0,
             enforce_tls: false,
+        }
+    }
+
+    #[test]
+    fn preparation_errors_do_not_publish_database_pools() {
+        for (total, coordination, expected) in [
+            (1, None, "db.pool_size"),
+            (10, Some(10), "db.coordination_pool_size"),
+            (10, Some(0), "db.coordination_pool_size"),
+            (10, None, "relative URL"),
+        ] {
+            let error = super::PreparedDatabase::prepare(&db_config(total, coordination))
+                .err()
+                .expect("invalid configuration must fail preparation");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(!super::is_initialized());
         }
     }
 

@@ -304,7 +304,7 @@ pub async fn all() -> AppResult<BTreeMap<String, RegistrationInfo>> {
 /// Sends a request to an appservice
 ///
 /// Only returns None if there is no url specified in the appservice registration file
-#[tracing::instrument(skip(request))]
+#[tracing::instrument(skip_all, fields(appservice_id = %registration.id))]
 pub(crate) async fn send_request(
     registration: Registration,
     mut request: reqwest::Request,
@@ -341,6 +341,7 @@ pub(crate) async fn send_request(
     let response = match reqwest::Client::execute(&client, request).await {
         Ok(r) => r,
         Err(e) => {
+            let e = e.without_url();
             warn!(
                 "Could not send request to appservice {:?} at {}: {}",
                 registration.id, destination, e

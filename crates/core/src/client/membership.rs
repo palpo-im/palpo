@@ -288,7 +288,7 @@ pub struct LeaveRoomReqBody {
 //     }
 // };
 
-/// Request type for the `mutual_rooms` endpoint.
+/// Request type for the legacy path-based `mutual_rooms` endpoint.
 #[derive(ToParameters, Deserialize, Debug)]
 pub struct MutualRoomsReqArgs {
     /// The user to search mutual rooms for.
@@ -379,6 +379,19 @@ impl MutualRoomsV1ResBody {
     }
 }
 
+/// Request parameters for the current MSC2666 query-based endpoint.
+pub type MutualRoomsUnstableReqArgs = MutualRoomsV1ReqArgs;
+
+/// Response body for MSC2666, which does not include the stable endpoint's count.
+#[derive(ToSchema, Serialize, Debug)]
+pub struct MutualRoomsUnstableResBody {
+    /// The current page of rooms shared by both users.
+    pub joined: Vec<OwnedRoomId>,
+    /// An opaque token for the next page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_batch: Option<String>,
+}
+
 #[cfg(test)]
 mod mutual_rooms_tests {
     use serde_json::json;
@@ -387,6 +400,32 @@ mod mutual_rooms_tests {
         MutualRoomsReqArgs, MutualRoomsResBody, MutualRoomsV1ReqArgs, MutualRoomsV1ResBody,
     };
     use crate::{owned_room_id, owned_user_id};
+
+    #[test]
+    fn current_unstable_wire_format_uses_query_pagination_names() {
+        let request: super::MutualRoomsUnstableReqArgs = serde_json::from_value(json!({
+            "user_id": "@alice:example.org", "from": "next"
+        }))
+        .unwrap();
+        assert_eq!(request.from.as_deref(), Some("next"));
+        let mut response = super::MutualRoomsUnstableResBody {
+            joined: vec![owned_room_id!("!one:example.org")],
+            next_batch: Some("next".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            json!({
+                "joined": ["!one:example.org"], "next_batch": "next"
+            })
+        );
+        response.next_batch = None;
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "joined": ["!one:example.org"]
+            })
+        );
+    }
 
     #[test]
     fn stable_request_and_response_use_v1_19_field_names() {

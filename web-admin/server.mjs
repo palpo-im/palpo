@@ -320,7 +320,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const lockPath = `${databasePath}.lock`;
   const lock = await open(lockPath, 'wx', 0o600);
   await lock.writeFile(`${process.pid}\n`);
-  const store = new Store(databasePath);
+  let store;
+  try { store = new Store(databasePath); }
+  catch (error) { await lock.close(); await unlink(lockPath); throw error; }
   const service = new Service({ store, palpo: new Palpo(palpoUrl), serverName, callbackOrigins, transportOrigin, relayOrigin, outboundOptions });
   const accountConfig = process.env.PALPO_ACCOUNT_CONFIG ? JSON.parse(await readFile(process.env.PALPO_ACCOUNT_CONFIG, 'utf8')) : undefined;
   const retirementAdminToken = process.env.PALPO_AGENT_ADMIN_TOKEN_FILE

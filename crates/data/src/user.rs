@@ -172,6 +172,50 @@ pub async fn ignored_users(user_id: &UserId) -> DataResult<Vec<OwnedUserId>> {
         .map_err(Into::into)
 }
 
+/// Whether the user's stable invite permission account data blocks all invites.
+pub async fn invite_blocked(user_id: &UserId) -> DataResult<bool> {
+    let config = get_global_data::<JsonValue>(user_id, "m.invite_permission_config").await?;
+    Ok(config
+        .as_ref()
+        .and_then(|config| config.get("default_action"))
+        .and_then(JsonValue::as_str)
+        == Some("block"))
+}
+
+/// Invites visible to the recipient's sync. Other reads and appservice delivery
+/// retain the original membership records.
+pub async fn invited_rooms_for_sync(
+    user_id: &UserId,
+    since_sn: i64,
+) -> DataResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
+    let config = user_datas::table
+        .filter(user_datas::user_id.eq(user_id))
+        .filter(user_datas::room_id.is_null())
+        .filter(user_datas::data_type.eq("m.invite_permission_config"))
+        .order_by(user_datas::id.desc())
+        .first::<DbUserData>(&mut connect().await?)
+        .await
+        .optional()?;
+    let mut invite_since = since_sn;
+    if let Some(config) = config {
+        if !config.is_deleted
+            && config
+                .json_data
+                .get("default_action")
+                .and_then(JsonValue::as_str)
+                == Some("block")
+        {
+            return Ok(Vec::new());
+        }
+        // An allowing update (including a tombstone) re-exposes retained invites
+        // that the client synced past while blocking was enabled.
+        if config.occur_sn >= since_sn {
+            invite_since = 0;
+        }
+    }
+    invited_rooms(user_id, invite_since).await
+}
+
 /// Returns an iterator over all rooms a user was invited to.
 pub async fn invited_rooms(
     user_id: &UserId,

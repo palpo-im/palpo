@@ -66,7 +66,7 @@ pub(super) async fn get_room_event(
     }
 
     json_ok(RoomEventResBody::new(
-        event.to_room_event_for(authed.user_id(), Some(authed.device_id())),
+        event.to_room_event_for(authed.user_id(), authed.device_id()),
     ))
 }
 
@@ -183,7 +183,7 @@ pub(super) async fn get_context(
         .into());
     }
 
-    if !crate::room::lazy_loading::lazy_load_was_sent_before(
+    if !crate::room::lazy_loading::lazy_load_was_sent_before_for(
         sender_id,
         authed.device_id(),
         &room_id,
@@ -197,7 +197,7 @@ pub(super) async fn get_context(
 
     // Use limit with maximum 100
     let limit = args.limit.min(100);
-    let base_event = base_event.to_room_event_for(sender_id, Some(authed.device_id()));
+    let base_event = base_event.to_room_event_for(sender_id, authed.device_id());
     let events_before_loaded = timeline::stream::load_pdus_backward(
         Some(sender_id),
         &room_id,
@@ -218,7 +218,7 @@ pub(super) async fn get_context(
     }
 
     for (_, event) in &events_before {
-        if !crate::room::lazy_loading::lazy_load_was_sent_before(
+        if !crate::room::lazy_loading::lazy_load_was_sent_before_for(
             sender_id,
             authed.device_id(),
             &room_id,
@@ -237,7 +237,7 @@ pub(super) async fn get_context(
         .unwrap_or_else(|| base_token);
     let events_before = events_before
         .into_iter()
-        .map(|(_, pdu)| pdu.to_room_event_for(sender_id, Some(authed.device_id())))
+        .map(|(_, pdu)| pdu.to_room_event_for(sender_id, authed.device_id()))
         .collect::<Vec<_>>();
     let events_after = timeline::stream::load_pdus_forward(
         Some(sender_id),
@@ -250,7 +250,7 @@ pub(super) async fn get_context(
     .await?;
 
     for (_, event) in &events_after {
-        if !crate::room::lazy_loading::lazy_load_was_sent_before(
+        if !crate::room::lazy_loading::lazy_load_was_sent_before_for(
             sender_id,
             authed.device_id(),
             &room_id,
@@ -284,7 +284,7 @@ pub(super) async fn get_context(
         .unwrap_or_else(|| base_token);
     let events_after: Vec<_> = events_after
         .into_iter()
-        .map(|(_, pdu)| pdu.to_room_event_for(sender_id, Some(authed.device_id())))
+        .map(|(_, pdu)| pdu.to_room_event_for(sender_id, authed.device_id()))
         .collect();
     let mut state = Vec::new();
 
@@ -303,7 +303,7 @@ pub(super) async fn get_context(
                     continue;
                 }
             };
-            state.push(pdu.to_state_event_for(sender_id, Some(authed.device_id())));
+            state.push(pdu.to_state_event_for(sender_id, authed.device_id()));
         } else if !lazy_load_enabled || lazy_loaded.contains(&state_key) {
             let pdu = match timeline::get_pdu(&event_id).await {
                 Ok(pdu) => pdu,
@@ -312,7 +312,7 @@ pub(super) async fn get_context(
                     continue;
                 }
             };
-            state.push(pdu.to_state_event_for(sender_id, Some(authed.device_id())));
+            state.push(pdu.to_state_event_for(sender_id, authed.device_id()));
         }
     }
 

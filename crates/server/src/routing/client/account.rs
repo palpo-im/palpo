@@ -46,10 +46,7 @@ pub fn authed_router() -> Router {
                 .hoop(hoops::limit_rate)
                 .get(whoami),
         )
-        .push(
-            Router::with_path("deactivate")
-                .post(deactivate),
-        )
+        .push(Router::with_path("deactivate").post(deactivate))
         .push(password::authed_router())
         .push(threepid::authed_router())
 }
@@ -84,7 +81,7 @@ async fn whoami(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<WhoamiResBody> {
 
     json_ok(WhoamiResBody {
         user_id: authed.user_id().to_owned(),
-        device_id: Some(authed.device_id().to_owned()),
+        device_id: authed.device_id().map(ToOwned::to_owned),
         is_guest: authed.user.is_guest,
     })
 }
@@ -118,20 +115,30 @@ async fn deactivate(
     };
 
     let Some(auth) = &body.auth else {
-        crate::uiaa::create_challenge_session(authed.user_id(), authed.device_id(), &mut uiaa_info)
-            .await?;
+        crate::uiaa::create_challenge_session(
+            authed.user_id(),
+            authed.require_device_id()?,
+            &mut uiaa_info,
+        )
+        .await?;
         return Err(uiaa_info.into());
     };
     hoops::check_password_attempt(authed.user_id().as_str())?;
-    let (authenticated, uiaa) =
-        match crate::uiaa::try_auth(authed.user_id(), authed.device_id(), auth, &uiaa_info).await {
-            Ok(result) => result,
-            Err(_) => {
-                hoops::record_password_failure(authed.user_id().as_str())?;
-                res.status_code(StatusCode::UNAUTHORIZED);
-                return Err(MatrixError::forbidden("Authentication failed.", None).into());
-            }
-        };
+    let (authenticated, uiaa) = match crate::uiaa::try_auth(
+        authed.user_id(),
+        authed.require_device_id()?,
+        auth,
+        &uiaa_info,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            hoops::record_password_failure(authed.user_id().as_str())?;
+            res.status_code(StatusCode::UNAUTHORIZED);
+            return Err(MatrixError::forbidden("Authentication failed.", None).into());
+        }
+    };
     if !authenticated {
         hoops::record_password_failure(authed.user_id().as_str())?;
         return Err(uiaa.into());

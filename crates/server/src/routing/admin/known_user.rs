@@ -318,7 +318,13 @@ mod tests {
             .unwrap()
             .iter()
             // `/v2/users` calls the ID `name`, `/v1/known_users` calls it `user_id`.
-            .map(|u| u.get("user_id").unwrap_or(&u["name"]).as_str().unwrap().to_owned())
+            .map(|u| {
+                u.get("user_id")
+                    .unwrap_or(&u["name"])
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
             .collect()
     }
 

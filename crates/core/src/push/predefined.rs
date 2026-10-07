@@ -851,7 +851,7 @@ impl PredefinedContentRuleId {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches2::assert_matches;
+    use strass::assert_let;
 
     use super::PredefinedOverrideRuleId;
     #[cfg(feature = "unstable-msc4306")]
@@ -900,13 +900,13 @@ mod tests {
         );
         assert!(master_rule.enabled);
         assert_eq!(master_rule.actions.len(), 1);
-        assert_matches!(&master_rule.actions[0], Action::Notify);
+        assert_let!(Action::Notify = &master_rule.actions[0]);
 
         let user_rule = ruleset.override_.get(user_rule_id).unwrap();
         assert!(!user_rule.enabled);
         assert!(user_rule.actions.is_empty());
 
-        assert_matches!(ruleset.override_.get(default_rule_id), None);
+        assert_let!(None = ruleset.override_.get(default_rule_id));
 
         let member_event_rule = ruleset
             .override_
@@ -956,6 +956,6 @@ mod tests {
         let user_rule = ruleset.postcontent.get(user_rule_id).unwrap();
         assert!(user_rule.enabled);
         assert_eq!(user_rule.actions.len(), 1);
-        assert_matches!(&user_rule.actions[0], Action::Notify);
+        assert_let!(Action::Notify = &user_rule.actions[0]);
     }
 }

@@ -113,12 +113,14 @@ pub(super) async fn get_messages(
     //         .map(|(sn, depth)| BatchToken::new(sn, Some(depth)))?
     // }
 
-    crate::room::lazy_loading::lazy_load_confirm_delivery(
-        authed.user_id(),
-        authed.device_id(),
-        &args.room_id,
-        from_tk.event_sn(),
-    )?;
+    if let Some(device_id) = authed.device_id() {
+        crate::room::lazy_loading::lazy_load_confirm_delivery(
+            authed.user_id(),
+            device_id,
+            &args.room_id,
+            from_tk.event_sn(),
+        )?;
+    }
 
     // Match Synapse's `MAX_LIMIT` for `/messages?limit=`.
     let limit = args.limit.min(1000);
@@ -156,7 +158,7 @@ pub(super) async fn get_messages(
 
             let events: Vec<_> = events
                 .into_iter()
-                .map(|(_, pdu)| pdu.to_room_event_for(sender_id, Some(authed.device_id())))
+                .map(|(_, pdu)| pdu.to_room_event_for(sender_id, authed.device_id()))
                 .collect();
 
             resp.start = from_tk.to_string();
@@ -200,7 +202,7 @@ pub(super) async fn get_messages(
                 // https://github.com/vector-im/element-web/issues/21034
                 // if !crate::room::lazy_loading.lazy_load_was_sent_before(
                 // sender_id,
-                // authed.device_id(),
+                // authed.require_device_id()?,
                 // &args.room_id,
                 // &event.sender,
                 // )? {
@@ -213,7 +215,7 @@ pub(super) async fn get_messages(
             resp.end = next_token.map(|tk| tk.to_string());
             resp.chunk = events
                 .values()
-                .map(|pdu| pdu.to_room_event_for(sender_id, Some(authed.device_id())))
+                .map(|pdu| pdu.to_room_event_for(sender_id, authed.device_id()))
                 .collect();
         }
     }
@@ -229,7 +231,7 @@ pub(super) async fn get_messages(
         .await
         {
             resp.state
-                .push(member_event.to_state_event_for(sender_id, Some(authed.device_id())));
+                .push(member_event.to_state_event_for(sender_id, authed.device_id()));
         }
     }
 
@@ -237,7 +239,7 @@ pub(super) async fn get_messages(
     // if let Some(next_token) = next_token {
     // crate::room::lazy_loading.lazy_load_mark_sent(
     // authed.user_id(),
-    // authed.device_id(),
+    // authed.require_device_id()?,
     // &body.room_id,
     // lazy_loaded,
     // next_token,
@@ -278,7 +280,7 @@ pub(super) async fn send_message(
     if let Some(event_id) = crate::transaction_id::get_event_id(
         &args.txn_id,
         authed.user_id(),
-        Some(authed.device_id()),
+        authed.device_id(),
         Some(&args.room_id),
     )
     .await?
@@ -297,7 +299,7 @@ pub(super) async fn send_message(
             event_type: args.event_type.to_string().into(),
             content: to_raw_value(&content)?,
             unsigned,
-            transaction_device: Some(authed.device_id().to_owned()),
+            transaction_device: authed.device_id().map(ToOwned::to_owned),
             timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
@@ -314,7 +316,7 @@ pub(super) async fn send_message(
     crate::transaction_id::add_txn_id(
         &args.txn_id,
         authed.user_id(),
-        Some(authed.device_id()),
+        authed.device_id(),
         Some(&args.room_id),
         Some(&event_id),
     )

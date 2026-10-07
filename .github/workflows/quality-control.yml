@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Typos check with custom config file
-        uses: crate-ci/typos@v1.50.2
+        uses: crate-ci/typos@v1.50.3
 
   deny:
     name: Cargo deny
@@ -55,7 +55,10 @@ jobs:
           components: rustfmt
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          # Rust 1.99 falsely lints Diesel's generated QueryableByName code:
+          # https://github.com/rust-lang/rust-clippy/issues/17525
+          # Keep linting strict; the build/test job below still uses latest stable.
+          toolchain: 1.98.1
           components: clippy
 
       - name: Install dependencies

@@ -14,7 +14,7 @@ use crate::core::serde::CanonicalJsonValue;
 use crate::core::{UnixMillis, signatures};
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::data::user::{DbUser, DbUserDevice, NewDbProfile, NewDbUser, NewDbUserDevice};
+use crate::data::user::{DbUser, DbUserDevice, NewDbProfile, NewDbUser};
 use crate::exts::DepotExt;
 use crate::server_key::{PubKeyMap, PubKeys};
 use crate::{AppError, AppResult, AuthArgs, AuthedInfo, MatrixError, config};
@@ -102,7 +102,7 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
         crate::user::ensure_account_usable(&user)?;
         depot.insert_typed(AuthedInfo {
             user,
-            user_device: device,
+            user_device: Some(device),
             access_token_id: Some(access_token_id),
             appservice: None,
         });
@@ -134,9 +134,8 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
                 )
                 .map_err(|_| MatrixError::invalid_param("Invalid appservice sender_localpart"))?
             };
+            let user_device = resolve_appservice_device(&user_id, aa.device_id.as_deref()).await?;
             let user = get_or_create_appservice_user(&user_id, &appservice.id).await?;
-            let user_device =
-                get_or_create_appservice_device(&user_id, aa.device_id.as_deref()).await?;
 
             crate::user::ensure_account_usable(&user)?;
             depot.insert_typed(AuthedInfo {
@@ -207,7 +206,7 @@ async fn auth_by_delegated_token(token: &str, _aa: &AuthArgs, depot: &mut Depot)
 
     depot.insert_typed(AuthedInfo {
         user,
-        user_device,
+        user_device: Some(user_device),
         access_token_id: None,
         appservice: None,
     });
@@ -279,45 +278,25 @@ async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) ->
         .await
 }
 
-/// Get or create a device for an appservice user
-async fn get_or_create_appservice_device(
+/// Resolve an asserted device without provisioning or creating any device.
+async fn resolve_appservice_device(
     user_id: &UserId,
     device_id: Option<&str>,
-) -> AppResult<DbUserDevice> {
-    let device_id = device_id
-        .map(|d| d.to_owned().into())
-        .unwrap_or_else(|| OwnedDeviceId::from("appservice"));
-
-    // Try to get existing device
-    if let Ok(device) = user_devices::table
+) -> AppResult<Option<DbUserDevice>> {
+    let Some(device_id) = device_id else {
+        return Ok(None);
+    };
+    let device_id: OwnedDeviceId = device_id.into();
+    let device = user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(&device_id))
         .first::<DbUserDevice>(&mut connect().await?)
         .await
-    {
-        return Ok(device);
-    }
-
-    // Create new device
-    let new_device = NewDbUserDevice {
-        user_id: user_id.to_owned(),
-        device_id,
-        display_name: None,
-        user_agent: None,
-        is_hidden: true,
-        last_seen_ip: None,
-        last_seen_at: None,
-        created_at: UnixMillis::now(),
-    };
-
-    let device = diesel::insert_into(user_devices::table)
-        .values(&new_device)
-        .get_result::<DbUserDevice>(&mut connect().await?)
-        .await?;
-
-    Ok(device)
+        .optional()?;
+    device.map(Some).ok_or_else(|| {
+        MatrixError::unknown_device("The asserted device does not belong to this user.").into()
+    })
 }
-
 async fn auth_by_signatures_inner(req: &mut Request, depot: &mut Depot) -> AppResult<()> {
     let Some(Authorization(x_matrix)) = req.headers().typed_get::<Authorization<XMatrix>>() else {
         warn!("missing or invalid Authorization header");
@@ -422,9 +401,17 @@ mod tests {
     use crate::core::error::ErrorKind;
 
     async fn authenticate_fixture(token: &str, user_id: Option<&str>) -> AppResult<AuthedInfo> {
+        authenticate_fixture_device(token, user_id, None).await
+    }
+
+    async fn authenticate_fixture_device(
+        token: &str,
+        user_id: Option<&str>,
+        device_id: Option<&str>,
+    ) -> AppResult<AuthedInfo> {
         let args = AuthArgs {
             user_id: user_id.map(ToOwned::to_owned),
-            device_id: None,
+            device_id: device_id.map(ToOwned::to_owned),
             access_token: None,
             authorization: Some(format!("Bearer {token}")),
             from_appservice: false,
@@ -489,7 +476,123 @@ mod tests {
         );
         assert!(sender.access_token_id().is_none());
         let repeated = authenticate_fixture(token, None).await.unwrap();
-        assert_eq!(repeated.user_device.id, sender.user_device.id);
+        assert!(repeated.user_device.is_none());
+        assert!(sender.user_device.is_none());
+
+        assert!(
+            crate::data::user::device::get_devices(sender.user_id())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            crate::data::user::device::get_devices(child.user_id())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        for (user_id, device_id) in [(sender.user_id(), "SENDER"), (child.user_id(), "CHILD")] {
+            diesel::insert_into(user_devices::table)
+                .values(crate::data::user::NewDbUserDevice {
+                    user_id: user_id.to_owned(),
+                    device_id: device_id.into(),
+                    display_name: None,
+                    user_agent: None,
+                    is_hidden: false,
+                    last_seen_ip: None,
+                    last_seen_at: None,
+                    created_at: UnixMillis::now(),
+                })
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        let asserted =
+            authenticate_fixture_device(token, Some(child.user_id().as_str()), Some("CHILD"))
+                .await
+                .unwrap();
+        assert_eq!(asserted.device_id().unwrap().as_str(), "CHILD");
+        let asserted_sender = authenticate_fixture_device(token, None, Some("SENDER"))
+            .await
+            .unwrap();
+        assert_eq!(asserted_sender.device_id().unwrap().as_str(), "SENDER");
+        for (user_id, device_id) in [
+            (None, "CHILD"),
+            (Some(child.user_id().as_str()), "SENDER"),
+            (Some("@dynamic_new:dynamic.example"), "UNKNOWN"),
+        ] {
+            assert!(matches!(
+                authenticate_fixture_device(token, user_id, Some(device_id)).await,
+                Err(AppError::Matrix(MatrixError {
+                    kind: ErrorKind::UnknownDevice,
+                    ..
+                }))
+            ));
+        }
+        assert!(
+            !crate::data::user::user_exists(
+                &UserId::parse("@dynamic_new:dynamic.example").unwrap()
+            )
+            .await
+            .unwrap()
+        );
+
+        use salvo::test::{ResponseExt, TestClient};
+        let service = Service::new(crate::routing::root());
+        let whoami = "http://localhost/_matrix/client/v3/account/whoami";
+        let mut response = TestClient::get(whoami)
+            .add_header("Authorization", format!("Bearer {token}"), true)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        let json = response.take_json::<serde_json::Value>().await.unwrap();
+        assert_eq!(json["user_id"], sender.user_id().as_str());
+        assert!(json.get("device_id").is_none());
+        let mut unknown = TestClient::get(format!("{whoami}?device_id=CHILD"))
+            .add_header("Authorization", format!("Bearer {token}"), true)
+            .send(&service)
+            .await;
+        assert_eq!(unknown.status_code, Some(StatusCode::BAD_REQUEST));
+        assert_eq!(
+            unknown.take_json::<serde_json::Value>().await.unwrap()["errcode"],
+            "M_UNKNOWN_DEVICE"
+        );
+        let mut keys = TestClient::post("http://localhost/_matrix/client/v3/keys/upload")
+            .json(&serde_json::json!({}))
+            .add_header("Authorization", format!("Bearer {token}"), true)
+            .send(&service)
+            .await;
+        assert_eq!(keys.status_code, Some(StatusCode::BAD_REQUEST));
+        assert_eq!(
+            keys.take_json::<serde_json::Value>().await.unwrap()["errcode"],
+            "M_MISSING_PARAM"
+        );
+        assert_eq!(
+            crate::data::user::device::get_devices(sender.user_id())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // Ordinary tokens retain their real device even when assertion query parameters exist.
+        crate::data::user::device::create_device(
+            sender.user_id(),
+            &OwnedDeviceId::from("NATIVE"),
+            "native-device-fixture-token",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut native = TestClient::get(format!("{whoami}?device_id=UNKNOWN"))
+            .add_header("Authorization", "Bearer native-device-fixture-token", true)
+            .send(&service)
+            .await;
+        assert_eq!(native.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            native.take_json::<serde_json::Value>().await.unwrap()["device_id"],
+            "NATIVE"
+        );
 
         assert_unknown_token(authenticate_fixture("wrong-fixture-token", None).await);
         assert!(matches!(

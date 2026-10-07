@@ -148,8 +148,8 @@ pub enum CallIntent {
 mod tests {
     use std::time::Duration;
 
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{NotificationType, RtcNotificationEventContent};
     use crate::events::{AnyMessageLikeEvent, Mentions, MessageLikeEvent};
@@ -197,10 +197,7 @@ mod tests {
         });
 
         let event = from_json_value::<AnyMessageLikeEvent>(json_data).unwrap();
-        assert_matches!(
-            event,
-            AnyMessageLikeEvent::RtcNotification(MessageLikeEvent::Original(ev))
-        );
+        assert_let!(AnyMessageLikeEvent::RtcNotification(MessageLikeEvent::Original(ev)) = event);
         assert_eq!(ev.content.lifetime, Duration::from_millis(30_000));
     }
 

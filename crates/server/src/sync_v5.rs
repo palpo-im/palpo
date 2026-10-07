@@ -620,7 +620,7 @@ pub async fn sync_events(
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     let ignored_users = crate::user::ignored_users(sender_id).await;
 
-    let all_invited_rooms = data::user::invited_rooms(sender_id, 0).await?;
+    let all_invited_rooms = data::user::invited_rooms_for_sync(sender_id, 0).await?;
     let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(|r| r.0.as_ref()).collect();
 
     let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0).await?;
@@ -956,7 +956,11 @@ async fn fetch_subscriptions(
     known_rooms: &KnownRooms,
 ) -> AppResult<()> {
     let mut known_subscription_rooms = BTreeSet::new();
+    let invites_blocked = data::user::invite_blocked(sender_id).await?;
     for (room_id, room) in &req_body.room_subscriptions {
+        if invites_blocked && crate::room::user::is_invited(sender_id, room_id).await? {
+            continue;
+        }
         if !crate::room::room_exists(room_id).await? {
             continue;
         }
@@ -1017,6 +1021,7 @@ async fn process_rooms(
 ) -> AppResult<BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>> {
     let mut rooms = BTreeMap::new();
     let receipts_enabled = req_body.extensions.receipts.enabled.unwrap_or(false);
+    let invites_blocked = data::user::invite_blocked(sender_id).await?;
 
     for (
         room_id,
@@ -1028,6 +1033,9 @@ async fn process_rooms(
         },
     ) in todo_rooms
     {
+        if invites_blocked && crate::room::user::is_invited(sender_id, room_id).await? {
+            continue;
+        }
         let mut timestamp: Option<_> = None;
         let mut invite_state = None;
         let new_room_id: &RoomId = (*room_id).as_ref();
@@ -1520,7 +1528,8 @@ async fn collect_e2ee(
                 if joined_since_last_sync || new_encrypted_room {
                     // If the user is in a new encrypted room, give them all joined users
                     let mut new_changes: Vec<OwnedUserId> = Vec::new();
-                    for user_id in room::get_members(room_id).await?
+                    for user_id in room::get_members(room_id)
+                        .await?
                         .into_iter()
                         // Don't send key updates from the sender to the sender
                         .filter(|user_id| sender_id != *user_id)

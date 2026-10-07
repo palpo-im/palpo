@@ -90,9 +90,9 @@ where
 
 /// Find the common prefix from a collection of strings and return a slice
 /// ```
-/// use tuwunel_core::utils::string::common_prefix;
+/// use palpo::utils::string::common_prefix;
 /// let input = ["conduwuit", "conduit", "construct"];
-/// common_prefix(&input) == "con";
+/// assert_eq!(common_prefix(&input), "con");
 /// ```
 #[must_use]
 #[allow(clippy::string_slice)]

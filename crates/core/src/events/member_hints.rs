@@ -37,8 +37,8 @@ impl MemberHintsEventContent {
 mod test {
     use std::collections::BTreeSet;
 
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json};
+    use strass::assert_let;
 
     use super::*;
     use crate::events::AnyStateEvent;
@@ -65,8 +65,8 @@ mod test {
         let event = from_json_value::<AnyStateEvent>(data)
             .expect("We should be able to deserialize the member hints event");
 
-        assert_matches!(event, AnyStateEvent::MemberHints(event));
-        assert_matches!(event, crate::events::StateEvent::Original(event));
+        assert_let!(AnyStateEvent::MemberHints(event) = event);
+        assert_let!(crate::events::StateEvent::Original(event) = event);
 
         assert!(event.content.service_members.contains(user_id));
 
@@ -87,8 +87,8 @@ mod test {
         let event = from_json_value::<AnyStateEvent>(data)
             .expect("We should be able to deserialize the member hints event");
 
-        assert_matches!(event, AnyStateEvent::MemberHints(event));
-        assert_matches!(event, crate::events::StateEvent::Original(event));
+        assert_let!(AnyStateEvent::MemberHints(event) = event);
+        assert_let!(crate::events::StateEvent::Original(event) = event);
 
         assert!(event.content.service_members.contains(user_id));
     }
