@@ -287,15 +287,15 @@ fn resolve_state_at_incoming_impl<'a>(
                 starting_events.push(id);
             }
 
-            for starting_event in starting_events {
-                auth_chain_sets.push(
-                    crate::room::auth_chain::get_auth_chain_ids(
-                        &incoming_pdu.room_id,
-                        [&*starting_event].into_iter(),
-                    )
-                    .await?,
-                );
-            }
+            // Compare the complete auth ancestry of each fork. Splitting it by
+            // state event would put shared historical grants into the auth difference.
+            auth_chain_sets.push(
+                crate::room::auth_chain::get_auth_chain_ids(
+                    &incoming_pdu.room_id,
+                    starting_events.iter().map(|event| &**event),
+                )
+                .await?,
+            );
 
             fork_states.push(state);
         }
@@ -403,6 +403,183 @@ mod tests {
         state::set_event_state_before(&target.event_id, &target.room_id, Arc::new(compressed))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_rejected_fork_does_not_replay_shared_historical_power() {
+        crate::test_database::init();
+        let rules = room::get_version_rules(&RoomVersionId::V11).unwrap();
+        let pdu = |id, ty, key, content| {
+            let mut pdu = event(id, ty, key, content);
+            pdu.room_id = RoomId::parse("!auth-forks:example.org").unwrap();
+            pdu
+        };
+        let create = store(pdu(
+            "$fork-create",
+            "m.room.create",
+            Some(""),
+            serde_json::json!({"creator":"@alice:example.org","room_version":"11"}),
+        ))
+        .await;
+        diesel::insert_into(rooms::table)
+            .values(crate::data::room::NewDbRoom {
+                id: create.room_id.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 1,
+                has_auth_chain_index: false,
+                created_at: UnixMillis(1000),
+            })
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let mut alice = pdu(
+            "$fork-alice",
+            "m.room.member",
+            Some("@alice:example.org"),
+            serde_json::json!({"membership":"join"}),
+        );
+        alice.auth_events = vec![create.event_id.clone()];
+        let alice = store(alice).await;
+        let mut public = pdu(
+            "$fork-public",
+            "m.room.join_rules",
+            Some(""),
+            serde_json::json!({"join_rule":"public"}),
+        );
+        public.auth_events = vec![create.event_id.clone(), alice.event_id.clone()];
+        let public = store(public).await;
+        let mut bob = pdu(
+            "$fork-bob",
+            "m.room.member",
+            Some("@bob:example.org"),
+            serde_json::json!({"membership":"join"}),
+        );
+        bob.sender = UserId::parse("@bob:example.org").unwrap();
+        bob.auth_events = vec![create.event_id.clone(), public.event_id.clone()];
+        let bob = store(bob).await;
+        let mut old_power = pdu(
+            "$fork-old-power",
+            "m.room.power_levels",
+            Some(""),
+            serde_json::json!({"users":{"@alice:example.org":100,"@bob:example.org":100},"state_default":50}),
+        );
+        old_power.auth_events = vec![create.event_id.clone(), alice.event_id.clone()];
+        let old_power = store(old_power).await;
+        let mut current_power = pdu(
+            "$fork-current-power",
+            "m.room.power_levels",
+            Some(""),
+            serde_json::json!({"users":{"@alice:example.org":100,"@bob:example.org":0},"state_default":50}),
+        );
+        current_power.auth_events = vec![
+            create.event_id.clone(),
+            alice.event_id.clone(),
+            old_power.event_id.clone(),
+        ];
+        let current_power = store(current_power).await;
+
+        // Both snapshots retain a topic from before Bob's power was revoked.
+        // The historical grant is shared ancestry, not a conflicting power event.
+        let mut alice_topic = pdu(
+            "$fork-alice-topic",
+            "m.room.topic",
+            Some(""),
+            serde_json::json!({"topic":"Alice's topic"}),
+        );
+        alice_topic.auth_events = vec![
+            create.event_id.clone(),
+            alice.event_id.clone(),
+            old_power.event_id.clone(),
+        ];
+        alice_topic.origin_server_ts = UnixMillis(2000);
+        let alice_topic = store(alice_topic).await;
+        let mut bob_topic = pdu(
+            "$fork-bob-topic",
+            "m.room.topic",
+            Some(""),
+            serde_json::json!({"topic":"Bob's later topic"}),
+        );
+        bob_topic.sender = bob.sender.clone();
+        bob_topic.auth_events = vec![
+            create.event_id.clone(),
+            bob.event_id.clone(),
+            old_power.event_id.clone(),
+        ];
+        bob_topic.origin_server_ts = UnixMillis(3000);
+        let bob_topic = store(bob_topic).await;
+        let common = [&create, &alice, &public, &bob, &current_power];
+        let accepted = store(pdu(
+            "$fork-accepted",
+            "m.room.message",
+            None,
+            serde_json::json!({"body":"accepted","msgtype":"m.text"}),
+        ))
+        .await;
+        let mut accepted_state = common.to_vec();
+        accepted_state.push(&alice_topic);
+        snapshot(&accepted, &accepted_state).await;
+        let mut rejected = pdu(
+            "$fork-rejected",
+            "m.room.power_levels",
+            Some(""),
+            serde_json::json!({"users":{"@alice:example.org":100,"@bob:example.org":100}}),
+        );
+        rejected.rejection_reason = Some("rejected power update".into());
+        let rejected = store(rejected).await;
+        let mut rejected_state = common.to_vec();
+        rejected_state.push(&bob_topic);
+        snapshot(&rejected, &rejected_state).await;
+
+        let mut child = pdu(
+            "$fork-child",
+            "m.room.topic",
+            Some(""),
+            serde_json::json!({"topic":"new topic"}),
+        );
+        child.auth_events = vec![
+            create.event_id.clone(),
+            alice.event_id.clone(),
+            current_power.event_id.clone(),
+        ];
+        for predecessors in [
+            vec![accepted.event_id.clone(), rejected.event_id.clone()],
+            vec![rejected.event_id.clone(), accepted.event_id.clone()],
+        ] {
+            child.prev_events = predecessors;
+            let resolved = resolve_state_at_incoming(&child, &rules)
+                .await
+                .unwrap()
+                .unwrap();
+            let power_field = state::ensure_field_id(&StateEventType::RoomPowerLevels, "")
+                .await
+                .unwrap();
+            let topic_field = state::ensure_field_id(&StateEventType::RoomTopic, "")
+                .await
+                .unwrap();
+            assert_eq!(resolved.get(&power_field), Some(&current_power.event_id));
+            assert_eq!(
+                resolved.get(&topic_field),
+                Some(&alice_topic.event_id),
+                "shared historical power must not reauthorize Bob's competing topic"
+            );
+            crate::event::handler::auth_check(&child, &rules, Some(&resolved))
+                .await
+                .unwrap();
+            let mut unauthorized = child.clone();
+            unauthorized.sender = bob.sender.clone();
+            unauthorized.auth_events = vec![
+                create.event_id.clone(),
+                bob.event_id.clone(),
+                current_power.event_id.clone(),
+            ];
+            assert!(
+                crate::event::handler::auth_check(&unauthorized, &rules, Some(&resolved))
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]
