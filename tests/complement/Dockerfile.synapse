@@ -1,0 +1,5 @@
+# Enable directory sharing for the regression while retaining Synapse's
+# federation signature checks. The upstream image disables sharing by default.
+ARG BASE_IMAGE=complement-synapse-base
+FROM ${BASE_IMAGE}
+RUN printf '\nallow_public_rooms_over_federation: true\n' >> /conf/shared.yaml.j2

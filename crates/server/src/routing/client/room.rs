@@ -805,10 +805,12 @@ pub(super) async fn get_public_rooms(
 #[endpoint]
 pub(super) async fn get_filtered_public_rooms(
     _aa: AuthArgs,
+    server: QueryParam<OwnedServerName, false>,
     args: JsonBody<PublicRoomsFilteredReqBody>,
 ) -> JsonResult<PublicRoomsResBody> {
+    let server = server.into_inner();
     let body = crate::directory::get_public_rooms(
-        args.server.as_deref(),
+        server.as_deref().or(args.server.as_deref()),
         args.limit,
         args.since.as_deref(),
         &args.filter,
