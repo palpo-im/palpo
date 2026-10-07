@@ -7,8 +7,12 @@ use opendal::layers::LoggingLayer;
 use crate::AppResult;
 use crate::config::StorageConfig;
 
-static OPERATOR: OnceLock<Operator> = OnceLock::new();
-static REDIRECT_CONFIG: OnceLock<Option<RedirectConfig>> = OnceLock::new();
+static STORAGE: OnceLock<PreparedStorage> = OnceLock::new();
+
+pub(crate) struct PreparedStorage {
+    operator: Operator,
+    redirect: Option<RedirectConfig>,
+}
 
 struct RedirectConfig {
     presign_expiry: Duration,
@@ -17,48 +21,62 @@ struct RedirectConfig {
 /// Initialize the global storage operator from configuration.
 /// Must be called once at startup after config is loaded.
 pub fn init(config: &StorageConfig) -> AppResult<()> {
-    if matches!(config, StorageConfig::S3 { .. }) {
-        opendal::install_default();
+    PreparedStorage::prepare(config)?.install()
+}
+
+impl PreparedStorage {
+    pub(crate) fn prepare(config: &StorageConfig) -> AppResult<Self> {
+        if matches!(config, StorageConfig::S3 { .. }) {
+            opendal::install_default();
+        }
+
+        let op = build_operator(config)?;
+        let redirect = match config {
+            StorageConfig::S3 {
+                redirect,
+                presign_expiry,
+                ..
+            } if *redirect => Some(RedirectConfig {
+                presign_expiry: Duration::from_secs(*presign_expiry),
+            }),
+            _ => None,
+        };
+        Ok(Self {
+            operator: op,
+            redirect,
+        })
     }
 
-    let op = build_operator(config)?;
-    OPERATOR
-        .set(op)
-        .map_err(|_| crate::AppError::public("Storage operator already initialized"))?;
+    pub(crate) fn install(self) -> AppResult<()> {
+        STORAGE
+            .set(self)
+            .map_err(|_| crate::AppError::public("Storage operator already initialized"))
+    }
+}
 
-    let redirect = match config {
-        StorageConfig::S3 {
-            redirect,
-            presign_expiry,
-            ..
-        } if *redirect => Some(RedirectConfig {
-            presign_expiry: Duration::from_secs(*presign_expiry),
-        }),
-        _ => None,
-    };
-    REDIRECT_CONFIG
-        .set(redirect)
-        .map_err(|_| crate::AppError::public("Redirect config already initialized"))?;
-
-    Ok(())
+pub(crate) fn is_initialized() -> bool {
+    STORAGE.get().is_some()
 }
 
 /// Get the global storage operator.
 pub fn operator() -> &'static Operator {
-    OPERATOR
+    &STORAGE
         .get()
         .expect("Storage operator not initialized. Call storage::init() first.")
+        .operator
 }
 
 /// Whether redirect mode is enabled (S3 with presigned URLs).
 pub fn is_redirect_enabled() -> bool {
-    REDIRECT_CONFIG.get().map(|c| c.is_some()).unwrap_or(false)
+    STORAGE
+        .get()
+        .is_some_and(|storage| storage.redirect.is_some())
 }
 
 /// Generate a presigned URL for reading the given key.
 /// Returns `None` if redirect is not enabled.
 pub async fn presign_read(key: &str) -> AppResult<Option<String>> {
-    let Some(Some(config)) = REDIRECT_CONFIG.get() else {
+    let Some(config) = STORAGE.get().and_then(|storage| storage.redirect.as_ref()) else {
         return Ok(None);
     };
     let presigned = operator().presign_read(key, config.presign_expiry).await?;

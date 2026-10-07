@@ -351,19 +351,33 @@ pub fn appservice_registration_dir() -> Option<&'static str> {
     get().appservice_registration_dir.as_deref()
 }
 
-/// Returns this server's keypair.
+static KEYPAIR: OnceLock<Ed25519KeyPair> = OnceLock::new();
+
+pub(crate) fn prepare_keypair(conf: &ServerConfig) -> AppResult<Ed25519KeyPair> {
+    let keypair = if let Some(keypair) = &conf.keypair {
+        let bytes = STANDARD
+            .decode(&keypair.document)
+            .map_err(|_| AppError::internal("server keypair is invalid base64"))?;
+        Ed25519KeyPair::from_der(&bytes, keypair.version.clone())
+    } else {
+        let bytes = Ed25519KeyPair::generate().map_err(|error| {
+            AppError::internal(format!("failed to generate server keypair: {error}"))
+        })?;
+        Ed25519KeyPair::from_der(&bytes, crate::utils::random_string(8))
+    };
+    keypair.map_err(|error| AppError::internal(format!("invalid server Ed25519 keypair: {error}")))
+}
+
+pub(crate) fn install_keypair(keypair: Ed25519KeyPair) -> AppResult<()> {
+    KEYPAIR
+        .set(keypair)
+        .map_err(|_| AppError::internal("server keypair is already initialized"))
+}
+
+/// Returns this server's keypair, prepared during startup.
 pub fn keypair() -> &'static Ed25519KeyPair {
-    static KEYPAIR: OnceLock<Ed25519KeyPair> = OnceLock::new();
     KEYPAIR.get_or_init(|| {
-        if let Some(keypair) = &get().keypair {
-            let bytes = STANDARD
-                .decode(&keypair.document)
-                .expect("server keypair is invalid base64 string");
-            Ed25519KeyPair::from_der(&bytes, keypair.version.clone())
-                .expect("invalid server Ed25519KeyPair")
-        } else {
-            crate::utils::generate_keypair()
-        }
+        prepare_keypair(get()).expect("server keypair should be prepared at startup")
     })
 }
 

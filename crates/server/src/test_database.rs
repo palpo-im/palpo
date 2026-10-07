@@ -26,6 +26,6 @@ pub fn init() {
             "url": url, "pool_size": 10, "statement_timeout": 5000
         }))
         .unwrap();
-        crate::data::init(&config);
+        crate::data::init(&config).expect("test database initialization failed");
     });
 }
