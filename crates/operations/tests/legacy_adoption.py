@@ -48,7 +48,7 @@ def main():
         temp=Path(temp);db=temp/'source.sqlite';plan_path=temp/'plan.json';auth=temp/'authority.json'
         env={k:v for k,v in os.environ.items() if not k.startswith('PALPO_')}
         env.update(PALPO_SERVER_NAME='example.test',PALPO_URL='http://127.0.0.1:9',PALPO_ADMIN_DATABASE=str(db))
-        store=Path(__file__).resolve().parents[3]/'web-admin/lib/store.mjs'
+        store=Path(__file__).resolve().parents[3]/'crates/operations/tests/fixtures/legacy_node/lib/store.mjs'
         run([args.node,'--input-type=module','-e',SEED,str(store),str(db),str(fixture)])
         original=read(db)
         auth.write_text(json.dumps({'engagements':{n['serverEngagementId']:native['authority']},'resources':{},'projects':{}}))

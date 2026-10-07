@@ -100,8 +100,8 @@ def main():
     args = parser.parse_args()
     binary = str(args.binary.resolve(strict=True))
     root = Path(__file__).resolve().parents[3]
-    node_store = str(root / "web-admin/lib/store.mjs")
-    node_service = str(root / "web-admin/lib/service.mjs")
+    node_store = str(root / "crates/operations/tests/fixtures/legacy_node/lib/store.mjs")
+    node_service = str(root / "crates/operations/tests/fixtures/legacy_node/lib/service.mjs")
 
     with tempfile.TemporaryDirectory(prefix="palpo-rust-migration-") as directory:
         directory = Path(directory)
@@ -155,7 +155,7 @@ def main():
         receipt = json.loads(run(transfer, env).stdout)
         assert snapshot(database) == (migrated, delivery_rows), 'Handoff rewrote original state or delivery custody'
         run([args.node, '--input-type=module', '-e', INSPECT_FENCED, node_store, str(database)])
-        refused_node = run([args.node, str(root / 'web-admin/server.mjs')], dict(env, PUBLIC_ORIGIN='http://127.0.0.1:8090'), success=False)
+        refused_node = run([args.node, str(root / 'crates/operations/tests/fixtures/legacy_node/server.mjs')], dict(env, PUBLIC_ORIGIN='http://127.0.0.1:8090'), success=False)
         assert 'Rust owns' in refused_node.stderr
         assert not lock.exists(), 'A refused old Node startup stranded the service lock'
         assert json.loads(run(transfer, env).stdout) == receipt

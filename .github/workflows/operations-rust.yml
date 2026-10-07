@@ -8,9 +8,6 @@ on:
     paths:
       - 'crates/hagency-contract/**'
       - 'crates/operations/**'
-      - 'web-admin/lib/store.mjs'
-      - 'web-admin/lib/service.mjs'
-      - 'web-admin/lib/outbound.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/operations-rust.yml'
@@ -19,9 +16,6 @@ on:
     paths:
       - 'crates/hagency-contract/**'
       - 'crates/operations/**'
-      - 'web-admin/lib/store.mjs'
-      - 'web-admin/lib/service.mjs'
-      - 'web-admin/lib/outbound.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/operations-rust.yml'

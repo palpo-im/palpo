@@ -9,7 +9,7 @@ native host remains Rust and the mini-app presentation remains OctoScript.
 The ADR workflow paths are implemented, including migration and scoped lifecycle
 operations. Production cutover still requires the deployment and device gates
 below. General homeserver diagnostics outside the ADR lifecycle are not claimed
-as browser-admin parity. The historical Node code remains for migration checks;
+as browser-admin parity. The historical Node code remains under `tests/fixtures/legacy_node/` for migration checks;
 it must not write a database handed to Rust.
 
 ## Implemented
