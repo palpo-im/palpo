@@ -44,6 +44,7 @@ async fn send_delayed_event(
         &args.event_type,
         &args.txn_id,
         args.timestamp,
+        args.sticky_duration_ms,
         body.delay,
         body.state_key.clone(),
         body.content.clone(),
