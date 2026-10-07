@@ -122,6 +122,12 @@ pub(crate) async fn process_incoming_pdu(
         return Ok(());
     };
 
+    // Signatures and hashes were checked by the outlier parser. Reject live
+    // invites before the PDU or any derived membership is stored via /send.
+    if is_timeline_event && !is_backfill {
+        crate::membership::ensure_incoming_invite_allowed(&outlier_pdu.pdu).await?;
+    }
+
     let (incoming_pdu, val, event_guard) = outlier_pdu
         .process_incoming(remote_server, is_backfill)
         .await?;
@@ -537,6 +543,12 @@ pub async fn process_to_timeline_pdu(
         return Err(AppError::internal(
             "cannot process rejected event to timeline",
         ));
+    }
+    // An allowed outlier can be retried after the user enabled invite blocking.
+    // Historical backfill remains part of the room DAG without applying a live
+    // recipient preference retrospectively.
+    if !incoming_pdu.is_backfill {
+        crate::membership::ensure_incoming_invite_allowed(&incoming_pdu).await?;
     }
     // A soft-failed outlier had an incomplete DAG when it was first checked, so its
     // policy check was deferred. It is re-authorised below and only then checked against

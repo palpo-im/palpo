@@ -793,8 +793,8 @@ impl TimestampToEventResBody {
 mod tests {
     use std::collections::BTreeMap;
 
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{
         AllowRule, CustomAllowRule, JoinRule, JoinRuleSummary, Restricted, RestrictedSummary,
@@ -816,7 +816,7 @@ mod tests {
         assert_eq!(summary.num_joined_members, 5);
         assert!(!summary.world_readable);
         assert!(!summary.guest_can_join);
-        assert_matches!(summary.join_rule, JoinRuleSummary::Public);
+        assert_let!(JoinRuleSummary::Public = summary.join_rule);
     }
 
     #[test]
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(summary.num_joined_members, 5);
         assert!(!summary.world_readable);
         assert!(!summary.guest_can_join);
-        assert_matches!(summary.join_rule, JoinRuleSummary::Private);
+        assert_let!(JoinRuleSummary::Private = summary.join_rule);
     }
 
     #[test]
@@ -853,7 +853,7 @@ mod tests {
         assert_eq!(summary.num_joined_members, 5);
         assert!(!summary.world_readable);
         assert!(!summary.guest_can_join);
-        assert_matches!(summary.join_rule, JoinRuleSummary::Restricted(restricted));
+        assert_let!(JoinRuleSummary::Restricted(restricted) = summary.join_rule);
         assert_eq!(restricted.allowed_room_ids.len(), 1);
     }
 
@@ -872,7 +872,7 @@ mod tests {
         assert_eq!(summary.num_joined_members, 5);
         assert!(!summary.world_readable);
         assert!(!summary.guest_can_join);
-        assert_matches!(summary.join_rule, JoinRuleSummary::Restricted(restricted));
+        assert_let!(JoinRuleSummary::Restricted(restricted) = summary.join_rule);
         assert_eq!(restricted.allowed_room_ids.len(), 0);
     }
 
@@ -930,19 +930,19 @@ mod tests {
         assert_eq!(JoinRuleSummary::Public, JoinRule::Public.into());
         assert_eq!(JoinRuleSummary::Private, JoinRule::Private.into());
 
-        assert_matches!(
-            JoinRule::KnockRestricted(Restricted::default()).into(),
-            JoinRuleSummary::KnockRestricted(restricted)
+        assert_let!(
+            JoinRuleSummary::KnockRestricted(restricted) =
+                JoinRule::KnockRestricted(Restricted::default()).into()
         );
         assert_eq!(restricted.allowed_room_ids, &[] as &[OwnedRoomId]);
 
         let room_id = owned_room_id!("!room:localhost");
-        assert_matches!(
-            JoinRule::Restricted(Restricted::new(vec![AllowRule::RoomMembership(
-                RoomMembership::new(room_id.clone())
-            )]))
-            .into(),
-            JoinRuleSummary::Restricted(restricted)
+        assert_let!(
+            JoinRuleSummary::Restricted(restricted) =
+                JoinRule::Restricted(Restricted::new(vec![AllowRule::RoomMembership(
+                    RoomMembership::new(room_id.clone())
+                )]))
+                .into()
         );
         assert_eq!(restricted.allowed_room_ids, [room_id]);
     }
@@ -951,7 +951,7 @@ mod tests {
     fn roundtrip_custom_allow_rule() {
         let json = r#"{"type":"org.msc9000.something","foo":"bar"}"#;
         let allow_rule: AllowRule = serde_json::from_str(json).unwrap();
-        assert_matches!(&allow_rule, AllowRule::_Custom(_));
+        assert_let!(AllowRule::_Custom(_) = &allow_rule);
         assert_eq!(serde_json::to_string(&allow_rule).unwrap(), json);
     }
 
@@ -985,7 +985,7 @@ mod tests {
         }"#;
         let join_rule: JoinRule = serde_json::from_str(json).unwrap();
 
-        assert_matches!(join_rule, JoinRule::Restricted(restricted));
+        assert_let!(JoinRule::Restricted(restricted) = join_rule);
         assert_eq!(
             restricted.allow,
             &[

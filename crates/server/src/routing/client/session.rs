@@ -608,7 +608,7 @@ async fn get_access_token(
     let conf = crate::config::get();
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let device_id = authed.device_id();
+    let device_id = authed.require_device_id()?;
 
     if !conf.login_via_existing_session {
         return Err(
@@ -686,7 +686,7 @@ async fn logout(aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
         tracing::warn!("Failed to revoke delegated auth token: {e}");
     }
 
-    user::remove_device(authed.user_id(), authed.device_id()).await?;
+    user::remove_device(authed.user_id(), authed.require_device_id()?).await?;
     empty_ok()
 }
 
@@ -1139,7 +1139,7 @@ async fn refresh_access_token(
 ) -> JsonResult<RefreshTokenResBody> {
     let authed = depot.authed_info()?;
     let user_id = authed.user_id();
-    let device_id = authed.device_id();
+    let device_id = authed.require_device_id()?;
     crate::user::valid_refresh_token(user_id, device_id, &body.refresh_token).await?;
 
     let access_token = utils::random_string(TOKEN_LENGTH);

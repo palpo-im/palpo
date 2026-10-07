@@ -119,8 +119,8 @@ impl From<UnstableMediaPreviewConfigEventContent> for MediaPreviewConfigEventCon
 
 #[cfg(all(test, feature = "unstable-msc4278"))]
 mod tests {
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{MediaPreviewConfigEventContent, UnstableMediaPreviewConfigEventContent};
     use crate::events::media_preview_config::{InviteAvatars, MediaPreviews};
@@ -138,9 +138,9 @@ mod tests {
         let unstable_media_preview_config_data =
             from_json_value::<AnyGlobalAccountDataEvent>(raw_unstable_media_preview_config)
                 .unwrap();
-        assert_matches!(
-            unstable_media_preview_config_data,
-            AnyGlobalAccountDataEvent::UnstableMediaPreviewConfig(unstable_media_preview_config)
+        assert_let!(
+            AnyGlobalAccountDataEvent::UnstableMediaPreviewConfig(unstable_media_preview_config) =
+                unstable_media_preview_config_data
         );
         assert_eq!(
             unstable_media_preview_config.content.media_previews,
@@ -160,9 +160,9 @@ mod tests {
         });
         let media_preview_config_data =
             from_json_value::<AnyGlobalAccountDataEvent>(raw_media_preview_config).unwrap();
-        assert_matches!(
-            media_preview_config_data,
-            AnyGlobalAccountDataEvent::MediaPreviewConfig(media_preview_config)
+        assert_let!(
+            AnyGlobalAccountDataEvent::MediaPreviewConfig(media_preview_config) =
+                media_preview_config_data
         );
         assert_eq!(
             media_preview_config.content.media_previews,

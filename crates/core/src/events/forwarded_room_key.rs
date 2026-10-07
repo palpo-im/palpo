@@ -44,15 +44,28 @@ pub struct ToDeviceForwardedRoomKeyEventContent {
     /// field is empty between A and B, and contains A's Curve25519 key
     /// between B and C.
     pub forwarding_curve25519_key_chain: Vec<String>,
+}
 
-    /// Used to mark key if allowed for shared history.
-    ///
-    /// Defaults to `false`.
-    #[cfg(feature = "unstable-msc3061")]
-    #[serde(
-        default,
-        rename = "org.matrix.msc3061.shared_history",
-        skip_serializing_if = "palpo_core::serde::is_default"
-    )]
-    pub shared_history: bool,
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::ToDeviceForwardedRoomKeyEventContent;
+
+    #[test]
+    fn forwarded_room_key_does_not_emit_non_spec_history_flags() {
+        let expected = json!({
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "room_id": "!room:example.org",
+            "sender_key": "sender",
+            "session_id": "session",
+            "session_key": "key",
+            "sender_claimed_ed25519_key": "signing-key",
+            "forwarding_curve25519_key_chain": []
+        });
+        let mut legacy = expected.clone();
+        legacy["org.matrix.msc3061.shared_history"] = true.into();
+        let content: ToDeviceForwardedRoomKeyEventContent = serde_json::from_value(legacy).unwrap();
+        assert_eq!(serde_json::to_value(content).unwrap(), expected);
+    }
 }

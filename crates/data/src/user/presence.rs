@@ -224,7 +224,8 @@ pub async fn set_presence(mut db_presence: NewDbPresence, force: bool) -> DataRe
                     user_presences::state.eq(&db_presence.state),
                     user_presences::status_msg.eq(&db_presence.status_msg),
                     user_presences::last_active_at.eq(db_presence.last_active_at),
-                    user_presences::last_federation_update_at.eq(db_presence.last_federation_update_at),
+                    user_presences::last_federation_update_at
+                        .eq(db_presence.last_federation_update_at),
                     user_presences::last_user_sync_at.eq(db_presence.last_user_sync_at),
                     user_presences::currently_active.eq(db_presence.currently_active),
                     user_presences::occur_sn.eq(occur_sn),

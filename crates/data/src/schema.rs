@@ -53,6 +53,7 @@ diesel::table! {
         error -> Nullable<Jsonb>,
         finalized_at -> Nullable<Int8>,
         created_at -> Int8,
+        sticky_duration_ms -> Nullable<Int4>,
     }
 }
 

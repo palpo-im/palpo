@@ -219,7 +219,7 @@ pub async fn sync_events(
         left_rooms.insert(room_id.to_owned(), left_room);
     }
 
-    let invited_rooms: BTreeMap<_, _> = data::user::invited_rooms(
+    let invited_rooms: BTreeMap<_, _> = data::user::invited_rooms_for_sync(
         sender_id,
         since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
     )
@@ -549,10 +549,11 @@ async fn load_joined_room(
                 if joined_member_count + invited_member_count <= 5 {
                     // Go through all PDUs and for each member event, check if the user is still
                     // joined or invited until we have 5 or we reach the end
-                    for (_, pdu) in timeline::stream::load_all_pdus(Some(sender_id), room_id, until_tk)
-                        .await?
-                        .into_iter() // Ignore all broken pdus
-                        .filter(|(_, pdu)| pdu.event_ty == TimelineEventType::RoomMember)
+                    for (_, pdu) in
+                        timeline::stream::load_all_pdus(Some(sender_id), room_id, until_tk)
+                            .await?
+                            .into_iter() // Ignore all broken pdus
+                            .filter(|(_, pdu)| pdu.event_ty == TimelineEventType::RoomMember)
                     {
                         let hero = {
                             let content = pdu.get_content::<RoomMemberEventContent>()?;

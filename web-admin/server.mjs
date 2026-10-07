@@ -8,6 +8,9 @@ import { Service, Palpo, ApiError, publicFleet, fixedTransportOrigin } from './l
 import { Workflow } from './lib/workflow.mjs';
 import { isOutbound } from './lib/outbound.mjs';
 import { Accounts } from './lib/accounts.mjs';
+import { MiniApp } from './lib/miniapp.mjs';
+import { Inbox } from './lib/inbox.mjs';
+import { ActionNotifications } from './lib/action-notifications.mjs';
 
 const base = dirname(fileURLToPath(import.meta.url));
 const opaque = () => randomBytes(32).toString('base64url');
@@ -35,11 +38,14 @@ async function body(req, limit = 16384) {
   } catch { throw new ApiError(400, 'invalid_json', 'A JSON object is required.'); }
 }
 
-export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, readTimeoutMs = 8000, accountConfig, accountOptions, startAccountWorker = true, retirementAdminToken = accountConfig?.adminToken }) {
+export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, readTimeoutMs = 8000, accountConfig, accountOptions, startAccountWorker = true, miniappOptions, inboxOptions, actionConfig, startActionWorker = true, retirementAdminToken = accountConfig?.adminToken }) {
   const origin = new URL(publicOrigin);
   const workflow = new Workflow(service, { readTimeoutMs });
   const sessions = new Map(), attempts = new Map();
   const accounts = new Accounts(service, accountConfig, accountOptions), signupAttempts = new Map();
+  const inbox = new Inbox(service, workflow, { ...inboxOptions, approvers: actionConfig?.approvers ?? inboxOptions?.approvers ?? [] });
+  const miniapp = new MiniApp(service, workflow, accounts, inbox, miniappOptions);
+  const actionNotifications = new ActionNotifications(inbox, actionConfig);
   const cookie = (value, clear = false) => `palpo_admin=${value}; Path=/; HttpOnly; SameSite=Strict${origin.protocol === 'https:' ? '; Secure' : ''}; Max-Age=${clear ? 0 : Math.floor(sessionTtl / 1000)}`;
   const error = (status, code, message) => { throw new ApiError(status, code, message); };
   const server = createServer(async (req, res) => {
@@ -90,6 +96,18 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
         error(405, 'method_not_allowed', 'Unsupported machine operation.');
       }
       if (req.headers.host !== origin.host) error(403, 'host_forbidden', 'Unexpected admin application host.');
+      if (path.startsWith('/_palpo/miniapp/v1/')) {
+        // Separate host-only bearer entry. Browser cookie/Origin/CSRF behavior
+        // below stays unchanged. A reverse proxy must preserve this fixed host.
+        if (req.headers.origin || req.headers.cookie) error(403, 'host_only', 'This endpoint accepts native host sessions only.');
+        if (req.method !== 'POST') error(405, 'method_not_allowed', 'Use POST.');
+        const input = await body(req, 16384);
+        const result = path === '/_palpo/miniapp/v1/session' ? await miniapp.open(req.headers.authorization, input)
+          : path === '/_palpo/miniapp/v1/call' ? await miniapp.call(req.headers.authorization, input)
+          : path === '/_palpo/miniapp/v1/disconnect' ? await miniapp.disconnect(req.headers.authorization)
+          : error(404, 'not_found', 'Mini-app endpoint not found.');
+        json(res, 200, result); return;
+      }
       const readSignal = req.method === 'GET' && ['/api/requests', '/api/catalog', '/api/projects'].includes(path) ? AbortSignal.timeout(readTimeoutMs) : undefined;
       const mutation = !['GET', 'HEAD'].includes(req.method);
       const pairMatch = /^\/api\/pair\/(hf_[a-f0-9]{32})$/.exec(path);
@@ -257,8 +275,12 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
     }
   });
   server.accounts = accounts;
+  server.miniapp = miniapp;
+  server.inbox = inbox;
+  server.actionNotifications = actionNotifications;
+  if (startActionWorker) server.once('listening', () => actionNotifications.start());
   if (startAccountWorker && accountConfig) server.once('listening', () => accounts.start());
-  server.once('close', () => { void accounts.stop(); });
+  server.once('close', () => { void accounts.stop(); void actionNotifications.stop(); });
   return server;
 }
 
@@ -287,18 +309,21 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const lockPath = `${databasePath}.lock`;
   const lock = await open(lockPath, 'wx', 0o600);
   await lock.writeFile(`${process.pid}\n`);
-  const store = new Store(databasePath);
+  let store;
+  try { store = new Store(databasePath); }
+  catch (error) { await lock.close(); await unlink(lockPath); throw error; }
   const service = new Service({ store, palpo: new Palpo(palpoUrl), serverName, callbackOrigins, transportOrigin, relayOrigin, outboundOptions });
   const accountConfig = process.env.PALPO_ACCOUNT_CONFIG ? JSON.parse(await readFile(process.env.PALPO_ACCOUNT_CONFIG, 'utf8')) : undefined;
   const retirementAdminToken = process.env.PALPO_AGENT_ADMIN_TOKEN_FILE
     ? (await readFile(process.env.PALPO_AGENT_ADMIN_TOKEN_FILE, 'utf8')).trim() : accountConfig?.adminToken;
-  const server = createApp({ service, publicOrigin, accountConfig, retirementAdminToken });
+  const actionConfig = process.env.PALPO_ACTION_CONFIG ? JSON.parse(await readFile(process.env.PALPO_ACTION_CONFIG, 'utf8')) : undefined;
+  const server = createApp({ service, publicOrigin, accountConfig, actionConfig, retirementAdminToken, inboxOptions: { requireProjectApproval: process.env.PALPO_PROJECT_APPROVAL_REQUIRED === '1' } });
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return; shuttingDown = true;
     const closed = new Promise(resolve => server.close(resolve)); server.closeIdleConnections();
     const deadline = setTimeout(() => server.closeAllConnections(), 8000); deadline.unref();
-    await Promise.all([server.accounts.stop(), closed]); clearTimeout(deadline);
+    await Promise.all([server.accounts.stop(), server.actionNotifications.stop(), closed]); clearTimeout(deadline);
     store.close(); await lock.close(); await unlink(lockPath); process.exit(0);
   };
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);

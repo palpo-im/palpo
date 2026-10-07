@@ -35,6 +35,7 @@ pub struct DbDelayedEvent {
     pub error: Option<JsonValue>,
     pub finalized_at: Option<i64>,
     pub created_at: i64,
+    pub sticky_duration_ms: Option<i32>,
 }
 
 #[derive(Insertable, Debug, Clone)]
@@ -53,6 +54,7 @@ pub struct NewDbDelayedEvent {
     pub running_since: i64,
     pub send_at: i64,
     pub created_at: i64,
+    pub sticky_duration_ms: Option<i32>,
 }
 
 /// Outcome of trying to schedule a delayed event.

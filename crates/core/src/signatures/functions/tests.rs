@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use assert_matches2::assert_matches;
 use serde_json::json;
+use strass::assert_let;
 
 use super::{
     servers_to_check_signatures, sign_json, to_canonical_json_string_for_signing,
@@ -236,11 +236,10 @@ fn verification_fails_if_missing_signatures_for_authorized_user() {
 
     let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V9);
 
-    assert_matches!(
-        verification_result,
+    assert_let!(
         Err(Error::Verification(
             VerificationError::NoSignaturesForEntity(server)
-        ))
+        )) = verification_result
     );
     assert_eq!(server, "domain-authorized");
 }
@@ -275,11 +274,10 @@ fn verification_fails_if_required_keys_are_not_given() {
     let public_key_map = BTreeMap::new();
     let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
 
-    assert_matches!(
-        verification_result,
+    assert_let!(
         Err(Error::Verification(
             VerificationError::NoPublicKeysForEntity(entity)
-        ))
+        )) = verification_result
     );
     assert_eq!(entity, "domain-sender");
 }
@@ -323,9 +321,8 @@ fn verify_event_fails_if_public_key_is_invalid() {
 
     let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
 
-    assert_matches!(
-        verification_result,
-        Err(Error::Verification(VerificationError::Signature(error)))
+    assert_let!(
+        Err(Error::Verification(VerificationError::Signature(error))) = verification_result
     );
     // dalek doesn't expose InternalError :(
     // https://github.com/dalek-cryptography/ed25519-dalek/issues/174
@@ -445,11 +442,10 @@ fn verify_event_fails_when_missing_key_and_event_is_signed_once_by_entity() {
     add_key_to_map(&mut public_key_map, "domain-sender", &key_pair_sender);
 
     let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
-    assert_matches!(
-        verification_result,
+    assert_let!(
         Err(Error::Verification(
             VerificationError::NoSupportedSignatureForEntity(entity)
-        ))
+        )) = verification_result
     );
     assert_eq!(entity, "domain-sender");
 }
@@ -532,11 +528,10 @@ fn verify_event_with_single_key_with_unknown_algorithm_should_not_accept_event()
     add_invalid_key_to_map(&mut public_key_map, "domain-sender", &key_pair_sender);
 
     let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
-    assert_matches!(
-        verification_result,
+    assert_let!(
         Err(Error::Verification(
             VerificationError::NoSupportedSignatureForEntity(entity)
-        ))
+        )) = verification_result
     );
     assert_eq!(entity, "domain-sender");
 }
@@ -574,11 +569,10 @@ fn verify_event_reports_invalid_base64_signature_path() {
     add_key_to_map(&mut public_key_map, "domain-sender", &key_pair_sender);
 
     let verification_result = verify_event(&public_key_map, &signed_event, &RoomVersionRules::V6);
-    assert_matches!(
-        verification_result,
+    assert_let!(
         Err(Error::Verification(
             VerificationError::InvalidBase64Signature { path, .. }
-        ))
+        )) = verification_result
     );
     assert_eq!(path, "signatures.domain-sender.ed25519:1");
 }
@@ -758,10 +752,7 @@ fn verify_canonical_json_bytes_unsupported_algorithm() {
         canonical_json.as_bytes(),
     )
     .unwrap_err();
-    assert_matches!(
-        err,
-        Error::Verification(VerificationError::UnsupportedAlgorithm)
-    );
+    assert_let!(Error::Verification(VerificationError::UnsupportedAlgorithm) = err);
 }
 
 #[test]
@@ -785,7 +776,7 @@ fn verify_canonical_json_bytes_wrong_key() {
         canonical_json.as_bytes(),
     )
     .unwrap_err();
-    assert_matches!(err, Error::Verification(VerificationError::Signature(_)));
+    assert_let!(Error::Verification(VerificationError::Signature(_)) = err);
 }
 
 fn policy_signature_test_event() -> CanonicalJsonObject {
@@ -822,9 +813,8 @@ fn verify_policy_server_signature_succeeds_with_policy_server_signature() {
         Base64::new(key_pair.public_key().to_vec()),
     );
 
-    assert_matches!(
-        verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6),
-        Ok(())
+    assert_let!(
+        Ok(()) = verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6)
     );
 }
 
@@ -840,9 +830,9 @@ fn verify_policy_server_signature_fails_with_invalid_policy_server_signature() {
         Base64::new(configured_key_pair.public_key().to_vec()),
     );
 
-    assert_matches!(
-        verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6),
-        Err(Error::Verification(VerificationError::Signature(_)))
+    assert_let!(
+        Err(Error::Verification(VerificationError::Signature(_))) =
+            verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6)
     );
 }
 
@@ -859,10 +849,7 @@ fn verify_policy_server_signature_fails_when_signature_is_missing() {
 
     let err = verify_policy_server_signature(&room_policy, &signed_event, &RoomVersionRules::V6)
         .unwrap_err();
-    assert_matches!(
-        err,
-        Error::Verification(VerificationError::NoSignaturesForEntity(entity))
-    );
+    assert_let!(Error::Verification(VerificationError::NoSignaturesForEntity(entity)) = err);
     assert_eq!(entity, "domain-policy-server");
 }
 
@@ -883,9 +870,8 @@ fn verify_policy_server_signature_allows_policy_configuration_event() {
         Base64::new(key_pair.public_key().to_vec()),
     );
 
-    assert_matches!(
-        verify_policy_server_signature(&room_policy, &event, &RoomVersionRules::V6),
-        Ok(())
+    assert_let!(
+        Ok(()) = verify_policy_server_signature(&room_policy, &event, &RoomVersionRules::V6)
     );
 }
 
@@ -930,17 +916,17 @@ fn verify_policy_server_signature_covers_the_redacted_event() {
     };
 
     let signed_as_sent = with_signature(&event, sign_with(&event));
-    assert_matches!(
-        verify_policy_server_signature(&room_policy, &signed_as_sent, &RoomVersionRules::V6),
-        Err(Error::Verification(VerificationError::Signature(_)))
+    assert_let!(
+        Err(Error::Verification(VerificationError::Signature(_))) =
+            verify_policy_server_signature(&room_policy, &signed_as_sent, &RoomVersionRules::V6)
     );
 
     let redacted =
         crate::serde::canonical_json::redact(event.clone(), &RoomVersionRules::V6.redaction, None)
             .unwrap();
     let signed_redacted = with_signature(&event, sign_with(&redacted));
-    assert_matches!(
-        verify_policy_server_signature(&room_policy, &signed_redacted, &RoomVersionRules::V6),
-        Ok(())
+    assert_let!(
+        Ok(()) =
+            verify_policy_server_signature(&room_policy, &signed_redacted, &RoomVersionRules::V6)
     );
 }
