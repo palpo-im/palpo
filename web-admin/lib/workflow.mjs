@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ApiError, Palpo, publicFleet } from './service.mjs';
-import { lifecycleStatus } from './agent-lifecycle.mjs';
 import { isOutbound, outboundProven, outboundOnline, outboundStatusCurrent } from './outbound.mjs';
 
 const now = () => new Date().toISOString();
@@ -60,14 +59,6 @@ export class Workflow {
     if (!Array.isArray(data.offers) || data.offers.some(offer => !offer || typeof offer !== 'object' || Array.isArray(offer)
       || (Array.isArray(offer.resources) && offer.resources.some(resource => !resource || typeof resource !== 'object' || Array.isArray(resource))))
       || !data.approvalBotMxid || !/^@[^\s:]+:.+$/.test(data.approvalBotMxid)) fail(409, 'provider_capability_missing', 'Hagency has not published its roles and approval identity.');
-    if (data.projectWorkflow !== undefined) {
-      const support = data.projectWorkflow;
-      if (!isOutbound(fleet) || !support || !['registrationGeneration,v', 'registrationGeneration,unusedRelease,v'].includes(Object.keys(support).sort().join(','))
-        || (Object.hasOwn(support, 'unusedRelease') && support.unusedRelease !== true)
-        || support.v !== 1 || !Number.isSafeInteger(support.registrationGeneration) || support.registrationGeneration < 1
-        || (fleet.projectWorkflow && support.registrationGeneration < fleet.projectWorkflow.registrationGeneration)) fail(409, 'project_workflow_mismatch', 'The project workflow capability must identify the current registration.');
-      fleet.projectWorkflow = { ...support, transportGeneration: fleet.transport.generation };
-    } else delete fleet.projectWorkflow;
     // v1 providers may return only published roles, without a flag. When a
     // provider includes configured-but-withdrawn roles, honor explicit false.
     fleet.capabilities = { v: 1, fleetId: data.fleetId, serverName: data.serverName, representativeMxid: data.representativeMxid, approvalBotMxid: data.approvalBotMxid, offers: data.offers.filter(offer => offer.published !== false).map(offer => ({ role: field(offer.role, 'Role', 80), ...(typeof offer.description === 'string' ? { description: offer.description.slice(0, 500) } : {}),
@@ -231,7 +222,7 @@ export class Workflow {
     if (digest(members) !== digest(allowed)) fail(409, 'owner_dm_join_pending', 'Waiting for the Hagency approval identity to join the private owner room.');
     return true;
   }
-  async createProject(input, actor, token, { proposal = false } = {}) {
+  async createProject(input, actor, token) {
     const fleet = this.fleet(field(input.fleetId, 'Fleet ID'));
     const requestId = key(input.requestId, 'Project operation ID'), name = field(input.name, 'Project name');
     const existingRoom = typeof input.roomId === 'string' && input.roomId.trim() ? field(input.roomId, 'Room ID', 255) : null;
@@ -239,7 +230,7 @@ export class Workflow {
     const fingerprint = digest({ actor, fleetId: fleet.id, name, existingRoom });
     let project = this.store.state.projects[id];
     if (project && project.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This project operation ID is already bound to different content.');
-    const grant = this.projectGrant?.(input, actor, project, { proposal });
+    const grant = this.projectGrant?.(input, actor, project);
     const capabilities = await this.capabilities(fleet);
     if (!project) {
       project = this.store.state.projects[id] = { id, requestId, fingerprint, fleetId: fleet.id, name, ownerMxid: actor, approvalBotMxid: capabilities.approvalBotMxid, authVersion: 1, createdAt: now(), roomId: existingRoom, state: 'creating', room: { aliasLocalpart: `hf_${id}` }, ownerDm: { aliasLocalpart: `hf_${id}_approvals` } };
@@ -258,8 +249,8 @@ export class Workflow {
       if (!['join', 'invite'].includes(repMembership)) await this.palpo.call(`/_matrix/client/v3/rooms/${enc(project.roomId)}/invite`, token, { method: 'POST', body: { user_id: fleet.representativeMxid } });
       await this.rep(fleet, `/_matrix/client/v3/join/${enc(project.roomId)}`, { method: 'POST', body: {} });
       const dm = await this.ensureRoom(project.ownerDm, { name: `${name} · Private approvals`, actor, token, invite: [project.approvalBotMxid], encrypted: true, binding: { v: 1, projectId: id, purpose: 'owner_approval', ownerMxid: actor, approvalBotMxid: project.approvalBotMxid } });
-      project.ownerDmRoomId = dm.roomId; project.state = proposal ? 'awaiting_approval' : 'registered'; project.lastError = null;
-      this.store.audit(actor, 'project.register', fleet.id, id, project.state);
+      project.ownerDmRoomId = dm.roomId; project.state = 'registered'; project.lastError = null;
+      this.store.audit(actor, 'project.register', fleet.id, id, 'registered');
       return await this.projectView(project, actor, token);
     } catch (error) { project.lastError = { code: error.code ?? 'internal_error', at: now() }; project.state = 'partial'; this.store.audit(actor, 'project.register', fleet.id, id, 'partial'); throw error; }
   }
@@ -270,9 +261,7 @@ export class Workflow {
     if (project.ownerMxid !== actor) delete view.ownerDmRoomId;
     try {
       await this.validateProjectRoom(project.roomId, actor, token, project.ownerMxid, true, signal);
-      const allocation = this.projectAllocation?.(project);
-      if (allocation) view.allocation = allocation;
-      view.canRequest = allocation ? allocation.ready : true;
+      view.canRequest = true;
       if (actor === project.ownerMxid) {
         await this.validateOwnerDm(project, token, signal); view.ownerApproval = 'ready';
       } else view.ownerApproval = 'verified_by_provider_on_submission';
@@ -312,14 +301,13 @@ export class Workflow {
       }
       agentDefinition = { name, resourceId: definition.resourceId };
     }
+    this.resourceGrant?.(project, agentDefinition?.resourceId);
     const payload = { v: 1, fleetId: fleet.id, requestId, requesterMxid: actor, sourceRoomId: fleet.reception.roomId, targetProjectId: project.id, targetRoomId: project.roomId, ownerMxid: project.ownerMxid, ownerDmRoomId: project.ownerDmRoomId, role, requestedTokens, ratePerDay, authVersion: project.authVersion,
       ...(agentDefinition ? { agentDefinition } : {}) };
     const id = `${fleet.id}:${requestId}`, fingerprint = digest(payload);
     let request = this.store.state.requests[id];
     if (request && request.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This request ID is already bound to different content.');
-    this.resourceGrant?.(project, agentDefinition?.resourceId, request);
     if (!request) {
-      if (project.resourceGrant?.v === 1) this.agentRequestPlan?.(project, payload);
       const offer = capabilities.offers.find(offer => offer.role === role);
       if (!offer) fail(409, 'role_unavailable', 'This role is not currently published by the Hagency.');
       const resource = agentDefinition && offer.resources?.find(resource => resource.id === agentDefinition.resourceId);
@@ -328,8 +316,7 @@ export class Workflow {
         && !['ended', 'rejected'].includes(other.state) && other.payload.agentDefinition?.name === agentDefinition.name)) {
         fail(409, 'agent_name_conflict', 'This project already has an Agent request with that name. Use a distinct name for the next Agent.');
       }
-      request = this.store.state.requests[id] = { id, requestId, fleetId: fleet.id, projectId: project.id, requesterMxid: actor, payload, fingerprint,
-        ...(project.resourceGrant?.v === 1 ? { workflowVersion: 1 } : {}), state: 'sending', createdAt: now() };
+      request = this.store.state.requests[id] = { id, requestId, fleetId: fleet.id, projectId: project.id, requesterMxid: actor, payload, fingerprint, state: 'sending', createdAt: now() };
       if (resource) request.resource = { ...resource };
       this.store.audit(actor, 'request.submit', fleet.id, requestId, 'started');
     }
@@ -345,10 +332,6 @@ export class Workflow {
         const event = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(payload.sourceRoomId)}/send/com.hagency.engagement.request.v1/${enc(`request_${digest({ fleetId: fleet.id, actor, requestId })}`)}`, token, { method: 'PUT', body: eventContent });
         if (!event.event_id) fail(502, 'request_event_missing', 'Matrix did not acknowledge the request event.');
         request.sourceEventId = event.event_id; this.store.save();
-      }
-      if (request.workflowVersion === 1) {
-        if (!this.agentRequest) fail(503, 'project_workflow_unavailable', 'Project agent approval is unavailable.');
-        return this.agentRequest(request, project);
       }
       if (isOutbound(fleet)) {
         this.service.outbound.enqueue(fleet, 'work', 'request', requestId, { ...payload, sourceEventId: request.sourceEventId });
@@ -372,7 +355,6 @@ export class Workflow {
     const fields = ['v', 'fleetId', 'requestId', 'engagementId', 'state', 'targetProjectId', 'targetRoomId', 'sourceRoomId', 'sourceEventId', 'role', 'requestedTokens', 'allocatedTokens', 'agentMxid', 'bound', 'ready', 'decidedAt', 'endedAt'];
     request.provider = Object.fromEntries(fields.filter(key => result[key] !== undefined).map(key => [key, result[key]]));
     if (request.payload.agentDefinition) request.provider.agentDefinition = structuredClone(request.payload.agentDefinition);
-    request.provider.lifecycle = lifecycleStatus(result.lifecycle, result);
     request.provider.serving = result.serving && typeof result.serving === 'object' ? Object.fromEntries(['framework', 'model', 'reasoning', 'tier'].filter(key => typeof result.serving[key] === 'string').map(key => [key, result.serving[key].slice(0, 128)])) : null;
     if (result.fulfillment) request.provider.fulfillment = { phase: result.fulfillment.phase, incomplete: result.fulfillment.incomplete, ...(typeof result.fulfillment.error === 'string' ? { error: result.fulfillment.error.slice(0, 500) } : {}) };
     request.state = result.state;
@@ -381,7 +363,6 @@ export class Workflow {
       request.state = 'ended'; request.provider.state = 'ended'; request.provider.ready = false;
       request.provider.bound = false; request.provider.endedAt = request.retirement.endedAt;
     }
-    if (request.removalActionId) { request.state = 'retiring'; request.usable = false; request.provider.ready = false; }
     request.observedAt = now(); if (persist) this.store.save();
   }
   requestView(request, actor) {
@@ -390,7 +371,7 @@ export class Workflow {
       ...(payload.agentDefinition ? { agentDefinition: payload.agentDefinition } : {}),
       ...(actor === payload.ownerMxid ? { ownerDmRoomId: payload.ownerDmRoomId } : {}) };
   }
-  async requests(actor, token, signal = AbortSignal.timeout(this.readTimeoutMs), onlyRequestId = null) {
+  async requests(actor, token, signal = AbortSignal.timeout(this.readTimeoutMs)) {
     const version = this.service.mutationVersion;
     // Poll copies outside the mutation queue. Commit synchronously only while no
     // mutation is running and all authority/status bindings still match. No
@@ -398,8 +379,7 @@ export class Workflow {
     const authority = fleet => fleet && { id: fleet.id, ownerMxid: fleet.ownerMxid, state: fleet.state,
       installation: fleet.installation, callbackUrl: fleet.callbackUrl, registration: fleet.registration,
       connection: fleet.connection, representativeMxid: fleet.representativeMxid };
-    const snapshots = Object.values(this.store.state.requests).filter(request => (onlyRequestId === null || request.id === onlyRequestId)
-      && (request.requesterMxid === actor || this.store.state.projects[request.projectId]?.ownerMxid === actor))
+    const snapshots = Object.values(this.store.state.requests).filter(request => request.requesterMxid === actor || this.store.state.projects[request.projectId]?.ownerMxid === actor)
       .map(request => ({ request: structuredClone(request), requestBefore: digest(request),
         project: structuredClone(this.store.state.projects[request.projectId]), fleet: structuredClone(this.store.state.fleets[request.fleetId]) }));
     const poll = async ({ request, requestBefore, project, fleet }) => {
@@ -445,11 +425,9 @@ export class Workflow {
         || digest(currentProject) !== digest(project) || digest(authority(currentFleet)) !== digest(authority(fleet))) {
         return this.requestView(failed(current, signal.aborted ? 'read_timeout' : 'status_refresh_pending'), actor);
       }
-      this.store.atomic(() => {
-        Object.assign(current, request);
-        if (managedAgent && request.usable) currentFleet.agents[managedAgent.id] ??= managedAgent;
-        this.agentLifecycle?.(current);
-      });
+      Object.assign(current, request);
+      if (managedAgent && request.usable) currentFleet.agents[managedAgent.id] ??= managedAgent;
+      this.store.save();
       return this.requestView(current, actor);
     };
     const output = [];

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { ApiError } from './service.mjs';
-import { isQuietAt } from './notification-preferences.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const enc = encodeURIComponent;
@@ -25,19 +24,14 @@ export class ActionNotifications {
     const user = await this.palpo.user(actor, this.config.adminToken);
     return !!user?.admin && !user.deactivated && !user.locked && !user.appservice_id;
   }
-  async room(actor, { create = true, joined = false } = {}) {
-    if (!this.config) throw new ApiError(503, 'action_room_unavailable', 'My Actions rooms are not configured. Use the Inbox.');
+  async room(actor) {
     const { botMxid, botToken } = this.config;
-    const identity = await this.palpo.call('/_matrix/client/v3/account/whoami', botToken).catch(() => {
-      throw new ApiError(503, 'action_bot_unavailable', 'The notification bot identity could not be verified.');
-    });
-    if (identity.user_id !== botMxid || identity.is_guest) throw new ApiError(503, 'action_bot_unavailable', 'The notification bot identity could not be verified.');
+    const identity = await this.palpo.call('/_matrix/client/v3/account/whoami', botToken);
+    if (identity.user_id !== botMxid || identity.is_guest) fail('The notification bot identity could not be verified.');
     let binding = this.inbox.state.rooms[actor];
-    const expected = { v: 1, purpose: 'my_actions', ownerMxid: actor, botMxid, serverName: this.service.serverName,
-      ...(binding?.revision ? { revision: binding.revision } : {}) };
+    const expected = { v: 1, purpose: 'my_actions', ownerMxid: actor, botMxid, serverName: this.service.serverName };
     if (binding && binding.botMxid !== botMxid) fail('The saved My Actions room belongs to a different bot.');
-    if (!binding?.roomId && !create) return null;
-    if (!binding?.roomId) {
+    if (!binding) {
       const alias = `palpo_actions_${hash(JSON.stringify(expected)).slice(0, 24)}`;
       let roomId;
       try { roomId = (await this.palpo.call(`/_matrix/client/v3/directory/room/${enc('#' + alias + ':' + this.service.serverName)}`, botToken)).room_id; }
@@ -75,106 +69,35 @@ export class ActionNotifications {
       || get('m.room.member', botMxid)?.membership !== 'join'
       || !['join', 'invite'].includes(get('m.room.member', actor)?.membership)
       || state.some(e => e.type === 'm.room.member' && ['join', 'invite'].includes(e.content?.membership) && ![actor, botMxid].includes(e.state_key))) fail('Restore the private My Actions room settings and membership. Pending actions remain in the Inbox.');
-    if (joined && get('m.room.member', actor)?.membership !== 'join') fail('Join My Actions to open its board. Pending actions remain in the Inbox.');
     return binding.roomId;
-  }
-  // Read-only lookup. A matching name, Matrix event or cached binding is never
-  // sufficient to mount a board. Revalidate bot identity, privacy and membership.
-  async get(actor, roomId) {
-    if (!this.config || !this.inbox.state.rooms[actor] || (roomId && this.inbox.state.rooms[actor].roomId !== roomId)) return { room: null };
-    const binding = this.inbox.state.rooms[actor];
-    const verified = await this.room(actor, { create: false, joined: true });
-    if (this.inbox.state.rooms[actor] !== binding) fail('My Actions changed during verification. Reopen the room.');
-    if (!verified) return { room: null };
-    return { room: { v: 1, purpose: 'my_actions', revision: this.inbox.state.rooms[actor].revision ?? 1, account: actor, roomId: verified,
-      botMxid: this.config.botMxid, serverName: this.service.serverName } };
-  }
-  // Only an explicit app operation may join the account to its private room.
-  // Repeating it recovers a lost reply and never creates a second valid room.
-  async ensure(actor, token) {
-    let roomId;
-    try { roomId = await this.room(actor); }
-    catch (cause) {
-      if (!this.inbox.state.rooms[actor]?.roomId || !(cause.code === 'action_room_not_private' || [403, 404].includes(cause.status))) throw cause;
-      // Leaving disables delivery. Only this explicit setup creates a new private
-      // room; never re-invite into a room whose privacy could have been lost.
-      this.inbox.store.atomic(() => {
-        const previous = this.inbox.state.rooms[actor];
-        this.inbox.state.rooms[actor] = { botMxid: this.config.botMxid, revision: (previous.revision ?? 1) + 1, roomId: null };
-        for (const notice of Object.values(this.inbox.state.notices)) if (notice.recipient === actor && notice.delivery) {
-          notice.delivery = null; notice.dueAt = this.now();
-        }
-      });
-      roomId = await this.room(actor);
-    }
-    const state = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/state`, this.config.botToken);
-    if (state.find(e => e.type === 'm.room.member' && e.state_key === actor)?.content?.membership !== 'join') {
-      await this.palpo.call(`/_matrix/client/v3/join/${enc(roomId)}`, token, { method: 'POST', body: {} });
-    }
-    return (await this.get(actor, roomId)).room;
   }
   async tick() {
     if (!this.config) return;
     await this.service.palpo.requireAdmin(this.config.adminToken);
-    const at = this.now(), settings = new Map();
-    const due = Object.values(this.inbox.state.notices).filter(n => {
-      if (n.cancelled || n.finished || n.dueAt > at || (n.snoozedUntil ?? 0) > at) return false;
-      if (!settings.has(n.recipient)) {
-        const prefs = this.inbox.preferences.get(n.recipient);
-        settings.set(n.recipient, { ...prefs, quiet: isQuietAt(prefs.quietHours, at) });
-      }
-      const prefs = settings.get(n.recipient);
-      return prefs.enabled && !prefs.quiet && (n.delivered === 0 || prefs.remindersEnabled);
-    }).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, 20);
+    const due = Object.values(this.inbox.state.notices).filter(n => !n.cancelled && !n.finished && n.dueAt <= this.now()).slice(0, 20);
     for (const notice of due) {
       try {
         const row = this.inbox.state.records[notice.actionId];
-        const admin = this.inbox.canApproveProjects(notice.recipient, true) && await this.isAdmin(notice.recipient);
+        const admin = this.config.approvers.includes(notice.recipient) && await this.isAdmin(notice.recipient);
         // Recheck canonical state and recipient authority just before sending.
-        if (!row || row.revision !== notice.revision || !this.inbox.canRead(row, notice.recipient, admin)
+        if (!row || row.revision !== notice.revision || (row.ownerMxid !== notice.recipient && !admin)
           || (notice.delivered > 0 && !this.inbox.pending(row, notice.recipient, admin))) {
           this.inbox.store.atomic(() => { notice.cancelled = true; }); continue;
         }
-        if (this.inbox.agents.manages(row)) {
-          const person = await this.palpo.user(notice.recipient, this.config.adminToken);
-          if (!person || person.deactivated || person.locked || person.appservice_id) {
-            this.inbox.store.atomic(() => { notice.cancelled = true; }); continue;
-          }
-        }
         const roomId = await this.room(notice.recipient);
-        // Room/authority checks await Matrix; a quiet-hours boundary may have
-        // passed since this tick selected its batch.
-        const prefs = this.inbox.preferences.get(notice.recipient);
-        if (!prefs.enabled || (notice.delivered > 0 && !prefs.remindersEnabled) || isQuietAt(prefs.quietHours, this.now())) continue;
         const pending = this.inbox.pending(row, notice.recipient, admin);
-        const intervals = this.inbox.preferences.intervals(notice.recipient, this.intervals);
-        // Persist the exact envelope before attempting delivery. An ambiguous
-        // response retry cannot change its body or transaction across a restart.
-        if (!notice.delivery) {
-          const label = pending ? 'A Palpo action needs your attention.' : 'A Palpo action has an update.';
-          const route = `${new URL(this.config.homeserverOrigin).origin}/_palpo/miniapp/action/${row.id}`;
-          this.inbox.store.atomic(() => {
-            notice.delivery = { roomId, transactionId: notice.id + '_' + notice.delivered + '_room_' + (this.inbox.state.rooms[notice.recipient].revision ?? 1), content: {
-              msgtype: pending ? 'm.text' : 'm.notice', body: `${label}\nOpen in Rinx: ${route}`,
-              format: 'org.matrix.custom.html', formatted_body: `${label} <a href="${route}">Open action</a>`,
-              'm.mentions': { user_ids: pending ? [notice.recipient] : [] },
-              'im.palpo.action.v1': { v: 1, id: row.id, revision: row.revision, appId: 'im.palpo.operations', ownerMxid: notice.recipient, serverName: this.service.serverName },
-            } };
-          });
-        }
-        if (notice.delivery.roomId !== roomId) fail('The action room changed during a pending delivery.');
-        const result = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/send/m.room.message/${enc(notice.delivery.transactionId)}`,
-          this.config.botToken, { method: 'PUT', body: notice.delivery.content });
+        const label = pending ? 'A Palpo action needs your attention.' : 'A Palpo action has an update.';
+        const route = `${new URL(this.config.homeserverOrigin).origin}/_palpo/miniapp/action/${row.id}`;
+        const result = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/send/m.room.message/${enc(notice.id + '_' + notice.delivered)}`, this.config.botToken, { method: 'PUT', body: {
+          msgtype: 'm.notice', body: `${label}\nOpen in Rinx: ${route}`,
+          format: 'org.matrix.custom.html', formatted_body: `${label} <a href="${route}">Open action</a>`,
+          'im.palpo.action.v1': { v: 1, id: row.id, revision: row.revision, appId: 'im.palpo.operations', ownerMxid: notice.recipient, serverName: this.service.serverName },
+        } });
         if (typeof result.event_id !== 'string') throw new Error('No Matrix receipt');
         this.inbox.store.atomic(() => {
           notice.eventId = result.event_id; notice.roomId = roomId; notice.delivered++; notice.attempt = 0; notice.lastError = null;
-          notice.lastDeliveredAt = this.now(); notice.snoozedUntil = null; notice.delivery = null;
-          // One delivery covers every cadence point missed during downtime,
-          // retries, snooze or quiet hours. Never replay an overdue burst.
-          notice.reminderCursor = Math.max(notice.reminderCursor ?? 0,
-            intervals.filter(delay => notice.createdAt + delay <= this.now()).length);
-          notice.finished = !pending || notice.reminderCursor >= intervals.length;
-          notice.dueAt = notice.createdAt + (intervals[notice.reminderCursor] ?? 0);
+          notice.finished = !pending || notice.delivered > this.intervals.length;
+          notice.dueAt = notice.createdAt + (this.intervals[notice.delivered - 1] ?? 0);
         });
       } catch (cause) {
         this.inbox.store.atomic(() => {

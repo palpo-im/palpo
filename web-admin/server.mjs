@@ -10,7 +10,6 @@ import { isOutbound } from './lib/outbound.mjs';
 import { Accounts } from './lib/accounts.mjs';
 import { MiniApp } from './lib/miniapp.mjs';
 import { Inbox } from './lib/inbox.mjs';
-import { ProjectCommands } from './lib/project-commands.mjs';
 import { ActionNotifications } from './lib/action-notifications.mjs';
 
 const base = dirname(fileURLToPath(import.meta.url));
@@ -45,12 +44,8 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
   const sessions = new Map(), attempts = new Map();
   const accounts = new Accounts(service, accountConfig, accountOptions), signupAttempts = new Map();
   const inbox = new Inbox(service, workflow, { ...inboxOptions, approvers: actionConfig?.approvers ?? inboxOptions?.approvers ?? [] });
-  const projectCommands = new ProjectCommands(service, inbox, { adminToken: actionConfig?.adminToken ?? accountConfig?.adminToken });
-  service.outbound.projectCommands = projectCommands;
-  inbox.projectCommands = projectCommands;
   const miniapp = new MiniApp(service, workflow, accounts, inbox, miniappOptions);
   const actionNotifications = new ActionNotifications(inbox, actionConfig);
-  miniapp.actionNotifications = actionNotifications;
   const cookie = (value, clear = false) => `palpo_admin=${value}; Path=/; HttpOnly; SameSite=Strict${origin.protocol === 'https:' ? '; Secure' : ''}; Max-Age=${clear ? 0 : Math.floor(sessionTtl / 1000)}`;
   const error = (status, code, message) => { throw new ApiError(status, code, message); };
   const server = createServer(async (req, res) => {
@@ -60,7 +55,7 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
     res.setHeader('Referrer-Policy', 'no-referrer');
     try {
       const url = new URL(req.url, origin), path = url.pathname;
-      const machine = /^\/api\/fleet\/v2\/(hf_[a-f0-9]{32})\/(poll|ack|updates|retire-agent|authorize-command)$/.exec(path);
+      const machine = /^\/api\/fleet\/v2\/(hf_[a-f0-9]{32})\/(poll|ack|updates|retire-agent)$/.exec(path);
       const relay = /^\/api\/relay\/v2\/(hf_[a-f0-9]{32})\/(?:_matrix\/app\/v1\/)?(transactions|users|rooms)\/([^/]+)$/.exec(path);
       if (machine || relay) {
         const expectedOrigin = machine ? service.transportOrigin : service.relayOrigin;
@@ -77,11 +72,6 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
           const input = await body(req, 16384);
           const result = await service.serial(() => service.retireAllocatedAgent(
             service.outbound.authenticate(fleet.id, token, generation), input, retirementAdminToken));
-          json(res, 200, result); return;
-        }
-        if (machine?.[2] === 'authorize-command' && req.method === 'POST') {
-          const input = await body(req, 16384);
-          const result = await service.serial(() => projectCommands.authorize(service.outbound.authenticate(fleet.id, token, generation), input));
           json(res, 200, result); return;
         }
         if (machine && req.method === 'POST' && ['ack', 'updates'].includes(machine[2])) {
@@ -287,7 +277,6 @@ export function createApp({ service, publicOrigin, sessionTtl = 30 * 60 * 1000, 
   server.accounts = accounts;
   server.miniapp = miniapp;
   server.inbox = inbox;
-  server.projectCommands = projectCommands;
   server.actionNotifications = actionNotifications;
   if (startActionWorker) server.once('listening', () => actionNotifications.start());
   if (startAccountWorker && accountConfig) server.once('listening', () => accounts.start());
@@ -328,7 +317,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const retirementAdminToken = process.env.PALPO_AGENT_ADMIN_TOKEN_FILE
     ? (await readFile(process.env.PALPO_AGENT_ADMIN_TOKEN_FILE, 'utf8')).trim() : accountConfig?.adminToken;
   const actionConfig = process.env.PALPO_ACTION_CONFIG ? JSON.parse(await readFile(process.env.PALPO_ACTION_CONFIG, 'utf8')) : undefined;
-  const server = createApp({ service, publicOrigin, accountConfig, actionConfig, retirementAdminToken, inboxOptions: { projectApprover: process.env.PALPO_PROJECT_APPROVER, requireProjectApproval: process.env.PALPO_PROJECT_APPROVAL_REQUIRED === '1' } });
+  const server = createApp({ service, publicOrigin, accountConfig, actionConfig, retirementAdminToken, inboxOptions: { requireProjectApproval: process.env.PALPO_PROJECT_APPROVAL_REQUIRED === '1' } });
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return; shuttingDown = true;

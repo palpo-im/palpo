@@ -21,12 +21,6 @@ export function fixture({ path = ':memory:', bypassRetirement = false, deliverPr
     calls.push({ path, search: url.search, method, token, body });
     const actingService = [...registrations.values()].find(reg => reg.as_token === token && !reg.disabled);
     const actor = actors.get(token) ?? (token === 'admin-secret' ? '@admin:example.test' : token === 'owner-secret' ? '@owner:example.test' : token === 'other-secret' ? '@other:example.test' : actingService ? url.searchParams.get('user_id') : null);
-    const source = /^\/_matrix\/client\/v3\/rooms\/([^/]+)\/event\/([^/]+)$/.exec(path);
-    if (source) {
-      const room = rooms.get(source[1]), event = events.get(source[2]);
-      if (!room || !actor || member(room, actor) !== 'join') return response(403, { errcode: 'M_FORBIDDEN' });
-      return event?.room_id === source[1] ? response(200, event) : missing();
-    }
     if (path.startsWith('/api/fleet/v1')) {
       const reg = [...registrations.values()].find(reg => reg.hs_token === token && !reg.disabled);
       if (!reg) return response(401, { code: 'unauthorized' });

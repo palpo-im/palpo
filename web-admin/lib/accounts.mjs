@@ -32,31 +32,6 @@ export class Accounts {
   publicConfig() { return { enabled: !!this.config, ready: this.ready, serverName: this.service.serverName }; }
   adminView() { return { ...this.publicConfig(), roomId: this.state?.roomId ?? null, botMxid: this.config?.botMxid ?? null, lastError: this.lastError,
     requests: Object.values(this.state?.requests ?? {}).map(row => ({ ...this.view(row), displayName: row.displayName, reason: row.reason, decidedBy: row.decidedBy ?? null, lastError: row.lastError ?? null })) }; }
-  miniappView(actor) {
-    const value = this.adminView();
-    return { ...value, requests: value.requests.map(row => ({ ...row,
-      canOpen: !!this.config?.approvers.includes(actor) && !!this.state?.roomId && !!this.state.requests[row.id].sourceEventId })) };
-  }
-  async openApproval(id, actor) {
-    if (!this.config?.approvers.includes(actor) || !await this.admin(actor))
-      fail(403, 'account_approver_required', 'Only a configured, current account approver can open this request.');
-    const row = this.state.requests[id];
-    if (!row?.sourceEventId || !this.state.roomId) fail(409, 'account_notification_pending', 'The original approval message is not ready. Refresh shortly.');
-    const roomId = this.state.roomId, eventId = row.sourceEventId, digest = row.digest;
-    const state = await this.room();
-    if (!state.some(e => e.type === 'm.room.member' && e.state_key === actor && ['join', 'invite'].includes(e.content?.membership)))
-      fail(403, 'account_room_membership_required', 'An invitation to the account approval room is required.');
-    const event = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(roomId)}/event/${enc(eventId)}`, this.config.botToken);
-    const request = event.content?.['org.octos.approval_request'];
-    if (event.event_id !== eventId || event.type !== 'm.room.message' || event.sender !== this.config.botMxid
-      || request?.request_id !== id || request.tool_name !== 'palpo.register_account' || request.tool_args_digest !== digest
-      || !Array.isArray(request.authorized_approvers) || !request.authorized_approvers.includes(actor))
-      fail(409, 'account_source_changed', 'The original account approval message could not be verified.');
-    if (!await this.admin(actor)) fail(403, 'account_approver_required', 'Account approver authority has changed.');
-    if (this.state.roomId !== roomId || this.state.requests[id]?.sourceEventId !== eventId || this.state.requests[id]?.digest !== digest)
-      fail(409, 'account_source_changed', 'This request has a newer approval message. Refresh and open it again.');
-    return { v: 1, requestId: id, account: actor, roomId, eventId };
-  }
   view(row) { return { id: row.id, userId: row.userId, status: row.status, createdAt: row.createdAt, expiresAt: row.expiresAt }; }
   seal(password, id) {
     const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', this.key, iv); cipher.setAAD(Buffer.from(id));
@@ -112,7 +87,7 @@ export class Accounts {
   status(id, receipt) { const row = this.get(id, receipt); this.expire(); return this.view(row); }
   async admin(mxid) {
     const user = await this.palpo.user(mxid, this.config.adminToken);
-    return !!user && user.admin === true && !user.locked && !user.deactivated && !user.is_guest && !user.appservice_id;
+    return !!user && user.admin === true && !user.deactivated && !user.is_guest && !user.appservice_id;
   }
   async room() {
     const state = await this.palpo.call(`/_matrix/client/v3/rooms/${enc(this.state.roomId)}/state`, this.config.botToken);
@@ -178,7 +153,7 @@ export class Accounts {
     this.ready = true;
   }
   card(row) {
-    return { msgtype: 'm.text', body: `Account request: ${row.userId}\nName: ${row.displayName}\nReason: ${row.reason}\nApprove creates an ordinary Matrix account. Project and agent resources require their separate approvals.`,
+    return { msgtype: 'm.text', body: `Account request: ${row.userId}\nName: ${row.displayName}\nReason: ${row.reason}\nApprove creates an ordinary Matrix account. Agent resources still require Hagency approval.`,
       'org.octos.approval_request': { request_id: row.id, tool_name: 'palpo.register_account', tool_args_digest: row.digest,
         title: `Register ${row.userId}`, summary: `${row.displayName}\n${row.reason}\nOrdinary user account; no administrator privileges.`,
         risk_level: 'normal', authorized_approvers: this.config.approvers, expires_at: new Date(row.expiresAt).toISOString(), on_timeout: 'notify' },

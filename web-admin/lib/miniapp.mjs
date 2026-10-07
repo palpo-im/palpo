@@ -10,7 +10,6 @@ export const SERVICES = Object.freeze({
   'palpo.catalog.list': 'Browse published Hagency resources',
   'palpo.projects.list': 'Read projects your Matrix account can access',
   'palpo.projects.create': 'Create projects as your Matrix account',
-  'palpo.requests.open': 'Open a ready agent’s project room in Rinx',
   'palpo.requests.list': 'Read your agent requests and their progress',
   'palpo.requests.create': 'Request agents for projects you can access',
   'palpo.fleets.list': 'Read fleets you own or administer',
@@ -27,18 +26,12 @@ export const SERVICES = Object.freeze({
   'palpo.agents.retire': 'Retire a managed Matrix identity',
   'palpo.activity.list': 'Read the Palpo administrator audit history',
   'palpo.accounts.list': 'Read pending account signup requests',
-  'palpo.accounts.open': "Open an authorized signup request in Rinx's trusted approval room",
   'palpo.inbox.list': 'Read your pending Palpo actions and history',
-  'palpo.inbox.submit': 'Request projects, additional tokens and agent removal within your permissions',
+  'palpo.inbox.submit': 'Submit resource contributions or project requests',
   'palpo.inbox.get': 'Read the latest state of an authorized action',
-  'palpo.inbox.decide': 'Approve or reject within your explicitly assigned project permissions',
-  'palpo.inbox.recover': 'Retry a failed project reservation or release its never-used allocation as the designated administrator',
+  'palpo.inbox.decide': 'Approve or reject within your server permissions',
   'palpo.inbox.activate': 'Continue an approved project as its owner',
   'palpo.inbox.seen': 'Mark a notification seen without completing its action',
-  'palpo.actions.room.get': 'Verify your private My Actions room without joining it',
-  'palpo.actions.room.ensure': 'Set up and open your private My Actions room',
-  'palpo.notifications.get': 'Read your Palpo notification preferences',
-  'palpo.notifications.set': 'Change your Palpo reminders and quiet hours',
   'palpo.inbox.snooze': 'Snooze reminders for an action you can take',
 });
 const fail = (status, code, message) => { throw new ApiError(status, code, message); };
@@ -55,22 +48,6 @@ export class MiniApp {
   constructor(service, workflow, accounts, inbox, { ttlMs = 15 * 60 * 1000, now = Date.now, maxSessions = 512 } = {}) {
     Object.assign(this, { service, workflow, accounts, inbox, ttlMs, now, maxSessions });
     this.sessions = new Map();
-  }
-  agentChat(request, actor) {
-    const current = this.service.store.state.requests[request?.id];
-    const project = this.service.store.state.projects[current?.projectId];
-    if (!current || !project || (current.requesterMxid !== actor && project.ownerMxid !== actor)
-      || request.usable !== true || request.statusVerified !== true || request.agentJoined !== true
-      || current.removalActionId || current.retirement || !['active', 'ready'].includes(request.state)
-      || request.provider?.ready !== true || request.provider.bound !== true
-      || request.provider.targetRoomId !== project.roomId || current.payload.ownerMxid !== project.ownerMxid) return null;
-    if (current.workflowVersion === 1) {
-      const action = this.inbox.state.records[current.actionId], value = this.inbox.agents.grant(action?.grantId);
-      if (!value || action.state !== 'approved' || action.execution !== 'done'
-        || action.result?.engagementId !== request.provider.engagementId
-        || (value.record.desiredRevision ?? value.grant.revision) !== value.grant.revision) return null;
-    }
-    return { v: 1, requestId: current.id, account: actor, roomId: project.roomId, agentMxid: request.provider.agentMxid };
   }
   async admin(token) {
     try { await this.service.palpo.requireAdmin(token); return true; }
@@ -97,10 +74,10 @@ export class MiniApp {
   }
   key(token) { return createHash('sha256').update(token).digest('hex'); }
   identity(session, isAdmin) {
-    return { version: 1, userId: session.actor, isAdmin, canApproveProjects: this.inbox.canApproveProjects(session.actor, isAdmin), canReviewAgents: this.inbox.agents.reviewer(session.actor), serverName: this.service.serverName,
+    return { version: 1, userId: session.actor, isAdmin, serverName: this.service.serverName,
       services: session.services, callbackOrigins: isAdmin ? [...this.service.callbackOrigins] : [],
       outboundAvailable: !!(this.service.transportOrigin && this.service.relayOrigin),
-      features: { inbox: true, contributions: false, projectApproval: true, remoteAgentDecisions: true, topUps: true, agentRemoval: true } };
+      features: { inbox: true, contributions: true, projectApproval: true, remoteAgentDecisions: false, topUps: false } };
   }
   async authenticate(header) {
     const bearer = credentials(header), key = bearer ? this.key(bearer) : '';
@@ -149,24 +126,12 @@ export class MiniApp {
         const fleets = await this.workflow.catalog(actor, signal);
         return { fleets: fleets.filter(f => !project || f.id === project.fleetId).map(f => ({ ...f,
           capabilities: f.capabilities ? { ...f.capabilities, offers: f.capabilities.offers.map(o => ({ ...o,
-            resources: (o.resources ?? []).filter(r => !project?.resourceGrant || project.resourceGrant.resourceIds.includes(r.id))
-              .map(r => ({ ...r, contributions: this.inbox.projects.catalog(this.service.fleet(f.id), r.id) })) })) } : null })) };
-      }
-      case 'palpo.requests.open': {
-        fields(args, ['requestId']);
-        const requestId = text(args.requestId, 'Request ID');
-        const [request] = await this.workflow.requests(actor, token, signal, requestId);
-        const target = this.agentChat(request, actor);
-        if (!target) fail(409, 'agent_chat_unavailable', 'This agent is not ready in your project room. Refresh My Agents and try again.');
-        return target;
+            resources: (o.resources ?? []).filter(r => !project?.resourceGrant || project.resourceGrant.resourceIds.includes(r.id)) })) } : null })) };
       }
       case 'palpo.projects.list': fields(args, []); return { projects: await this.workflow.projects(actor, token, signal) };
       case 'palpo.projects.create': fields(args, ['requestId', 'name', 'fleetId', 'roomId']); return mutate(async () => ({ project: await this.workflow.createProject(args, actor, token) }));
-      case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request,
-        agentDefinition: request.agentDefinition ?? null, canOpenChat: !!this.agentChat(request, actor), canRequestTopUp: this.inbox.agents.canTopUp(request, actor), allocation: this.inbox.agents.allocation(request),
-        canRemove: this.inbox.lifecycle.canRemove(request, actor), lifecycle: this.inbox.lifecycle.view(request) })) };
+      case 'palpo.requests.list': fields(args, []); return { requests: (await this.workflow.requests(actor, token, signal)).map(request => ({ ...request, agentDefinition: request.agentDefinition ?? null })) };
       case 'palpo.requests.create': fields(args, ['requestId', 'projectId', 'role', 'requestedTokens', 'ratePerDay', 'agentDefinition']); return mutate(async () => ({ request: await this.workflow.request(args, actor, token) }));
-      case 'palpo.fleets.register': fail(403, 'hagency_contribution_required', 'Resource contribution starts in Hagency.');
       case 'palpo.fleets.list': {
         fields(args, []); const isAdmin = await this.admin(token);
         return { fleets: Object.values(this.service.store.state.fleets).filter(fleet => isAdmin || fleet.ownerMxid === actor).map(publicFleet) };
@@ -175,16 +140,11 @@ export class MiniApp {
       case 'palpo.fleets.connect': fields(args, ['fleetId']); return mutate(() => this.workflow.connect(id(), actor, token));
       case 'palpo.inbox.list': fields(args, ['view', 'offset', 'limit']); return this.inbox.list(actor, await this.admin(token), args);
       case 'palpo.inbox.get': fields(args, ['id']); return this.inbox.get(text(args.id, 'Action ID'), actor, await this.admin(token));
-      case 'palpo.inbox.submit': return mutate(() => this.inbox.submit(args, actor, token));
-      case 'palpo.inbox.decide': return mutate(() => this.inbox.decide(args, actor, token));
-      case 'palpo.inbox.recover': return mutate(() => this.inbox.recover(args, actor, token));
+      case 'palpo.inbox.submit': return mutate(() => this.inbox.submit(args, actor));
+      case 'palpo.inbox.decide': return mutate(async () => { await this.service.palpo.requireAdmin(token); return this.inbox.decide(args, actor, token); });
       case 'palpo.inbox.activate': return mutate(() => this.inbox.activate(args, actor, token));
       case 'palpo.inbox.seen': return this.inbox.seen(args, actor, await this.admin(token));
-      case 'palpo.actions.room.get': fields(args, ['roomId']); return this.actionNotifications.get(actor, args.roomId === undefined ? undefined : text(args.roomId, 'Room ID'));
-      case 'palpo.actions.room.ensure': fields(args, []); return mutate(() => this.actionNotifications.ensure(actor, token));
-      case 'palpo.notifications.get': fields(args, []); return this.inbox.preferences.get(actor);
-      case 'palpo.notifications.set': return mutate(() => this.inbox.preferences.set(args, actor));
-      case 'palpo.inbox.snooze': return mutate(async () => this.inbox.snooze(args, actor, await this.admin(token)));
+      case 'palpo.inbox.snooze': return this.inbox.snooze(args, actor, await this.admin(token));
     }
     // These existing operations are server-administrator operations, exactly as
     // in the browser. A package grant never makes an ordinary account an admin.
@@ -192,8 +152,8 @@ export class MiniApp {
     const adminMutation = fn => mutate(async () => { await this.service.palpo.requireAdmin(token); return fn(); });
     switch (service) {
       case 'palpo.activity.list': fields(args, []); return { events: this.service.store.state.audit.slice(-200).reverse() };
-      case 'palpo.accounts.list': fields(args, []); return this.accounts.miniappView(actor);
-      case 'palpo.accounts.open': fields(args, ['requestId']); return this.accounts.openApproval(text(args.requestId, 'Request ID'), actor);
+      case 'palpo.accounts.list': fields(args, []); return this.accounts.adminView();
+      case 'palpo.fleets.register': fields(args, ['requestId', 'name', 'ownerMxid', 'transportMode', 'callbackUrl']); return adminMutation(async () => ({ fleet: await this.service.create(args, actor, token) }));
       case 'palpo.fleets.install': fields(args, ['fleetId']); return adminMutation(async () => ({ fleet: await this.service.install(id(), actor, token) }));
       case 'palpo.fleets.set_state': {
         fields(args, ['fleetId', 'action']);

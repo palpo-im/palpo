@@ -132,12 +132,6 @@ export class Outbound {
       if (hash !== fleet.transport.updateDigest) fail(409, 'sequence_conflict', 'This update sequence already has different content.');
       return { ok: true };
     }
-    const commandReceipts = input.commandReceipts === undefined ? []
-      : this.projectCommands?.validateReceipts(fleet, input.commandReceipts);
-    if (!commandReceipts) fail(409, 'project_workflow_unavailable', 'Project command receipts are not supported.');
-    const contributionPage = input.contributionPage === undefined ? null
-      : this.projectCommands?.validateContributions(fleet, input.contributionPage);
-    if (input.contributionPage !== undefined && !contributionPage) fail(409, 'project_workflow_unavailable', 'Contribution publication is not supported.');
     const copy = structuredClone(fleet);
     if (input.capabilities !== undefined) workflow.applyCapabilities(copy, input.capabilities, false);
     const records = [];
@@ -145,10 +139,6 @@ export class Outbound {
       if (!status || typeof status !== 'object' || status.v !== 1) fail(400, 'invalid_status', 'Each status must be a version 1 request observation.');
       const request = this.store.state.requests?.[`${fleet.id}:${status.requestId}`];
       if (!request || status.fleetId !== fleet.id) fail(409, 'unknown_request', 'Updates must identify an existing request in this fleet.');
-      if (request.workflowVersion === 1) {
-        if (!workflow.agentStatus) fail(409, 'project_workflow_unavailable', 'Agent status verification is unavailable.');
-        if (!workflow.agentStatus(request, status, commandReceipts)) continue;
-      }
       const record = structuredClone(request);
       if (status.role !== request.payload.role || status.requestedTokens !== request.payload.requestedTokens) fail(409, 'request_binding_conflict', 'The status role or quota does not match the registered request.');
       workflow.applyStatus(record, status, false);
@@ -170,13 +160,7 @@ export class Outbound {
     copy.transport.sequence = input.sequence; copy.transport.updateDigest = hash; copy.transport.lastSeenAt = new Date().toISOString();
     return this.store.atomic(() => {
       Object.assign(fleet, copy);
-      this.projectCommands?.applyContributions(fleet, contributionPage);
-      this.projectCommands?.applyReceipts(commandReceipts);
-      for (const record of records) {
-        const current = this.store.state.requests[record.id];
-        Object.assign(current, record);
-        workflow.agentLifecycle?.(current);
-      }
+      for (const record of records) Object.assign(this.store.state.requests[record.id], record);
       return { ok: true };
     });
   }
