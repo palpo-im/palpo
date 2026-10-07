@@ -776,3 +776,6 @@ impl MatrixServer {
         }
     }
 }
+
+#[cfg(test)]
+mod oauth_admin_tests;

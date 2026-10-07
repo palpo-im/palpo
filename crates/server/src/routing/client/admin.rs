@@ -13,6 +13,7 @@ use crate::{AppResult, AuthArgs, DepotExt, JsonResult, MatrixError, config, data
 
 pub fn authed_router() -> Router {
     Router::new()
+        .hoop(crate::hoops::auth_by_admin_access_token)
         .push(Router::with_path("admin/whois/{user_id}").get(whois))
         .push(
             Router::with_path("admin/lock/{user_id}")
@@ -21,6 +22,22 @@ pub fn authed_router() -> Router {
         )
         .push(
             Router::with_path("admin/suspend/{user_id}")
+                .get(is_user_suspended)
+                .put(suspend_user),
+        )
+}
+
+pub(super) fn unstable_authed_router() -> Router {
+    Router::new()
+        .hoop(crate::hoops::auth_by_admin_access_token)
+        .hoop(crate::hoops::limit_rate)
+        .push(
+            Router::with_path("uk.timedout.msc4323/admin/lock/{user_id}")
+                .get(is_user_locked)
+                .put(lock_user),
+        )
+        .push(
+            Router::with_path("uk.timedout.msc4323/admin/suspend/{user_id}")
                 .get(is_user_suspended)
                 .put(suspend_user),
         )

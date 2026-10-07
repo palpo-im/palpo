@@ -39,6 +39,62 @@ pub async fn auth_by_access_token(aa: AuthArgs, depot: &mut Depot) -> AppResult<
     auth_by_access_token_inner(aa, depot).await
 }
 
+/// Server-administration routes declare their OAuth policy independently of API routes.
+#[handler]
+pub async fn auth_by_admin_access_token(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
+    auth_by_access_token_for(aa, depot, AccessTokenPolicy::ServerAdministration).await
+}
+
+#[derive(Clone, Copy)]
+enum AccessTokenPolicy {
+    MatrixApi,
+    ServerAdministration,
+}
+
+#[cfg(feature = "unstable-msc4484")]
+const ADMIN_SCOPE: &str = "urn:matrix:client:cc.c10y.msc4484.server_administration";
+
+impl AccessTokenPolicy {
+    fn authorize_oauth(
+        self,
+        scopes: &super::introspection::OAuthScopes,
+        is_admin: bool,
+    ) -> Result<(), MatrixError> {
+        #[cfg(feature = "unstable-msc4484")]
+        if matches!(self, Self::ServerAdministration) {
+            if !is_admin {
+                return Err(MatrixError::forbidden(
+                    "Requires server admin privileges",
+                    None,
+                ));
+            }
+            if !scopes.contains(ADMIN_SCOPE) {
+                // Reuse the existing OAuth scope challenge. MSC4363 authentication-age
+                // and assurance challenges are a separate policy.
+                let mut error = MatrixError::forbidden(
+                    "Token has no server administration scope",
+                    Some(crate::core::error::AuthenticateError::InsufficientScope {
+                        scope: ADMIN_SCOPE.to_owned(),
+                    }),
+                );
+                error.status_code = Some(StatusCode::UNAUTHORIZED);
+                return Err(error);
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "unstable-msc4484"))]
+        let _ = (self, is_admin);
+        if scopes.has_matrix_api_scope() {
+            Ok(())
+        } else {
+            Err(MatrixError::unknown_token(
+                "Token has no Matrix API scope",
+                true,
+            ))
+        }
+    }
+}
+
 /// Authenticates a route whose own query schema uses `user_id` for something other than
 /// application-service masquerading.
 ///
@@ -65,6 +121,14 @@ pub async fn auth_by_signatures(
 }
 
 async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
+    auth_by_access_token_for(aa, depot, AccessTokenPolicy::MatrixApi).await
+}
+
+async fn auth_by_access_token_for(
+    aa: AuthArgs,
+    depot: &mut Depot,
+    policy: AccessTokenPolicy,
+) -> AppResult<()> {
     let token = aa.require_access_token()?;
 
     if auth_by_local_token(token, &aa, depot).await? {
@@ -75,7 +139,7 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
     // introspection after the token misses Palpo's local access/appservice
     // stores, preserving existing password sessions when OIDC is enabled.
     if config::get().enabled_delegated_auth().is_some() {
-        return auth_by_delegated_token(token, &aa, depot).await;
+        return auth_by_delegated_token(token, policy, depot).await;
     }
 
     Err(MatrixError::unknown_token("unknown access token", true).into())
@@ -105,6 +169,7 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
             user_device: Some(device),
             access_token_id: Some(access_token_id),
             appservice: None,
+            oauth_scopes: None,
         });
         Ok(true)
     } else {
@@ -143,6 +208,7 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
                 user_device,
                 access_token_id: None,
                 appservice: Some(appservice_info),
+                oauth_scopes: None,
             });
             return Ok(true);
         }
@@ -151,26 +217,29 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
 }
 
 /// Validate a token via the external authorization server's introspection endpoint.
-async fn auth_by_delegated_token(token: &str, _aa: &AuthArgs, depot: &mut Depot) -> AppResult<()> {
+async fn auth_by_delegated_token(
+    token: &str,
+    policy: AccessTokenPolicy,
+    depot: &mut Depot,
+) -> AppResult<()> {
     let result = super::introspection::introspect_token(token).await?;
 
     if !result.active {
         return Err(MatrixError::unknown_token("Token is not active", true).into());
     }
 
-    let scope = result
+    let scopes = result
         .scope
         .as_deref()
-        .ok_or_else(|| MatrixError::unknown_token("Token has no Matrix API scope", true))?;
-    if !super::introspection::has_matrix_api_scope(scope) {
-        return Err(MatrixError::unknown_token("Token has no Matrix API scope", true).into());
-    }
-    let device_id_str = super::introspection::device_id_from_scope(scope)
+        .and_then(super::introspection::OAuthScopes::parse)
+        .ok_or_else(|| MatrixError::unknown_token("Token has invalid OAuth scopes", true))?;
+    let device_id_str = scopes
+        .device_id()
         .ok_or_else(|| MatrixError::unknown_token("Token has no unique Matrix device", true))?;
     if result
         .device_id
         .as_deref()
-        .is_some_and(|device_id| device_id != device_id_str.as_str())
+        .is_some_and(|device_id| device_id != device_id_str)
     {
         return Err(MatrixError::unknown_token("Token has mismatched Matrix device", true).into());
     }
@@ -190,10 +259,6 @@ async fn auth_by_delegated_token(token: &str, _aa: &AuthArgs, depot: &mut Depot)
         .first::<DbUser>(&mut connect().await?)
         .await
         .map_err(|_| MatrixError::unknown_token("User not found (not yet provisioned?)", true))?;
-    if user.is_guest {
-        crate::data::user::set_guest(&user_id, false).await?;
-        user.is_guest = false;
-    }
     crate::user::ensure_account_usable(&user)?;
 
     let device_id: OwnedDeviceId = device_id_str.into();
@@ -204,11 +269,18 @@ async fn auth_by_delegated_token(token: &str, _aa: &AuthArgs, depot: &mut Depot)
         .await
         .map_err(|_| MatrixError::unknown_token("Device not found (not yet provisioned?)", true))?;
 
+    // Challenge only a verified, provisioned identity, before changing account state.
+    policy.authorize_oauth(&scopes, user.is_admin)?;
+    if user.is_guest {
+        crate::data::user::set_guest(&user_id, false).await?;
+        user.is_guest = false;
+    }
     depot.insert_typed(AuthedInfo {
         user,
         user_device: Some(user_device),
         access_token_id: None,
         appservice: None,
+        oauth_scopes: Some(scopes),
     });
     Ok(())
 }
@@ -429,6 +501,65 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn endpoint_oauth_policies_do_not_confuse_api_and_administration() {
+        use super::super::introspection::OAuthScopes;
+        let api = OAuthScopes::parse("urn:matrix:client:api:*").unwrap();
+        let admin =
+            OAuthScopes::parse("urn:matrix:client:cc.c10y.msc4484.server_administration").unwrap();
+        assert!(
+            AccessTokenPolicy::MatrixApi
+                .authorize_oauth(&api, false)
+                .is_ok()
+        );
+        assert!(
+            AccessTokenPolicy::MatrixApi
+                .authorize_oauth(&admin, true)
+                .is_err()
+        );
+        #[cfg(feature = "unstable-msc4484")]
+        {
+            assert!(
+                AccessTokenPolicy::ServerAdministration
+                    .authorize_oauth(&api, true)
+                    .is_err()
+            );
+            assert!(
+                AccessTokenPolicy::ServerAdministration
+                    .authorize_oauth(&admin, true)
+                    .is_ok()
+            );
+            assert!(
+                AccessTokenPolicy::ServerAdministration
+                    .authorize_oauth(&admin, false)
+                    .is_err()
+            );
+            for lookalike in [
+                "urn:matrix:client:server_administration",
+                "urn:matrix:client:cc.c10y.msc4484.server_administration:extra",
+            ] {
+                assert!(
+                    AccessTokenPolicy::ServerAdministration
+                        .authorize_oauth(&OAuthScopes::parse(lookalike).unwrap(), true)
+                        .is_err()
+                );
+            }
+        }
+        #[cfg(not(feature = "unstable-msc4484"))]
+        {
+            assert!(
+                AccessTokenPolicy::ServerAdministration
+                    .authorize_oauth(&api, true)
+                    .is_ok()
+            );
+            assert!(
+                AccessTokenPolicy::ServerAdministration
+                    .authorize_oauth(&admin, true)
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]

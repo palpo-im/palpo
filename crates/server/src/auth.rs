@@ -13,6 +13,8 @@ pub struct AuthedInfo {
     pub user_device: Option<DbUserDevice>,
     pub access_token_id: Option<i64>,
     pub appservice: Option<RegistrationInfo>,
+    /// Scopes validated from OAuth introspection; absent for local/appservice tokens.
+    pub oauth_scopes: Option<crate::hoops::introspection::OAuthScopes>,
 }
 impl AuthedInfo {
     pub fn user(&self) -> &DbUser {
