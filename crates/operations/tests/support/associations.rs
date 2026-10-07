@@ -335,6 +335,23 @@ async fn connection_retries_keep_one_probe_and_do_not_confuse_verification_with_
         .unwrap();
     assert_eq!(row["connectionVerified"], true);
     assert_eq!(row["connectionVerification"], "verified");
+    for session in [&owner, &admin, &coordinator] {
+        for (view, present) in [("waiting", false), ("history", true)] {
+            let (status, inbox) = f
+                .call(session, "palpo.inbox.list", json!({"view":view}))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{inbox:?}");
+            assert_eq!(
+                inbox["actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| &row["id"] == id),
+                present,
+                "verified association in {view}: {inbox:?}"
+            );
+        }
+    }
     assert_eq!(
         f.call(&owner, "palpo.inbox.get", json!({"id":id})).await.1["action"]["connectionVerification"],
         "verified"
@@ -406,9 +423,43 @@ async fn association_has_one_admin_decision_and_recovers_install_before_scoped_e
     assert_eq!(status, StatusCode::OK, "{approved}");
     assert_eq!(approved["action"]["state"], "approved");
     assert_eq!(approved["action"]["execution"], "setup_failed");
+    for session in [&provider, &admin, &coordinator] {
+        let (status, inbox) = f
+            .call(session, "palpo.inbox.list", json!({"view":"waiting"}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{inbox:?}");
+        assert!(
+            inbox["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["id"] == id && row["execution"] == "setup_failed"),
+            "failed setup must remain accessible: {inbox:?}"
+        );
+    }
     let (status, retried) = f.call(&admin, "palpo.inbox.decide", decision).await;
     assert_eq!(status, StatusCode::OK, "{retried}");
     assert_eq!(retried["action"]["execution"], "verifying");
+    for (session, present) in [
+        (&provider, true),
+        (&admin, true),
+        (&coordinator, true),
+        (&manager, false),
+    ] {
+        let (status, inbox) = f
+            .call(session, "palpo.inbox.list", json!({"view":"waiting"}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{inbox:?}");
+        assert_eq!(
+            inbox["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["id"] == id && row["execution"] == "verifying"),
+            present,
+            "verification must preserve visibility boundaries: {inbox:?}"
+        );
+    }
     assert_eq!(f.registrations.lock().unwrap().installs, 1);
     assert_eq!(
         f.call(&provider, "palpo.fleets.export", json!({"fleetId":fleet}))

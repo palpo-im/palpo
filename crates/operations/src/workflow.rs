@@ -560,9 +560,15 @@ impl Workflows {
                 || view == "needs_action" && needs
                 || view == "waiting"
                     && !needs
-                    && (association.state == "requested" || association.execution == "pending")
+                    && (association.state == "requested"
+                        || association.state == "approved"
+                            && matches!(
+                                association.execution.as_str(),
+                                "pending" | "configuring" | "verifying" | "setup_failed"
+                            ))
                 || view == "history"
-                    && (association.state == "rejected" || association.execution == "done")
+                    && (association.state == "rejected"
+                        || matches!(association.execution.as_str(), "done" | "verified"))
             {
                 rows.push(row);
             }
