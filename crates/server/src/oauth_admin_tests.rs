@@ -1,5 +1,4 @@
 //! Run this test alone with an EMPTY, DEDICATED PALPO_TEST_DATABASE_URL.
-use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use palpo::core::{UnixMillis, UserId};
 use palpo::{config, data};
@@ -154,7 +153,7 @@ async fn provision(localpart: &str, admin: bool) {
 
 #[handler]
 async fn scope_context(depot: &mut Depot) -> Json<Value> {
-    let info = depot.obtain::<palpo::AuthedInfo>().unwrap();
+    let info = depot.get_typed::<palpo::AuthedInfo>().unwrap();
     Json(json!({
         "delegated": info.is_delegated_auth(),
         "has_scopes": info.oauth_scopes.is_some(),
