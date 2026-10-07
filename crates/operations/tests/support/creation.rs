@@ -746,3 +746,53 @@ async fn legacy_agent_history_is_scoped_and_old_links_follow_adoption() {
         old
     );
 }
+
+#[tokio::test]
+async fn catalog_capacity_is_scoped_current_and_never_inferred_from_total() {
+    let f = Fixture::new().await;
+    funded(&f).await;
+    let manager = f.session("manager").await;
+    let read =
+        |value: Value| value["fleets"][0]["capabilities"]["offers"][0]["resources"][0].clone();
+    let initial = read(f.call(&manager, "palpo.catalog.list", json!({})).await.1);
+    assert!(initial["remainingTokens"].is_null());
+    assert_eq!(initial["capacityState"], "unavailable");
+    let now = now_ms();
+    for (change, state) in [
+        None,
+        Some(("revision", json!(2))),
+        Some(("resourceId", json!("another_resource"))),
+        Some(("periodKey", json!("2026-09"))),
+        Some(("stale", json!(true))),
+    ]
+    .into_iter()
+    .zip([
+        "current",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+        "stale",
+    ]) {
+        f.app.store.lock().await.transaction(|stored| {
+            let cap = &mut stored["fleets"]["engagement_a"]["capabilities"];
+            cap["resourceBudgets"] = json!({"grant_a":{"resourceId":RESOURCE,"revision":1,"allocatedTokens":1000000,
+                "retainedTokens":300000,"remainingTokens":700000,"overdrawn":false,"period":"monthly","periodKey":"2026-10"}});
+            cap["resourceBudgetObservedAtMs"] = json!(now);
+            cap["resourceBudgetReceivedAtMs"] = json!(now);
+            if let Some((key,value)) = &change {
+                if *key == "stale" { cap["resourceBudgetObservedAtMs"] = json!(now-90001); }
+                else { cap["resourceBudgets"]["grant_a"][key] = value.clone(); }
+            }
+            Ok(())
+        }).unwrap();
+        let row = read(f.call(&manager, "palpo.catalog.list", json!({})).await.1);
+        assert_eq!(row["capacityState"], state);
+        assert_eq!(row["allocatedTokens"], 1000000);
+        if state == "current" {
+            assert_eq!(row["remainingTokens"], 700000);
+        } else {
+            assert!(row["remainingTokens"].is_null());
+            assert!(row["retainedTokens"].is_null());
+        }
+    }
+}

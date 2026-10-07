@@ -406,6 +406,36 @@ pub(crate) fn catalog(
                     row["allocatedTokens"] = json!(grant.allocated_tokens);
                     row["period"] = details["period"].clone();
                     row["periodKey"] = details["periodKey"].clone();
+                    let capabilities = &fleet["capabilities"];
+                    let budget = &capabilities["resourceBudgets"][grant.id.as_str()];
+                    let observed = capabilities["resourceBudgetObservedAtMs"].as_u64();
+                    let received = capabilities["resourceBudgetReceivedAtMs"].as_u64();
+                    let bound = budget.is_object()
+                        && budget["resourceId"] == resource["id"]
+                        && budget["revision"] == json!(grant.revision)
+                        && budget["allocatedTokens"] == json!(grant.allocated_tokens)
+                        && budget["period"] == details["period"]
+                        && budget["periodKey"] == details["periodKey"];
+                    let current = bound
+                        && observed.zip(received).is_some_and(|(seen, arrived)| {
+                            seen <= arrived.saturating_add(5000)
+                                && now.saturating_sub(seen.min(arrived)) < 90000
+                        });
+                    row["capacityState"] = json!(if current {
+                        "current"
+                    } else if bound {
+                        "stale"
+                    } else {
+                        "unavailable"
+                    });
+                    row["capacityObservedAtMs"] = if bound { json!(observed) } else { Value::Null };
+                    for key in ["retainedTokens", "remainingTokens", "overdrawn"] {
+                        row[key] = if current {
+                            budget[key].clone()
+                        } else {
+                            Value::Null
+                        };
+                    }
                     resources.push(row);
                 }
             }
