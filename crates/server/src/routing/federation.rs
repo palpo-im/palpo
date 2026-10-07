@@ -23,10 +23,17 @@ use crate::core::federation::directory::ServerVersionResBody;
 use crate::{AppError, AppResult, AuthArgs, JsonResult, config, hoops, json_ok};
 
 pub fn router() -> Router {
-    let router = Router::with_path("federation")
+    Router::with_path("federation")
         .hoop(check_federation_enabled)
-        .hoop(hoops::auth_by_access_token_or_signatures)
         .oapi_tag("federation")
+        // Server discovery is public; authentication applies only to the other routes.
+        .push(Router::with_path("v1/version").get(version))
+        .push(authenticated_router())
+}
+
+fn authenticated_router() -> Router {
+    let router = Router::new()
+        .hoop(hoops::auth_by_access_token_or_signatures)
         .push(
             Router::with_path("v2")
                 .push(backfill::router())
@@ -38,8 +45,7 @@ pub fn router() -> Router {
                 .push(space::router())
                 .push(threepid::router())
                 .push(transaction::router())
-                .push(user::router())
-                .push(Router::with_path("version").post(version)),
+                .push(user::router()),
         )
         .push(
             Router::with_path("v1")
@@ -53,8 +59,7 @@ pub fn router() -> Router {
                 .push(threepid::router())
                 .push(transaction::router())
                 .push(user::router())
-                .push(media::router())
-                .push(Router::with_path("version").post(version)),
+                .push(media::router()),
         )
         .push(Router::with_path("versions").get(get_versions));
 
@@ -90,4 +95,74 @@ async fn version() -> JsonResult<ServerVersionResBody> {
             version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use salvo::http::{Method, Request, StatusCode};
+    use salvo::prelude::{Router, Service};
+    use salvo::routing::PathState;
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::{config, router};
+
+    fn service() -> Service {
+        config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "federation.example",
+                "db": {"url": "unused-test-config"},
+                "federation": {"enable": true},
+            }))
+            .unwrap()
+        });
+        Service::new(Router::with_path("_matrix").push(router()))
+    }
+
+    #[tokio::test]
+    async fn version_is_public_and_returns_server_information() {
+        let service = service();
+        for authorization in [None, Some("Bearer invalid-token")] {
+            let request = TestClient::get("http://localhost/_matrix/federation/v1/version");
+            let request = match authorization {
+                Some(value) => request.add_header("authorization", value, true),
+                None => request,
+            };
+            let mut response = request.send(&service).await;
+            assert_eq!(response.status_code, Some(StatusCode::OK));
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json"
+            );
+            assert_eq!(
+                response.take_json::<Value>().await.unwrap(),
+                json!({"server": {"name": "Palpo", "version": env!("CARGO_PKG_VERSION")}})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn version_does_not_accept_post() {
+        let mut request = Request::default();
+        *request.method_mut() = Method::POST;
+        let mut path = PathState::from_owned_path("/federation/v1/version".to_owned());
+        assert!(router().detect(&mut request, &mut path).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn other_federation_routes_still_require_authentication() {
+        let service = service();
+        for version in ["v1", "v2"] {
+            let mut response = TestClient::get(format!(
+                "http://localhost/_matrix/federation/{version}/event/$test"
+            ))
+            .send(&service)
+            .await;
+            assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+            assert_eq!(
+                response.take_json::<Value>().await.unwrap()["errcode"],
+                "M_MISSING_TOKEN"
+            );
+        }
+    }
 }
