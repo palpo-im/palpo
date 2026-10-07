@@ -43,72 +43,104 @@ async fn denies_public_invites(user_id: &UserId) -> AppResult<bool> {
 
 #[cfg(feature = "unstable-msc4494")]
 async fn shares_non_public_room(invitee: &UserId, inviter: &UserId) -> AppResult<bool> {
-    Ok(shared_invite_room_change(invitee, inviter).await?.is_some())
+    Ok(invite_relationship_changes(invitee, &[inviter.to_owned()])
+        .await?
+        .contains_key(inviter))
 }
 
+/// Resolve each distinct inviter once and each shared room's rule once per request.
 #[cfg(feature = "unstable-msc4494")]
-async fn current_join_positions(
-    user_id: &UserId,
-) -> AppResult<std::collections::HashMap<OwnedRoomId, i64>> {
+async fn invite_relationship_changes(
+    invitee: &UserId,
+    inviters: &[OwnedUserId],
+) -> AppResult<std::collections::HashMap<OwnedUserId, i64>> {
+    use std::collections::HashMap;
+
     use data::schema::room_users;
-    use diesel::prelude::*;
+    use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
 
-    // Match joined_rooms: historical memberships must not establish a relationship.
-    let memberships = room_users::table
-        .filter(room_users::user_id.eq(user_id))
-        .distinct_on(room_users::room_id)
-        .select((
-            room_users::room_id,
-            room_users::membership,
-            room_users::event_sn,
-        ))
-        .order_by((room_users::room_id.desc(), room_users::id.desc()))
-        .load::<(OwnedRoomId, String, i64)>(&mut data::connect().await?)
-        .await?;
-    Ok(memberships
-        .into_iter()
-        .filter_map(|(room_id, membership, sn)| (membership == "join").then_some((room_id, sn)))
-        .collect())
-}
-
-/// Latest stream position establishing a currently qualifying shared room.
-#[cfg(feature = "unstable-msc4494")]
-async fn shared_invite_room_change(invitee: &UserId, inviter: &UserId) -> AppResult<Option<i64>> {
     use crate::core::events::StateEventType;
     use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
     use crate::core::room::JoinRule;
 
-    let invitee_rooms = current_join_positions(invitee).await?;
-    let inviter_rooms = current_join_positions(inviter).await?;
-    let mut latest = None;
-    for (room_id, invitee_sn) in invitee_rooms {
-        let Some(inviter_sn) = inviter_rooms.get(&room_id) else {
+    // Historical memberships cannot establish a relationship. Match joined_rooms'
+    // latest-row semantics for inviters, limiting the batch to the recipient's rooms.
+    let invitee_rooms = data::user::joined_rooms(invitee).await?;
+    let mut changes: HashMap<OwnedUserId, i64> = HashMap::new();
+    if invitee_rooms.is_empty() || inviters.is_empty() {
+        return Ok(changes);
+    }
+    let memberships = room_users::table
+        .filter(room_users::user_id.eq_any(inviters))
+        .filter(room_users::room_id.eq_any(&invitee_rooms))
+        .distinct_on((room_users::user_id, room_users::room_id))
+        .select((
+            room_users::user_id,
+            room_users::room_id,
+            room_users::membership,
+        ))
+        .order_by((
+            room_users::user_id.desc(),
+            room_users::room_id.desc(),
+            room_users::id.desc(),
+        ))
+        .load::<(OwnedUserId, OwnedRoomId, String)>(&mut data::connect().await?)
+        .await?;
+    let mut qualifying_rooms: HashMap<OwnedRoomId, Option<i64>> = HashMap::new();
+    for (inviter, room_id, membership) in memberships {
+        if membership != "join" {
             continue;
-        };
-        match room::get_state(&room_id, &StateEventType::RoomJoinRules, "", None).await {
-            Ok(pdu) => {
-                let content: RoomJoinRulesEventContent = serde_json::from_str(pdu.content.get())?;
-                // Only proposal-listed rules establish trust. Reserved and custom rules
-                // have no supported admission policy and must fail closed.
-                if matches!(
-                    content.join_rule,
-                    JoinRule::Invite
-                        | JoinRule::Knock
-                        | JoinRule::Restricted(_)
-                        | JoinRule::KnockRestricted(_)
-                ) {
-                    let change_sn = invitee_sn.max(*inviter_sn).max(pdu.event_sn);
-                    latest =
-                        Some(latest.map_or(change_sn, |previous: i64| previous.max(change_sn)));
+        }
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            qualifying_rooms.entry(room_id.clone())
+        {
+            let rule_sn =
+                match room::get_state(&room_id, &StateEventType::RoomJoinRules, "", None).await {
+                    Ok(pdu) => {
+                        // Bad state disqualifies this room, not the entire invitation or sync.
+                        serde_json::from_str::<RoomJoinRulesEventContent>(pdu.content.get())
+                            .ok()
+                            .filter(|content| {
+                                matches!(
+                                    content.join_rule,
+                                    JoinRule::Invite
+                                        | JoinRule::Knock
+                                        | JoinRule::Restricted(_)
+                                        | JoinRule::KnockRestricted(_)
+                                )
+                            })
+                            .map(|_| pdu.event_sn)
+                    }
+                    Err(e) if e.is_not_found() => None,
+                    Err(e) => return Err(e),
+                };
+            let change = if let Some(rule_sn) = rule_sn {
+                match room::user::join_sn(invitee, &room_id).await {
+                    Ok(join_sn) => Some(rule_sn.max(join_sn)),
+                    Err(e) if e.is_not_found() => None,
+                    Err(e) => return Err(e),
                 }
-            }
-            // Without known room state there is no evidence of a qualifying room.
-            Err(e) if e.is_not_found() => {}
-            Err(e) => return Err(e),
+            } else {
+                None
+            };
+            entry.insert(change);
+        }
+        if let Some(Some(room_change)) = qualifying_rooms.get(&room_id) {
+            // The current joined period starts before join-to-join profile updates.
+            let inviter_join_sn = match room::user::join_sn(&inviter, &room_id).await {
+                Ok(join_sn) => join_sn,
+                Err(e) if e.is_not_found() => continue,
+                Err(e) => return Err(e),
+            };
+            let change = (*room_change).max(inviter_join_sn);
+            changes
+                .entry(inviter)
+                .and_modify(|previous| *previous = (*previous).max(change))
+                .or_insert(change);
         }
     }
-    Ok(latest)
+    Ok(changes)
 }
 
 /// Apply membership-based filtering to retained invites in both sync versions.
@@ -120,30 +152,44 @@ pub(crate) async fn invited_rooms_for_sync(
     #[cfg(feature = "unstable-msc4494")]
     if denies_public_invites(user_id).await? {
         use data::schema::room_users;
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         // The invitation can predate a newly qualifying membership or join rule.
         // Reconsider retained invites, but replay them only after relevant changes,
         // including the account-data replay already handled by the data layer.
         let incremental_rooms: std::collections::HashSet<_> =
-            invites.into_iter().map(|(room_id, _)| room_id).collect();
-        let retained = data::user::invited_rooms_for_sync(user_id, 0).await?;
+            invites.iter().map(|(room_id, _)| room_id.clone()).collect();
+        // Sliding sync already requested all invitations. Reuse that snapshot.
+        let retained = if since_sn == 0 {
+            invites
+        } else {
+            data::user::invited_rooms_for_sync(user_id, 0).await?
+        };
+        if retained.is_empty() {
+            return Ok(Vec::new());
+        }
+        let room_ids: Vec<_> = retained.iter().map(|(room_id, _)| room_id).collect();
+        let inviters: std::collections::HashMap<OwnedRoomId, OwnedUserId> = room_users::table
+            .filter(room_users::user_id.eq(user_id))
+            .filter(room_users::room_id.eq_any(&room_ids))
+            .filter(room_users::membership.eq("invite"))
+            .distinct_on(room_users::room_id)
+            .order_by((room_users::room_id.desc(), room_users::id.desc()))
+            .select((room_users::room_id, room_users::sender_id))
+            .load::<(OwnedRoomId, OwnedUserId)>(&mut data::connect().await?)
+            .await?
+            .into_iter()
+            .collect();
+        let unique_inviters: std::collections::HashSet<_> = inviters.values().cloned().collect();
+        let unique_inviters: Vec<_> = unique_inviters.into_iter().collect();
+        let changes = invite_relationship_changes(user_id, &unique_inviters).await?;
         let mut allowed = Vec::new();
-        for (room_id, state) in retained {
-            let inviter = room_users::table
-                .filter(room_users::user_id.eq(user_id))
-                .filter(room_users::room_id.eq(&room_id))
-                .filter(room_users::membership.eq("invite"))
-                .order_by(room_users::id.desc())
-                .select(room_users::sender_id)
-                .first::<OwnedUserId>(&mut data::connect().await?)
-                .await
-                .optional()?;
-            if let Some(inviter) = inviter
-                && let Some(change_sn) = shared_invite_room_change(user_id, &inviter).await?
-                && (incremental_rooms.contains(&room_id) || change_sn >= since_sn)
+        for (room_id, room_state) in retained {
+            if let Some(inviter) = inviters.get(&room_id)
+                && let Some(change_sn) = changes.get(inviter)
+                && (incremental_rooms.contains(&room_id) || *change_sn >= since_sn)
             {
-                allowed.push((room_id, state));
+                allowed.push((room_id, room_state));
             }
         }
         return Ok(allowed);
@@ -628,6 +674,7 @@ mod tests {
 
         for (i, rule) in [
             "public",
+            "malformed",
             "private",
             "example.custom",
             "invite",
@@ -642,7 +689,7 @@ mod tests {
             let raw = json!({
                 "event_id": format!("$membership_rule_{i}:example.org"), "room_id": mutual,
                 "type": "m.room.join_rules", "sender": inviter, "state_key": "",
-                "content": {"join_rule": rule, "allow": []}, "origin_server_ts": 1,
+                "content": if *rule == "malformed" { json!({}) } else { json!({"join_rule": rule, "allow": []}) }, "origin_server_ts": 1,
                 "depth": 1, "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
             });
             let pdu: PduEvent = serde_json::from_value(raw.clone()).unwrap();
@@ -759,6 +806,262 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_invite_profile_updates_do_not_replay_retained_invites() {
+        use std::sync::Arc;
+
+        use diesel::{ExpressionMethods, QueryDsl};
+
+        use crate::core::events::StateEventType;
+        use crate::core::serde::CanonicalJsonObject;
+        use crate::data::schema::{room_users, rooms};
+        use crate::room::state::{CompressedEvent, CompressedState};
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let invitee: OwnedUserId = "@invite_profile:dynamic.example".try_into().unwrap();
+        let inviter: OwnedUserId = "@invite_profile_sender:example.org".try_into().unwrap();
+        let mutual: OwnedRoomId = "!invite_profile_shared:example.org".try_into().unwrap();
+        diesel::insert_into(rooms::table)
+            .values(data::room::NewDbRoom {
+                id: mutual.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        data::user::set_data(
+            &invitee,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+        )
+        .await
+        .unwrap();
+        let mut compressed = CompressedState::new();
+        for (i, member) in [&invitee, &inviter].into_iter().enumerate() {
+            let raw = json!({
+                "event_id": format!("$invite_profile_join_{i}:example.org"), "room_id": mutual,
+                "type": "m.room.member", "sender": member, "state_key": member,
+                "content": {"membership": "join"}, "origin_server_ts": 1,
+                "depth": 1, "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
+            });
+            let (pdu, _, guard) = PduBuilder::save_as_outlier(
+                serde_json::from_value(raw.clone()).unwrap(),
+                serde_json::from_value::<CanonicalJsonObject>(raw).unwrap(),
+                member,
+            )
+            .await
+            .unwrap();
+            drop(guard);
+            let field = state::ensure_field_id(&StateEventType::RoomMember, member.as_str())
+                .await
+                .unwrap();
+            compressed.insert(CompressedEvent::new(field, pdu.event_sn));
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: pdu.event_id.clone(),
+                    event_sn: pdu.event_sn,
+                    room_id: mutual.clone(),
+                    room_server_id: None,
+                    user_id: member.clone(),
+                    user_server_id: member.server_name().to_owned(),
+                    sender_id: member.clone(),
+                    membership: "join".into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: crate::core::UnixMillis::now(),
+                })
+                .execute(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        let raw = json!({
+            "event_id": "$invite_profile_rule:example.org", "room_id": mutual,
+            "type": "m.room.join_rules", "sender": inviter, "state_key": "",
+            "content": {"join_rule": "invite"}, "origin_server_ts": 1,
+            "depth": 1, "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
+        });
+        let (pdu, _, guard) = PduBuilder::save_as_outlier(
+            serde_json::from_value(raw.clone()).unwrap(),
+            serde_json::from_value(raw).unwrap(),
+            &inviter,
+        )
+        .await
+        .unwrap();
+        drop(guard);
+        let field = state::ensure_field_id(&StateEventType::RoomJoinRules, "")
+            .await
+            .unwrap();
+        compressed.insert(CompressedEvent::new(field, pdu.event_sn));
+        let baseline = state::save_state(&mutual, Arc::new(compressed))
+            .await
+            .unwrap();
+        state::set_room_state(&mutual, baseline.frame_id)
+            .await
+            .unwrap();
+        // Malformed state in a second shared room must not break a valid relationship.
+        let malformed: OwnedRoomId = "!invite_profile_malformed:example.org".try_into().unwrap();
+        diesel::insert_into(rooms::table)
+            .values(data::room::NewDbRoom {
+                id: malformed.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        for (i, member) in [&invitee, &inviter].into_iter().enumerate() {
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$invite_profile_malformed_join_{i}:example.org")
+                        .try_into()
+                        .unwrap(),
+                    event_sn: 1,
+                    room_id: malformed.clone(),
+                    room_server_id: None,
+                    user_id: member.clone(),
+                    user_server_id: member.server_name().to_owned(),
+                    sender_id: member.clone(),
+                    membership: "join".into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: crate::core::UnixMillis::now(),
+                })
+                .execute(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        let raw = json!({
+            "event_id": "$invite_profile_malformed_rule:example.org", "room_id": malformed,
+            "type": "m.room.join_rules", "sender": inviter, "state_key": "", "content": {},
+            "origin_server_ts": 1, "depth": 1, "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
+        });
+        let (bad, _, guard) = PduBuilder::save_as_outlier(
+            serde_json::from_value(raw.clone()).unwrap(),
+            serde_json::from_value(raw).unwrap(),
+            &inviter,
+        )
+        .await
+        .unwrap();
+        drop(guard);
+        let bad_state: CompressedState = [CompressedEvent::new(field, bad.event_sn)]
+            .into_iter()
+            .collect();
+        let bad_frame = state::save_state(&malformed, Arc::new(bad_state))
+            .await
+            .unwrap();
+        state::set_room_state(&malformed, bad_frame.frame_id)
+            .await
+            .unwrap();
+        ensure_invite_allowed(&invitee, &inviter).await.unwrap();
+        // Many retained invitations from the same inviter share one relationship check.
+        for i in 0..8 {
+            let room_id: OwnedRoomId = format!("!invite_profile_target_{i}:example.org")
+                .try_into()
+                .unwrap();
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$invite_profile_target_{i}:example.org")
+                        .try_into()
+                        .unwrap(),
+                    event_sn: 1,
+                    room_id,
+                    room_server_id: None,
+                    user_id: invitee.clone(),
+                    user_server_id: invitee.server_name().to_owned(),
+                    sender_id: inviter.clone(),
+                    membership: "invite".into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: Some(json!([])),
+                    created_at: crate::core::UnixMillis::now(),
+                })
+                .execute(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        assert_eq!(invited_rooms_for_sync(&invitee, 0).await.unwrap().len(), 8);
+        for (i, member) in [&invitee, &inviter].into_iter().enumerate() {
+            let join_sn = room::user::join_sn(member, &mutual).await.unwrap();
+            let raw = json!({
+                "event_id": format!("$invite_profile_update_{i}:example.org"), "room_id": mutual,
+                "type": "m.room.member", "sender": member, "state_key": member,
+                "content": {"membership": "join", "displayname": "Changed", "avatar_url": "mxc://example.org/avatar"},
+                "origin_server_ts": 1, "depth": 1, "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
+            });
+            let (profile, _, guard) = PduBuilder::save_as_outlier(
+                serde_json::from_value(raw.clone()).unwrap(),
+                serde_json::from_value(raw).unwrap(),
+                member,
+            )
+            .await
+            .unwrap();
+            drop(guard);
+            crate::event::update_before_frame_id(&profile.event_id, baseline.frame_id)
+                .await
+                .unwrap();
+            diesel::update(
+                room_users::table
+                    .filter(room_users::room_id.eq(&mutual))
+                    .filter(room_users::user_id.eq(member)),
+            )
+            .set((
+                room_users::event_id.eq(&profile.event_id),
+                room_users::event_sn.eq(profile.event_sn),
+            ))
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+            assert_eq!(room::user::join_sn(member, &mutual).await.unwrap(), join_sn);
+            assert!(
+                invited_rooms_for_sync(&invitee, profile.event_sn)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(invited_rooms_for_sync(&invitee, 0).await.unwrap().len(), 8);
+        }
+        // With only the malformed shared room remaining, reject with the protocol error.
+        diesel::update(room_users::table.filter(room_users::room_id.eq(&mutual)))
+            .set(room_users::membership.eq("leave"))
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            ensure_invite_allowed(&invitee, &inviter).await,
+            Err(crate::AppError::Matrix(MatrixError {
+                kind: crate::core::error::ErrorKind::InviteBlocked,
+                ..
+            }))
+        ));
+        assert!(
+            invited_rooms_for_sync(&invitee, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
