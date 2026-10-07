@@ -31,7 +31,7 @@ impl InvitePermissionConfigEventContent {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches2::assert_matches;
+    use strass::assert_let;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
 
     use super::InvitePermissionConfigEventContent;
@@ -57,10 +57,7 @@ mod tests {
             "type": "m.invite_permission_config"
         });
 
-        assert_matches!(
-            from_json_value::<AnyGlobalAccountDataEvent>(json),
-            Ok(AnyGlobalAccountDataEvent::InvitePermissionConfig(ev))
-        );
+        assert_let!(Ok(AnyGlobalAccountDataEvent::InvitePermissionConfig(ev)) = from_json_value::<AnyGlobalAccountDataEvent>(json));
         assert!(ev.content.block_all);
     }
 }

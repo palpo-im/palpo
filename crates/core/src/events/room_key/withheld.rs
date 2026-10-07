@@ -241,8 +241,8 @@ pub enum RoomKeyWithheldCode {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{
         RoomKeyWithheldCodeInfo, RoomKeyWithheldSessionData, ToDeviceRoomKeyWithheldEventContent,
@@ -310,7 +310,7 @@ mod tests {
             content.reason.as_deref(),
             Some("Could not find an olm session")
         );
-        assert_matches!(content.code, RoomKeyWithheldCodeInfo::NoOlm);
+        assert_let!(RoomKeyWithheldCodeInfo::NoOlm = content.code);
     }
 
     #[test]
@@ -328,10 +328,7 @@ mod tests {
         assert_eq!(content.algorithm, EventEncryptionAlgorithm::MegolmV1AesSha2);
         assert_eq!(content.sender_key, Base64::new(PUBLIC_KEY.to_owned()));
         assert_eq!(content.reason, None);
-        assert_matches!(
-            content.code,
-            RoomKeyWithheldCodeInfo::Blacklisted(session_data)
-        );
+        assert_let!(RoomKeyWithheldCodeInfo::Blacklisted(session_data) = content.code);
         assert_eq!(session_data.room_id, room_id);
         assert_eq!(session_data.session_id, "unique_id");
     }
