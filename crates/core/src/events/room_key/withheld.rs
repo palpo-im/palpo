@@ -124,6 +124,10 @@ pub enum RoomKeyWithheldCodeInfo {
     #[serde(rename = "m.no_olm")]
     NoOlm,
 
+    /// `m.history_not_shared`: the megolm session is not marked for shared history.
+    #[serde(rename = "m.history_not_shared")]
+    HistoryNotShared(Box<RoomKeyWithheldSessionData>),
+
     #[doc(hidden)]
     #[serde(untagged)]
     _Custom(Box<CustomRoomKeyWithheldCodeInfo>),
@@ -138,6 +142,7 @@ impl RoomKeyWithheldCodeInfo {
             Self::Unauthorized(_) => RoomKeyWithheldCode::Unauthorized,
             Self::Unavailable(_) => RoomKeyWithheldCode::Unavailable,
             Self::NoOlm => RoomKeyWithheldCode::NoOlm,
+            Self::HistoryNotShared(_) => RoomKeyWithheldCode::HistoryNotShared,
             Self::_Custom(info) => info.code.as_str().into(),
         }
     }
@@ -163,6 +168,7 @@ impl<'de> Deserialize<'de> for RoomKeyWithheldCodeInfo {
             "m.unauthorised" => Self::Unauthorized(from_raw_json_value(&json)?),
             "m.unavailable" => Self::Unavailable(from_raw_json_value(&json)?),
             "m.no_olm" => Self::NoOlm,
+            "m.history_not_shared" => Self::HistoryNotShared(from_raw_json_value(&json)?),
             _ => Self::_Custom(from_raw_json_value(&json)?),
         })
     }
@@ -235,14 +241,17 @@ pub enum RoomKeyWithheldCode {
     /// An olm session could not be established.
     NoOlm,
 
+    /// `m.history_not_shared`: the megolm session is not marked for shared history.
+    HistoryNotShared,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
 }
 
 #[cfg(test)]
 mod tests {
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{
         RoomKeyWithheldCodeInfo, RoomKeyWithheldSessionData, ToDeviceRoomKeyWithheldEventContent,
@@ -252,6 +261,44 @@ mod tests {
 
     const PUBLIC_KEY: &[u8] = b"key";
     const BASE64_ENCODED_PUBLIC_KEY: &str = "a2V5";
+
+    #[test]
+    fn history_not_shared_round_trips_as_a_known_code() {
+        let room_id = owned_room_id!("!roomid:localhost");
+        let json = json!({
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "code": "m.history_not_shared",
+            "sender_key": BASE64_ENCODED_PUBLIC_KEY,
+            "room_id": room_id,
+            "session_id": "history_session"
+        });
+        let content: ToDeviceRoomKeyWithheldEventContent = from_json_value(json.clone()).unwrap();
+        let RoomKeyWithheldCodeInfo::HistoryNotShared(session) = &content.code else {
+            panic!("expected history-not-shared session data");
+        };
+        assert_eq!(session.room_id, room_id);
+        assert_eq!(session.session_id, "history_session");
+        assert!(matches!(
+            content.code.code(),
+            super::RoomKeyWithheldCode::HistoryNotShared
+        ));
+        assert_eq!(to_json_value(content).unwrap(), json);
+    }
+
+    #[test]
+    fn history_not_shared_requires_both_session_identifiers() {
+        for missing in ["room_id", "session_id"] {
+            let mut json = json!({
+                "algorithm": "m.megolm.v1.aes-sha2",
+                "code": "m.history_not_shared",
+                "sender_key": BASE64_ENCODED_PUBLIC_KEY,
+                "room_id": "!roomid:localhost",
+                "session_id": "history_session"
+            });
+            json.as_object_mut().unwrap().remove(missing);
+            assert!(from_json_value::<ToDeviceRoomKeyWithheldEventContent>(json).is_err());
+        }
+    }
 
     #[test]
     fn serialization_no_olm() {
@@ -310,7 +357,7 @@ mod tests {
             content.reason.as_deref(),
             Some("Could not find an olm session")
         );
-        assert_matches!(content.code, RoomKeyWithheldCodeInfo::NoOlm);
+        assert_let!(RoomKeyWithheldCodeInfo::NoOlm = content.code);
     }
 
     #[test]
@@ -328,10 +375,7 @@ mod tests {
         assert_eq!(content.algorithm, EventEncryptionAlgorithm::MegolmV1AesSha2);
         assert_eq!(content.sender_key, Base64::new(PUBLIC_KEY.to_owned()));
         assert_eq!(content.reason, None);
-        assert_matches!(
-            content.code,
-            RoomKeyWithheldCodeInfo::Blacklisted(session_data)
-        );
+        assert_let!(RoomKeyWithheldCodeInfo::Blacklisted(session_data) = content.code);
         assert_eq!(session_data.room_id, room_id);
         assert_eq!(session_data.session_id, "unique_id");
     }

@@ -67,8 +67,8 @@ impl From<UnstableMarkedUnreadEventContent> for MarkedUnreadEventContent {
 
 #[cfg(all(test, feature = "unstable-msc2867"))]
 mod tests {
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{MarkedUnreadEventContent, UnstableMarkedUnreadEventContent};
     use crate::events::{AnyRoomAccountDataEvent, RoomAccountDataEvent};
@@ -83,9 +83,9 @@ mod tests {
         });
         let unstable_marked_unread_account_data =
             from_json_value::<AnyRoomAccountDataEvent>(raw_unstable_marked_unread).unwrap();
-        assert_matches!(
-            unstable_marked_unread_account_data,
-            AnyRoomAccountDataEvent::UnstableMarkedUnread(unstable_marked_unread)
+        assert_let!(
+            AnyRoomAccountDataEvent::UnstableMarkedUnread(unstable_marked_unread) =
+                unstable_marked_unread_account_data
         );
         assert!(unstable_marked_unread.content.unread);
 
@@ -97,9 +97,8 @@ mod tests {
         });
         let marked_unread_account_data =
             from_json_value::<AnyRoomAccountDataEvent>(raw_marked_unread).unwrap();
-        assert_matches!(
-            marked_unread_account_data,
-            AnyRoomAccountDataEvent::MarkedUnread(marked_unread)
+        assert_let!(
+            AnyRoomAccountDataEvent::MarkedUnread(marked_unread) = marked_unread_account_data
         );
         assert!(marked_unread.content.unread);
     }

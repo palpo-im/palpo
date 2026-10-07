@@ -154,14 +154,13 @@ pub async fn load_pdus(
             query
                 .filter(events::sn.gt(start_sn))
                 .filter(events::is_rejected.eq(false))
-                .order(events::stream_ordering.desc())
+                .order((events::stream_ordering.asc(), events::sn.asc()))
                 .offset(offset)
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn))
                 .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
                 .await?
                 .into_iter()
-                .rev()
                 .collect()
         } else {
             query

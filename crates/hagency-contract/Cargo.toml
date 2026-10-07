@@ -1,0 +1,16 @@
+[package]
+name = "palpo-hagency-contract"
+description = "Versioned Hagency server-engagement and coordinator decision contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+palpo-identifiers-validation.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ryu-js = "1.0.3"
+thiserror.workspace = true

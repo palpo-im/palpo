@@ -103,7 +103,7 @@ pub(super) async fn get_members(
         .into_iter()
         .filter(|(key, _)| key.0 == StateEventType::RoomMember)
         .filter_map(|(_, pdu)| membership_filter(pdu, membership, not_membership, until_sn))
-        .map(|pdu| pdu.to_member_event_for(authed.user_id(), Some(authed.device_id())))
+        .map(|pdu| pdu.to_member_event_for(authed.user_id(), authed.device_id()))
         .collect();
 
     json_ok(MembersResBody { chunk: states })
@@ -320,7 +320,7 @@ pub(super) async fn join_room_by_id(
 
     crate::membership::join_room(
         &authed.user,
-        Some(authed.device_id()),
+        authed.device_id(),
         &room_id,
         body.as_ref().and_then(|body| body.reason.clone()),
         &servers,
@@ -488,7 +488,7 @@ pub(crate) async fn join_room_by_id_or_alias(
 
     let join_room_body = crate::membership::join_room(
         authed.user(),
-        Some(authed.device_id()),
+        authed.device_id(),
         &room_id,
         body.reason.clone(),
         &servers,

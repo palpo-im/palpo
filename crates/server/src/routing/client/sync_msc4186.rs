@@ -42,7 +42,7 @@ pub(super) async fn sync_events_v5(
 ) -> JsonResult<SyncEventsResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let device_id = authed.device_id();
+    let device_id = authed.require_device_id()?;
 
     let since_sn: i64 = args
         .pos

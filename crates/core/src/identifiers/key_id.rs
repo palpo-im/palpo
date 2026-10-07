@@ -219,8 +219,8 @@ impl KeyName for AnyKeyName {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches2::assert_matches;
     use palpo_identifiers_validation::Error;
+    use strass::assert_let;
 
     use super::DeviceKeyId;
 
@@ -241,13 +241,13 @@ mod tests {
     #[test]
     fn missing_colon_fails_to_parse() {
         let error = DeviceKeyId::parse("ed25519_MYDEVICE").expect_err("Should fail to parse");
-        assert_matches!(error, Error::MissingColon);
+        assert_let!(Error::MissingColon = error);
     }
 
     #[test]
     fn empty_algorithm_fails_to_parse() {
         let error = DeviceKeyId::parse(":MYDEVICE").expect_err("Should fail to parse");
         // Weirdly, this also reports MissingColon
-        assert_matches!(error, Error::MissingColon);
+        assert_let!(Error::MissingColon = error);
     }
 }

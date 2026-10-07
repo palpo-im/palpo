@@ -14,7 +14,7 @@ use crate::macros::EventContent;
 ///
 /// This event is defined in [MSC4268](https://github.com/matrix-org/matrix-spec-proposals/pull/4268)
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize, EventContent)]
-#[palpo_event(type = "io.element.msc4268.room_key_bundle", alias = "m.room_key_bundle", kind = ToDevice)]
+#[palpo_event(type = "m.room_key_bundle", alias = "io.element.msc4268.room_key_bundle", kind = ToDevice)]
 pub struct ToDeviceRoomKeyBundleEventContent {
     /// The room that these keys are for.
     pub room_id: OwnedRoomId,
@@ -82,5 +82,32 @@ mod tests {
             }),
             "The serialized value should match the declared JSON Value"
         );
+    }
+
+    #[test]
+    fn bundle_event_uses_stable_type_for_stable_and_legacy_input() {
+        use crate::events::AnyToDeviceEvent;
+
+        for event_type in ["m.room_key_bundle", "io.element.msc4268.room_key_bundle"] {
+            let json = json!({
+                "type": event_type,
+                "sender": "@alice:example.org",
+                "content": {
+                    "room_id": "!room:example.org",
+                    "file": {
+                        "v": "v2", "url": "mxc://example.org/key-bundle",
+                        "key": { "alg": "A256CTR", "ext": true, "k": "aWF6-32KGYaC3A_FEUCk1Bt0JA37zP0wrStgmdCaW-0", "key_ops": ["decrypt", "encrypt"], "kty": "oct" },
+                        "iv": "w+sE15fzSc0AAAAAAAAAAA", "hashes": { "sha256": "fdSLu/YkRx3Wyh3KQabP3rd6+SFiKg5lsJZQHtkSAYA" }
+                    }
+                }
+            });
+            let event: AnyToDeviceEvent = serde_json::from_value(json.clone()).unwrap();
+            let AnyToDeviceEvent::RoomKeyBundle(event) = event else {
+                panic!("room-key bundle must deserialize as the known event type");
+            };
+            let serialized = serde_json::to_value(event).unwrap();
+            assert_eq!(serialized["type"], "m.room_key_bundle");
+            assert_eq!(serialized["content"], json["content"]);
+        }
     }
 }

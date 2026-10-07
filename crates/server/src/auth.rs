@@ -10,7 +10,7 @@ use crate::data::user::{DbUser, DbUserDevice};
 #[derive(Clone, Debug)]
 pub struct AuthedInfo {
     pub user: DbUser,
-    pub user_device: DbUserDevice,
+    pub user_device: Option<DbUserDevice>,
     pub access_token_id: Option<i64>,
     pub appservice: Option<RegistrationInfo>,
 }
@@ -21,8 +21,14 @@ impl AuthedInfo {
     pub fn user_id(&self) -> &UserId {
         &self.user.id
     }
-    pub fn device_id(&self) -> &DeviceId {
-        &self.user_device.device_id
+    pub fn device_id(&self) -> Option<&DeviceId> {
+        self.user_device
+            .as_ref()
+            .map(|device| device.device_id.as_ref())
+    }
+    pub fn require_device_id(&self) -> Result<&DeviceId, MatrixError> {
+        self.device_id()
+            .ok_or_else(|| MatrixError::missing_param("This operation requires a device_id."))
     }
     pub fn access_token_id(&self) -> Option<i64> {
         self.access_token_id

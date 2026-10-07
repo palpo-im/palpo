@@ -5,7 +5,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use salvo::prelude::*;
 
 use crate::core::client::membership::{
-    MutualRoomsReqArgs, MutualRoomsResBody, MutualRoomsV1ReqArgs, MutualRoomsV1ResBody,
+    MutualRoomsReqArgs, MutualRoomsResBody, MutualRoomsUnstableReqArgs, MutualRoomsUnstableResBody,
+    MutualRoomsV1ReqArgs, MutualRoomsV1ResBody,
 };
 use crate::core::{MatrixError, OwnedRoomId, RoomId, UserId};
 use crate::{AppResult, AuthArgs, DepotExt, JsonResult, data, json_ok};
@@ -94,6 +95,20 @@ pub(super) async fn get_mutual_rooms(
         Some(token) => MutualRoomsResBody::with_token(joined, token),
         None => MutualRoomsResBody::new(joined),
     })
+}
+
+/// Get shared rooms using the current MSC2666 wire format.
+#[endpoint]
+pub(super) async fn get_mutual_rooms_unstable(
+    _aa: AuthArgs,
+    args: MutualRoomsUnstableReqArgs,
+    depot: &mut Depot,
+) -> JsonResult<MutualRoomsUnstableResBody> {
+    let authed = depot.authed_info()?;
+    validate_stable_target(authed.user_id(), &args.user_id)?;
+    let joined = mutual_room_ids(authed.user_id(), &args.user_id).await?;
+    let (_, joined, next_batch) = paginate_mutual_rooms(joined, args.from.as_deref())?;
+    json_ok(MutualRoomsUnstableResBody { joined, next_batch })
 }
 
 /// Get a paginated list of rooms shared by the authenticated user and another user.
@@ -185,5 +200,65 @@ mod tests {
         assert!(
             validate_stable_target(&user_id, owned_user_id!("@bob:example.org").as_ref()).is_ok()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_current_unstable_route_keeps_appservice_sender_identity() {
+        use salvo::prelude::*;
+        use salvo::test::{ResponseExt, TestClient};
+        use serde_json::{Value, json};
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "mutual.example", "db": { "url": "unused-test-config" }
+            }))
+            .unwrap()
+        });
+        let registration = serde_json::from_value(json!({
+            "id": "mutual-rooms-fixture", "url": null,
+            "as_token": "mutual-rooms-token", "hs_token": "fixture-hs-token",
+            "sender_localpart": "bridge",
+            "namespaces": { "users": [], "aliases": [], "rooms": [] }
+        }))
+        .unwrap();
+        crate::appservice::register_appservice(registration)
+            .await
+            .unwrap();
+        let service = Service::new(
+            Router::with_path("_matrix/client").push(crate::routing::client::unstable::router()),
+        );
+        let url = "http://localhost/_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms?user_id=%40outside%3Amutual.example";
+        let missing_token = TestClient::get(url).send(&service).await;
+        assert_eq!(missing_token.status_code, Some(StatusCode::UNAUTHORIZED));
+        let mut response = TestClient::get(url)
+            .add_header("Authorization", "Bearer mutual-rooms-token", true)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            response.take_json::<Value>().await.unwrap(),
+            json!({"joined": []})
+        );
+        // The target is deliberately outside the service's namespace. It must not
+        // be provisioned or selected as the authenticated user.
+        assert!(
+            !crate::data::user::user_exists(&owned_user_id!("@outside:mutual.example"))
+                .await
+                .unwrap()
+        );
+        let mut invalid_cursor = TestClient::get(format!("{url}&from=%25%25%25"))
+            .add_header("Authorization", "Bearer mutual-rooms-token", true)
+            .send(&service)
+            .await;
+        assert_eq!(invalid_cursor.status_code, Some(StatusCode::BAD_REQUEST));
+        assert_eq!(
+            invalid_cursor.take_json::<Value>().await.unwrap()["errcode"],
+            "M_INVALID_PARAM"
+        );
+        crate::appservice::unregister_appservice("mutual-rooms-fixture")
+            .await
+            .unwrap();
     }
 }
