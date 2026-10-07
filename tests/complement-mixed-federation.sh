@@ -21,26 +21,34 @@
 #   PALPO_SYNAPSE_TEST_SKIP
 #                  Additional go test -skip regex for Palpo -> Synapse direction.
 #   TEST_TIMEOUT   Go test timeout (default: 90m)
+#   ALLOWED_SKIPS  Newline-separated exact subtest names accepted by the results
+#                  gate. Defaults only to the documented to-device exclusions.
+# Requires Go, Docker, Python 3 and a Complement checkout at the revision used
+# by .github/workflows/complement.yml.
 
 set -euo pipefail
 
 COMPLEMENT_SRC="${1:?Path to Complement source is required}"
 RESULTS_DIR="${2:?Directory for test results is required}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CASES="$SCRIPT_DIR/complement/mixed-cases.txt"
 
 DIRECTION="${DIRECTION:-both}"
 PALPO_IMAGE="${PALPO_IMAGE:-complement-palpo}"
 SYNAPSE_IMAGE="${SYNAPSE_IMAGE:-complement-synapse}"
-DEFAULT_TEST_FILTER='^(TestDeviceListsUpdateOverFederation|TestUserAppearsInChangedDeviceListOnJoinOverFederation|TestContentMediaV1|TestRemotePresence|TestRemoteAliasRequestsUnderstandUnicode|TestUnbanViaInvite|TestFederationRejectInvite|TestJoinViaRoomIDAndServerName|TestJoinFederatedRoomFailOver|TestRemoteTyping|TestFederationRoomsInvite|TestToDeviceMessagesOverFederation|TestFederationKeyUploadQuery|TestRestrictedRoomsSpacesSummaryFederation|TestMessagesOverFederation)$'
+DEFAULT_TEST_FILTER="^($(awk '!/^#/ && NF == 2 {print $2}' "$CASES" | paste -sd '|' -))$"
 TEST_FILTER="${TEST_FILTER:-$DEFAULT_TEST_FILTER}"
 TEST_SKIP="${TEST_SKIP:-^TestToDeviceMessagesOverFederation$/^stopped_server$}"
 SYNAPSE_PALPO_TEST_SKIP="${SYNAPSE_PALPO_TEST_SKIP-^TestToDeviceMessagesOverFederation$/^interrupted_connectivity$}"
 PALPO_SYNAPSE_TEST_SKIP="${PALPO_SYNAPSE_TEST_SKIP-}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-90m}"
 
-test_packages=(
-    ./tests
-    ./tests/csapi
-)
+mapfile -t test_packages < <(awk '!/^#/ && NF == 2 {print "./" $1}' "$CASES" | sort -u)
+
+# Keep Palpo-specific coverage in this repository, rather than relying on
+# unmerged upstream Complement changes. Copy only our dedicated package.
+mkdir -p "$COMPLEMENT_SRC/tests/palpo_mixed"
+cp "$SCRIPT_DIR"/complement/mixed/*_test.go "$COMPLEMENT_SRC/tests/palpo_mixed/"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -79,6 +87,26 @@ run_direction() {
     effective_skip="$(combine_skip "$TEST_SKIP" "$direction_skip")"
 
     mkdir -p "$dir"
+    # Invalidate an earlier run before any operation that could fail.
+    printf '125\n' > "$dir/exit-code"
+    : > "$dir/results.jsonl"
+
+    # The default run must execute every manifest entry. TEST_FILTER overrides
+    # are diagnostic runs, and must not be described as full coverage.
+    if [[ "$TEST_FILTER" == "$DEFAULT_TEST_FILTER" ]]; then
+        cp "$CASES" "$dir/required-tests.txt"
+    else
+        : > "$dir/required-tests.txt"
+        echo "Diagnostic TEST_FILTER override: full coverage gate disabled"
+    fi
+    if [[ -v ALLOWED_SKIPS ]]; then
+        printf '%s\n' "$ALLOWED_SKIPS" > "$dir/allowed-skips.txt"
+    else
+        printf '%s\n' 'TestToDeviceMessagesOverFederation/stopped_server' > "$dir/allowed-skips.txt"
+        if [[ "$name" == "synapse-palpo" ]]; then
+            printf '%s\n' 'TestToDeviceMessagesOverFederation/interrupted_connectivity' >> "$dir/allowed-skips.txt"
+        fi
+    fi
 
     echo "=== Running mixed federation: $name ==="
     echo "Default image: $default_image"
@@ -86,6 +114,10 @@ run_direction() {
     echo "HS2 image:     $hs2_image"
     echo "Test filter:   $TEST_FILTER"
     echo "Test skip:     ${effective_skip:-<none>}"
+    git -C "$COMPLEMENT_SRC" rev-parse HEAD > "$dir/complement-revision" || return 1
+    printf 'hs1=%s\nhs2=%s\nfilter=%s\nskip=%s\n' \
+        "$hs1_image" "$hs2_image" "$TEST_FILTER" "$effective_skip" > "$dir/run-config.txt"
+    docker image inspect --format '{{.Id}}' "$hs1_image" "$hs2_image" > "$dir/image-ids.txt" || return 1
 
     go_test_args=(-tags="palpo_blacklist" -count=1 -timeout "$TEST_TIMEOUT" -run "$TEST_FILTER")
     if [[ -n "$effective_skip" ]]; then
@@ -100,28 +132,16 @@ run_direction() {
         COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
         COMPLEMENT_SHARE_ENV_PREFIX=PASS_ \
         PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite \
-        go test -p=1 -parallel=1 "${go_test_args[@]}" -json "${test_packages[@]}" \
+        go test -p=1 -parallel=1 "${go_test_args[@]}" -json "${test_packages[@]}" 2>&1 \
         | tee "$dir/results.jsonl"
-    local status=${PIPESTATUS[0]}
+    local pipeline_status=("${PIPESTATUS[@]}")
+    local status="${pipeline_status[0]}"
+    if [[ "${pipeline_status[1]}" -ne 0 ]]; then
+        status="${pipeline_status[1]}"
+    fi
     set -o pipefail
-
-    grep '^{' "$dir/results.jsonl" \
-        | jq -c 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | {Action: .Action, Test: .Test}' \
-        | jq -sc 'sort_by(
-            (if .Action == "fail" then 0 elif .Action == "skip" then 1 else 2 end),
-            .Test
-        )[]' > "$dir/__test_all.result.jsonl"
-
-    grep '^{' "$dir/results.jsonl" \
-        | jq -r 'select(.Output != null) | .Output' > "$dir/results.log"
-
-    echo "=== Test Summary ($name) ==="
-    echo "Total: $(wc -l < "$dir/__test_all.result.jsonl")"
-    echo "Pass:  $(grep -c '"pass"' "$dir/__test_all.result.jsonl" || true)"
-    echo "Fail:  $(grep -c '"fail"' "$dir/__test_all.result.jsonl" || true)"
-    echo "Skip:  $(grep -c '"skip"' "$dir/__test_all.result.jsonl" || true)"
-
-    return "$status"
+    printf '%s\n' "$status" > "$dir/exit-code"
+    python3 "$SCRIPT_DIR/mixed_federation_results.py" "$RESULTS_DIR" --direction "$name"
 }
 
 exit_code=0
