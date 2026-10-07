@@ -130,10 +130,15 @@ mod tests {
             };
             let mut response = request.send(&service).await;
             assert_eq!(response.status_code, Some(StatusCode::OK));
-            assert_eq!(
-                response.headers().get("content-type").unwrap(),
-                "application/json"
-            );
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse::<mime::Mime>()
+                .unwrap();
+            assert_eq!(content_type.essence_str(), "application/json");
             assert_eq!(
                 response.take_json::<Value>().await.unwrap(),
                 json!({"server": {"name": "Palpo", "version": env!("CARGO_PKG_VERSION")}})
