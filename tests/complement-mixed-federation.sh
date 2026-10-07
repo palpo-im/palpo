@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 # Run Complement federation tests with mixed homeserver implementations:
-# one Palpo homeserver and one Synapse homeserver.
+# one Palpo homeserver and one Synapse homeserver, with an explicit third peer
+# matching hs1 for ACL and restricted-join failover scenarios.
 #
 # Usage:
 #   bash tests/complement-mixed-federation.sh <complement-src> <results-dir>
@@ -11,7 +12,7 @@
 #   PALPO_IMAGE    Docker image for Palpo (default: complement-palpo)
 #   SYNAPSE_IMAGE  Docker image for Synapse (default: complement-synapse)
 #   TEST_FILTER    Go test -run regex. Defaults to mixed two-homeserver
-#                  federation/interoperability tests.
+#                  federation/interoperability tests, including three-peer cases.
 #   TEST_SKIP      Go test -skip regex (default: known unstable mixed restart
 #                  subtests)
 #   SYNAPSE_PALPO_TEST_SKIP
@@ -112,12 +113,13 @@ run_direction() {
     echo "Default image: $default_image"
     echo "HS1 image:     $hs1_image"
     echo "HS2 image:     $hs2_image"
+    echo "HS3 image:     $hs1_image (for three-peer tests)"
     echo "Test filter:   $TEST_FILTER"
     echo "Test skip:     ${effective_skip:-<none>}"
     git -C "$COMPLEMENT_SRC" rev-parse HEAD > "$dir/complement-revision" || return 1
-    printf 'hs1=%s\nhs2=%s\nfilter=%s\nskip=%s\n' \
-        "$hs1_image" "$hs2_image" "$TEST_FILTER" "$effective_skip" > "$dir/run-config.txt"
-    docker image inspect --format '{{.Id}}' "$hs1_image" "$hs2_image" > "$dir/image-ids.txt" || return 1
+    printf 'hs1=%s\nhs2=%s\nhs3=%s\nfilter=%s\nskip=%s\n' \
+        "$hs1_image" "$hs2_image" "$hs1_image" "$TEST_FILTER" "$effective_skip" > "$dir/run-config.txt"
+    docker image inspect --format '{{.Id}}' "$hs1_image" "$hs2_image" "$hs1_image" > "$dir/image-ids.txt" || return 1
 
     go_test_args=(-tags="palpo_blacklist" -count=1 -timeout "$TEST_TIMEOUT" -run "$TEST_FILTER")
     if [[ -n "$effective_skip" ]]; then
@@ -129,6 +131,7 @@ run_direction() {
         COMPLEMENT_BASE_IMAGE="$default_image" \
         COMPLEMENT_BASE_IMAGE_HS1="$hs1_image" \
         COMPLEMENT_BASE_IMAGE_HS2="$hs2_image" \
+        COMPLEMENT_BASE_IMAGE_HS3="$hs1_image" \
         COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
         COMPLEMENT_SHARE_ENV_PREFIX=PASS_ \
         PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite \

@@ -1,7 +1,8 @@
 # Mixed federation coverage
 
-The mixed job runs the same manifest twice: hs1=Synapse/hs2=Palpo and
-hs1=Palpo/hs2=Synapse. A successful local request is insufficient: tests must
+The mixed job runs the same manifest twice: hs1=Synapse/hs2=Palpo/hs3=Synapse and
+hs1=Palpo/hs2=Synapse/hs3=Palpo. Most cases deploy two peers; ACL and restricted
+failover cases deploy three. A successful local request is insufficient: tests must
 observe the response from the other implementation or the event in its sync.
 The manifest is `mixed-cases.txt`; it drives both selection and the results gate.
 
@@ -20,7 +21,8 @@ still built from its current default branch so compatibility changes are visible
 | Public room discovery | None; upstream TestPublicRooms deploys one server | Remote GET/POST, metadata, private-room exclusion, limit, complete pagination without duplicates, name/topic/no-match filters, unpublishing, invalid remote pagination errors |
 | Remote profile lookup | None; upstream profile federation tests use a simulated peer | Full profile, displayname and avatar lookup before sharing a room, Unicode values |
 | Alias resolution | Unicode lookup | Unicode resolution and actual join by alias, missing/deleted alias returning M_NOT_FOUND |
-| Membership | Invite, join by ID, candidate failover, invite rejection, ban/unban | Also remote leave/reinvite/rejoin, kick, knock and knock-restricted transitions; restricted joins and local-user remote authorization |
+| Membership | Invite, join by ID, candidate failover, invite rejection, ban/unban | Also remote leave/reinvite/rejoin, kick, knock and knock-restricted transitions; restricted joins, local-user remote authorization and three-peer restricted/knock-restricted candidate failover |
+| Server ACLs | None | Three-peer PDU and typing/receipt EDU deny rules, with a separate allowed room as a positive delivery control |
 | State and profile changes | Incidental state in message/join tests | Incremental remote topic and membership displayname/avatar updates, checked again via state retrieval |
 | PDUs | Messages and backfill | Also direct event retrieval, redaction observed on the peer, opaque encrypted-event payload integrity |
 | Receipt/typing/to-device EDUs | Typing and to-device | Also m.read receipt observed on the peer's incremental sync |
@@ -31,8 +33,8 @@ still built from its current default branch so compatibility changes are visible
 | Presence | Remote presence | Retained TestRemotePresence |
 
 The six Palpo-owned top-level tests live in `mixed/` and are copied into
-Complement's `tests/palpo_mixed` package. Six additional upstream membership
-tests are selected. Every default run must report all 27 manifest entries as
+Complement's `tests/palpo_mixed` package. Ten additional upstream membership/ACL
+tests are selected. Every default run must report all 31 manifest entries as
 passed in both directions. Subtest counts are not used as a coverage percentage.
 
 The Synapse fixture explicitly enables `allow_public_rooms_over_federation` in
@@ -58,8 +60,9 @@ silently classified as covered by an unrelated join/message test:
   Add the matching regression cases alongside those fixes.
 - Discovery through well-known delegation, SRV records, explicit ports, and
   DNS/TLS failures. Complement's fixed hs1/hs2 Docker routing does not model them.
-- Server ACL deny/allow and three-server restricted-join failover. These require
-  a third peer with an explicit mixed image assignment and isolated deployments.
+- ACL wildcard/IP-literal edge cases and larger topology permutations. The
+  selected ACL cases deny a named server and use a positive sentinel room;
+  they do not verify every ACL matching rule.
 - Malformed/mismatched signatures, expired signing keys, key rotation and
   notary failure. A programmable federation peer is needed; a successful join
   between two real servers cannot verify each rejection rule.
@@ -71,6 +74,13 @@ silently classified as covered by an unrelated join/message test:
 - Client-side E2EE key verification, decryption, cross-signing and recovery.
   The encrypted event test checks only opaque server-to-server relay.
 - Device deletion, cross-signing and key-query timeout/partial-failure handling.
+- Remote timestamp-to-event lookup; existing history tests primarily exercise
+  `/messages` and backfill, not that separate outgoing request path.
+- OpenID token validation/expiry and third-party identity invitations, which
+  require identity-service fixtures rather than another ordinary homeserver.
+- Peeking and policy-signing extensions: Palpo exposes these request paths,
+  but a stock Synapse peer does not establish support for their optional
+  protocols. They need capability-specific peers and explicit contract tests.
 
 Two existing unstable to-device subtests remain excluded: `stopped_server` in
 both directions and `interrupted_connectivity` for Synapse -> Palpo. Every other

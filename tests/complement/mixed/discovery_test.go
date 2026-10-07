@@ -134,7 +134,8 @@ func TestMixedPublicRooms(t *testing.T) {
 				t.Fatalf("invalid remote token returned unexpected HTTP %d", status)
 			}
 			body := jsonResponse(t, res, status)
-			if body.Get("errcode").Str == "" || body.Get("chunk").Exists() || strings.Contains(body.Get("error").Str, "missing field") {
+			message := body.Get("error").Str
+			if body.Get("errcode").Str == "" || body.Get("chunk").Exists() || strings.Contains(message, "missing field") || strings.Contains(message, "error decoding response body") {
 				t.Fatalf("remote error was decoded as a successful directory: %s", body.Raw)
 			}
 		})

@@ -21,6 +21,11 @@ tests TestRestrictedRoomsRemoteJoin
 tests TestRestrictedRoomsRemoteJoinLocalUser
 tests TestRestrictedRoomsRemoteJoinInMSC3787Room
 tests TestRestrictedRoomsRemoteJoinLocalUserInMSC3787Room
+# Three real peers: hs3 uses the same implementation as hs1 in each direction.
+tests TestACLs
+tests TestACLsForEDUs
+tests TestRestrictedRoomsRemoteJoinFailOver
+tests TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room
 # History visibility and backfill across real homeservers.
 tests/csapi TestMessagesOverFederation
 # Palpo-owned scenarios, copied into the Complement checkout by the runner.
