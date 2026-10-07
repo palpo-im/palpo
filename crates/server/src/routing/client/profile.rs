@@ -133,6 +133,11 @@ fn custom_profile_fields(fields: JsonValue) -> BTreeMap<String, JsonValue> {
 }
 
 fn ensure_custom_profile_field(field: &str) -> Result<(), MatrixError> {
+    if field.len() > 255 {
+        return Err(MatrixError::key_too_large(
+            "Profile keys must not exceed 255 bytes.",
+        ));
+    }
     if matches!(field, "avatar_url" | "displayname" | "xyz.amorgan.blurhash") {
         return Err(MatrixError::invalid_param(
             "Use the dedicated profile endpoint for this field.",
@@ -140,8 +145,7 @@ fn ensure_custom_profile_field(field: &str) -> Result<(), MatrixError> {
     }
 
     // Matrix Common Namespaced Identifier Grammar (v1.16 appendices).
-    if field.len() > 255
-        || !field.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+    if !field.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         || !field.bytes().all(|c| {
             c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_' | b'.')
         })
@@ -584,5 +588,98 @@ mod tests {
             assert!(ensure_custom_profile_field(field).is_err(), "{field}");
         }
         assert!(ensure_custom_profile_field(&"a".repeat(256)).is_err());
+    }
+
+    #[test]
+    fn oversized_profile_keys_use_the_specified_error() {
+        let error = ensure_custom_profile_field(&"a".repeat(256)).unwrap_err();
+        assert!(matches!(
+            error.kind,
+            crate::core::error::ErrorKind::KeyTooLarge
+        ));
+        for code in ["M_KEY_TOO_LARGE", "M_PROFILE_TOO_LARGE"] {
+            let kind: crate::core::error::ErrorKind =
+                serde_json::from_value(serde_json::json!({"errcode": code})).unwrap();
+            assert_eq!(serde_json::to_value(kind).unwrap()["errcode"], code);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_profile_size_rejections_roll_back_fields_and_stream() {
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+        use serde_json::json;
+
+        use crate::data::schema::user_profile_changes;
+        use crate::data::{self};
+
+        crate::test_database::init();
+        let user_id: crate::core::OwnedUserId = "@profile:example.org".try_into().unwrap();
+        data::user::create_user(&data::user::NewDbUser {
+            id: user_id.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user_id.localpart().into(),
+            server_name: user_id.server_name().to_owned(),
+            appservice_id: None,
+            created_at: crate::core::UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        data::user::ensure_profile_exists(&user_id).await.unwrap();
+        // Serialized writers must validate the combined profile inside their transactions.
+        let (first, second) = tokio::join!(
+            data::user::set_profile_field(&user_id, "org.example.one", json!("a".repeat(35_000))),
+            data::user::set_profile_field(&user_id, "org.example.two", json!("b".repeat(35_000))),
+        );
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        let rejected = if first.is_err() { first } else { second };
+        assert!(matches!(
+            rejected,
+            Err(data::DataError::Matrix(crate::core::MatrixError {
+                kind: crate::core::error::ErrorKind::ProfileTooLarge,
+                ..
+            }))
+        ));
+        let before = data::user::get_profile(&user_id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.fields.as_object().unwrap().len(), 1);
+        assert!(
+            data::user::set_global_display_name(&user_id, Some(&"x".repeat(35_000)))
+                .await
+                .is_err()
+        );
+        assert!(
+            data::user::set_global_avatar_and_blurhash(&user_id, None, Some(&"x".repeat(35_000)))
+                .await
+                .is_err()
+        );
+        assert!(
+            data::user::set_profile_field(&user_id, &"a".repeat(256), json!(1))
+                .await
+                .is_err()
+        );
+        let after = data::user::get_profile(&user_id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.fields, before.fields);
+        assert_eq!(after.display_name, before.display_name);
+        assert_eq!(after.blurhash, before.blurhash);
+        let count = user_profile_changes::table
+            .filter(user_profile_changes::user_id.eq(&user_id))
+            .count()
+            .get_result::<i64>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "rejected mutations must publish no change-stream entries"
+        );
     }
 }

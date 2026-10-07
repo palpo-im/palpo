@@ -130,6 +130,46 @@ fn capabilities(fleet: &mut Value, input: &Value, server: &ServerName, now: u64)
         "coordinatorAgentControlV1":input["coordinatorAgentControlV1"]==true,
         "coordinatorProjectSetupV1":input["coordinatorProjectSetupV1"]==true,
         "coordinatorAgentProfileV1":input["coordinatorAgentProfileV1"]==true,"observedAt":iso(now)?});
+    // A display-only snapshot, carried by the authenticated, sequenced provider
+    // lane. Never derive authorization or new allocation capacity from it.
+    if let Some(raw) = input.get("resourceBudgets") {
+        let rows = raw
+            .as_array()
+            .filter(|r| r.len() <= 2048)
+            .ok_or_else(|| fail(400, "invalid_resource_budgets"))?;
+        let observed = input["resourceBudgetObservedAtMs"]
+            .as_u64()
+            .filter(|n| *n <= 9_007_199_254_740_991 && *n <= now.saturating_add(5000))
+            .ok_or_else(|| fail(400, "invalid_resource_budgets"))?;
+        let mut clean = serde_json::Map::new();
+        for row in rows {
+            let id: palpo_hagency_contract::ResourceAllocationId =
+                text(row, "id")?.to_owned().try_into()?;
+            let resource = text(row, "resourceId")?;
+            let revision: palpo_hagency_contract::Revision =
+                serde_json::from_value(row["revision"].clone())?;
+            let amount = |key: &str| -> Result<u64> {
+                let value: palpo_hagency_contract::Tokens =
+                    serde_json::from_value(row[key].clone())?;
+                Ok(u64::from(value))
+            };
+            let allocated = amount("allocatedTokens")?;
+            let retained = amount("retainedTokens")?;
+            let remaining = amount("remainingTokens")?;
+            if remaining != allocated.saturating_sub(retained)
+                || row["overdrawn"] != (retained > allocated)
+                || clean.contains_key(id.as_str())
+            {
+                return Err(fail(400, "invalid_resource_budgets"));
+            }
+            clean.insert(id.as_str().to_owned(), json!({"resourceId":resource,"revision":revision,
+                "allocatedTokens":allocated,"retainedTokens":retained,"remainingTokens":remaining,
+                "overdrawn":retained>allocated,"period":text(row,"period")?,"periodKey":text(row,"periodKey")?}));
+        }
+        fleet["capabilities"]["resourceBudgets"] = Value::Object(clean);
+        fleet["capabilities"]["resourceBudgetObservedAtMs"] = json!(observed);
+        fleet["capabilities"]["resourceBudgetReceivedAtMs"] = json!(now);
+    }
     fleet["capabilityRead"] = json!({"state":"current","observedAt":iso(now)?});
     Ok(())
 }
@@ -814,4 +854,64 @@ pub fn apply(
     let id = text(&fleet, "id")?.to_owned();
     state["fleets"][id] = fleet;
     Ok(json!({"ok":true}))
+}
+
+#[cfg(test)]
+mod resource_budget_tests {
+    use super::*;
+    fn input() -> Value {
+        json!({"v":1,"fleetId":"fleet_a","serverName":"example.test",
+            "representativeMxid":"@fleet_a_representative:example.test","approvalBotMxid":"@fleet_a_approval:example.test",
+            "offers":[],"resourceBudgetObservedAtMs":1000,"resourceBudgets":[{
+                "id":"grant_a","resourceId":"resource_0123456789abcdef01234567","revision":1,
+                "allocatedTokens":1000,"retainedTokens":300,"remainingTokens":700,"overdrawn":false,
+                "period":"monthly","periodKey":"2026-10"}]})
+    }
+    fn fleet() -> Value {
+        json!({"id":"fleet_a","representativeMxid":"@fleet_a_representative:example.test"})
+    }
+    #[test]
+    fn resource_budget_snapshot_validates_and_old_providers_clear_capacity() {
+        let server = "example.test".to_owned().try_into().unwrap();
+        let mut f = fleet();
+        let original = input();
+        capabilities(&mut f, &original, &server, 1000).unwrap();
+        assert_eq!(
+            f["capabilities"]["resourceBudgets"]["grant_a"]["remainingTokens"],
+            700
+        );
+        assert_eq!(f["capabilities"]["resourceBudgetReceivedAtMs"], 1000);
+        for (field, value) in [
+            ("remainingTokens", json!(800)),
+            ("overdrawn", json!(true)),
+            ("allocatedTokens", json!(9007199254740992_u64)),
+            ("retainedTokens", json!(-1)),
+            ("revision", json!(0)),
+        ] {
+            let mut changed = original.clone();
+            changed["resourceBudgets"][0][field] = value;
+            assert!(
+                capabilities(&mut fleet(), &changed, &server, 1000).is_err(),
+                "accepted {field}"
+            );
+        }
+        let mut duplicate = original.clone();
+        duplicate["resourceBudgets"]
+            .as_array_mut()
+            .unwrap()
+            .push(original["resourceBudgets"][0].clone());
+        assert!(capabilities(&mut fleet(), &duplicate, &server, 1000).is_err());
+        let mut future = original.clone();
+        future["resourceBudgetObservedAtMs"] = json!(6001);
+        assert!(capabilities(&mut fleet(), &future, &server, 1000).is_err());
+        let mut over = original.clone();
+        over["resourceBudgets"][0]["retainedTokens"] = json!(1200);
+        over["resourceBudgets"][0]["remainingTokens"] = json!(0);
+        over["resourceBudgets"][0]["overdrawn"] = json!(true);
+        capabilities(&mut f, &over, &server, 1000).unwrap();
+        let mut legacy = original;
+        legacy.as_object_mut().unwrap().remove("resourceBudgets");
+        capabilities(&mut f, &legacy, &server, 1000).unwrap();
+        assert!(f["capabilities"].get("resourceBudgets").is_none());
+    }
 }

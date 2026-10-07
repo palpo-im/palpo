@@ -32,7 +32,8 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     let mut challenged_body = if let Ok(body) = &body {
         if signing_key_payload_missing(body) {
             if let Some(session) = body.auth.as_ref().and_then(|auth| auth.session()) {
-                load_challenged_signing_key_payload(sender_id, authed.device_id(), session).await?
+                load_challenged_signing_key_payload(sender_id, authed.require_device_id()?, session)
+                    .await?
             } else {
                 None
             }
@@ -89,7 +90,8 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
     {
         if let Ok(json) = serde_json::from_slice::<CanonicalJsonValue>(payload) {
             uiaa_info.session = Some(utils::random_string(SESSION_ID_LENGTH));
-            crate::uiaa::create_session(sender_id, authed.device_id(), &uiaa_info, json).await?;
+            crate::uiaa::create_session(sender_id, authed.require_device_id()?, &uiaa_info, json)
+                .await?;
             return Err(uiaa_info.into());
         } else {
             return Err(MatrixError::not_json("no json body was sent when required").into());
@@ -104,12 +106,16 @@ pub(super) async fn upload(_aa: AuthArgs, req: &mut Request, depot: &mut Depot) 
         if challenged_body.is_none()
             && let Some(session) = auth.session()
         {
-            challenged_body =
-                load_challenged_signing_key_payload(sender_id, authed.device_id(), session).await?;
+            challenged_body = load_challenged_signing_key_payload(
+                sender_id,
+                authed.require_device_id()?,
+                session,
+            )
+            .await?;
         }
 
         let (authenticated, uiaa) =
-            crate::uiaa::try_auth(sender_id, authed.device_id(), auth, &uiaa_info).await?;
+            crate::uiaa::try_auth(sender_id, authed.require_device_id()?, auth, &uiaa_info).await?;
         if !authenticated {
             return Err(uiaa.into());
         }

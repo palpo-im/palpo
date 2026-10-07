@@ -239,9 +239,9 @@ pub struct CustomRtcFocusInfo {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "unstable-msc4143")]
-    use assert_matches2::assert_matches;
-    #[cfg(feature = "unstable-msc4143")]
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    #[cfg(feature = "unstable-msc4143")]
+    use strass::assert_let;
 
     #[cfg(feature = "unstable-msc4143")]
     use super::RtcFocusInfo;
@@ -259,7 +259,7 @@ mod tests {
         let focus: RtcFocusInfo = from_json_value(json).unwrap();
 
         // Then it should be recognized as a LiveKit focus with the correct service URL.
-        assert_matches!(focus, RtcFocusInfo::LiveKit(info));
+        assert_let!(RtcFocusInfo::LiveKit(info) = focus);
         assert_eq!(info.service_url, "https://livekit.example.com");
     }
 

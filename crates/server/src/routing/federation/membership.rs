@@ -312,6 +312,7 @@ async fn invite_user(
     if event_id != args.event_id {
         return Err(MatrixError::bad_json("event ID does not match the request path").into());
     }
+    crate::membership::ensure_invite_allowed(&invitee_id).await?;
     let mut auth_event = signed_event.clone();
     auth_event.insert(
         "event_id".to_owned(),

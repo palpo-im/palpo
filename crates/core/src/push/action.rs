@@ -315,8 +315,8 @@ pub struct CustomTweak {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches2::assert_matches;
     use serde_json::{from_value as from_json_value, json, to_value as to_json_value};
+    use strass::assert_let;
 
     use super::{Action, HighlightTweakValue, SoundTweakValue, Tweak};
 
@@ -348,10 +348,7 @@ mod tests {
 
     #[test]
     fn deserialize_string() {
-        assert_matches!(
-            from_json_value::<Action>(json!("notify")),
-            Ok(Action::Notify)
-        );
+        assert_let!(Ok(Action::Notify) = from_json_value::<Action>(json!("notify")));
     }
 
     #[test]
@@ -360,9 +357,8 @@ mod tests {
             "set_tweak": "sound",
             "value": "default"
         });
-        assert_matches!(
-            from_json_value::<Action>(json_data),
-            Ok(Action::SetTweak(Tweak::Sound(value)))
+        assert_let!(
+            Ok(Action::SetTweak(Tweak::Sound(value))) = from_json_value::<Action>(json_data)
         );
         assert_eq!(value, SoundTweakValue::Default);
 
@@ -370,9 +366,8 @@ mod tests {
             "set_tweak": "sound",
             "value": "custom"
         });
-        assert_matches!(
-            from_json_value::<Action>(json_data),
-            Ok(Action::SetTweak(Tweak::Sound(value)))
+        assert_let!(
+            Ok(Action::SetTweak(Tweak::Sound(value))) = from_json_value::<Action>(json_data)
         );
         assert_eq!(value.as_str(), "custom");
     }
@@ -383,17 +378,17 @@ mod tests {
             "set_tweak": "highlight",
             "value": true
         });
-        assert_matches!(
-            from_json_value::<Action>(json_data),
-            Ok(Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes)))
+        assert_let!(
+            Ok(Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes))) =
+                from_json_value::<Action>(json_data)
         );
     }
 
     #[test]
     fn deserialize_tweak_highlight_with_default_value() {
-        assert_matches!(
-            from_json_value::<Action>(json!({ "set_tweak": "highlight" })),
-            Ok(Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes)))
+        assert_let!(
+            Ok(Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes))) =
+                from_json_value::<Action>(json!({ "set_tweak": "highlight" }))
         );
     }
 }

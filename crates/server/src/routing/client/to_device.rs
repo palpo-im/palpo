@@ -34,12 +34,8 @@ async fn send_to_device(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     // Check if this is a new transaction id
-    if crate::transaction_id::txn_id_exists(
-        &args.txn_id,
-        authed.user_id(),
-        Some(authed.device_id()),
-    )
-    .await?
+    if crate::transaction_id::txn_id_exists(&args.txn_id, authed.user_id(), authed.device_id())
+        .await?
     {
         return empty_ok();
     }
@@ -106,7 +102,7 @@ async fn send_to_device(
     crate::transaction_id::add_txn_id(
         &args.txn_id,
         authed.user_id(),
-        Some(authed.device_id()),
+        authed.device_id(),
         None,
         None,
     )
