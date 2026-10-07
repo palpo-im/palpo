@@ -219,15 +219,14 @@ pub async fn sync_events(
         left_rooms.insert(room_id.to_owned(), left_room);
     }
 
-    let invite_snapshot = crate::membership::invited_rooms_for_sync(
+    let mut invite_snapshot = crate::membership::invited_rooms_for_sync(
         sender_id,
         since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
+        curr_sn,
     )
     .await?;
-    let invited_rooms: BTreeMap<_, _> = invite_snapshot
-        .rooms
-        .iter()
-        .cloned()
+    let invited_rooms: BTreeMap<_, _> = std::mem::take(&mut invite_snapshot.rooms)
+        .into_iter()
         .map(|(room_id, invite_state_events)| {
             (
                 room_id,

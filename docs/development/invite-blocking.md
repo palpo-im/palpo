@@ -19,33 +19,48 @@ join rules are checked against current local state for each request, including f
 
 The check applies before local invite persistence (including `createRoom` and
 membership state writes), to federation invite endpoints, and to incoming invite
-PDUs. Retained invitations are filtered in ordinary and sliding sync, including
-explicit sliding-sync room subscriptions, until they first qualify. That decision
-is persisted for the current invitation membership in `room_invite_admissions`
-only after a complete sync response includes its invitation state. Inventory reads
-are side-effect free: sliding-sync filters, ranges, and count-only responses do not
-admit unseen invitations. Explicit subscriptions use the same response-based rule.
-Invites returned while the account allows invitations are also admitted, so later
-enabling `deny_public` does not hide invites already shown to clients. Hidden,
-unadmitted invitations still need a qualifying relationship. Once admitted, a
-pending invite remains visible even if the users later stop
-sharing a qualifying room. New invitations still require a current relationship.
-This preserves the same view for incremental clients, fresh syncs, and other devices
-without treating loss of a shared relationship as an invitation withdrawal.
+PDUs. Both authorization and sync read permission, current joined memberships and
+room-state frame IDs in short, read-only, repeatable-read transactions. Rule checks
+use those immutable frames, so they cannot combine old memberships with newer rules.
 
-Incremental sync can expose a previously hidden invitation when it first qualifies.
-Adding another qualifying room, qualifying-to-qualifying rule changes, and profile
-updates do not replay an already admitted invite. Stable `block` and ignore lists
-still suppress invitations; the existing account-data replay behavior is preserved.
-The migration ties admissions to `room_users.id` with cascading deletion: replacing
-or ending an invitation removes its admission, so new invitations cannot inherit
-old trust. The decision survives restarts and is shared across server instances.
+Sync reads each invitation's membership row ID, event ID, sender, stream position,
+stripped state and existing admission together. The same captured state is used
+in both ordinary and sliding-sync responses; rendering does not reload by room ID.
+Inventory reads have no side effects. Only invitation states included in a complete
+response receive admission records, after list filters, ranges and subscriptions.
+Count-only responses and excluded rooms do not admit unseen invitations.
 
-Each sync batches membership checks for distinct, not-yet-admitted inviters, reads
-the recipient's joins once, and caches shared-room rules for that request. Sliding
-sync reuses its invitation snapshot. Membership reads and appservice delivery retain
-their existing behavior. Disabling the Cargo feature treats the experimental action
-as unknown and omits its support flag.
+The pending-invitation lifecycle is:
+
+| State | Sync behavior |
+| --- | --- |
+| Unadmitted, currently ineligible under `deny_public` | Hidden; no admission is written. |
+| Unadmitted, currently eligible or allowed | May be returned; admission is written only if selected in the completed response. |
+| Already admitted | Remains visible while pending, even if qualification is later lost; stable `block` and ignore lists still suppress it. |
+| Ended or replaced | The old admission is deleted; the new event must establish its own eligibility. |
+
+Eligibility is a current-state predicate, not a membership/history-change position.
+First delivery uses the response's captured stream position, so eligible invitations
+committed after a client passed their event position can still be delivered once.
+Permissions, memberships and join rules beyond the captured response cursor wait
+for the next sync, so a future change cannot receive an earlier delivery position.
+Other devices with older cursors receive the admission; the delivering client does
+not replay it at the next cursor. Additional qualifying rooms, rule changes and
+join-to-join profile updates cannot restamp an admitted invitation. Account-data
+replay behavior is preserved. Invites returned while allowing all senders are also
+admitted, so enabling `deny_public` later preserves invitations already shown.
+New invitations still require a current relationship.
+
+`room_invite_admissions` is tied to `room_users.id` with cascading deletion.
+Before recording delivery, the server locks and verifies both the captured membership
+ID and event ID. A replaced invitation cannot inherit a stale snapshot's admission.
+Ordered, idempotent inserts preserve the first delivery across concurrent devices
+and instances. Decisions survive restarts.
+
+Checks batch distinct unadmitted inviters and cache each immutable shared-room frame
+within the request. Membership reads and appservice delivery keep their existing
+behavior. Disabling the Cargo feature treats the experimental action as unknown and
+omits its support flag.
 
 Run the database regressions against an empty, dedicated PostgreSQL database:
 

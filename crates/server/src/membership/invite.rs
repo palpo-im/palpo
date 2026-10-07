@@ -12,96 +12,58 @@ pub(crate) async fn ensure_invite_allowed(
     invitee_id: &UserId,
     inviter_id: &UserId,
 ) -> AppResult<()> {
-    if invitee_id.is_local() && data::user::invite_blocked(invitee_id).await? {
+    if !invitee_id.is_local() {
+        return Ok(());
+    }
+    #[cfg(feature = "unstable-msc4494")]
+    let membership_action = Some("uk.timedout.msc4494.deny_public");
+    #[cfg(not(feature = "unstable-msc4494"))]
+    let membership_action = None;
+    let permission = data::user::invite_permission_snapshot(
+        invitee_id,
+        &[inviter_id.to_owned()],
+        membership_action,
+    )
+    .await?;
+    if permission.default_action.as_deref() == Some("block") {
         return Err(MatrixError::invite_blocked("This user has blocked room invites.").into());
     }
     #[cfg(feature = "unstable-msc4494")]
-    if invitee_id.is_local()
-        && denies_public_invites(invitee_id).await?
-        && !shares_non_public_room(invitee_id, inviter_id).await?
+    if permission.default_action.as_deref() == membership_action
+        && !eligible_inviters(&permission.shared_rooms, i64::MAX)
+            .await?
+            .contains(inviter_id)
     {
         return Err(
             MatrixError::invite_blocked("No shared non-public room with the inviter.").into(),
         );
     }
-    #[cfg(not(feature = "unstable-msc4494"))]
-    let _ = inviter_id;
     Ok(())
-}
-
-#[cfg(feature = "unstable-msc4494")]
-async fn denies_public_invites(user_id: &UserId) -> AppResult<bool> {
-    let config =
-        data::user::get_global_data::<serde_json::Value>(user_id, "m.invite_permission_config")
-            .await?;
-    Ok(config
-        .as_ref()
-        .and_then(|c| c.get("default_action"))
-        .and_then(serde_json::Value::as_str)
-        == Some("uk.timedout.msc4494.deny_public"))
-}
-
-#[cfg(feature = "unstable-msc4494")]
-async fn shares_non_public_room(invitee: &UserId, inviter: &UserId) -> AppResult<bool> {
-    Ok(invite_relationship_changes(invitee, &[inviter.to_owned()])
-        .await?
-        .contains_key(inviter))
 }
 
 /// Resolve each distinct inviter once and each shared room's rule once per request.
 #[cfg(feature = "unstable-msc4494")]
-async fn invite_relationship_changes(
-    invitee: &UserId,
-    inviters: &[OwnedUserId],
-) -> AppResult<std::collections::HashMap<OwnedUserId, i64>> {
-    use std::collections::HashMap;
-
-    use data::schema::room_users;
-    use diesel::{ExpressionMethods, QueryDsl};
-    use diesel_async::RunQueryDsl;
+async fn eligible_inviters(
+    shared_rooms: &[data::user::SharedInviteRoom],
+    until_sn: i64,
+) -> AppResult<std::collections::HashSet<OwnedUserId>> {
+    use std::collections::{HashMap, HashSet};
 
     use crate::core::events::StateEventType;
     use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
     use crate::core::room::JoinRule;
-
-    // Historical memberships cannot establish a relationship. Match joined_rooms'
-    // latest-row semantics for inviters, limiting the batch to the recipient's rooms.
-    let invitee_rooms = data::user::joined_rooms(invitee).await?;
-    let mut changes: HashMap<OwnedUserId, i64> = HashMap::new();
-    if invitee_rooms.is_empty() || inviters.is_empty() {
-        return Ok(changes);
-    }
-    let memberships = room_users::table
-        .filter(room_users::user_id.eq_any(inviters))
-        .filter(room_users::room_id.eq_any(&invitee_rooms))
-        .distinct_on((room_users::user_id, room_users::room_id))
-        .select((
-            room_users::user_id,
-            room_users::room_id,
-            room_users::membership,
-        ))
-        .order_by((
-            room_users::user_id.desc(),
-            room_users::room_id.desc(),
-            room_users::id.desc(),
-        ))
-        .load::<(OwnedUserId, OwnedRoomId, String)>(&mut data::connect().await?)
-        .await?;
-    let mut qualifying_rooms: HashMap<OwnedRoomId, Option<i64>> = HashMap::new();
-    for (inviter, room_id, membership) in memberships {
-        if membership != "join" {
-            continue;
-        }
+    let mut eligible = HashSet::new();
+    let mut qualifying_frames: HashMap<i64, bool> = HashMap::new();
+    for shared in shared_rooms {
         if let std::collections::hash_map::Entry::Vacant(entry) =
-            qualifying_rooms.entry(room_id.clone())
+            qualifying_frames.entry(shared.frame_id)
         {
-            let rule_sn =
-                match room::get_state(&room_id, &StateEventType::RoomJoinRules, "", None).await {
-                    Ok(pdu) => {
-                        // Bad state disqualifies this room, not the entire invitation or sync.
+            let qualifies =
+                match state::get_state(shared.frame_id, &StateEventType::RoomJoinRules, "").await {
+                    Ok(pdu) if pdu.event_sn <= until_sn => {
                         serde_json::from_str::<RoomJoinRulesEventContent>(pdu.content.get())
                             .ok()
-                            .filter(|content| {
+                            .is_some_and(|content| {
                                 matches!(
                                     content.join_rule,
                                     JoinRule::Invite
@@ -110,46 +72,29 @@ async fn invite_relationship_changes(
                                         | JoinRule::KnockRestricted(_)
                                 )
                             })
-                            .map(|_| pdu.event_sn)
                     }
-                    Err(e) if e.is_not_found() => None,
+                    Ok(_) => false,
+                    Err(e) if e.is_not_found() => false,
                     Err(e) => return Err(e),
                 };
-            let change = if let Some(rule_sn) = rule_sn {
-                match room::user::join_sn(invitee, &room_id).await {
-                    Ok(join_sn) => Some(rule_sn.max(join_sn)),
-                    Err(e) if e.is_not_found() => None,
-                    Err(e) => return Err(e),
-                }
-            } else {
-                None
-            };
-            entry.insert(change);
+            entry.insert(qualifies);
         }
-        if let Some(Some(room_change)) = qualifying_rooms.get(&room_id) {
-            // The current joined period starts before join-to-join profile updates.
-            let inviter_join_sn = match room::user::join_sn(&inviter, &room_id).await {
-                Ok(join_sn) => join_sn,
-                Err(e) if e.is_not_found() => continue,
-                Err(e) => return Err(e),
-            };
-            let change = (*room_change).max(inviter_join_sn);
-            changes
-                .entry(inviter)
-                .and_modify(|previous| *previous = (*previous).max(change))
-                .or_insert(change);
+        if qualifying_frames.get(&shared.frame_id) == Some(&true) {
+            eligible.insert(shared.inviter.clone());
         }
     }
-    Ok(changes)
+    Ok(eligible)
 }
 
 /// Read-only invitation inventory, with decisions tied to the exact membership rows.
 /// Persist only the subset included in a successfully constructed sync response.
 #[derive(Default)]
 pub(crate) struct InviteSyncSnapshot {
-    pub(crate) rooms: Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>,
+    pub(crate) rooms: std::collections::BTreeMap<OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>>,
     #[cfg(feature = "unstable-msc4494")]
-    pending_admissions: std::collections::HashMap<OwnedRoomId, (i64, i64)>,
+    delivery_sn: i64,
+    #[cfg(feature = "unstable-msc4494")]
+    pending_admissions: std::collections::HashMap<OwnedRoomId, (i64, OwnedEventId)>,
 }
 
 impl InviteSyncSnapshot {
@@ -158,10 +103,10 @@ impl InviteSyncSnapshot {
         {
             let candidates: Vec<_> = room_ids
                 .iter()
-                .filter_map(|room_id| self.pending_admissions.get(*room_id).copied())
+                .filter_map(|room_id| self.pending_admissions.get(*room_id).cloned())
                 .collect();
             if !candidates.is_empty() {
-                admit_pending_invites(candidates).await?;
+                admit_pending_invites(candidates, self.delivery_sn).await?;
             }
         }
         #[cfg(not(feature = "unstable-msc4494"))]
@@ -174,125 +119,57 @@ impl InviteSyncSnapshot {
 pub(crate) async fn invited_rooms_for_sync(
     user_id: &UserId,
     since_sn: i64,
+    until_sn: i64,
 ) -> AppResult<InviteSyncSnapshot> {
-    let invites = data::user::invited_rooms_for_sync(user_id, since_sn).await?;
     #[cfg(feature = "unstable-msc4494")]
-    if denies_public_invites(user_id).await? {
-        use data::schema::{room_invite_admissions, room_users};
-        use diesel::{ExpressionMethods, QueryDsl};
-        use diesel_async::RunQueryDsl;
-        // The invitation can predate a newly qualifying membership or join rule.
-        // Previously hidden invites can be returned when they first qualify,
-        // also preserving account-data replay already handled by the data layer.
-        let incremental_rooms: std::collections::HashSet<_> =
-            invites.iter().map(|(room_id, _)| room_id.clone()).collect();
-        // Sliding sync already requested all invitations. Reuse that snapshot.
-        let retained = if since_sn == 0 {
-            invites
-        } else {
-            data::user::invited_rooms_for_sync(user_id, 0).await?
-        };
-        if retained.is_empty() {
-            return Ok(InviteSyncSnapshot::default());
-        }
-        let room_ids: Vec<_> = retained.iter().map(|(room_id, _)| room_id).collect();
-        let current_invites: std::collections::HashMap<OwnedRoomId, (i64, OwnedUserId)> =
-            room_users::table
-                .filter(room_users::user_id.eq(user_id))
-                .filter(room_users::room_id.eq_any(&room_ids))
-                .filter(room_users::membership.eq("invite"))
-                .distinct_on(room_users::room_id)
-                .order_by((room_users::room_id.desc(), room_users::id.desc()))
-                .select((room_users::room_id, room_users::id, room_users::sender_id))
-                .load::<(OwnedRoomId, i64, OwnedUserId)>(&mut data::connect().await?)
-                .await?
-                .into_iter()
-                .map(|(room_id, id, sender)| (room_id, (id, sender)))
-                .collect();
-        let invite_ids: Vec<_> = current_invites.values().map(|(id, _)| *id).collect();
-        let mut admitted: std::collections::HashMap<i64, i64> = room_invite_admissions::table
-            .filter(room_invite_admissions::room_user_id.eq_any(&invite_ids))
-            .select((
-                room_invite_admissions::room_user_id,
-                room_invite_admissions::admitted_sn,
-            ))
-            .load::<(i64, i64)>(&mut data::connect().await?)
-            .await?
-            .into_iter()
-            .collect();
-        // Once actually returned, a pending invitation stays admitted. Losing a shared
-        // relationship does not hide it from a fresh client.
-        let unique_inviters: std::collections::HashSet<_> = current_invites
-            .values()
-            .filter(|(id, _)| !admitted.contains_key(id))
-            .map(|(_, sender)| sender.clone())
-            .collect();
-        let unique_inviters: Vec<_> = unique_inviters.into_iter().collect();
-        let changes = if unique_inviters.is_empty() {
-            std::collections::HashMap::new()
-        } else {
-            invite_relationship_changes(user_id, &unique_inviters).await?
-        };
-        let pending_admissions: std::collections::HashMap<_, _> = current_invites
-            .iter()
-            .filter(|(_, (id, _))| !admitted.contains_key(id))
-            .filter_map(|(room_id, (id, sender))| {
-                changes.get(sender).map(|sn| (room_id.clone(), (*id, *sn)))
-            })
-            .collect();
-        // Evaluate eligibility without admitting inventory entries that list filters
-        // or ranges may exclude. The finished response commits only its subset.
-        admitted.extend(pending_admissions.values().copied());
-        let mut allowed = Vec::new();
-        for (room_id, room_state) in retained {
-            if let Some((id, _)) = current_invites.get(&room_id)
-                && let Some(admitted_sn) = admitted.get(id)
-                && (incremental_rooms.contains(&room_id) || *admitted_sn >= since_sn)
-            {
-                allowed.push((room_id, room_state));
-            }
-        }
-        return Ok(InviteSyncSnapshot {
-            rooms: allowed,
-            pending_admissions,
-        });
-    }
-    #[allow(unused_mut)]
+    let retained_action = Some("uk.timedout.msc4494.deny_public");
+    #[cfg(not(feature = "unstable-msc4494"))]
+    let retained_action = None;
+    let inventory =
+        data::user::invite_sync_inventory(user_id, since_sn, until_sn, retained_action).await?;
     let mut snapshot = InviteSyncSnapshot {
-        rooms: invites,
-        ..Default::default()
+        rooms: std::collections::BTreeMap::new(),
+        #[cfg(feature = "unstable-msc4494")]
+        delivery_sn: until_sn,
+        #[cfg(feature = "unstable-msc4494")]
+        pending_admissions: std::collections::HashMap::new(),
     };
     #[cfg(feature = "unstable-msc4494")]
-    if !snapshot.rooms.is_empty() {
-        use data::schema::{room_invite_admissions, room_users};
-        use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
-        use diesel_async::RunQueryDsl;
-
-        // Prepare admissions under an allowing preference, without writing them
-        // until the response identifies the invitation rooms actually returned.
-        let room_ids: Vec<_> = snapshot.rooms.iter().map(|(room_id, _)| room_id).collect();
-        let candidates = room_users::table
-            .left_join(
-                room_invite_admissions::table
-                    .on(room_invite_admissions::room_user_id.eq(room_users::id)),
-            )
-            .filter(room_users::user_id.eq(user_id))
-            .filter(room_users::room_id.eq_any(&room_ids))
-            .filter(room_users::membership.eq("invite"))
-            .filter(room_invite_admissions::room_user_id.is_null())
-            .select((room_users::room_id, room_users::id, room_users::event_sn))
-            .load::<(OwnedRoomId, i64, i64)>(&mut data::connect().await?)
-            .await?;
-        snapshot.pending_admissions = candidates
-            .into_iter()
-            .map(|(room_id, id, sn)| (room_id, (id, sn)))
-            .collect();
+    let deny_public = inventory.default_action.as_deref() == retained_action;
+    #[cfg(feature = "unstable-msc4494")]
+    let eligible = eligible_inviters(&inventory.shared_rooms, until_sn).await?;
+    for invite in inventory.invites {
+        #[cfg(feature = "unstable-msc4494")]
+        if deny_public {
+            if invite.admitted_sn.is_none() && !eligible.contains(&invite.sender_id) {
+                continue;
+            }
+            // Never-delivered, eligible invitations are sent once, even if their event
+            // was committed late or the client already synced past the qualification.
+            if let Some(admitted_sn) = invite.admitted_sn
+                && invite.event_sn < inventory.replay_since_sn
+                && admitted_sn < since_sn
+            {
+                continue;
+            }
+        }
+        #[cfg(feature = "unstable-msc4494")]
+        if invite.admitted_sn.is_none() {
+            snapshot.pending_admissions.insert(
+                invite.room_id.clone(),
+                (invite.membership_id, invite.event_id),
+            );
+        }
+        snapshot.rooms.insert(invite.room_id, invite.state);
     }
     Ok(snapshot)
 }
 
 #[cfg(feature = "unstable-msc4494")]
-async fn admit_pending_invites(mut candidates: Vec<(i64, i64)>) -> AppResult<()> {
+async fn admit_pending_invites(
+    mut candidates: Vec<(i64, OwnedEventId)>,
+    delivery_sn: i64,
+) -> AppResult<()> {
     use data::schema::{room_invite_admissions, room_users};
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -305,23 +182,23 @@ async fn admit_pending_invites(mut candidates: Vec<(i64, i64)>) -> AppResult<()>
             // A concurrent join/leave can replace the pending membership. Hold its
             // key while inserting admissions, instead of racing the foreign key.
             let candidate_ids: Vec<_> = candidates.iter().map(|(id, _)| *id).collect();
-            let live: std::collections::HashSet<_> = room_users::table
+            let live: std::collections::HashMap<_, _> = room_users::table
                 .filter(room_users::id.eq_any(&candidate_ids))
                 .filter(room_users::membership.eq("invite"))
                 .order_by(room_users::id.asc())
-                .select(room_users::id)
+                .select((room_users::id, room_users::event_id))
                 .for_key_share()
-                .load::<i64>(conn)
+                .load::<(i64, OwnedEventId)>(conn)
                 .await?
                 .into_iter()
                 .collect();
             let values: Vec<_> = candidates
                 .iter()
-                .filter(|(id, _)| live.contains(id))
-                .map(|(id, sn)| {
+                .filter(|(id, event_id)| live.get(id) == Some(event_id))
+                .map(|(id, _)| {
                     (
                         room_invite_admissions::room_user_id.eq(*id),
-                        room_invite_admissions::admitted_sn.eq(*sn),
+                        room_invite_admissions::admitted_sn.eq(delivery_sn),
                     )
                 })
                 .collect();
@@ -577,17 +454,12 @@ mod tests {
         user_id: &UserId,
         since_sn: i64,
     ) -> AppResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
-        let snapshot = super::invited_rooms_for_sync(user_id, since_sn).await?;
+        let snapshot =
+            super::invited_rooms_for_sync(user_id, since_sn, data::curr_sn().await?).await?;
         snapshot
-            .record_returned(
-                &snapshot
-                    .rooms
-                    .iter()
-                    .map(|(id, _)| id.as_ref())
-                    .collect::<Vec<_>>(),
-            )
+            .record_returned(&snapshot.rooms.keys().map(AsRef::as_ref).collect::<Vec<_>>())
             .await?;
-        Ok(snapshot.rooms)
+        Ok(snapshot.rooms.into_iter().collect())
     }
 
     #[tokio::test]
@@ -896,6 +768,8 @@ mod tests {
         // Membership alone does not suffice when the join rule is unavailable.
         assert_blocked(ensure_invite_allowed(&invitee, &inviter).await);
 
+        let mut qualifying_frame = None;
+        let mut public_frame = None;
         for (i, rule) in [
             "public",
             "malformed",
@@ -960,6 +834,12 @@ mod tests {
                 *rule,
                 "invite" | "knock" | "restricted" | "knock_restricted"
             );
+            if allowed {
+                qualifying_frame = Some(delta.frame_id);
+            }
+            if *rule == "public" {
+                public_frame = Some(delta.frame_id);
+            }
             assert_eq!(
                 ensure_membership_invite_allowed(&builder, &inviter)
                     .await
@@ -972,7 +852,10 @@ mod tests {
                 allowed,
                 "{rule}"
             );
-            let inventory = super::invited_rooms_for_sync(&invitee, 0).await.unwrap();
+            let inventory =
+                super::invited_rooms_for_sync(&invitee, 0, data::curr_sn().await.unwrap())
+                    .await
+                    .unwrap();
             assert_eq!(inventory.rooms.len(), usize::from(allowed));
             use crate::data::schema::room_invite_admissions;
             assert!(
@@ -1063,6 +946,131 @@ mod tests {
                 }
             }
         }
+        // Current qualification and the rule used to prove it share a pinned frame.
+        state::set_room_state(&mutual, qualifying_frame.unwrap())
+            .await
+            .unwrap();
+        let permission = data::user::invite_permission_snapshot(
+            &invitee,
+            std::slice::from_ref(&inviter),
+            Some("uk.timedout.msc4494.deny_public"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            eligible_inviters(&permission.shared_rooms, 0)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a rule beyond the response boundary must not establish early eligibility"
+        );
+        state::set_room_state(&mutual, public_frame.unwrap())
+            .await
+            .unwrap();
+        assert!(
+            eligible_inviters(&permission.shared_rooms, i64::MAX)
+                .await
+                .unwrap()
+                .contains(&inviter),
+            "rule lookup must use the captured frame instead of a newer rule"
+        );
+        assert_blocked(ensure_invite_allowed(&invitee, &inviter).await);
+        state::set_room_state(&mutual, qualifying_frame.unwrap())
+            .await
+            .unwrap();
+        // Reserve a stream position, then commit the new invite after a client passed it.
+        let mut delayed = room_users::table
+            .filter(room_users::user_id.eq(&invitee))
+            .filter(room_users::room_id.eq(&target))
+            .first::<data::room::DbRoomUser>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::delete(room_users::table.find(delayed.id))
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        delayed.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
+        )
+        .get_result(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+        delayed.event_id = "$membership_delayed_invite:example.org".try_into().unwrap();
+        delayed.event_sn = data::next_sn().await.unwrap();
+        let since = delayed.event_sn + 1;
+        for _ in 0..3 {
+            data::next_sn().await.unwrap();
+        }
+        let until = data::curr_sn().await.unwrap();
+        let delayed_id = delayed.id;
+        diesel::insert_into(room_users::table)
+            .values(delayed)
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let snapshot = super::invited_rooms_for_sync(&invitee, since, until)
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.rooms.len(),
+            1,
+            "an eligible, never-delivered invite must survive a passed event cursor"
+        );
+        snapshot.record_returned(&[target.as_ref()]).await.unwrap();
+        use crate::data::schema::room_invite_admissions;
+        let first_delivery = room_invite_admissions::table
+            .find(delayed_id)
+            .select(room_invite_admissions::admitted_sn)
+            .first::<i64>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            first_delivery, until,
+            "delivery has its own position, separate from qualification and event positions"
+        );
+        data::next_sn().await.unwrap();
+        assert!(
+            super::invited_rooms_for_sync(&invitee, until + 1, data::curr_sn().await.unwrap())
+                .await
+                .unwrap()
+                .rooms
+                .is_empty(),
+            "the delivering client must not receive a duplicate"
+        );
+        assert_eq!(
+            super::invited_rooms_for_sync(&invitee, since, data::curr_sn().await.unwrap())
+                .await
+                .unwrap()
+                .rooms
+                .len(),
+            1,
+            "another device with an older cursor must receive the admission"
+        );
+        let captured = data::curr_sn().await.unwrap();
+        data::user::set_data(
+            &invitee,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "allow"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            super::invited_rooms_for_sync(&invitee, 0, captured)
+                .await
+                .unwrap()
+                .rooms
+                .is_empty(),
+            "a permission update beyond the response token must wait for the next sync"
+        );
+        assert_eq!(
+            super::invited_rooms_for_sync(&invitee, 0, data::curr_sn().await.unwrap())
+                .await
+                .unwrap()
+                .rooms
+                .len(),
+            1
+        );
     }
 
     #[cfg(feature = "unstable-msc4494")]

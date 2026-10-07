@@ -182,38 +182,308 @@ pub async fn invite_blocked(user_id: &UserId) -> DataResult<bool> {
         == Some("block"))
 }
 
-/// Invites visible to the recipient's sync. Other reads and appservice delivery
-/// retain the original membership records.
-pub async fn invited_rooms_for_sync(
+/// One invitation event: identity, sender, state and admission come from one SQL row.
+pub struct SyncInvitation {
+    pub membership_id: i64,
+    pub event_id: OwnedEventId,
+    pub event_sn: i64,
+    pub room_id: OwnedRoomId,
+    pub sender_id: OwnedUserId,
+    pub state: Vec<RawJson<AnyStrippedStateEvent>>,
+    pub admitted_sn: Option<i64>,
+}
+
+/// A shared-room membership snapshot pins the immutable room-state frame as well.
+pub struct SharedInviteRoom {
+    pub inviter: OwnedUserId,
+    pub frame_id: i64,
+}
+
+pub struct InvitePermissionSnapshot {
+    pub default_action: Option<String>,
+    pub shared_rooms: Vec<SharedInviteRoom>,
+}
+
+async fn read_invite_permission(
+    conn: &mut diesel_async::AsyncPgConnection,
     user_id: &UserId,
-    since_sn: i64,
-) -> DataResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
-    let config = user_datas::table
+) -> DataResult<Option<DbUserData>> {
+    Ok(user_datas::table
         .filter(user_datas::user_id.eq(user_id))
         .filter(user_datas::room_id.is_null())
         .filter(user_datas::data_type.eq("m.invite_permission_config"))
         .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect().await?)
+        .first::<DbUserData>(conn)
         .await
-        .optional()?;
-    let mut invite_since = since_sn;
-    if let Some(config) = config {
-        if !config.is_deleted
-            && config
-                .json_data
-                .get("default_action")
-                .and_then(JsonValue::as_str)
-                == Some("block")
-        {
-            return Ok(Vec::new());
-        }
-        // An allowing update (including a tombstone) re-exposes retained invites
-        // that the client synced past while blocking was enabled.
-        if config.occur_sn >= since_sn {
-            invite_since = 0;
-        }
+        .optional()?)
+}
+
+fn invite_default_action(config: Option<&DbUserData>) -> Option<String> {
+    config
+        .filter(|config| !config.is_deleted)
+        .and_then(|config| config.json_data.get("default_action"))
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+}
+
+async fn read_shared_invite_rooms(
+    conn: &mut diesel_async::AsyncPgConnection,
+    invitee: &UserId,
+    inviters: &[OwnedUserId],
+    until_sn: i64,
+) -> DataResult<Vec<SharedInviteRoom>> {
+    if inviters.is_empty() {
+        return Ok(Vec::new());
     }
-    invited_rooms(user_id, invite_since).await
+    let recipient_rooms = room_users::table
+        .filter(room_users::user_id.eq(invitee))
+        .distinct_on(room_users::room_id)
+        .order_by((room_users::room_id.desc(), room_users::id.desc()))
+        .select((
+            room_users::room_id,
+            room_users::membership,
+            room_users::event_sn,
+        ))
+        .load::<(OwnedRoomId, String, i64)>(conn)
+        .await?;
+    let joined: Vec<_> = recipient_rooms
+        .into_iter()
+        .filter(|(_, membership, event_sn)| membership == "join" && *event_sn <= until_sn)
+        .map(|(room_id, ..)| room_id)
+        .collect();
+    if joined.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = room_users::table
+        .inner_join(rooms::table.on(room_users::room_id.eq(rooms::id)))
+        .filter(room_users::user_id.eq_any(inviters))
+        .filter(room_users::room_id.eq_any(joined))
+        .distinct_on((room_users::user_id, room_users::room_id))
+        .order_by((
+            room_users::user_id.desc(),
+            room_users::room_id.desc(),
+            room_users::id.desc(),
+        ))
+        .select((
+            room_users::user_id,
+            room_users::membership,
+            room_users::event_sn,
+            rooms::state_frame_id,
+        ))
+        .load::<(OwnedUserId, String, i64, Option<i64>)>(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, membership, event_sn, _)| membership == "join" && *event_sn <= until_sn)
+        .filter_map(|(inviter, _, _, frame_id)| {
+            frame_id.map(|frame_id| SharedInviteRoom { inviter, frame_id })
+        })
+        .collect())
+}
+
+/// New-invite authorization uses one permission/membership/room-frame snapshot.
+pub async fn invite_permission_snapshot(
+    invitee: &UserId,
+    inviters: &[OwnedUserId],
+    membership_action: Option<&str>,
+) -> DataResult<InvitePermissionSnapshot> {
+    connect()
+        .await?
+        .build_transaction()
+        .read_only()
+        .repeatable_read()
+        .run::<_, DataError, _>(async |conn| {
+            let config = read_invite_permission(conn, invitee).await?;
+            let default_action = invite_default_action(config.as_ref());
+            let shared_rooms =
+                if membership_action.is_some() && default_action.as_deref() == membership_action {
+                    read_shared_invite_rooms(conn, invitee, inviters, i64::MAX).await?
+                } else {
+                    Vec::new()
+                };
+            Ok(InvitePermissionSnapshot {
+                default_action,
+                shared_rooms,
+            })
+        })
+        .await
+}
+
+pub struct InviteSyncInventory {
+    pub default_action: Option<String>,
+    pub replay_since_sn: i64,
+    pub invites: Vec<SyncInvitation>,
+    pub shared_rooms: Vec<SharedInviteRoom>,
+}
+
+/// Read permission, ignored senders and invitations from one repeatable-read snapshot.
+/// `retained_action` asks for older invites for an action whose eligibility is dynamic.
+pub async fn invite_sync_inventory(
+    user_id: &UserId,
+    since_sn: i64,
+    until_sn: i64,
+    retained_action: Option<&str>,
+) -> DataResult<InviteSyncInventory> {
+    connect()
+        .await?
+        .build_transaction()
+        .read_only()
+        .repeatable_read()
+        .run::<_, DataError, _>(async |conn| {
+            let config = read_invite_permission(conn, user_id).await?;
+            let default_action = invite_default_action(config.as_ref());
+            let replay_since_sn = if config
+                .as_ref()
+                .is_some_and(|config| config.occur_sn >= since_sn)
+            {
+                0
+            } else {
+                since_sn
+            };
+            // Permission updates beyond the response boundary are reconsidered on the
+            // next sync, rather than assigning their visibility an earlier position.
+            if default_action.as_deref() == Some("block")
+                || config
+                    .as_ref()
+                    .is_some_and(|config| config.occur_sn > until_sn)
+            {
+                return Ok(InviteSyncInventory {
+                    default_action,
+                    replay_since_sn,
+                    invites: Vec::new(),
+                    shared_rooms: Vec::new(),
+                });
+            }
+            let load_since =
+                if retained_action.is_some() && default_action.as_deref() == retained_action {
+                    0
+                } else {
+                    replay_since_sn
+                };
+            let latest_membership = diesel::alias!(room_users as latest_invite_membership);
+            let latest = latest_membership
+                .filter(latest_membership.field(room_users::user_id).eq(user_id))
+                .distinct_on(latest_membership.field(room_users::room_id))
+                .order_by((
+                    latest_membership.field(room_users::room_id).desc(),
+                    latest_membership.field(room_users::id).desc(),
+                ))
+                .select(latest_membership.field(room_users::id));
+            let mut query = room_users::table
+                .left_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(user_id))
+                .filter(room_users::id.eq_any(latest))
+                .filter(room_users::membership.eq("invite"))
+                .filter(room_users::event_sn.le(until_sn))
+                .filter(
+                    room_users::sender_id.ne_all(
+                        user_ignores::table
+                            .filter(user_ignores::user_id.eq(user_id))
+                            .select(user_ignores::ignored_id),
+                    ),
+                )
+                .distinct_on(room_users::room_id)
+                .order_by((room_users::room_id.desc(), room_users::id.desc()))
+                .select((
+                    room_users::id,
+                    room_users::event_id,
+                    room_users::event_sn,
+                    room_users::room_id,
+                    room_users::sender_id,
+                    room_users::state_data,
+                    room_invite_admissions::admitted_sn.nullable(),
+                ))
+                .into_boxed();
+            // Tracking is enabled only with the membership-filtering feature. It also
+            // recovers late/unseen allowed invites and admissions made on other devices.
+            query = if retained_action.is_some() {
+                query.filter(
+                    room_users::event_sn
+                        .ge(load_since)
+                        .or(room_invite_admissions::room_user_id.is_null())
+                        .or(room_invite_admissions::admitted_sn.ge(since_sn)),
+                )
+            } else {
+                query.filter(room_users::event_sn.ge(load_since))
+            };
+            let rows = query
+                .load::<(
+                    i64,
+                    OwnedEventId,
+                    i64,
+                    OwnedRoomId,
+                    OwnedUserId,
+                    Option<JsonValue>,
+                    Option<i64>,
+                )>(conn)
+                .await?;
+            let invites: Vec<SyncInvitation> = rows
+                .into_iter()
+                .filter_map(
+                    |(
+                        membership_id,
+                        event_id,
+                        event_sn,
+                        room_id,
+                        sender_id,
+                        state,
+                        admitted_sn,
+                    )| {
+                        state
+                            .and_then(|state| serde_json::from_value(state).ok())
+                            .map(|state| SyncInvitation {
+                                membership_id,
+                                event_id,
+                                event_sn,
+                                room_id,
+                                sender_id,
+                                state,
+                                admitted_sn,
+                            })
+                    },
+                )
+                .collect();
+            let shared_rooms =
+                if retained_action.is_some() && default_action.as_deref() == retained_action {
+                    let inviters: std::collections::HashSet<_> = invites
+                        .iter()
+                        .filter(|invite| invite.admitted_sn.is_none())
+                        .map(|invite| invite.sender_id.clone())
+                        .collect();
+                    read_shared_invite_rooms(
+                        conn,
+                        user_id,
+                        &inviters.into_iter().collect::<Vec<_>>(),
+                        until_sn,
+                    )
+                    .await?
+                } else {
+                    Vec::new()
+                };
+            Ok(InviteSyncInventory {
+                default_action,
+                replay_since_sn,
+                invites,
+                shared_rooms,
+            })
+        })
+        .await
+}
+
+/// Stable permission filtering; membership reads and appservice delivery stay unchanged.
+pub async fn invited_rooms_for_sync(
+    user_id: &UserId,
+    since_sn: i64,
+) -> DataResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
+    Ok(invite_sync_inventory(user_id, since_sn, i64::MAX, None)
+        .await?
+        .invites
+        .into_iter()
+        .map(|invite| (invite.room_id, invite.state))
+        .collect())
 }
 
 /// Returns an iterator over all rooms a user was invited to.
