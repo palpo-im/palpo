@@ -52,6 +52,7 @@ fn router_inner() -> Router {
         client = client
             .push(
                 Router::with_path(v)
+                    .push(admin::authed_router())
                     .push(account::public_router())
                     .push(profile::public_router())
                     .push(register::public_router())
@@ -80,7 +81,6 @@ fn router_inner() -> Router {
                     .push(profile::authed_router())
                     .push(voip::authed_router())
                     .push(appservice::authed_router())
-                    .push(admin::authed_router())
                     .push(third_party::authed_router())
                     .push(to_device::authed_router())
                     .push(auth::authed_router())
@@ -265,6 +265,9 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
         unstable_features.insert("org.matrix.msc4140".to_owned(), true);
     }
 
+    #[cfg(feature = "unstable-msc4484")]
+    unstable_features.insert("org.continuwuity.msc4484.unstable".to_owned(), true);
+
     // Selective presence is privacy-sensitive: advertising it while only part of the
     // behaviour exists would tell clients their presence is restricted when it is not, so
     // it is only advertised when the whole feature is compiled in.
@@ -294,6 +297,18 @@ mod supported_versions_tests {
     use serde_json::{json, to_value as to_json_value};
 
     use super::{SUPPORTED_MATRIX_VERSIONS, supported_versions_body};
+
+    #[test]
+    fn msc4484_is_advertised_only_when_built_in() {
+        let advertised = supported_versions_body(false)
+            .unstable_features
+            .get("org.continuwuity.msc4484.unstable")
+            .copied();
+        assert_eq!(
+            advertised,
+            cfg!(feature = "unstable-msc4484").then_some(true)
+        );
+    }
 
     #[test]
     fn advertised_versions_are_explicitly_reviewed() {

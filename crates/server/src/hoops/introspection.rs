@@ -114,37 +114,94 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
     Ok(result)
 }
 
-/// Extract device_id from OAuth scope string.
-/// Looks for `urn:matrix:client:device:<id>` or the unstable variant.
-pub fn device_id_from_scope(scope: &str) -> Option<String> {
-    let mut device_id: Option<&str> = None;
-    for part in scope.split_whitespace() {
-        if let Some(id) = part
-            .strip_prefix("urn:matrix:client:device:")
-            .or_else(|| part.strip_prefix("urn:matrix:org.matrix.msc2967.client:device:"))
-        {
-            if id.is_empty() || device_id.is_some_and(|previous| previous != id) {
+/// Validated, space-delimited OAuth scopes (RFC 6749 section 3.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OAuthScopes(std::collections::BTreeSet<String>);
+
+impl OAuthScopes {
+    pub fn parse(scope: &str) -> Option<Self> {
+        let mut scopes = std::collections::BTreeSet::new();
+        for part in scope.split(' ') {
+            if part.is_empty()
+                || !part
+                    .bytes()
+                    .all(|b| matches!(b, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+            {
                 return None;
             }
-            device_id = Some(id);
+            scopes.insert(part.to_owned());
         }
+        Some(Self(scopes))
     }
-    device_id.map(ToOwned::to_owned)
+
+    pub fn contains(&self, scope: &str) -> bool {
+        self.0.contains(scope)
+    }
+
+    pub fn has_matrix_api_scope(&self) -> bool {
+        self.contains("urn:matrix:client:api:*")
+            || self.contains("urn:matrix:org.matrix.msc2967.client:api:*")
+    }
+
+    /// Require one unambiguous device, allowing stable and unstable aliases.
+    pub fn device_id(&self) -> Option<&str> {
+        let mut device_id = None;
+        for part in &self.0 {
+            if let Some(id) = part
+                .strip_prefix("urn:matrix:client:device:")
+                .or_else(|| part.strip_prefix("urn:matrix:org.matrix.msc2967.client:device:"))
+            {
+                if id.is_empty() || device_id.is_some_and(|previous| previous != id) {
+                    return None;
+                }
+                device_id = Some(id);
+            }
+        }
+        device_id
+    }
 }
 
-/// Only Matrix API-scoped OAuth tokens can authorize Client-Server API calls.
+pub fn device_id_from_scope(scope: &str) -> Option<String> {
+    OAuthScopes::parse(scope)?
+        .device_id()
+        .map(ToOwned::to_owned)
+}
+
 pub fn has_matrix_api_scope(scope: &str) -> bool {
-    scope.split_whitespace().any(|part| {
-        matches!(
-            part,
-            "urn:matrix:client:api:*" | "urn:matrix:org.matrix.msc2967.client:api:*"
-        )
-    })
+    OAuthScopes::parse(scope).is_some_and(|scopes| scopes.has_matrix_api_scope())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_scope_syntax_is_strict_and_matches_exact_tokens() {
+        for invalid in [
+            "",
+            " openid",
+            "openid ",
+            "openid  email",
+            "openid\temail",
+            "openid\nemail",
+            "é",
+            "a\\b",
+            "a\"b",
+            "a\0b",
+        ] {
+            assert!(OAuthScopes::parse(invalid).is_none(), "{invalid:?}");
+            assert!(!has_matrix_api_scope(invalid));
+        }
+        let scopes = OAuthScopes::parse("openid openid ! # [ ] ~").unwrap();
+        assert!(scopes.contains("openid"));
+        assert!(!scopes.contains("open"));
+        assert!(!has_matrix_api_scope("urn:matrix:client:api:*:extra"));
+        assert_eq!(device_id_from_scope("urn:matrix:client:device:"), None);
+        assert_eq!(
+            device_id_from_scope("urn:matrix:client:device:DEV\topenid"),
+            None
+        );
+    }
 
     #[test]
     fn matrix_scope_requires_api_access_and_unambiguous_device() {

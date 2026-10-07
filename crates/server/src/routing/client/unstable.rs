@@ -20,6 +20,7 @@ pub(super) fn router() -> Router {
         .push(Router::with_path("io.element.msc4388/rendezvous").get(discover_rendezvous))
         .push(super::profile::msc4133_public_router())
         .push(super::user::current_unstable_router())
+        .push(super::admin::unstable_authed_router())
         // Authed routes
         .push(
             authed
@@ -53,16 +54,6 @@ pub(super) fn router() -> Router {
                 .push(
                     Router::with_path("im.nheko.summary/rooms/{room_id_or_alias}/summary")
                         .get(super::room::summary::get_summary_msc_3266),
-                )
-                .push(
-                    Router::with_path("uk.timedout.msc4323/admin/lock/{user_id}")
-                        .get(super::admin::is_user_locked)
-                        .put(super::admin::lock_user),
-                )
-                .push(
-                    Router::with_path("uk.timedout.msc4323/admin/suspend/{user_id}")
-                        .get(super::admin::is_user_suspended)
-                        .put(super::admin::suspend_user),
                 )
                 .push(super::profile::msc4133_authed_router()),
         )
