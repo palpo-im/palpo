@@ -620,7 +620,7 @@ pub async fn sync_events(
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     let ignored_users = crate::user::ignored_users(sender_id).await;
 
-    let all_invited_rooms = data::user::invited_rooms_for_sync(sender_id, 0).await?;
+    let all_invited_rooms = crate::membership::invited_rooms_for_sync(sender_id, 0).await?;
     let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(|r| r.0.as_ref()).collect();
 
     let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0).await?;
@@ -770,7 +770,7 @@ pub async fn sync_events(
     )
     .await?;
 
-    fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms).await?;
+    fetch_subscriptions(sync_info, &all_invited_rooms, &mut todo_rooms, known_rooms).await?;
 
     // MSC4262 profile updates need the finished room subset, so they are collected after
     // the lists and subscriptions have been resolved rather than alongside the other
@@ -952,13 +952,16 @@ async fn fetch_subscriptions(
         since_sn,
         req_body,
     }: SyncInfo<'_>,
+    all_invited_rooms: &[&RoomId],
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
 ) -> AppResult<()> {
     let mut known_subscription_rooms = BTreeSet::new();
-    let invites_blocked = data::user::invite_blocked(sender_id).await?;
     for (room_id, room) in &req_body.room_subscriptions {
-        if invites_blocked && crate::room::user::is_invited(sender_id, room_id).await? {
+        // Explicit subscriptions must obey the same invite filter as room lists.
+        if !all_invited_rooms.contains(&room_id.as_ref())
+            && crate::room::user::is_invited(sender_id, room_id).await?
+        {
             continue;
         }
         if !crate::room::room_exists(room_id).await? {
@@ -1021,7 +1024,6 @@ async fn process_rooms(
 ) -> AppResult<BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>> {
     let mut rooms = BTreeMap::new();
     let receipts_enabled = req_body.extensions.receipts.enabled.unwrap_or(false);
-    let invites_blocked = data::user::invite_blocked(sender_id).await?;
 
     for (
         room_id,
@@ -1033,7 +1035,10 @@ async fn process_rooms(
         },
     ) in todo_rooms
     {
-        if invites_blocked && crate::room::user::is_invited(sender_id, room_id).await? {
+        // Explicit subscriptions must obey the same invite filter as room lists.
+        if !all_invited_rooms.contains(&room_id.as_ref())
+            && crate::room::user::is_invited(sender_id, room_id).await?
+        {
             continue;
         }
         let mut timestamp: Option<_> = None;
@@ -2048,6 +2053,71 @@ mod tests {
             filters: Some(filters),
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_membership_filtered_invite_cannot_be_subscribed_to() {
+        use serde_json::json;
+
+        use super::*;
+        crate::test_database::init();
+        let recipient: OwnedUserId = "@subscription_filter:dynamic.example".try_into().unwrap();
+        let inviter: OwnedUserId = "@subscription_inviter:example.org".try_into().unwrap();
+        let room = rid("!subscription_filter:example.org");
+        diesel::insert_into(room_users::table)
+            .values(data::room::NewDbRoomUser {
+                event_id: "$subscription_filter:example.org".try_into().unwrap(),
+                event_sn: 1,
+                room_id: room.clone(),
+                room_server_id: None,
+                user_id: recipient.clone(),
+                user_server_id: recipient.server_name().to_owned(),
+                sender_id: inviter,
+                membership: "invite".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: Some(json!([])),
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        data::user::set_data(
+            &recipient,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+        )
+        .await
+        .unwrap();
+        let invites = crate::membership::invited_rooms_for_sync(&recipient, 0)
+            .await
+            .unwrap();
+        assert!(invites.is_empty());
+        let body: SyncEventsReqBody = serde_json::from_value(json!({})).unwrap();
+        let device: OwnedDeviceId = "SUBSCRIPTION".into();
+        let mut response = SyncEventsResBody::new("2".into());
+        let rooms = process_rooms(
+            SyncInfo {
+                sender_id: &recipient,
+                device_id: &device,
+                since_sn: 0,
+                req_body: &body,
+            },
+            &[],
+            &HashSet::new(),
+            &BTreeSet::new(),
+            &[(room, TodoRoom::new(BTreeSet::new(), 10, 0))].into(),
+            &KnownRooms::new(),
+            &mut response,
+        )
+        .await
+        .unwrap();
+        assert!(rooms.is_empty());
+        assert!(response.extensions.account_data.rooms.is_empty());
     }
 
     #[test]
