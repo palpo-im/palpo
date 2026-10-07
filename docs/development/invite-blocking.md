@@ -22,7 +22,10 @@ membership state writes), to federation invite endpoints, and to incoming invite
 PDUs. Retained invitations are filtered in ordinary and sliding sync, including
 explicit sliding-sync room subscriptions, until they first qualify. That decision
 is persisted for the current invitation membership in `room_invite_admissions`.
-Once admitted, a pending invite remains visible even if the users later stop
+Invites returned while the account allows invitations are also admitted, so later
+enabling `deny_public` does not hide invites already shown to clients. Hidden,
+unadmitted invitations still need a qualifying relationship. Once admitted, a
+pending invite remains visible even if the users later stop
 sharing a qualifying room. New invitations still require a current relationship.
 This preserves the same view for incremental clients, fresh syncs, and other devices
 without treating loss of a shared relationship as an invitation withdrawal.
