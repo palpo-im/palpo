@@ -529,7 +529,21 @@ async fn send_events(
             let response = crate::appservice::send_request(registration, request)
                 .await
                 .map_err(|e| (kind.clone(), e))
-                .map(|_response| kind.clone());
+                .and_then(|response| {
+                    if response.status() == reqwest::StatusCode::OK {
+                        Ok(kind.clone())
+                    } else {
+                        // Keep the durable transaction queued on a refused or
+                        // unavailable appservice; receiving HTTP is not an ACK.
+                        Err((
+                            kind.clone(),
+                            AppError::public(format!(
+                                "Appservice transaction refused with HTTP {}",
+                                response.status()
+                            )),
+                        ))
+                    }
+                });
 
             drop(permit);
             response

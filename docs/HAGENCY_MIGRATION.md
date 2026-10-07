@@ -11,12 +11,17 @@ The separate Node `web-admin` application and its CI job are removed here.
 Generic App Service registration, pause/revoke, URL compare-and-set, identity
 retirement, and Matrix administration APIs remain in Palpo.
 
-The `palpo-hagency-contract` and `palpo-operations` packages proposed in draft
-[#508](https://github.com/palpo-im/palpo/pull/508) have not been merged into
-Palpo main. Their implemented contract/workflow code has been adapted into
-`hagency-contract` and `hagency-operations` in hagency-server. Runtime consumers
-must switch to that repository before the draft's Palpo dependency can be retired.
-Those packages must not be added to the Palpo workspace by later merges.
+The `palpo-hagency-contract` and `palpo-operations` packages have since landed
+in Palpo main and remain in this branch, including their migration and writer
+ownership checks. Their removal or relocation requires a separate accepted
+cross-project migration; resolving this cleanup does not retire those consumers.
+The Hagency ownership change remains a draft proposal until the replacement and
+runtime/client consumers are accepted.
+
+The Node application is removed, but its entry point and SQLite migration dependencies
+are retained under `crates/operations/tests/fixtures/legacy_node/`. The Rust
+Operations CI still exercises legacy state preservation and writer fencing.
+These fixtures are not a deployable Node service.
 
 ## Existing installations
 
@@ -33,9 +38,10 @@ Existing deployed images remain available at their pinned revisions.
    state belongs in the Hagency PostgreSQL database. Palpo's database is not an
    import destination for the old application's SQLite state.
 4. Plan a reviewed state migration for existing fleet IDs, credentials, pending
-   requests and leased deliveries. The Rust implementation does not provide an
-   automatic Node SQLite converter or automatically convert the legacy Inbox
-   into coordinator authority. Do not reconnect by blindly creating duplicate
+   requests and leased deliveries. Moving to hagency-server does not provide an automatic SQLite-to-PostgreSQL
+   migration. Palpo Rust Operations separately supports the documented Node
+   SQLite adoption path; that does not automatically turn old Inbox records
+   into coordinator authority. See [the Operations migration guide](../crates/operations/README.md). Do not reconnect by blindly creating duplicate
    fleets, discard pending operations, or run both application writers together.
 5. Verify Pasion sign-in, Padmin management, fleet delivery and the new Inbox
    against the chosen runtime/client versions before routing traffic to the

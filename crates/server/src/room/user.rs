@@ -1,12 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
+use lru_cache::LruCache;
 
 use crate::core::Seqnum;
-use crate::core::events::room::member::MembershipState;
-use crate::core::events::{AnyStrippedStateEvent, AnySyncStateEvent, GlobalAccountDataEventType};
+use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
+use crate::core::events::{
+    AnyStrippedStateEvent, AnySyncStateEvent, GlobalAccountDataEventType, StateEventType,
+};
 use crate::core::identifiers::*;
 use crate::core::push::{NewPushRule, NewSimplePushRule};
 use crate::core::serde::{JsonValue, RawJson};
@@ -15,7 +19,13 @@ use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
 use crate::exts::*;
-use crate::{AppResult, MatrixError, utils};
+use crate::{AppError, AppResult, MatrixError, utils};
+
+// Membership events and their before-state are immutable. Cache by event, so a
+// profile update can reuse the previous join's result without walking the whole
+// membership history on every sync. A real rejoin has a different event key.
+static JOIN_SN_CACHE: LazyLock<Mutex<LruCache<OwnedEventId, Seqnum>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(10_000)));
 
 #[derive(Debug, Clone)]
 pub struct UserNotifySummary {
@@ -147,14 +157,50 @@ pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoom
 }
 
 pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
-    room_users::table
+    let (mut event_id, mut event_sn) = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("join"))
-        .select(room_users::event_sn)
-        .first::<i64>(&mut connect().await?)
-        .await
-        .map_err(Into::into)
+        .select((room_users::event_id, room_users::event_sn))
+        .first::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+        .await?;
+
+    // room_users records the latest membership event, including join-to-join
+    // name/avatar changes. Sync needs the beginning of the current joined
+    // period instead. Follow the server's stored before-state, not unsigned
+    // prev_content supplied by another server or unrelated timeline branches.
+    let mut visited = HashSet::new();
+    loop {
+        if let Some(join_sn) = JOIN_SN_CACHE.lock().unwrap().get_mut(&event_id).copied() {
+            event_sn = join_sn;
+            break;
+        }
+        if !visited.insert(event_id.clone()) {
+            return Err(AppError::internal("cycle in membership before-state"));
+        }
+        let Some(frame_id) = crate::data::room::get_pdu_before_frame_id(&event_id).await? else {
+            // Partial history has no earlier membership proof. Keep the oldest
+            // known join, but don't cache it: missing state may arrive later.
+            return Ok(event_sn);
+        };
+        let field_id =
+            super::state::get_field_id(&StateEventType::RoomMember, user_id.as_str()).await?;
+        let before = super::state::get_full_state_ids(frame_id).await?;
+        let Some(previous_id) = before.get(&field_id) else {
+            break;
+        };
+        let previous = super::timeline::get_pdu(previous_id).await?;
+        if previous.get_content::<RoomMemberEventContent>()?.membership != MembershipState::Join {
+            break;
+        }
+        event_sn = previous.event_sn;
+        event_id = previous.event_id.clone();
+    }
+    let mut cache = JOIN_SN_CACHE.lock().unwrap();
+    for event_id in visited {
+        cache.insert(event_id, event_sn);
+    }
+    Ok(event_sn)
 }
 pub async fn join_depth(user_id: &UserId, room_id: &RoomId) -> AppResult<u64> {
     let join_sn = join_sn(user_id, room_id).await?;

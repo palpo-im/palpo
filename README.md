@@ -93,8 +93,9 @@ Our test server is for **evaluation and testing purposes only**:
 ## 📦 Installation
 
 Palpo provides the Matrix homeserver and its management APIs. The Hagency project,
-fleet, Agent approval and Inbox application has moved to
+fleet, Agent approval and Inbox application ownership is proposed to move to
 [hagency-server](https://github.com/chrislearn/hagency-server).
+The existing Rust Operations crates remain until their replacement is accepted.
 See the [migration and ownership guide](docs/HAGENCY_MIGRATION.md) before replacing
 an existing `web-admin` deployment.
 

@@ -40,9 +40,9 @@ pub struct MediaConfig {
     /// Maximum number of bytes accepted when fetching remote media content
     /// from a remote homeserver via federation. The entire response is
     /// buffered when the remote server returns a multipart response, so this
-    /// limit prevents unbounded memory allocation.
+    /// limit prevents unbounded memory allocation. Defaults to 100 MiB.
     ///
-    /// default: 104857600 (100 MiB)
+    /// default: 104857600
     #[serde(default = "default_max_remote_media_size")]
     pub max_remote_media_size: usize,
 

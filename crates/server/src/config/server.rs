@@ -124,7 +124,7 @@ pub struct ServerConfig {
     /// keep accepting a just-revoked token for up to this many seconds. Leave at
     /// 0 (disabled) unless you run a single instance.
     ///
-    /// default: 0 (disabled)
+    /// default: 0
     #[serde(default = "default_native_token_cache_ttl")]
     pub native_token_cache_ttl: u64,
 

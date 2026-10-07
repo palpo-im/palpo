@@ -151,10 +151,10 @@ pub fn validate_canonical_json(json: &CanonicalJsonObject) -> Result<(), Canonic
 mod tests {
     use std::collections::BTreeMap;
 
-    use assert_matches2::assert_matches;
     use serde_json::{
         from_str as from_json_str, json, to_string as to_json_string, to_value as to_json_value,
     };
+    use strass::assert_let;
 
     use super::value::CanonicalJsonValue;
     use super::{
@@ -291,10 +291,7 @@ mod tests {
             }
         });
 
-        assert_matches!(
-            CanonicalJsonValue::try_from(original_event),
-            Ok(CanonicalJsonValue::Object(mut object))
-        );
+        assert_let!(Ok(CanonicalJsonValue::Object(mut object)) = CanonicalJsonValue::try_from(original_event));
 
         redact_in_place(&mut object, &RedactionRules::V1, None).unwrap();
 
@@ -348,10 +345,7 @@ mod tests {
             }
         });
 
-        assert_matches!(
-            CanonicalJsonValue::try_from(original_event),
-            Ok(CanonicalJsonValue::Object(mut object))
-        );
+        assert_let!(Ok(CanonicalJsonValue::Object(mut object)) = CanonicalJsonValue::try_from(original_event));
 
         redact_in_place(&mut object, &RedactionRules::V9, None).unwrap();
 
@@ -393,10 +387,7 @@ mod tests {
             },
         });
 
-        assert_matches!(
-            CanonicalJsonValue::try_from(original_event),
-            Ok(CanonicalJsonValue::Object(mut object))
-        );
+        assert_let!(Ok(CanonicalJsonValue::Object(mut object)) = CanonicalJsonValue::try_from(original_event));
 
         redact_in_place(&mut object, &RedactionRules::V11, None).unwrap();
 
@@ -446,9 +437,8 @@ mod tests {
             "type": "m.room.power_levels",
             "unsigned": { "age": 45 }
         });
-        assert_matches!(
-            CanonicalJsonValue::try_from(original_event),
-            Ok(CanonicalJsonValue::Object(object))
+        assert_let!(
+            Ok(CanonicalJsonValue::Object(object)) = CanonicalJsonValue::try_from(original_event)
         );
 
         let redacted = redact(object, &RedactionRules::V11, None).unwrap();
@@ -489,9 +479,8 @@ mod tests {
             "type": "m.room.aliases",
             "unsigned": { "age": 1 }
         });
-        assert_matches!(
-            CanonicalJsonValue::try_from(original_event),
-            Ok(CanonicalJsonValue::Object(object))
+        assert_let!(
+            Ok(CanonicalJsonValue::Object(object)) = CanonicalJsonValue::try_from(original_event)
         );
 
         let redacted = redact(object, &RedactionRules::V1, None).unwrap();
@@ -537,9 +526,8 @@ mod tests {
             "type": "m.room.member",
             "unsigned": { "age": 1234 }
         });
-        assert_matches!(
-            CanonicalJsonValue::try_from(original_event),
-            Ok(CanonicalJsonValue::Object(object))
+        assert_let!(
+            Ok(CanonicalJsonValue::Object(object)) = CanonicalJsonValue::try_from(original_event)
         );
 
         let redacted = redact(object, &RedactionRules::V11, None).unwrap();
@@ -574,10 +562,7 @@ mod tests {
     #[test]
     fn to_canonical_object_rejects_float() {
         let input = serde_json::json!({ "x": 1.5 });
-        assert_matches!(
-            to_canonical_object(input),
-            Err(CanonicalJsonError::InvalidType(ty))
-        );
+        assert_let!(Err(CanonicalJsonError::InvalidType(ty)) = to_canonical_object(input));
         assert_eq!(ty, "float", "error payload should be \"float\"");
     }
 }

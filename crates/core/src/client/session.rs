@@ -383,7 +383,11 @@ pub struct DiscoveryInfo {
     pub homeserver: HomeServerInfo,
 
     /// Information about the identity server to connect to.
-    #[serde(default, rename = "m.identity_server")]
+    #[serde(
+        default,
+        rename = "m.identity_server",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub identity_server: Option<IdentityServerInfo>,
 }
 
@@ -422,6 +426,42 @@ impl IdentityServerInfo {
     /// Create a new `IdentityServerInfo` with the given base url.
     pub fn new(base_url: String) -> Self {
         Self { base_url }
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use serde_json::json;
+
+    use super::{DiscoveryInfo, HomeServerInfo, IdentityServerInfo};
+
+    #[test]
+    fn login_discovery_omits_absent_identity_server() {
+        let discovery =
+            DiscoveryInfo::new(HomeServerInfo::new("https://matrix.example.org".into()));
+        let expected = json!({ "m.homeserver": { "base_url": "https://matrix.example.org" } });
+        assert_eq!(serde_json::to_value(&discovery).unwrap(), expected);
+        let parsed: DiscoveryInfo = serde_json::from_value(expected).unwrap();
+        assert!(parsed.identity_server.is_none());
+    }
+
+    #[test]
+    fn login_discovery_preserves_configured_identity_server() {
+        let mut discovery =
+            DiscoveryInfo::new(HomeServerInfo::new("https://matrix.example.org".into()));
+        discovery.identity_server = Some(IdentityServerInfo::new(
+            "https://identity.example.org".into(),
+        ));
+        let expected = json!({
+            "m.homeserver": { "base_url": "https://matrix.example.org" },
+            "m.identity_server": { "base_url": "https://identity.example.org" }
+        });
+        assert_eq!(serde_json::to_value(&discovery).unwrap(), expected);
+        let parsed: DiscoveryInfo = serde_json::from_value(expected).unwrap();
+        assert_eq!(
+            parsed.identity_server.unwrap().base_url,
+            "https://identity.example.org"
+        );
     }
 }
 

@@ -11,6 +11,44 @@ use crate::schema::*;
 use crate::{DataError, DataResult, connect};
 
 const PROFILE_STREAM_LOCK_ID: i64 = 1_346_426_200;
+const MAX_PROFILE_BYTES: usize = 64 * 1024;
+
+fn ensure_profile_size(profile: &DbProfile) -> DataResult<()> {
+    let body = crate::core::user::ProfileResBody {
+        display_name: profile.display_name.clone(),
+        avatar_url: profile.avatar_url.clone(),
+        blurhash: profile.blurhash.clone(),
+        fields: profile
+            .fields
+            .as_object()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    // Count compact UTF-8 JSON, including keys, escaping and all dedicated fields.
+    if serde_json::to_vec(&body)?.len() >= MAX_PROFILE_BYTES {
+        return Err(
+            MatrixError::profile_too_large("The complete profile must be under 64 KiB.").into(),
+        );
+    }
+    Ok(())
+}
+
+async fn ensure_profile_size_on_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+) -> DataResult<()> {
+    let profile = user_profiles::table
+        .filter(user_profiles::user_id.eq(user_id))
+        .filter(user_profiles::room_id.is_null())
+        .first::<DbProfile>(conn)
+        .await?;
+    ensure_profile_size(&profile)
+}
 
 async fn lock_profile_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
@@ -224,6 +262,9 @@ async fn with_profile_repair<'a>(
 }
 
 pub async fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) -> DataResult<()> {
+    if field.len() > 255 {
+        return Err(MatrixError::key_too_large("Profile keys must not exceed 255 bytes.").into());
+    }
     let value = &value;
     with_profile_repair(user_id, || {
         Box::pin(async move {
@@ -244,6 +285,7 @@ pub async fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) 
                     if updated == 0 {
                         return Ok(0);
                     }
+                    ensure_profile_size_on_conn(conn, user_id).await?;
                     record_profile_change_on_conn(conn, user_id, field, Some(value.clone()))
                         .await?;
                     Ok(updated)
@@ -342,6 +384,7 @@ pub async fn set_global_display_name(
                     if updated == 0 {
                         return Ok(0);
                     }
+                    ensure_profile_size_on_conn(conn, user_id).await?;
                     record_profile_change_on_conn(
                         conn,
                         user_id,
@@ -378,6 +421,7 @@ pub async fn set_global_avatar_url(
                     if updated == 0 {
                         return Ok(0);
                     }
+                    ensure_profile_size_on_conn(conn, user_id).await?;
                     record_profile_change_on_conn(
                         conn,
                         user_id,
@@ -418,6 +462,7 @@ pub async fn set_global_avatar_and_blurhash(
                     if updated == 0 {
                         return Ok(0);
                     }
+                    ensure_profile_size_on_conn(conn, user_id).await?;
                     record_profile_change_on_conn(
                         conn,
                         user_id,
@@ -527,4 +572,41 @@ pub async fn profile_changes_since(
             },
         })
         .collect())
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use crate::core::error::ErrorKind;
+
+    #[test]
+    fn profile_size_counts_utf8_json_and_dedicated_fields() {
+        let mut profile = DbProfile {
+            id: 1,
+            user_id: "@alice:example.org".try_into().unwrap(),
+            room_id: None,
+            display_name: None,
+            avatar_url: None,
+            blurhash: None,
+            fields: serde_json::json!({"org.example.note": "a".repeat(MAX_PROFILE_BYTES - 24)}),
+        };
+        // {"org.example.note":"..."} contributes 23 bytes beyond the string.
+        assert!(ensure_profile_size(&profile).is_ok());
+        profile.display_name = Some("é".into());
+        assert!(matches!(
+            ensure_profile_size(&profile),
+            Err(DataError::Matrix(MatrixError {
+                kind: ErrorKind::ProfileTooLarge,
+                ..
+            }))
+        ));
+        profile.display_name = None;
+        profile.fields =
+            serde_json::json!({"org.example.note": "a".repeat(MAX_PROFILE_BYTES - 23)});
+        assert!(ensure_profile_size(&profile).is_err());
+        // Escaped characters contribute their JSON bytes, rather than raw string bytes.
+        profile.fields =
+            serde_json::json!({"org.example.note": "\n".repeat(MAX_PROFILE_BYTES / 2)});
+        assert!(ensure_profile_size(&profile).is_err());
+    }
 }
