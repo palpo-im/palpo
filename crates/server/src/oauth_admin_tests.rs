@@ -19,6 +19,7 @@ fn introspection(token: &str) -> Value {
     });
     match token {
         "api-admin" => {}
+        "api-ordinary" => response["username"] = json!("ordinary"),
         "admin-only" | "non-admin" => {
             response["scope"] = json!(format!("{ADMIN_SCOPE} urn:matrix:client:device:DEVICE"));
             if token == "non-admin" {
@@ -310,6 +311,7 @@ async fn oauth_admin_routes() {
     let whoami = "/_matrix/client/v3/account/whoami";
     for token in [
         "api-admin",
+        "api-ordinary",
         "unstable-api",
         "both",
         "native-admin",
@@ -359,6 +361,12 @@ async fn oauth_admin_routes() {
             false,
         )
         .await;
+    }
+    let ordinary_self = get(&service, self_whois, "api-ordinary").await;
+    if enabled {
+        assert_error(ordinary_self, StatusCode::FORBIDDEN, "M_FORBIDDEN", false).await;
+    } else {
+        assert_eq!(ordinary_self.status_code, Some(StatusCode::OK));
     }
     let target = UserId::parse("@target:scope.example").unwrap();
     for path in routes
