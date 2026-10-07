@@ -38,7 +38,7 @@ async fn send_delayed_event(
     let authed = depot.authed_info()?;
     let delay_id = crate::delayed_event::schedule(
         authed.user_id(),
-        Some(authed.device_id()),
+        authed.device_id(),
         authed.appservice().is_some(),
         &args.room_id,
         &args.event_type,

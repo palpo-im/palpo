@@ -345,6 +345,9 @@ pub enum ErrorKind {
     /// An unknown error has occurred.
     Unknown,
 
+    /// `M_UNKNOWN_DEVICE`: the asserted application-service device does not belong to the user.
+    UnknownDevice,
+
     /// `M_UNKNOWN_POS`
     ///
     /// The sliding sync ([MSC4186]) connection was expired by the server.
@@ -513,6 +516,7 @@ impl ErrorKind {
             ErrorKind::Unactionable => ErrorCode::Unactionable,
             ErrorKind::Unauthorized => ErrorCode::Unauthorized,
             ErrorKind::Unknown => ErrorCode::Unknown,
+            ErrorKind::UnknownDevice => ErrorCode::UnknownDevice,
             #[cfg(feature = "unstable-msc4186")]
             ErrorKind::UnknownPos => ErrorCode::UnknownPos,
             ErrorKind::UnknownToken { .. } => ErrorCode::UnknownToken,
