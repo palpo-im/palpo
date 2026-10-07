@@ -19,7 +19,7 @@ pub async fn get_public_rooms(
     if let Some(other_server) =
         server.filter(|server| *server != config::get().server_name.as_str())
     {
-        let body = public_rooms_request(
+        let request = public_rooms_request(
             &other_server.origin().await,
             PublicRoomsReqBody {
                 limit,
@@ -31,8 +31,12 @@ pub async fn get_public_rooms(
                 room_network: RoomNetwork::Matrix,
             },
         )?
-        .send()
-        .await?;
+        .into_inner();
+
+        let body = crate::sending::send_federation_request(other_server, request, None)
+            .await?
+            .json::<PublicRoomsResBody>()
+            .await?;
 
         Ok(body)
     } else {
