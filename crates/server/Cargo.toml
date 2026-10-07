@@ -11,10 +11,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
+# OAuth administration authorization is independent of event-format extensions.
+unstable-msc4484 = []
 unstable-msc4262 = ["palpo-core/unstable-msc4262"]
 unstable-msc4293 = ["palpo-core/unstable-msc4293"]
 unstable-msc4466 = ["palpo-core/unstable-msc4466"]
-unstable-msc4484 = []
 unstable-msc4495 = ["palpo-core/unstable-msc4495"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
