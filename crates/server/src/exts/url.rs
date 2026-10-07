@@ -99,7 +99,7 @@ impl GetUrlOrigin for ServerName {
 ///
 /// # Examples:
 /// ```rust
-/// # use palpo::api::server_server::FedDest;
+/// # use palpo::FedDest;
 /// # fn main() -> Result<(), std::net::AddrParseError> {
 /// FedDest::Literal("198.51.100.3:8448".parse()?);
 /// FedDest::Literal("[2001:db8::4:5]:443".parse()?);
