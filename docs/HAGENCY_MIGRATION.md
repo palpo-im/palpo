@@ -15,8 +15,9 @@ The `palpo-hagency-contract` and `palpo-operations` packages have since landed
 in Palpo main and remain in this branch, including their migration and writer
 ownership checks. Their removal or relocation requires a separate accepted
 cross-project migration; resolving this cleanup does not retire those consumers.
-The Hagency ownership change remains a draft proposal until the replacement and
-runtime/client consumers are accepted.
+The Hagency ownership change remains a separate proposal until the replacement
+and runtime/client consumers are accepted. Retiring the Node source does not
+depend on that relocation: the Rust Operations service already remains here.
 
 The Node application is removed, but its entry point and SQLite migration dependencies
 are retained under `crates/operations/tests/fixtures/legacy_node/`. The Rust
@@ -31,12 +32,15 @@ Existing deployed images remain available at their pinned revisions.
 
 1. Keep the working `web-admin` image pinned while preparing the replacement.
    Back up its private SQLite database and the separate Palpo/Pasion databases.
-2. Select a reviewed hagency-server revision that contains the contract and
-   Operations migration. The cleanup PR is a draft until that revision is
-   published and consumers have been checked.
-3. Configure Hagency, Palpo and Pasion databases separately. Hagency business
-   state belongs in the Hagency PostgreSQL database. Palpo's database is not an
-   import destination for the old application's SQLite state.
+2. For Node-to-Rust adoption, select a reviewed Palpo Rust Operations revision
+   and follow its SQLite handoff and acceptance guide. A later move to
+   hagency-server additionally requires a reviewed replacement revision and
+   consumer checks; this source cleanup does not perform that move.
+3. Keep the Operations SQLite database separate from Palpo's Matrix database.
+   Under the proposed hagency-server deployment, configure Hagency, Palpo and
+   Pasion databases separately; business state would move to Hagency PostgreSQL.
+   Palpo's Matrix database is not an import destination for the old application's
+   SQLite state.
 4. Plan a reviewed state migration for existing fleet IDs, credentials, pending
    requests and leased deliveries. Moving to hagency-server does not provide an automatic SQLite-to-PostgreSQL
    migration. Palpo Rust Operations separately supports the documented Node

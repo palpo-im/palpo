@@ -11,7 +11,8 @@ compare-and-set、身份 retirement 和 Matrix 管理 API 继续留在 Palpo。
 `palpo-hagency-contract`、`palpo-operations` 现已合并到 Palpo main，
 本分支保留这两个 crate、迁移功能和 writer 归属保护。移除或迁走它们需要另行
 完成跨项目迁移验收；本次解决冲突不撤除现有消费者。Hagency 归属调整在替代服务
-及运行端/客户端验收完成前仍为草稿提案。
+及运行端/客户端验收完成前仍为独立提案。移除 Node 源码不依赖这次迁址；
+当前 Rust Operations 服务仍保留在本仓库。
 
 Node 应用被移除，但入口及 SQLite 迁移依赖保留在
 `crates/operations/tests/fixtures/legacy_node/`，仅供 Rust Operations CI
@@ -24,10 +25,12 @@ Node 应用被移除，但入口及 SQLite 迁移依赖保留在
 
 1. 准备替代服务时继续锁定可用的 `web-admin` 镜像；备份私有 SQLite 数据库及
    独立的 Palpo/Pasion 数据库。
-2. 选择包含协议/Operations 迁移并已审阅的 hagency-server revision。清理 PR
-   在该 revision 发布、消费者检查完成前保持草稿。
-3. 分别配置 Hagency、Palpo、Pasion 数据库。业务状态属于 Hagency PostgreSQL，
-   Palpo 数据库不承接旧应用的 SQLite 导入。
+2. 从 Node 切换到 Rust 时，选择已审阅的 Palpo Rust Operations revision，
+   按其 SQLite 接管和验收指南操作。以后迁往 hagency-server 时，还需另行审阅
+   替代版本并验证消费者；本次源码清理不执行该迁址。
+3. Operations SQLite 数据库与 Palpo Matrix 数据库分开保存。在拟议的
+   hagency-server 部署中，Hagency、Palpo、Pasion 分别配置数据库，业务状态才会
+   迁往 Hagency PostgreSQL。Palpo Matrix 数据库不承接旧应用的 SQLite 导入。
 4. 逐项审阅既有 fleet ID、凭据、待处理申请和租约投递的状态迁移。迁往 hagency-server
    没有自动的 SQLite 到 PostgreSQL 转换器。Palpo Rust Operations 另有已记录的
    Node SQLite 接管流程，但不会自动将旧 Inbox 变成 coordinator 授权；参见
