@@ -389,3 +389,27 @@ creates a resource grant. Legacy contribution creation is replaced by owner-led
 association setup, and direct agent identity registration is replaced by native
 coordinator-approved provisioning. Their old capabilities are deliberately never
 granted; they are not unfinished authority-bypass routes.
+
+### Earlier project-role workflow proposal
+
+[PR #507 at `8ccc7b0e`](https://github.com/palpo-im/palpo/tree/8ccc7b0e52f723e2c931946c9350a02a0824decd/web-admin)
+implemented an earlier Node workflow with a designated server administrator for
+project approval and assigned project administrators for agent approval.
+ADR 0011 supersedes that authority model. The final integration preserves the
+proposal in Git history and keeps the current Rust implementation; it does not
+install the old Node services alongside it.
+
+| Earlier proposal | Current Rust path |
+| --- | --- |
+| Project and agent decisions, scoped commands and execution receipts | `workflow.rs`, `outbound.rs`, `updates.rs` and `palpo-hagency-contract`; authority comes from the current engagement delegation |
+| Agent top-ups and removal | `workflow.rs`, `lifecycle.rs` and `retirement.rs`; execution and verified cleanup remain separate from a human decision |
+| Reminders, quiet hours and private My Actions rooms | `preferences.rs`, `notifications.rs` and `notifications/room_api.rs` |
+| Opening an agent conversation or a signup approval | `navigation.rs` and `accounts.rs`; navigation rechecks the current account and verified room binding |
+| Old approvals and allocations | Explicit handoff, adoption and continuation described above; an old verdict never grants new authority |
+
+The old branch's 148 Node service tests passed in GitHub run
+[`37266711118`](https://github.com/palpo-im/palpo/actions/runs/37266711118), but its
+browser suite timed out waiting for `#request-role-hint`. That historical failure
+is not a passing acceptance result for either backend. Current validation uses
+the Rust tests and native-client evidence described here; it does not claim
+behavioral parity with the superseded approval policy.
