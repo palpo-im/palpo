@@ -1,15 +1,12 @@
 //! Durable, single-use email proofs. Every state transition locks its row.
-use super::{DbUser, NewDbPassword, NewDbProfile, NewDbUser, NewDbUserThreepid};
-use crate::{
-    DataError, DataResult, connect,
-    core::{MatrixError, UnixMillis, UserId},
-    schema::*,
-};
-use diesel::{
-    prelude::*,
-    sql_types::{BigInt, Integer, Nullable, Text},
-};
+use diesel::prelude::*;
+use diesel::sql_types::{BigInt, Integer, Nullable, Text};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+
+use super::{DbUser, NewDbPassword, NewDbProfile, NewDbUser, NewDbUserThreepid};
+use crate::core::{MatrixError, UnixMillis, UserId};
+use crate::schema::*;
+use crate::{DataError, DataResult, connect};
 
 pub const CODE_LIFETIME_MS: i64 = 600_000;
 pub const PROOF_LIFETIME_MS: i64 = 1_800_000;

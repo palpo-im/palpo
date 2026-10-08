@@ -243,6 +243,9 @@ mod tests {
 mod wire_tests {
     #[test]
     fn empty_threepid_list_uses_matrix_wire_key() {
-        assert_eq!(serde_json::to_value(super::ThreepidsResBody::new(Vec::new())).unwrap(), serde_json::json!({"threepids":[]}));
+        assert_eq!(
+            serde_json::to_value(super::ThreepidsResBody::new(Vec::new())).unwrap(),
+            serde_json::json!({"threepids":[]})
+        );
     }
 }

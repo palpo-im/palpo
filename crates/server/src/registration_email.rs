@@ -1,10 +1,11 @@
 //! Palpo owns verification; AgentMail is only the mail transport.
-use crate::{AppError, AppResult, JsonResult, MatrixError, config, data, json_ok};
 use data::user::registration_email as store;
 use hmac::{Hmac, KeyInit, Mac};
 use salvo::prelude::*;
 use serde::Deserialize;
 use sha2::Sha256;
+
+use crate::{AppError, AppResult, JsonResult, MatrixError, config, data, json_ok};
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()

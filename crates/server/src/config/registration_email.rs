@@ -71,17 +71,22 @@ mod tests {
         std::fs::write(&key, "x".repeat(32)).unwrap();
         let mut config = RegistrationEmailConfig {
             agentmail_inbox: "sender@agentmail.to".into(),
-            agentmail_api_key_file: key.clone(), otp_secret_file: key,
+            agentmail_api_key_file: key.clone(),
+            otp_secret_file: key,
             agentmail_api_url: default_api_url(),
         };
         assert!(config.validate().is_ok());
-        for invalid in ["http://external.example/v0/", "https://user:secret@example.org/v0/", "https://api.agentmail.to/v0/?key=secret"] {
+        for invalid in [
+            "http://external.example/v0/",
+            "https://user:secret@example.org/v0/",
+            "https://api.agentmail.to/v0/?key=secret",
+        ] {
             config.agentmail_api_url = invalid.into();
             assert!(config.validate().is_err());
         }
         config.agentmail_api_url = "http://127.0.0.1:1234/v0/".into();
         assert!(config.validate().is_ok());
-        std::fs::write(&config.otp_secret_file,"short").unwrap();
+        std::fs::write(&config.otp_secret_file, "short").unwrap();
         assert!(config.validate().is_err());
     }
 }

@@ -90,3 +90,12 @@ and all ten black-box PostgreSQL checks passed. A verified AgentMail inbox also
 accepted a real Palpo verification email; recipient-code confirmation is separate
 from transport acceptance. Native desktop and phone-size Rinx account creation
 passed against the recording transport.
+
+Live acceptance on 2026-10-08: this implementation was deployed to mini2 at
+`https://river.ominix.io`. Native macOS Rinx sent an actual AgentMail message,
+verified the code supplied from the recipient mailbox, created a new account,
+and entered the signed-in chat interface. Authenticated `account/whoami`,
+`account/3pid` and initial `sync` checks passed. A server restart preserved the
+pending verification record; an expired code was rejected before a native resend
+completed the flow. No recipient codes, account passwords or access tokens are
+included in these docs.
