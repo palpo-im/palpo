@@ -216,7 +216,9 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 /// unstable features in their stable releases
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
-    json_ok(supported_versions_body(config::get().delayed_events.enable))
+    let mut body = supported_versions_body(config::get().delayed_events.enable);
+    body.unstable_features.insert("org.palpo.registration.email_otp".to_owned(), config::get().registration_email.is_some());
+    json_ok(body)
 }
 
 /// Client-Server specification versions whose behavior has been reviewed for

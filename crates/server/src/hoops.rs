@@ -348,3 +348,19 @@ mod tests {
         assert!(limiter.check("bob", &config).is_ok());
     }
 }
+
+static EMAIL_SEND_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static EMAIL_VERIFY_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+
+pub fn check_email_send_rate(req: &Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        EMAIL_SEND_LIMITER.check(&ip, &crate::config::RateLimitConfig { per_second: 1.0/60.0, burst: 6 })?;
+    }
+    Ok(())
+}
+pub fn check_email_verify_rate(req: &Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        EMAIL_VERIFY_LIMITER.check(&ip, &crate::config::RateLimitConfig { per_second: 0.5, burst: 15 })?;
+    }
+    Ok(())
+}

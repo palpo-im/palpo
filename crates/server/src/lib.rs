@@ -39,6 +39,7 @@ pub mod state;
 pub mod storage;
 pub mod transaction_id;
 pub mod uiaa;
+pub mod registration_email;
 pub mod user;
 pub use exts::*;
 mod cjson;

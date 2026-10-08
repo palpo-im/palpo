@@ -27,6 +27,7 @@ pub mod login_token;
 pub mod openid_token;
 pub mod presence;
 pub mod registration_token;
+pub mod registration_email;
 pub mod uiaa;
 use std::mem;
 
