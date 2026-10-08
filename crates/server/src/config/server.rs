@@ -76,7 +76,7 @@ impl ListenerConfig {
 "#,
     ignore = "federation well_known compression typing read_receipt presence \
         admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice \
-        delayed_events"
+        delayed_events registration_email"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
@@ -398,6 +398,10 @@ pub struct ServerConfig {
     ///
     /// display: sensitive
     pub registration_token: Option<String>,
+
+    /// Require email OTP before human registration, using AgentMail for delivery.
+    #[serde(default)]
+    pub registration_email: Option<super::RegistrationEmailConfig>,
 
     /// Controls whether encrypted rooms and events are allowed.
     #[serde(default = "default_true")]
@@ -1074,6 +1078,9 @@ impl ServerConfig {
             return Err(AppError::internal(
                 "Registration token was specified but is empty (\"\")",
             ));
+        }
+        if let Some(email) = &self.registration_email {
+            email.validate()?;
         }
 
         // // check if we can read the token file path, and check if the file is empty

@@ -26,13 +26,16 @@ use crate::{
 pub fn public_router() -> Router {
     Router::with_path("register")
         .push(Router::with_path("available").get(available))
+        .push(
+            Router::with_path("email/requestToken").post(crate::registration_email::request_token),
+        )
+        .push(Router::with_path("email/submitToken").post(crate::registration_email::submit_token))
         .post(register)
         .push(Router::with_path("m.login.registration_token/validity").get(validate_token))
 }
 
 pub fn authed_router() -> Router {
     Router::with_path("register")
-        .push(Router::with_path("email/requestToken").post(token_via_email))
         .push(Router::with_path("msisdn/requestToken").post(token_via_msisdn))
 }
 
@@ -76,6 +79,13 @@ async fn register(
     }
 
     let is_guest = body.kind == RegistrationKind::Guest;
+    let email_required =
+        conf.registration_email.is_some() && body.login_type != Some(LoginType::ApplicationService);
+    if email_required && is_guest {
+        return Err(
+            MatrixError::forbidden("This server requires a verified email account.", None).into(),
+        );
+    }
     let user_id = match (&body.username, is_guest) {
         (Some(username), false) => {
             let proposed_user_id =
@@ -134,10 +144,18 @@ async fn register(
     // UIAA
     let mut uiaa_info = UiaaInfo {
         flows: vec![AuthFlow {
-            stages: if conf.registration_token.is_some() {
-                vec![AuthType::RegistrationToken]
-            } else {
-                vec![AuthType::Dummy]
+            stages: {
+                let mut stages = Vec::new();
+                if email_required {
+                    stages.push(AuthType::EmailIdentity);
+                }
+                if conf.registration_token.is_some() {
+                    stages.push(AuthType::RegistrationToken);
+                }
+                if stages.is_empty() {
+                    stages.push(AuthType::Dummy);
+                }
+                stages
             },
         }],
         completed: Vec::new(),
@@ -146,6 +164,7 @@ async fn register(
         auth_error: None,
     };
 
+    let mut completed_session = None;
     if body.login_type != Some(LoginType::ApplicationService) && !is_guest {
         let uiaa_user_id =
             UserId::parse_with_server_name("", &conf.server_name).expect("we know this is valid");
@@ -155,11 +174,35 @@ async fn register(
         // registration session was started.
         match body.auth.as_ref().filter(|auth| auth.session().is_some()) {
             Some(auth) => {
+                // Only claim after checking that this server issued the UIAA session.
+                let session = auth.session().expect("filtered above");
+                crate::uiaa::get_session(&uiaa_user_id, &uiaa_device_id, session).await?;
+                if let crate::core::client::uiaa::AuthData::EmailIdentity(email) = auth
+                    && (!email_required
+                        || email.thirdparty_id_creds.id_server.is_some()
+                        || !data::user::registration_email::claim(
+                            email.thirdparty_id_creds.sid.as_str(),
+                            &crate::registration_email::secret_hash(
+                                email.thirdparty_id_creds.client_secret.as_str(),
+                            )?,
+                            session,
+                            &user_id,
+                            crate::registration_email::now(),
+                        )
+                        .await?)
+                {
+                    return Err(MatrixError::forbidden(
+                        "Verify your email before registering.",
+                        None,
+                    )
+                    .into());
+                }
                 let (authed, uiaa) =
                     crate::uiaa::try_auth(&uiaa_user_id, &uiaa_device_id, auth, &uiaa_info).await?;
                 if !authed {
                     return Err(AppError::Uiaa(uiaa));
                 }
+                completed_session = uiaa.session;
             }
             None => {
                 crate::uiaa::create_challenge_session(
@@ -177,7 +220,37 @@ async fn register(
     let db_user = if is_guest {
         crate::user::create_guest_user(user_id.clone()).await?
     } else {
-        crate::user::create_user(user_id.clone(), body.password.as_deref()).await?
+        let email_session =
+            if email_required {
+                Some(completed_session.as_deref().ok_or_else(|| {
+                    MatrixError::forbidden("Email verification is required.", None)
+                })?)
+            } else {
+                None
+            };
+        let new_user = data::user::NewDbUser {
+            id: user_id.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user_id.localpart().to_owned(),
+            server_name: user_id.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        };
+        let hash = body
+            .password
+            .as_deref()
+            .map(crate::utils::hash_password)
+            .transpose()?;
+        data::user::registration_email::create_registered_user(
+            &new_user,
+            hash.as_deref(),
+            email_session,
+            crate::registration_email::now(),
+        )
+        .await?
     };
 
     // Presence update
@@ -393,19 +466,6 @@ async fn validate_token(
             supplied.len() == expected.len() && supplied.ct_eq(expected.as_bytes()).into()
         });
     Ok(Json(ValidateTokenResBody { valid }))
-}
-
-// `POST /_matrix/client/*/register/email/requestToken`
-/// Request a registration token with a 3rd party email.
-///
-/// `/v3/` ([spec])
-///
-/// [spec]: https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3registeremailrequesttoken
-
-#[endpoint]
-async fn token_via_email(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
-    let _authed = depot.authed_info()?;
-    empty_ok()
 }
 
 /// `POST /_matrix/client/*/register/msisdn/requestToken`

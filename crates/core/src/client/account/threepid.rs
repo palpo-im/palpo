@@ -24,9 +24,8 @@ pub struct ThreepidsResBody {
     /// A list of third party identifiers the homeserver has associated with the
     /// user's account.
     ///
-    /// If the `compat-get-3pids` feature is enabled, this field will always be
-    /// serialized, even if its value is an empty list.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The Matrix wire key is `threepids`, including for an empty list.
+    #[serde(default, rename = "threepids")]
     pub three_pids: Vec<ThirdPartyIdentifier>,
 }
 impl ThreepidsResBody {
@@ -236,6 +235,17 @@ mod tests {
             ))
             .unwrap(),
             json!({ "id_server_unbind_result": "success" })
+        );
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    #[test]
+    fn empty_threepid_list_uses_matrix_wire_key() {
+        assert_eq!(
+            serde_json::to_value(super::ThreepidsResBody::new(Vec::new())).unwrap(),
+            serde_json::json!({"threepids":[]})
         );
     }
 }

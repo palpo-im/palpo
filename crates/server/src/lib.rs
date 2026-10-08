@@ -32,6 +32,7 @@ pub mod exts;
 pub mod federation;
 pub mod media;
 pub mod membership;
+pub mod registration_email;
 pub mod room;
 pub mod sending;
 pub mod server_key;

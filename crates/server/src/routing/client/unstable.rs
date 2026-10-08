@@ -10,6 +10,7 @@ pub(super) fn router() -> Router {
         .hoop(hoops::limit_rate)
         .push(super::delayed_event::authed_router());
     Router::with_path("unstable")
+        .push(Router::with_path("org.palpo.registration").get(crate::registration_email::discovery))
         // Public routes (no auth required) — MSC2965 OIDC discovery
         .push(
             Router::with_path("org.matrix.msc2965/auth_issuer").get(auth_issuer),
