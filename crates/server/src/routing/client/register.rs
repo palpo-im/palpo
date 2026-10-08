@@ -177,8 +177,8 @@ async fn register(
                 // Only claim after checking that this server issued the UIAA session.
                 let session = auth.session().expect("filtered above");
                 crate::uiaa::get_session(&uiaa_user_id, &uiaa_device_id, session).await?;
-                if let crate::core::client::uiaa::AuthData::EmailIdentity(email) = auth {
-                    if !email_required
+                if let crate::core::client::uiaa::AuthData::EmailIdentity(email) = auth
+                    && (!email_required
                         || email.thirdparty_id_creds.id_server.is_some()
                         || !data::user::registration_email::claim(
                             email.thirdparty_id_creds.sid.as_str(),
@@ -189,14 +189,13 @@ async fn register(
                             &user_id,
                             crate::registration_email::now(),
                         )
-                        .await?
-                    {
-                        return Err(MatrixError::forbidden(
-                            "Verify your email before registering.",
-                            None,
-                        )
-                        .into());
-                    }
+                        .await?)
+                {
+                    return Err(MatrixError::forbidden(
+                        "Verify your email before registering.",
+                        None,
+                    )
+                    .into());
                 }
                 let (authed, uiaa) =
                     crate::uiaa::try_auth(&uiaa_user_id, &uiaa_device_id, auth, &uiaa_info).await?;
