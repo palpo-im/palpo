@@ -609,18 +609,13 @@ pub async fn sync_events(
         crate::user::get_push_rules(sender_id).await?;
     }
 
-    let invite_snapshot =
-        crate::membership::invited_rooms_for_sync(sender_id, 0, device_id, async {
-            #[cfg(feature = "unstable-msc4262")]
-            let sn =
-                data::user::curr_sn_after_presence_profile_and_inbox_writes(sender_id, device_id)
-                    .await?;
-            #[cfg(not(feature = "unstable-msc4262"))]
-            let sn =
-                data::user::curr_sn_after_presence_writes(Some((sender_id, device_id))).await?;
-            Ok(sn)
-        })
-        .await?;
+    let invite_snapshot = crate::membership::invited_rooms_for_sync(
+        sender_id,
+        0,
+        device_id,
+        crate::membership::InviteSyncStream::Sliding,
+    )
+    .await?;
     let curr_sn = invite_snapshot.until_sn;
     crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
@@ -2111,12 +2106,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let invites =
-            crate::membership::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
-            .await
-            .unwrap();
+        let invites = crate::membership::invited_rooms_for_sync(
+            &recipient,
+            0,
+            "TEST".into(),
+            crate::membership::InviteSyncStream::Sliding,
+        )
+        .await
+        .unwrap();
         assert!(invites.rooms.is_empty());
         let body: SyncEventsReqBody = serde_json::from_value(json!({})).unwrap();
         let device: OwnedDeviceId = "SUBSCRIPTION".into();
@@ -2250,7 +2247,7 @@ mod tests {
                     &recipient,
                     0,
                     "TEST".into(),
-                    async { Ok(data::user::curr_sn_after_presence_writes(None).await?) },
+                    crate::membership::InviteSyncStream::Sliding,
                 )
                 .await
                 .unwrap();
@@ -2358,12 +2355,14 @@ mod tests {
             created_at: UnixMillis::now(),
         }).execute(&mut connect().await.unwrap()).await.unwrap();
         let reserved_sn = data::next_sn().await.unwrap();
-        let snapshot =
-            crate::membership::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
-            .await
-            .unwrap();
+        let snapshot = crate::membership::invited_rooms_for_sync(
+            &recipient,
+            0,
+            "TEST".into(),
+            crate::membership::InviteSyncStream::Sliding,
+        )
+        .await
+        .unwrap();
         let read = data::user::invite_sync_inventory(&recipient, 0, reserved_sn, None, None)
             .await
             .unwrap();
@@ -2444,7 +2443,7 @@ mod tests {
             &recipient,
             reserved_sn + 1,
             "TEST".into(),
-            async { Ok(data::user::curr_sn_after_presence_writes(None).await?) },
+            crate::membership::InviteSyncStream::Sliding,
         )
         .await
         .unwrap();
@@ -2466,9 +2465,12 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            crate::membership::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
+            crate::membership::invited_rooms_for_sync(
+                &recipient,
+                0,
+                "TEST".into(),
+                crate::membership::InviteSyncStream::Sliding
+            )
             .await
             .unwrap()
             .rooms

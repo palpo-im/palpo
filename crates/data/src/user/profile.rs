@@ -66,6 +66,18 @@ async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), 
     Ok(())
 }
 
+/// Shared by cursor-only reads and coordinated sliding-sync snapshots.
+pub async fn lock_presence_profile_and_inbox_streams(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<()> {
+    super::presence::lock_presence_stream_shared(conn).await?;
+    lock_profile_stream_shared(conn).await?;
+    super::device::lock_inbox_stream(conn, user_id, device_id).await?;
+    Ok(())
+}
+
 /// Read the global stream position after every earlier presence publication, profile
 /// mutation and write to this device inbox commits.
 ///
@@ -81,11 +93,9 @@ pub async fn curr_sn_after_presence_profile_and_inbox_writes(
     connect()
         .await?
         .transaction::<_, DataError, _>(async |conn| {
-            super::presence::lock_presence_stream_shared(conn).await?;
             // Readers may run together, but an exclusive writer cannot publish a stream
             // position until its profile row and change row have both committed.
-            lock_profile_stream_shared(conn).await?;
-            super::device::lock_inbox_stream(conn, user_id, device_id).await?;
+            lock_presence_profile_and_inbox_streams(conn, user_id, device_id).await?;
             Ok(
                 diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",

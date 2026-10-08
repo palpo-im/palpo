@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::json;
@@ -446,18 +446,25 @@ async fn invite_user(
     // )
     // .map_err(|_| MatrixError::invalid_param("sender is not a user id"))?;
 
-    diesel::update(
-        room_users::table.filter(
-            room_users::room_id
-                .eq(&args.room_id)
-                .and(room_users::user_id.eq(&invitee_id))
-                .and(room_users::membership.eq(MembershipState::Invite.to_string())),
-        ),
-    )
-    .set(room_users::state_data.eq(json!(invite_state)))
-    .execute(&mut connect().await?)
-    .await
-    .ok();
+    connect()
+        .await?
+        .transaction::<_, crate::AppError, _>(async |conn| {
+            crate::data::user::lock_invite_user_write(conn, &invitee_id).await?;
+            diesel::update(
+                room_users::table.filter(
+                    room_users::room_id
+                        .eq(&args.room_id)
+                        .and(room_users::user_id.eq(&invitee_id))
+                        .and(room_users::membership.eq(MembershipState::Invite.to_string())),
+                ),
+            )
+            .set(room_users::state_data.eq(json!(invite_state)))
+            .execute(conn)
+            .await?;
+            Ok(())
+        })
+        .await
+        .ok();
 
     drop(event_guard);
     // }

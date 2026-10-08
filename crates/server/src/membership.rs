@@ -207,6 +207,7 @@ pub async fn update_membership(
             connect()
                 .await?
                 .transaction::<_, AppError, _>(async |conn| {
+                    crate::data::user::lock_invite_user_write(conn, user_id).await?;
                     diesel::delete(
                         room_users::table
                             .filter(room_users::room_id.eq(room_id))
@@ -252,6 +253,7 @@ pub async fn update_membership(
             connect()
                 .await?
                 .transaction::<_, AppError, _>(async |conn| {
+                    crate::data::user::lock_invite_user_write(conn, user_id).await?;
                     diesel::delete(
                         room_users::table
                             .filter(room_users::room_id.eq(room_id))
@@ -285,6 +287,7 @@ pub async fn update_membership(
             connect()
                 .await?
                 .transaction::<_, AppError, _>(async |conn| {
+                    crate::data::user::lock_invite_user_write(conn, user_id).await?;
                     diesel::delete(
                         room_users::table
                             .filter(room_users::room_id.eq(room_id))

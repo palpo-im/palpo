@@ -32,7 +32,7 @@ use std::mem;
 
 use diesel::dsl;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 pub use external_id::*;
 pub use presence::*;
 pub use registration_token::*;
@@ -227,15 +227,11 @@ fn invite_default_action(config: Option<&DbUserData>) -> Option<String> {
         .map(str::to_owned)
 }
 
-async fn read_shared_invite_rooms(
+async fn read_invite_joined_rooms(
     conn: &mut diesel_async::AsyncPgConnection,
     invitee: &UserId,
-    inviters: &[OwnedUserId],
     until_sn: i64,
-) -> DataResult<Vec<SharedInviteRoom>> {
-    if inviters.is_empty() {
-        return Ok(Vec::new());
-    }
+) -> DataResult<Vec<OwnedRoomId>> {
     let recipient_rooms = room_users::table
         .filter(room_users::user_id.eq(invitee))
         .distinct_on(room_users::room_id)
@@ -247,11 +243,23 @@ async fn read_shared_invite_rooms(
         ))
         .load::<(OwnedRoomId, String, i64)>(conn)
         .await?;
-    let joined: Vec<_> = recipient_rooms
+    Ok(recipient_rooms
         .into_iter()
         .filter(|(_, membership, event_sn)| membership == "join" && *event_sn <= until_sn)
         .map(|(room_id, ..)| room_id)
-        .collect();
+        .collect())
+}
+
+async fn read_shared_invite_memberships(
+    conn: &mut diesel_async::AsyncPgConnection,
+    invitee: &UserId,
+    inviters: &[OwnedUserId],
+    until_sn: i64,
+) -> DataResult<Vec<(OwnedUserId, OwnedRoomId, Option<i64>)>> {
+    if inviters.is_empty() {
+        return Ok(Vec::new());
+    }
+    let joined = read_invite_joined_rooms(conn, invitee, until_sn).await?;
     if joined.is_empty() {
         return Ok(Vec::new());
     }
@@ -269,17 +277,33 @@ async fn read_shared_invite_rooms(
             room_users::user_id,
             room_users::membership,
             room_users::event_sn,
+            room_users::room_id,
             rooms::state_frame_id,
         ))
-        .load::<(OwnedUserId, String, i64, Option<i64>)>(conn)
+        .load::<(OwnedUserId, String, i64, OwnedRoomId, Option<i64>)>(conn)
         .await?;
     Ok(rows
         .into_iter()
-        .filter(|(_, membership, event_sn, _)| membership == "join" && *event_sn <= until_sn)
-        .filter_map(|(inviter, _, _, frame_id)| {
-            frame_id.map(|frame_id| SharedInviteRoom { inviter, frame_id })
-        })
+        .filter(|(_, membership, event_sn, ..)| membership == "join" && *event_sn <= until_sn)
+        .map(|(inviter, _, _, room, frame)| (inviter, room, frame))
         .collect())
+}
+
+async fn read_shared_invite_rooms(
+    conn: &mut diesel_async::AsyncPgConnection,
+    invitee: &UserId,
+    inviters: &[OwnedUserId],
+    until_sn: i64,
+) -> DataResult<Vec<SharedInviteRoom>> {
+    Ok(
+        read_shared_invite_memberships(conn, invitee, inviters, until_sn)
+            .await?
+            .into_iter()
+            .filter_map(|(inviter, _, frame)| {
+                frame.map(|frame_id| SharedInviteRoom { inviter, frame_id })
+            })
+            .collect(),
+    )
 }
 
 /// New-invite authorization uses one permission/membership/room-frame snapshot.
@@ -317,10 +341,149 @@ pub struct InviteSyncInventory {
     pub shared_rooms: Vec<SharedInviteRoom>,
 }
 
+// Domain seeds separate user and room locks. Use bigint keys so these scopes
+// cannot overlap account-data locks in PostgreSQL's separate two-int key space.
+const INVITE_USER_LOCK: i64 = 0x494e5655;
+const INVITE_ROOM_LOCK: i64 = 0x494e5652;
+
+async fn lock_invite_write_scope(
+    conn: &mut diesel_async::AsyncPgConnection,
+    namespace: i64,
+    id: &str,
+) -> DataResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(id)
+        .bind::<diesel::sql_types::BigInt, _>(namespace)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+async fn lock_invite_read_scopes(
+    conn: &mut diesel_async::AsyncPgConnection,
+    namespace: i64,
+    ids: Vec<String>,
+) -> DataResult<()> {
+    #[derive(QueryableByName)]
+    struct ScopeKey {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        key: i64,
+    }
+    // Sort the actual PostgreSQL keys, rather than identifiers: hash collisions
+    // must not give overlapping requests different physical lock orders.
+    let keys = diesel::sql_query(
+        "SELECT DISTINCT hashtextextended(id, $2) AS key FROM unnest($1::text[]) AS scopes(id) ORDER BY key",
+    )
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(ids)
+    .bind::<diesel::sql_types::BigInt, _>(namespace)
+    .load::<ScopeKey>(conn)
+    .await?;
+    for key in keys {
+        diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
+            .bind::<diesel::sql_types::BigInt, _>(key.key)
+            .execute(conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// All builds coordinate user policy, ignore-list, membership and admission writes,
+/// so an MSC4494 reader is also protected from a feature-disabled instance. Writers
+/// hold exactly one user scope until commit and never acquire sync stream locks.
+pub async fn lock_invite_user_write(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user: &UserId,
+) -> DataResult<()> {
+    lock_invite_write_scope(conn, INVITE_USER_LOCK, user.as_str()).await
+}
+
+/// Current room-frame publication holds one room scope until commit, independently
+/// of user-scoped membership transactions. Do not acquire user or stream locks here.
+pub async fn lock_invite_room_write(
+    conn: &mut diesel_async::AsyncPgConnection,
+    room: &RoomId,
+) -> DataResult<()> {
+    lock_invite_write_scope(conn, INVITE_ROOM_LOCK, room.as_str()).await
+}
+
+async fn unadmitted_invite_senders(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user: &UserId,
+) -> DataResult<std::collections::BTreeSet<OwnedUserId>> {
+    Ok(room_users::table
+        .left_join(
+            room_invite_admissions::table
+                .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+        )
+        .filter(room_users::user_id.eq(user))
+        .filter(room_users::membership.eq("invite"))
+        .filter(room_invite_admissions::room_user_id.is_null())
+        .select(room_users::sender_id)
+        .distinct()
+        .load::<OwnedUserId>(conn)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+/// Take after the sync stream locks in READ COMMITTED. Discover users first and
+/// acquire every user scope in physical-key order, including the recipient. Even shared
+/// locks need one order when writers are queued. The recipient lock then freezes
+/// policy, ignores, invitations and admissions. If a new sender appeared before
+/// that lock, return false: the caller must release the transaction and retry.
+/// After user scopes are fixed, freeze the shared rooms in sorted order, including
+/// rooms without a frame. Readers overlap; unrelated users/rooms keep writing.
+pub async fn lock_invite_sync_state(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user: &UserId,
+    membership_action: &str,
+) -> DataResult<bool> {
+    let preflight = read_invite_permission(conn, user).await?;
+    let mut users =
+        if invite_default_action(preflight.as_ref()).as_deref() == Some(membership_action) {
+            unadmitted_invite_senders(conn, user).await?
+        } else {
+            std::collections::BTreeSet::new()
+        };
+    users.insert(user.to_owned());
+    lock_invite_read_scopes(
+        conn,
+        INVITE_USER_LOCK,
+        users.iter().map(ToString::to_string).collect(),
+    )
+    .await?;
+    let config = read_invite_permission(conn, user).await?;
+    if invite_default_action(config.as_ref()).as_deref() != Some(membership_action) {
+        return Ok(true);
+    }
+    let inviters = unadmitted_invite_senders(conn, user).await?;
+    if !inviters.is_subset(&users) {
+        return Ok(false);
+    }
+    let shared = read_shared_invite_memberships(
+        conn,
+        user,
+        &inviters.into_iter().collect::<Vec<_>>(),
+        i64::MAX,
+    )
+    .await?;
+    let shared_rooms: std::collections::BTreeSet<_> =
+        shared.into_iter().map(|(_, room, _)| room).collect();
+    lock_invite_read_scopes(
+        conn,
+        INVITE_ROOM_LOCK,
+        shared_rooms
+            .into_iter()
+            .map(|room| room.to_string())
+            .collect(),
+    )
+    .await?;
+    Ok(true)
+}
+
 /// Read permission, ignored senders and invitations from one repeatable-read snapshot.
 /// `retained_action` asks for older invites for an action whose eligibility is dynamic.
-/// This query never advances the caller's stream boundary. For current-state
-/// eligibility, pass `i64::MAX` and capture a protected response cursor afterwards.
+/// This query never advances the caller's stream boundary.
 pub async fn invite_sync_inventory(
     user_id: &UserId,
     since_sn: i64,
@@ -334,102 +497,137 @@ pub async fn invite_sync_inventory(
         .read_only()
         .repeatable_read()
         .run::<_, DataError, _>(async |conn| {
-            let config = read_invite_permission(conn, user_id).await?;
-            let default_action = invite_default_action(config.as_ref());
-            let replay_since_sn = if config
-                .as_ref()
-                .is_some_and(|config| config.occur_sn >= since_sn)
-            {
-                0
-            } else {
-                since_sn
-            };
-            if default_action.as_deref() == Some("block") {
-                return Ok(InviteSyncInventory {
-                    default_action,
-                    replay_since_sn,
-                    invites: Vec::new(),
-                    shared_rooms: Vec::new(),
-                });
-            }
-            let load_since =
-                if retained_action.is_some() && default_action.as_deref() == retained_action {
-                    0
-                } else {
-                    replay_since_sn
-                };
-            let latest_membership = diesel::alias!(room_users as latest_invite_membership);
-            let latest = latest_membership
-                .filter(latest_membership.field(room_users::user_id).eq(user_id))
-                .distinct_on(latest_membership.field(room_users::room_id))
-                .order_by((
-                    latest_membership.field(room_users::room_id).desc(),
-                    latest_membership.field(room_users::id).desc(),
-                ))
-                .select(latest_membership.field(room_users::id));
-            let delivered_sn = diesel::dsl::sql::<
-                diesel::sql_types::Nullable<diesel::sql_types::BigInt>,
-            >("(room_invite_admissions.delivered_devices ->> ")
-            .bind::<diesel::sql_types::Text, _>(device_id.map_or("", DeviceId::as_str))
-            .sql(")::bigint");
-            let mut query = room_users::table
-                .left_join(
-                    room_invite_admissions::table
-                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
-                )
-                .filter(room_users::user_id.eq(user_id))
-                .filter(room_users::id.eq_any(latest))
-                .filter(room_users::membership.eq("invite"))
-                .filter(room_users::event_sn.le(until_sn))
-                .filter(
-                    room_users::sender_id.ne_all(
-                        user_ignores::table
-                            .filter(user_ignores::user_id.eq(user_id))
-                            .select(user_ignores::ignored_id),
-                    ),
-                )
-                .distinct_on(room_users::room_id)
-                .order_by((room_users::room_id.desc(), room_users::id.desc()))
-                .select((
-                    room_users::id,
-                    room_users::event_id,
-                    room_users::event_sn,
-                    room_users::room_id,
-                    room_users::sender_id,
-                    room_users::state_data,
-                    room_invite_admissions::admitted_sn.nullable(),
-                    delivered_sn.clone(),
-                ))
-                .into_boxed();
-            // Tracking is enabled only with the membership-filtering feature. It also
-            // recovers late/unseen allowed invites and deliveries on other devices,
-            // even when their global admission was committed behind this cursor.
-            query = if retained_action.is_some() {
-                query.filter(
-                    room_users::event_sn
-                        .ge(load_since)
-                        .or(delivered_sn.clone().is_null())
-                        .or(delivered_sn.ge(since_sn)),
-                )
-            } else {
-                query.filter(room_users::event_sn.ge(load_since))
-            };
-            let rows = query
-                .load::<(
-                    i64,
-                    OwnedEventId,
-                    i64,
-                    OwnedRoomId,
-                    OwnedUserId,
-                    Option<JsonValue>,
-                    Option<i64>,
-                    Option<i64>,
-                )>(conn)
-                .await?;
-            let invites: Vec<SyncInvitation> = rows
-                .into_iter()
-                .filter_map(
-                    |(
+            invite_sync_inventory_with_conn(
+                conn,
+                user_id,
+                since_sn,
+                until_sn,
+                retained_action,
+                device_id,
+            )
+            .await
+        })
+        .await
+}
+
+/// The caller supplies either a repeatable-read snapshot or an invitation-state
+/// locks. The latter allow its protected sync cursor to be read on the same
+/// connection without nested pool acquisitions or an unlocked sequence read.
+pub async fn invite_sync_inventory_with_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: &UserId,
+    since_sn: i64,
+    until_sn: i64,
+    retained_action: Option<&str>,
+    device_id: Option<&DeviceId>,
+) -> DataResult<InviteSyncInventory> {
+    let config = read_invite_permission(conn, user_id).await?;
+    let default_action = invite_default_action(config.as_ref());
+    let replay_since_sn = if config
+        .as_ref()
+        .is_some_and(|config| config.occur_sn >= since_sn)
+    {
+        0
+    } else {
+        since_sn
+    };
+    if default_action.as_deref() == Some("block") {
+        return Ok(InviteSyncInventory {
+            default_action,
+            replay_since_sn,
+            invites: Vec::new(),
+            shared_rooms: Vec::new(),
+        });
+    }
+    let load_since = if retained_action.is_some() && default_action.as_deref() == retained_action {
+        0
+    } else {
+        replay_since_sn
+    };
+    let latest_membership = diesel::alias!(room_users as latest_invite_membership);
+    let latest = latest_membership
+        .filter(latest_membership.field(room_users::user_id).eq(user_id))
+        .distinct_on(latest_membership.field(room_users::room_id))
+        .order_by((
+            latest_membership.field(room_users::room_id).desc(),
+            latest_membership.field(room_users::id).desc(),
+        ))
+        .select(latest_membership.field(room_users::id));
+    let delivered_sn = diesel::dsl::sql::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>>(
+        "(room_invite_admissions.delivered_devices ->> ",
+    )
+    .bind::<diesel::sql_types::Text, _>(device_id.map_or("", DeviceId::as_str))
+    .sql(")::bigint");
+    let mut query = room_users::table
+        .left_join(
+            room_invite_admissions::table
+                .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+        )
+        .filter(room_users::user_id.eq(user_id))
+        .filter(room_users::id.eq_any(latest))
+        .filter(room_users::membership.eq("invite"))
+        .filter(room_users::event_sn.le(until_sn))
+        .filter(
+            room_users::sender_id.ne_all(
+                user_ignores::table
+                    .filter(user_ignores::user_id.eq(user_id))
+                    .select(user_ignores::ignored_id),
+            ),
+        )
+        .distinct_on(room_users::room_id)
+        .order_by((room_users::room_id.desc(), room_users::id.desc()))
+        .select((
+            room_users::id,
+            room_users::event_id,
+            room_users::event_sn,
+            room_users::room_id,
+            room_users::sender_id,
+            room_users::state_data,
+            room_invite_admissions::admitted_sn.nullable(),
+            delivered_sn.clone(),
+        ))
+        .into_boxed();
+    // Tracking is enabled only with the membership-filtering feature. It also
+    // recovers late/unseen allowed invites and deliveries on other devices,
+    // even when their global admission was committed behind this cursor.
+    query = if retained_action.is_some() {
+        query.filter(
+            room_users::event_sn
+                .ge(load_since)
+                .or(delivered_sn.clone().is_null())
+                .or(delivered_sn.ge(since_sn)),
+        )
+    } else {
+        query.filter(room_users::event_sn.ge(load_since))
+    };
+    let rows = query
+        .load::<(
+            i64,
+            OwnedEventId,
+            i64,
+            OwnedRoomId,
+            OwnedUserId,
+            Option<JsonValue>,
+            Option<i64>,
+            Option<i64>,
+        )>(conn)
+        .await?;
+    let invites: Vec<SyncInvitation> = rows
+        .into_iter()
+        .filter_map(
+            |(
+                membership_id,
+                event_id,
+                event_sn,
+                room_id,
+                sender_id,
+                state,
+                admitted_sn,
+                delivered_sn,
+            )| {
+                state
+                    .and_then(|state| serde_json::from_value(state).ok())
+                    .map(|state| SyncInvitation {
                         membership_id,
                         event_id,
                         event_sn,
@@ -438,47 +636,33 @@ pub async fn invite_sync_inventory(
                         state,
                         admitted_sn,
                         delivered_sn,
-                    )| {
-                        state
-                            .and_then(|state| serde_json::from_value(state).ok())
-                            .map(|state| SyncInvitation {
-                                membership_id,
-                                event_id,
-                                event_sn,
-                                room_id,
-                                sender_id,
-                                state,
-                                admitted_sn,
-                                delivered_sn,
-                            })
-                    },
-                )
-                .collect();
-            let shared_rooms =
-                if retained_action.is_some() && default_action.as_deref() == retained_action {
-                    let inviters: std::collections::HashSet<_> = invites
-                        .iter()
-                        .filter(|invite| invite.admitted_sn.is_none())
-                        .map(|invite| invite.sender_id.clone())
-                        .collect();
-                    read_shared_invite_rooms(
-                        conn,
-                        user_id,
-                        &inviters.into_iter().collect::<Vec<_>>(),
-                        until_sn,
-                    )
-                    .await?
-                } else {
-                    Vec::new()
-                };
-            Ok(InviteSyncInventory {
-                default_action,
-                replay_since_sn,
-                invites,
-                shared_rooms,
-            })
-        })
-        .await
+                    })
+            },
+        )
+        .collect();
+    let shared_rooms = if retained_action.is_some() && default_action.as_deref() == retained_action
+    {
+        let inviters: std::collections::HashSet<_> = invites
+            .iter()
+            .filter(|invite| invite.admitted_sn.is_none())
+            .map(|invite| invite.sender_id.clone())
+            .collect();
+        read_shared_invite_rooms(
+            conn,
+            user_id,
+            &inviters.into_iter().collect::<Vec<_>>(),
+            until_sn,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    Ok(InviteSyncInventory {
+        default_action,
+        replay_since_sn,
+        invites,
+        shared_rooms,
+    })
 }
 
 /// Stable permission filtering; membership reads and appservice delivery stay unchanged.
@@ -916,21 +1100,27 @@ pub async fn reactivate(user_id: &UserId) -> DataResult<()> {
 }
 
 pub async fn set_ignored_users(user_id: &UserId, ignored_ids: &[OwnedUserId]) -> DataResult<()> {
-    diesel::delete(user_ignores::table.filter(user_ignores::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
-        .await?;
-    for ignored_id in ignored_ids {
-        diesel::insert_into(user_ignores::table)
-            .values(NewDbUserIgnore {
-                user_id: user_id.to_owned(),
-                ignored_id: ignored_id.to_owned(),
-                created_at: UnixMillis::now(),
-            })
-            .on_conflict_do_nothing()
-            .execute(&mut connect().await?)
-            .await?;
-    }
-    Ok(())
+    connect()
+        .await?
+        .transaction::<_, DataError, _>(async |conn| {
+            lock_invite_user_write(conn, user_id).await?;
+            diesel::delete(user_ignores::table.filter(user_ignores::user_id.eq(user_id)))
+                .execute(conn)
+                .await?;
+            for ignored_id in ignored_ids {
+                diesel::insert_into(user_ignores::table)
+                    .values(NewDbUserIgnore {
+                        user_id: user_id.to_owned(),
+                        ignored_id: ignored_id.to_owned(),
+                        created_at: UnixMillis::now(),
+                    })
+                    .on_conflict_do_nothing()
+                    .execute(conn)
+                    .await?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 /// Get user_id by third party ID (email, phone, etc.)

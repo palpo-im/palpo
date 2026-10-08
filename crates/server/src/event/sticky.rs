@@ -37,6 +37,18 @@ async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), D
     Ok(())
 }
 
+/// Shared by cursor-only reads and coordinated invitation snapshots.
+pub(crate) async fn lock_sync_streams(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> AppResult<()> {
+    crate::data::user::lock_presence_stream_shared(conn).await?;
+    lock_sticky_stream_shared(conn).await?;
+    crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
+    Ok(())
+}
+
 /// Read the global stream position after all earlier presence, sticky and device-inbox
 /// writes that can affect this `/sync` have committed.
 ///
@@ -55,9 +67,7 @@ pub async fn curr_sn_after_sync_writes(
                 // Same order as `curr_sn_after_presence_writes`: presence, then inbox. Sync
                 // readers may snapshot concurrently; they only need to exclude the exclusive
                 // writers that allocate a stream position.
-                crate::data::user::lock_presence_stream_shared(conn).await?;
-                lock_sticky_stream_shared(conn).await?;
-                crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
+                lock_sync_streams(conn, user_id, device_id).await?;
                 Ok(diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",
                 )

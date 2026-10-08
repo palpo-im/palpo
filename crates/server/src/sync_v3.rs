@@ -52,12 +52,12 @@ pub async fn sync_events(
         None
     };
     // Capture invitations before constructing any stream-bounded response data.
-    // Reacquire the protected cursor after dynamic invitation eligibility reads.
+    // Read dynamic eligibility and its cursor in the same protected phase.
     let mut invite_snapshot = crate::membership::invited_rooms_for_sync(
         sender_id,
         since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
         device_id,
-        crate::event::sticky::curr_sn_after_sync_writes(sender_id, device_id),
+        crate::membership::InviteSyncStream::Ordinary,
     )
     .await?;
     let curr_sn = invite_snapshot.until_sn;

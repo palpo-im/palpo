@@ -8,6 +8,9 @@ use crate::membership::federation::membership::{InviteUserReqArgs, InviteUserReq
 use crate::room::{state, timeline};
 use crate::{AppResult, GetUrlOrigin, IsRemoteOrLocal, MatrixError, data, room, sending};
 
+#[cfg(feature = "unstable-msc4494")]
+const MEMBERSHIP_INVITE_ACTION: &str = "uk.timedout.msc4494.deny_public";
+
 pub(crate) async fn ensure_invite_allowed(
     invitee_id: &UserId,
     inviter_id: &UserId,
@@ -16,7 +19,7 @@ pub(crate) async fn ensure_invite_allowed(
         return Ok(());
     }
     #[cfg(feature = "unstable-msc4494")]
-    let membership_action = Some("uk.timedout.msc4494.deny_public");
+    let membership_action = Some(MEMBERSHIP_INVITE_ACTION);
     #[cfg(not(feature = "unstable-msc4494"))]
     let membership_action = None;
     let permission = data::user::invite_permission_snapshot(
@@ -95,6 +98,8 @@ pub(crate) struct InviteSyncSnapshot {
     pending_admissions: std::collections::HashMap<OwnedRoomId, (i64, OwnedEventId)>,
     #[cfg(feature = "unstable-msc4494")]
     device_id: OwnedDeviceId,
+    #[cfg(feature = "unstable-msc4494")]
+    user_id: OwnedUserId,
 }
 
 impl InviteSyncSnapshot {
@@ -106,7 +111,8 @@ impl InviteSyncSnapshot {
                 .filter_map(|room_id| self.pending_admissions.get(*room_id).cloned())
                 .collect();
             if !candidates.is_empty() {
-                admit_pending_invites(candidates, self.until_sn, &self.device_id).await?;
+                admit_pending_invites(candidates, self.until_sn, &self.device_id, &self.user_id)
+                    .await?;
             }
         }
         #[cfg(not(feature = "unstable-msc4494"))]
@@ -115,41 +121,126 @@ impl InviteSyncSnapshot {
     }
 }
 
-/// Apply membership-based filtering to retained invites in both sync versions.
-/// `capture_cursor` must acquire that sync version's stream locks before reading
-/// the sequence. With admission tracking, poll it only after reading current state;
-/// the cursor then includes observed changes without crossing uncommitted writes.
+#[derive(Clone, Copy)]
+pub(crate) enum InviteSyncStream {
+    Ordinary,
+    Sliding,
+}
+
+impl InviteSyncStream {
+    #[cfg(not(feature = "unstable-msc4494"))]
+    async fn capture_cursor(self, user: &UserId, device: &DeviceId) -> AppResult<i64> {
+        match self {
+            Self::Ordinary => crate::event::sticky::curr_sn_after_sync_writes(user, device).await,
+            Self::Sliding => {
+                #[cfg(feature = "unstable-msc4262")]
+                let sn = data::user::curr_sn_after_presence_profile_and_inbox_writes(user, device)
+                    .await?;
+                #[cfg(not(feature = "unstable-msc4262"))]
+                let sn = data::user::curr_sn_after_presence_writes(Some((user, device))).await?;
+                Ok(sn)
+            }
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    async fn lock_streams(
+        self,
+        conn: &mut diesel_async::AsyncPgConnection,
+        user: &UserId,
+        device: &DeviceId,
+    ) -> AppResult<()> {
+        match self {
+            Self::Ordinary => crate::event::sticky::lock_sync_streams(conn, user, device).await?,
+            Self::Sliding => {
+                #[cfg(feature = "unstable-msc4262")]
+                data::user::lock_presence_profile_and_inbox_streams(conn, user, device).await?;
+                #[cfg(not(feature = "unstable-msc4262"))]
+                data::user::lock_presence_and_inbox_streams(conn, Some((user, device))).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The invitation decision and cursor share one protected read phase. Invitation
+/// writers cannot commit between inventory and cursor reads; applicable stream
+/// writers cannot publish uncommitted allocations. Immutable frame IDs allow rule
+/// decoding after these locks have been released. Later changes belong to the next
+/// response and cannot invalidate a decision at this boundary.
 pub(crate) async fn invited_rooms_for_sync(
     user_id: &UserId,
     since_sn: i64,
     device_id: &DeviceId,
-    capture_cursor: impl std::future::Future<Output = AppResult<i64>> + Send,
+    stream: InviteSyncStream,
 ) -> AppResult<InviteSyncSnapshot> {
     #[cfg(feature = "unstable-msc4494")]
-    let retained_action = Some("uk.timedout.msc4494.deny_public");
+    let retained_action = Some(MEMBERSHIP_INVITE_ACTION);
     #[cfg(not(feature = "unstable-msc4494"))]
     let retained_action = None;
-    // Stable sync keeps its existing event window. Dynamic eligibility instead
-    // reads current rows, then uses admission tracking to recover late arrivals.
-    #[cfg(not(feature = "unstable-msc4494"))]
-    let until_sn = capture_cursor.await?;
     #[cfg(feature = "unstable-msc4494")]
-    let until_sn = i64::MAX;
-    let inventory = data::user::invite_sync_inventory(
-        user_id,
-        since_sn,
-        until_sn,
-        retained_action,
-        Some(device_id),
-    )
-    .await?;
+    let (inventory, until_sn) = loop {
+        use diesel_async::RunQueryDsl;
+
+        let snapshot = data::connect()
+            .await?
+            .build_transaction()
+            .read_committed()
+            .run::<_, crate::AppError, _>(async |conn| {
+                // READ COMMITTED is intentional: a snapshot established while waiting
+                // for a writer must not hide that writer after its lock is released.
+                stream.lock_streams(conn, user_id, device_id).await?;
+                if !data::user::lock_invite_sync_state(conn, user_id, MEMBERSHIP_INVITE_ACTION)
+                    .await?
+                {
+                    return Ok(None);
+                }
+                let inventory = data::user::invite_sync_inventory_with_conn(
+                    conn,
+                    user_id,
+                    since_sn,
+                    i64::MAX,
+                    retained_action,
+                    Some(device_id),
+                )
+                .await?;
+                let until_sn = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "SELECT last_value FROM occur_sn_seq",
+                )
+                .get_result::<i64>(conn)
+                .await?;
+                Ok(Some((inventory, until_sn)))
+            })
+            .await?;
+        if let Some(snapshot) = snapshot {
+            break snapshot;
+        }
+        // The transaction released every scope before rediscovery; no partial
+        // inventory, cursor or admission is published from the failed attempt.
+        tokio::task::yield_now().await;
+    };
+    #[cfg(not(feature = "unstable-msc4494"))]
+    let (inventory, until_sn) = {
+        let until_sn = stream.capture_cursor(user_id, device_id).await?;
+        let inventory = data::user::invite_sync_inventory(
+            user_id,
+            since_sn,
+            until_sn,
+            retained_action,
+            Some(device_id),
+        )
+        .await?;
+        (inventory, until_sn)
+    };
     let mut snapshot = InviteSyncSnapshot {
         rooms: std::collections::BTreeMap::new(),
-        until_sn: 0,
+        until_sn,
         #[cfg(feature = "unstable-msc4494")]
         pending_admissions: std::collections::HashMap::new(),
         #[cfg(feature = "unstable-msc4494")]
         device_id: device_id.to_owned(),
+        #[cfg(feature = "unstable-msc4494")]
+        user_id: user_id.to_owned(),
     };
     #[cfg(feature = "unstable-msc4494")]
     let deny_public = inventory.default_action.as_deref() == retained_action;
@@ -179,9 +270,6 @@ pub(crate) async fn invited_rooms_for_sync(
         }
         snapshot.rooms.insert(invite.room_id, invite.state);
     }
-    #[cfg(feature = "unstable-msc4494")]
-    let until_sn = capture_cursor.await?;
-    snapshot.until_sn = until_sn;
     Ok(snapshot)
 }
 
@@ -190,6 +278,7 @@ async fn admit_pending_invites(
     mut candidates: Vec<(i64, OwnedEventId)>,
     delivery_sn: i64,
     device_id: &DeviceId,
+    user_id: &UserId,
 ) -> AppResult<()> {
     use data::schema::{room_invite_admissions, room_users};
     use diesel::{ExpressionMethods, QueryDsl};
@@ -200,11 +289,13 @@ async fn admit_pending_invites(
     data::connect()
         .await?
         .transaction::<_, crate::AppError, _>(async |conn| {
+            data::user::lock_invite_user_write(conn, user_id).await?;
             // A concurrent join/leave can replace the pending membership. Hold its
             // key while inserting admissions, instead of racing the foreign key.
             let candidate_ids: Vec<_> = candidates.iter().map(|(id, _)| *id).collect();
             let live: std::collections::HashMap<_, _> = room_users::table
                 .filter(room_users::id.eq_any(&candidate_ids))
+                .filter(room_users::user_id.eq(user_id))
                 .filter(room_users::membership.eq("invite"))
                 .order_by(room_users::id.asc())
                 .select((room_users::id, room_users::event_id))
@@ -483,9 +574,12 @@ mod tests {
         user_id: &UserId,
         since_sn: i64,
     ) -> AppResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
-        let snapshot = super::invited_rooms_for_sync(user_id, since_sn, "TEST".into(), async {
-            Ok(data::user::curr_sn_after_presence_writes(None).await?)
-        })
+        let snapshot = super::invited_rooms_for_sync(
+            user_id,
+            since_sn,
+            "TEST".into(),
+            InviteSyncStream::Ordinary,
+        )
         .await?;
         snapshot
             .record_returned(&snapshot.rooms.keys().map(AsRef::as_ref).collect::<Vec<_>>())
@@ -751,7 +845,11 @@ mod tests {
                 &user,
                 0,
                 &device,
-                capture_cursor(&user, &device, sliding),
+                if sliding {
+                    InviteSyncStream::Sliding
+                } else {
+                    InviteSyncStream::Ordinary
+                },
             );
             tokio::pin!(snapshot);
             assert!(
@@ -782,7 +880,7 @@ mod tests {
     #[cfg(feature = "unstable-msc4494")]
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
-    async fn database_invite_snapshot_advances_boundary_for_observed_changes() {
+    async fn database_invite_snapshot_coordinates_eligibility_and_cursor() {
         use std::sync::Arc;
 
         use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
@@ -824,22 +922,53 @@ mod tests {
             }))
             .unwrap()
         });
-        for case in [
+        for (case, stream) in [
             "recipient_leave",
             "inviter_leave",
             "recipient_profile",
             "inviter_profile",
             "rule_public",
             "rule_knock",
-        ] {
-            let recipient: OwnedUserId = format!("@boundary_{case}:dynamic.example")
+            "rule_gain",
+            "rule_first",
+            "permission_deny_public",
+            "permission_block",
+            "ignore",
+        ]
+        .into_iter()
+        .flat_map(|case| {
+            [InviteSyncStream::Ordinary, InviteSyncStream::Sliding].map(|stream| (case, stream))
+        }) {
+            let label = format!(
+                "{case}_{}",
+                match stream {
+                    InviteSyncStream::Ordinary => "ordinary",
+                    InviteSyncStream::Sliding => "sliding",
+                }
+            );
+            let recipient: OwnedUserId = format!("@boundary_{label}:dynamic.example")
                 .try_into()
                 .unwrap();
-            let inviter: OwnedUserId = format!("@boundary_{case}:example.org").try_into().unwrap();
-            let shared: OwnedRoomId = format!("!boundary_shared_{case}:example.org")
+            let inviter: OwnedUserId = format!("@boundary_{label}:example.org").try_into().unwrap();
+            // Membership updates must not create a missing remote user's profile
+            // while this fixture deliberately holds a sync stream lock.
+            data::user::create_user(&data::user::NewDbUser {
+                id: inviter.clone(),
+                ty: None,
+                is_admin: false,
+                is_guest: false,
+                is_local: false,
+                localpart: inviter.localpart().to_owned(),
+                server_name: inviter.server_name().to_owned(),
+                appservice_id: None,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .await
+            .unwrap();
+            let shared: OwnedRoomId = format!("!boundary_shared_{label}:example.org")
                 .try_into()
                 .unwrap();
-            let target: OwnedRoomId = format!("!boundary_invite_{case}:example.org")
+            let target: OwnedRoomId = format!("!boundary_invite_{label}:example.org")
                 .try_into()
                 .unwrap();
             for room in [&shared, &target] {
@@ -860,7 +989,7 @@ mod tests {
                 &recipient,
                 None,
                 "m.invite_permission_config",
-                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+                json!({"default_action": if case == "permission_deny_public" { "allow" } else { "uk.timedout.msc4494.deny_public" }}),
             )
             .await
             .unwrap();
@@ -874,7 +1003,7 @@ mod tests {
             {
                 diesel::insert_into(room_users::table)
                     .values(data::room::NewDbRoomUser {
-                        event_id: format!("$boundary_{case}_{i}:example.org")
+                        event_id: format!("$boundary_{label}_{i}:example.org")
                             .try_into()
                             .unwrap(),
                         event_sn: data::next_sn().await.unwrap(),
@@ -894,71 +1023,105 @@ mod tests {
                     .await
                     .unwrap();
             }
-            set_rule(&shared, &inviter, case, "invite").await;
+            if case != "rule_first" {
+                set_rule(
+                    &shared,
+                    &inviter,
+                    &label,
+                    if matches!(case, "permission_deny_public" | "rule_gain") {
+                        "public"
+                    } else {
+                        "invite"
+                    },
+                )
+                .await;
+            }
             let captured = data::curr_sn().await.unwrap();
-            let before = super::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
-            .await
-            .unwrap();
-            assert_eq!(before.rooms.len(), 1, "{case}: initially eligible");
+            let before = super::invited_rooms_for_sync(&recipient, 0, "TEST".into(), stream)
+                .await
+                .unwrap();
+            assert_eq!(
+                before.rooms.len(),
+                usize::from(!matches!(case, "rule_gain" | "rule_first")),
+                "{case}: initial eligibility"
+            );
 
-            let changed = if case.starts_with("rule_") {
-                set_rule(&shared, &inviter, case, case.strip_prefix("rule_").unwrap()).await
+            // Hold the cursor's inbox lock on an independent connection. The old
+            // implementation read eligibility before waiting here, then published
+            // a cursor containing changes it had never evaluated.
+            let mut blocker = data::connect().await.unwrap();
+            diesel::sql_query("BEGIN")
+                .execute(&mut blocker)
+                .await
+                .unwrap();
+            data::user::device::lock_inbox_stream(&mut blocker, &recipient, "TEST".into())
+                .await
+                .unwrap();
+            let pending = super::invited_rooms_for_sync(&recipient, 0, "TEST".into(), stream);
+            tokio::pin!(pending);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(200), &mut pending)
+                    .await
+                    .is_err()
+            );
+
+            let changed = if case.starts_with("permission_") {
+                data::user::set_data(&recipient, None, "m.invite_permission_config",
+                    json!({"default_action": if case == "permission_block" { "block" } else { "uk.timedout.msc4494.deny_public" }}),
+                ).await.unwrap().occur_sn
+            } else if case == "ignore" {
+                data::user::set_ignored_users(&recipient, std::slice::from_ref(&inviter))
+                    .await
+                    .unwrap();
+                data::next_sn().await.unwrap()
+            } else if case.starts_with("rule_") {
+                set_rule(
+                    &shared,
+                    &inviter,
+                    &label,
+                    if matches!(case, "rule_gain" | "rule_first") {
+                        "invite"
+                    } else {
+                        case.strip_prefix("rule_").unwrap()
+                    },
+                )
+                .await
             } else {
                 let member = if case.starts_with("recipient_") {
                     &recipient
                 } else {
                     &inviter
                 };
-                let mut replacement = room_users::table
-                    .filter(room_users::room_id.eq(&shared))
-                    .filter(room_users::user_id.eq(member))
-                    .first::<data::room::DbRoomUser>(&mut data::connect().await.unwrap())
-                    .await
-                    .unwrap();
-                diesel::delete(room_users::table.find(replacement.id))
-                    .execute(&mut data::connect().await.unwrap())
-                    .await
-                    .unwrap();
-                replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
-                    "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
+                let event_sn = data::next_sn().await.unwrap();
+                crate::membership::update_membership(
+                    &EventId::parse(format!("$boundary_{label}_replacement:example.org")).unwrap(),
+                    event_sn,
+                    &shared,
+                    member,
+                    if case.ends_with("leave") {
+                        MembershipState::Leave
+                    } else {
+                        MembershipState::Join
+                    },
+                    &inviter,
+                    None,
                 )
-                .get_result(&mut data::connect().await.unwrap())
                 .await
                 .unwrap();
-                replacement.event_id = format!("$boundary_{case}_replacement:example.org")
-                    .try_into()
-                    .unwrap();
-                replacement.event_sn = data::next_sn().await.unwrap();
-                replacement.membership = if case.ends_with("leave") {
-                    "leave"
-                } else {
-                    "join"
-                }
-                .into();
-                replacement.display_name = Some("new profile".into());
-                let changed = replacement.event_sn;
-                diesel::insert_into(room_users::table)
-                    .values(replacement)
-                    .execute(&mut data::connect().await.unwrap())
-                    .await
-                    .unwrap();
-                changed
+                event_sn
             };
             assert!(changed > captured);
-            // Model a change committed after the caller captured its initial cursor,
-            // but before the repeatable-read invitation transaction begins.
-            let after = super::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
-            .await
-            .unwrap();
+            diesel::sql_query("COMMIT")
+                .execute(&mut blocker)
+                .await
+                .unwrap();
+            let after = pending.await.unwrap();
             assert!(
                 after.until_sn >= changed,
                 "{case}: response must include the observed change"
             );
-            let qualifies = case.ends_with("profile") || case == "rule_knock";
+            let qualifies = case.ends_with("profile")
+                || matches!(case, "rule_knock" | "rule_gain" | "rule_first");
             assert_eq!(after.rooms.len(), usize::from(qualifies), "{case}");
             assert!(
                 room_invite_admissions::table
@@ -999,15 +1162,14 @@ mod tests {
                 before.record_returned(&[target.as_ref()]).await.unwrap();
                 data::next_sn().await.unwrap();
                 let other: OwnedDeviceId = "OTHER".into();
-                let recovered =
-                    super::invited_rooms_for_sync(&recipient, after.until_sn + 1, &other, async {
-                        Ok(
-                            data::user::curr_sn_after_presence_writes(Some((&recipient, &other)))
-                                .await?,
-                        )
-                    })
-                    .await
-                    .unwrap();
+                let recovered = super::invited_rooms_for_sync(
+                    &recipient,
+                    after.until_sn + 1,
+                    &other,
+                    InviteSyncStream::Ordinary,
+                )
+                .await
+                .unwrap();
                 assert_eq!(
                     recovered.rooms.len(),
                     1,
@@ -1044,12 +1206,7 @@ mod tests {
                     &recipient,
                     recovered.until_sn + 1,
                     &other,
-                    async {
-                        Ok(
-                            data::user::curr_sn_after_presence_writes(Some((&recipient, &other)))
-                                .await?,
-                        )
-                    },
+                    InviteSyncStream::Ordinary,
                 )
                 .await
                 .unwrap();
@@ -1058,6 +1215,428 @@ mod tests {
                     "{case}: this device must not receive a duplicate"
                 );
             }
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_invite_snapshot_retries_new_senders_while_waiting_for_locks() {
+        use std::time::Duration;
+
+        use diesel_async::AsyncConnection;
+
+        use crate::data::schema::{room_users, rooms};
+
+        crate::test_database::init();
+        let a: OwnedUserId = "@scope_retry_a:dynamic.example".try_into().unwrap();
+        let z: OwnedUserId = "@scope_retry_z:dynamic.example".try_into().unwrap();
+        async fn key(user: &UserId) -> i64 {
+            diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT hashtextextended(")
+                .bind::<diesel::sql_types::Text, _>(user.as_str())
+                .sql(", ")
+                .bind::<diesel::sql_types::BigInt, _>(0x494e5655_i64)
+                .sql(")")
+                .get_result(&mut data::connect().await.unwrap())
+                .await
+                .unwrap()
+        }
+        let (sender, recipient) = if key(&a).await < key(&z).await {
+            (a, z)
+        } else {
+            (z, a)
+        };
+        let newcomer: OwnedUserId = "@scope_retry_new:dynamic.example".try_into().unwrap();
+        let first: OwnedRoomId = "!scope_retry_first:example.org".try_into().unwrap();
+        let second: OwnedRoomId = "!scope_retry_second:example.org".try_into().unwrap();
+        for room in [&first, &second] {
+            diesel::insert_into(rooms::table)
+                .values(data::room::NewDbRoom {
+                    id: room.clone(),
+                    version: "11".into(),
+                    is_public: false,
+                    min_depth: 0,
+                    has_auth_chain_index: false,
+                    created_at: crate::core::UnixMillis::now(),
+                })
+                .execute(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        data::user::set_data(
+            &recipient,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+        )
+        .await
+        .unwrap();
+        async fn store_invite(recipient: &UserId, sender: &UserId, room: &RoomId) -> AppResult<()> {
+            data::connect()
+                .await?
+                .transaction::<_, crate::AppError, _>(async |conn| {
+                    data::user::lock_invite_user_write(conn, recipient).await?;
+                    diesel::insert_into(room_users::table)
+                        .values(data::room::NewDbRoomUser {
+                            event_id: EventId::parse(format!(
+                                "${}:example.org",
+                                sender.localpart()
+                            ))
+                            .unwrap(),
+                            event_sn: diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                                "SELECT nextval('occur_sn_seq')",
+                            )
+                            .get_result(conn)
+                            .await?,
+                            room_id: room.to_owned(),
+                            room_server_id: None,
+                            user_id: recipient.to_owned(),
+                            user_server_id: recipient.server_name().to_owned(),
+                            sender_id: sender.to_owned(),
+                            membership: "invite".into(),
+                            forgotten: false,
+                            display_name: None,
+                            avatar_url: None,
+                            state_data: Some(json!([])),
+                            created_at: crate::core::UnixMillis::now(),
+                        })
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+                .await
+        }
+        store_invite(&recipient, &sender, &first).await.unwrap();
+        let mut blocker = data::connect().await.unwrap();
+        diesel::sql_query("BEGIN")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+        data::user::lock_invite_user_write(&mut blocker, &sender)
+            .await
+            .unwrap();
+        let snapshot = super::invited_rooms_for_sync(
+            &recipient,
+            0,
+            "RETRY".into(),
+            InviteSyncStream::Ordinary,
+        );
+        tokio::pin!(snapshot);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut snapshot)
+                .await
+                .is_err()
+        );
+        // The sorted first key is blocked, so the recipient is still writable.
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            store_invite(&recipient, &newcomer, &second),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut new_blocker = data::connect().await.unwrap();
+        diesel::sql_query("BEGIN")
+            .execute(&mut new_blocker)
+            .await
+            .unwrap();
+        data::user::lock_invite_user_write(&mut new_blocker, &newcomer)
+            .await
+            .unwrap();
+        diesel::sql_query("COMMIT")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+        drop(blocker);
+        // The first attempt did not know this scope. It must release its locks,
+        // retry discovery, and now wait for the newcomer before publishing.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut snapshot)
+                .await
+                .is_err()
+        );
+        diesel::sql_query("COMMIT")
+            .execute(&mut new_blocker)
+            .await
+            .unwrap();
+        drop(new_blocker);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), snapshot)
+                .await
+                .unwrap()
+                .unwrap()
+                .rooms
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_invite_writers_wait_for_the_sync_read_phase() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use crate::data::schema::{room_users, rooms};
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user: OwnedUserId = "@phase_reader:dynamic.example".try_into().unwrap();
+        let inviter: OwnedUserId = "@phase_inviter:dynamic.example".try_into().unwrap();
+        let room: OwnedRoomId = "!phase_read:example.org".try_into().unwrap();
+        let shared: OwnedRoomId = "!phase_shared:example.org".try_into().unwrap();
+        diesel::insert_into(rooms::table)
+            .values(data::room::NewDbRoom {
+                id: room.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::insert_into(rooms::table)
+            .values(data::room::NewDbRoom {
+                id: shared.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        for (i, member) in [&user, &inviter].into_iter().enumerate() {
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: EventId::parse(format!("$phase_join_{i}:example.org")).unwrap(),
+                    event_sn: data::next_sn().await.unwrap(),
+                    room_id: shared.clone(),
+                    room_server_id: None,
+                    user_id: member.clone(),
+                    user_server_id: member.server_name().to_owned(),
+                    sender_id: inviter.clone(),
+                    membership: "join".into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: crate::core::UnixMillis::now(),
+                })
+                .execute(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        let frame = state::save_state(&shared, Arc::new(Default::default()))
+            .await
+            .unwrap()
+            .frame_id;
+        let event: OwnedEventId = "$phase_invite:example.org".try_into().unwrap();
+        let id = diesel::insert_into(room_users::table)
+            .values(data::room::NewDbRoomUser {
+                event_id: event.clone(),
+                event_sn: data::next_sn().await.unwrap(),
+                room_id: room.clone(),
+                room_server_id: None,
+                user_id: user.clone(),
+                user_server_id: user.server_name().to_owned(),
+                sender_id: inviter.clone(),
+                membership: "invite".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: Some(json!([])),
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .returning(room_users::id)
+            .get_result::<i64>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+
+        for operation in [
+            "permission",
+            "delete_permission",
+            "ignore",
+            "frame",
+            "inviter_leave",
+            "admission",
+            "leave",
+        ] {
+            data::user::set_data(
+                &user,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            data::user::set_ignored_users(&user, &[]).await.unwrap();
+            let mut reader = data::connect().await.unwrap();
+            diesel::sql_query("BEGIN ISOLATION LEVEL READ COMMITTED")
+                .execute(&mut reader)
+                .await
+                .unwrap();
+            InviteSyncStream::Ordinary
+                .lock_streams(&mut reader, &user, "PHASE".into())
+                .await
+                .unwrap();
+            data::user::lock_invite_sync_state(
+                &mut reader,
+                &user,
+                "uk.timedout.msc4494.deny_public",
+            )
+            .await
+            .unwrap();
+            let inventory = data::user::invite_sync_inventory_with_conn(
+                &mut reader,
+                &user,
+                0,
+                i64::MAX,
+                Some("uk.timedout.msc4494.deny_public"),
+                Some("PHASE".into()),
+            )
+            .await
+            .unwrap();
+
+            // Another device can hold the shared decision lock concurrently.
+            let mut other = data::connect().await.unwrap();
+            diesel::sql_query("BEGIN")
+                .execute(&mut other)
+                .await
+                .unwrap();
+            InviteSyncStream::Sliding
+                .lock_streams(&mut other, &user, "OTHER_PHASE".into())
+                .await
+                .unwrap();
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                data::user::lock_invite_sync_state(
+                    &mut other,
+                    &user,
+                    "uk.timedout.msc4494.deny_public",
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            diesel::sql_query("COMMIT")
+                .execute(&mut other)
+                .await
+                .unwrap();
+            drop(other);
+
+            assert_eq!(inventory.invites.len(), 1);
+            if operation == "permission" {
+                // An unrelated user's write must not wait for these scopes.
+                let unrelated: OwnedUserId = "@phase_unrelated:dynamic.example".try_into().unwrap();
+                tokio::time::timeout(
+                    Duration::from_millis(200),
+                    data::user::set_data(
+                        &unrelated,
+                        None,
+                        "m.invite_permission_config",
+                        json!({"default_action": "block"}),
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            }
+
+            let writer = async {
+                match operation {
+                    "permission" => {
+                        data::user::set_data(
+                            &user,
+                            None,
+                            "m.invite_permission_config",
+                            json!({"default_action": "block"}),
+                        )
+                        .await?;
+                    }
+                    "delete_permission" => {
+                        data::user::delete_global_data(&user, "m.invite_permission_config").await?;
+                    }
+                    "ignore" => {
+                        data::user::set_ignored_users(&user, std::slice::from_ref(&inviter))
+                            .await?;
+                    }
+                    "frame" => {
+                        state::set_room_state(&shared, frame).await?;
+                    }
+                    "inviter_leave" => {
+                        crate::membership::update_membership(
+                            &EventId::parse("$phase_inviter_leave:example.org").unwrap(),
+                            data::next_sn().await?,
+                            &shared,
+                            &inviter,
+                            MembershipState::Leave,
+                            &inviter,
+                            None,
+                        )
+                        .await?;
+                    }
+                    "admission" => {
+                        admit_pending_invites(
+                            vec![(id, event.clone())],
+                            data::curr_sn().await?,
+                            "PHASE".into(),
+                            &user,
+                        )
+                        .await?;
+                    }
+                    "leave" => {
+                        crate::membership::update_membership(
+                            &EventId::parse("$phase_leave:example.org").unwrap(),
+                            data::next_sn().await?,
+                            &room,
+                            &user,
+                            MembershipState::Leave,
+                            &inviter,
+                            None,
+                        )
+                        .await?;
+                    }
+                    _ => unreachable!(),
+                }
+                AppResult::Ok(())
+            };
+            tokio::pin!(writer);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), &mut writer)
+                    .await
+                    .is_err(),
+                "{operation} committed inside the protected read phase"
+            );
+            let cursor = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "SELECT last_value FROM occur_sn_seq",
+            )
+            .get_result::<i64>(&mut reader)
+            .await
+            .unwrap();
+            assert!(
+                inventory
+                    .invites
+                    .iter()
+                    .all(|invite| invite.event_sn <= cursor)
+            );
+            diesel::sql_query("COMMIT")
+                .execute(&mut reader)
+                .await
+                .unwrap();
+            drop(reader);
+            tokio::time::timeout(Duration::from_secs(3), writer)
+                .await
+                .unwrap()
+                .unwrap();
         }
     }
 
@@ -1246,9 +1825,12 @@ mod tests {
                 allowed,
                 "{rule}"
             );
-            let inventory = super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
+            let inventory = super::invited_rooms_for_sync(
+                &invitee,
+                0,
+                "TEST".into(),
+                InviteSyncStream::Ordinary,
+            )
             .await
             .unwrap();
             assert_eq!(inventory.rooms.len(), usize::from(allowed));
@@ -1403,9 +1985,12 @@ mod tests {
             .execute(&mut data::connect().await.unwrap())
             .await
             .unwrap();
-        let snapshot = super::invited_rooms_for_sync(&invitee, since, "TEST".into(), async {
-            Ok(data::user::curr_sn_after_presence_writes(None).await?)
-        })
+        let snapshot = super::invited_rooms_for_sync(
+            &invitee,
+            since,
+            "TEST".into(),
+            InviteSyncStream::Ordinary,
+        )
         .await
         .unwrap();
         assert_eq!(
@@ -1427,9 +2012,12 @@ mod tests {
         );
         data::next_sn().await.unwrap();
         assert!(
-            super::invited_rooms_for_sync(&invitee, until + 1, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
+            super::invited_rooms_for_sync(
+                &invitee,
+                until + 1,
+                "TEST".into(),
+                InviteSyncStream::Ordinary
+            )
             .await
             .unwrap()
             .rooms
@@ -1437,9 +2025,12 @@ mod tests {
             "the delivering client must not receive a duplicate"
         );
         assert_eq!(
-            super::invited_rooms_for_sync(&invitee, since, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
+            super::invited_rooms_for_sync(
+                &invitee,
+                since,
+                "TEST".into(),
+                InviteSyncStream::Ordinary
+            )
             .await
             .unwrap()
             .rooms
@@ -1456,11 +2047,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let permission_update = super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), async {
-            Ok(data::user::curr_sn_after_presence_writes(None).await?)
-        })
-        .await
-        .unwrap();
+        let permission_update =
+            super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), InviteSyncStream::Ordinary)
+                .await
+                .unwrap();
         assert!(permission_update.until_sn > captured);
         assert_eq!(
             permission_update.rooms.len(),
@@ -1468,13 +2058,11 @@ mod tests {
             "the response boundary must include the observed permission update"
         );
         assert_eq!(
-            super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), async {
-                Ok(data::user::curr_sn_after_presence_writes(None).await?)
-            })
-            .await
-            .unwrap()
-            .rooms
-            .len(),
+            super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), InviteSyncStream::Ordinary)
+                .await
+                .unwrap()
+                .rooms
+                .len(),
             1
         );
     }

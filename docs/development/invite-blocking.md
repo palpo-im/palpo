@@ -19,9 +19,10 @@ join rules are checked against current local state for each request, including f
 
 The check applies before local invite persistence (including `createRoom` and
 membership state writes), to federation invite endpoints, and to incoming invite
-PDUs. Both authorization and sync read permission, current joined memberships and
-room-state frame IDs in short, read-only, repeatable-read transactions. Rule checks
-use those immutable frames, so they cannot combine old memberships with newer rules.
+PDUs. New-invite authorization reads permission, current joined memberships and
+room-state frame IDs in a short, read-only, repeatable-read transaction. Sync uses
+the coordinated read phase described below. Rule checks use immutable frames,
+so they cannot combine old memberships with newer rules.
 
 Sync reads each invitation's membership row ID, event ID, sender, stream position,
 stripped state, existing admission and this device's first delivery together. The same captured state is used
@@ -42,14 +43,30 @@ The pending-invitation lifecycle is:
 Eligibility is a current-state predicate, not a membership/history-change position.
 First delivery uses the response's captured stream position, so eligible invitations
 committed after a client passed their event position can still be delivered once.
-The invitation transaction reads current state without publishing a sequence value.
-After these reads, each sync version captures its response boundary through its
-existing PostgreSQL advisory stream locks. This includes observed changes while
-waiting for earlier presence, device-inbox and applicable sticky/profile writes to
-commit. PostgreSQL sequences expose uncommitted allocations, so an unlocked sequence
-read, even inside repeatable read, cannot provide a safe sync cursor. Both sync
-versions prepare invitations before other response data and use the protected
-boundary for stream reads, the next token and first-delivery records.
+With MSC4494 enabled, one connection holds the sync version's existing stream locks
+and shared user/room advisory locks while reading the inventory and response cursor.
+It discovers unadmitted inviters, then locks all relevant users in PostgreSQL lock-key order,
+including the recipient. This freezes policy, ignored senders, invitations, admissions
+and memberships. If a new sender appeared before the recipient lock was acquired,
+the transaction releases its locks and retries without publishing a cursor or decision.
+It then locks the shared rooms' current frames in lock-key order. A common order also
+prevents shared readers from forming a wait cycle behind queued writers.
+Shared rooms without a frame are included, so their first qualifying rule is covered.
+Policy and ignore-list changes, membership replacements, invitation-state updates and
+admissions take an exclusive lock for their user; frame publication takes one for its
+room. All builds participate in these writes, including feature-disabled instances.
+Writers hold one scope per transaction and never acquire stream locks within it.
+Readers take presence, applicable sticky/profile, device-inbox, user, then room locks.
+The transaction uses READ COMMITTED so a writer that commits while a lock is awaited
+is visible to subsequent reads; the scopes then keep the decision inputs stable until
+the cursor has been captured. Only database reads run in this phase. Immutable rule
+decoding, response construction and delivery recording run after it releases the
+locks. Shared readers can overlap, and unrelated users and rooms keep writing.
+PostgreSQL sequences expose uncommitted allocations, so retaining all applicable
+stream locks through the cursor read remains necessary. Both sync versions prepare
+invitations before other response data and use this boundary for stream reads, the
+next token and first-delivery records. A later eligibility change does not revoke
+a decision made at the protected boundary.
 Current membership rows replace earlier joins, so filtering them at an older cursor
 cannot reconstruct historical membership. A leave, profile update, permission change
 or join-rule change observed by the snapshot must belong to the response boundary.

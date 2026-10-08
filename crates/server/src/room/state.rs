@@ -118,11 +118,18 @@ pub async fn force_state(
 
 #[tracing::instrument]
 pub async fn set_room_state(room_id: &RoomId, frame_id: i64) -> AppResult<()> {
-    diesel::update(rooms::table.find(room_id))
-        .set(rooms::state_frame_id.eq(frame_id))
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
+    use diesel_async::AsyncConnection;
+    connect()
+        .await?
+        .transaction::<_, crate::AppError, _>(async |conn| {
+            crate::data::user::lock_invite_room_write(conn, room_id).await?;
+            diesel::update(rooms::table.find(room_id))
+                .set(rooms::state_frame_id.eq(frame_id))
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
+        .await
 }
 
 /// Generates a new StateHash and associates it with the incoming event.
