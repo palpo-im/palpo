@@ -615,12 +615,14 @@ pub async fn sync_events(
     #[cfg(not(feature = "unstable-msc4262"))]
     let curr_sn = data::user::curr_sn_after_presence_writes(Some((sender_id, device_id))).await?;
     crate::seqnum_reach(curr_sn).await;
+    let invite_snapshot = crate::membership::invited_rooms_for_sync(sender_id, 0, curr_sn).await?;
+    let curr_sn = invite_snapshot.until_sn;
+    crate::seqnum_reach(curr_sn).await;
     let next_batch = curr_sn + 1;
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     let ignored_users = crate::user::ignored_users(sender_id).await;
 
-    let invite_snapshot = crate::membership::invited_rooms_for_sync(sender_id, 0, curr_sn).await?;
     let all_invited_rooms: Vec<&RoomId> = invite_snapshot.rooms.keys().map(AsRef::as_ref).collect();
 
     let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0).await?;

@@ -42,8 +42,13 @@ The pending-invitation lifecycle is:
 Eligibility is a current-state predicate, not a membership/history-change position.
 First delivery uses the response's captured stream position, so eligible invitations
 committed after a client passed their event position can still be delivered once.
-Permissions, memberships and join rules beyond the captured response cursor wait
-for the next sync, so a future change cannot receive an earlier delivery position.
+The invitation transaction captures its response boundary after establishing the
+database snapshot. It advances an older caller cursor to include all changes visible
+in that snapshot. Both sync versions prepare invitations before other response data
+and use this boundary for stream reads, the next token and first-delivery records.
+Current membership rows replace earlier joins, so filtering them at an older cursor
+cannot reconstruct historical membership. A leave, profile update, permission change
+or join-rule change observed by the snapshot must belong to the response boundary.
 Other devices with older cursors receive the admission; the delivering client does
 not replay it at the next cursor. Additional qualifying rooms, rule changes and
 join-to-join profile updates cannot restamp an admitted invitation. Account-data

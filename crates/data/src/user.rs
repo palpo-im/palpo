@@ -310,6 +310,7 @@ pub async fn invite_permission_snapshot(
 }
 
 pub struct InviteSyncInventory {
+    pub until_sn: i64,
     pub default_action: Option<String>,
     pub replay_since_sn: i64,
     pub invites: Vec<SyncInvitation>,
@@ -318,6 +319,7 @@ pub struct InviteSyncInventory {
 
 /// Read permission, ignored senders and invitations from one repeatable-read snapshot.
 /// `retained_action` asks for older invites for an action whose eligibility is dynamic.
+/// Callers must use the returned boundary for the entire response, including its token.
 pub async fn invite_sync_inventory(
     user_id: &UserId,
     since_sn: i64,
@@ -331,6 +333,16 @@ pub async fn invite_sync_inventory(
         .repeatable_read()
         .run::<_, DataError, _>(async |conn| {
             let config = read_invite_permission(conn, user_id).await?;
+            // The first SELECT establishes this transaction's MVCC snapshot. The
+            // sequence is not MVCC-versioned: reading it afterwards bounds every
+            // change visible in that snapshot, even if the caller's cursor is older.
+            let until_sn = until_sn.max(
+                diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "SELECT last_value FROM occur_sn_seq",
+                )
+                .get_result::<i64>(conn)
+                .await?,
+            );
             let default_action = invite_default_action(config.as_ref());
             let replay_since_sn = if config
                 .as_ref()
@@ -340,14 +352,9 @@ pub async fn invite_sync_inventory(
             } else {
                 since_sn
             };
-            // Permission updates beyond the response boundary are reconsidered on the
-            // next sync, rather than assigning their visibility an earlier position.
-            if default_action.as_deref() == Some("block")
-                || config
-                    .as_ref()
-                    .is_some_and(|config| config.occur_sn > until_sn)
-            {
+            if default_action.as_deref() == Some("block") {
                 return Ok(InviteSyncInventory {
+                    until_sn,
                     default_action,
                     replay_since_sn,
                     invites: Vec::new(),
@@ -464,6 +471,7 @@ pub async fn invite_sync_inventory(
                     Vec::new()
                 };
             Ok(InviteSyncInventory {
+                until_sn,
                 default_action,
                 replay_since_sn,
                 invites,

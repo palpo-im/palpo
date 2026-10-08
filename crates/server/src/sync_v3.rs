@@ -51,6 +51,16 @@ pub async fn sync_events(
     } else {
         None
     };
+    // Capture invitations before constructing any stream-bounded response data.
+    // The transaction may observe changes beyond the initially captured cursor.
+    let mut invite_snapshot = crate::membership::invited_rooms_for_sync(
+        sender_id,
+        since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
+        curr_sn,
+    )
+    .await?;
+    let curr_sn = invite_snapshot.until_sn;
+    crate::seqnum_reach(curr_sn).await;
     let next_batch = BatchToken::new_live(curr_sn + 1);
 
     // Load filter
@@ -219,12 +229,6 @@ pub async fn sync_events(
         left_rooms.insert(room_id.to_owned(), left_room);
     }
 
-    let mut invite_snapshot = crate::membership::invited_rooms_for_sync(
-        sender_id,
-        since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
-        curr_sn,
-    )
-    .await?;
     let invited_rooms: BTreeMap<_, _> = std::mem::take(&mut invite_snapshot.rooms)
         .into_iter()
         .map(|(room_id, invite_state_events)| {
