@@ -728,6 +728,7 @@ diesel::table! {
     room_invite_admissions (room_user_id) {
         room_user_id -> Int8,
         admitted_sn -> Int8,
+        delivered_devices -> Jsonb,
     }
 }
 

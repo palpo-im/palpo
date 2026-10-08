@@ -191,6 +191,7 @@ pub struct SyncInvitation {
     pub sender_id: OwnedUserId,
     pub state: Vec<RawJson<AnyStrippedStateEvent>>,
     pub admitted_sn: Option<i64>,
+    pub delivered_sn: Option<i64>,
 }
 
 /// A shared-room membership snapshot pins the immutable room-state frame as well.
@@ -310,7 +311,6 @@ pub async fn invite_permission_snapshot(
 }
 
 pub struct InviteSyncInventory {
-    pub until_sn: i64,
     pub default_action: Option<String>,
     pub replay_since_sn: i64,
     pub invites: Vec<SyncInvitation>,
@@ -319,12 +319,14 @@ pub struct InviteSyncInventory {
 
 /// Read permission, ignored senders and invitations from one repeatable-read snapshot.
 /// `retained_action` asks for older invites for an action whose eligibility is dynamic.
-/// Callers must use the returned boundary for the entire response, including its token.
+/// This query never advances the caller's stream boundary. For current-state
+/// eligibility, pass `i64::MAX` and capture a protected response cursor afterwards.
 pub async fn invite_sync_inventory(
     user_id: &UserId,
     since_sn: i64,
     until_sn: i64,
     retained_action: Option<&str>,
+    device_id: Option<&DeviceId>,
 ) -> DataResult<InviteSyncInventory> {
     connect()
         .await?
@@ -333,16 +335,6 @@ pub async fn invite_sync_inventory(
         .repeatable_read()
         .run::<_, DataError, _>(async |conn| {
             let config = read_invite_permission(conn, user_id).await?;
-            // The first SELECT establishes this transaction's MVCC snapshot. The
-            // sequence is not MVCC-versioned: reading it afterwards bounds every
-            // change visible in that snapshot, even if the caller's cursor is older.
-            let until_sn = until_sn.max(
-                diesel::dsl::sql::<diesel::sql_types::BigInt>(
-                    "SELECT last_value FROM occur_sn_seq",
-                )
-                .get_result::<i64>(conn)
-                .await?,
-            );
             let default_action = invite_default_action(config.as_ref());
             let replay_since_sn = if config
                 .as_ref()
@@ -354,7 +346,6 @@ pub async fn invite_sync_inventory(
             };
             if default_action.as_deref() == Some("block") {
                 return Ok(InviteSyncInventory {
-                    until_sn,
                     default_action,
                     replay_since_sn,
                     invites: Vec::new(),
@@ -376,6 +367,11 @@ pub async fn invite_sync_inventory(
                     latest_membership.field(room_users::id).desc(),
                 ))
                 .select(latest_membership.field(room_users::id));
+            let delivered_sn = diesel::dsl::sql::<
+                diesel::sql_types::Nullable<diesel::sql_types::BigInt>,
+            >("(room_invite_admissions.delivered_devices ->> ")
+            .bind::<diesel::sql_types::Text, _>(device_id.map_or("", DeviceId::as_str))
+            .sql(")::bigint");
             let mut query = room_users::table
                 .left_join(
                     room_invite_admissions::table
@@ -402,16 +398,18 @@ pub async fn invite_sync_inventory(
                     room_users::sender_id,
                     room_users::state_data,
                     room_invite_admissions::admitted_sn.nullable(),
+                    delivered_sn.clone(),
                 ))
                 .into_boxed();
             // Tracking is enabled only with the membership-filtering feature. It also
-            // recovers late/unseen allowed invites and admissions made on other devices.
+            // recovers late/unseen allowed invites and deliveries on other devices,
+            // even when their global admission was committed behind this cursor.
             query = if retained_action.is_some() {
                 query.filter(
                     room_users::event_sn
                         .ge(load_since)
-                        .or(room_invite_admissions::room_user_id.is_null())
-                        .or(room_invite_admissions::admitted_sn.ge(since_sn)),
+                        .or(delivered_sn.clone().is_null())
+                        .or(delivered_sn.ge(since_sn)),
                 )
             } else {
                 query.filter(room_users::event_sn.ge(load_since))
@@ -424,6 +422,7 @@ pub async fn invite_sync_inventory(
                     OwnedRoomId,
                     OwnedUserId,
                     Option<JsonValue>,
+                    Option<i64>,
                     Option<i64>,
                 )>(conn)
                 .await?;
@@ -438,6 +437,7 @@ pub async fn invite_sync_inventory(
                         sender_id,
                         state,
                         admitted_sn,
+                        delivered_sn,
                     )| {
                         state
                             .and_then(|state| serde_json::from_value(state).ok())
@@ -449,6 +449,7 @@ pub async fn invite_sync_inventory(
                                 sender_id,
                                 state,
                                 admitted_sn,
+                                delivered_sn,
                             })
                     },
                 )
@@ -471,7 +472,6 @@ pub async fn invite_sync_inventory(
                     Vec::new()
                 };
             Ok(InviteSyncInventory {
-                until_sn,
                 default_action,
                 replay_since_sn,
                 invites,
@@ -486,12 +486,14 @@ pub async fn invited_rooms_for_sync(
     user_id: &UserId,
     since_sn: i64,
 ) -> DataResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
-    Ok(invite_sync_inventory(user_id, since_sn, i64::MAX, None)
-        .await?
-        .invites
-        .into_iter()
-        .map(|invite| (invite.room_id, invite.state))
-        .collect())
+    Ok(
+        invite_sync_inventory(user_id, since_sn, i64::MAX, None, None)
+            .await?
+            .invites
+            .into_iter()
+            .map(|invite| (invite.room_id, invite.state))
+            .collect(),
+    )
 }
 
 /// Returns an iterator over all rooms a user was invited to.

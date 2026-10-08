@@ -24,7 +24,7 @@ room-state frame IDs in short, read-only, repeatable-read transactions. Rule che
 use those immutable frames, so they cannot combine old memberships with newer rules.
 
 Sync reads each invitation's membership row ID, event ID, sender, stream position,
-stripped state and existing admission together. The same captured state is used
+stripped state, existing admission and this device's first delivery together. The same captured state is used
 in both ordinary and sliding-sync responses; rendering does not reload by room ID.
 Inventory reads have no side effects. Only invitation states included in a complete
 response receive admission records, after list filters, ranges and subscriptions.
@@ -42,16 +42,23 @@ The pending-invitation lifecycle is:
 Eligibility is a current-state predicate, not a membership/history-change position.
 First delivery uses the response's captured stream position, so eligible invitations
 committed after a client passed their event position can still be delivered once.
-The invitation transaction captures its response boundary after establishing the
-database snapshot. It advances an older caller cursor to include all changes visible
-in that snapshot. Both sync versions prepare invitations before other response data
-and use this boundary for stream reads, the next token and first-delivery records.
+The invitation transaction reads current state without publishing a sequence value.
+After these reads, each sync version captures its response boundary through its
+existing PostgreSQL advisory stream locks. This includes observed changes while
+waiting for earlier presence, device-inbox and applicable sticky/profile writes to
+commit. PostgreSQL sequences expose uncommitted allocations, so an unlocked sequence
+read, even inside repeatable read, cannot provide a safe sync cursor. Both sync
+versions prepare invitations before other response data and use the protected
+boundary for stream reads, the next token and first-delivery records.
 Current membership rows replace earlier joins, so filtering them at an older cursor
 cannot reconstruct historical membership. A leave, profile update, permission change
 or join-rule change observed by the snapshot must belong to the response boundary.
-Other devices with older cursors receive the admission; the delivering client does
-not replay it at the next cursor. Additional qualifying rooms, rule changes and
-join-to-join profile updates cannot restamp an admitted invitation. Account-data
+Global admission preserves the user's visibility decision; first delivery is
+recorded separately for each device. An unseen device receives an admitted invite
+even if another device's delayed admission commits behind its cursor. Once that
+device advances past its own delivery position, the invite is not replayed.
+Additional qualifying rooms, rule changes and join-to-join profile updates cannot
+restamp that device's delivery. Account-data
 replay behavior is preserved. Invites returned while allowing all senders are also
 admitted, so enabling `deny_public` later preserves invitations already shown.
 New invitations still require a current relationship.
@@ -59,13 +66,15 @@ New invitations still require a current relationship.
 `room_invite_admissions` is tied to `room_users.id` with cascading deletion.
 Before recording delivery, the server locks and verifies both the captured membership
 ID and event ID. A replaced invitation cannot inherit a stale snapshot's admission.
-Ordered, idempotent inserts preserve the first delivery across concurrent devices
-and instances. Decisions survive restarts.
+Ordered, atomic upserts preserve global admission and each device's first delivery
+across concurrent devices and instances. The JSONB device map merges with existing
+keys taking precedence. Decisions survive restarts.
 
 Checks batch distinct unadmitted inviters and cache each immutable shared-room frame
 within the request. Membership reads and appservice delivery keep their existing
 behavior. Disabling the Cargo feature treats the experimental action as unknown and
-omits its support flag.
+omits its support flag. Without admission tracking, stable sync retains its existing
+event window, captured through stream locks before reading invitations.
 
 Run the database regressions against an empty, dedicated PostgreSQL database:
 

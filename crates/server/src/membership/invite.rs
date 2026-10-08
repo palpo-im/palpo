@@ -88,12 +88,13 @@ async fn eligible_inviters(
 
 /// Read-only invitation inventory, with decisions tied to the exact membership rows.
 /// Persist only the subset included in a successfully constructed sync response.
-#[derive(Default)]
 pub(crate) struct InviteSyncSnapshot {
     pub(crate) rooms: std::collections::BTreeMap<OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>>,
     pub(crate) until_sn: i64,
     #[cfg(feature = "unstable-msc4494")]
     pending_admissions: std::collections::HashMap<OwnedRoomId, (i64, OwnedEventId)>,
+    #[cfg(feature = "unstable-msc4494")]
+    device_id: OwnedDeviceId,
 }
 
 impl InviteSyncSnapshot {
@@ -105,7 +106,7 @@ impl InviteSyncSnapshot {
                 .filter_map(|room_id| self.pending_admissions.get(*room_id).cloned())
                 .collect();
             if !candidates.is_empty() {
-                admit_pending_invites(candidates, self.until_sn).await?;
+                admit_pending_invites(candidates, self.until_sn, &self.device_id).await?;
             }
         }
         #[cfg(not(feature = "unstable-msc4494"))]
@@ -115,27 +116,45 @@ impl InviteSyncSnapshot {
 }
 
 /// Apply membership-based filtering to retained invites in both sync versions.
+/// `capture_cursor` must acquire that sync version's stream locks before reading
+/// the sequence. With admission tracking, poll it only after reading current state;
+/// the cursor then includes observed changes without crossing uncommitted writes.
 pub(crate) async fn invited_rooms_for_sync(
     user_id: &UserId,
     since_sn: i64,
-    until_sn: i64,
+    device_id: &DeviceId,
+    capture_cursor: impl std::future::Future<Output = AppResult<i64>> + Send,
 ) -> AppResult<InviteSyncSnapshot> {
     #[cfg(feature = "unstable-msc4494")]
     let retained_action = Some("uk.timedout.msc4494.deny_public");
     #[cfg(not(feature = "unstable-msc4494"))]
     let retained_action = None;
-    let inventory =
-        data::user::invite_sync_inventory(user_id, since_sn, until_sn, retained_action).await?;
+    // Stable sync keeps its existing event window. Dynamic eligibility instead
+    // reads current rows, then uses admission tracking to recover late arrivals.
+    #[cfg(not(feature = "unstable-msc4494"))]
+    let until_sn = capture_cursor.await?;
+    #[cfg(feature = "unstable-msc4494")]
+    let until_sn = i64::MAX;
+    let inventory = data::user::invite_sync_inventory(
+        user_id,
+        since_sn,
+        until_sn,
+        retained_action,
+        Some(device_id),
+    )
+    .await?;
     let mut snapshot = InviteSyncSnapshot {
         rooms: std::collections::BTreeMap::new(),
-        until_sn: inventory.until_sn,
+        until_sn: 0,
         #[cfg(feature = "unstable-msc4494")]
         pending_admissions: std::collections::HashMap::new(),
+        #[cfg(feature = "unstable-msc4494")]
+        device_id: device_id.to_owned(),
     };
     #[cfg(feature = "unstable-msc4494")]
     let deny_public = inventory.default_action.as_deref() == retained_action;
     #[cfg(feature = "unstable-msc4494")]
-    let eligible = eligible_inviters(&inventory.shared_rooms, inventory.until_sn).await?;
+    let eligible = eligible_inviters(&inventory.shared_rooms, until_sn).await?;
     for invite in inventory.invites {
         #[cfg(feature = "unstable-msc4494")]
         if deny_public {
@@ -144,15 +163,15 @@ pub(crate) async fn invited_rooms_for_sync(
             }
             // Never-delivered, eligible invitations are sent once, even if their event
             // was committed late or the client already synced past the qualification.
-            if let Some(admitted_sn) = invite.admitted_sn
+            if let Some(delivered_sn) = invite.delivered_sn
                 && invite.event_sn < inventory.replay_since_sn
-                && admitted_sn < since_sn
+                && delivered_sn < since_sn
             {
                 continue;
             }
         }
         #[cfg(feature = "unstable-msc4494")]
-        if invite.admitted_sn.is_none() {
+        if invite.delivered_sn.is_none() {
             snapshot.pending_admissions.insert(
                 invite.room_id.clone(),
                 (invite.membership_id, invite.event_id),
@@ -160,6 +179,9 @@ pub(crate) async fn invited_rooms_for_sync(
         }
         snapshot.rooms.insert(invite.room_id, invite.state);
     }
+    #[cfg(feature = "unstable-msc4494")]
+    let until_sn = capture_cursor.await?;
+    snapshot.until_sn = until_sn;
     Ok(snapshot)
 }
 
@@ -167,6 +189,7 @@ pub(crate) async fn invited_rooms_for_sync(
 async fn admit_pending_invites(
     mut candidates: Vec<(i64, OwnedEventId)>,
     delivery_sn: i64,
+    device_id: &DeviceId,
 ) -> AppResult<()> {
     use data::schema::{room_invite_admissions, room_users};
     use diesel::{ExpressionMethods, QueryDsl};
@@ -197,6 +220,8 @@ async fn admit_pending_invites(
                     (
                         room_invite_admissions::room_user_id.eq(*id),
                         room_invite_admissions::admitted_sn.eq(delivery_sn),
+                        room_invite_admissions::delivered_devices
+                            .eq(serde_json::json!({device_id.as_str(): delivery_sn})),
                     )
                 })
                 .collect();
@@ -204,11 +229,17 @@ async fn admit_pending_invites(
                 diesel::insert_into(room_invite_admissions::table)
                     .values(values)
                     .on_conflict(room_invite_admissions::room_user_id)
-                    .do_nothing()
+                    .do_update()
+                    .set(room_invite_admissions::delivered_devices.eq(
+                        diesel::dsl::sql::<diesel::sql_types::Jsonb>(
+                            "EXCLUDED.delivered_devices || room_invite_admissions.delivered_devices",
+                        ),
+                    ))
                     .execute(conn)
                     .await?;
             }
-            // Keep the first decision across concurrent devices or instances.
+            // Existing keys win, preserving the first delivery for each device.
+            // The global admission position also remains unchanged.
             Ok(())
         })
         .await
@@ -452,8 +483,10 @@ mod tests {
         user_id: &UserId,
         since_sn: i64,
     ) -> AppResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
-        let snapshot =
-            super::invited_rooms_for_sync(user_id, since_sn, data::curr_sn().await?).await?;
+        let snapshot = super::invited_rooms_for_sync(user_id, since_sn, "TEST".into(), async {
+            Ok(data::user::curr_sn_after_presence_writes(None).await?)
+        })
+        .await?;
         snapshot
             .record_returned(&snapshot.rooms.keys().map(AsRef::as_ref).collect::<Vec<_>>())
             .await?;
@@ -665,6 +698,87 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_invite_snapshot_waits_for_uncommitted_inbox_writes() {
+        use std::time::Duration;
+
+        use diesel::{ExpressionMethods, QueryDsl};
+
+        use crate::data::schema::device_inboxes;
+
+        async fn capture_cursor(user: &UserId, device: &DeviceId, sliding: bool) -> AppResult<i64> {
+            if !sliding {
+                return crate::event::sticky::curr_sn_after_sync_writes(user, device).await;
+            }
+            #[cfg(feature = "unstable-msc4262")]
+            let sn =
+                data::user::curr_sn_after_presence_profile_and_inbox_writes(user, device).await?;
+            #[cfg(not(feature = "unstable-msc4262"))]
+            let sn = data::user::curr_sn_after_presence_writes(Some((user, device))).await?;
+            Ok(sn)
+        }
+
+        crate::test_database::init();
+        let user: OwnedUserId = "@snapshot_cursor:example.org".try_into().unwrap();
+        let device: OwnedDeviceId = "CURSOR".into();
+        data::next_sn().await.unwrap();
+        for sliding in [false, true] {
+            let initial = capture_cursor(&user, &device, sliding).await.unwrap();
+            // A separate connection models another server instance. Its sequence
+            // allocation is immediately visible, while the inbox row is not.
+            let mut writer = data::connect().await.unwrap();
+            diesel::sql_query("BEGIN")
+                .execute(&mut writer)
+                .await
+                .unwrap();
+            data::user::device::lock_inbox_stream(&mut writer, &user, &device)
+                .await
+                .unwrap();
+            let pending_sn = diesel::insert_into(device_inboxes::table)
+                .values(data::user::device::NewDbDeviceInbox {
+                    user_id: user.clone(),
+                    device_id: device.clone(),
+                    json_data: json!({"type": "m.test", "sender": user, "content": {}}),
+                    created_at: 1,
+                })
+                .returning(device_inboxes::occur_sn)
+                .get_result::<i64>(&mut writer)
+                .await
+                .unwrap();
+            assert!(pending_sn > initial);
+            let snapshot = super::invited_rooms_for_sync(
+                &user,
+                0,
+                &device,
+                capture_cursor(&user, &device, sliding),
+            );
+            tokio::pin!(snapshot);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), &mut snapshot)
+                    .await
+                    .is_err(),
+                "sync must wait for the writer before publishing its new cursor (sliding={sliding})"
+            );
+            diesel::sql_query("COMMIT")
+                .execute(&mut writer)
+                .await
+                .unwrap();
+            let snapshot = snapshot.await.unwrap();
+            assert!(snapshot.until_sn >= pending_sn);
+            let delivered = device_inboxes::table
+                .filter(device_inboxes::user_id.eq(&user))
+                .filter(device_inboxes::device_id.eq(&device))
+                .filter(device_inboxes::occur_sn.ge(initial + 1))
+                .filter(device_inboxes::occur_sn.lt(snapshot.until_sn + 1))
+                .select(device_inboxes::occur_sn)
+                .load::<i64>(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(delivered, vec![pending_sn]);
+        }
+    }
+
     #[cfg(feature = "unstable-msc4494")]
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
@@ -782,9 +896,11 @@ mod tests {
             }
             set_rule(&shared, &inviter, case, "invite").await;
             let captured = data::curr_sn().await.unwrap();
-            let before = super::invited_rooms_for_sync(&recipient, 0, captured)
-                .await
-                .unwrap();
+            let before = super::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
+                Ok(data::user::curr_sn_after_presence_writes(None).await?)
+            })
+            .await
+            .unwrap();
             assert_eq!(before.rooms.len(), 1, "{case}: initially eligible");
 
             let changed = if case.starts_with("rule_") {
@@ -833,9 +949,11 @@ mod tests {
             assert!(changed > captured);
             // Model a change committed after the caller captured its initial cursor,
             // but before the repeatable-read invitation transaction begins.
-            let after = super::invited_rooms_for_sync(&recipient, 0, captured)
-                .await
-                .unwrap();
+            let after = super::invited_rooms_for_sync(&recipient, 0, "TEST".into(), async {
+                Ok(data::user::curr_sn_after_presence_writes(None).await?)
+            })
+            .await
+            .unwrap();
             assert!(
                 after.until_sn >= changed,
                 "{case}: response must include the observed change"
@@ -875,6 +993,71 @@ mod tests {
                     vec![]
                 }
             );
+            if case.ends_with("leave") {
+                // One device prepares an eligible response. Another observes the
+                // leave and advances its cursor before the first records delivery.
+                before.record_returned(&[target.as_ref()]).await.unwrap();
+                data::next_sn().await.unwrap();
+                let other: OwnedDeviceId = "OTHER".into();
+                let recovered =
+                    super::invited_rooms_for_sync(&recipient, after.until_sn + 1, &other, async {
+                        Ok(
+                            data::user::curr_sn_after_presence_writes(Some((&recipient, &other)))
+                                .await?,
+                        )
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    recovered.rooms.len(),
+                    1,
+                    "{case}: a delayed delivery on another device must not be lost behind its cursor"
+                );
+                let returned = [target.as_ref()];
+                let (repeat, first) = tokio::join!(
+                    before.record_returned(&returned),
+                    recovered.record_returned(&returned),
+                );
+                repeat.unwrap();
+                first.unwrap();
+                let (admitted_sn, devices) = room_invite_admissions::table
+                    .inner_join(
+                        room_users::table
+                            .on(room_users::id.eq(room_invite_admissions::room_user_id)),
+                    )
+                    .filter(room_users::room_id.eq(&target))
+                    .filter(room_users::user_id.eq(&recipient))
+                    .select((
+                        room_invite_admissions::admitted_sn,
+                        room_invite_admissions::delivered_devices,
+                    ))
+                    .first::<(i64, serde_json::Value)>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(admitted_sn, before.until_sn);
+                assert_eq!(
+                    devices,
+                    json!({"TEST": before.until_sn, "OTHER": recovered.until_sn})
+                );
+                data::next_sn().await.unwrap();
+                let next = super::invited_rooms_for_sync(
+                    &recipient,
+                    recovered.until_sn + 1,
+                    &other,
+                    async {
+                        Ok(
+                            data::user::curr_sn_after_presence_writes(Some((&recipient, &other)))
+                                .await?,
+                        )
+                    },
+                )
+                .await
+                .unwrap();
+                assert!(
+                    next.rooms.is_empty(),
+                    "{case}: this device must not receive a duplicate"
+                );
+            }
         }
     }
 
@@ -1063,10 +1246,11 @@ mod tests {
                 allowed,
                 "{rule}"
             );
-            let inventory =
-                super::invited_rooms_for_sync(&invitee, 0, data::curr_sn().await.unwrap())
-                    .await
-                    .unwrap();
+            let inventory = super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), async {
+                Ok(data::user::curr_sn_after_presence_writes(None).await?)
+            })
+            .await
+            .unwrap();
             assert_eq!(inventory.rooms.len(), usize::from(allowed));
             use crate::data::schema::room_invite_admissions;
             assert!(
@@ -1219,9 +1403,11 @@ mod tests {
             .execute(&mut data::connect().await.unwrap())
             .await
             .unwrap();
-        let snapshot = super::invited_rooms_for_sync(&invitee, since, until)
-            .await
-            .unwrap();
+        let snapshot = super::invited_rooms_for_sync(&invitee, since, "TEST".into(), async {
+            Ok(data::user::curr_sn_after_presence_writes(None).await?)
+        })
+        .await
+        .unwrap();
         assert_eq!(
             snapshot.rooms.len(),
             1,
@@ -1241,19 +1427,23 @@ mod tests {
         );
         data::next_sn().await.unwrap();
         assert!(
-            super::invited_rooms_for_sync(&invitee, until + 1, data::curr_sn().await.unwrap())
-                .await
-                .unwrap()
-                .rooms
-                .is_empty(),
+            super::invited_rooms_for_sync(&invitee, until + 1, "TEST".into(), async {
+                Ok(data::user::curr_sn_after_presence_writes(None).await?)
+            })
+            .await
+            .unwrap()
+            .rooms
+            .is_empty(),
             "the delivering client must not receive a duplicate"
         );
         assert_eq!(
-            super::invited_rooms_for_sync(&invitee, since, data::curr_sn().await.unwrap())
-                .await
-                .unwrap()
-                .rooms
-                .len(),
+            super::invited_rooms_for_sync(&invitee, since, "TEST".into(), async {
+                Ok(data::user::curr_sn_after_presence_writes(None).await?)
+            })
+            .await
+            .unwrap()
+            .rooms
+            .len(),
             1,
             "another device with an older cursor must receive the admission"
         );
@@ -1266,9 +1456,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let permission_update = super::invited_rooms_for_sync(&invitee, 0, captured)
-            .await
-            .unwrap();
+        let permission_update = super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), async {
+            Ok(data::user::curr_sn_after_presence_writes(None).await?)
+        })
+        .await
+        .unwrap();
         assert!(permission_update.until_sn > captured);
         assert_eq!(
             permission_update.rooms.len(),
@@ -1276,11 +1468,13 @@ mod tests {
             "the response boundary must include the observed permission update"
         );
         assert_eq!(
-            super::invited_rooms_for_sync(&invitee, 0, data::curr_sn().await.unwrap())
-                .await
-                .unwrap()
-                .rooms
-                .len(),
+            super::invited_rooms_for_sync(&invitee, 0, "TEST".into(), async {
+                Ok(data::user::curr_sn_after_presence_writes(None).await?)
+            })
+            .await
+            .unwrap()
+            .rooms
+            .len(),
             1
         );
     }
