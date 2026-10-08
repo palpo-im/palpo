@@ -153,25 +153,16 @@ pub async fn lock_presence_stream_shared(conn: &mut AsyncPgConnection) -> DataRe
     Ok(())
 }
 
-/// Shared by cursor-only reads and coordinated sync snapshots.
-pub async fn lock_presence_and_inbox_streams(
-    conn: &mut AsyncPgConnection,
-    device: Option<(&UserId, &DeviceId)>,
-) -> DataResult<()> {
-    lock_presence_stream_shared(conn).await?;
-    if let Some((user, device)) = device {
-        super::device::lock_inbox_stream(conn, user, device).await?;
-    }
-    Ok(())
-}
-
 pub async fn curr_sn_after_presence_writes(
     device: Option<(&UserId, &DeviceId)>,
 ) -> DataResult<i64> {
     connect()
         .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
-            lock_presence_and_inbox_streams(conn, device).await?;
+            lock_presence_stream_shared(conn).await?;
+            if let Some((user, device)) = device {
+                super::device::lock_inbox_stream(conn, user, device).await?;
+            }
             Ok(
                 diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",

@@ -44,7 +44,14 @@ pub async fn sync_events(
     crate::seqnum_reach(curr_sn).await;
     let since_tk = if let Some(since_str) = args.since.as_ref() {
         let since_tk: BatchToken = since_str.parse()?;
-        if since_tk.stream_ordering() > curr_sn {
+        // An issued next token is C + 1 even while the event stream is idle.
+        // MSC4494 must still check current eligibility and delayed admissions,
+        // which can change without allocating another event position.
+        #[cfg(feature = "unstable-msc4494")]
+        let max_since_sn = curr_sn + 1;
+        #[cfg(not(feature = "unstable-msc4494"))]
+        let max_since_sn = curr_sn;
+        if since_tk.stream_ordering() > max_since_sn {
             return Ok(SyncEventsResBody::new(since_str.to_owned()));
         }
         Some(since_tk)
@@ -52,16 +59,15 @@ pub async fn sync_events(
         None
     };
     // Capture invitations before constructing any stream-bounded response data.
-    // Read dynamic eligibility and its cursor in the same protected phase.
+    // Current invitation eligibility must not advance the original stream window.
     let mut invite_snapshot = crate::membership::invited_rooms_for_sync(
         sender_id,
         since_tk.unwrap_or(BatchToken::LIVE_MIN).stream_ordering(),
         device_id,
-        crate::membership::InviteSyncStream::Ordinary,
+        curr_sn,
     )
     .await?;
     let curr_sn = invite_snapshot.until_sn;
-    crate::seqnum_reach(curr_sn).await;
     let next_batch = BatchToken::new_live(curr_sn + 1);
 
     // Load filter

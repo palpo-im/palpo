@@ -230,22 +230,17 @@ fn invite_default_action(config: Option<&DbUserData>) -> Option<String> {
 async fn read_invite_joined_rooms(
     conn: &mut diesel_async::AsyncPgConnection,
     invitee: &UserId,
-    until_sn: i64,
 ) -> DataResult<Vec<OwnedRoomId>> {
     let recipient_rooms = room_users::table
         .filter(room_users::user_id.eq(invitee))
         .distinct_on(room_users::room_id)
         .order_by((room_users::room_id.desc(), room_users::id.desc()))
-        .select((
-            room_users::room_id,
-            room_users::membership,
-            room_users::event_sn,
-        ))
-        .load::<(OwnedRoomId, String, i64)>(conn)
+        .select((room_users::room_id, room_users::membership))
+        .load::<(OwnedRoomId, String)>(conn)
         .await?;
     Ok(recipient_rooms
         .into_iter()
-        .filter(|(_, membership, event_sn)| membership == "join" && *event_sn <= until_sn)
+        .filter(|(_, membership)| membership == "join")
         .map(|(room_id, ..)| room_id)
         .collect())
 }
@@ -254,12 +249,11 @@ async fn read_shared_invite_memberships(
     conn: &mut diesel_async::AsyncPgConnection,
     invitee: &UserId,
     inviters: &[OwnedUserId],
-    until_sn: i64,
 ) -> DataResult<Vec<(OwnedUserId, OwnedRoomId, Option<i64>)>> {
     if inviters.is_empty() {
         return Ok(Vec::new());
     }
-    let joined = read_invite_joined_rooms(conn, invitee, until_sn).await?;
+    let joined = read_invite_joined_rooms(conn, invitee).await?;
     if joined.is_empty() {
         return Ok(Vec::new());
     }
@@ -276,16 +270,15 @@ async fn read_shared_invite_memberships(
         .select((
             room_users::user_id,
             room_users::membership,
-            room_users::event_sn,
             room_users::room_id,
             rooms::state_frame_id,
         ))
-        .load::<(OwnedUserId, String, i64, OwnedRoomId, Option<i64>)>(conn)
+        .load::<(OwnedUserId, String, OwnedRoomId, Option<i64>)>(conn)
         .await?;
     Ok(rows
         .into_iter()
-        .filter(|(_, membership, event_sn, ..)| membership == "join" && *event_sn <= until_sn)
-        .map(|(inviter, _, _, room, frame)| (inviter, room, frame))
+        .filter(|(_, membership, ..)| membership == "join")
+        .map(|(inviter, _, room, frame)| (inviter, room, frame))
         .collect())
 }
 
@@ -293,17 +286,14 @@ async fn read_shared_invite_rooms(
     conn: &mut diesel_async::AsyncPgConnection,
     invitee: &UserId,
     inviters: &[OwnedUserId],
-    until_sn: i64,
 ) -> DataResult<Vec<SharedInviteRoom>> {
-    Ok(
-        read_shared_invite_memberships(conn, invitee, inviters, until_sn)
-            .await?
-            .into_iter()
-            .filter_map(|(inviter, _, frame)| {
-                frame.map(|frame_id| SharedInviteRoom { inviter, frame_id })
-            })
-            .collect(),
-    )
+    Ok(read_shared_invite_memberships(conn, invitee, inviters)
+        .await?
+        .into_iter()
+        .filter_map(|(inviter, _, frame)| {
+            frame.map(|frame_id| SharedInviteRoom { inviter, frame_id })
+        })
+        .collect())
 }
 
 /// New-invite authorization uses one permission/membership/room-frame snapshot.
@@ -322,7 +312,7 @@ pub async fn invite_permission_snapshot(
             let default_action = invite_default_action(config.as_ref());
             let shared_rooms =
                 if membership_action.is_some() && default_action.as_deref() == membership_action {
-                    read_shared_invite_rooms(conn, invitee, inviters, i64::MAX).await?
+                    read_shared_invite_rooms(conn, invitee, inviters).await?
                 } else {
                     Vec::new()
                 };
@@ -426,7 +416,7 @@ async fn unadmitted_invite_senders(
         .collect())
 }
 
-/// Take after the sync stream locks in READ COMMITTED. Discover users first and
+/// Take in READ COMMITTED after the cursor transaction ends. Discover users first and
 /// acquire every user scope in physical-key order, including the recipient. Even shared
 /// locks need one order when writers are queued. The recipient lock then freezes
 /// policy, ignores, invitations and admissions. If a new sender appeared before
@@ -460,13 +450,9 @@ pub async fn lock_invite_sync_state(
     if !inviters.is_subset(&users) {
         return Ok(false);
     }
-    let shared = read_shared_invite_memberships(
-        conn,
-        user,
-        &inviters.into_iter().collect::<Vec<_>>(),
-        i64::MAX,
-    )
-    .await?;
+    let shared =
+        read_shared_invite_memberships(conn, user, &inviters.into_iter().collect::<Vec<_>>())
+            .await?;
     let shared_rooms: std::collections::BTreeSet<_> =
         shared.into_iter().map(|(_, room, _)| room).collect();
     lock_invite_read_scopes(
@@ -510,9 +496,9 @@ pub async fn invite_sync_inventory(
         .await
 }
 
-/// The caller supplies either a repeatable-read snapshot or an invitation-state
-/// locks. The latter allow its protected sync cursor to be read on the same
-/// connection without nested pool acquisitions or an unlocked sequence read.
+/// The caller supplies either a repeatable-read snapshot or invitation-state
+/// locks. Invitation events respect its fixed response window; relationship
+/// eligibility reads current memberships and pinned room frames.
 pub async fn invite_sync_inventory_with_conn(
     conn: &mut diesel_async::AsyncPgConnection,
     user_id: &UserId,
@@ -647,13 +633,7 @@ pub async fn invite_sync_inventory_with_conn(
             .filter(|invite| invite.admitted_sn.is_none())
             .map(|invite| invite.sender_id.clone())
             .collect();
-        read_shared_invite_rooms(
-            conn,
-            user_id,
-            &inviters.into_iter().collect::<Vec<_>>(),
-            until_sn,
-        )
-        .await?
+        read_shared_invite_rooms(conn, user_id, &inviters.into_iter().collect::<Vec<_>>()).await?
     } else {
         Vec::new()
     };
