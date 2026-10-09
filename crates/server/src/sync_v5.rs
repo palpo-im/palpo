@@ -116,6 +116,9 @@ async fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
     Ok(())
 }
 
+type ListWindow = BTreeMap<usize, OwnedRoomId>;
+pub(crate) type ListWindows = BTreeMap<String, ListWindow>;
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
@@ -123,6 +126,9 @@ struct SlidingSyncCache {
     list_counts: BTreeMap<String, usize>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
     known_rooms: KnownRooms, // For every room, the room_since_sn number
+    /// The exact positions last served for each list, independently of event cursors.
+    #[serde(default)]
+    list_windows: ListWindows,
     extensions: sync_events::v5::ExtensionsConfig,
     required_state: BTreeSet<Seqnum>,
     /// Rooms whose full member profiles this connection has acknowledged (MSC4262).
@@ -659,6 +665,21 @@ pub async fn sync_events(
     // request flood.
     if since_sn > curr_sn {
         let mut res = SyncEventsResBody::new(next_batch.to_string());
+        #[cfg(feature = "unstable-msc4494")]
+        let previous_list_windows = load_or_create_connection(
+            &sender_id.to_owned(),
+            &device_id.to_owned(),
+            &req_body.conn_id,
+        )
+        .await
+        .lock()
+        .unwrap()
+        .list_windows
+        .clone();
+        #[cfg(feature = "unstable-msc4494")]
+        let mut lists_owe_update = false;
+        #[cfg(not(feature = "unstable-msc4494"))]
+        let lists_owe_update = false;
         #[cfg(feature = "unstable-msc4262")]
         let profiles_enabled = req_body.extensions.profiles.enabled.unwrap_or(false);
         #[cfg(not(feature = "unstable-msc4262"))]
@@ -680,7 +701,8 @@ pub async fn sync_events(
                 &dm_rooms,
             )
             .await;
-            if profiles_enabled
+            if cfg!(feature = "unstable-msc4494")
+                || profiles_enabled
                 || active_rooms
                     .iter()
                     .any(|room_id| invite_snapshot.has_pending_delivery(room_id))
@@ -688,6 +710,8 @@ pub async fn sync_events(
                 let mut sorted_rooms = active_rooms.clone();
                 sort_rooms_by_activity(&mut sorted_rooms).await?;
                 let mut selected = BTreeSet::new();
+                #[cfg(feature = "unstable-msc4494")]
+                let mut window = ListWindow::new();
                 let ranges = if list.ranges.is_empty() {
                     vec![(0, 50)]
                 } else {
@@ -697,12 +721,24 @@ pub async fn sync_events(
                     let start = start.min(sorted_rooms.len());
                     let end = inclusive_end.saturating_add(1).min(sorted_rooms.len());
                     if start < end {
+                        #[cfg(feature = "unstable-msc4494")]
+                        window.extend(
+                            (start..end).zip(
+                                sorted_rooms[start..end]
+                                    .iter()
+                                    .map(|room_id| (*room_id).to_owned()),
+                            ),
+                        );
                         selected.extend(
                             sorted_rooms[start..end]
                                 .iter()
                                 .map(|room_id| (*room_id).to_owned()),
                         );
                     }
+                }
+                #[cfg(feature = "unstable-msc4494")]
+                {
+                    lists_owe_update |= previous_list_windows.get(list_id) != Some(&window);
                 }
                 invites_owe_delivery |= selected
                     .iter()
@@ -746,7 +782,7 @@ pub async fn sync_events(
         #[cfg(not(feature = "unstable-msc4262"))]
         let profiles_owe_snapshot = false;
 
-        if !profiles_owe_snapshot && !invites_owe_delivery {
+        if !profiles_owe_snapshot && !invites_owe_delivery && !lists_owe_update {
             return Ok(res);
         }
     }
@@ -850,7 +886,64 @@ pub async fn sync_events(
     )
     .await;
     record_returned_invites(&invite_snapshot, &res_body).await?;
+    // Record positions only after the complete response and its invitation deliveries
+    // succeeded. Count-only responses must not replace the client's last window.
+    record_list_windows_sent(sender_id, device_id, &req_body.conn_id, &res_body).await;
     Ok(res_body)
+}
+
+fn window_from_sync_ops(ops: &[SyncListOp]) -> ListWindow {
+    let mut window = ListWindow::new();
+    for op in ops {
+        if let SyncListOp::Sync { range, room_ids } = op {
+            window.extend(
+                room_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, room_id)| (range.0 + offset, room_id.clone())),
+            );
+        }
+    }
+    window
+}
+
+/// Static SYNC operations are not updates; changed positions must reach the client
+/// even if there are no new room events and the list count has not changed.
+#[cfg(feature = "unstable-msc4494")]
+pub(crate) fn has_list_window_updates(
+    response: &SyncEventsResBody,
+    previous: &ListWindows,
+) -> bool {
+    response.lists.iter().any(|(list_id, list)| {
+        !list.ops.is_empty()
+            && (list
+                .ops
+                .iter()
+                .any(|op| !matches!(op, SyncListOp::Sync { .. }))
+                || previous.get(list_id) != Some(&window_from_sync_ops(&list.ops)))
+    })
+}
+
+async fn record_list_windows_sent(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    response: &SyncEventsResBody,
+) {
+    if response.lists.is_empty() {
+        return;
+    }
+    let windows: ListWindows = response
+        .lists
+        .iter()
+        .map(|(list_id, list)| (list_id.clone(), window_from_sync_ops(&list.ops)))
+        .collect();
+    // Keep this field in every build so another instance's feature configuration
+    // cannot discard the actual positions already served on this connection.
+    update_connection(user_id, device_id, conn_id, |cached| {
+        cached.list_windows.extend(windows.clone());
+    })
+    .await;
 }
 
 async fn record_returned_invites(
@@ -1750,15 +1843,12 @@ pub async fn update_sync_request_with_cache(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
-) -> (
-    BTreeMap<String, BTreeMap<OwnedRoomId, i64>>,
-    BTreeMap<String, usize>,
-) {
+) -> (KnownRooms, BTreeMap<String, usize>, ListWindows) {
     refresh_connection(&user_id, &device_id, &req_body.conn_id).await;
     // Sticky parameters are merged into a fresh copy of the request on every attempt, so a
     // write rebased onto another instance's newer cache merges against that cache.
     let original = req_body.clone();
-    let (merged, known, list_counts) =
+    let (merged, known, list_counts, list_windows) =
         update_connection(&user_id, &device_id, &original.conn_id, |cached| {
             let mut req_body = original.clone();
 
@@ -1876,11 +1966,12 @@ pub async fn update_sync_request_with_cache(
             cached.extensions = req_body.extensions.clone();
             let known = cached.known_rooms.clone();
             let list_counts = cached.list_counts.clone();
-            (req_body, known, list_counts)
+            let list_windows = cached.list_windows.clone();
+            (req_body, known, list_counts, list_windows)
         })
         .await;
     *req_body = merged;
-    (known, list_counts)
+    (known, list_counts, list_windows)
 }
 
 pub async fn update_sync_list_counts(
@@ -2084,6 +2175,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_window_cache_preserves_positions_and_loads_legacy_connections() {
+        let a = rid("!cached_a:example.org");
+        let b = rid("!cached_b:example.org");
+        let mut cached = super::SlidingSyncCache::default();
+        cached
+            .list_windows
+            .insert("main".to_owned(), [(1, a.clone()), (3, b.clone())].into());
+        cached
+            .known_rooms
+            .insert("main".to_owned(), [(a, 10), (b, 10)].into());
+        let mut json = serde_json::to_value(&cached).unwrap();
+        let restored: super::SlidingSyncCache = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.list_windows, cached.list_windows);
+        json.as_object_mut().unwrap().remove("list_windows");
+        let legacy: super::SlidingSyncCache = serde_json::from_value(json).unwrap();
+        assert!(legacy.list_windows.is_empty());
+        assert_eq!(legacy.known_rooms, cached.known_rooms);
+    }
+
     #[cfg(feature = "unstable-msc4494")]
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
@@ -2152,6 +2263,201 @@ mod tests {
         .unwrap();
         assert!(rooms.is_empty());
         assert!(response.extensions.account_data.rooms.is_empty());
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_sliding_sync_refreshes_ranges_shifted_by_an_unselected_invite() {
+        use serde_json::json;
+
+        use super::*;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let device: OwnedDeviceId = "WINDOW".into();
+        for mode in ["before", "after", "multiple"] {
+            let user: OwnedUserId = format!("@invite_window_{mode}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let sender: OwnedUserId = "@invite_window_sender:example.org".try_into().unwrap();
+            let letters = if mode == "multiple" {
+                vec!["a", "b", "c", "d", "e"]
+            } else if mode == "after" {
+                vec!["z", "b", "c"]
+            } else {
+                vec!["a", "b", "c"]
+            };
+            let mut targets = Vec::new();
+            for letter in letters {
+                let room = rid(&format!("!invite_window_{mode}_{letter}:example.org"));
+                diesel::insert_into(rooms::table)
+                    .values(data::room::NewDbRoom {
+                        id: room.clone(),
+                        version: "11".into(),
+                        is_public: false,
+                        min_depth: 0,
+                        has_auth_chain_index: false,
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(data::room::NewDbRoomUser {
+                        event_id: format!("$invite_window_{mode}_{letter}:example.org")
+                            .try_into()
+                            .unwrap(),
+                        event_sn: data::next_sn().await.unwrap(),
+                        room_id: room.clone(),
+                        room_server_id: None,
+                        user_id: user.clone(),
+                        user_server_id: user.server_name().to_owned(),
+                        sender_id: sender.clone(),
+                        membership: "invite".into(),
+                        forgotten: false,
+                        display_name: None,
+                        avatar_url: None,
+                        state_data: Some(json!([])),
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                targets.push(room);
+            }
+            let pending = &targets[0];
+            data::user::set_data(
+                &user,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "allow"}),
+            )
+            .await
+            .unwrap();
+            let early = crate::membership::invited_rooms_for_sync(
+                &user,
+                0,
+                "EARLY".into(),
+                data::curr_sn().await.unwrap(),
+            )
+            .await
+            .unwrap();
+            let subscriptions: serde_json::Map<_, _> = targets[1..]
+                .iter()
+                .map(|room| (room.to_string(), json!({"timeline_limit": 0})))
+                .collect();
+            let mut delivered_body: SyncEventsReqBody =
+                serde_json::from_value(json!({"room_subscriptions": subscriptions})).unwrap();
+            let known =
+                update_sync_request_with_cache(user.clone(), device.clone(), &mut delivered_body)
+                    .await
+                    .0;
+            let delivered = sync_events(&user, &device, 0, &delivered_body, &known)
+                .await
+                .unwrap();
+            assert_eq!(delivered.rooms.len(), targets.len() - 1);
+            assert!(!delivered.rooms.contains_key(pending));
+            data::user::set_data(
+                &user,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let ranges = if mode == "multiple" {
+                json!([[1, 1], [3, 3]])
+            } else {
+                json!([[1, 1]])
+            };
+            let mut body: SyncEventsReqBody = serde_json::from_value(json!({
+                "lists": {"main": {"timeline_limit": 0, "ranges": ranges, "filters": {"is_invite": true}}},
+                "unsubscribe_rooms": targets[1..],
+            })).unwrap();
+            let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
+                .await
+                .0;
+            let initial = sync_events(&user, &device, 0, &body, &known).await.unwrap();
+            let initial_ops = serde_json::to_value(&initial.lists["main"].ops).unwrap();
+            assert_eq!(initial_ops[0]["room_ids"], json!([targets[2]]));
+            if mode == "multiple" {
+                assert_eq!(initial_ops[1]["room_ids"], json!([targets[4]]));
+            }
+            let cursor = data::curr_sn().await.unwrap();
+            assert_eq!(initial.pos, (cursor + 1).to_string());
+
+            // A later poll reaches another instance. The newly visible invitation
+            // lies outside every requested range, but can displace old entries.
+            CONNECTIONS
+                .lock()
+                .unwrap()
+                .remove(&connection_key(&user, &device, &body.conn_id));
+            early.record_returned(&[pending.as_ref()]).await.unwrap();
+            assert_eq!(data::curr_sn().await.unwrap(), cursor);
+            let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
+                .await
+                .0;
+            let changed = sync_events(&user, &device, cursor + 1, &body, &known)
+                .await
+                .unwrap();
+            assert_eq!(changed.pos, initial.pos);
+            assert_eq!(changed.lists["main"].count, targets.len());
+            let changed_ops = serde_json::to_value(&changed.lists["main"].ops).unwrap();
+            if mode == "after" {
+                assert!(
+                    changed.lists["main"].ops.is_empty(),
+                    "unchanged ranges stay idle"
+                );
+                assert!(changed.rooms.is_empty());
+            } else {
+                assert_eq!(changed_ops[0]["range"], json!([1, 1]));
+                assert_eq!(
+                    changed_ops[0]["room_ids"],
+                    json!([targets[1]]),
+                    "{mode}: refresh the displaced room even though the new invite is outside the range"
+                );
+                if mode == "multiple" {
+                    assert_eq!(changed_ops[1]["range"], json!([3, 3]));
+                    assert_eq!(changed_ops[1]["room_ids"], json!([targets[3]]));
+                }
+            }
+            assert!(!changed.rooms.contains_key(pending));
+            let devices = room_users::table
+                .inner_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(&user))
+                .filter(room_users::room_id.eq(pending))
+                .select(room_invite_admissions::delivered_devices)
+                .first::<serde_json::Value>(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(devices["EARLY"], json!(early.until_sn));
+            assert!(
+                devices.get(device.as_str()).is_none(),
+                "an unselected invite stays unrecorded"
+            );
+            let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
+                .await
+                .0;
+            let repeated = sync_events(&user, &device, cursor + 1, &body, &known)
+                .await
+                .unwrap();
+            assert!(
+                repeated.lists["main"].ops.is_empty(),
+                "{mode}: refresh only once"
+            );
+            assert!(repeated.rooms.is_empty());
+            assert_eq!(repeated.pos, initial.pos);
+            assert_eq!(data::curr_sn().await.unwrap(), cursor);
+        }
     }
 
     #[cfg(feature = "unstable-msc4494")]

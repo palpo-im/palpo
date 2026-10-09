@@ -86,12 +86,22 @@ token while the event stream is idle. Current state or a delayed admission can c
 without a new sequence allocation. The response may retain that same token while
 delivering an invitation once; this device's delivery record then prevents repeats.
 More distant future tokens keep the existing early-return behavior.
-Sliding sync also checks first-delivery obligations before returning an idle,
-count-only response. An invitation selected by a list's filters and inclusive
-range, or by an explicit room subscription, bypasses that return if this device
-has not received it. Rendering and recording still use the captured invitation
-identity and the original cursor. Invitations outside the request's selection
-remain unrecorded and do not prevent later count-only idle responses.
+Sliding sync checks both first-delivery obligations and list positions before
+returning an idle, count-only response. It compares the filtered, sorted requested
+ranges against each connection's last complete response, preserving exact indices
+and order. An invitation becoming visible outside a range can displace rooms inside
+it without allocating a sequence number. That range still receives new `SYNC` ops,
+even when its newly selected rooms were already delivered to this device. The
+connection's JSON cache persists these windows across instances; older cache rows
+default to unknown windows and receive one refresh. All builds preserve and record
+the windows after successfully constructing a complete response. Count-only
+responses do not replace them. The handler compares returned ops with the preceding
+windows so long polling cannot swallow a changed list with no room or count updates.
+Unchanged `SYNC` ops remain empty for long polling. An invitation selected by a list
+range or explicit subscription also bypasses the idle return if first delivery is
+owed. Rendering and recording use the captured invitation identity and original
+cursor. Invitations outside the selection remain unrecorded; once the selected
+positions have been refreshed, they do not cause repeated full responses.
 Global admission preserves the user's visibility decision; first delivery is
 recorded separately for each device. An unseen device receives an admitted invite
 even if another device's delayed admission commits behind its cursor. Once that
