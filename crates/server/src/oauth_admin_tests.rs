@@ -238,6 +238,50 @@ async fn oauth_admin_routes() {
         assert_eq!(response.take_json::<Value>().await.unwrap(), expected);
     }
     let enabled = cfg!(feature = "unstable-msc4484");
+    // Discovery reports eligibility both before and after the token acquires admin scope.
+    for version in ["v1", "v3", "r0"] {
+        for (token, admin) in [
+            ("api-admin", true),
+            ("both", true),
+            ("native-admin", true),
+            ("appservice-admin", true),
+            ("api-ordinary", false),
+            ("native-ordinary", false),
+        ] {
+            let mut response = get(
+                &service,
+                &format!("/_matrix/client/{version}/capabilities"),
+                token,
+            )
+            .await;
+            assert_eq!(response.status_code, Some(StatusCode::OK));
+            let body = response.take_json::<Value>().await.unwrap();
+            let capability = body["capabilities"].get("org.continuwuity.msc4540.admin");
+            let expected =
+                json!({"allowed_scopes": if admin { vec![ADMIN_SCOPE] } else { vec![] }});
+            assert_eq!(
+                capability,
+                cfg!(feature = "unstable-msc4540").then_some(&expected)
+            );
+            assert_eq!(
+                body["capabilities"].get("m.account_moderation").is_some(),
+                admin
+            );
+        }
+    }
+    let admin_id = UserId::parse("@admin:scope.example").unwrap();
+    data::user::set_admin(&admin_id, false).await.unwrap();
+    for token in ["api-admin", "both", "native-admin"] {
+        let mut response = get(&service, "/_matrix/client/v3/capabilities", token).await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        let body = response.take_json::<Value>().await.unwrap();
+        assert_eq!(
+            body["capabilities"].get("org.continuwuity.msc4540.admin"),
+            cfg!(feature = "unstable-msc4540").then_some(&json!({"allowed_scopes": []}))
+        );
+        assert!(body["capabilities"].get("m.account_moderation").is_none());
+    }
+    data::user::set_admin(&admin_id, true).await.unwrap();
     let mut routes = vec!["/_palpo/admin".to_owned(), "/_synapse/admin".to_owned()];
     for version in ["v1", "v3", "r0"] {
         for operation in ["whois", "lock", "suspend"] {
@@ -408,6 +452,11 @@ async fn oauth_admin_routes() {
     assert_eq!(
         body["unstable_features"].get("org.continuwuity.msc4484.unstable"),
         enabled.then_some(&json!(true))
+    );
+    assert!(
+        body["unstable_features"]
+            .get("org.continuwuity.msc4540")
+            .is_none()
     );
     mock.abort();
 }
