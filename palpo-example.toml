@@ -1502,3 +1502,14 @@
 # Set to 0 to disable caching.
 #
 # introspection_cache_ttl = 300
+
+# Optional experimental MSC1763 message retention. Build with unstable-msc1763.
+# Retains state/auth/event graphs; purged content cannot be restored by a longer policy.
+# See docs/development/message-retention.md for policy precedence and guarantees.
+# [retention]
+# enable = false
+# [retention.policies."*"]
+# max_lifetime = 2592000000
+# [retention.limits.max_lifetime]
+# min = 3600000
+# max = 7776000000

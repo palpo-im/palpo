@@ -186,6 +186,9 @@ event_enum! {
         "m.room.encrypted" => super::room::encrypted::unstable_state,
         "m.room.guest_access" => super::room::guest_access,
         "m.room.history_visibility" => super::room::history_visibility,
+        #[cfg(feature = "unstable-msc1763")]
+        #[palpo_enum(ident = RoomRetention)]
+        "org.matrix.msc1763.retention" => super::room::retention,
         "m.room.join_rules" => super::room::join_rule,
         "m.room.member" => super::room::member,
         "m.room.name" => super::room::name,

@@ -386,6 +386,14 @@ async fn process_to_outlier_pdu_inner(
         && !pdu.is_outlier
         && !pdu.rejected()
     {
+        #[cfg(feature = "unstable-msc1763")]
+        let val = {
+            // Discard the snapshot read before the PDU loader applied retention.
+            drop(val);
+            timeline::get_pdu_json(event_id)
+                .await?
+                .ok_or_else(|| MatrixError::not_found("event payload not found"))?
+        };
         return Ok(Some(OutlierPdu {
             pdu: pdu.into_inner(),
             json_data: val,

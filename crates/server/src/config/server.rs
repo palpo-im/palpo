@@ -76,7 +76,7 @@ impl ListenerConfig {
 "#,
     ignore = "federation well_known compression typing read_receipt presence \
         admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice \
-        delayed_events registration_email"
+        delayed_events registration_email retention"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
@@ -758,6 +758,11 @@ pub struct ServerConfig {
     #[serde(default)]
     pub delayed_events: DelayedEventsConfig,
 
+    /// Optional experimental message retention configuration.
+    #[cfg(feature = "unstable-msc1763")]
+    #[serde(default)]
+    pub retention: super::RetentionConfig,
+
     // external structure; separate section
     #[serde(default)]
     pub presence: PresenceConfig,
@@ -907,6 +912,8 @@ impl ServerConfig {
     }
 
     pub fn check(&self) -> AppResult<()> {
+        #[cfg(feature = "unstable-msc1763")]
+        self.retention.validate().map_err(AppError::internal)?;
         if cfg!(debug_assertions) {
             tracing::warn!("Note: palpo was built without optimisations (i.e. debug build)");
         }

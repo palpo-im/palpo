@@ -1250,6 +1250,17 @@ async fn load_sticky(
         // users, including users who joined after the event was sent. A peeker is not a
         // joined user, so it retains the ordinary visibility check and cannot use the
         // sticky section to read otherwise-hidden history.
+        #[cfg(feature = "unstable-msc1763")]
+        if crate::retention::is_expired(
+            &pdu.event_id,
+            &pdu.room_id,
+            pdu.state_key.as_deref(),
+            pdu.origin_server_ts,
+        )
+        .await?
+        {
+            continue;
+        }
         if enforce_history_visibility && !pdu.user_can_see(user_id).await? {
             continue;
         }

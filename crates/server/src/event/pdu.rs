@@ -86,6 +86,17 @@ impl SnPduEvent {
     }
 
     pub async fn user_can_see(&self, user_id: &UserId) -> AppResult<bool> {
+        #[cfg(feature = "unstable-msc1763")]
+        if crate::retention::is_expired(
+            &self.event_id,
+            &self.room_id,
+            self.state_key.as_deref(),
+            self.origin_server_ts,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
         // A policy refusal must not be bypassed by the own-membership exception.
         if self.rejection_reason.is_some() {
             return Ok(false);
