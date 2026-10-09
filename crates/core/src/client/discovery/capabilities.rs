@@ -101,6 +101,14 @@ pub struct Capabilities {
     )]
     pub account_moderation: AccountModerationCapability,
 
+    /// Administrative scopes this user may request, independently of the current token's grants.
+    #[cfg(feature = "unstable-msc4540")]
+    #[serde(
+        rename = "org.continuwuity.msc4540.admin",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub admin: Option<AdminCapability>,
+
     /// Any other custom capabilities that the server supports outside of the
     /// specification, labeled using the Java package naming convention and
     /// stored as arbitrary JSON values.
@@ -135,6 +143,10 @@ impl Capabilities {
                 Some(Cow::Owned(serialize(&self.forget_forced_upon_leave)))
             }
             "m.account_moderation" => Some(Cow::Owned(serialize(&self.account_moderation))),
+            #[cfg(feature = "unstable-msc4540")]
+            "org.continuwuity.msc4540.admin" => {
+                self.admin.as_ref().map(|cap| Cow::Owned(serialize(cap)))
+            }
             _ => self.custom_capabilities.get(capability).map(Cow::Borrowed),
         }
     }
@@ -156,6 +168,10 @@ impl Capabilities {
             }
             "m.account_moderation" => {
                 self.account_moderation = from_json_value(value)?;
+            }
+            #[cfg(feature = "unstable-msc4540")]
+            "org.continuwuity.msc4540.admin" => {
+                self.admin = from_json_value(value)?;
             }
             _ => {
                 self.custom_capabilities
@@ -402,6 +418,15 @@ pub struct ForgetForcedUponLeaveCapability {
     pub enabled: bool,
 }
 
+/// Experimental MSC4540 administration discovery. This capability does not grant privileges.
+#[cfg(feature = "unstable-msc4540")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AdminCapability {
+    /// Implemented administrative scopes the user is eligible to request via OAuth step-up.
+    /// Legacy clients already have access to the corresponding functionality.
+    pub allowed_scopes: Vec<String>,
+}
+
 /// Information about the `m.account_moderation` capability.
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AccountModerationCapability {
@@ -435,5 +460,58 @@ impl ForgetForcedUponLeaveCapability {
     /// Returns whether all fields have their default value.
     pub fn is_default(&self) -> bool {
         !self.enabled
+    }
+}
+
+#[cfg(all(test, feature = "unstable-msc4540"))]
+mod admin_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn admin_capability_roundtrips_and_uses_typed_accessors() {
+        let mut capabilities = Capabilities::new();
+        assert!(capabilities.get("org.continuwuity.msc4540.admin").is_none());
+        assert!(
+            to_json_value(&capabilities)
+                .unwrap()
+                .get("org.continuwuity.msc4540.admin")
+                .is_none()
+        );
+        for value in [
+            json!({"allowed_scopes": []}),
+            json!({"allowed_scopes": ["urn:matrix:client:cc.c10y.msc4484.server_administration"]}),
+        ] {
+            capabilities
+                .set("org.continuwuity.msc4540.admin", value.clone())
+                .unwrap();
+            assert_eq!(
+                capabilities
+                    .get("org.continuwuity.msc4540.admin")
+                    .unwrap()
+                    .as_ref(),
+                &value
+            );
+            let decoded: Capabilities =
+                from_json_value(to_json_value(&capabilities).unwrap()).unwrap();
+            assert_eq!(
+                decoded.admin.unwrap().allowed_scopes,
+                capabilities.admin.as_ref().unwrap().allowed_scopes
+            );
+            assert!(
+                !decoded
+                    .custom_capabilities
+                    .contains_key("org.continuwuity.msc4540.admin")
+            );
+        }
+        assert!(
+            capabilities
+                .set(
+                    "org.continuwuity.msc4540.admin",
+                    json!({"allowed_scopes": "scope"})
+                )
+                .is_err()
+        );
     }
 }

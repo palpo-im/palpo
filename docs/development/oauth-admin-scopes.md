@@ -47,3 +47,23 @@ cargo test -p palpo --lib --features unstable-msc4484 oauth_admin_routes -- --ig
 ```
 
 Use a fresh empty database to repeat the command without `--features`.
+
+## Administration discovery (MSC4540)
+
+Build with `--features unstable-msc4540` (which also enables MSC4484) to expose
+`org.continuwuity.msc4540.admin` in authenticated capabilities responses.
+`allowed_scopes` contains the experimental server-administration scope for
+provisioned administrators, and is empty for other users. It describes scopes
+the user may request, independently of the current OAuth token's grants.
+Native administrators receive the same list and retain legacy access.
+
+The existing `m.account_moderation` capability is retained. Discovery never
+grants privileges: administration routes continue to check both administrator
+status and, for OAuth tokens, the management scope. Administrator policy changes
+are reflected by subsequent authenticated requests. Builds without MSC4540 omit
+the capability. MSC4540 does not add a `/versions` flag.
+
+The current scope challenge is usable before MSC4363 support is added by #487;
+clients must obtain the advertised scope from the delegated authorization
+service before performing administrative operations. The HTTP regression test
+also covers discovery before/after scope acquisition and privilege revocation.

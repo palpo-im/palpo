@@ -52,7 +52,7 @@ enum AccessTokenPolicy {
 }
 
 #[cfg(feature = "unstable-msc4484")]
-const ADMIN_SCOPE: &str = "urn:matrix:client:cc.c10y.msc4484.server_administration";
+pub(crate) const ADMIN_SCOPE: &str = "urn:matrix:client:cc.c10y.msc4484.server_administration";
 
 impl AccessTokenPolicy {
     fn authorize_oauth(
