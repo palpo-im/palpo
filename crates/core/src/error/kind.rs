@@ -147,6 +147,13 @@ pub enum ErrorKind {
     /// server expected an integer and instead received a string.
     InvalidParam,
 
+    /// A verified OAuth identity must reauthenticate to meet the resource's policy.
+    #[cfg(feature = "unstable-msc4363")]
+    InsufficientUserAuthentication {
+        /// Actionable scope, freshness, and assurance requirements.
+        challenge: super::StepUpChallenge,
+    },
+
     /// `M_INVALID_ROOM_STATE`
     ///
     /// The initial state implied by the parameters to the [`create_room`]
@@ -486,6 +493,10 @@ impl ErrorKind {
             ErrorKind::GuestAccessForbidden => ErrorCode::GuestAccessForbidden,
             ErrorKind::IncompatibleRoomVersion { .. } => ErrorCode::IncompatibleRoomVersion,
             ErrorKind::InvalidParam => ErrorCode::InvalidParam,
+            #[cfg(feature = "unstable-msc4363")]
+            ErrorKind::InsufficientUserAuthentication { .. } => {
+                ErrorCode::InsufficientUserAuthentication
+            }
             ErrorKind::KeyTooLarge => ErrorCode::KeyTooLarge,
             ErrorKind::ProfileTooLarge => ErrorCode::ProfileTooLarge,
             ErrorKind::InvalidRoomState => ErrorCode::InvalidRoomState,

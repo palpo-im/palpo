@@ -59,6 +59,20 @@ pub struct DelegatedAuthConfig {
     /// default: 300
     #[serde(default = "default_introspection_cache_ttl")]
     pub introspection_cache_ttl: u64,
+
+    /// Maximum authentication age in seconds for delegated administrative requests.
+    /// Requires `unstable-msc4363`. Unset means no freshness requirement.
+    /// display: hidden
+    #[cfg(feature = "unstable-msc4363")]
+    #[serde(default, with = "crate::core::serde::duration::opt_secs")]
+    pub admin_max_age: Option<std::time::Duration>,
+
+    /// Acceptable administrative OIDC ACR values as a space-separated string,
+    /// in preference order. Requires `unstable-msc4363`; unset permits any assurance.
+    /// display: hidden
+    #[cfg(feature = "unstable-msc4363")]
+    #[serde(default)]
+    pub admin_acr_values: Option<crate::core::error::AcrValues>,
 }
 
 impl DelegatedAuthConfig {
