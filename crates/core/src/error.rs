@@ -12,6 +12,10 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 mod auth;
 pub use auth::*;
+#[cfg(feature = "unstable-msc4363")]
+mod step_up;
+#[cfg(feature = "unstable-msc4363")]
+pub use step_up::*;
 mod kind;
 /// Deserialize and Serialize implementations for ErrorKind.
 /// Separate module because it's a lot of code.
@@ -212,6 +216,8 @@ impl Scribe for MatrixError {
                     Forbidden | GuestAccessForbidden | ThreepidAuthFailed | ThreepidDenied
                     | InviteBlocked => StatusCode::FORBIDDEN,
                     Unauthorized | UnknownToken { .. } | MissingToken => StatusCode::UNAUTHORIZED,
+                    #[cfg(feature = "unstable-msc4363")]
+                    InsufficientUserAuthentication { .. } => StatusCode::UNAUTHORIZED,
                     NotFound | Unrecognized => StatusCode::NOT_FOUND,
                     LimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
                     UserDeactivated | UserLocked | UserSuspended => StatusCode::FORBIDDEN,
@@ -230,6 +236,13 @@ impl Scribe for MatrixError {
         };
 
         let Self { kind, mut body, .. } = self;
+        #[cfg(feature = "unstable-msc4363")]
+        if let ErrorKind::InsufficientUserAuthentication { challenge } = &kind
+            && let JsonValue::Object(fields) =
+                serde_json::to_value(challenge).expect("valid challenge")
+        {
+            body.0.extend(fields);
+        }
         if let ErrorKind::LimitExceeded {
             retry_after: Some(RetryAfter::Delay(duration)),
         } = &kind

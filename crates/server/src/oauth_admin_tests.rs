@@ -12,6 +12,9 @@ use crate as palpo;
 const ADMIN_SCOPE: &str = "urn:matrix:client:cc.c10y.msc4484.server_administration";
 const API_SCOPE: &str = "urn:matrix:client:api:*";
 
+#[cfg(feature = "unstable-msc4363")]
+static STALE_AUTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn introspection(token: &str) -> Value {
     let mut response = json!({
         "active": true, "username": "admin", "device_id": "DEVICE",
@@ -48,6 +51,37 @@ fn introspection(token: &str) -> Value {
         "unprovisioned" => response["username"] = json!("missing"),
         "no-username" => {
             response.as_object_mut().unwrap().remove("username");
+        }
+        #[cfg(feature = "unstable-msc4363")]
+        "fresh" | "stale" | "future" | "missing-evidence" | "weak" | "expired"
+        | "fresh-ordinary" => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            response["scope"] = json!(format!(
+                "{ADMIN_SCOPE} {API_SCOPE} urn:matrix:client:device:DEVICE"
+            ));
+            if token != "missing-evidence" {
+                response["auth_time"] = json!(if token == "stale"
+                    || std::sync::atomic::AtomicBool::load(
+                        &STALE_AUTH,
+                        std::sync::atomic::Ordering::SeqCst
+                    ) {
+                    now - 301
+                } else if token == "future" {
+                    now + 60
+                } else {
+                    now
+                });
+                response["acr"] = json!(if token == "weak" { "pwd" } else { "mfa" });
+            }
+            if token == "expired" {
+                response["exp"] = json!(now - 1);
+            }
+            if token == "fresh-ordinary" {
+                response["username"] = json!("ordinary");
+            }
         }
         _ => response = json!({ "active": false }),
     }
@@ -172,6 +206,20 @@ async fn get(service: &Service, path: &str, token: &str) -> Response {
 
 async fn assert_error(mut response: Response, status: StatusCode, code: &str, challenge: bool) {
     assert_eq!(response.status_code, Some(status));
+    #[cfg(feature = "unstable-msc4363")]
+    if challenge {
+        assert!(response.headers().get("WWW-Authenticate").is_none());
+        let body = response.take_json::<Value>().await.unwrap();
+        assert_eq!(
+            body["errcode"],
+            "org.matrix.msc4363.M_INSUFFICIENT_USER_AUTHENTICATION"
+        );
+        assert_eq!(
+            body["org.matrix.msc4363.scope"],
+            format!("{ADMIN_SCOPE} urn:matrix:client:device:DEVICE {API_SCOPE}")
+        );
+        return;
+    }
     if challenge {
         assert_eq!(
             response
@@ -408,6 +456,94 @@ async fn oauth_admin_routes() {
     assert_eq!(
         body["unstable_features"].get("org.continuwuity.msc4484.unstable"),
         enabled.then_some(&json!(true))
+    );
+    mock.abort();
+}
+
+#[cfg(feature = "unstable-msc4363")]
+#[tokio::test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+async fn oauth_step_up_routes() {
+    crate::test_database::init();
+    let (endpoint, mock) = mock_introspection().await;
+    config::CONFIG
+        .set(
+            serde_json::from_value(json!({
+                "server_name":"scope.example", "db":{"url":"unused-test-config"},
+                "ip_range_denylist":[], "admin":{"mas_secret":"fixture-secret"},
+                "delegated_auth":{"enable":true, "introspection_endpoint":endpoint,
+                    "introspection_cache_ttl":3600, "admin_max_age":300, "admin_acr_values":"mfa"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    provision("admin", true).await;
+    provision("ordinary", false).await;
+    provision("target", false).await;
+    let service = Service::new(palpo::routing::root());
+    let path = "/_matrix/client/v3/admin/lock/@target:scope.example";
+    for token in ["stale", "future", "missing-evidence", "weak", "api-admin"] {
+        let mut response = get(&service, path, token).await;
+        assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+        let body = response.take_json::<Value>().await.unwrap();
+        assert_eq!(
+            body["errcode"],
+            "org.matrix.msc4363.M_INSUFFICIENT_USER_AUTHENTICATION"
+        );
+        assert_eq!(body["org.matrix.msc4363.max_age"], 300);
+        assert_eq!(body["org.matrix.msc4363.acr_values"], "mfa");
+        assert_eq!(
+            body["org.matrix.msc4363.scope"],
+            format!("{ADMIN_SCOPE} urn:matrix:client:device:DEVICE {API_SCOPE}")
+        );
+    }
+    // Ordinary API requests can cache evidence; administrative requests still fetch
+    // current assurance and evaluate its original authentication timestamp.
+    assert_eq!(
+        get(&service, "/_matrix/client/v3/account/whoami", "fresh")
+            .await
+            .status_code,
+        Some(StatusCode::OK)
+    );
+    assert_eq!(
+        get(&service, path, "fresh").await.status_code,
+        Some(StatusCode::OK)
+    );
+    STALE_AUTH.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_error(
+        get(&service, path, "fresh").await,
+        StatusCode::UNAUTHORIZED,
+        "unused",
+        true,
+    )
+    .await;
+    STALE_AUTH.store(false, std::sync::atomic::Ordering::SeqCst);
+    // Retrying with fresh authentication completes the protected state change.
+    let response = TestClient::put(format!("http://localhost{path}"))
+        .add_header("Authorization", "Bearer fresh", true)
+        .json(&json!({"locked":true}))
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    let target = UserId::parse("@target:scope.example").unwrap();
+    assert!(data::user::get_user(&target).await.unwrap().is_locked());
+    assert_error(
+        get(&service, path, "expired").await,
+        StatusCode::UNAUTHORIZED,
+        "M_UNKNOWN_TOKEN",
+        false,
+    )
+    .await;
+    assert_error(
+        get(&service, path, "fresh-ordinary").await,
+        StatusCode::FORBIDDEN,
+        "M_FORBIDDEN",
+        false,
+    )
+    .await;
+    assert_eq!(
+        get(&service, path, "native-admin").await.status_code,
+        Some(StatusCode::OK)
     );
     mock.abort();
 }

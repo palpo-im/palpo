@@ -15,6 +15,8 @@ use crate::exts::DepotExt;
 mod auth;
 pub use auth::*;
 pub mod introspection;
+#[cfg(feature = "unstable-msc4363")]
+mod step_up;
 
 #[handler]
 pub async fn ensure_accept(req: &mut Request) {

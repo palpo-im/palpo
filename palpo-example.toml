@@ -1502,3 +1502,10 @@
 # Set to 0 to disable caching.
 #
 # introspection_cache_ttl = 300
+
+# Maximum authentication age in seconds for delegated administrative requests.
+# Requires the unstable-msc4363 Cargo feature. Unset means no freshness requirement.
+# admin_max_age = 300
+
+# Acceptable OIDC ACR values, in preference order. Requires unstable-msc4363.
+# admin_acr_values = "urn:example:mfa urn:example:hardware-key"
