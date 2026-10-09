@@ -3,3 +3,10 @@
 ARG BASE_IMAGE=complement-synapse-base
 FROM ${BASE_IMAGE}
 RUN printf '\nallow_public_rooms_over_federation: true\n' >> /conf/shared.yaml.j2
+
+# localhost resolves to both IPv4 and IPv6, which nginx treats as separate
+# upstreams. Federation retries during a restart can mark both unavailable,
+# leaving client requests returning 502 after Synapse is already ready.
+# A single loopback upstream is never disabled by nginx's passive failure cache.
+RUN sed -i 's@proxy_pass http://localhost:8080;@proxy_pass http://127.0.0.1:8080;@' /conf/nginx.conf.j2 \
+    && grep -q 'proxy_pass http://127.0.0.1:8080;' /conf/nginx.conf.j2

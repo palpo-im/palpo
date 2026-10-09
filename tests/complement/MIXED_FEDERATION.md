@@ -45,6 +45,11 @@ The Synapse fixture explicitly enables `allow_public_rooms_over_federation` in
 `Dockerfile.synapse`. Its default is false: publishing a room alone is not enough
 to permit remote discovery. This setting does not disable federation signatures;
 the unsigned-request test verifies that the configured peer still rejects them.
+The fixture also points nginx's main-process upstream at `127.0.0.1:8080`.
+Using `localhost` creates separate IPv4/IPv6 upstreams; requests during a
+Synapse restart can mark both unavailable and keep returning 502 after the
+backend has recovered. A single loopback upstream avoids that failure cache,
+so the device-list restart tests can resume immediately after readiness.
 Malformed directory tokens currently produce 400, 500 or 502 depending on the
 serving/querying peer; the error test requires a Matrix error and rejects
 success/schema decoding. Positive directory assertions verify authentication.
