@@ -34,18 +34,17 @@ pub use backfill::*;
 
 #[tracing::instrument]
 pub async fn first_pdu_in_room(room_id: &RoomId) -> AppResult<Option<PduEvent>> {
-    event_datas::table
+    let event_id = event_datas::table
         .filter(event_datas::room_id.eq(room_id))
         .order(event_datas::event_sn.asc())
-        .select((event_datas::event_id, event_datas::json_data))
-        .first::<(OwnedEventId, JsonValue)>(&mut connect().await?)
+        .select(event_datas::event_id)
+        .first::<OwnedEventId>(&mut connect().await?)
         .await
-        .optional()?
-        .map(|(event_id, json)| {
-            PduEvent::from_json_value(room_id, &event_id, json)
-                .map_err(|_e| AppError::internal("invalid pdu in db"))
-        })
-        .transpose()
+        .optional()?;
+    match event_id {
+        Some(event_id) => Ok(Some(get_pdu(&event_id).await?.pdu)),
+        None => Ok(None),
+    }
 }
 
 #[tracing::instrument]
@@ -62,16 +61,24 @@ pub async fn last_event_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqn
 
 /// Returns the json of a pdu.
 pub async fn get_pdu_json(event_id: &EventId) -> AppResult<Option<CanonicalJsonObject>> {
-    event_datas::table
+    let result = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
-        .select(event_datas::json_data)
-        .first::<JsonValue>(&mut connect().await?)
+        .select((event_datas::room_id, event_datas::json_data))
+        .first::<(OwnedRoomId, JsonValue)>(&mut connect().await?)
         .await
-        .optional()?
-        .map(|json| {
-            serde_json::from_value(json).map_err(|_e| AppError::internal("invalid pdu in db"))
-        })
-        .transpose()
+        .optional()?;
+    let Some((room_id, json)) = result else {
+        return Ok(None);
+    };
+    #[cfg(feature = "unstable-msc1763")]
+    let mut json = json;
+    #[cfg(feature = "unstable-msc1763")]
+    crate::retention::sanitize_json(event_id, &room_id, &mut json).await?;
+    #[cfg(not(feature = "unstable-msc1763"))]
+    let _ = &room_id;
+    Ok(Some(
+        serde_json::from_value(json).map_err(|_e| AppError::internal("invalid pdu in db"))?,
+    ))
 }
 
 /// Returns the pdu.
@@ -86,13 +93,18 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
     else {
         return Ok(None);
     };
-    let mut pdu = event_datas::table
+    let json = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
         .select(event_datas::json_data)
         .first::<JsonValue>(&mut connect().await?)
         .await
-        .optional()?
-        .map(|json| {
+        .optional()?;
+    let mut pdu = if let Some(json) = json {
+        #[cfg(feature = "unstable-msc1763")]
+        let mut json = json;
+        #[cfg(feature = "unstable-msc1763")]
+        crate::retention::sanitize_json(event_id, &room_id, &mut json).await?;
+        Some({
             SnPduEvent::from_json_value(
                 &room_id,
                 event_id,
@@ -102,9 +114,11 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
                 false,
                 stream_ordering < 0,
             )
-            .map_err(|_e| AppError::internal("invalid pdu in db"))
+            .map_err(|_e| AppError::internal("invalid pdu in db"))?
         })
-        .transpose()?;
+    } else {
+        None
+    };
     if let Some(pdu) = pdu.as_mut() {
         let event = events::table
             .filter(events::id.eq(event_id))
@@ -132,6 +146,10 @@ pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
         ))
         .first::<(Seqnum, OwnedRoomId, JsonValue)>(&mut connect().await?)
         .await?;
+    #[cfg(feature = "unstable-msc1763")]
+    let mut json = json;
+    #[cfg(feature = "unstable-msc1763")]
+    crate::retention::sanitize_json(event_id, &room_id, &mut json).await?;
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
@@ -159,6 +177,10 @@ pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, Cano
         ))
         .first::<(Seqnum, OwnedRoomId, JsonValue)>(&mut connect().await?)
         .await?;
+    #[cfg(feature = "unstable-msc1763")]
+    let mut json = json;
+    #[cfg(feature = "unstable-msc1763")]
+    crate::retention::sanitize_json(event_id, &room_id, &mut json).await?;
     let data = serde_json::from_value(json.clone())
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
@@ -933,6 +955,12 @@ async fn build_and_append_pdu_locked(
     force: bool,
 ) -> AppResult<(SnPduEvent, bool)> {
     membership::ensure_membership_invite_allowed(&pdu_builder, sender).await?;
+    #[cfg(feature = "unstable-msc1763")]
+    crate::retention::validate_local(
+        &pdu_builder.event_type.to_string(),
+        pdu_builder.state_key.as_deref(),
+        pdu_builder.content.get(),
+    )?;
     if !force
         && let Some(state_key) = &pdu_builder.state_key
         && let Ok(curr_state) = super::get_state(

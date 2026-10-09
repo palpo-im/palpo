@@ -189,6 +189,17 @@ pub async fn load_pdus(
         for (event_id, event_sn) in events {
             match super::get_pdu(&event_id).await {
                 Ok(mut pdu) => {
+                    #[cfg(feature = "unstable-msc1763")]
+                    if crate::retention::is_expired(
+                        &pdu.event_id,
+                        &pdu.room_id,
+                        pdu.state_key.as_deref(),
+                        pdu.origin_server_ts,
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
                     if let Some(user_id) = user_id
                         && !pdu.user_can_see(user_id).await.unwrap_or(false)
                     {

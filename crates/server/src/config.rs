@@ -29,6 +29,10 @@ mod db;
 pub use db::*;
 mod delayed_event;
 pub use delayed_event::*;
+#[cfg(feature = "unstable-msc1763")]
+mod retention;
+#[cfg(feature = "unstable-msc1763")]
+pub use retention::*;
 // mod dns;
 // pub use dns::*;
 mod federation;

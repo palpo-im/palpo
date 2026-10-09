@@ -9,6 +9,8 @@ pub(super) fn router() -> Router {
         .hoop(hoops::auth_by_access_token)
         .hoop(hoops::limit_rate)
         .push(super::delayed_event::authed_router());
+    #[cfg(feature = "unstable-msc1763")]
+    let authed = authed.push(super::retention::router());
     Router::with_path("unstable")
         .push(Router::with_path("org.palpo.registration").get(crate::registration_email::discovery))
         // Public routes (no auth required) — MSC2965 OIDC discovery

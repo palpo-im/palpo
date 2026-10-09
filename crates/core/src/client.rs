@@ -21,6 +21,8 @@ pub mod push;
 pub mod redact;
 pub mod register;
 pub mod relation;
+#[cfg(feature = "unstable-msc1763")]
+pub mod retention;
 pub mod room;
 #[cfg(feature = "unstable-msc4143")]
 pub mod rtc;

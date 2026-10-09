@@ -29,6 +29,7 @@ unstable-extensible-events = [
     "unstable-msc3955",
 ]
 unstable-msc1767 = []
+unstable-msc1763 = []
 unstable-msc2448 = []
 unstable-msc2654 = []
 unstable-msc2666 = []
