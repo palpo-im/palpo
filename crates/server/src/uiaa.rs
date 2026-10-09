@@ -118,10 +118,31 @@ pub async fn try_auth(
                 return Ok((false, uiaa_info));
             }
         }
+        AuthData::EmailIdentity(email) => {
+            if !uiaa_info
+                .flows
+                .iter()
+                .any(|f| f.stages.contains(&AuthType::EmailIdentity))
+                || !data::user::registration_email::is_claimed(
+                    email.thirdparty_id_creds.sid.as_str(),
+                    &crate::registration_email::secret_hash(
+                        email.thirdparty_id_creds.client_secret.as_str(),
+                    )?,
+                    uiaa_info.session.as_deref().expect("session is set"),
+                    crate::registration_email::now(),
+                )
+                .await?
+            {
+                return Err(MatrixError::forbidden("Email verification is required.", None).into());
+            }
+            if !uiaa_info.completed.contains(&AuthType::EmailIdentity) {
+                uiaa_info.completed.push(AuthType::EmailIdentity);
+            }
+        }
         AuthData::Dummy(_) => {
             uiaa_info.completed.push(AuthType::Dummy);
         }
-        k => error!("type not supported: {:?}", k),
+        _ => return Err(MatrixError::invalid_param("Unsupported authentication stage.").into()),
     }
 
     // Check if a flow now succeeds

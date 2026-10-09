@@ -1,0 +1,37 @@
+# Package (relative to Complement) and required top-level test.
+# Device lists, keys (including OTK claim/exhaustion), media, presence and EDUs.
+tests TestDeviceListsUpdateOverFederation
+tests TestUserAppearsInChangedDeviceListOnJoinOverFederation
+tests TestContentMediaV1
+tests TestRemotePresence
+tests TestRemoteTyping
+tests TestToDeviceMessagesOverFederation
+tests TestFederationKeyUploadQuery
+# Aliases, invitations, joins, bans and restricted membership.
+tests TestRemoteAliasRequestsUnderstandUnicode
+tests TestUnbanViaInvite
+tests TestFederationRejectInvite
+tests TestJoinViaRoomIDAndServerName
+tests TestJoinFederatedRoomFailOver
+tests TestFederationRoomsInvite
+tests TestRestrictedRoomsSpacesSummaryFederation
+tests TestKnocking
+tests TestKnockingInMSC3787Room
+tests TestRestrictedRoomsRemoteJoin
+tests TestRestrictedRoomsRemoteJoinLocalUser
+tests TestRestrictedRoomsRemoteJoinInMSC3787Room
+tests TestRestrictedRoomsRemoteJoinLocalUserInMSC3787Room
+# Three real peers: hs3 uses the same implementation as hs1 in each direction.
+tests TestACLs
+tests TestACLsForEDUs
+tests TestRestrictedRoomsRemoteJoinFailOver
+tests TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room
+# History visibility and backfill across real homeservers.
+tests/csapi TestMessagesOverFederation
+# Palpo-owned scenarios, copied into the Complement checkout by the runner.
+tests/palpo_mixed TestMixedFederationAuthentication
+tests/palpo_mixed TestMixedPublicRooms
+tests/palpo_mixed TestMixedRemoteProfile
+tests/palpo_mixed TestMixedRemoteAlias
+tests/palpo_mixed TestMixedRoomLifecycle
+tests/palpo_mixed TestMixedRemoteHierarchy

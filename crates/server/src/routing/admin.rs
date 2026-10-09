@@ -61,7 +61,7 @@ pub fn router() -> Router {
     for v in ["_palpo/admin", "_synapse/admin"] {
         admin = admin.push(
             Router::with_path(v)
-                .hoop(crate::hoops::auth_by_access_token)
+                .hoop(crate::hoops::auth_by_admin_access_token)
                 .hoop(require_admin)
                 .get(home)
                 .push(appservice::router())

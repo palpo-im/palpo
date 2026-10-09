@@ -61,6 +61,8 @@ mod oidc;
 pub use oidc::*;
 mod delegated_auth;
 pub use delegated_auth::*;
+mod registration_email;
+pub use registration_email::*;
 
 use crate::core::client::discovery::capabilities::RoomVersionStability;
 use crate::core::identifiers::*;

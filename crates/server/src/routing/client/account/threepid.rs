@@ -6,14 +6,13 @@
 //!
 //! [spec]: https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3account3pidadd
 //!
-//! This homeserver does not support third-party identifiers, so the mutating
-//! endpoints report that honestly instead of returning a fake success:
-//! `add`/`bind` are denied (matching the `requestToken` endpoints) and
-//! `delete`/`unbind` report that no such 3PID exists.
+//! Registration can associate a locally verified email address. Identity-server
+//! publishing and post-registration contact changes remain unsupported.
 
 use salvo::prelude::*;
 
 use crate::core::client::account::threepid::ThreepidsResBody;
+use crate::exts::DepotExt;
 use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, json_ok};
 
 pub fn authed_router() -> Router {
@@ -28,10 +27,22 @@ pub fn authed_router() -> Router {
 /// #GET _matrix/client/v3/account/3pid
 /// Get a list of third party identifiers associated with this account.
 ///
-/// - Always empty: this server does not store third-party identifiers.
+/// Returns contact information verified during registration.
 #[endpoint]
-async fn get(_aa: AuthArgs) -> JsonResult<ThreepidsResBody> {
-    json_ok(ThreepidsResBody::new(Vec::new()))
+async fn get(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<ThreepidsResBody> {
+    let authed = depot.authed_info()?;
+    let entries = crate::data::user::get_threepids(authed.user_id()).await?;
+    json_ok(ThreepidsResBody::new(
+        entries
+            .into_iter()
+            .map(|entry| crate::core::third_party::ThirdPartyIdentifier {
+                medium: entry.medium.into(),
+                address: entry.address,
+                added_at: entry.added_at,
+                validated_at: entry.validated_at,
+            })
+            .collect(),
+    ))
 }
 
 /// #POST /_matrix/client/v3/account/3pid/add
@@ -56,7 +67,10 @@ async fn bind(_aa: AuthArgs) -> EmptyResult {
 ///   unbind.
 #[endpoint]
 async fn unbind(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::threepid_not_found("User has no third-party identifiers.").into())
+    Err(MatrixError::threepid_denied(
+        "Contact changes are not supported. Contact your server administrator.",
+    )
+    .into())
 }
 
 /// #POST /_matrix/client/v3/account/3pid/delete
@@ -65,5 +79,8 @@ async fn unbind(_aa: AuthArgs) -> EmptyResult {
 ///   delete.
 #[endpoint]
 async fn delete(_aa: AuthArgs) -> EmptyResult {
-    Err(MatrixError::threepid_not_found("User has no third-party identifiers.").into())
+    Err(MatrixError::threepid_denied(
+        "Contact changes are not supported. Contact your server administrator.",
+    )
+    .into())
 }
