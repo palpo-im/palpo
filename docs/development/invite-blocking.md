@@ -63,14 +63,22 @@ prevents shared readers from forming a wait cycle behind queued writers.
 Shared rooms without a frame are included, so their first qualifying rule is covered.
 Policy and ignore-list changes, membership replacements, invitation-state updates and
 admissions take an exclusive lock for their user; frame publication takes one for its
-room. All builds participate in these writes, including feature-disabled instances.
-Writers hold one scope per transaction and never acquire stream locks within it.
+room. Resolved-state publication locks all changed users in physical-key order,
+then the room, and commits the membership replacements and frame together on one
+connection. A failed publication rolls back both, including admission deletions.
+User/settings preparation runs before these locks; derived statistics and federation
+side effects run after commit. All builds participate, including feature-disabled
+instances. Writers never acquire stream locks within the publication transaction.
 Invitation readers take user, then room locks, after the cursor transaction has ended.
 The transaction uses READ COMMITTED so a writer that commits while a lock is awaited
 is visible to subsequent reads; the scopes then keep the decision inputs stable until
 the inventory has been captured. Only database reads run in this phase. Immutable rule
 decoding, response construction and delivery recording run after it releases the
 locks. Shared readers can overlap, and unrelated users and rooms keep writing.
+Remote joins import the returned auth chain and state as checked outliers, without
+publishing historical membership changes or a provisional local join. The returned
+resolved state is published together before the actual join event is appended, so
+invitation decisions cannot combine a premature join with the previous room rules.
 Invitation events are restricted to the original response window, while permission,
 ignore lists, shared memberships and join rules are evaluated at this consistent
 current-state read point. Current membership rows replace earlier joins, so filtering

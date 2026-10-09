@@ -354,6 +354,15 @@ async fn lock_invite_read_scopes(
     namespace: i64,
     ids: Vec<String>,
 ) -> DataResult<()> {
+    lock_invite_scopes(conn, namespace, ids, true).await
+}
+
+async fn lock_invite_scopes(
+    conn: &mut diesel_async::AsyncPgConnection,
+    namespace: i64,
+    ids: Vec<String>,
+    shared: bool,
+) -> DataResult<()> {
     #[derive(QueryableByName)]
     struct ScopeKey {
         #[diesel(sql_type = diesel::sql_types::BigInt)]
@@ -369,17 +378,21 @@ async fn lock_invite_read_scopes(
     .load::<ScopeKey>(conn)
     .await?;
     for key in keys {
-        diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
-            .bind::<diesel::sql_types::BigInt, _>(key.key)
-            .execute(conn)
-            .await?;
+        diesel::sql_query(if shared {
+            "SELECT pg_advisory_xact_lock_shared($1)"
+        } else {
+            "SELECT pg_advisory_xact_lock($1)"
+        })
+        .bind::<diesel::sql_types::BigInt, _>(key.key)
+        .execute(conn)
+        .await?;
     }
     Ok(())
 }
 
 /// All builds coordinate user policy, ignore-list, membership and admission writes,
 /// so an MSC4494 reader is also protected from a feature-disabled instance. Writers
-/// hold exactly one user scope until commit and never acquire sync stream locks.
+/// hold their scopes until commit and never acquire sync stream locks.
 pub async fn lock_invite_user_write(
     conn: &mut diesel_async::AsyncPgConnection,
     user: &UserId,
@@ -387,8 +400,27 @@ pub async fn lock_invite_user_write(
     lock_invite_write_scope(conn, INVITE_USER_LOCK, user.as_str()).await
 }
 
-/// Current room-frame publication holds one room scope until commit, independently
-/// of user-scoped membership transactions. Do not acquire user or stream locks here.
+/// Bulk resolved-state publication follows the reader's lock order: all changed
+/// users in physical-key order, then the room. Call before changing any rows and
+/// publish memberships and frame on this connection in the same transaction.
+pub async fn lock_invite_state_write(
+    conn: &mut diesel_async::AsyncPgConnection,
+    users: &[OwnedUserId],
+    room: &RoomId,
+) -> DataResult<()> {
+    lock_invite_scopes(
+        conn,
+        INVITE_USER_LOCK,
+        users.iter().map(ToString::to_string).collect(),
+        false,
+    )
+    .await?;
+    lock_invite_room_write(conn, room).await
+}
+
+/// Current room-frame publication holds one room scope until commit. If a caller
+/// also changes memberships, acquire all user scopes first; never acquire them
+/// or sync stream locks after taking a room scope.
 pub async fn lock_invite_room_write(
     conn: &mut diesel_async::AsyncPgConnection,
     room: &RoomId,

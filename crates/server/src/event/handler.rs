@@ -41,6 +41,53 @@ pub(crate) async fn process_incoming_pdu(
     is_timeline_event: bool,
     is_backfill: bool,
 ) -> AppResult<()> {
+    process_incoming_pdu_inner(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        is_timeline_event,
+        is_backfill,
+        false,
+    )
+    .await
+}
+
+/// Validate and store a successful send_join response as outliers. Historical
+/// auth-chain memberships must not change current membership or frame state;
+/// force_state publishes the returned state before append_pdu publishes our join.
+pub(crate) async fn process_join_response_pdu(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version_id: &RoomVersionId,
+    value: CanonicalJsonObject,
+) -> AppResult<()> {
+    process_incoming_pdu_inner(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        false,
+        false,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_incoming_pdu_inner(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version_id: &RoomVersionId,
+    value: CanonicalJsonObject,
+    is_timeline_event: bool,
+    is_backfill: bool,
+    joining: bool,
+) -> AppResult<()> {
     if !crate::room::room_exists(room_id).await? {
         return Err(MatrixError::not_found("room is unknown to this server").into());
     }
@@ -116,8 +163,15 @@ pub(crate) async fn process_incoming_pdu(
         return Ok(());
     }
 
-    let Some(outlier_pdu) =
-        process_to_outlier_pdu(remote_server, event_id, room_id, room_version_id, value).await?
+    let Some(outlier_pdu) = process_to_outlier_pdu_inner(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        joining,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -143,6 +197,24 @@ pub(crate) async fn process_incoming_pdu(
     check_room_id(room_id, &incoming_pdu)?;
     // 8. if not timeline event: stop
     if !is_timeline_event {
+        if joining && !incoming_pdu.soft_failed {
+            let rules = crate::room::get_version_rules(room_version_id)?;
+            if let Some(before) = resolve_state_at_incoming(&incoming_pdu, &rules).await? {
+                let mut compressed = CompressedState::new();
+                for (field, event) in before {
+                    let (sn, _) = crate::event::ensure_event_sn(room_id, &event).await?;
+                    compressed.insert(state::compress_event(room_id, field, sn)?);
+                }
+                // Cache historical event-time state without publishing current
+                // state. Later imports must not repeatedly walk the whole DAG.
+                state::set_event_state_before(
+                    &incoming_pdu.event_id,
+                    room_id,
+                    Arc::new(compressed),
+                )
+                .await?;
+            }
+        }
         return Ok(());
     }
     // Skip old events
@@ -284,7 +356,18 @@ pub async fn process_to_outlier_pdu(
     event_id: &EventId,
     room_id: &RoomId,
     room_version: &RoomVersionId,
+    value: CanonicalJsonObject,
+) -> AppResult<Option<OutlierPdu>> {
+    process_to_outlier_pdu_inner(remote_server, event_id, room_id, room_version, value, false).await
+}
+
+async fn process_to_outlier_pdu_inner(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
     mut value: CanonicalJsonObject,
+    joining: bool,
 ) -> AppResult<Option<OutlierPdu>> {
     if let Some((room_id, event_sn, event_data)) = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
@@ -376,7 +459,7 @@ pub async fn process_to_outlier_pdu(
     check_room_id(room_id, &incoming_pdu)?;
 
     let server_joined =
-        crate::room::is_server_joined(crate::config::server_name(), room_id).await?;
+        joining || crate::room::is_server_joined(crate::config::server_name(), room_id).await?;
     if !server_joined {
         if let Some(_state_key) = incoming_pdu.state_key.as_deref()
             && incoming_pdu.event_ty == TimelineEventType::RoomMember

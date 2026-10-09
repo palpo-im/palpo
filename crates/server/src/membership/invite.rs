@@ -1534,6 +1534,524 @@ mod tests {
     #[cfg(feature = "unstable-msc4494")]
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_force_state_publishes_memberships_and_rules_together() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use diesel::QueryDsl;
+        use diesel_async::SimpleAsyncConnection;
+
+        use crate::core::events::StateEventType;
+        use crate::core::serde::CanonicalJsonObject;
+        use crate::data::schema::{room_invite_admissions, room_users, rooms};
+        use crate::room::state::{CompressedEvent, CompressedState};
+
+        #[derive(diesel::QueryableByName)]
+        struct Waiting {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            count: i64,
+        }
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        // Pause a real force_state caller in its statistics side effect. Before
+        // the fix, this ran after each committed membership but before the frame.
+        // It must now run only after the complete resolved state is published.
+        data::connect()
+            .await
+            .unwrap()
+            .batch_execute(
+                "CREATE FUNCTION pr517_pause_force_statistics() RETURNS trigger AS $$
+             BEGIN
+               IF NEW.room_id LIKE '!force_atomic_%' THEN
+                 PERFORM pg_advisory_xact_lock(517, 4494);
+               END IF;
+               RETURN NEW;
+             END $$ LANGUAGE plpgsql;
+             CREATE TRIGGER pr517_pause_force_statistics BEFORE INSERT ON stats_room_currents
+             FOR EACH ROW EXECUTE FUNCTION pr517_pause_force_statistics()",
+            )
+            .await
+            .unwrap();
+
+        for (case, stream) in ["public", "invite"].into_iter().flat_map(|case| {
+            [InviteSyncStream::Ordinary, InviteSyncStream::Sliding].map(|stream| (case, stream))
+        }) {
+            let label = format!("{case}_{}", matches!(stream, InviteSyncStream::Sliding));
+            let user: OwnedUserId = format!("@force_atomic_{label}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let inviter: OwnedUserId = format!("@force_atomic_sender_{label}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let shared: OwnedRoomId = format!("!force_atomic_{label}:example.org")
+                .try_into()
+                .unwrap();
+            let target: OwnedRoomId = format!("!force_target_{label}:example.org")
+                .try_into()
+                .unwrap();
+            for room in [&shared, &target] {
+                crate::room::ensure_room(room, &RoomVersionId::V10)
+                    .await
+                    .unwrap();
+            }
+            let mut resolved = CompressedState::new();
+            let mut initial_state = CompressedState::new();
+            for (i, (ty, key, content)) in [
+                (
+                    StateEventType::RoomJoinRules,
+                    String::new(),
+                    json!({"join_rule": if case == "public" { "invite" } else { "public" }}),
+                ),
+                (
+                    StateEventType::RoomMember,
+                    user.to_string(),
+                    json!({"membership": "join"}),
+                ),
+                (
+                    StateEventType::RoomMember,
+                    inviter.to_string(),
+                    json!({"membership": "join"}),
+                ),
+                (
+                    StateEventType::RoomJoinRules,
+                    String::new(),
+                    json!({"join_rule": case}),
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let raw = json!({
+                    "event_id": format!("$force_atomic_{label}_{i}:example.org"), "room_id": shared,
+                    "type": ty, "sender": inviter, "state_key": key,
+                    "content": content, "origin_server_ts": 1, "depth": 1,
+                    "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
+                });
+                let pdu: PduEvent = serde_json::from_value(raw.clone()).unwrap();
+                let canonical: CanonicalJsonObject = serde_json::from_value(raw).unwrap();
+                let (stored, _, guard) = PduBuilder::save_as_outlier(pdu, canonical, &inviter)
+                    .await
+                    .unwrap();
+                let field = state::ensure_field_id(&ty, &key).await.unwrap();
+                let compressed = CompressedEvent::new(field, stored.event_sn);
+                if i == 0 {
+                    initial_state.insert(compressed);
+                } else {
+                    resolved.insert(compressed);
+                }
+                if i == 2 {
+                    initial_state.insert(compressed);
+                    let initial = state::save_state(&shared, Arc::new(initial_state.clone()))
+                        .await
+                        .unwrap();
+                    state::set_room_state(&shared, initial.frame_id)
+                        .await
+                        .unwrap();
+                    diesel::insert_into(room_users::table)
+                        .values(data::room::NewDbRoomUser {
+                            event_id: stored.event_id.clone(),
+                            event_sn: stored.event_sn,
+                            room_id: shared.clone(),
+                            room_server_id: None,
+                            user_id: inviter.clone(),
+                            user_server_id: inviter.server_name().to_owned(),
+                            sender_id: inviter.clone(),
+                            membership: "join".into(),
+                            forgotten: false,
+                            display_name: None,
+                            avatar_url: None,
+                            state_data: None,
+                            created_at: crate::core::UnixMillis::now(),
+                        })
+                        .execute(&mut data::connect().await.unwrap())
+                        .await
+                        .unwrap();
+                }
+                drop(guard);
+            }
+            // The old state has no common joined membership; both complete
+            // states therefore hide the public case. Only the mixed state admits it.
+            let id = diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$force_target_{label}:example.org")
+                        .try_into()
+                        .unwrap(),
+                    event_sn: data::next_sn().await.unwrap(),
+                    room_id: target.clone(),
+                    room_server_id: None,
+                    user_id: user.clone(),
+                    user_server_id: user.server_name().to_owned(),
+                    sender_id: inviter.clone(),
+                    membership: "invite".into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: Some(json!([])),
+                    created_at: crate::core::UnixMillis::now(),
+                })
+                .returning(room_users::id)
+                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+            data::user::set_data(
+                &user,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let cursor = stream.capture_cursor(&user, "FORCE".into()).await.unwrap();
+            assert!(
+                super::invited_rooms_for_sync(&user, 0, "FORCE".into(), cursor)
+                    .await
+                    .unwrap()
+                    .rooms
+                    .is_empty()
+            );
+            let delta = state::save_state(&shared, Arc::new(resolved))
+                .await
+                .unwrap();
+            let mut blocker = data::connect().await.unwrap();
+            blocker
+                .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(517, 4494)")
+                .await
+                .unwrap();
+            let room = shared.clone();
+            let writer = tokio::spawn(async move {
+                state::force_state(&room, delta.frame_id, delta.appended, delta.disposed).await
+            });
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let waiting = diesel::sql_query("SELECT COUNT(*) AS count FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = 517 AND objid = 4494 AND objsubid = 2")
+                        .get_result::<Waiting>(&mut data::connect().await.unwrap()).await.unwrap();
+                    if waiting.count > 0 { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            let snapshot = tokio::time::timeout(
+                Duration::from_secs(2),
+                super::invited_rooms_for_sync(&user, 0, "FORCE".into(), cursor),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            // Release the writer even if an assertion subsequently fails.
+            diesel::sql_query("COMMIT")
+                .execute(&mut blocker)
+                .await
+                .unwrap();
+            writer.await.unwrap().unwrap();
+            assert_eq!(
+                snapshot.rooms.contains_key(&target),
+                case == "invite",
+                "{label}: sync observed a partially published resolved state"
+            );
+            assert_eq!(snapshot.until_sn, cursor);
+            snapshot
+                .record_returned(&snapshot.rooms.keys().map(AsRef::as_ref).collect::<Vec<_>>())
+                .await
+                .unwrap();
+            let admitted = room_invite_admissions::table
+                .find(id)
+                .count()
+                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(admitted, i64::from(case == "invite"));
+            assert_eq!(
+                rooms::table
+                    .find(&shared)
+                    .select(rooms::state_frame_id)
+                    .first::<Option<i64>>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap(),
+                Some(delta.frame_id)
+            );
+
+            // A failed frame publication must roll back the accompanying
+            // membership replacement and its cascading admission deletion.
+            let raw = json!({
+                "event_id": format!("$force_leave_{label}:example.org"), "room_id": target,
+                "type": "m.room.member", "sender": user, "state_key": user,
+                "content": {"membership": "leave"}, "origin_server_ts": 1, "depth": 1,
+                "auth_events": [], "prev_events": [], "hashes": {"sha256": "test"}
+            });
+            let (leave, _, guard) = PduBuilder::save_as_outlier(
+                serde_json::from_value(raw.clone()).unwrap(),
+                serde_json::from_value(raw).unwrap(),
+                &user,
+            )
+            .await
+            .unwrap();
+            let field = state::ensure_field_id(&StateEventType::RoomMember, user.as_str())
+                .await
+                .unwrap();
+            let failed = state::save_state(
+                &target,
+                Arc::new(
+                    [CompressedEvent::new(field, leave.event_sn)]
+                        .into_iter()
+                        .collect(),
+                ),
+            )
+            .await
+            .unwrap();
+            drop(guard);
+            data::connect().await.unwrap().batch_execute(
+                "CREATE FUNCTION pr517_fail_force_frame() RETURNS trigger AS $$
+                 BEGIN IF NEW.id LIKE '!force_target_%' THEN RAISE EXCEPTION 'pr517 test failure'; END IF;
+                 RETURN NEW; END $$ LANGUAGE plpgsql;
+                 CREATE TRIGGER pr517_fail_force_frame BEFORE UPDATE OF state_frame_id ON rooms
+                 FOR EACH ROW EXECUTE FUNCTION pr517_fail_force_frame()"
+            ).await.unwrap();
+            assert!(
+                state::force_state(&target, failed.frame_id, failed.appended, failed.disposed)
+                    .await
+                    .is_err()
+            );
+            data::connect().await.unwrap().batch_execute("DROP TRIGGER pr517_fail_force_frame ON rooms; DROP FUNCTION pr517_fail_force_frame()").await.unwrap();
+            assert_eq!(
+                room_users::table
+                    .find(id)
+                    .select(room_users::membership)
+                    .first::<String>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap(),
+                "invite"
+            );
+            assert_eq!(
+                rooms::table
+                    .find(&target)
+                    .select(rooms::state_frame_id)
+                    .first::<Option<i64>>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                room_invite_admissions::table
+                    .find(id)
+                    .count()
+                    .get_result::<i64>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap(),
+                admitted
+            );
+        }
+        data::connect().await.unwrap().batch_execute("DROP TRIGGER pr517_pause_force_statistics ON stats_room_currents; DROP FUNCTION pr517_pause_force_statistics()").await.unwrap();
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_join_response_import_does_not_publish_historical_memberships() {
+        use std::sync::Arc;
+
+        use diesel::{ExpressionMethods, QueryDsl};
+
+        use crate::core::events::StateEventType;
+        use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
+        use crate::core::serde::{CanonicalJsonObject, to_raw_json_value};
+        use crate::core::signatures::{Ed25519KeyPair, hash_and_sign_event};
+        use crate::data::schema::{events, room_users, rooms};
+        use crate::room::state::{CompressedEvent, CompressedState};
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let room: OwnedRoomId = "!join_import:example.org".try_into().unwrap();
+        let creator: OwnedUserId = "@join_import_creator:example.org".try_into().unwrap();
+        let user: OwnedUserId = "@join_import_user:dynamic.example".try_into().unwrap();
+        crate::room::ensure_room(&room, &RoomVersionId::V10)
+            .await
+            .unwrap();
+        let signing_key =
+            Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "join_import".into())
+                .unwrap();
+        let mut keys = ServerSigningKeys::new(
+            creator.server_name().to_owned(),
+            crate::core::UnixMillis(crate::core::UnixMillis::now().0 + 86_400_000),
+        );
+        keys.verify_keys.insert(
+            "ed25519:join_import".try_into().unwrap(),
+            VerifyKey::from_bytes(signing_key.public_key().to_vec()),
+        );
+        crate::server_key::add_signing_keys(keys).await.unwrap();
+        let rules = crate::room::get_version_rules(&RoomVersionId::V10).unwrap();
+        let mut resolved = CompressedState::new();
+        let mut auth: Vec<OwnedEventId> = Vec::new();
+        let mut prev = Vec::new();
+        for (i, (ty, key, sender, content)) in [
+            (
+                StateEventType::RoomCreate,
+                String::new(),
+                &creator,
+                json!({"creator": creator, "room_version": "10"}),
+            ),
+            (
+                StateEventType::RoomMember,
+                creator.to_string(),
+                &creator,
+                json!({"membership": "join"}),
+            ),
+            (
+                StateEventType::RoomJoinRules,
+                String::new(),
+                &creator,
+                json!({"join_rule": "public"}),
+            ),
+            (
+                StateEventType::RoomMember,
+                user.to_string(),
+                &user,
+                json!({"membership": "join"}),
+            ),
+            (
+                StateEventType::RoomMember,
+                user.to_string(),
+                &user,
+                json!({"membership": "leave"}),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let event_auth: Vec<OwnedEventId> = match i {
+                0 => Vec::new(),
+                1 => vec![auth[0].clone()],
+                2 => vec![auth[0].clone(), auth[1].clone()],
+                3 => vec![auth[0].clone(), auth[2].clone()],
+                4 => vec![auth[0].clone(), auth[3].clone()],
+                _ => unreachable!(),
+            };
+            let raw = json!({
+                "room_id": room, "type": ty, "state_key": key,
+                "sender": sender, "content": content, "origin_server_ts": crate::core::UnixMillis::now(),
+                "depth": i + 1, "auth_events": event_auth, "prev_events": prev,
+            });
+            let mut value: CanonicalJsonObject = serde_json::from_value(raw).unwrap();
+            if sender == &creator {
+                hash_and_sign_event(
+                    creator.server_name().as_str(),
+                    &signing_key,
+                    &mut value,
+                    &rules.redaction,
+                )
+                .unwrap();
+            } else {
+                crate::server_key::hash_and_sign_event(&mut value, &RoomVersionId::V10).unwrap();
+            }
+            let (event, value) = gen_event_id_canonical_json(
+                &to_raw_json_value(&value).unwrap(),
+                &RoomVersionId::V10,
+            )
+            .unwrap();
+            crate::event::handler::process_join_response_pdu(
+                creator.server_name(),
+                &event,
+                &room,
+                &RoomVersionId::V10,
+                value,
+            )
+            .await
+            .unwrap();
+            let stored = timeline::get_pdu(&event).await.unwrap();
+            assert!(
+                stored.rejection_reason.is_none(),
+                "auth-checked join import rejected event {i}"
+            );
+            assert!(
+                !stored.soft_failed,
+                "join import lost its stored predecessors for event {i}"
+            );
+            assert!(
+                events::table
+                    .find(&event)
+                    .select(events::is_outlier)
+                    .first::<bool>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                room_users::table
+                    .filter(room_users::room_id.eq(&room))
+                    .count()
+                    .get_result::<i64>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                rooms::table
+                    .find(&room)
+                    .select(rooms::state_frame_id)
+                    .first::<Option<i64>>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap(),
+                None
+            );
+            let field = state::ensure_field_id(&ty, &key).await.unwrap();
+            // The final state contains leave, while its auth chain contains join.
+            if i != 3 {
+                resolved.insert(CompressedEvent::new(field, stored.event_sn));
+            }
+            auth.push(event.clone());
+            prev = vec![event];
+        }
+        let delta = state::save_state(&room, Arc::new(resolved)).await.unwrap();
+        state::force_state(&room, delta.frame_id, delta.appended, delta.disposed)
+            .await
+            .unwrap();
+        let memberships = room_users::table
+            .filter(room_users::room_id.eq(&room))
+            .select((room_users::user_id, room_users::membership))
+            .load::<(OwnedUserId, String)>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert!(memberships.contains(&(creator.clone(), "join".into())));
+        assert!(memberships.contains(&(user.clone(), "leave".into())));
+        // The actual join is appended against the published returned state.
+        let raw = json!({"event_id": "$join_import_actual:example.org", "room_id": room,
+            "type": "m.room.member", "state_key": user, "sender": user,
+            "content": {"membership": "join"}, "origin_server_ts": 1, "depth": 6,
+            "auth_events": [auth[0], auth[2], auth[4]], "prev_events": prev, "hashes": {"sha256": "test"}});
+        let (join, value, guard) = PduBuilder::save_as_outlier(
+            serde_json::from_value(raw.clone()).unwrap(),
+            serde_json::from_value(raw).unwrap(),
+            &user,
+        )
+        .await
+        .unwrap();
+        timeline::append_pdu(&join, value, &crate::room::lock_state(&room).await)
+            .await
+            .unwrap();
+        drop(guard);
+        assert!(crate::room::user::is_joined(&user, &room).await.unwrap());
+        assert_eq!(
+            crate::room::get_state_content::<
+                crate::core::events::room::join_rule::RoomJoinRulesEventContent,
+            >(&room, &StateEventType::RoomJoinRules, "", None,)
+            .await
+            .unwrap()
+            .join_rule,
+            crate::core::room::JoinRule::Public
+        );
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_invite_writers_wait_for_the_sync_read_phase() {
         use std::sync::Arc;
         use std::time::Duration;

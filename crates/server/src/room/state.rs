@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -60,6 +60,8 @@ pub async fn force_state(
             event_ids.push(id);
         }
     }
+    let mut memberships = Vec::new();
+    let mut invalidate_space = false;
     for event_id in &event_ids {
         let pdu = match timeline::get_pdu(event_id).await {
             Ok(pdu) => pdu,
@@ -88,7 +90,7 @@ pub async fn force_state(
                     Err(_) => continue,
                 };
 
-                membership::update_membership(
+                if let Some(row) = membership::prepare_membership(
                     &pdu.event_id,
                     pdu.event_sn,
                     room_id,
@@ -97,19 +99,42 @@ pub async fn force_state(
                     &pdu.sender,
                     None,
                 )
-                .await?;
+                .await?
+                {
+                    memberships.push(row);
+                }
             }
             TimelineEventType::SpaceChild => {
-                let mut cache = room::space::ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap();
-                cache.remove(&(pdu.room_id.clone(), false));
-                cache.remove(&(pdu.room_id.clone(), true));
+                invalidate_space = true;
             }
             _ => continue,
         }
     }
 
-    set_room_state(room_id, frame_id).await?;
-    if let Err(e) = room::update_currents(room_id).await {
+    // A resolved state is one publication, not a series of independently
+    // committed memberships followed by a frame. Readers must see either state.
+    let users = memberships
+        .iter()
+        .map(|row| row.user_id.clone())
+        .collect::<Vec<_>>();
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            crate::data::user::lock_invite_state_write(conn, &users, room_id).await?;
+            for row in &memberships {
+                membership::replace_membership_with_conn(conn, row).await?;
+            }
+            set_room_state_with_conn(conn, room_id, frame_id).await
+        })
+        .await?;
+    if invalidate_space {
+        let mut cache = room::space::ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap();
+        cache.remove(&(room_id.to_owned(), false));
+        cache.remove(&(room_id.to_owned(), true));
+    }
+    if !memberships.is_empty() {
+        membership::finish_membership_update(room_id).await?;
+    } else if let Err(e) = room::update_currents(room_id).await {
         error!("failed to update statistics for room {room_id}: {e}");
     }
 
@@ -118,18 +143,26 @@ pub async fn force_state(
 
 #[tracing::instrument]
 pub async fn set_room_state(room_id: &RoomId, frame_id: i64) -> AppResult<()> {
-    use diesel_async::AsyncConnection;
     connect()
         .await?
         .transaction::<_, crate::AppError, _>(async |conn| {
             crate::data::user::lock_invite_room_write(conn, room_id).await?;
-            diesel::update(rooms::table.find(room_id))
-                .set(rooms::state_frame_id.eq(frame_id))
-                .execute(conn)
-                .await?;
-            Ok(())
+            set_room_state_with_conn(conn, room_id, frame_id).await
         })
         .await
+}
+
+/// Caller holds the room's exclusive invitation scope until commit.
+async fn set_room_state_with_conn(
+    conn: &mut AsyncPgConnection,
+    room_id: &RoomId,
+    frame_id: i64,
+) -> AppResult<()> {
+    diesel::update(rooms::table.find(room_id))
+        .set(rooms::state_frame_id.eq(frame_id))
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// Generates a new StateHash and associates it with the incoming event.

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use tokio::sync::RwLock;
 
 use crate::core::events::direct::DirectEventContent;
@@ -113,6 +113,34 @@ pub async fn update_membership(
     sender_id: &UserId,
     last_state: Option<Vec<RawJson<AnyStrippedStateEvent>>>,
 ) -> AppResult<()> {
+    if let Some(row) = prepare_membership(
+        event_id, event_sn, room_id, user_id, membership, sender_id, last_state,
+    )
+    .await?
+    {
+        connect()
+            .await?
+            .transaction::<_, AppError, _>(async |conn| {
+                crate::data::user::lock_invite_user_write(conn, user_id).await?;
+                replace_membership_with_conn(conn, &row).await
+            })
+            .await?;
+        finish_membership_update(room_id).await?;
+    }
+    Ok(())
+}
+
+/// Prepare ancillary user/settings changes before taking publication locks.
+/// The returned membership itself is only published by the caller's transaction.
+pub(crate) async fn prepare_membership(
+    event_id: &EventId,
+    event_sn: i64,
+    room_id: &RoomId,
+    user_id: &UserId,
+    membership: MembershipState,
+    sender_id: &UserId,
+    last_state: Option<Vec<RawJson<AnyStrippedStateEvent>>>,
+) -> AppResult<Option<NewDbRoomUser>> {
     let conf = crate::config::get();
     // Keep track what remote users exist by adding them as "deactivated" users
     if user_id.server_name() != conf.server_name && !crate::data::user::user_exists(user_id).await?
@@ -204,43 +232,11 @@ pub async fn update_membership(
                     };
                 }
             }
-            connect()
-                .await?
-                .transaction::<_, AppError, _>(async |conn| {
-                    crate::data::user::lock_invite_user_write(conn, user_id).await?;
-                    diesel::delete(
-                        room_users::table
-                            .filter(room_users::room_id.eq(room_id))
-                            .filter(room_users::user_id.eq(user_id)),
-                    )
-                    .execute(conn)
-                    .await?;
-                    diesel::insert_into(room_users::table)
-                        .values(&NewDbRoomUser {
-                            room_id: room_id.to_owned(),
-                            room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
-                            user_id: user_id.to_owned(),
-                            user_server_id: user_id.server_name().to_owned(),
-                            event_id: event_id.to_owned(),
-                            event_sn,
-                            sender_id: sender_id.to_owned(),
-                            membership: membership.to_string(),
-                            forgotten: false,
-                            display_name: None,
-                            avatar_url: None,
-                            state_data,
-                            created_at: UnixMillis::now(),
-                        })
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-                .await?;
         }
         MembershipState::Invite | MembershipState::Knock => {
             // We want to know if the sender is ignored by the receiver
             if crate::user::user_is_ignored(sender_id, user_id).await {
-                return Ok(());
+                return Ok(None);
             }
             if let Some(last_state) = &last_state {
                 for event in last_state {
@@ -250,75 +246,49 @@ pub async fn update_membership(
                 }
             }
             let _ = ensure_field(&StateEventType::RoomMember, user_id.as_str()).await;
-            connect()
-                .await?
-                .transaction::<_, AppError, _>(async |conn| {
-                    crate::data::user::lock_invite_user_write(conn, user_id).await?;
-                    diesel::delete(
-                        room_users::table
-                            .filter(room_users::room_id.eq(room_id))
-                            .filter(room_users::user_id.eq(user_id)),
-                    )
-                    .execute(conn)
-                    .await?;
-                    diesel::insert_into(room_users::table)
-                        .values(&NewDbRoomUser {
-                            room_id: room_id.to_owned(),
-                            room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
-                            user_id: user_id.to_owned(),
-                            user_server_id: user_id.server_name().to_owned(),
-                            event_id: event_id.to_owned(),
-                            event_sn,
-                            sender_id: sender_id.to_owned(),
-                            membership: membership.to_string(),
-                            forgotten: false,
-                            display_name: None,
-                            avatar_url: None,
-                            state_data,
-                            created_at: UnixMillis::now(),
-                        })
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-                .await?;
         }
-        MembershipState::Leave | MembershipState::Ban => {
-            connect()
-                .await?
-                .transaction::<_, AppError, _>(async |conn| {
-                    crate::data::user::lock_invite_user_write(conn, user_id).await?;
-                    diesel::delete(
-                        room_users::table
-                            .filter(room_users::room_id.eq(room_id))
-                            .filter(room_users::user_id.eq(user_id)),
-                    )
-                    .execute(conn)
-                    .await?;
-                    diesel::insert_into(room_users::table)
-                        .values(&NewDbRoomUser {
-                            room_id: room_id.to_owned(),
-                            room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
-                            user_id: user_id.to_owned(),
-                            user_server_id: user_id.server_name().to_owned(),
-                            event_id: event_id.to_owned(),
-                            event_sn,
-                            sender_id: sender_id.to_owned(),
-                            membership: membership.to_string(),
-                            forgotten: false,
-                            display_name: None,
-                            avatar_url: None,
-                            state_data,
-                            created_at: UnixMillis::now(),
-                        })
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-                .await?;
-        }
-        _ => {}
+        MembershipState::Leave | MembershipState::Ban => {}
+        _ => return Ok(None),
     }
+    Ok(Some(NewDbRoomUser {
+        room_id: room_id.to_owned(),
+        room_server_id: room_id.server_name().ok().map(|v| v.to_owned()),
+        user_id: user_id.to_owned(),
+        user_server_id: user_id.server_name().to_owned(),
+        event_id: event_id.to_owned(),
+        event_sn,
+        sender_id: sender_id.to_owned(),
+        membership: membership.to_string(),
+        forgotten: false,
+        display_name: None,
+        avatar_url: None,
+        state_data,
+        created_at: UnixMillis::now(),
+    }))
+}
+
+/// Caller must hold this user's exclusive invitation scope until commit.
+/// Use the same connection as any accompanying room-frame publication.
+pub(crate) async fn replace_membership_with_conn(
+    conn: &mut AsyncPgConnection,
+    row: &NewDbRoomUser,
+) -> AppResult<()> {
+    diesel::delete(
+        room_users::table
+            .filter(room_users::room_id.eq(&row.room_id))
+            .filter(room_users::user_id.eq(&row.user_id)),
+    )
+    .execute(conn)
+    .await?;
+    diesel::insert_into(room_users::table)
+        .values(row)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Derived statistics and federation side effects run after publication commits.
+pub(crate) async fn finish_membership_update(room_id: &RoomId) -> AppResult<()> {
     crate::room::update_joined_servers(room_id).await?;
     if let Err(e) = crate::room::update_currents(room_id).await {
         error!("failed to update statistics for room {room_id}: {e}");
