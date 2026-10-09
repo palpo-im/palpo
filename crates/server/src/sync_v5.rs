@@ -35,8 +35,8 @@ mod profiles;
 /// Returns the rooms (in input order) that survive the `is_invite`,
 /// `room_types`, `not_room_types`, `is_dm`, and `is_encrypted` filters from
 /// the request. Used by both `process_lists` (which sorts and slices the
-/// result for ops) and the `since_sn > curr_sn` fast path (which only needs
-/// the count).
+/// result for ops) and the `since_sn > curr_sn` fast path (for counts and
+/// deciding whether selected rooms still need delivery).
 async fn compute_active_rooms<'a>(
     list: &sync_events::v5::ReqList,
     all_invited_rooms: &[&'a RoomId],
@@ -650,7 +650,8 @@ pub async fn sync_events(
 
     // Fast path: client's pos is ahead of curr_sn (the typical idle case where
     // a client immediately re-polls with the pos we just handed it). There are
-    // no new events to deliver, but we still emit each requested list's count
+    // no new events to deliver, but selected invitations or profiles may still
+    // need their first delivery. Otherwise emit each requested list's count
     // so sliding-sync clients (matrix-rust-sdk in particular) can compute
     // `fully_loaded` and stop tight-polling. Omitting `count` here makes the
     // SDK skip `update_request_generator_state`, which keeps `fully_loaded`
@@ -660,6 +661,12 @@ pub async fn sync_events(
         let mut res = SyncEventsResBody::new(next_batch.to_string());
         #[cfg(feature = "unstable-msc4262")]
         let profiles_enabled = req_body.extensions.profiles.enabled.unwrap_or(false);
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profiles_enabled = false;
+        let mut invites_owe_delivery = req_body
+            .room_subscriptions
+            .keys()
+            .any(|room_id| invite_snapshot.has_pending_delivery(room_id));
         #[cfg(feature = "unstable-msc4262")]
         let mut listed_rooms = BTreeMap::new();
         #[cfg(feature = "unstable-msc4262")]
@@ -673,8 +680,11 @@ pub async fn sync_events(
                 &dm_rooms,
             )
             .await;
-            #[cfg(feature = "unstable-msc4262")]
-            if profiles_enabled {
+            if profiles_enabled
+                || active_rooms
+                    .iter()
+                    .any(|room_id| invite_snapshot.has_pending_delivery(room_id))
+            {
                 let mut sorted_rooms = active_rooms.clone();
                 sort_rooms_by_activity(&mut sorted_rooms).await?;
                 let mut selected = BTreeSet::new();
@@ -694,8 +704,14 @@ pub async fn sync_events(
                         );
                     }
                 }
-                room_subset.extend(selected.iter().cloned());
-                listed_rooms.insert(list_id.clone(), selected);
+                invites_owe_delivery |= selected
+                    .iter()
+                    .any(|room_id| invite_snapshot.has_pending_delivery(room_id));
+                #[cfg(feature = "unstable-msc4262")]
+                if profiles_enabled {
+                    room_subset.extend(selected.iter().cloned());
+                    listed_rooms.insert(list_id.clone(), selected);
+                }
             }
             res.lists.insert(
                 list_id.clone(),
@@ -730,7 +746,7 @@ pub async fn sync_events(
         #[cfg(not(feature = "unstable-msc4262"))]
         let profiles_owe_snapshot = false;
 
-        if !profiles_owe_snapshot {
+        if !profiles_owe_snapshot && !invites_owe_delivery {
             return Ok(res);
         }
     }
@@ -2141,6 +2157,189 @@ mod tests {
     #[cfg(feature = "unstable-msc4494")]
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_sliding_sync_delivers_late_invite_at_an_idle_cursor() {
+        use serde_json::json;
+
+        use super::*;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let inviter: OwnedUserId = "@sliding_idle_sender:example.org".try_into().unwrap();
+        let device: OwnedDeviceId = "IDLE".into();
+        for mode in [
+            "range",
+            "default",
+            "subscription",
+            "joined",
+            "outside",
+            "empty",
+        ] {
+            let recipient: OwnedUserId = format!("@sliding_idle_{mode}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let mut targets = Vec::new();
+            for i in 0..3 {
+                let room = rid(&format!("!sliding_idle_{mode}_{i}:example.org"));
+                diesel::insert_into(rooms::table)
+                    .values(data::room::NewDbRoom {
+                        id: room.clone(),
+                        version: "11".into(),
+                        is_public: false,
+                        min_depth: 0,
+                        has_auth_chain_index: false,
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(data::room::NewDbRoomUser {
+                        event_id: format!("$sliding_idle_{mode}_{i}:example.org")
+                            .try_into()
+                            .unwrap(),
+                        event_sn: data::next_sn().await.unwrap(),
+                        room_id: room.clone(),
+                        room_server_id: None,
+                        user_id: recipient.clone(),
+                        user_server_id: recipient.server_name().to_owned(),
+                        sender_id: inviter.clone(),
+                        membership: "invite".into(),
+                        forgotten: false,
+                        display_name: None,
+                        avatar_url: None,
+                        state_data: Some(json!([])),
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                targets.push(room);
+            }
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "allow"}),
+            )
+            .await
+            .unwrap();
+            let early = crate::membership::invited_rooms_for_sync(
+                &recipient,
+                0,
+                "EARLY".into(),
+                data::curr_sn().await.unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(early.rooms.len(), 3);
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let body: SyncEventsReqBody = serde_json::from_value(match mode {
+                "range" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[1, 1]], "filters": {"is_invite": true}}}}),
+                "default" => json!({"lists": {"main": {"timeline_limit": 0, "filters": {"is_invite": true}}}}),
+                "subscription" => json!({"room_subscriptions": {targets[0].as_str(): {"timeline_limit": 0}}}),
+                "joined" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": false}}}}),
+                "outside" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[3, 3]], "filters": {"is_invite": true}}}}),
+                "empty" => json!({}),
+                _ => unreachable!(),
+            }).unwrap();
+            let hidden = sync_events(&recipient, &device, 0, &body, &KnownRooms::new())
+                .await
+                .unwrap();
+            assert!(hidden.rooms.is_empty(), "{mode}: initially ineligible");
+            let idle_sn = data::curr_sn().await.unwrap();
+            assert_eq!(hidden.pos, (idle_sn + 1).to_string());
+
+            // Another device finishes its earlier response after this client has
+            // reached the idle token. Admission does not allocate a stream position.
+            early
+                .record_returned(&targets.iter().map(AsRef::as_ref).collect::<Vec<_>>())
+                .await
+                .unwrap();
+            assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
+            let recovered =
+                sync_events(&recipient, &device, idle_sn + 1, &body, &KnownRooms::new())
+                    .await
+                    .unwrap();
+            let expected: BTreeSet<_> = match mode {
+                "range" => [targets[1].clone()].into(),
+                "default" => targets.iter().cloned().collect(),
+                "subscription" => [targets[0].clone()].into(),
+                _ => BTreeSet::new(),
+            };
+            assert_eq!(
+                recovered.rooms.keys().cloned().collect::<BTreeSet<_>>(),
+                expected,
+                "{mode}: idle delivery must respect selection"
+            );
+            assert!(
+                recovered
+                    .rooms
+                    .values()
+                    .all(|room| room.invite_state.is_some())
+            );
+            assert_eq!(
+                recovered.is_empty_for_long_poll(),
+                expected.is_empty(),
+                "{mode}: selected invitations must return without waiting"
+            );
+            assert_eq!(recovered.pos, hidden.pos);
+            assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
+            let delivered = room_users::table
+                .inner_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(&recipient))
+                .select((
+                    room_users::room_id,
+                    room_invite_admissions::delivered_devices,
+                ))
+                .load::<(OwnedRoomId, serde_json::Value)>(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(delivered.len(), 3);
+            for (room, devices) in delivered {
+                assert_eq!(devices["EARLY"], json!(early.until_sn));
+                assert_eq!(
+                    devices.get("IDLE"),
+                    expected.contains(&room).then_some(&json!(idle_sn)),
+                    "{mode}: record only the invitations actually returned"
+                );
+            }
+
+            // Other invitations can remain pending outside this request's selection.
+            // They must not force another full response or restamp this delivery.
+            let repeated = sync_events(&recipient, &device, idle_sn + 1, &body, &KnownRooms::new())
+                .await
+                .unwrap();
+            assert!(
+                repeated.rooms.is_empty(),
+                "{mode}: no repeated idle delivery"
+            );
+            assert!(repeated.lists.values().all(|list| list.ops.is_empty()));
+            assert_eq!(repeated.pos, hidden.pos);
+            assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
+            for (list_id, list) in &recovered.lists {
+                assert_eq!(repeated.lists[list_id].count, list.count);
+            }
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_sliding_sync_admits_only_returned_invites() {
         use serde_json::json;
 
@@ -2236,11 +2435,12 @@ mod tests {
                 .filter(|(_, room)| room.invite_state.is_some())
                 .map(|(id, _)| id.clone())
                 .collect();
-            assert_eq!(
-                returned.len(),
-                usize::from(matches!(mode, "range" | "subscription")),
-                "{mode}"
-            );
+            let expected_count = if mode == "idle" {
+                3
+            } else {
+                usize::from(matches!(mode, "range" | "subscription"))
+            };
+            assert_eq!(returned.len(), expected_count, "{mode}");
             if mode == "stale" {
                 // Preparing an invite must not authorize its replacement while rendering.
                 let snapshot = crate::membership::invited_rooms_for_sync(

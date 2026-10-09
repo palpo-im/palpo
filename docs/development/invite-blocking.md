@@ -86,6 +86,12 @@ token while the event stream is idle. Current state or a delayed admission can c
 without a new sequence allocation. The response may retain that same token while
 delivering an invitation once; this device's delivery record then prevents repeats.
 More distant future tokens keep the existing early-return behavior.
+Sliding sync also checks first-delivery obligations before returning an idle,
+count-only response. An invitation selected by a list's filters and inclusive
+range, or by an explicit room subscription, bypasses that return if this device
+has not received it. Rendering and recording still use the captured invitation
+identity and the original cursor. Invitations outside the request's selection
+remain unrecorded and do not prevent later count-only idle responses.
 Global admission preserves the user's visibility decision; first delivery is
 recorded separately for each device. An unseen device receives an admitted invite
 even if another device's delayed admission commits behind its cursor. Once that

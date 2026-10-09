@@ -99,6 +99,19 @@ pub(crate) struct InviteSyncSnapshot {
 }
 
 impl InviteSyncSnapshot {
+    /// First delivery is owed independently of whether the event cursor advanced.
+    pub(crate) fn has_pending_delivery(&self, room_id: &RoomId) -> bool {
+        #[cfg(feature = "unstable-msc4494")]
+        {
+            self.pending_admissions.contains_key(room_id)
+        }
+        #[cfg(not(feature = "unstable-msc4494"))]
+        {
+            let _ = room_id;
+            false
+        }
+    }
+
     pub(crate) async fn record_returned(&self, room_ids: &[&RoomId]) -> AppResult<()> {
         #[cfg(feature = "unstable-msc4494")]
         {
