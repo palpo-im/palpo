@@ -261,6 +261,9 @@ pub async fn append_pdu(
     mut pdu_json: CanonicalJsonObject,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<()> {
+    if pdu.is_backfill {
+        return append_backfilled_pdu(pdu, pdu_json).await;
+    }
     let conf = crate::config::get();
 
     // Make unsigned fields correct. This is not properly documented in the spec, but state
@@ -274,13 +277,18 @@ pub async fn append_pdu(
             // Third arm (`canonicalize_prev_content`) emits a WARN and yields
             // None when stored prev state has non-canonical JSON; in that case
             // we skip the whole prev_* trio rather than panic.
-            if let Ok(state_frame_id) = state::get_pdu_frame_id(&pdu.event_id).await
-                && let Ok(prev_state) = state::get_state(
-                    state_frame_id - 1,
-                    &pdu.event_ty.to_string().into(),
-                    state_key,
-                )
-                .await
+            let before_frame = match state::get_pdu_before_frame_id(&pdu.event_id).await {
+                Ok(frame) => Some(frame),
+                // Local events have not had their after-state appended yet.
+                Err(error) if error.is_not_found() => {
+                    state::get_room_frame_id(&pdu.room_id, None).await.ok()
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(state_frame_id) = before_frame
+                && let Ok(prev_state) =
+                    state::get_state(state_frame_id, &pdu.event_ty.to_string().into(), state_key)
+                        .await
                 && let Some(prev_content_obj) = canonicalize_prev_content(
                     &prev_state.content,
                     &pdu.event_id,

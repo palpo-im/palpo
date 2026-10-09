@@ -576,11 +576,12 @@ async fn select_edus_device_changes(
 
             // Empty prev id forces synapse to resync; because synapse resyncs,
             // we can just insert placeholder data
+            let stream_id = data::user::key::device_list_stream_id(&user_id).await? as u64;
             let edu = Edu::DeviceListUpdate(DeviceListUpdateContent {
                 user_id,
                 device_id: device_id!("placeholder").to_owned(),
                 device_display_name: Some("Placeholder".to_owned()),
-                stream_id: 1,
+                stream_id,
                 prev_id: Vec::new(),
                 deleted: None,
                 keys: None,

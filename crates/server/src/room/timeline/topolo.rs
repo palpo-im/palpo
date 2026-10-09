@@ -71,6 +71,8 @@ pub async fn load_pdus(
     while list.len() < limit {
         let mut query = events::table
             .filter(events::room_id.eq(room_id))
+            .filter(events::is_outlier.eq(false))
+            .filter(events::soft_failed.eq(false))
             .into_boxed();
 
         // Live sync tokens contain the next stream position, so their bounds form a

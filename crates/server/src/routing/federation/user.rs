@@ -12,7 +12,7 @@ use crate::core::federation::key::{
 use crate::core::identifiers::*;
 use crate::data::connect;
 use crate::data::schema::*;
-use crate::{AppError, AuthArgs, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok};
+use crate::{AuthArgs, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok};
 
 pub fn router() -> Router {
     Router::with_path("user")
@@ -71,14 +71,7 @@ async fn get_devices(
 ) -> JsonResult<DevicesResBody> {
     let origin = depot.origin()?;
     let user_id = user_id.into_inner();
-    let stream_id = device_streams::table
-        .filter(device_streams::user_id.eq(&user_id))
-        .select(device_streams::id)
-        .order_by(device_streams::id.desc())
-        .first::<i64>(&mut connect().await?)
-        .await
-        .optional()?
-        .unwrap_or_default();
+    let stream_id = data::user::key::device_list_stream_id(&user_id).await?;
 
     let mut devices = vec![];
     let devices_and_names = user_devices::table
@@ -87,10 +80,13 @@ async fn get_devices(
         .load::<(OwnedDeviceId, Option<String>)>(&mut connect().await?)
         .await?;
     for (device_id, display_name) in devices_and_names {
+        // A login creates its device before uploading identity keys. It must
+        // not make the whole user's federation device list unavailable.
+        let Some(keys) = data::user::get_device_keys_and_sigs(&user_id, &device_id).await? else {
+            continue;
+        };
         devices.push(Device {
-            keys: data::user::get_device_keys_and_sigs(&user_id, &device_id)
-                .await?
-                .ok_or_else(|| AppError::public("server keys not found"))?,
+            keys,
             device_id,
             device_display_name: display_name,
         })

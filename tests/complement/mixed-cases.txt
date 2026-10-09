@@ -29,6 +29,7 @@ tests TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room
 # History visibility and backfill across real homeservers.
 tests/csapi TestMessagesOverFederation
 # Palpo-owned scenarios, copied into the Complement checkout by the runner.
+tests/palpo_mixed TestMixedHomeserverImages
 tests/palpo_mixed TestMixedFederationAuthentication
 tests/palpo_mixed TestMixedPublicRooms
 tests/palpo_mixed TestMixedRemoteProfile

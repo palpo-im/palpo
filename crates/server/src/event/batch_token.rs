@@ -3,6 +3,68 @@ use std::str::FromStr;
 use crate::MatrixError;
 use crate::core::Seqnum;
 
+/// Sync-only response identities never change the event stream component.
+pub(crate) fn split_sync_token(input: &str) -> Result<(&str, Option<i64>), MatrixError> {
+    let mut parts = input.split('_');
+    let base = parts.next().unwrap_or_default();
+    let mut invite = None;
+    let mut window_seen = false;
+    for part in parts {
+        if let Some(id) = part.strip_prefix('i') {
+            let id =
+                id.parse::<i64>().ok().filter(|id| *id > 0).ok_or_else(|| {
+                    MatrixError::invalid_param("invalid invitation delivery token")
+                })?;
+            if invite.replace(id).is_some() {
+                return Err(MatrixError::invalid_param(
+                    "duplicate invitation delivery token",
+                ));
+            }
+        } else if let Some(id) = part.strip_prefix('w')
+            && !window_seen
+            && !id.is_empty()
+            && id.len() <= 64
+            && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            window_seen = true;
+        } else {
+            return Err(MatrixError::invalid_param("invalid sync response token"));
+        }
+    }
+    Ok((base, invite))
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SyncPosition {
+    pub(crate) event_sn: Seqnum,
+    pub(crate) invite_batch: Option<i64>,
+    pub(crate) original: Option<String>,
+}
+
+impl From<Seqnum> for SyncPosition {
+    fn from(event_sn: Seqnum) -> Self {
+        Self {
+            event_sn,
+            ..Self::default()
+        }
+    }
+}
+
+impl FromStr for SyncPosition {
+    type Err = MatrixError;
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let (base, invite_batch) = split_sync_token(input)?;
+        let event_sn = base
+            .parse()
+            .map_err(|_| MatrixError::invalid_param("invalid sync position"))?;
+        Ok(Self {
+            event_sn,
+            invite_batch,
+            original: Some(input.to_owned()),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatchToken {
     Live {
@@ -78,6 +140,7 @@ impl BatchToken {
 impl FromStr for BatchToken {
     type Err = MatrixError;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let (input, _) = split_sync_token(input)?;
         if let Some(stripped) = input.strip_prefix('s') {
             let stream_ordering: Seqnum = stripped.parse().map_err(|_| {
                 MatrixError::invalid_param("invalid batch token: cannot parse stream ordering")
@@ -166,5 +229,26 @@ mod tests {
     fn rejects_non_numeric_garbage() {
         assert!("garbage".parse::<BatchToken>().is_err());
         assert!("".parse::<BatchToken>().is_err());
+    }
+
+    #[test]
+    fn response_markers_preserve_the_event_cursor() {
+        let live: BatchToken = "s42_i19".parse().unwrap();
+        assert_eq!(live, BatchToken::new_live(42));
+        let sliding: SyncPosition = "42_i19_wWindow123".parse().unwrap();
+        assert_eq!(sliding.event_sn, 42);
+        assert_eq!(sliding.invite_batch, Some(19));
+        assert_eq!(sliding.original.as_deref(), Some("42_i19_wWindow123"));
+        for invalid in [
+            "42_i0",
+            "42_i-1",
+            "42_i19_i20",
+            "42_w",
+            "42_wA_wB",
+            "42_x1",
+            "42_i99999999999999999999",
+        ] {
+            assert!(invalid.parse::<SyncPosition>().is_err(), "{invalid}");
+        }
     }
 }

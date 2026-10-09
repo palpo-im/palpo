@@ -28,14 +28,11 @@ async fn get_backfill(
     let origin = depot.origin()?;
     debug!("got backfill request from: {}", origin);
 
-    let seed_prev_ids = event_edges::table
-        .filter(event_edges::event_id.eq_any(&args.v))
-        .select(event_edges::prev_id)
-        .load::<OwnedEventId>(&mut connect().await?)
-        .await?;
-
+    // Federation backfill includes the requested seeds. Starting at their
+    // parents skips the missing extremity itself at every page boundary.
     let seeds = events::table
-        .filter(events::id.eq_any(seed_prev_ids))
+        .filter(events::id.eq_any(&args.v))
+        .filter(events::room_id.eq(&args.room_id))
         .select((events::id, events::depth))
         .load::<(OwnedEventId, i64)>(&mut connect().await?)
         .await?;

@@ -58,6 +58,13 @@ pub async fn sync_events(
     } else {
         None
     };
+    let invite_batch = args
+        .since
+        .as_deref()
+        .map(crate::event::split_sync_token)
+        .transpose()?
+        .and_then(|(_, batch)| batch);
+    crate::membership::acknowledge_invite_delivery(sender_id, device_id, invite_batch).await?;
     // Capture invitations before constructing any stream-bounded response data.
     // Current invitation eligibility must not advance the original stream window.
     let mut invite_snapshot = crate::membership::invited_rooms_for_sync(
@@ -402,7 +409,7 @@ pub async fn sync_events(
         .await?,
     };
 
-    let res_body = SyncEventsResBody {
+    let mut res_body = SyncEventsResBody {
         next_batch: next_batch.to_string(),
         rooms,
         presence,
@@ -417,7 +424,7 @@ pub async fn sync_events(
         // Fallback keys are not yet supported
         device_unused_fallback_key_types: None,
     };
-    invite_snapshot
+    let delivery = invite_snapshot
         .record_returned(
             &res_body
                 .rooms
@@ -427,6 +434,9 @@ pub async fn sync_events(
                 .collect::<Vec<_>>(),
         )
         .await?;
+    if let Some(delivery) = delivery {
+        res_body.next_batch.push_str(&format!("_i{delivery}"));
+    }
     Ok(res_body)
 }
 
@@ -494,12 +504,12 @@ async fn load_joined_room(
         .await
         {
             Ok(filled_events) if !filled_events.is_empty() => {
-                timeline = load_timeline_around_join(
+                timeline = load_timeline_with_backfilled_history(
                     sender_id,
                     room_id,
-                    // Backward live bounds are exclusive. Keep our own join in the
-                    // replacement timeline after filling remote room history.
-                    join_sn,
+                    // Keep every live event in this captured response window,
+                    // including profile updates committed after the join.
+                    next_batch,
                     Some(&filter.room.timeline),
                 )
                 .await?;
@@ -852,10 +862,7 @@ async fn load_joined_room(
                                     .await?
                                     .is_empty()
                                 {
-                                    // if user_id.is_local() {
-                                    // check for test TestDeviceListsUpdateOverFederation
-                                    // device_list_updates.insert(user_id.clone());
-                                    // }
+                                    device_list_updates.insert(user_id.clone());
                                     joined_users.insert(user_id);
                                 }
                             }
@@ -1270,18 +1277,17 @@ fn timeline_contains_own_join(timeline: &TimelineData, user_id: &UserId) -> bool
     })
 }
 
-async fn load_timeline_around_join(
+async fn load_timeline_with_backfilled_history(
     user_id: &UserId,
     room_id: &RoomId,
-    join_sn: Seqnum,
+    until: BatchToken,
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
     let limit = filter.and_then(|f| f.limit).unwrap_or(10);
     let mut timeline_pdus = timeline::topolo::load_pdus_backward(
         Some(user_id),
         room_id,
-        // Live bounds are exclusive. Keep the join in the replacement timeline.
-        Some(BatchToken::new_live(join_sn.saturating_add(1))),
+        Some(until),
         None,
         filter,
         limit + 1,
@@ -1597,9 +1603,18 @@ mod pagination_database_tests {
         .await
         .unwrap();
         assert_eq!(reverse.keys().copied().collect::<Vec<_>>(), vec![102, 101]);
-        let recovered = load_timeline_around_join(&join.sender, &join.room_id, join.event_sn, None)
-            .await
-            .unwrap();
+        let profile = save_event("$page-profile", 104, 4, true).await;
+        save_event("$page-future-profile", 105, 5, true).await;
+        let recovered = load_timeline_with_backfilled_history(
+            &join.sender,
+            &join.room_id,
+            BatchToken::new_live(105),
+            None,
+        )
+        .await
+        .unwrap();
         assert!(timeline_contains_own_join(&recovered, &join.sender));
+        assert!(recovered.events.contains_key(&profile.event_sn));
+        assert!(!recovered.events.contains_key(&105));
     }
 }

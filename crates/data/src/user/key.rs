@@ -577,6 +577,16 @@ pub async fn claim_one_time_key(
     }
 }
 
+/// The persisted revision used by device-list EDUs and federation resyncs.
+pub async fn device_list_stream_id(user_id: &UserId) -> DataResult<Seqnum> {
+    Ok(device_streams::table
+        .filter(device_streams::user_id.eq(user_id))
+        .select(diesel::dsl::max(device_streams::id))
+        .first::<Option<i64>>(&mut connect().await?)
+        .await?
+        .unwrap_or_default())
+}
+
 /// Replace the key-change marker for a `(user, room)` (or global when
 /// `change.room_id` is `None`) with a fresh row.
 pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {

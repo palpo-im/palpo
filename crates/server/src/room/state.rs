@@ -52,8 +52,41 @@ pub async fn force_state(
     room_id: &RoomId,
     frame_id: i64,
     appended: Arc<CompressedState>,
-    _disposed_data: Arc<CompressedState>,
+    disposed: Arc<CompressedState>,
 ) -> AppResult<()> {
+    force_state_inner(room_id, frame_id, appended, disposed, None)
+        .await
+        .map(|_| ())
+}
+
+/// Without participating room state, only the original inviter can rescind an
+/// out-of-band invitation. Check the current invitation inside the publication
+/// transaction so a concurrent replacement cannot inherit an older decision.
+pub(crate) async fn force_state_for_invite_withdrawal(
+    room_id: &RoomId,
+    frame_id: i64,
+    appended: Arc<CompressedState>,
+    disposed: Arc<CompressedState>,
+    invitee: &UserId,
+    sender: &UserId,
+) -> AppResult<bool> {
+    force_state_inner(
+        room_id,
+        frame_id,
+        appended,
+        disposed,
+        Some((invitee, sender)),
+    )
+    .await
+}
+
+async fn force_state_inner(
+    room_id: &RoomId,
+    frame_id: i64,
+    appended: Arc<CompressedState>,
+    _disposed: Arc<CompressedState>,
+    withdrawal: Option<(&UserId, &UserId)>,
+) -> AppResult<bool> {
     let mut event_ids = Vec::new();
     for new in appended.iter() {
         if let Ok((_, id)) = new.split().await {
@@ -113,20 +146,50 @@ pub async fn force_state(
 
     // A resolved state is one publication, not a series of independently
     // committed memberships followed by a frame. Readers must see either state.
-    let users = memberships
+    let mut users = memberships
         .iter()
         .map(|row| row.user_id.clone())
         .collect::<Vec<_>>();
-    connect()
+    if let Some((invitee, _)) = withdrawal {
+        users.push(invitee.to_owned());
+    }
+    let published = connect()
         .await?
         .transaction::<_, AppError, _>(async |conn| {
             crate::data::user::lock_invite_state_write(conn, &users, room_id).await?;
+            if let Some((invitee, sender)) = withdrawal {
+                let joined = room_users::table
+                    .filter(room_users::room_id.eq(room_id))
+                    .filter(room_users::user_server_id.eq(crate::config::server_name()))
+                    .filter(room_users::membership.eq("join"));
+                let participating = diesel::select(diesel::dsl::exists(joined))
+                    .get_result::<bool>(conn)
+                    .await?;
+                let current = room_users::table
+                    .filter(room_users::room_id.eq(room_id))
+                    .filter(room_users::user_id.eq(invitee))
+                    .select((room_users::membership, room_users::sender_id))
+                    .first::<(String, OwnedUserId)>(conn)
+                    .await
+                    .optional()?;
+                if !participating
+                    && current.is_some_and(|(membership, inviter)| {
+                        membership == "invite" && inviter != sender
+                    })
+                {
+                    return Ok(false);
+                }
+            }
             for row in &memberships {
                 membership::replace_membership_with_conn(conn, row).await?;
             }
-            set_room_state_with_conn(conn, room_id, frame_id).await
+            set_room_state_with_conn(conn, room_id, frame_id).await?;
+            Ok(true)
         })
         .await?;
+    if !published {
+        return Ok(false);
+    }
     if invalidate_space {
         let mut cache = room::space::ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap();
         cache.remove(&(room_id.to_owned(), false));
@@ -138,7 +201,7 @@ pub async fn force_state(
         error!("failed to update statistics for room {room_id}: {e}");
     }
 
-    Ok(())
+    Ok(true)
 }
 
 #[tracing::instrument]

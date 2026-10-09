@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -49,6 +49,7 @@ pub async fn backfill_if_required(
         }
         let existing: Vec<OwnedEventId> = events::table
             .filter(events::id.eq_any(&pdu.prev_events))
+            .filter(events::is_outlier.eq(false))
             .select(events::id)
             .load(&mut connect().await?)
             .await?;
@@ -92,6 +93,7 @@ pub async fn backfill_if_required(
             }
             let existing: Vec<OwnedEventId> = events::table
                 .filter(events::id.eq_any(&pdu.prev_events))
+                .filter(events::is_outlier.eq(false))
                 .select(events::id)
                 .load(&mut connect().await?)
                 .await?;
@@ -147,10 +149,22 @@ pub async fn backfill_from_extremities(
     extremities: &[OwnedEventId],
     _limit: usize,
 ) -> AppResult<Vec<SnPduEvent>> {
-    let admin_servers = room::admin_servers(room_id, false).await?;
+    let mut backfill_servers = match room::admin_servers(room_id, false).await {
+        Ok(servers) => servers,
+        Err(error) if error.is_not_found() => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    // History can come from any participating server. In room v12 the
+    // creator's power is implicit, so the explicit power-level user map may
+    // contain no administrator candidates at all.
+    for server in room::participating_servers(room_id, false).await? {
+        if !backfill_servers.contains(&server) {
+            backfill_servers.push(server);
+        }
+    }
     let room_version = room::get_version(room_id).await?;
 
-    for backfill_server in &admin_servers {
+    for backfill_server in &backfill_servers {
         info!("asking {backfill_server} for backfill from extremities");
         let request = backfill_request(
             &backfill_server.origin().await,
@@ -166,11 +180,12 @@ pub async fn backfill_from_extremities(
             },
         )?
         .into_inner();
-        match crate::sending::send_federation_request(backfill_server, request, None)
-            .await?
-            .json::<BackfillResBody>()
-            .await
-        {
+        let response =
+            match crate::sending::send_federation_request(backfill_server, request, None).await {
+                Ok(response) => response.json::<BackfillResBody>().await.map_err(Into::into),
+                Err(error) => Err(error),
+            };
+        match response {
             Ok(response) => {
                 let mut events = Vec::new();
                 let pdus = response
@@ -221,7 +236,7 @@ pub async fn backfill_pdu(
 ) -> AppResult<(SnPduEvent, CanonicalJsonObject)> {
     let (event_id, value) = parse_fetched_pdu(room_id, room_version, &pdu)?;
     // Skip the PDU if we already have it as a timeline event
-    if let Ok(pdu) = super::get_pdu(&event_id).await {
+    if let Some(pdu) = super::get_non_outlier_pdu(&event_id).await? {
         info!("we already know {event_id}, skipping backfill");
         let value = super::get_pdu_json(&event_id)
             .await?
@@ -248,4 +263,108 @@ pub async fn backfill_pdu(
     }
 
     Ok((pdu, value))
+}
+
+/// History joins the timeline without publishing its old memberships or room
+/// state, generating notifications, executing commands, or extending stickiness.
+pub(crate) async fn append_backfilled_pdu(
+    pdu: &SnPduEvent,
+    json: CanonicalJsonObject,
+) -> AppResult<()> {
+    let before = room::state::get_pdu_before_frame_id(&pdu.event_id).await?;
+    let after = if let Some(key) = &pdu.state_key {
+        let field = room::state::ensure_field_id(&pdu.event_ty.to_string().into(), key).await?;
+        let mut state = room::state::get_full_state_ids(before).await?;
+        state.insert(field, pdu.event_id.clone());
+        let mut compressed = room::state::CompressedState::new();
+        for (field, id) in state {
+            let event = super::get_pdu(&id).await?;
+            compressed.insert(room::state::CompressedEvent::new(field, event.event_sn));
+        }
+        let hash = crate::utils::hash_keys(compressed.iter().map(|event| &event[..]));
+        match room::state::get_frame_id(&pdu.room_id, &hash).await {
+            Ok(frame) => frame,
+            Err(error) if error.is_not_found() => {
+                let frame = room::state::ensure_frame(&pdu.room_id, hash).await?;
+                room::state::save_state_delta(
+                    &pdu.room_id,
+                    frame,
+                    room::state::StateDiff {
+                        parent_id: None,
+                        appended: std::sync::Arc::new(compressed),
+                        disposed: std::sync::Arc::new(room::state::CompressedState::new()),
+                    },
+                )
+                .await?;
+                frame
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        before
+    };
+    let data = crate::data::room::DbEventData {
+        event_id: pdu.event_id.clone(),
+        event_sn: pdu.event_sn,
+        room_id: pdu.room_id.clone(),
+        internal_metadata: None,
+        json_data: serde_json::to_value(&json)?,
+        format_version: None,
+    };
+    let promoted = connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            let (outlier, rejected) = events::table
+                .find(&pdu.event_id)
+                .select((events::is_outlier, events::is_rejected))
+                .for_update()
+                .first::<(bool, bool)>(conn)
+                .await?;
+            if rejected {
+                return Err(AppError::internal(
+                    "cannot promote a rejected backfill event",
+                ));
+            }
+            if !outlier {
+                return Ok(false);
+            }
+            diesel::update(event_points::table.find(&pdu.event_id))
+                .set(event_points::frame_id.eq(after))
+                .execute(conn)
+                .await?;
+            data.save_with_conn(conn).await?;
+            diesel::update(events::table.find(&pdu.event_id))
+                .set((
+                    events::is_outlier.eq(false),
+                    events::soft_failed.eq(false),
+                    events::stream_ordering.eq(-pdu.event_sn.abs()),
+                ))
+                .execute(conn)
+                .await?;
+            diesel::delete(
+                event_stickies::table.filter(event_stickies::event_id.eq(&pdu.event_id)),
+            )
+            .execute(conn)
+            .await?;
+            Ok(true)
+        })
+        .await?;
+    if promoted {
+        for prev in &pdu.prev_events {
+            crate::data::room::NewDbEventEdge {
+                room_id: pdu.room_id.clone(),
+                event_depth: pdu.depth as i64,
+                event_id: pdu.event_id.clone(),
+                event_sn: pdu.event_sn,
+                prev_id: prev.clone(),
+            }
+            .save()
+            .await?;
+        }
+        crate::event::search::save_pdu(pdu, &json).await?;
+        let mut promoted = pdu.clone();
+        promoted.is_outlier = false;
+        room::state::update_backward_extremities(&promoted).await?;
+    }
+    Ok(())
 }

@@ -141,31 +141,22 @@ async fn leave_room_remote(
         .filter_map(|sender| sender.as_str().map(|s| s.to_owned()))
         .filter_map(|sender| UserId::parse(sender).ok())
         .map(|user| user.server_name().to_owned())
+        .filter(|server| server != config::server_name())
         .collect();
 
     for remote_server in servers {
-        let request = make_leave_request(
-            &room_id
-                .server_name()
-                .map_err(AppError::internal)?
-                .origin()
-                .await,
-            room_id,
-            user_id,
-        )?
-        .into_inner();
-        let make_leave_response = crate::sending::send_federation_request(
-            room_id.server_name().map_err(AppError::internal)?,
-            request,
-            None,
-        )
-        .await?
-        .json::<MakeLeaveResBody>()
-        .await;
+        let request =
+            make_leave_request(&remote_server.origin().await, room_id, user_id)?.into_inner();
+        let make_leave_response =
+            match crate::sending::send_federation_request(&remote_server, request, None).await {
+                Ok(response) => response
+                    .json::<MakeLeaveResBody>()
+                    .await
+                    .map_err(Into::into),
+                Err(error) => Err(error),
+            };
 
-        make_leave_response_and_server = make_leave_response
-            .map(|r| (r, remote_server))
-            .map_err(Into::into);
+        make_leave_response_and_server = make_leave_response.map(|r| (r, remote_server));
 
         if make_leave_response_and_server.is_ok() {
             break;
@@ -220,7 +211,7 @@ async fn leave_room_remote(
     NewDbEvent {
         id: event_id.to_owned(),
         sn: event_sn,
-        ty: MembershipState::Leave.to_string(),
+        ty: TimelineEventType::RoomMember.to_string(),
         room_id: room_id.to_owned(),
         unrecognized_keys: None,
         depth: 0,

@@ -91,31 +91,72 @@ the captured decision do not revoke an invitation selected from that decision.
 Stream reads, next tokens and first-delivery records all retain the original boundary.
 With MSC4494 enabled, v3 still evaluates invitations for the normal `C + 1` next
 token while the event stream is idle. Current state or a delayed admission can change
-without a new sequence allocation. The response may retain that same token while
-delivering an invitation once; this device's delivery record then prevents repeats.
+without a new sequence allocation. The event component stays at `C + 1`; an
+independent `_i<batch>` response identity distinguishes newly offered invitations.
+Constructing or sending a response does not acknowledge it. Requests repeating the
+old token replay unconfirmed invitations; requests echoing the offered token confirm
+only that response's selected membership IDs for that user and device.
 More distant future tokens keep the existing early-return behavior.
 Sliding sync checks both first-delivery obligations and list positions before
 returning an idle, count-only response. It compares the filtered, sorted requested
-ranges against each connection's last complete response, preserving exact indices
+ranges against each connection's last acknowledged response, preserving exact indices
 and order. An invitation becoming visible outside a range can displace rooms inside
 it without allocating a sequence number. That range still receives new `SYNC` ops,
 even when its newly selected rooms were already delivered to this device. The
-connection's JSON cache persists these windows across instances; older cache rows
-default to unknown windows and receive one refresh. All builds preserve and record
-the windows after successfully constructing a complete response. Count-only
-responses do not replace them. The handler compares returned ops with the preceding
+connection's JSON cache persists these windows across instances; older caches
+that tracked offered windows receive one refresh before using acknowledgements.
+All builds preserve and record
+the windows. With MSC4494 enabled, changed windows receive an independent `_w`
+response identity and remain pending until that exact token returns. Lost responses
+and retries on another instance refresh the same windows. Count-only responses do
+not replace them. The handler compares returned ops with the preceding
 windows so long polling cannot swallow a changed list with no room or count updates.
 Unchanged `SYNC` ops remain empty for long polling. An invitation selected by a list
 range or explicit subscription also bypasses the idle return if first delivery is
 owed. Rendering and recording use the captured invitation identity and original
 cursor. Invitations outside the selection remain unrecorded; once the selected
-positions have been refreshed, they do not cause repeated full responses.
+positions have been acknowledged, they do not cause repeated full responses.
 Global admission preserves the user's visibility decision; first delivery is
 recorded separately for each device. An unseen device receives an admitted invite
 even if another device's delayed admission commits behind its cursor. Once that
-device advances past its own delivery position, the invite is not replayed.
+device acknowledges its response and advances past its delivery position, the
+invite is not replayed. Echoing another device's response cannot confirm delivery.
+Batch IDs use a separate database sequence, so they cannot skip event publications.
+Concurrent or partially selected responses acknowledge their own exact subsets,
+instead of treating a higher batch ID as confirmation of every earlier response.
+Expired batch records cause a safe redelivery. Existing first-delivery positions
+and global admissions are preserved.
 Additional qualifying rooms, rule changes and join-to-join profile updates cannot
-restamp that device's delivery. Account-data
+restamp that device's delivery. Local join-to-join profile updates remove an unused
+client-supplied restricted-join authorizer before hashing and signing, so the event
+and subsequent leaves can be accepted by other homeservers. Federation restricted
+join checks return a definitive forbidden error when all allowed rooms are known
+and the user is absent; unknown room state still permits another server to assist.
+Incoming federation transactions count all raw EDUs before decoding them. A
+malformed ephemeral update is skipped individually, so it cannot prevent the
+transaction's persistent membership events or valid EDUs from being processed.
+An incapable restricted-room resident allows candidate failover before checking
+its potentially delayed view of allowed-room membership. Remote invitation
+rejection routes through servers in the invitation state, including domainless
+room IDs. An out-of-band invitation can only be rescinded by its original
+inviter while the receiving server is not participating; this is checked inside
+the membership/frame publication transaction. Remote knock summaries include
+the accepted local knock and cannot overwrite a replacement membership.
+Membership `prev_content` uses the event's exact before-state frame, rather than
+assuming consecutive frame IDs. Newly shared membership is included in device
+list change notifications. Imported auth/state outliers are not timeline history:
+backfill promotes them without publishing historical memberships, current room
+state, notifications, commands or sticky windows. Federation backfill responses
+include their requested seed events so page boundaries do not skip history.
+History fetching also tries participating servers when the power-level user map
+does not name an administrator, as in room v12. Rebuilding a just-joined sync
+timeline after backfill retains the response's original upper boundary, so it
+includes subsequent live profile updates without consuming future events.
+Repeated remote knocks contact the resident again because a remote rejection
+may not have been federated to the knocking server. Device-list responses omit
+devices awaiting identity-key upload; persisted device-list revisions match
+outgoing EDUs and resync responses.
+Account-data
 replay behavior is preserved. Invites returned while allowing all senders are also
 admitted, so enabling `deny_public` later preserves invitations already shown.
 New invitations still require a current relationship.

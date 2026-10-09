@@ -729,6 +729,19 @@ diesel::table! {
         room_user_id -> Int8,
         admitted_sn -> Int8,
         delivered_devices -> Jsonb,
+        acknowledged_devices -> Jsonb,
+    }
+}
+
+diesel::table! {
+    room_invite_delivery_batches (id) {
+        id -> Int8,
+        user_id -> Text,
+        device_id -> Text,
+        delivery_sn -> Int8,
+        membership_ids -> Array<Int8>,
+        batch_key -> Bytea,
+        created_at -> Timestamptz,
     }
 }
 
@@ -1301,6 +1314,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     remote_presence_recipients,
     room_aliases,
     room_invite_admissions,
+    room_invite_delivery_batches,
     room_joined_servers,
     room_lookup_servers,
     room_peeking_servers,

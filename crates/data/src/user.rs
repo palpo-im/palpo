@@ -193,6 +193,7 @@ pub struct SyncInvitation {
     pub state: Vec<RawJson<AnyStrippedStateEvent>>,
     pub admitted_sn: Option<i64>,
     pub delivered_sn: Option<i64>,
+    pub delivery_acknowledged: bool,
 }
 
 /// A shared-room membership snapshot pins the immutable room-state frame as well.
@@ -577,6 +578,11 @@ pub async fn invite_sync_inventory_with_conn(
     )
     .bind::<diesel::sql_types::Text, _>(device_id.map_or("", DeviceId::as_str))
     .sql(")::bigint");
+    let acknowledged = diesel::dsl::sql::<diesel::sql_types::Bool>(
+        "COALESCE(room_invite_admissions.acknowledged_devices ? ",
+    )
+    .bind::<diesel::sql_types::Text, _>(device_id.map_or("", DeviceId::as_str))
+    .sql(", false)");
     let mut query = room_users::table
         .left_join(
             room_invite_admissions::table
@@ -604,6 +610,7 @@ pub async fn invite_sync_inventory_with_conn(
             room_users::state_data,
             room_invite_admissions::admitted_sn.nullable(),
             delivered_sn.clone(),
+            acknowledged.clone(),
         ))
         .into_boxed();
     // Tracking is enabled only with the membership-filtering feature. It also
@@ -613,7 +620,7 @@ pub async fn invite_sync_inventory_with_conn(
         query.filter(
             room_users::event_sn
                 .ge(load_since)
-                .or(delivered_sn.clone().is_null())
+                .or(acknowledged.eq(false))
                 .or(delivered_sn.ge(since_sn)),
         )
     } else {
@@ -629,6 +636,7 @@ pub async fn invite_sync_inventory_with_conn(
             Option<JsonValue>,
             Option<i64>,
             Option<i64>,
+            bool,
         )>(conn)
         .await?;
     let invites: Vec<SyncInvitation> = rows
@@ -643,6 +651,7 @@ pub async fn invite_sync_inventory_with_conn(
                 state,
                 admitted_sn,
                 delivered_sn,
+                delivery_acknowledged,
             )| {
                 state
                     .and_then(|state| serde_json::from_value(state).ok())
@@ -655,6 +664,7 @@ pub async fn invite_sync_inventory_with_conn(
                         state,
                         admitted_sn,
                         delivered_sn,
+                        delivery_acknowledged,
                     })
             },
         )

@@ -89,29 +89,38 @@ async fn make_join(args: MakeJoinReqArgs, depot: &mut Depot) -> JsonResult<MakeJ
             None
         } else {
             let join_rule = room::get_join_rule(&args.room_id).await?;
-            let guest_can_join = room::guest_can_join(&args.room_id).await;
-            if join_rule == JoinRule::Public || guest_can_join {
-                None
-            } else if crate::federation::user_can_perform_restricted_join(
-                &args.user_id,
-                &args.room_id,
-                &room_version_id,
-                Some(&join_rule),
-            )
-            .await?
+            if !matches!(
+                join_rule,
+                JoinRule::Restricted(_) | JoinRule::KnockRestricted(_)
+            ) || room::user::is_joined(&args.user_id, &args.room_id).await?
+                || room::user::is_invited(&args.user_id, &args.room_id).await?
             {
-                membership::get_first_user_can_issue_invite(
-                    &args.room_id,
-                    &args.user_id,
-                    &join_rule.restriction_rooms(),
-                )
-                .await
-                .ok()
+                None
             } else {
-                return Err(MatrixError::unable_to_grant_join(
-                    "no user on this server is able to assist in joining",
+                // An incapable resident must allow failover even when its view
+                // of the allowed room has not received the joining user yet.
+                let authorizer = membership::local_invite_authorizer(&args.room_id, &args.user_id)
+                    .await?
+                    .ok_or_else(|| {
+                        MatrixError::unable_to_grant_join(
+                            "no user on this server is able to assist in joining",
+                        )
+                    })?;
+                if !crate::federation::user_can_perform_restricted_join(
+                    &args.user_id,
+                    &args.room_id,
+                    &room_version_id,
+                    Some(&join_rule),
                 )
-                .into());
+                .await?
+                {
+                    return Err(MatrixError::forbidden(
+                        "joining user did not pass restricted room's rules",
+                        None,
+                    )
+                    .into());
+                }
+                Some(authorizer)
             }
         }
     };

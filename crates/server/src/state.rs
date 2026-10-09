@@ -20,11 +20,34 @@ pub async fn send_state_event_for_key(
     room_id: &RoomId,
     room_version: &RoomVersionId,
     event_type: &StateEventType,
-    json: RawJson<AnyStateEventContent>,
+    mut json: RawJson<AnyStateEventContent>,
     state_key: String,
     sticky_duration_ms: Option<StickyDurationMs>,
     timestamp: Option<UnixMillis>,
 ) -> AppResult<OwnedEventId> {
+    let state_lock = room::lock_state(room_id).await;
+    if *event_type == StateEventType::RoomMember {
+        let mut content: serde_json::Value = serde_json::from_str(json.inner().get())?;
+        if content
+            .get("membership")
+            .and_then(serde_json::Value::as_str)
+            == Some("join")
+            && content.get("join_authorised_via_users_server").is_some()
+            && let Ok(target) = UserId::parse(&state_key)
+            && room::get_member(room_id, &target, None)
+                .await
+                .is_ok_and(|member| member.membership == MembershipState::Join)
+        {
+            // Profile updates do not need a restricted-join authorizer. Remove
+            // the client-supplied value before hashing/signing: remote servers
+            // validate this field even when event auth would otherwise ignore it.
+            content
+                .as_object_mut()
+                .unwrap()
+                .remove("join_authorised_via_users_server");
+            json = RawJson::from_value(&content)?;
+        }
+    }
     allowed_to_send_state_event(room_id, event_type, &state_key, &json).await?;
     let pdu = timeline::build_and_append_pdu(
         PduBuilder {
@@ -38,7 +61,7 @@ pub async fn send_state_event_for_key(
         user_id,
         room_id,
         room_version,
-        &room::lock_state(room_id).await,
+        &state_lock,
     )
     .await?
     .pdu;

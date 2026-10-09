@@ -129,6 +129,12 @@ struct SlidingSyncCache {
     /// The exact positions last served for each list, independently of event cursors.
     #[serde(default)]
     list_windows: ListWindows,
+    /// Windows offered in responses, awaiting the exact response token.
+    #[serde(default)]
+    pending_list_windows: BTreeMap<String, ListWindows>,
+    /// Legacy caches recorded offered windows without client acknowledgement.
+    #[serde(default)]
+    list_window_acknowledgements: bool,
     extensions: sync_events::v5::ExtensionsConfig,
     required_state: BTreeSet<Seqnum>,
     /// Rooms whose full member profiles this connection has acknowledged (MSC4262).
@@ -157,6 +163,15 @@ struct SlidingSyncCache {
 struct PendingProfileUsers {
     added: BTreeSet<OwnedUserId>,
     removed: BTreeSet<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4494")]
+fn require_list_window_acknowledgements(cached: &mut SlidingSyncCache) {
+    if !cached.list_window_acknowledgements {
+        cached.list_windows.clear();
+        cached.pending_list_windows.clear();
+        cached.list_window_acknowledgements = true;
+    }
 }
 
 #[cfg(feature = "unstable-msc4262")]
@@ -598,15 +613,41 @@ async fn maybe_cleanup_connections() {
 pub async fn sync_events(
     sender_id: &UserId,
     device_id: &DeviceId,
-    since_sn: Seqnum,
+    since: impl Into<crate::event::SyncPosition>,
     req_body: &SyncEventsReqBody,
     known_rooms: &KnownRooms,
 ) -> AppResult<SyncEventsResBody> {
+    sync_events_at_position(sender_id, device_id, since.into(), req_body, known_rooms).await
+}
+
+async fn sync_events_at_position(
+    sender_id: &UserId,
+    device_id: &DeviceId,
+    since: crate::event::SyncPosition,
+    req_body: &SyncEventsReqBody,
+    known_rooms: &KnownRooms,
+) -> AppResult<SyncEventsResBody> {
+    let since_sn = since.event_sn;
     // Periodically clean up expired connections
     maybe_cleanup_connections().await;
     // Another instance may have served this connection since this process last did --
     // including during the long poll that precedes a repeated call.
     refresh_connection(sender_id, device_id, &req_body.conn_id).await;
+    crate::membership::acknowledge_invite_delivery(sender_id, device_id, since.invite_batch)
+        .await?;
+    #[cfg(feature = "unstable-msc4494")]
+    {
+        update_connection(sender_id, device_id, &req_body.conn_id, |cached| {
+            require_list_window_acknowledgements(cached);
+            if let Some(token) = since.original.as_deref()
+                && let Some(windows) = cached.pending_list_windows.remove(token)
+            {
+                cached.list_windows.extend(windows);
+                cached.pending_list_windows.clear();
+            }
+        })
+        .await;
+    }
 
     #[cfg(feature = "unstable-msc4262")]
     acknowledge_profile_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
@@ -885,10 +926,12 @@ pub async fn sync_events(
         removed_profile_users,
     )
     .await;
-    record_returned_invites(&invite_snapshot, &res_body).await?;
+    if let Some(delivery) = record_returned_invites(&invite_snapshot, &res_body).await? {
+        res_body.pos.push_str(&format!("_i{delivery}"));
+    }
     // Record positions only after the complete response and its invitation deliveries
     // succeeded. Count-only responses must not replace the client's last window.
-    record_list_windows_sent(sender_id, device_id, &req_body.conn_id, &res_body).await;
+    record_list_windows_sent(sender_id, device_id, &req_body.conn_id, &mut res_body).await;
     Ok(res_body)
 }
 
@@ -928,7 +971,7 @@ async fn record_list_windows_sent(
     user_id: &UserId,
     device_id: &DeviceId,
     conn_id: &Option<String>,
-    response: &SyncEventsResBody,
+    response: &mut SyncEventsResBody,
 ) {
     if response.lists.is_empty() {
         return;
@@ -940,7 +983,43 @@ async fn record_list_windows_sent(
         .collect();
     // Keep this field in every build so another instance's feature configuration
     // cannot discard the actual positions already served on this connection.
+    #[cfg(feature = "unstable-msc4494")]
+    {
+        let base = response.pos.clone();
+        let fresh = format!("{base}_w{}", crate::utils::random_string(24));
+        response.pos = update_connection(user_id, device_id, conn_id, |cached| {
+            if windows
+                .iter()
+                .all(|(id, window)| cached.list_windows.get(id) == Some(window))
+            {
+                return base.clone();
+            }
+            let token = cached
+                .pending_list_windows
+                .iter()
+                .find(|(token, offered)| {
+                    token
+                        .strip_prefix(&base)
+                        .is_some_and(|suffix| suffix.starts_with("_w"))
+                        && **offered == windows
+                })
+                .map(|(token, _)| token.clone())
+                .unwrap_or_else(|| fresh.clone());
+            // Eviction only causes a safe refresh, never an acknowledgement.
+            if cached.pending_list_windows.len() >= 16 {
+                cached.pending_list_windows.clear();
+            }
+            cached
+                .pending_list_windows
+                .insert(token.clone(), windows.clone());
+            token
+        })
+        .await;
+    }
+    #[cfg(not(feature = "unstable-msc4494"))]
     update_connection(user_id, device_id, conn_id, |cached| {
+        cached.list_window_acknowledgements = false;
+        cached.pending_list_windows.clear();
         cached.list_windows.extend(windows.clone());
     })
     .await;
@@ -949,7 +1028,7 @@ async fn record_list_windows_sent(
 async fn record_returned_invites(
     snapshot: &crate::membership::InviteSyncSnapshot,
     response: &SyncEventsResBody,
-) -> AppResult<()> {
+) -> AppResult<Option<i64>> {
     let returned: Vec<_> = response
         .rooms
         .iter()
@@ -1850,6 +1929,8 @@ pub async fn update_sync_request_with_cache(
     let original = req_body.clone();
     let (merged, known, list_counts, list_windows) =
         update_connection(&user_id, &device_id, &original.conn_id, |cached| {
+            #[cfg(feature = "unstable-msc4494")]
+            require_list_window_acknowledgements(cached);
             let mut req_body = original.clone();
 
             for (list_id, list) in &mut req_body.lists {
@@ -2363,6 +2444,13 @@ mod tests {
                 .unwrap();
             assert_eq!(delivered.rooms.len(), targets.len() - 1);
             assert!(!delivered.rooms.contains_key(pending));
+            crate::membership::acknowledge_invite_delivery(
+                &user,
+                &device,
+                crate::event::split_sync_token(&delivered.pos).unwrap().1,
+            )
+            .await
+            .unwrap();
             data::user::set_data(
                 &user,
                 None,
@@ -2383,14 +2471,48 @@ mod tests {
             let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
                 .await
                 .0;
-            let initial = sync_events(&user, &device, 0, &body, &known).await.unwrap();
+            let mut initial = sync_events(&user, &device, 0, &body, &known).await.unwrap();
             let initial_ops = serde_json::to_value(&initial.lists["main"].ops).unwrap();
             assert_eq!(initial_ops[0]["room_ids"], json!([targets[2]]));
             if mode == "multiple" {
                 assert_eq!(initial_ops[1]["room_ids"], json!([targets[4]]));
             }
             let cursor = data::curr_sn().await.unwrap();
-            assert_eq!(initial.pos, (cursor + 1).to_string());
+            assert_eq!(
+                initial
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                cursor + 1
+            );
+
+            // A pre-upgrade cache may have recorded a response that was lost.
+            // Its offered windows are not proof that this client received them.
+            update_connection(&user, &device, &body.conn_id, |cached| {
+                cached.list_windows = initial
+                    .lists
+                    .iter()
+                    .map(|(id, list)| (id.clone(), window_from_sync_ops(&list.ops)))
+                    .collect();
+                cached.pending_list_windows.clear();
+                cached.list_window_acknowledgements = false;
+            })
+            .await;
+            let (known, _, legacy_windows) =
+                update_sync_request_with_cache(user.clone(), device.clone(), &mut body).await;
+            assert!(
+                legacy_windows.is_empty(),
+                "legacy windows must not delay the replay"
+            );
+            initial = sync_events(&user, &device, cursor + 1, &body, &known)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&initial.lists["main"].ops).unwrap(),
+                initial_ops,
+                "legacy offered windows need a replay before acknowledgement"
+            );
 
             // A later poll reaches another instance. The newly visible invitation
             // lies outside every requested range, but can displace old entries.
@@ -2403,10 +2525,23 @@ mod tests {
             let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
                 .await
                 .0;
-            let changed = sync_events(&user, &device, cursor + 1, &body, &known)
-                .await
-                .unwrap();
-            assert_eq!(changed.pos, initial.pos);
+            let changed = sync_events(
+                &user,
+                &device,
+                initial.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &known,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                changed
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                cursor + 1
+            );
             assert_eq!(changed.lists["main"].count, targets.len());
             let changed_ops = serde_json::to_value(&changed.lists["main"].ops).unwrap();
             if mode == "after" {
@@ -2447,15 +2582,46 @@ mod tests {
             let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
                 .await
                 .0;
-            let repeated = sync_events(&user, &device, cursor + 1, &body, &known)
-                .await
-                .unwrap();
+            CONNECTIONS
+                .lock()
+                .unwrap()
+                .remove(&connection_key(&user, &device, &body.conn_id));
+            let replay = sync_events(
+                &user,
+                &device,
+                initial.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &known,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&replay.lists["main"].ops).unwrap(),
+                changed_ops,
+                "{mode}: an unacknowledged list refresh must replay across instances"
+            );
+            let repeated = sync_events(
+                &user,
+                &device,
+                changed.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &known,
+            )
+            .await
+            .unwrap();
             assert!(
                 repeated.lists["main"].ops.is_empty(),
                 "{mode}: refresh only once"
             );
             assert!(repeated.rooms.is_empty());
-            assert_eq!(repeated.pos, initial.pos);
+            assert_eq!(
+                repeated
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                cursor + 1
+            );
             assert_eq!(data::curr_sn().await.unwrap(), cursor);
         }
     }
@@ -2565,7 +2731,14 @@ mod tests {
                 .unwrap();
             assert!(hidden.rooms.is_empty(), "{mode}: initially ineligible");
             let idle_sn = data::curr_sn().await.unwrap();
-            assert_eq!(hidden.pos, (idle_sn + 1).to_string());
+            assert_eq!(
+                hidden
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                idle_sn + 1
+            );
 
             // Another device finishes its earlier response after this client has
             // reached the idle token. Admission does not allocate a stream position.
@@ -2600,7 +2773,14 @@ mod tests {
                 expected.is_empty(),
                 "{mode}: selected invitations must return without waiting"
             );
-            assert_eq!(recovered.pos, hidden.pos);
+            assert_eq!(
+                recovered
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                idle_sn + 1
+            );
             assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
             let delivered = room_users::table
                 .inner_join(
@@ -2627,15 +2807,66 @@ mod tests {
 
             // Other invitations can remain pending outside this request's selection.
             // They must not force another full response or restamp this delivery.
-            let repeated = sync_events(&recipient, &device, idle_sn + 1, &body, &KnownRooms::new())
+            let retry = sync_events(&recipient, &device, idle_sn + 1, &body, &KnownRooms::new())
                 .await
                 .unwrap();
+            assert_eq!(
+                retry.rooms.keys().cloned().collect::<BTreeSet<_>>(),
+                expected,
+                "{mode}: same-token retry must replay selected invitations"
+            );
+            if mode == "range" {
+                // Confirming a later, disjoint response must not acknowledge
+                // this range's earlier response by treating batch IDs as a watermark.
+                let subscription: SyncEventsReqBody = serde_json::from_value(json!({
+                    "room_subscriptions": {targets[0].as_str(): {"timeline_limit": 0}}
+                }))
+                .unwrap();
+                let later = sync_events(
+                    &recipient,
+                    &device,
+                    idle_sn + 1,
+                    &subscription,
+                    &KnownRooms::new(),
+                )
+                .await
+                .unwrap();
+                let after_later_ack = sync_events(
+                    &recipient,
+                    &device,
+                    later.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                    &body,
+                    &KnownRooms::new(),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    after_later_ack.rooms.contains_key(&targets[1]),
+                    "an acknowledged disjoint response cannot hide an unconfirmed invite"
+                );
+            }
+            let repeated = sync_events(
+                &recipient,
+                &device,
+                recovered.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &KnownRooms::new(),
+            )
+            .await
+            .unwrap();
             assert!(
                 repeated.rooms.is_empty(),
                 "{mode}: no repeated idle delivery"
             );
             assert!(repeated.lists.values().all(|list| list.ops.is_empty()));
-            assert_eq!(repeated.pos, hidden.pos);
+            assert_eq!(
+                repeated
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                idle_sn + 1
+            );
             assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
             for (list_id, list) in &recovered.lists {
                 assert_eq!(repeated.lists[list_id].count, list.count);

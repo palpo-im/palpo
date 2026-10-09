@@ -1,0 +1,2 @@
+DROP TABLE room_invite_delivery_batches;
+ALTER TABLE room_invite_admissions DROP COLUMN acknowledged_devices;

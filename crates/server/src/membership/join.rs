@@ -556,21 +556,28 @@ pub async fn get_first_user_can_issue_invite(
         );
     }
     if invitee_in_restriction_room {
-        let joined_users: Vec<_> = room::joined_users(room_id, None).await?;
-        for joined_user in &joined_users {
-            if joined_user.server_name() == config::get().server_name
-                && room::user_can_invite(room_id, joined_user, invitee_id).await
-            {
-                return Ok(joined_user.clone());
-            }
+        if let Some(user) = local_invite_authorizer(room_id, invitee_id).await? {
+            return Ok(user);
         }
         debug!(
-            "get_first_user_can_issue_invite: no local user with invite power in room {room_id}, \
-             checked {} joined users",
-            joined_users.len()
+            "get_first_user_can_issue_invite: no local user with invite power in room {room_id}"
         );
     }
     Err(MatrixError::not_found("no user can issue invite in this room").into())
+}
+
+pub(crate) async fn local_invite_authorizer(
+    room_id: &RoomId,
+    invitee_id: &UserId,
+) -> AppResult<Option<OwnedUserId>> {
+    for user in room::joined_users(room_id, None).await? {
+        if user.server_name() == config::server_name()
+            && room::user_can_invite(room_id, &user, invitee_id).await
+        {
+            return Ok(Some(user));
+        }
+    }
+    Ok(None)
 }
 pub async fn get_users_can_issue_invite(
     room_id: &RoomId,

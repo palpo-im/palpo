@@ -112,7 +112,7 @@ impl InviteSyncSnapshot {
         }
     }
 
-    pub(crate) async fn record_returned(&self, room_ids: &[&RoomId]) -> AppResult<()> {
+    pub(crate) async fn record_returned(&self, room_ids: &[&RoomId]) -> AppResult<Option<i64>> {
         #[cfg(feature = "unstable-msc4494")]
         {
             let candidates: Vec<_> = room_ids
@@ -120,13 +120,18 @@ impl InviteSyncSnapshot {
                 .filter_map(|room_id| self.pending_admissions.get(*room_id).cloned())
                 .collect();
             if !candidates.is_empty() {
-                admit_pending_invites(candidates, self.until_sn, &self.device_id, &self.user_id)
-                    .await?;
+                return admit_pending_invites(
+                    candidates,
+                    self.until_sn,
+                    &self.device_id,
+                    &self.user_id,
+                )
+                .await;
             }
         }
         #[cfg(not(feature = "unstable-msc4494"))]
         let _ = room_ids;
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -207,9 +212,9 @@ pub(crate) async fn invited_rooms_for_sync(
             if invite.admitted_sn.is_none() && !eligible.contains(&invite.sender_id) {
                 continue;
             }
-            // Never-delivered, eligible invitations are sent once, even if their event
-            // was committed late or the client already synced past the qualification.
+            // Responses are replayable until the client echoes their delivery token.
             if let Some(delivered_sn) = invite.delivered_sn
+                && invite.delivery_acknowledged
                 && invite.event_sn < inventory.replay_since_sn
                 && delivered_sn < since_sn
             {
@@ -217,7 +222,7 @@ pub(crate) async fn invited_rooms_for_sync(
             }
         }
         #[cfg(feature = "unstable-msc4494")]
-        if invite.delivered_sn.is_none() {
+        if !invite.delivery_acknowledged {
             snapshot.pending_admissions.insert(
                 invite.room_id.clone(),
                 (invite.membership_id, invite.event_id),
@@ -234,13 +239,16 @@ async fn admit_pending_invites(
     delivery_sn: i64,
     device_id: &DeviceId,
     user_id: &UserId,
-) -> AppResult<()> {
-    use data::schema::{room_invite_admissions, room_users};
+) -> AppResult<Option<i64>> {
+    use data::schema::{
+        room_invite_admissions, room_invite_delivery_batches as batches, room_users,
+    };
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::{AsyncConnection, RunQueryDsl};
 
     // Consistent insert order prevents concurrent multi-room syncs from deadlocking.
     candidates.sort_unstable_by_key(|(id, _)| *id);
+    candidates.dedup();
     data::connect()
         .await?
         .transaction::<_, crate::AppError, _>(async |conn| {
@@ -259,10 +267,14 @@ async fn admit_pending_invites(
                 .await?
                 .into_iter()
                 .collect();
-            let values: Vec<_> = candidates
+            let live_ids: Vec<_> = candidates
                 .iter()
                 .filter(|(id, event_id)| live.get(id) == Some(event_id))
-                .map(|(id, _)| {
+                .map(|(id, _)| *id)
+                .collect();
+            let values: Vec<_> = live_ids
+                .iter()
+                .map(|id| {
                     (
                         room_invite_admissions::room_user_id.eq(*id),
                         room_invite_admissions::admitted_sn.eq(delivery_sn),
@@ -286,9 +298,79 @@ async fn admit_pending_invites(
             }
             // Existing keys win, preserving the first delivery for each device.
             // The global admission position also remains unchanged.
-            Ok(())
+            if live_ids.is_empty() {
+                return Ok(None);
+            }
+            use sha2::{Digest, Sha256};
+            let mut hash = Sha256::new();
+            for id in &live_ids {
+                hash.update(id.to_be_bytes());
+            }
+            let key = hash.finalize().to_vec();
+            // Retry of the same selected subset reuses a response identity. It
+            // never consumes an event position or acknowledges other responses.
+            diesel::insert_into(batches::table)
+                .values((batches::user_id.eq(user_id), batches::device_id.eq(device_id),
+                    batches::delivery_sn.eq(delivery_sn), batches::membership_ids.eq(&live_ids), batches::batch_key.eq(&key)))
+                .on_conflict((batches::user_id, batches::device_id, batches::delivery_sn, batches::batch_key))
+                .do_update()
+                .set(batches::created_at.eq(diesel::dsl::sql::<diesel::sql_types::Timestamptz>("now()")))
+                .execute(conn).await?;
+            let id = batches::table
+                .filter(batches::user_id.eq(user_id))
+                .filter(batches::device_id.eq(device_id))
+                .filter(batches::delivery_sn.eq(delivery_sn))
+                .filter(batches::batch_key.eq(&key))
+                .filter(batches::membership_ids.eq(&live_ids))
+                .select(batches::id).first::<i64>(conn).await?;
+            diesel::sql_query("DELETE FROM room_invite_delivery_batches WHERE user_id = $1 AND device_id = $2 AND created_at < now() - interval '30 days'")
+                .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+                .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+                .execute(conn).await?;
+            Ok(Some(id))
         })
         .await
+}
+
+/// Only a request echoing an issued response token confirms delivery. The
+/// lookup is scoped to this user/device and marks exactly its selected subset.
+pub(crate) async fn acknowledge_invite_delivery(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    batch: Option<i64>,
+) -> AppResult<()> {
+    #[cfg(feature = "unstable-msc4494")]
+    if let Some(batch) = batch {
+        use data::schema::{
+            room_invite_admissions as admissions, room_invite_delivery_batches as batches,
+        };
+        use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+        use diesel_async::{AsyncConnection, RunQueryDsl};
+        data::connect().await?.transaction::<_, crate::AppError, _>(async |conn| {
+            data::user::lock_invite_user_write(conn, user_id).await?;
+            let ids = batches::table.find(batch)
+                .filter(batches::user_id.eq(user_id))
+                .filter(batches::device_id.eq(device_id))
+                .select(batches::membership_ids).first::<Vec<i64>>(conn).await.optional()?;
+            if let Some(ids) = ids {
+                diesel::update(admissions::table.filter(admissions::room_user_id.eq_any(ids)))
+                    .set(admissions::acknowledged_devices.eq(
+                        diesel::dsl::sql::<diesel::sql_types::Jsonb>("acknowledged_devices || ")
+                            .bind::<diesel::sql_types::Jsonb, _>(serde_json::json!({device_id.as_str(): true}))))
+                    .execute(conn).await?;
+            }
+            // Discard confirmed or expired response identities. An expired token
+            // cannot suppress an unconfirmed invitation: it is simply sent again.
+            diesel::sql_query("DELETE FROM room_invite_delivery_batches b WHERE user_id = $1 AND device_id = $2 AND (created_at < now() - interval '30 days' OR NOT EXISTS (SELECT 1 FROM room_invite_admissions a WHERE a.room_user_id = ANY(b.membership_ids) AND NOT (a.acknowledged_devices ? $2)))")
+                .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+                .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+                .execute(conn).await?;
+            Ok(())
+        }).await?;
+    }
+    #[cfg(not(feature = "unstable-msc4494"))]
+    let _ = (user_id, device_id, batch);
+    Ok(())
 }
 
 /// Check local membership events before deduplication, signing or persistence.
@@ -567,9 +649,10 @@ mod tests {
     ) -> AppResult<Vec<(OwnedRoomId, Vec<RawJson<AnyStrippedStateEvent>>)>> {
         let snapshot =
             snapshot_for_sync(user_id, since_sn, "TEST".into(), InviteSyncStream::Ordinary).await?;
-        snapshot
+        let delivery = snapshot
             .record_returned(&snapshot.rooms.keys().map(AsRef::as_ref).collect::<Vec<_>>())
             .await?;
+        super::acknowledge_invite_delivery(user_id, "TEST".into(), delivery).await?;
         Ok(snapshot.rooms.into_iter().collect())
     }
 
@@ -1151,7 +1234,7 @@ mod tests {
                     recovered.record_returned(&returned),
                 );
                 repeat.unwrap();
-                first.unwrap();
+                let first = first.unwrap();
                 let (admitted_sn, devices) = room_invite_admissions::table
                     .inner_join(
                         room_users::table
@@ -1171,6 +1254,9 @@ mod tests {
                     devices,
                     json!({"TEST": before.until_sn, "OTHER": recovered.until_sn})
                 );
+                super::acknowledge_invite_delivery(&recipient, &other, first)
+                    .await
+                    .unwrap();
                 data::next_sn().await.unwrap();
                 let next = snapshot_for_sync(
                     &recipient,
@@ -1366,13 +1452,46 @@ mod tests {
             recovered.rooms.invite.contains_key(&room),
             "an idle sync must check delayed first deliveries before returning"
         );
-        assert_eq!(recovered.next_batch, hidden.next_batch);
+        assert_ne!(recovered.next_batch, hidden.next_batch);
+        assert_eq!(
+            recovered
+                .next_batch
+                .parse::<crate::event::BatchToken>()
+                .unwrap()
+                .stream_ordering(),
+            idle_sn + 1
+        );
         assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
         let repeated = crate::sync_v3::sync_events(&user, &device, &args)
             .await
             .unwrap();
-        assert!(repeated.rooms.invite.is_empty());
-        assert_eq!(repeated.next_batch, hidden.next_batch);
+        assert!(
+            repeated.rooms.invite.contains_key(&room),
+            "a lost response must replay on the same token"
+        );
+        assert_eq!(
+            repeated.next_batch, recovered.next_batch,
+            "same-token retries reuse the response identity"
+        );
+        let batch = crate::event::split_sync_token(&recovered.next_batch)
+            .unwrap()
+            .1;
+        super::acknowledge_invite_delivery(&user, "UNRELATED".into(), batch)
+            .await
+            .unwrap();
+        let still_pending = crate::sync_v3::sync_events(&user, &device, &args)
+            .await
+            .unwrap();
+        assert!(
+            still_pending.rooms.invite.contains_key(&room),
+            "another device cannot acknowledge this delivery"
+        );
+        let acknowledged: SyncEventsReqArgs =
+            serde_json::from_value(json!({"since": recovered.next_batch})).unwrap();
+        let after_ack = crate::sync_v3::sync_events(&user, &device, &acknowledged)
+            .await
+            .unwrap();
+        assert!(after_ack.rooms.invite.is_empty());
         let future: SyncEventsReqArgs = serde_json::from_value(
             json!({"since": crate::event::BatchToken::new_live(idle_sn + 2).to_string()}),
         )
@@ -1849,9 +1968,25 @@ mod tests {
     }
 
     #[cfg(feature = "unstable-msc4494")]
-    #[tokio::test]
+    #[test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
-    async fn database_join_response_import_does_not_publish_historical_memberships() {
+    fn database_join_response_import_does_not_publish_historical_memberships() {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_stack_size(8 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::spawn(Box::pin(check_join_response_import()))
+                    .await
+                    .unwrap()
+            });
+    }
+
+    // The full debug federation fixture needs more stack than Windows's test
+    // thread provides. Run its boxed future on one dedicated runtime worker.
+    async fn check_join_response_import() {
         use std::sync::Arc;
 
         use diesel::{ExpressionMethods, QueryDsl};
@@ -2047,6 +2182,236 @@ mod tests {
             .join_rule,
             crate::core::room::JoinRule::Public
         );
+        // A join -> join profile update may carry an unused, invalid authorizer.
+        // Authorization ignores it; membership and visibility readers must too.
+        let raw = json!({"event_id": "$join_import_profile:example.org", "room_id": room,
+            "type": "m.room.member", "state_key": user, "sender": user,
+            "content": {"membership": "join", "displayname": "Bobby", "join_authorised_via_users_server": "unused"},
+            "origin_server_ts": 2, "depth": 7, "auth_events": [auth[0], auth[2], join.event_id],
+            "prev_events": [join.event_id], "hashes": {"sha256": "test"}});
+        let (profile, value, guard) = PduBuilder::save_as_outlier(
+            serde_json::from_value(raw.clone()).unwrap(),
+            serde_json::from_value(raw).unwrap(),
+            &user,
+        )
+        .await
+        .unwrap();
+        let lock = crate::room::lock_state(&room).await;
+        timeline::append_pdu(&profile, value, &lock).await.unwrap();
+        let frame = state::append_to_state(&profile).await.unwrap();
+        state::set_room_state(&room, frame).await.unwrap();
+        drop(lock);
+        drop(guard);
+        assert_eq!(
+            state::user_membership(frame, &user).await.unwrap(),
+            MembershipState::Join
+        );
+        // Keep the fixture's delivery queue alive without starting network workers.
+        static WAKEUPS: std::sync::OnceLock<
+            std::sync::Mutex<tokio::sync::mpsc::Receiver<crate::sending::OutgoingKind>>,
+        > = std::sync::OnceLock::new();
+        crate::sending::MPSC_SENDER.get_or_init(|| {
+            let (sender, receiver) =
+                tokio::sync::mpsc::channel(crate::sending::WAKEUP_QUEUE_CAPACITY);
+            WAKEUPS.set(std::sync::Mutex::new(receiver)).unwrap();
+            sender
+        });
+        for authorizer in ["unused", creator.as_str()] {
+            let content = json!({"membership": "join", "displayname": authorizer,
+                "join_authorised_via_users_server": authorizer, "custom": {"preserved": true}});
+            let id = crate::state::send_state_event_for_key(
+                &user,
+                &room,
+                &RoomVersionId::V10,
+                &StateEventType::RoomMember,
+                RawJson::from_value(&content).unwrap(),
+                user.to_string(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let saved: serde_json::Value =
+                timeline::get_pdu(&id).await.unwrap().get_content().unwrap();
+            let saved_event = timeline::get_pdu(&id).await.unwrap();
+            let previous: serde_json::Value =
+                serde_json::from_str(saved_event.unsigned["prev_content"].get()).unwrap();
+            assert_eq!(previous["membership"], "join");
+            if authorizer != "unused" {
+                assert_eq!(previous["displayname"], "unused");
+            }
+            assert_eq!(saved["displayname"], authorizer);
+            assert_eq!(saved["custom"], json!({"preserved": true}));
+            assert!(
+                saved.get("join_authorised_via_users_server").is_none(),
+                "an unused authorizer must not enter the signed federation event"
+            );
+        }
+        let current_frame = state::get_room_frame_id(&room, None).await.unwrap();
+        for page in [
+            timeline::topolo::load_pdus_backward(None, &room, None, None, None, 100)
+                .await
+                .unwrap(),
+            timeline::stream::load_pdus_backward(None, &room, None, None, None, 100)
+                .await
+                .unwrap(),
+        ] {
+            assert!(
+                page.values().all(|event| !auth.contains(&event.event_id)),
+                "checked auth/state outliers must not leak into client timelines"
+            );
+        }
+        let current_member = room_users::table
+            .filter(room_users::room_id.eq(&room))
+            .filter(room_users::user_id.eq(&user))
+            .select(room_users::event_id)
+            .first::<OwnedEventId>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let mut historical_leave = timeline::get_pdu(&auth[4]).await.unwrap();
+        historical_leave.is_backfill = true;
+        let historical_json = timeline::get_pdu_json(&auth[4]).await.unwrap().unwrap();
+        Box::pin(crate::event::handler::process_to_timeline_pdu(
+            historical_leave,
+            historical_json,
+            Some(creator.server_name()),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            state::get_room_frame_id(&room, None).await.unwrap(),
+            current_frame
+        );
+        assert_eq!(
+            room_users::table
+                .filter(room_users::room_id.eq(&room))
+                .filter(room_users::user_id.eq(&user))
+                .select(room_users::event_id)
+                .first::<OwnedEventId>(&mut data::connect().await.unwrap())
+                .await
+                .unwrap(),
+            current_member,
+            "backfilled leave must not replace the current membership"
+        );
+        assert!(
+            timeline::get_non_outlier_pdu(&auth[4])
+                .await
+                .unwrap()
+                .unwrap()
+                .is_backfill
+        );
+        let target: OwnedRoomId = "!restricted_check:example.org".try_into().unwrap();
+        let unknown: OwnedUserId = "@restricted_check:dynamic.example".try_into().unwrap();
+        let restriction = |allowed: &RoomId| {
+            serde_json::from_value(json!({
+            "join_rule": "restricted", "allow": [{"type": "m.room_membership", "room_id": allowed}]
+        })).unwrap()
+        };
+        let allowed = restriction(&room);
+        assert!(
+            crate::federation::user_can_perform_restricted_join(
+                &user,
+                &target,
+                &RoomVersionId::V10,
+                Some(&allowed)
+            )
+            .await
+            .unwrap()
+        );
+        let denied = crate::federation::user_can_perform_restricted_join(
+            &unknown,
+            &target,
+            &RoomVersionId::V10,
+            Some(&allowed),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                denied,
+                crate::AppError::Matrix(crate::MatrixError {
+                    kind: crate::core::error::ErrorKind::Forbidden,
+                    ..
+                })
+            ),
+            "known absence must be a definitive permission failure"
+        );
+        let missing = restriction("!unknown_restriction:example.org".try_into().unwrap());
+        let unavailable = crate::federation::user_can_perform_restricted_join(
+            &unknown,
+            &target,
+            &RoomVersionId::V10,
+            Some(&missing),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                unavailable,
+                crate::AppError::Matrix(crate::MatrixError {
+                    kind: crate::core::error::ErrorKind::UnableToAuthorizeJoin,
+                    ..
+                })
+            ),
+            "an unknown room must still allow another resident to assist"
+        );
+        let invite: OwnedEventId = "$withdrawal_invite:example.org".try_into().unwrap();
+        crate::membership::update_membership(
+            &invite,
+            data::curr_sn().await.unwrap(),
+            &room,
+            &user,
+            MembershipState::Invite,
+            &creator,
+            None,
+        )
+        .await
+        .unwrap();
+        let field = state::ensure_field_id(&StateEventType::RoomMember, user.as_str())
+            .await
+            .unwrap();
+        let mut replacement = state::get_full_state_ids(current_frame).await.unwrap();
+        replacement.insert(field, auth[4].clone());
+        let mut compressed = CompressedState::new();
+        for (field, event) in replacement {
+            compressed.insert(CompressedEvent::new(
+                field,
+                timeline::get_pdu(&event).await.unwrap().event_sn,
+            ));
+        }
+        let delta = state::save_state(&room, Arc::new(compressed))
+            .await
+            .unwrap();
+        assert!(
+            !state::force_state_for_invite_withdrawal(
+                &room,
+                delta.frame_id,
+                delta.appended.clone(),
+                delta.disposed.clone(),
+                &user,
+                &unknown
+            )
+            .await
+            .unwrap()
+        );
+        assert!(crate::room::user::is_invited(&user, &room).await.unwrap());
+        assert_eq!(
+            state::get_room_frame_id(&room, None).await.unwrap(),
+            current_frame
+        );
+        assert!(
+            state::force_state_for_invite_withdrawal(
+                &room,
+                delta.frame_id,
+                delta.appended,
+                delta.disposed,
+                &user,
+                &creator
+            )
+            .await
+            .unwrap()
+        );
+        assert!(crate::room::user::is_left(&user, &room).await.unwrap());
     }
 
     #[cfg(feature = "unstable-msc4494")]
@@ -2657,7 +3022,7 @@ mod tests {
             1,
             "an eligible, never-delivered invite must survive a passed event cursor"
         );
-        snapshot.record_returned(&[target.as_ref()]).await.unwrap();
+        let delivery = snapshot.record_returned(&[target.as_ref()]).await.unwrap();
         use crate::data::schema::room_invite_admissions;
         let first_delivery = room_invite_admissions::table
             .find(delayed_id)
@@ -2669,6 +3034,22 @@ mod tests {
             first_delivery, until,
             "delivery has its own position, separate from qualification and event positions"
         );
+        assert!(
+            snapshot_for_sync(
+                &invitee,
+                until + 1,
+                "TEST".into(),
+                InviteSyncStream::Ordinary
+            )
+            .await
+            .unwrap()
+            .rooms
+            .contains_key(&target),
+            "unconfirmed delivery must still replay"
+        );
+        super::acknowledge_invite_delivery(&invitee, "TEST".into(), delivery)
+            .await
+            .unwrap();
         data::next_sn().await.unwrap();
         assert!(
             snapshot_for_sync(
