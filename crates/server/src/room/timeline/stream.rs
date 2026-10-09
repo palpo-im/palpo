@@ -97,6 +97,8 @@ pub async fn load_pdus(
     while list.len() < limit {
         let mut query = events::table
             .filter(events::room_id.eq(room_id))
+            .filter(events::is_outlier.eq(false))
+            .filter(events::soft_failed.eq(false))
             .into_boxed();
         if dir == Direction::Forward {
             if let Some(since_tk) = since_tk {
@@ -145,11 +147,8 @@ pub async fn load_pdus(
                 query = query.filter(events::ty.eq_any(types));
             }
         }
-        // Don't filter by is_outlier or soft_failed here:
-        //  - Federation events that arrive with missing prev_events end up marked as outlier and/or
-        //    soft_failed even though they should still be visible to clients (per Matrix spec,
-        //    soft-failed events appear in the timeline; they just don't contribute to room state).
-        //  - We *do* filter is_rejected because rejected events should not be visible at all.
+        // Stored auth/state and events awaiting DAG recovery are not delivered
+        // until they pass timeline promotion. Soft-failed events remain hidden.
         let events: Vec<(OwnedEventId, Seqnum)> = if dir == Direction::Forward {
             query
                 .filter(events::sn.gt(start_sn))

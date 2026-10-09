@@ -5,6 +5,10 @@ hs1=Palpo/hs2=Synapse/hs3=Palpo. Most cases deploy two peers; ACL and restricted
 failover cases deploy three. A successful local request is insufficient: tests must
 observe the response from the other implementation or the event in its sync.
 The manifest is `mixed-cases.txt`; it drives both selection and the results gate.
+The per-peer environment names must use lowercase `hs1`, `hs2`, and `hs3`:
+Complement indexes its image map by those exact names. Uppercase suffixes silently
+fall back to the default image. `TestMixedHomeserverImages` inspects the actual
+containers in each direction and requires all three configured images to match.
 
 ## Audit
 
@@ -32,9 +36,9 @@ still built from its current default branch so compatibility changes are visible
 | History | Federated message history/backfill | Retained TestMessagesOverFederation, including its visibility cases |
 | Presence | Remote presence | Retained TestRemotePresence |
 
-The six Palpo-owned top-level tests live in `mixed/` and are copied into
+The seven Palpo-owned top-level tests live in `mixed/` and are copied into
 Complement's `tests/palpo_mixed` package. Ten additional upstream membership/ACL
-tests are selected. Every default run must report all 31 manifest entries as
+tests are selected. Every default run must report all 32 manifest entries as
 passed in both directions. Subtest counts are not used as a coverage percentage.
 
 The Synapse fixture explicitly enables `allow_public_rooms_over_federation` in

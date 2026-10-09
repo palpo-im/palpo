@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap, hash_map};
 use std::time::Instant;
 
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::json;
 
@@ -735,14 +737,56 @@ async fn send_device_key_update_with_joined_rooms(
     if user_id.is_remote() {
         return Ok(());
     }
+    let stream_id = data::next_sn().await?;
+    diesel::insert_into(data::schema::device_streams::table)
+        .values((
+            data::schema::device_streams::id.eq(stream_id),
+            data::schema::device_streams::user_id.eq(user_id),
+            data::schema::device_streams::device_id.eq(device_id),
+        ))
+        .execute(&mut data::connect().await?)
+        .await?;
     let remote_servers = data::room::joined_servers_for_rooms(joined_rooms).await?;
 
-    let content = DeviceListUpdateContent::new(
-        user_id.to_owned(),
-        device_id.to_owned(),
-        data::next_sn().await? as u64,
-    );
+    let content =
+        DeviceListUpdateContent::new(user_id.to_owned(), device_id.to_owned(), stream_id as u64);
     let edu = Edu::DeviceListUpdate(content);
 
     sending::send_edu_servers(remote_servers.into_iter(), &edu).await
+}
+
+#[cfg(test)]
+mod device_list_database_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_device_list_versions_advance_before_sending() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user: OwnedUserId = "@device_version:dynamic.example".try_into().unwrap();
+        let other: OwnedUserId = "@device_version_other:dynamic.example".try_into().unwrap();
+        assert_eq!(
+            data::user::key::device_list_stream_id(&user).await.unwrap(),
+            0
+        );
+        send_device_key_update(&user, "FIRST".into()).await.unwrap();
+        let first = data::user::key::device_list_stream_id(&user).await.unwrap();
+        assert!(first > 0);
+        send_device_key_update(&user, "SECOND".into())
+            .await
+            .unwrap();
+        assert!(data::user::key::device_list_stream_id(&user).await.unwrap() > first);
+        assert_eq!(
+            data::user::key::device_list_stream_id(&other)
+                .await
+                .unwrap(),
+            0
+        );
+    }
 }

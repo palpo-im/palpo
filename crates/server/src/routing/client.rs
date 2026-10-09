@@ -265,6 +265,9 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
         ("net.zemos.msc4383".to_owned(), true), /* Homeserver implementation metadata (https://github.com/matrix-org/matrix-spec-proposals/pull/4383) */
     ]);
 
+    #[cfg(feature = "unstable-msc4494")]
+    unstable_features.insert("uk.timedout.msc4494".to_owned(), true);
+
     if delayed_events {
         // delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140)
         unstable_features.insert("org.matrix.msc4140".to_owned(), true);
@@ -383,6 +386,16 @@ mod supported_versions_tests {
         #[cfg(feature = "unstable-msc4262")]
         assert_eq!(advertised, Some(true));
         #[cfg(not(feature = "unstable-msc4262"))]
+        assert_eq!(advertised, None);
+    }
+
+    #[test]
+    fn membership_invite_blocking_is_advertised_only_when_enabled() {
+        let body = supported_versions_body(false);
+        let advertised = body.unstable_features.get("uk.timedout.msc4494");
+        #[cfg(feature = "unstable-msc4494")]
+        assert_eq!(advertised, Some(&true));
+        #[cfg(not(feature = "unstable-msc4494"))]
         assert_eq!(advertised, None);
     }
 

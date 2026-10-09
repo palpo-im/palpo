@@ -90,6 +90,14 @@ async fn lock_data_key(
     room_id: Option<&RoomId>,
     event_type: &str,
 ) -> DataResult<()> {
+    if room_id.is_none()
+        && matches!(
+            event_type,
+            "m.invite_permission_config" | "m.ignored_user_list"
+        )
+    {
+        super::lock_invite_user_write(conn, user_id).await?;
+    }
     let room_id = room_id.map_or("", RoomId::as_str);
     // PostgreSQL text cannot contain NUL, so make the pair unambiguous with a
     // length prefix instead of a separator that either component might use.

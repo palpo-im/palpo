@@ -11,6 +11,7 @@ use palpo_core::Direction;
 
 use super::fetching::fetch_and_process_missing_state;
 use super::resolver::{resolve_state, resolve_state_at_incoming};
+use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::server_acl::RoomServerAclEventContent;
 use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::federation::event::timestamp_to_event_request;
@@ -40,6 +41,53 @@ pub(crate) async fn process_incoming_pdu(
     value: BTreeMap<String, CanonicalJsonValue>,
     is_timeline_event: bool,
     is_backfill: bool,
+) -> AppResult<()> {
+    process_incoming_pdu_inner(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        is_timeline_event,
+        is_backfill,
+        false,
+    )
+    .await
+}
+
+/// Validate and store a successful send_join response as outliers. Historical
+/// auth-chain memberships must not change current membership or frame state;
+/// force_state publishes the returned state before append_pdu publishes our join.
+pub(crate) async fn process_join_response_pdu(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version_id: &RoomVersionId,
+    value: CanonicalJsonObject,
+) -> AppResult<()> {
+    process_incoming_pdu_inner(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        false,
+        false,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_incoming_pdu_inner(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version_id: &RoomVersionId,
+    value: CanonicalJsonObject,
+    is_timeline_event: bool,
+    is_backfill: bool,
+    joining: bool,
 ) -> AppResult<()> {
     if !crate::room::room_exists(room_id).await? {
         return Err(MatrixError::not_found("room is unknown to this server").into());
@@ -116,8 +164,15 @@ pub(crate) async fn process_incoming_pdu(
         return Ok(());
     }
 
-    let Some(outlier_pdu) =
-        process_to_outlier_pdu(remote_server, event_id, room_id, room_version_id, value).await?
+    let Some(outlier_pdu) = process_to_outlier_pdu_inner(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        joining,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -143,6 +198,24 @@ pub(crate) async fn process_incoming_pdu(
     check_room_id(room_id, &incoming_pdu)?;
     // 8. if not timeline event: stop
     if !is_timeline_event {
+        if joining && !incoming_pdu.soft_failed {
+            let rules = crate::room::get_version_rules(room_version_id)?;
+            if let Some(before) = resolve_state_at_incoming(&incoming_pdu, &rules).await? {
+                let mut compressed = CompressedState::new();
+                for (field, event) in before {
+                    let (sn, _) = crate::event::ensure_event_sn(room_id, &event).await?;
+                    compressed.insert(state::compress_event(room_id, field, sn)?);
+                }
+                // Cache historical event-time state without publishing current
+                // state. Later imports must not repeatedly walk the whole DAG.
+                state::set_event_state_before(
+                    &incoming_pdu.event_id,
+                    room_id,
+                    Arc::new(compressed),
+                )
+                .await?;
+            }
+        }
         return Ok(());
     }
     // Skip old events
@@ -284,7 +357,18 @@ pub async fn process_to_outlier_pdu(
     event_id: &EventId,
     room_id: &RoomId,
     room_version: &RoomVersionId,
+    value: CanonicalJsonObject,
+) -> AppResult<Option<OutlierPdu>> {
+    process_to_outlier_pdu_inner(remote_server, event_id, room_id, room_version, value, false).await
+}
+
+async fn process_to_outlier_pdu_inner(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
     mut value: CanonicalJsonObject,
+    joining: bool,
 ) -> AppResult<Option<OutlierPdu>> {
     if let Some((room_id, event_sn, event_data)) = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
@@ -376,7 +460,7 @@ pub async fn process_to_outlier_pdu(
     check_room_id(room_id, &incoming_pdu)?;
 
     let server_joined =
-        crate::room::is_server_joined(crate::config::server_name(), room_id).await?;
+        joining || crate::room::is_server_joined(crate::config::server_name(), room_id).await?;
     if !server_joined {
         if let Some(_state_key) = incoming_pdu.state_key.as_deref()
             && incoming_pdu.event_ty == TimelineEventType::RoomMember
@@ -571,7 +655,7 @@ pub async fn process_to_timeline_pdu(
                 .await
                 .unwrap_or(false);
 
-    if !server_joined {
+    if !server_joined && !incoming_pdu.is_backfill {
         if let Some(state_key) = incoming_pdu.state_key.clone().as_deref()
             && incoming_pdu.event_ty == TimelineEventType::RoomMember
             && state_key != incoming_pdu.sender().as_str() //????
@@ -644,7 +728,27 @@ pub async fn process_to_timeline_pdu(
                 disposed,
             } = state::save_state(&incoming_pdu.room_id, Arc::new(new_room_state)).await?;
 
-            state::force_state(&incoming_pdu.room_id, frame_id, appended, disposed).await?;
+            if incoming_pdu
+                .get_content::<RoomMemberEventContent>()?
+                .membership
+                == MembershipState::Leave
+            {
+                let target = UserId::parse(state_key)?;
+                if !state::force_state_for_invite_withdrawal(
+                    &incoming_pdu.room_id,
+                    frame_id,
+                    appended,
+                    disposed,
+                    &target,
+                    &incoming_pdu.sender,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+            } else {
+                state::force_state(&incoming_pdu.room_id, frame_id, appended, disposed).await?;
+            }
 
             debug!("appended incoming pdu");
             timeline::append_pdu(&incoming_pdu, json_data, &state_lock).await?;
@@ -688,7 +792,8 @@ pub async fn process_to_timeline_pdu(
 
     // Soft fail check before doing state res
     debug!("performing soft-fail check");
-    let soft_fail = fails_current_state_check(&incoming_pdu, room_version_id).await?;
+    let soft_fail = !incoming_pdu.is_backfill
+        && fails_current_state_check(&incoming_pdu, room_version_id).await?;
 
     // 13. Use state resolution to find new room state
     let state_lock = crate::room::lock_state(&incoming_pdu.room_id).await;
@@ -721,7 +826,10 @@ pub async fn process_to_timeline_pdu(
 
     // A soft-failed state event must not change the room's current state: it failed
     // authorisation against exactly that state.
-    let guards = if !soft_fail && let Some(state_key) = &incoming_pdu.state_key {
+    let guards = if !soft_fail
+        && !incoming_pdu.is_backfill
+        && let Some(state_key) = &incoming_pdu.state_key
+    {
         debug!("preparing for stateres to derive new room state");
 
         // We also add state after incoming event to the fork states

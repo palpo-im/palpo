@@ -44,11 +44,12 @@ pub(super) async fn sync_events_v5(
     let sender_id = authed.user_id();
     let device_id = authed.require_device_id()?;
 
-    let since_sn: i64 = args
+    let since: crate::event::SyncPosition = args
         .pos
         .as_ref()
         .and_then(|string| string.parse().ok())
         .unwrap_or_default();
+    let since_sn = since.event_sn;
 
     let mut req_body = req_body.into_inner();
 
@@ -64,15 +65,16 @@ pub(super) async fn sync_events_v5(
     }
 
     // Get sticky parameters from cache
-    let (known_rooms, previous_list_counts) = crate::sync_v5::update_sync_request_with_cache(
-        sender_id.to_owned(),
-        device_id.to_owned(),
-        &mut req_body,
-    )
-    .await;
+    let (known_rooms, previous_list_counts, previous_list_windows) =
+        crate::sync_v5::update_sync_request_with_cache(
+            sender_id.to_owned(),
+            device_id.to_owned(),
+            &mut req_body,
+        )
+        .await;
 
     let mut res_body =
-        crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)
+        crate::sync_v5::sync_events(sender_id, device_id, since.clone(), &req_body, &known_rooms)
             .await?;
 
     let since_is_ahead = since_sn > data::curr_sn().await?;
@@ -81,6 +83,7 @@ pub(super) async fn sync_events_v5(
         args.pos.is_some(),
         &res_body,
         &previous_list_counts,
+        &previous_list_windows,
     ) {
         let duration = long_poll_timeout(args.timeout);
         #[cfg(feature = "unstable-msc4262")]
@@ -88,14 +91,18 @@ pub(super) async fn sync_events_v5(
         #[cfg(not(feature = "unstable-msc4262"))]
         let profile_updates = false;
         #[cfg(feature = "unstable-msc4262")]
-        let profile_after_sn = res_body.pos.parse().ok();
+        let profile_after_sn = res_body
+            .pos
+            .parse::<crate::event::SyncPosition>()
+            .ok()
+            .map(|pos| pos.event_sn);
         #[cfg(not(feature = "unstable-msc4262"))]
         let profile_after_sn = None;
         let watcher =
             crate::watcher::watch(sender_id, device_id, profile_updates, profile_after_sn);
         _ = tokio::time::timeout(duration, watcher).await;
         res_body =
-            crate::sync_v5::sync_events(sender_id, device_id, since_sn, &req_body, &known_rooms)
+            crate::sync_v5::sync_events(sender_id, device_id, since, &req_body, &known_rooms)
                 .await?;
     }
 
@@ -125,7 +132,14 @@ fn should_long_poll(
     has_pos: bool,
     response: &SyncEventsResBody,
     previous_list_counts: &std::collections::BTreeMap<String, usize>,
+    previous_list_windows: &crate::sync_v5::ListWindows,
 ) -> bool {
+    #[cfg(feature = "unstable-msc4494")]
+    if crate::sync_v5::has_list_window_updates(response, previous_list_windows) {
+        return false;
+    }
+    #[cfg(not(feature = "unstable-msc4494"))]
+    let _ = previous_list_windows;
     response.is_empty_for_long_poll()
         && (since_is_ahead || (has_pos && !has_list_count_changes(response, previous_list_counts)))
 }
@@ -229,7 +243,13 @@ mod tests {
         //     long-poll guard fires (the request should hang on the watcher
         //     instead of returning immediately).
         assert!(!has_list_count_changes(&step2, &cached_counts));
-        assert!(should_long_poll(true, true, &step2, &cached_counts));
+        assert!(should_long_poll(
+            true,
+            true,
+            &step2,
+            &cached_counts,
+            &BTreeMap::new()
+        ));
 
         // (c) cache write after step 2 is idempotent.
         let cached_counts_after: BTreeMap<String, usize> = step2
@@ -248,6 +268,59 @@ mod tests {
         assert!(
             json.get("lists")
                 .is_some_and(|v| !v.as_object().unwrap().is_empty())
+        );
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[test]
+    fn changed_list_positions_are_returned_even_without_room_or_count_updates() {
+        use crate::core::client::sync_events::v5::SyncListOp;
+        use crate::core::identifiers::RoomId;
+
+        let a = RoomId::parse("!a:example.org").unwrap().to_owned();
+        let b = RoomId::parse("!b:example.org").unwrap().to_owned();
+        let previous = [("main".to_owned(), [(1, a.clone()), (2, b.clone())].into())].into();
+        let counts = [("main".to_owned(), 3)].into();
+        let mut response = SyncEventsResBody::new("42".to_owned());
+        response.lists.insert(
+            "main".to_owned(),
+            SyncList {
+                count: 3,
+                ops: vec![SyncListOp::Sync {
+                    range: (1, 2),
+                    room_ids: vec![b.clone(), a.clone()],
+                }],
+            },
+        );
+        assert!(response.is_empty_for_long_poll());
+        assert!(!has_list_count_changes(&response, &counts));
+        for since_is_ahead in [true, false] {
+            assert!(
+                !should_long_poll(since_is_ahead, true, &response, &counts, &previous),
+                "list changes must survive the handler even if another stream advanced meanwhile"
+            );
+        }
+        response.lists.get_mut("main").unwrap().ops = vec![SyncListOp::Sync {
+            range: (1, 2),
+            room_ids: vec![a.clone(), b.clone()],
+        }];
+        for since_is_ahead in [true, false] {
+            assert!(
+                should_long_poll(since_is_ahead, true, &response, &counts, &previous),
+                "unchanged full SYNC operations must not cause a polling loop"
+            );
+        }
+        response.lists.get_mut("main").unwrap().ops = vec![SyncListOp::Sync {
+            range: (2, 3),
+            room_ids: vec![a, b],
+        }];
+        assert!(
+            !should_long_poll(true, true, &response, &counts, &previous),
+            "the same room set at different indices is a list update"
+        );
+        assert!(
+            !should_long_poll(true, true, &response, &counts, &BTreeMap::new()),
+            "legacy connections must receive a complete window before comparison"
         );
     }
 
@@ -270,7 +343,13 @@ mod tests {
         };
 
         assert!(!response.is_empty_for_long_poll());
-        assert!(!should_long_poll(true, true, &response, &BTreeMap::new()));
+        assert!(!should_long_poll(
+            true,
+            true,
+            &response,
+            &BTreeMap::new(),
+            &BTreeMap::new()
+        ));
     }
 
     /// When the user joins (or leaves) a room between two idle re-polls, the

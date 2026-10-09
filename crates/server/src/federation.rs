@@ -164,18 +164,12 @@ pub(crate) async fn user_can_perform_restricted_join(
         return Ok(false);
     }
 
-    if room::user::is_joined(user_id, room_id)
-        .await
-        .unwrap_or(false)
-    {
+    if room::user::is_joined(user_id, room_id).await? {
         // joining user is already joined, there is nothing we need to do
-        return Ok(false);
+        return Ok(true);
     }
 
-    if room::user::is_invited(user_id, room_id)
-        .await
-        .unwrap_or(false)
-    {
+    if room::user::is_invited(user_id, room_id).await? {
         return Ok(true);
     }
 
@@ -196,10 +190,13 @@ pub(crate) async fn user_can_perform_restricted_join(
 
     if r.allow.is_empty() {
         tracing::info!("`{room_id}` is restricted but the allow key is empty");
-        return Ok(false);
+        return Err(
+            MatrixError::forbidden("restricted room has no valid allow rules", None).into(),
+        );
     }
 
     let mut authorized = false;
+    let mut unknown_room = false;
     for m in r.allow.iter().filter_map(|rule| {
         if let AllowRule::RoomMembership(membership) = rule {
             Some(membership)
@@ -207,24 +204,22 @@ pub(crate) async fn user_can_perform_restricted_join(
             None
         }
     }) {
-        if room::is_server_joined(&config::get().server_name, &m.room_id)
-            .await
-            .unwrap_or(false)
-            && room::user::is_joined(user_id, &m.room_id)
-                .await
-                .unwrap_or(false)
-        {
+        if !room::is_server_joined(&config::get().server_name, &m.room_id).await? {
+            unknown_room = true;
+        } else if room::user::is_joined(user_id, &m.room_id).await? {
             authorized = true;
             break;
         }
     }
     if authorized {
         Ok(true)
-    } else {
+    } else if unknown_room {
         Err(MatrixError::unable_to_authorize_join(
             "joining user is not known to be in any required room",
         )
         .into())
+    } else {
+        Err(MatrixError::forbidden("joining user is not in any required room", None).into())
     }
 }
 

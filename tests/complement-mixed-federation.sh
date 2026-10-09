@@ -129,9 +129,9 @@ run_direction() {
     set +o pipefail
     env -C "$COMPLEMENT_SRC" \
         COMPLEMENT_BASE_IMAGE="$default_image" \
-        COMPLEMENT_BASE_IMAGE_HS1="$hs1_image" \
-        COMPLEMENT_BASE_IMAGE_HS2="$hs2_image" \
-        COMPLEMENT_BASE_IMAGE_HS3="$hs1_image" \
+        COMPLEMENT_BASE_IMAGE_hs1="$hs1_image" \
+        COMPLEMENT_BASE_IMAGE_hs2="$hs2_image" \
+        COMPLEMENT_BASE_IMAGE_hs3="$hs1_image" \
         COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
         COMPLEMENT_SHARE_ENV_PREFIX=PASS_ \
         PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite \

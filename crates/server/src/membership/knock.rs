@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use salvo::http::StatusError;
 
 use crate::core::UnixMillis;
@@ -46,11 +46,6 @@ pub async fn knock_room(
             None,
         )
         .into());
-    }
-
-    if room::user::is_knocked(sender_id, room_id).await? {
-        warn!("{sender_id} is already knocked in {room_id}");
-        return Ok(None);
     }
 
     if let Ok(memeber) = room::get_member(room_id, sender_id, None).await
@@ -231,11 +226,14 @@ pub async fn knock_room(
             StatusError::internal_server_error().brief(format!("invalid knock event PDU: {e:?}"))
         })?;
 
-    let knock_state = send_knock_body
+    let mut knock_state = send_knock_body
         .knock_room_state
         .iter()
         .map(stripped_knock_state_event)
         .collect::<AppResult<Vec<_>>>()?;
+    // Residents can omit the knocking user's own membership from their summary.
+    // /sync still needs the accepted knock to describe this user's transition.
+    knock_state.push(parsed_knock_pdu.to_stripped_state_event().await);
 
     info!("appending room knock event locally");
     let event_id = parsed_knock_pdu.event_id.clone();
@@ -243,7 +241,7 @@ pub async fn knock_room(
     NewDbEvent {
         id: event_id.to_owned(),
         sn: event_sn,
-        ty: MembershipState::Knock.to_string(),
+        ty: crate::core::events::TimelineEventType::RoomMember.to_string(),
         room_id: room_id.to_owned(),
         unrecognized_keys: None,
         depth: parsed_knock_pdu.depth as i64,
@@ -273,18 +271,23 @@ pub async fn knock_room(
 
     // This server is not joined to the remote room. Its local room state only
     // contains the knock event, so use the state returned by /send_knock for /sync.
-    let updated = diesel::update(
-        room_users::table
-            .filter(room_users::room_id.eq(room_id))
-            .filter(room_users::user_id.eq(sender_id))
-            .filter(room_users::membership.eq(MembershipState::Knock.to_string())),
-    )
-    .set(room_users::state_data.eq(serde_json::to_value(&knock_state)?))
-    .execute(&mut connect().await?)
-    .await?;
-    if updated != 1 {
-        return Err(AppError::internal("failed to save federated knock state"));
-    }
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            crate::data::user::lock_invite_user_write(conn, sender_id).await?;
+            diesel::update(
+                room_users::table
+                    .filter(room_users::room_id.eq(room_id))
+                    .filter(room_users::user_id.eq(sender_id))
+                    .filter(room_users::event_id.eq(&event_id))
+                    .filter(room_users::membership.eq(MembershipState::Knock.to_string())),
+            )
+            .set(room_users::state_data.eq(serde_json::to_value(&knock_state)?))
+            .execute(conn)
+            .await?;
+            Ok(())
+        })
+        .await?;
 
     drop(event_guard);
     Ok(Some(knock_pdu))

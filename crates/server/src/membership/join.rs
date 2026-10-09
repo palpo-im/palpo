@@ -27,7 +27,7 @@ use crate::core::serde::{
 use crate::data::room::{DbEventData, NewDbEvent};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
-use crate::event::handler::process_incoming_pdu;
+use crate::event::handler::process_join_response_pdu;
 use crate::event::{
     PduBuilder, PduEvent, ensure_event_sn, gen_event_id_canonical_json, parse_fetched_pdu,
 };
@@ -299,8 +299,7 @@ pub async fn join_room(
         warn!("invalid pdu in send_join response: {}", e);
         AppError::public("invalid join event pdu")
     })?;
-    let join_event_id = parsed_join_pdu.event_id.clone();
-    let (join_event_sn, event_guard) = ensure_event_sn(room_id, &join_event_id).await?;
+    let (join_event_sn, event_guard) = ensure_event_sn(room_id, &parsed_join_pdu.event_id).await?;
 
     let mut state = HashMap::new();
     let pub_key_map = RwLock::new(BTreeMap::new());
@@ -311,17 +310,8 @@ pub async fn join_room(
     let resp_auth = &resp_events.auth_chain;
     crate::server_key::acquire_events_pubkeys(resp_auth.iter().chain(resp_state.iter())).await;
 
-    super::update_membership(
-        &join_event_id,
-        join_event_sn,
-        room_id,
-        sender_id,
-        MembershipState::Join,
-        sender_id,
-        None,
-    )
-    .await?;
-
+    // Import the response as outliers. Publish its resolved state together,
+    // then the actual join; historical joins must not establish eligibility.
     let mut parsed_pdus = IndexMap::new();
     for auth_pdu in resp_auth {
         let (event_id, event_value) = parse_fetched_pdu(room_id, &room_version, auth_pdu)?;
@@ -331,27 +321,19 @@ pub async fn join_room(
         let (event_id, event_value) = parse_fetched_pdu(room_id, &room_version, state)?;
         parsed_pdus.insert(event_id, event_value);
     }
-    // Process the trusted send_join auth_chain/state events in topological
-    // (depth) order so that each event's prev_events are already stored by the
-    // time it is handled. Processing them in arbitrary order makes an event
-    // whose ancestors haven't been stored yet look like it has missing
-    // prev_events, which drives the incoming-PDU pipeline to fire
-    // `get_missing_events`/`state_ids`/`state` federation requests back at the
-    // remote. Against servers that only answer make/send_join (e.g. Complement
-    // test servers) those 404 and needlessly congest the outbound send queue,
-    // delaying real traffic such as a redaction we're trying to deliver.
+    // Validate and store auth/state in depth order so predecessors are present
+    // without unnecessary missing-event federation requests. These are inputs
+    // to the returned snapshot, not live events that each replace current state.
     let mut ordered_pdus: Vec<_> = parsed_pdus.into_iter().collect();
     ordered_pdus
         .sort_by_key(|(_, value)| value.get("depth").and_then(|v| v.as_integer()).unwrap_or(0));
     for (event_id, event_value) in ordered_pdus {
-        if let Err(e) = process_incoming_pdu(
+        if let Err(e) = process_join_response_pdu(
             &remote_server,
             &event_id,
             room_id,
             &room_version,
             event_value,
-            true,
-            false,
         )
         .await
         {
@@ -574,21 +556,28 @@ pub async fn get_first_user_can_issue_invite(
         );
     }
     if invitee_in_restriction_room {
-        let joined_users: Vec<_> = room::joined_users(room_id, None).await?;
-        for joined_user in &joined_users {
-            if joined_user.server_name() == config::get().server_name
-                && room::user_can_invite(room_id, joined_user, invitee_id).await
-            {
-                return Ok(joined_user.clone());
-            }
+        if let Some(user) = local_invite_authorizer(room_id, invitee_id).await? {
+            return Ok(user);
         }
         debug!(
-            "get_first_user_can_issue_invite: no local user with invite power in room {room_id}, \
-             checked {} joined users",
-            joined_users.len()
+            "get_first_user_can_issue_invite: no local user with invite power in room {room_id}"
         );
     }
     Err(MatrixError::not_found("no user can issue invite in this room").into())
+}
+
+pub(crate) async fn local_invite_authorizer(
+    room_id: &RoomId,
+    invitee_id: &UserId,
+) -> AppResult<Option<OwnedUserId>> {
+    for user in room::joined_users(room_id, None).await? {
+        if user.server_name() == config::server_name()
+            && room::user_can_invite(room_id, &user, invitee_id).await
+        {
+            return Ok(Some(user));
+        }
+    }
+    Ok(None)
 }
 pub async fn get_users_can_issue_invite(
     room_id: &RoomId,

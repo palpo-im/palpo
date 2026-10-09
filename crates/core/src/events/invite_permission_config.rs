@@ -49,6 +49,52 @@ pub enum InvitePermissionAction {
     /// Reject the invite.
     Block,
 
+    /// Reject invites unless both users are joined to a room with a non-public join rule.
+    #[cfg(feature = "unstable-msc4494")]
+    #[palpo_enum(rename = "uk.timedout.msc4494.deny_public")]
+    DenyPublic,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn invite_actions_preserve_unknown_values_and_ignore_invalid_values() {
+        for action in ["block", "unknown", "uk.timedout.msc4494.deny_public"] {
+            let content: InvitePermissionConfigEventContent =
+                serde_json::from_value(json!({"default_action": action})).unwrap();
+            assert_eq!(content.default_action.unwrap().as_str(), action);
+        }
+        for value in [
+            json!({}),
+            json!({"default_action": 42}),
+            json!({"default_action": null}),
+        ] {
+            let content: InvitePermissionConfigEventContent =
+                serde_json::from_value(value).unwrap();
+            assert!(content.default_action.is_none());
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[test]
+    fn membership_action_uses_unstable_wire_name() {
+        let content: InvitePermissionConfigEventContent =
+            serde_json::from_value(json!({"default_action": "uk.timedout.msc4494.deny_public"}))
+                .unwrap();
+        assert!(matches!(
+            content.default_action,
+            Some(InvitePermissionAction::DenyPublic)
+        ));
+        assert_eq!(
+            serde_json::to_value(InvitePermissionAction::DenyPublic).unwrap(),
+            json!("uk.timedout.msc4494.deny_public")
+        );
+    }
 }

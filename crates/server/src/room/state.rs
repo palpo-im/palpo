@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -52,14 +52,49 @@ pub async fn force_state(
     room_id: &RoomId,
     frame_id: i64,
     appended: Arc<CompressedState>,
-    _disposed_data: Arc<CompressedState>,
+    disposed: Arc<CompressedState>,
 ) -> AppResult<()> {
+    force_state_inner(room_id, frame_id, appended, disposed, None)
+        .await
+        .map(|_| ())
+}
+
+/// Without participating room state, only the original inviter can rescind an
+/// out-of-band invitation. Check the current invitation inside the publication
+/// transaction so a concurrent replacement cannot inherit an older decision.
+pub(crate) async fn force_state_for_invite_withdrawal(
+    room_id: &RoomId,
+    frame_id: i64,
+    appended: Arc<CompressedState>,
+    disposed: Arc<CompressedState>,
+    invitee: &UserId,
+    sender: &UserId,
+) -> AppResult<bool> {
+    force_state_inner(
+        room_id,
+        frame_id,
+        appended,
+        disposed,
+        Some((invitee, sender)),
+    )
+    .await
+}
+
+async fn force_state_inner(
+    room_id: &RoomId,
+    frame_id: i64,
+    appended: Arc<CompressedState>,
+    _disposed: Arc<CompressedState>,
+    withdrawal: Option<(&UserId, &UserId)>,
+) -> AppResult<bool> {
     let mut event_ids = Vec::new();
     for new in appended.iter() {
         if let Ok((_, id)) = new.split().await {
             event_ids.push(id);
         }
     }
+    let mut memberships = Vec::new();
+    let mut invalidate_space = false;
     for event_id in &event_ids {
         let pdu = match timeline::get_pdu(event_id).await {
             Ok(pdu) => pdu,
@@ -88,7 +123,7 @@ pub async fn force_state(
                     Err(_) => continue,
                 };
 
-                membership::update_membership(
+                if let Some(row) = membership::prepare_membership(
                     &pdu.event_id,
                     pdu.event_sn,
                     room_id,
@@ -97,30 +132,98 @@ pub async fn force_state(
                     &pdu.sender,
                     None,
                 )
-                .await?;
+                .await?
+                {
+                    memberships.push(row);
+                }
             }
             TimelineEventType::SpaceChild => {
-                let mut cache = room::space::ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap();
-                cache.remove(&(pdu.room_id.clone(), false));
-                cache.remove(&(pdu.room_id.clone(), true));
+                invalidate_space = true;
             }
             _ => continue,
         }
     }
 
-    set_room_state(room_id, frame_id).await?;
-    if let Err(e) = room::update_currents(room_id).await {
+    // A resolved state is one publication, not a series of independently
+    // committed memberships followed by a frame. Readers must see either state.
+    let mut users = memberships
+        .iter()
+        .map(|row| row.user_id.clone())
+        .collect::<Vec<_>>();
+    if let Some((invitee, _)) = withdrawal {
+        users.push(invitee.to_owned());
+    }
+    let published = connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            crate::data::user::lock_invite_state_write(conn, &users, room_id).await?;
+            if let Some((invitee, sender)) = withdrawal {
+                let joined = room_users::table
+                    .filter(room_users::room_id.eq(room_id))
+                    .filter(room_users::user_server_id.eq(crate::config::server_name()))
+                    .filter(room_users::membership.eq("join"));
+                let participating = diesel::select(diesel::dsl::exists(joined))
+                    .get_result::<bool>(conn)
+                    .await?;
+                let current = room_users::table
+                    .filter(room_users::room_id.eq(room_id))
+                    .filter(room_users::user_id.eq(invitee))
+                    .select((room_users::membership, room_users::sender_id))
+                    .first::<(String, OwnedUserId)>(conn)
+                    .await
+                    .optional()?;
+                if !participating
+                    && current.is_some_and(|(membership, inviter)| {
+                        membership == "invite" && inviter != sender
+                    })
+                {
+                    return Ok(false);
+                }
+            }
+            for row in &memberships {
+                membership::replace_membership_with_conn(conn, row).await?;
+            }
+            set_room_state_with_conn(conn, room_id, frame_id).await?;
+            Ok(true)
+        })
+        .await?;
+    if !published {
+        return Ok(false);
+    }
+    if invalidate_space {
+        let mut cache = room::space::ROOM_ID_SPACE_CHUNK_CACHE.lock().unwrap();
+        cache.remove(&(room_id.to_owned(), false));
+        cache.remove(&(room_id.to_owned(), true));
+    }
+    if !memberships.is_empty() {
+        membership::finish_membership_update(room_id).await?;
+    } else if let Err(e) = room::update_currents(room_id).await {
         error!("failed to update statistics for room {room_id}: {e}");
     }
 
-    Ok(())
+    Ok(true)
 }
 
 #[tracing::instrument]
 pub async fn set_room_state(room_id: &RoomId, frame_id: i64) -> AppResult<()> {
+    connect()
+        .await?
+        .transaction::<_, crate::AppError, _>(async |conn| {
+            crate::data::user::lock_invite_room_write(conn, room_id).await?;
+            set_room_state_with_conn(conn, room_id, frame_id).await
+        })
+        .await
+}
+
+/// Caller holds the room's exclusive invitation scope until commit.
+async fn set_room_state_with_conn(
+    conn: &mut AsyncPgConnection,
+    room_id: &RoomId,
+    frame_id: i64,
+) -> AppResult<()> {
     diesel::update(rooms::table.find(room_id))
         .set(rooms::state_frame_id.eq(frame_id))
-        .execute(&mut connect().await?)
+        .execute(conn)
         .await?;
     Ok(())
 }

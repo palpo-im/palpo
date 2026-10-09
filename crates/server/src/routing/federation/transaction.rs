@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
+use serde::Deserialize;
 
 use crate::core::UnixMillis;
 use crate::core::device::{DeviceListUpdateContent, DirectDeviceContent};
@@ -10,9 +11,7 @@ use crate::core::events::receipt::{
     ReceiptContent, ReceiptEvent, ReceiptEventContent, ReceiptType,
 };
 use crate::core::events::typing::TypingContent;
-use crate::core::federation::transaction::{
-    Edu, SendMessageReqBody, SendMessageResBody, SigningKeyUpdateContent,
-};
+use crate::core::federation::transaction::{Edu, SendMessageResBody, SigningKeyUpdateContent};
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceContent;
 #[cfg(feature = "unstable-msc4495")]
@@ -28,43 +27,72 @@ pub fn router() -> Router {
     Router::with_path("send/{txn_id}").put(send_message)
 }
 
+/// Decode ephemeral events independently so one malformed EDU cannot reject the
+/// transaction's persistent events. Keep every raw EDU until the limit is checked.
+#[derive(Deserialize, ToSchema)]
+struct IncomingTransaction {
+    origin: OwnedServerName,
+    #[serde(rename = "origin_server_ts")]
+    _origin_server_ts: UnixMillis,
+    // Match the outgoing request's enabled `unstable-unspecified` compatibility.
+    #[serde(default)]
+    #[salvo(schema(value_type = Vec<Object>))]
+    pdus: Vec<Box<RawJsonValue>>,
+    #[serde(default)]
+    #[salvo(schema(value_type = Vec<Object>))]
+    edus: Vec<Box<RawJsonValue>>,
+}
+
+impl IncomingTransaction {
+    fn validate(&self, origin: &ServerName) -> AppResult<()> {
+        if self.origin != origin {
+            return Err(MatrixError::forbidden(
+                "not allowed to send transactions on behalf of other servers",
+                None,
+            )
+            .into());
+        }
+        if self.pdus.len() > PDU_LIMIT {
+            return Err(MatrixError::forbidden(
+                format!("not allowed to send more than {PDU_LIMIT} PDUs in one transaction"),
+                None,
+            )
+            .into());
+        }
+        if self.edus.len() > EDU_LIMIT {
+            return Err(MatrixError::forbidden(
+                format!("not allowed to send more than {EDU_LIMIT} EDUs in one transaction"),
+                None,
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
+fn parse_edus(edus: Vec<Box<RawJsonValue>>) -> impl Iterator<Item = Edu> {
+    edus.into_iter().filter_map(|raw| {
+        serde_json::from_str(raw.get())
+            .map_err(|error| warn!(%error, "could not parse EDU; ignoring ephemeral update"))
+            .ok()
+    })
+}
+
 /// #PUT /_matrix/federation/v1/send/{txn_id}
 /// Push EDUs and PDUs to this server.
 #[endpoint]
 async fn send_message(
     depot: &mut Depot,
     _txn_id: PathParam<OwnedTransactionId>,
-    body: JsonBody<SendMessageReqBody>,
+    body: JsonBody<IncomingTransaction>,
 ) -> JsonResult<SendMessageResBody> {
     let origin = depot.origin()?;
     let body = body.into_inner();
-    if &body.origin != origin {
-        return Err(MatrixError::forbidden(
-            "not allowed to send transactions on behalf of other servers",
-            None,
-        )
-        .into());
-    }
-
-    if body.pdus.len() > PDU_LIMIT {
-        return Err(MatrixError::forbidden(
-            "not allowed to send more than {PDU_LIMIT} PDUs in one transaction",
-            None,
-        )
-        .into());
-    }
-
-    if body.edus.len() > EDU_LIMIT {
-        return Err(MatrixError::forbidden(
-            "not allowed to send more than {EDU_LIMIT} EDUs in one transaction",
-            None,
-        )
-        .into());
-    }
+    body.validate(origin)?;
 
     let txn_start_time = Instant::now();
     let resolved_map = process_pdus(&body.pdus, &body.origin, &txn_start_time).await?;
-    process_edus(body.edus, &body.origin).await;
+    process_edus(parse_edus(body.edus), &body.origin).await;
 
     json_ok(SendMessageResBody {
         pdus: resolved_map
@@ -123,7 +151,7 @@ async fn process_pdus(
     Ok(resolved_map)
 }
 
-async fn process_edus(edus: Vec<Edu>, origin: &ServerName) {
+async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) {
     for edu in edus {
         match edu {
             Edu::Presence(presence) => process_edu_presence(origin, presence).await,
@@ -442,5 +470,55 @@ async fn process_edu_signing_key_update(origin: &ServerName, content: SigningKey
             true,
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn malformed_edu_does_not_discard_persistent_or_valid_ephemeral_events() {
+        let pdu = json!({"type": "m.room.message", "content": {"body": "keep me"}});
+        let body: IncomingTransaction = serde_json::from_value(json!({
+            "origin": "remote.example",
+            "origin_server_ts": 1,
+            "pdus": [pdu],
+            "edus": [
+                {"edu_type": "m.presence", "content": {"push": [
+                    {"user_id": "@alice:remote.example", "presence": "online"}
+                ]}},
+                {"edu_type": "m.typing", "content": {
+                    "room_id": "!room:remote.example",
+                    "user_id": "@alice:remote.example", "typing": true
+                }},
+                null
+            ]
+        }))
+        .unwrap();
+        body.validate(&body.origin).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body.pdus[0].get()).unwrap(),
+            pdu
+        );
+        let edus: Vec<_> = parse_edus(body.edus).collect();
+        assert!(matches!(edus.as_slice(), [Edu::Typing(content)] if content.typing));
+    }
+
+    #[test]
+    fn malformed_edus_still_count_towards_transaction_limit() {
+        let body: IncomingTransaction = serde_json::from_value(json!({
+            "origin": "remote.example",
+            "origin_server_ts": 1,
+            "edus": vec![json!(null); EDU_LIMIT + 1]
+        }))
+        .unwrap();
+        assert!(body.validate(&body.origin).is_err());
+        assert!(
+            body.validate(&ServerName::parse("another.example").unwrap())
+                .is_err()
+        );
     }
 }

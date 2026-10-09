@@ -35,8 +35,8 @@ mod profiles;
 /// Returns the rooms (in input order) that survive the `is_invite`,
 /// `room_types`, `not_room_types`, `is_dm`, and `is_encrypted` filters from
 /// the request. Used by both `process_lists` (which sorts and slices the
-/// result for ops) and the `since_sn > curr_sn` fast path (which only needs
-/// the count).
+/// result for ops) and the `since_sn > curr_sn` fast path (for counts and
+/// deciding whether selected rooms still need delivery).
 async fn compute_active_rooms<'a>(
     list: &sync_events::v5::ReqList,
     all_invited_rooms: &[&'a RoomId],
@@ -116,6 +116,9 @@ async fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
     Ok(())
 }
 
+type ListWindow = BTreeMap<usize, OwnedRoomId>;
+pub(crate) type ListWindows = BTreeMap<String, ListWindow>;
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SlidingSyncCache {
     lists: BTreeMap<String, sync_events::v5::ReqList>,
@@ -123,6 +126,15 @@ struct SlidingSyncCache {
     list_counts: BTreeMap<String, usize>,
     subscriptions: BTreeMap<OwnedRoomId, sync_events::v5::RoomSubscription>,
     known_rooms: KnownRooms, // For every room, the room_since_sn number
+    /// The exact positions last served for each list, independently of event cursors.
+    #[serde(default)]
+    list_windows: ListWindows,
+    /// Windows offered in responses, awaiting the exact response token.
+    #[serde(default)]
+    pending_list_windows: BTreeMap<String, ListWindows>,
+    /// Legacy caches recorded offered windows without client acknowledgement.
+    #[serde(default)]
+    list_window_acknowledgements: bool,
     extensions: sync_events::v5::ExtensionsConfig,
     required_state: BTreeSet<Seqnum>,
     /// Rooms whose full member profiles this connection has acknowledged (MSC4262).
@@ -151,6 +163,15 @@ struct SlidingSyncCache {
 struct PendingProfileUsers {
     added: BTreeSet<OwnedUserId>,
     removed: BTreeSet<OwnedUserId>,
+}
+
+#[cfg(feature = "unstable-msc4494")]
+fn require_list_window_acknowledgements(cached: &mut SlidingSyncCache) {
+    if !cached.list_window_acknowledgements {
+        cached.list_windows.clear();
+        cached.pending_list_windows.clear();
+        cached.list_window_acknowledgements = true;
+    }
 }
 
 #[cfg(feature = "unstable-msc4262")]
@@ -592,15 +613,41 @@ async fn maybe_cleanup_connections() {
 pub async fn sync_events(
     sender_id: &UserId,
     device_id: &DeviceId,
-    since_sn: Seqnum,
+    since: impl Into<crate::event::SyncPosition>,
     req_body: &SyncEventsReqBody,
     known_rooms: &KnownRooms,
 ) -> AppResult<SyncEventsResBody> {
+    sync_events_at_position(sender_id, device_id, since.into(), req_body, known_rooms).await
+}
+
+async fn sync_events_at_position(
+    sender_id: &UserId,
+    device_id: &DeviceId,
+    since: crate::event::SyncPosition,
+    req_body: &SyncEventsReqBody,
+    known_rooms: &KnownRooms,
+) -> AppResult<SyncEventsResBody> {
+    let since_sn = since.event_sn;
     // Periodically clean up expired connections
     maybe_cleanup_connections().await;
     // Another instance may have served this connection since this process last did --
     // including during the long poll that precedes a repeated call.
     refresh_connection(sender_id, device_id, &req_body.conn_id).await;
+    crate::membership::acknowledge_invite_delivery(sender_id, device_id, since.invite_batch)
+        .await?;
+    #[cfg(feature = "unstable-msc4494")]
+    {
+        update_connection(sender_id, device_id, &req_body.conn_id, |cached| {
+            require_list_window_acknowledgements(cached);
+            if let Some(token) = since.original.as_deref()
+                && let Some(windows) = cached.pending_list_windows.remove(token)
+            {
+                cached.list_windows.extend(windows);
+                cached.pending_list_windows.clear();
+            }
+        })
+        .await;
+    }
 
     #[cfg(feature = "unstable-msc4262")]
     acknowledge_profile_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
@@ -615,13 +662,15 @@ pub async fn sync_events(
     #[cfg(not(feature = "unstable-msc4262"))]
     let curr_sn = data::user::curr_sn_after_presence_writes(Some((sender_id, device_id))).await?;
     crate::seqnum_reach(curr_sn).await;
+
+    let invite_snapshot =
+        crate::membership::invited_rooms_for_sync(sender_id, 0, device_id, curr_sn).await?;
     let next_batch = curr_sn + 1;
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     let ignored_users = crate::user::ignored_users(sender_id).await;
 
-    let all_invited_rooms = data::user::invited_rooms_for_sync(sender_id, 0).await?;
-    let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(|r| r.0.as_ref()).collect();
+    let all_invited_rooms: Vec<&RoomId> = invite_snapshot.rooms.keys().map(AsRef::as_ref).collect();
 
     let all_knocked_rooms = data::user::knocked_rooms(sender_id, 0).await?;
     let all_knocked_rooms: Vec<&RoomId> = all_knocked_rooms.iter().map(|r| r.0.as_ref()).collect();
@@ -648,7 +697,8 @@ pub async fn sync_events(
 
     // Fast path: client's pos is ahead of curr_sn (the typical idle case where
     // a client immediately re-polls with the pos we just handed it). There are
-    // no new events to deliver, but we still emit each requested list's count
+    // no new events to deliver, but selected invitations or profiles may still
+    // need their first delivery. Otherwise emit each requested list's count
     // so sliding-sync clients (matrix-rust-sdk in particular) can compute
     // `fully_loaded` and stop tight-polling. Omitting `count` here makes the
     // SDK skip `update_request_generator_state`, which keeps `fully_loaded`
@@ -656,8 +706,29 @@ pub async fn sync_events(
     // request flood.
     if since_sn > curr_sn {
         let mut res = SyncEventsResBody::new(next_batch.to_string());
+        #[cfg(feature = "unstable-msc4494")]
+        let previous_list_windows = load_or_create_connection(
+            &sender_id.to_owned(),
+            &device_id.to_owned(),
+            &req_body.conn_id,
+        )
+        .await
+        .lock()
+        .unwrap()
+        .list_windows
+        .clone();
+        #[cfg(feature = "unstable-msc4494")]
+        let mut lists_owe_update = false;
+        #[cfg(not(feature = "unstable-msc4494"))]
+        let lists_owe_update = false;
         #[cfg(feature = "unstable-msc4262")]
         let profiles_enabled = req_body.extensions.profiles.enabled.unwrap_or(false);
+        #[cfg(not(feature = "unstable-msc4262"))]
+        let profiles_enabled = false;
+        let mut invites_owe_delivery = req_body
+            .room_subscriptions
+            .keys()
+            .any(|room_id| invite_snapshot.has_pending_delivery(room_id));
         #[cfg(feature = "unstable-msc4262")]
         let mut listed_rooms = BTreeMap::new();
         #[cfg(feature = "unstable-msc4262")]
@@ -671,11 +742,17 @@ pub async fn sync_events(
                 &dm_rooms,
             )
             .await;
-            #[cfg(feature = "unstable-msc4262")]
-            if profiles_enabled {
+            if cfg!(feature = "unstable-msc4494")
+                || profiles_enabled
+                || active_rooms
+                    .iter()
+                    .any(|room_id| invite_snapshot.has_pending_delivery(room_id))
+            {
                 let mut sorted_rooms = active_rooms.clone();
                 sort_rooms_by_activity(&mut sorted_rooms).await?;
                 let mut selected = BTreeSet::new();
+                #[cfg(feature = "unstable-msc4494")]
+                let mut window = ListWindow::new();
                 let ranges = if list.ranges.is_empty() {
                     vec![(0, 50)]
                 } else {
@@ -685,6 +762,14 @@ pub async fn sync_events(
                     let start = start.min(sorted_rooms.len());
                     let end = inclusive_end.saturating_add(1).min(sorted_rooms.len());
                     if start < end {
+                        #[cfg(feature = "unstable-msc4494")]
+                        window.extend(
+                            (start..end).zip(
+                                sorted_rooms[start..end]
+                                    .iter()
+                                    .map(|room_id| (*room_id).to_owned()),
+                            ),
+                        );
                         selected.extend(
                             sorted_rooms[start..end]
                                 .iter()
@@ -692,8 +777,18 @@ pub async fn sync_events(
                         );
                     }
                 }
-                room_subset.extend(selected.iter().cloned());
-                listed_rooms.insert(list_id.clone(), selected);
+                #[cfg(feature = "unstable-msc4494")]
+                {
+                    lists_owe_update |= previous_list_windows.get(list_id) != Some(&window);
+                }
+                invites_owe_delivery |= selected
+                    .iter()
+                    .any(|room_id| invite_snapshot.has_pending_delivery(room_id));
+                #[cfg(feature = "unstable-msc4262")]
+                if profiles_enabled {
+                    room_subset.extend(selected.iter().cloned());
+                    listed_rooms.insert(list_id.clone(), selected);
+                }
             }
             res.lists.insert(
                 list_id.clone(),
@@ -728,7 +823,7 @@ pub async fn sync_events(
         #[cfg(not(feature = "unstable-msc4262"))]
         let profiles_owe_snapshot = false;
 
-        if !profiles_owe_snapshot {
+        if !profiles_owe_snapshot && !invites_owe_delivery && !lists_owe_update {
             return Ok(res);
         }
     }
@@ -770,7 +865,7 @@ pub async fn sync_events(
     )
     .await?;
 
-    fetch_subscriptions(sync_info, &mut todo_rooms, known_rooms).await?;
+    fetch_subscriptions(sync_info, &all_invited_rooms, &mut todo_rooms, known_rooms).await?;
 
     // MSC4262 profile updates need the finished room subset, so they are collected after
     // the lists and subscriptions have been resolved rather than alongside the other
@@ -791,7 +886,7 @@ pub async fn sync_events(
 
     res_body.rooms = process_rooms(
         sync_info,
-        &all_invited_rooms,
+        &invite_snapshot,
         &dm_rooms,
         &ignored_users,
         &todo_rooms,
@@ -831,7 +926,116 @@ pub async fn sync_events(
         removed_profile_users,
     )
     .await;
+    if let Some(delivery) = record_returned_invites(&invite_snapshot, &res_body).await? {
+        res_body.pos.push_str(&format!("_i{delivery}"));
+    }
+    // Record positions only after the complete response and its invitation deliveries
+    // succeeded. Count-only responses must not replace the client's last window.
+    record_list_windows_sent(sender_id, device_id, &req_body.conn_id, &mut res_body).await;
     Ok(res_body)
+}
+
+fn window_from_sync_ops(ops: &[SyncListOp]) -> ListWindow {
+    let mut window = ListWindow::new();
+    for op in ops {
+        if let SyncListOp::Sync { range, room_ids } = op {
+            window.extend(
+                room_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, room_id)| (range.0 + offset, room_id.clone())),
+            );
+        }
+    }
+    window
+}
+
+/// Static SYNC operations are not updates; changed positions must reach the client
+/// even if there are no new room events and the list count has not changed.
+#[cfg(feature = "unstable-msc4494")]
+pub(crate) fn has_list_window_updates(
+    response: &SyncEventsResBody,
+    previous: &ListWindows,
+) -> bool {
+    response.lists.iter().any(|(list_id, list)| {
+        !list.ops.is_empty()
+            && (list
+                .ops
+                .iter()
+                .any(|op| !matches!(op, SyncListOp::Sync { .. }))
+                || previous.get(list_id) != Some(&window_from_sync_ops(&list.ops)))
+    })
+}
+
+async fn record_list_windows_sent(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    response: &mut SyncEventsResBody,
+) {
+    if response.lists.is_empty() {
+        return;
+    }
+    let windows: ListWindows = response
+        .lists
+        .iter()
+        .map(|(list_id, list)| (list_id.clone(), window_from_sync_ops(&list.ops)))
+        .collect();
+    // Keep this field in every build so another instance's feature configuration
+    // cannot discard the actual positions already served on this connection.
+    #[cfg(feature = "unstable-msc4494")]
+    {
+        let base = response.pos.clone();
+        let fresh = format!("{base}_w{}", crate::utils::random_string(24));
+        response.pos = update_connection(user_id, device_id, conn_id, |cached| {
+            if windows
+                .iter()
+                .all(|(id, window)| cached.list_windows.get(id) == Some(window))
+            {
+                return base.clone();
+            }
+            let token = cached
+                .pending_list_windows
+                .iter()
+                .find(|(token, offered)| {
+                    token
+                        .strip_prefix(&base)
+                        .is_some_and(|suffix| suffix.starts_with("_w"))
+                        && **offered == windows
+                })
+                .map(|(token, _)| token.clone())
+                .unwrap_or_else(|| fresh.clone());
+            // Eviction only causes a safe refresh, never an acknowledgement.
+            if cached.pending_list_windows.len() >= 16 {
+                cached.pending_list_windows.clear();
+            }
+            cached
+                .pending_list_windows
+                .insert(token.clone(), windows.clone());
+            token
+        })
+        .await;
+    }
+    #[cfg(not(feature = "unstable-msc4494"))]
+    update_connection(user_id, device_id, conn_id, |cached| {
+        cached.list_window_acknowledgements = false;
+        cached.pending_list_windows.clear();
+        cached.list_windows.extend(windows.clone());
+    })
+    .await;
+}
+
+async fn record_returned_invites(
+    snapshot: &crate::membership::InviteSyncSnapshot,
+    response: &SyncEventsResBody,
+) -> AppResult<Option<i64>> {
+    let returned: Vec<_> = response
+        .rooms
+        .iter()
+        .filter(|(_, room)| room.invite_state.is_some())
+        .map(|(room_id, _)| room_id.as_ref())
+        .collect();
+    snapshot.record_returned(&returned).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -952,13 +1156,16 @@ async fn fetch_subscriptions(
         since_sn,
         req_body,
     }: SyncInfo<'_>,
+    all_invited_rooms: &[&RoomId],
     todo_rooms: &mut TodoRooms,
     known_rooms: &KnownRooms,
 ) -> AppResult<()> {
     let mut known_subscription_rooms = BTreeSet::new();
-    let invites_blocked = data::user::invite_blocked(sender_id).await?;
     for (room_id, room) in &req_body.room_subscriptions {
-        if invites_blocked && crate::room::user::is_invited(sender_id, room_id).await? {
+        // Explicit subscriptions must obey the same invite filter as room lists.
+        if !all_invited_rooms.contains(&room_id.as_ref())
+            && crate::room::user::is_invited(sender_id, room_id).await?
+        {
             continue;
         }
         if !crate::room::room_exists(room_id).await? {
@@ -1012,7 +1219,7 @@ async fn process_rooms(
         device_id,
         since_sn,
     }: SyncInfo<'_>,
-    all_invited_rooms: &[&RoomId],
+    invite_snapshot: &crate::membership::InviteSyncSnapshot,
     dm_rooms: &HashSet<OwnedRoomId>,
     ignored_users: &BTreeSet<OwnedUserId>,
     todo_rooms: &TodoRooms,
@@ -1021,7 +1228,6 @@ async fn process_rooms(
 ) -> AppResult<BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>> {
     let mut rooms = BTreeMap::new();
     let receipts_enabled = req_body.extensions.receipts.enabled.unwrap_or(false);
-    let invites_blocked = data::user::invite_blocked(sender_id).await?;
 
     for (
         room_id,
@@ -1033,22 +1239,22 @@ async fn process_rooms(
         },
     ) in todo_rooms
     {
-        if invites_blocked && crate::room::user::is_invited(sender_id, room_id).await? {
+        // Explicit subscriptions must obey the same invite filter as room lists.
+        if !invite_snapshot.rooms.contains_key(room_id)
+            && crate::room::user::is_invited(sender_id, room_id).await?
+        {
             continue;
         }
         let mut timestamp: Option<_> = None;
         let mut invite_state = None;
-        let new_room_id: &RoomId = (*room_id).as_ref();
         let is_initial = *room_since_sn == 0
             || !known_rooms
                 .values()
                 .any(|rooms| rooms.contains_key(room_id));
 
-        let timeline = if all_invited_rooms.contains(&new_room_id) {
-            // Invited rooms have empty timeline, only stripped state
-            invite_state = crate::room::user::invite_state(sender_id, room_id)
-                .await
-                .ok();
+        let timeline = if let Some(state) = invite_snapshot.rooms.get(room_id) {
+            // Never reload by room ID: that could render a different invitation event.
+            invite_state = Some(state.clone());
             TimelineData {
                 events: Default::default(),
                 limited: false,
@@ -1716,16 +1922,15 @@ pub async fn update_sync_request_with_cache(
     user_id: OwnedUserId,
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
-) -> (
-    BTreeMap<String, BTreeMap<OwnedRoomId, i64>>,
-    BTreeMap<String, usize>,
-) {
+) -> (KnownRooms, BTreeMap<String, usize>, ListWindows) {
     refresh_connection(&user_id, &device_id, &req_body.conn_id).await;
     // Sticky parameters are merged into a fresh copy of the request on every attempt, so a
     // write rebased onto another instance's newer cache merges against that cache.
     let original = req_body.clone();
-    let (merged, known, list_counts) =
+    let (merged, known, list_counts, list_windows) =
         update_connection(&user_id, &device_id, &original.conn_id, |cached| {
+            #[cfg(feature = "unstable-msc4494")]
+            require_list_window_acknowledgements(cached);
             let mut req_body = original.clone();
 
             for (list_id, list) in &mut req_body.lists {
@@ -1842,11 +2047,12 @@ pub async fn update_sync_request_with_cache(
             cached.extensions = req_body.extensions.clone();
             let known = cached.known_rooms.clone();
             let list_counts = cached.list_counts.clone();
-            (req_body, known, list_counts)
+            let list_windows = cached.list_windows.clone();
+            (req_body, known, list_counts, list_windows)
         })
         .await;
     *req_body = merged;
-    (known, list_counts)
+    (known, list_counts, list_windows)
 }
 
 pub async fn update_sync_list_counts(
@@ -2048,6 +2254,966 @@ mod tests {
             filters: Some(filters),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn list_window_cache_preserves_positions_and_loads_legacy_connections() {
+        let a = rid("!cached_a:example.org");
+        let b = rid("!cached_b:example.org");
+        let mut cached = super::SlidingSyncCache::default();
+        cached
+            .list_windows
+            .insert("main".to_owned(), [(1, a.clone()), (3, b.clone())].into());
+        cached
+            .known_rooms
+            .insert("main".to_owned(), [(a, 10), (b, 10)].into());
+        let mut json = serde_json::to_value(&cached).unwrap();
+        let restored: super::SlidingSyncCache = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.list_windows, cached.list_windows);
+        json.as_object_mut().unwrap().remove("list_windows");
+        let legacy: super::SlidingSyncCache = serde_json::from_value(json).unwrap();
+        assert!(legacy.list_windows.is_empty());
+        assert_eq!(legacy.known_rooms, cached.known_rooms);
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_membership_filtered_invite_cannot_be_subscribed_to() {
+        use serde_json::json;
+
+        use super::*;
+        crate::test_database::init();
+        let recipient: OwnedUserId = "@subscription_filter:dynamic.example".try_into().unwrap();
+        let inviter: OwnedUserId = "@subscription_inviter:example.org".try_into().unwrap();
+        let room = rid("!subscription_filter:example.org");
+        diesel::insert_into(room_users::table)
+            .values(data::room::NewDbRoomUser {
+                event_id: "$subscription_filter:example.org".try_into().unwrap(),
+                event_sn: 1,
+                room_id: room.clone(),
+                room_server_id: None,
+                user_id: recipient.clone(),
+                user_server_id: recipient.server_name().to_owned(),
+                sender_id: inviter,
+                membership: "invite".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: Some(json!([])),
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        data::user::set_data(
+            &recipient,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+        )
+        .await
+        .unwrap();
+        let invites = crate::membership::invited_rooms_for_sync(
+            &recipient,
+            0,
+            "TEST".into(),
+            data::curr_sn().await.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(invites.rooms.is_empty());
+        let body: SyncEventsReqBody = serde_json::from_value(json!({})).unwrap();
+        let device: OwnedDeviceId = "SUBSCRIPTION".into();
+        let mut response = SyncEventsResBody::new("2".into());
+        let rooms = process_rooms(
+            SyncInfo {
+                sender_id: &recipient,
+                device_id: &device,
+                since_sn: 0,
+                req_body: &body,
+            },
+            &invites,
+            &HashSet::new(),
+            &BTreeSet::new(),
+            &[(room, TodoRoom::new(BTreeSet::new(), 10, 0))].into(),
+            &KnownRooms::new(),
+            &mut response,
+        )
+        .await
+        .unwrap();
+        assert!(rooms.is_empty());
+        assert!(response.extensions.account_data.rooms.is_empty());
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_sliding_sync_refreshes_ranges_shifted_by_an_unselected_invite() {
+        use serde_json::json;
+
+        use super::*;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let device: OwnedDeviceId = "WINDOW".into();
+        for mode in ["before", "after", "multiple"] {
+            let user: OwnedUserId = format!("@invite_window_{mode}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let sender: OwnedUserId = "@invite_window_sender:example.org".try_into().unwrap();
+            let letters = if mode == "multiple" {
+                vec!["a", "b", "c", "d", "e"]
+            } else if mode == "after" {
+                vec!["z", "b", "c"]
+            } else {
+                vec!["a", "b", "c"]
+            };
+            let mut targets = Vec::new();
+            for letter in letters {
+                let room = rid(&format!("!invite_window_{mode}_{letter}:example.org"));
+                diesel::insert_into(rooms::table)
+                    .values(data::room::NewDbRoom {
+                        id: room.clone(),
+                        version: "11".into(),
+                        is_public: false,
+                        min_depth: 0,
+                        has_auth_chain_index: false,
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(data::room::NewDbRoomUser {
+                        event_id: format!("$invite_window_{mode}_{letter}:example.org")
+                            .try_into()
+                            .unwrap(),
+                        event_sn: data::next_sn().await.unwrap(),
+                        room_id: room.clone(),
+                        room_server_id: None,
+                        user_id: user.clone(),
+                        user_server_id: user.server_name().to_owned(),
+                        sender_id: sender.clone(),
+                        membership: "invite".into(),
+                        forgotten: false,
+                        display_name: None,
+                        avatar_url: None,
+                        state_data: Some(json!([])),
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                targets.push(room);
+            }
+            let pending = &targets[0];
+            data::user::set_data(
+                &user,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "allow"}),
+            )
+            .await
+            .unwrap();
+            let early = crate::membership::invited_rooms_for_sync(
+                &user,
+                0,
+                "EARLY".into(),
+                data::curr_sn().await.unwrap(),
+            )
+            .await
+            .unwrap();
+            let subscriptions: serde_json::Map<_, _> = targets[1..]
+                .iter()
+                .map(|room| (room.to_string(), json!({"timeline_limit": 0})))
+                .collect();
+            let mut delivered_body: SyncEventsReqBody =
+                serde_json::from_value(json!({"room_subscriptions": subscriptions})).unwrap();
+            let known =
+                update_sync_request_with_cache(user.clone(), device.clone(), &mut delivered_body)
+                    .await
+                    .0;
+            let delivered = sync_events(&user, &device, 0, &delivered_body, &known)
+                .await
+                .unwrap();
+            assert_eq!(delivered.rooms.len(), targets.len() - 1);
+            assert!(!delivered.rooms.contains_key(pending));
+            crate::membership::acknowledge_invite_delivery(
+                &user,
+                &device,
+                crate::event::split_sync_token(&delivered.pos).unwrap().1,
+            )
+            .await
+            .unwrap();
+            data::user::set_data(
+                &user,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let ranges = if mode == "multiple" {
+                json!([[1, 1], [3, 3]])
+            } else {
+                json!([[1, 1]])
+            };
+            let mut body: SyncEventsReqBody = serde_json::from_value(json!({
+                "lists": {"main": {"timeline_limit": 0, "ranges": ranges, "filters": {"is_invite": true}}},
+                "unsubscribe_rooms": targets[1..],
+            })).unwrap();
+            let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
+                .await
+                .0;
+            let mut initial = sync_events(&user, &device, 0, &body, &known).await.unwrap();
+            let initial_ops = serde_json::to_value(&initial.lists["main"].ops).unwrap();
+            assert_eq!(initial_ops[0]["room_ids"], json!([targets[2]]));
+            if mode == "multiple" {
+                assert_eq!(initial_ops[1]["room_ids"], json!([targets[4]]));
+            }
+            let cursor = data::curr_sn().await.unwrap();
+            assert_eq!(
+                initial
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                cursor + 1
+            );
+
+            // A pre-upgrade cache may have recorded a response that was lost.
+            // Its offered windows are not proof that this client received them.
+            update_connection(&user, &device, &body.conn_id, |cached| {
+                cached.list_windows = initial
+                    .lists
+                    .iter()
+                    .map(|(id, list)| (id.clone(), window_from_sync_ops(&list.ops)))
+                    .collect();
+                cached.pending_list_windows.clear();
+                cached.list_window_acknowledgements = false;
+            })
+            .await;
+            let (known, _, legacy_windows) =
+                update_sync_request_with_cache(user.clone(), device.clone(), &mut body).await;
+            assert!(
+                legacy_windows.is_empty(),
+                "legacy windows must not delay the replay"
+            );
+            initial = sync_events(&user, &device, cursor + 1, &body, &known)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&initial.lists["main"].ops).unwrap(),
+                initial_ops,
+                "legacy offered windows need a replay before acknowledgement"
+            );
+
+            // A later poll reaches another instance. The newly visible invitation
+            // lies outside every requested range, but can displace old entries.
+            CONNECTIONS
+                .lock()
+                .unwrap()
+                .remove(&connection_key(&user, &device, &body.conn_id));
+            early.record_returned(&[pending.as_ref()]).await.unwrap();
+            assert_eq!(data::curr_sn().await.unwrap(), cursor);
+            let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
+                .await
+                .0;
+            let changed = sync_events(
+                &user,
+                &device,
+                initial.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &known,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                changed
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                cursor + 1
+            );
+            assert_eq!(changed.lists["main"].count, targets.len());
+            let changed_ops = serde_json::to_value(&changed.lists["main"].ops).unwrap();
+            if mode == "after" {
+                assert!(
+                    changed.lists["main"].ops.is_empty(),
+                    "unchanged ranges stay idle"
+                );
+                assert!(changed.rooms.is_empty());
+            } else {
+                assert_eq!(changed_ops[0]["range"], json!([1, 1]));
+                assert_eq!(
+                    changed_ops[0]["room_ids"],
+                    json!([targets[1]]),
+                    "{mode}: refresh the displaced room even though the new invite is outside the range"
+                );
+                if mode == "multiple" {
+                    assert_eq!(changed_ops[1]["range"], json!([3, 3]));
+                    assert_eq!(changed_ops[1]["room_ids"], json!([targets[3]]));
+                }
+            }
+            assert!(!changed.rooms.contains_key(pending));
+            let devices = room_users::table
+                .inner_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(&user))
+                .filter(room_users::room_id.eq(pending))
+                .select(room_invite_admissions::delivered_devices)
+                .first::<serde_json::Value>(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(devices["EARLY"], json!(early.until_sn));
+            assert!(
+                devices.get(device.as_str()).is_none(),
+                "an unselected invite stays unrecorded"
+            );
+            let known = update_sync_request_with_cache(user.clone(), device.clone(), &mut body)
+                .await
+                .0;
+            CONNECTIONS
+                .lock()
+                .unwrap()
+                .remove(&connection_key(&user, &device, &body.conn_id));
+            let replay = sync_events(
+                &user,
+                &device,
+                initial.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &known,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&replay.lists["main"].ops).unwrap(),
+                changed_ops,
+                "{mode}: an unacknowledged list refresh must replay across instances"
+            );
+            let repeated = sync_events(
+                &user,
+                &device,
+                changed.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &known,
+            )
+            .await
+            .unwrap();
+            assert!(
+                repeated.lists["main"].ops.is_empty(),
+                "{mode}: refresh only once"
+            );
+            assert!(repeated.rooms.is_empty());
+            assert_eq!(
+                repeated
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                cursor + 1
+            );
+            assert_eq!(data::curr_sn().await.unwrap(), cursor);
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_sliding_sync_delivers_late_invite_at_an_idle_cursor() {
+        use serde_json::json;
+
+        use super::*;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let inviter: OwnedUserId = "@sliding_idle_sender:example.org".try_into().unwrap();
+        let device: OwnedDeviceId = "IDLE".into();
+        for mode in [
+            "range",
+            "default",
+            "subscription",
+            "joined",
+            "outside",
+            "empty",
+        ] {
+            let recipient: OwnedUserId = format!("@sliding_idle_{mode}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let mut targets = Vec::new();
+            for i in 0..3 {
+                let room = rid(&format!("!sliding_idle_{mode}_{i}:example.org"));
+                diesel::insert_into(rooms::table)
+                    .values(data::room::NewDbRoom {
+                        id: room.clone(),
+                        version: "11".into(),
+                        is_public: false,
+                        min_depth: 0,
+                        has_auth_chain_index: false,
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(data::room::NewDbRoomUser {
+                        event_id: format!("$sliding_idle_{mode}_{i}:example.org")
+                            .try_into()
+                            .unwrap(),
+                        event_sn: data::next_sn().await.unwrap(),
+                        room_id: room.clone(),
+                        room_server_id: None,
+                        user_id: recipient.clone(),
+                        user_server_id: recipient.server_name().to_owned(),
+                        sender_id: inviter.clone(),
+                        membership: "invite".into(),
+                        forgotten: false,
+                        display_name: None,
+                        avatar_url: None,
+                        state_data: Some(json!([])),
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                targets.push(room);
+            }
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "allow"}),
+            )
+            .await
+            .unwrap();
+            let early = crate::membership::invited_rooms_for_sync(
+                &recipient,
+                0,
+                "EARLY".into(),
+                data::curr_sn().await.unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(early.rooms.len(), 3);
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let body: SyncEventsReqBody = serde_json::from_value(match mode {
+                "range" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[1, 1]], "filters": {"is_invite": true}}}}),
+                "default" => json!({"lists": {"main": {"timeline_limit": 0, "filters": {"is_invite": true}}}}),
+                "subscription" => json!({"room_subscriptions": {targets[0].as_str(): {"timeline_limit": 0}}}),
+                "joined" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": false}}}}),
+                "outside" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[3, 3]], "filters": {"is_invite": true}}}}),
+                "empty" => json!({}),
+                _ => unreachable!(),
+            }).unwrap();
+            let hidden = sync_events(&recipient, &device, 0, &body, &KnownRooms::new())
+                .await
+                .unwrap();
+            assert!(hidden.rooms.is_empty(), "{mode}: initially ineligible");
+            let idle_sn = data::curr_sn().await.unwrap();
+            assert_eq!(
+                hidden
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                idle_sn + 1
+            );
+
+            // Another device finishes its earlier response after this client has
+            // reached the idle token. Admission does not allocate a stream position.
+            early
+                .record_returned(&targets.iter().map(AsRef::as_ref).collect::<Vec<_>>())
+                .await
+                .unwrap();
+            assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
+            let recovered =
+                sync_events(&recipient, &device, idle_sn + 1, &body, &KnownRooms::new())
+                    .await
+                    .unwrap();
+            let expected: BTreeSet<_> = match mode {
+                "range" => [targets[1].clone()].into(),
+                "default" => targets.iter().cloned().collect(),
+                "subscription" => [targets[0].clone()].into(),
+                _ => BTreeSet::new(),
+            };
+            assert_eq!(
+                recovered.rooms.keys().cloned().collect::<BTreeSet<_>>(),
+                expected,
+                "{mode}: idle delivery must respect selection"
+            );
+            assert!(
+                recovered
+                    .rooms
+                    .values()
+                    .all(|room| room.invite_state.is_some())
+            );
+            assert_eq!(
+                recovered.is_empty_for_long_poll(),
+                expected.is_empty(),
+                "{mode}: selected invitations must return without waiting"
+            );
+            assert_eq!(
+                recovered
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                idle_sn + 1
+            );
+            assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
+            let delivered = room_users::table
+                .inner_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(&recipient))
+                .select((
+                    room_users::room_id,
+                    room_invite_admissions::delivered_devices,
+                ))
+                .load::<(OwnedRoomId, serde_json::Value)>(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(delivered.len(), 3);
+            for (room, devices) in delivered {
+                assert_eq!(devices["EARLY"], json!(early.until_sn));
+                assert_eq!(
+                    devices.get("IDLE"),
+                    expected.contains(&room).then_some(&json!(idle_sn)),
+                    "{mode}: record only the invitations actually returned"
+                );
+            }
+
+            // Other invitations can remain pending outside this request's selection.
+            // They must not force another full response or restamp this delivery.
+            let retry = sync_events(&recipient, &device, idle_sn + 1, &body, &KnownRooms::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                retry.rooms.keys().cloned().collect::<BTreeSet<_>>(),
+                expected,
+                "{mode}: same-token retry must replay selected invitations"
+            );
+            if mode == "range" {
+                // Confirming a later, disjoint response must not acknowledge
+                // this range's earlier response by treating batch IDs as a watermark.
+                let subscription: SyncEventsReqBody = serde_json::from_value(json!({
+                    "room_subscriptions": {targets[0].as_str(): {"timeline_limit": 0}}
+                }))
+                .unwrap();
+                let later = sync_events(
+                    &recipient,
+                    &device,
+                    idle_sn + 1,
+                    &subscription,
+                    &KnownRooms::new(),
+                )
+                .await
+                .unwrap();
+                let after_later_ack = sync_events(
+                    &recipient,
+                    &device,
+                    later.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                    &body,
+                    &KnownRooms::new(),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    after_later_ack.rooms.contains_key(&targets[1]),
+                    "an acknowledged disjoint response cannot hide an unconfirmed invite"
+                );
+            }
+            let repeated = sync_events(
+                &recipient,
+                &device,
+                recovered.pos.parse::<crate::event::SyncPosition>().unwrap(),
+                &body,
+                &KnownRooms::new(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                repeated.rooms.is_empty(),
+                "{mode}: no repeated idle delivery"
+            );
+            assert!(repeated.lists.values().all(|list| list.ops.is_empty()));
+            assert_eq!(
+                repeated
+                    .pos
+                    .parse::<crate::event::SyncPosition>()
+                    .unwrap()
+                    .event_sn,
+                idle_sn + 1
+            );
+            assert_eq!(data::curr_sn().await.unwrap(), idle_sn);
+            for (list_id, list) in &recovered.lists {
+                assert_eq!(repeated.lists[list_id].count, list.count);
+            }
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_sliding_sync_admits_only_returned_invites() {
+        use serde_json::json;
+
+        use super::*;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let inviter: OwnedUserId = "@sliding_admission_sender:example.org".try_into().unwrap();
+        let device: OwnedDeviceId = "ADMISSION".into();
+        for mode in [
+            "joined",
+            "range",
+            "subscription",
+            "idle",
+            "outside",
+            "empty",
+            "stale",
+        ] {
+            let recipient: OwnedUserId = format!("@sliding_admission_{mode}:dynamic.example")
+                .try_into()
+                .unwrap();
+            let mut targets = Vec::new();
+            for i in 0..3 {
+                let room = rid(&format!("!sliding_admission_{mode}_{i}:example.org"));
+                diesel::insert_into(rooms::table)
+                    .values(data::room::NewDbRoom {
+                        id: room.clone(),
+                        version: "11".into(),
+                        is_public: false,
+                        min_depth: 0,
+                        has_auth_chain_index: false,
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(data::room::NewDbRoomUser {
+                        event_id: format!("$sliding_admission_{mode}_{i}:example.org")
+                            .try_into()
+                            .unwrap(),
+                        event_sn: data::next_sn().await.unwrap(),
+                        room_id: room.clone(),
+                        room_server_id: None,
+                        user_id: recipient.clone(),
+                        user_server_id: recipient.server_name().to_owned(),
+                        sender_id: inviter.clone(),
+                        membership: "invite".into(),
+                        forgotten: false,
+                        display_name: None,
+                        avatar_url: None,
+                        state_data: Some(json!([])),
+                        created_at: UnixMillis::now(),
+                    })
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                targets.push(room);
+            }
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "allow"}),
+            )
+            .await
+            .unwrap();
+            let body: SyncEventsReqBody = serde_json::from_value(match mode {
+                "joined" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": false}}}}),
+                "range" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[1, 1]], "filters": {"is_invite": true}}}}),
+                "subscription" => json!({"room_subscriptions": {targets[0].as_str(): {"timeline_limit": 0}}}),
+                "outside" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[3, 3]], "filters": {"is_invite": true}}}}),
+                "empty" | "stale" => json!({}),
+                "idle" => json!({"lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": true}}}}),
+                _ => unreachable!(),
+            }).unwrap();
+            let since = if mode == "idle" {
+                data::curr_sn().await.unwrap() + 1
+            } else {
+                0
+            };
+            let response = sync_events(&recipient, &device, since, &body, &KnownRooms::new())
+                .await
+                .unwrap();
+            let returned: BTreeSet<_> = response
+                .rooms
+                .iter()
+                .filter(|(_, room)| room.invite_state.is_some())
+                .map(|(id, _)| id.clone())
+                .collect();
+            let expected_count = if mode == "idle" {
+                3
+            } else {
+                usize::from(matches!(mode, "range" | "subscription"))
+            };
+            assert_eq!(returned.len(), expected_count, "{mode}");
+            if mode == "stale" {
+                // Preparing an invite must not authorize its replacement while rendering.
+                let snapshot = crate::membership::invited_rooms_for_sync(
+                    &recipient,
+                    0,
+                    "TEST".into(),
+                    data::curr_sn().await.unwrap(),
+                )
+                .await
+                .unwrap();
+                let mut replacement = room_users::table
+                    .filter(room_users::user_id.eq(&recipient))
+                    .filter(room_users::room_id.eq(&targets[0]))
+                    .first::<data::room::DbRoomUser>(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                diesel::delete(room_users::table.find(replacement.id))
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
+                )
+                .get_result(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+                replacement.event_sn = data::next_sn().await.unwrap();
+                diesel::insert_into(room_users::table)
+                    .values(replacement)
+                    .execute(&mut connect().await.unwrap())
+                    .await
+                    .unwrap();
+                snapshot
+                    .record_returned(&[targets[0].as_ref()])
+                    .await
+                    .unwrap();
+            }
+            let admitted: BTreeSet<_> = room_users::table
+                .inner_join(
+                    room_invite_admissions::table
+                        .on(room_invite_admissions::room_user_id.eq(room_users::id)),
+                )
+                .filter(room_users::user_id.eq(&recipient))
+                .select(room_users::room_id)
+                .load::<OwnedRoomId>(&mut connect().await.unwrap())
+                .await
+                .unwrap()
+                .into_iter()
+                .collect();
+            assert_eq!(
+                admitted, returned,
+                "only invitations returned in {mode} may be admitted"
+            );
+            data::user::set_data(
+                &recipient,
+                None,
+                "m.invite_permission_config",
+                json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+            )
+            .await
+            .unwrap();
+            let invite_list: SyncEventsReqBody = serde_json::from_value(json!({
+                "lists": {"main": {"timeline_limit": 0, "ranges": [[0, 10]], "filters": {"is_invite": true}}}
+            })).unwrap();
+            let restricted = sync_events(&recipient, &device, 0, &invite_list, &KnownRooms::new())
+                .await
+                .unwrap();
+            let visible: BTreeSet<_> = restricted.rooms.keys().cloned().collect();
+            assert_eq!(
+                visible, returned,
+                "unseen invitations must stay hidden after enabling deny_public ({mode})"
+            );
+        }
+    }
+
+    #[cfg(feature = "unstable-msc4494")]
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_invite_snapshot_keeps_state_and_identity_together() {
+        use serde_json::json;
+
+        use super::*;
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let recipient: OwnedUserId = "@snapshot_identity:dynamic.example".try_into().unwrap();
+        let inviter: OwnedUserId = "@snapshot_old:example.org".try_into().unwrap();
+        let room = rid("!snapshot_identity:example.org");
+        diesel::insert_into(rooms::table)
+            .values(data::room::NewDbRoom {
+                id: room.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::insert_into(room_users::table).values(data::room::NewDbRoomUser {
+            event_id: "$snapshot_old:example.org".try_into().unwrap(),
+            event_sn: data::next_sn().await.unwrap(), room_id: room.clone(), room_server_id: None,
+            user_id: recipient.clone(), user_server_id: recipient.server_name().to_owned(),
+            sender_id: inviter.clone(), membership: "invite".into(), forgotten: false,
+            display_name: None, avatar_url: None,
+            state_data: Some(json!([{"type": "m.room.name", "state_key": "", "sender": inviter, "content": {"name": "old"}}])),
+            created_at: UnixMillis::now(),
+        }).execute(&mut connect().await.unwrap()).await.unwrap();
+        let reserved_sn = data::next_sn().await.unwrap();
+        let snapshot = crate::membership::invited_rooms_for_sync(
+            &recipient,
+            0,
+            "TEST".into(),
+            data::curr_sn().await.unwrap(),
+        )
+        .await
+        .unwrap();
+        let read = data::user::invite_sync_inventory(&recipient, 0, reserved_sn, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read.invites[0].event_id.as_str(),
+            "$snapshot_old:example.org"
+        );
+        assert_eq!(
+            serde_json::to_value(&read.invites[0].state).unwrap(),
+            serde_json::to_value(&snapshot.rooms[&room]).unwrap()
+        );
+        let old_state = snapshot.rooms[&room].clone();
+        let mut replacement = room_users::table
+            .filter(room_users::user_id.eq(&recipient))
+            .filter(room_users::room_id.eq(&room))
+            .first::<data::room::DbRoomUser>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let old_id = replacement.id;
+        diesel::delete(room_users::table.find(old_id))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
+        )
+        .get_result(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        replacement.event_id = "$snapshot_new:example.org".try_into().unwrap();
+        replacement.event_sn = reserved_sn;
+        replacement.sender_id = "@snapshot_new:example.org".try_into().unwrap();
+        replacement.state_data = Some(
+            json!([{"type": "m.room.name", "state_key": "", "sender": replacement.sender_id, "content": {"name": "new"}}]),
+        );
+        diesel::insert_into(room_users::table)
+            .values(replacement)
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let body: SyncEventsReqBody = serde_json::from_value(json!({})).unwrap();
+        let device: OwnedDeviceId = "SNAPSHOT".into();
+        let mut response = SyncEventsResBody::new("2".into());
+        response.rooms = process_rooms(
+            SyncInfo {
+                sender_id: &recipient,
+                device_id: &device,
+                since_sn: 0,
+                req_body: &body,
+            },
+            &snapshot,
+            &HashSet::new(),
+            &BTreeSet::new(),
+            &[(room.clone(), TodoRoom::new(BTreeSet::new(), 0, 0))].into(),
+            &KnownRooms::new(),
+            &mut response,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.rooms[&room].invite_state.as_ref().unwrap()).unwrap(),
+            serde_json::to_value(&old_state).unwrap(),
+            "rendering must use the same invite event as the admission snapshot"
+        );
+        record_returned_invites(&snapshot, &response).await.unwrap();
+        assert!(
+            room_invite_admissions::table
+                .select(room_invite_admissions::room_user_id)
+                .filter(room_invite_admissions::room_user_id.eq(old_id))
+                .load::<i64>(&mut connect().await.unwrap())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // An allowed invitation committed behind a client's cursor still needs first delivery.
+        data::next_sn().await.unwrap();
+        let late = crate::membership::invited_rooms_for_sync(
+            &recipient,
+            reserved_sn + 1,
+            "TEST".into(),
+            data::curr_sn().await.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            late.rooms.len(),
+            1,
+            "unseen allowed invitations must not be lost behind the event cursor"
+        );
+        assert_ne!(
+            serde_json::to_value(&late.rooms[&room]).unwrap(),
+            serde_json::to_value(&old_state).unwrap()
+        );
+        data::user::set_data(
+            &recipient,
+            None,
+            "m.invite_permission_config",
+            json!({"default_action": "uk.timedout.msc4494.deny_public"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::membership::invited_rooms_for_sync(
+                &recipient,
+                0,
+                "TEST".into(),
+                data::curr_sn().await.unwrap()
+            )
+            .await
+            .unwrap()
+            .rooms
+            .is_empty(),
+            "rendering an old invite must not admit its unrelated replacement"
+        );
     }
 
     #[test]
