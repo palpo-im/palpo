@@ -62,7 +62,7 @@ pub struct Capabilities {
     pub room_versions: RoomVersionsCapability,
 
     /// Capability to indicate if the user can change their display name.
-    #[serde(rename = "m.set_display_name", default)]
+    #[serde(rename = "m.set_displayname", alias = "m.set_display_name", default)]
     #[deprecated = "Since Matrix 1.16, prefer profile_fields if it is set."]
     pub set_display_name: SetDisplayNameCapability,
 
@@ -136,9 +136,15 @@ impl Capabilities {
         match capability {
             "m.change_password" => Some(Cow::Owned(serialize(&self.change_password))),
             "m.room_versions" => Some(Cow::Owned(serialize(&self.room_versions))),
-            "m.set_displayname" => Some(Cow::Owned(serialize(&self.set_display_name))),
+            "m.set_displayname" | "m.set_display_name" => {
+                Some(Cow::Owned(serialize(&self.set_display_name)))
+            }
             "m.set_avatar_url" => Some(Cow::Owned(serialize(&self.set_avatar_url))),
             "m.3pid_changes" => Some(Cow::Owned(serialize(&self.thirdparty_id_changes))),
+            "m.profile_fields" | "uk.tcpip.msc4133.profile_fields" => self
+                .profile_fields
+                .as_ref()
+                .map(|cap| Cow::Owned(serialize(cap))),
             "m.forget_forced_upon_leave" => {
                 Some(Cow::Owned(serialize(&self.forget_forced_upon_leave)))
             }
@@ -160,9 +166,14 @@ impl Capabilities {
         match capability {
             "m.change_password" => self.change_password = from_json_value(value)?,
             "m.room_versions" => self.room_versions = from_json_value(value)?,
-            "m.set_displayname" => self.set_display_name = from_json_value(value)?,
+            "m.set_displayname" | "m.set_display_name" => {
+                self.set_display_name = from_json_value(value)?;
+            }
             "m.set_avatar_url" => self.set_avatar_url = from_json_value(value)?,
             "m.3pid_changes" => self.thirdparty_id_changes = from_json_value(value)?,
+            "m.profile_fields" | "uk.tcpip.msc4133.profile_fields" => {
+                self.profile_fields = from_json_value(value)?;
+            }
             "m.forget_forced_upon_leave" => {
                 self.forget_forced_upon_leave = from_json_value(value)?;
             }
@@ -460,6 +471,103 @@ impl ForgetForcedUponLeaveCapability {
     /// Returns whether all fields have their default value.
     pub fn is_default(&self) -> bool {
         !self.enabled
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn get_and_set_cover_every_typed_field() {
+        let caps = Capabilities {
+            change_password: ChangePasswordCapability::new(false),
+            room_versions: RoomVersionsCapability::new(
+                RoomVersionId::V11,
+                [(RoomVersionId::V11, RoomVersionStability::Stable)].into(),
+            ),
+            set_display_name: SetDisplayNameCapability::new(false),
+            set_avatar_url: SetAvatarUrlCapability::new(false),
+            thirdparty_id_changes: ThirdPartyIdChangesCapability::new(false),
+            profile_fields: Some(ProfileFieldsCapability::new(true)),
+            forget_forced_upon_leave: ForgetForcedUponLeaveCapability::new(true),
+            account_moderation: AccountModerationCapability::new(true, true),
+            ..Default::default()
+        };
+        let serialized = to_json_value(&caps).unwrap();
+        let mut copy = Capabilities::new();
+        for (name, value) in serialized.as_object().unwrap() {
+            assert_eq!(caps.get(name).as_deref(), Some(value), "get({name})");
+            copy.set(name, value.clone()).unwrap();
+        }
+        assert!(copy.custom_capabilities.is_empty());
+        assert_eq!(to_json_value(copy).unwrap(), serialized);
+        assert!(serialized.get("m.set_displayname").is_some());
+        assert!(serialized.get("m.set_display_name").is_none());
+    }
+
+    #[test]
+    fn profile_alias_updates_typed_field_and_serializes_canonically() {
+        for name in ["m.profile_fields", "uk.tcpip.msc4133.profile_fields"] {
+            let mut caps = Capabilities::new();
+            assert!(caps.get(name).is_none());
+            let value = json!({"enabled": true, "allowed": ["displayname"]});
+            caps.set(name, value.clone()).unwrap();
+            assert!(caps.profile_fields.as_ref().unwrap().enabled);
+            assert_eq!(caps.get("m.profile_fields").as_deref(), Some(&value));
+            assert_eq!(
+                caps.get("uk.tcpip.msc4133.profile_fields").as_deref(),
+                Some(&value)
+            );
+            assert!(caps.custom_capabilities.is_empty());
+            let serialized = to_json_value(&caps).unwrap();
+            assert_eq!(serialized["m.profile_fields"], value);
+            assert!(serialized.get("uk.tcpip.msc4133.profile_fields").is_none());
+            caps.set(name, JsonValue::Null).unwrap();
+            assert!(caps.profile_fields.is_none());
+            assert!(
+                to_json_value(caps)
+                    .unwrap()
+                    .get("m.profile_fields")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_display_name_is_accepted_but_serialized_canonically() {
+        let value = json!({"enabled": false});
+        let mut caps: Capabilities = from_json_value(json!({"m.set_display_name": value})).unwrap();
+        assert!(!caps.set_display_name.enabled);
+        assert_eq!(caps.get("m.set_display_name").as_deref(), Some(&value));
+        assert_eq!(caps.get("m.set_displayname").as_deref(), Some(&value));
+        caps.set("m.set_display_name", json!({"enabled": true}))
+            .unwrap();
+        assert!(caps.set_display_name.enabled);
+        assert!(caps.custom_capabilities.is_empty());
+        let serialized = to_json_value(caps).unwrap();
+        assert_eq!(serialized["m.set_displayname"], json!({"enabled": true}));
+        assert!(serialized.get("m.set_display_name").is_none());
+    }
+
+    #[test]
+    fn malformed_typed_values_are_rejected_without_mutation() {
+        let mut caps = Capabilities::new();
+        caps.profile_fields = Some(ProfileFieldsCapability::new(true));
+        let before = to_json_value(&caps).unwrap();
+        for name in [
+            "m.profile_fields",
+            "uk.tcpip.msc4133.profile_fields",
+            "m.set_displayname",
+        ] {
+            assert!(caps.set(name, json!({"enabled": "invalid"})).is_err());
+            assert_eq!(to_json_value(&caps).unwrap(), before);
+        }
+        let custom = json!({"enabled": "custom semantics"});
+        caps.set("org.example.feature", custom.clone()).unwrap();
+        assert_eq!(caps.get("org.example.feature").as_deref(), Some(&custom));
     }
 }
 

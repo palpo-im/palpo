@@ -209,6 +209,7 @@ impl IdDst {
             #[automatically_derived]
             impl #impl_generics #borrowed_type {
                 pub(super) const fn from_borrowed_unchecked(s: &::std::primitive::str) -> &Self {
+                    // SAFETY: The macro parser requires repr(transparent) over str.
                     unsafe { ::std::mem::transmute(s) }
                 }
 

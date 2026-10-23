@@ -3,7 +3,7 @@
 //! [MXC URI]: https://spec.matrix.org/latest/client-server-api/#matrix-content-mxc-uris
 
 use std::fmt;
-use std::num::NonZeroU8;
+use std::num::NonZeroU16;
 
 use palpo_identifiers_validation::error::MxcUriError;
 use palpo_identifiers_validation::mxc_uri::validate;
@@ -54,7 +54,7 @@ impl MxcUri {
 
     // convenience method for calling validate(self)
     #[inline(always)]
-    fn extract_slash_idx(&self) -> Result<NonZeroU8> {
+    fn extract_slash_idx(&self) -> Result<NonZeroU16> {
         validate(self.as_str())
     }
 }
@@ -113,6 +113,36 @@ mod tests {
     use palpo_identifiers_validation::error::MxcUriError;
 
     use super::MxcUri;
+
+    #[test]
+    fn parse_mxc_uri_with_long_server_name() {
+        for len in [249, 250, 251, 255] {
+            let server = "a".repeat(len);
+            let uri = format!("mxc://{server}/media");
+            let mxc = <&MxcUri>::from(uri.as_str());
+            assert!(mxc.is_valid());
+            let parts = mxc.parts().unwrap();
+            assert_eq!(parts.server_name.as_str(), server);
+            assert_eq!(parts.media_id, "media");
+        }
+    }
+
+    #[test]
+    fn parse_mxc_uri_with_maximum_server_name_and_port() {
+        let server = format!("{}:65535", "a".repeat(255));
+        let uri = format!("mxc://{server}/media");
+        let mxc = <&MxcUri>::from(uri.as_str());
+        assert_eq!(mxc.server_name().unwrap().as_str(), server);
+        assert_eq!(mxc.media_id().unwrap(), "media");
+    }
+
+    #[test]
+    fn parse_mxc_uri_rejects_oversized_server_name() {
+        let uri = format!("mxc://{}/media", "a".repeat(262));
+        let mxc = <&MxcUri>::from(uri.as_str());
+        assert_eq!(mxc.parts(), Err(MxcUriError::ServerNameMalformed));
+        assert!(!mxc.is_valid());
+    }
 
     // #[test]
     // fn parse_mxc_uri() {

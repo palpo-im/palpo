@@ -5,7 +5,7 @@ use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, SecretKey, Signer, SigningKey};
 use pkcs8::der::asn1::{BitStringRef, OctetStringRef};
-use pkcs8::der::zeroize::{Zeroize as _, Zeroizing};
+use pkcs8::der::zeroize::Zeroizing;
 use pkcs8::spki::AlgorithmIdentifierRef;
 use pkcs8::{ObjectIdentifier, PrivateKeyInfoRef, SecretDocument};
 
@@ -166,18 +166,19 @@ impl Ed25519KeyPair {
     pub fn generate() -> Result<Zeroizing<Vec<u8>>, Error> {
         use rand::TryRng as _;
 
-        let mut secret_key = SecretKey::default();
+        let mut secret_key = Zeroizing::new(SecretKey::default());
         let mut rng = rand::rngs::SysRng;
-        rng.try_fill_bytes(&mut secret_key).map_err(Error::Random)?;
+        rng.try_fill_bytes(secret_key.as_mut())
+            .map_err(Error::Random)?;
         let signing_key = SigningKey::from_bytes(&secret_key);
 
-        let mut private_key_bytes = [0u8; 2 + 32];
+        let mut private_key_bytes = Zeroizing::new([0u8; 2 + 32]);
         private_key_bytes[0] = 0x04;
         private_key_bytes[1] = 0x20;
-        private_key_bytes[2..].copy_from_slice(&secret_key);
+        private_key_bytes[2..].copy_from_slice(secret_key.as_ref());
 
         let public_key = signing_key.verifying_key().to_bytes();
-        let private_key = OctetStringRef::new(&private_key_bytes)
+        let private_key = OctetStringRef::new(private_key_bytes.as_ref())
             .map_err(pkcs8::Error::from)
             .map_err(Error::DerParse)?;
         let public_key = BitStringRef::from_bytes(&public_key)
@@ -190,8 +191,6 @@ impl Ed25519KeyPair {
         };
         let encoded = SecretDocument::try_from(&private_key_info).map_err(Error::DerParse)?;
 
-        private_key_bytes.zeroize();
-        secret_key.zeroize();
         Ok(encoded.to_bytes())
     }
 
@@ -264,7 +263,16 @@ mod tests {
 
     #[test]
     fn generate_key() {
-        Ed25519KeyPair::generate().unwrap();
+        use ed25519_dalek::{Signer as _, Verifier as _, VerifyingKey};
+
+        let document = Ed25519KeyPair::generate().unwrap();
+        let keypair = Ed25519KeyPair::from_der(&document, "test".to_owned()).unwrap();
+        assert_eq!(keypair.version(), "test");
+        let message = b"generated keys must still sign valid federation messages";
+        let signature = keypair.signing_key.sign(message);
+        let public_key = VerifyingKey::from_bytes(&keypair.public_key()).unwrap();
+        public_key.verify(message, &signature).unwrap();
+        assert!(public_key.verify(b"tampered", &signature).is_err());
     }
 
     #[test]
@@ -274,31 +282,48 @@ mod tests {
         assert_eq!(keypair.public_key(), WELL_FORMED_PUBKEY);
     }
 
-    // #[cfg(feature = "ring-compat")]
-    // mod ring_compat {
-    //     use super::Ed25519KeyPair;
+    #[cfg(feature = "ring-compat")]
+    mod ring_compat {
+        use super::Ed25519KeyPair;
 
-    //     const RING_DOC: &[u8] = &[
-    //         0x30, 0x53, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70, 0x04, 0x22,
-    //         0x04, 0x20, 0x61, 0x9E, 0xD8, 0x25, 0xA6, 0x1D, 0x32, 0x29, 0xD7, 0xD8, 0x22, 0x03,
-    //         0xC6, 0x0E, 0x37, 0x48, 0xE9, 0xC9, 0x11, 0x96, 0x3B, 0x03, 0x15, 0x94, 0x19, 0x3A,
-    //         0x86, 0xEC, 0xE6, 0x2D, 0x73, 0xC0, 0xA1, 0x23, 0x03, 0x21, 0x00, 0x3D, 0xA6, 0xC8,
-    //         0xD1, 0x76, 0x2F, 0xD6, 0x49, 0xB8, 0x4F, 0xF6, 0xC6, 0x1D, 0x04, 0xEA, 0x4A, 0x70,
-    //         0xA8, 0xC9, 0xF0, 0x8F, 0x96, 0x7F, 0x6B, 0xD7, 0xDA, 0xE5, 0x2E, 0x88, 0x8D, 0xBA,
-    //         0x3E,
-    //     ];
+        const RING_DOC: &[u8] = &[
+            0x30, 0x53, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70, 0x04, 0x22,
+            0x04, 0x20, 0x61, 0x9E, 0xD8, 0x25, 0xA6, 0x1D, 0x32, 0x29, 0xD7, 0xD8, 0x22, 0x03,
+            0xC6, 0x0E, 0x37, 0x48, 0xE9, 0xC9, 0x11, 0x96, 0x3B, 0x03, 0x15, 0x94, 0x19, 0x3A,
+            0x86, 0xEC, 0xE6, 0x2D, 0x73, 0xC0, 0xA1, 0x23, 0x03, 0x21, 0x00, 0x3D, 0xA6, 0xC8,
+            0xD1, 0x76, 0x2F, 0xD6, 0x49, 0xB8, 0x4F, 0xF6, 0xC6, 0x1D, 0x04, 0xEA, 0x4A, 0x70,
+            0xA8, 0xC9, 0xF0, 0x8F, 0x96, 0x7F, 0x6B, 0xD7, 0xDA, 0xE5, 0x2E, 0x88, 0x8D, 0xBA,
+            0x3E,
+        ];
 
-    //     const RING_PUBKEY: &[u8] = &[
-    //         0x3D, 0xA6, 0xC8, 0xD1, 0x76, 0x2F, 0xD6, 0x49, 0xB8, 0x4F, 0xF6, 0xC6, 0x1D, 0x04,
-    //         0xEA, 0x4A, 0x70, 0xA8, 0xC9, 0xF0, 0x8F, 0x96, 0x7F, 0x6B, 0xD7, 0xDA, 0xE5, 0x2E,
-    //         0x88, 0x8D, 0xBA, 0x3E,
-    //     ];
+        const RING_PUBKEY: &[u8] = &[
+            0x3D, 0xA6, 0xC8, 0xD1, 0x76, 0x2F, 0xD6, 0x49, 0xB8, 0x4F, 0xF6, 0xC6, 0x1D, 0x04,
+            0xEA, 0x4A, 0x70, 0xA8, 0xC9, 0xF0, 0x8F, 0x96, 0x7F, 0x6B, 0xD7, 0xDA, 0xE5, 0x2E,
+            0x88, 0x8D, 0xBA, 0x3E,
+        ];
 
-    //     #[test]
-    //     fn ring_key() {
-    //         let keypair = Ed25519KeyPair::from_der(RING_DOC, "".to_owned()).unwrap();
+        #[test]
+        fn ring_key() {
+            // The compatibility helper is feature-gated; from_der itself accepts standard DER.
+            let super::super::compat::CompatibleDocument::CleanedFromRing(document) =
+                super::super::compat::CompatibleDocument::from_bytes(RING_DOC)
+            else {
+                panic!("ring document was not converted");
+            };
+            let keypair = Ed25519KeyPair::from_der(&document, "".to_owned()).unwrap();
 
-    //         assert_eq!(keypair.public_key(), RING_PUBKEY);
-    //     }
-    // }
+            assert_eq!(keypair.public_key(), RING_PUBKEY);
+        }
+
+        #[test]
+        fn well_formed_document_is_borrowed_unchanged() {
+            let original = super::WELL_FORMED_DOC;
+            let super::super::compat::CompatibleDocument::WellFormed(document) =
+                super::super::compat::CompatibleDocument::from_bytes(original)
+            else {
+                panic!("standard DER was unexpectedly copied");
+            };
+            assert!(std::ptr::eq(document, original));
+        }
+    }
 }
