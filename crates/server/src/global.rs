@@ -137,7 +137,8 @@ pub(crate) async fn prepare_appservices(
     database: Option<&crate::data::PreparedDatabase>,
 ) -> AppResult<Vec<Registration>> {
     use figment::Figment;
-    use figment::providers::{Format, Toml, Yaml};
+    use figment::providers::{Format, Toml};
+    use serde_saphyr::figment::Yaml;
     let mut appservices = vec![];
     let Some(registration_dir) = conf.appservice_registration_dir.as_deref() else {
         return Ok(appservices);
