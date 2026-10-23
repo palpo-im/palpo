@@ -6,10 +6,11 @@ use std::sync::{LazyLock, OnceLock};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use figment::Figment;
-use figment::providers::{Env, Format, Json, Toml, Yaml};
+use figment::providers::{Env, Format, Json, Toml};
 use figment::value::Value;
 use ipaddress::IPAddress;
 use kdl::{KdlDocument, KdlNode, KdlValue};
+use serde_saphyr::figment::Yaml;
 
 mod server;
 pub use server::*;
@@ -458,6 +459,30 @@ mod tests {
     fn unknown_toml_keys(toml: &str) -> Vec<String> {
         let file_conf = Figment::new().merge(Toml::string(toml));
         unknown_config_keys(&file_conf, &file_conf).expect("config should deserialize")
+    }
+
+    #[test]
+    fn yaml_config_preserves_types_and_unknown_key_detection() {
+        for extension in ["yaml", "yml"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!("config.{extension}"));
+            std::fs::write(
+                &path,
+                "server_name: example.test\nallow_registration: false\nip_range_denylist: []\nalow_registration: true\n",
+            )
+            .unwrap();
+            let file = figment_from_path(&path);
+            let config = file.extract::<ServerConfig>().unwrap();
+            assert!(!config.allow_registration);
+            assert!(config.ip_range_denylist.is_empty());
+            assert_eq!(
+                unknown_config_keys(&file, &file).unwrap(),
+                ["alow_registration"]
+            );
+
+            std::fs::write(&path, "server_name: [unterminated").unwrap();
+            assert!(figment_from_path(&path).extract::<ServerConfig>().is_err());
+        }
     }
 
     #[test]

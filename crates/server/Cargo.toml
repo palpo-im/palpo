@@ -56,7 +56,7 @@ diesel_migrations = { workspace = true }
 dotenvy = { workspace = true }
 either = { workspace = true, features = ["serde"] }
 fast32 = { workspace = true }
-figment = { workspace = true, features = ["env", "toml", "yaml", "json"] }
+figment = { workspace = true, features = ["env", "toml", "json"] }
 kdl = { workspace = true }
 futures-util = { workspace = true, features = ["io"] }
 globwalk = { workspace = true }
@@ -180,7 +180,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 serde_regex = { workspace = true }
-serde-saphyr = { workspace = true }
+serde-saphyr = { workspace = true, features = ["figment"] }
 sha1 = { workspace = true }
 smallvec = { workspace = true }
 strum = { workspace = true }
