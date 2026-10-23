@@ -454,7 +454,10 @@ pub fn derive_from_event_to_enum(input: TokenStream) -> TokenStream {
 ///
 /// # Attributes
 ///
-/// * `#[palpo_api(validate = PATH)]`: the path to a function to validate the string during parsing
+/// The type must be a tuple struct with `str` as its last field and must be
+/// `#[repr(transparent)]`, because generated conversions rely on the layout of `str`.
+///
+/// * `#[palpo_id(validate = PATH)]`: the path to a function to validate the string during parsing
 ///   and deserialization. By default, the types implement `From` string types, when this is set
 ///   they implement `TryFrom`.
 ///
@@ -464,6 +467,7 @@ pub fn derive_from_event_to_enum(input: TokenStream) -> TokenStream {
 /// # // HACK: This is "ignore" because of cyclical dependency drama.
 /// use palpo_core_macros::IdDst;
 ///
+/// #[repr(transparent)]
 /// #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, IdDst)]
 /// #[palpo_id(validate = palpo_identifiers_validation::user_id::validate)]
 /// pub struct UserId(str);
