@@ -192,6 +192,20 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
         account_moderation,
         ..Default::default()
     };
+    #[cfg(feature = "unstable-msc4540")]
+    {
+        capabilities.admin = Some(
+            crate::core::client::discovery::capabilities::AdminCapability {
+                // Eligibility comes from the same provisioned account policy as enforcement,
+                // rather than the scopes already granted to this token.
+                allowed_scopes: if authed.is_admin() {
+                    vec![crate::hoops::ADMIN_SCOPE.to_owned()]
+                } else {
+                    Vec::new()
+                },
+            },
+        );
+    }
     if conf.delayed_events.enable {
         // MSC4140 limits capability, using the unstable-prefixed name.
         capabilities.custom_capabilities.insert(

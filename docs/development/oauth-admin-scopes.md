@@ -95,3 +95,23 @@ database and a real mock HTTP issuer to exercise challenges, cache bypass and a
 successful state-changing retry. Run it alone with `PALPO_TEST_DATABASE_URL`
 set, then run `oauth_admin_routes` in a fresh database with the feature enabled
 and disabled to check compatibility.
+
+## Administration discovery (MSC4540)
+
+Build with `--features unstable-msc4540` (which also enables MSC4363 and MSC4484) to expose
+`org.continuwuity.msc4540.admin` in authenticated capabilities responses.
+`allowed_scopes` contains the experimental server-administration scope for
+provisioned administrators, and is empty for other users. It describes scopes
+the user may request, independently of the current OAuth token's grants.
+Native administrators receive the same list and retain legacy access.
+
+The existing `m.account_moderation` capability is retained. Discovery never
+grants privileges: administration routes continue to check both administrator
+status and, for OAuth tokens, the management scope. Administrator policy changes
+are reflected by subsequent authenticated requests. Builds without MSC4540 omit
+the capability. MSC4540 does not add a `/versions` flag.
+
+MSC4540 automatically enables MSC4363 JSON step-up challenges;
+clients must obtain the advertised scope from the delegated authorization
+service before performing administrative operations. The HTTP regression test
+also covers discovery before/after scope acquisition and privilege revocation.
