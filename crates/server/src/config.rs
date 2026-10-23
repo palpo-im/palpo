@@ -486,6 +486,25 @@ mod tests {
     }
 
     #[test]
+    fn yaml_appservice_registration_preserves_namespaces() {
+        use serde_saphyr::figment::Yaml;
+
+        let registration = Figment::from(Yaml::string(
+            "id: bridge\nurl: null\nas_token: fixture-as\nhs_token: fixture-hs\nsender_localpart: bridge\nrate_limited: false\nnamespaces:\n  users:\n    - exclusive: true\n      regex: '@bridge_.*:example.test'\n  aliases: []\n  rooms: []\n",
+        ))
+        .extract::<crate::core::appservice::Registration>()
+        .unwrap();
+        assert_eq!(registration.id, "bridge");
+        assert_eq!(registration.url, None);
+        assert_eq!(registration.rate_limited, Some(false));
+        assert!(registration.namespaces.users[0].exclusive);
+        assert_eq!(
+            registration.namespaces.users[0].regex,
+            "@bridge_.*:example.test"
+        );
+    }
+
+    #[test]
     fn empty_kdl_block_is_an_explicit_empty_list() {
         let doc: KdlDocument = "ip_range_denylist {\n}"
             .parse()
