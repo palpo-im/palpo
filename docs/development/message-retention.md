@@ -65,15 +65,18 @@ visible while its room is inactive.
 
 Shared PDU loaders apply retention before returning payloads. Client event
 lookup and context refuse expired events; stream/topological timelines used by
-messages and both sync implementations omit them. Search checks event visibility
-and removes expired search index entries. Sticky sync also applies retention
+messages and both sync implementations omit them. Search excludes expired hits
+before pagination and counting, even while they remain indexed before a sweep.
+Queued push and application-service deliveries discard expired events on retry.
+Sticky sync also applies retention
 before its history-visibility exemption. Shared federation loaders return only
 skeletal PDUs for expired messages. Their hashes, signatures and auth/prev
 references are retained; arbitrary content and unsigned bundles are removed.
 Administrative PDU lookups use the same loaders.
 
 Expiry is permanent once observed: a persisted marker prevents content from
-returning after a longer policy, a restart, or federation backfill. Database
+returning after a longer policy, a restart, or federation backfill. Markers survive
+administrative history purges, including deletion of the parent event. Database
 guards also prevent re-indexing a purged message. Payload removal and deletion
 of search, relation, sticky and per-event push indexes happen transactionally.
 Finalized delayed-send records lose their duplicate content as well; a late
@@ -101,7 +104,8 @@ regression creates a real room and exercises event lookup, messages, context,
 both sync APIs, search, shared federation loaders, policy changes, terminal/state
 preservation, backfill/re-indexing protection, a restart in a separate process,
 repeated sweeps and subsequent room operation. A separate test verifies disabled
-configuration and advertisement.
+configuration and advertisement. Another regression covers unswept search pages,
+queued integration retries, and administrative purge followed by backfill.
 
 Run each ignored test alone in a fresh **empty dedicated PostgreSQL database**:
 
@@ -109,8 +113,9 @@ Run each ignored test alone in a fresh **empty dedicated PostgreSQL database**:
 cargo test -p palpo-core --features unstable-msc1763 retention
 cargo test -p palpo --lib --features unstable-msc1763 retention
 cargo test -p palpo --lib --features unstable-msc1763 retention_http_expiry -- --ignored
+cargo test -p palpo --lib --features unstable-msc1763 retention_http_purge_queue -- --ignored
 cargo test -p palpo --lib --features unstable-msc1763 retention_http_disabled -- --ignored
 ```
 
-Set `PALPO_TEST_DATABASE_URL` for the last two commands. Tests refuse existing
+Set `PALPO_TEST_DATABASE_URL` for the last three commands. Tests refuse existing
 databases. CI runs the two HTTP fixtures in separate databases.

@@ -382,45 +382,91 @@ fn retention_http_purge_queue_and_search_pages() {
 
 async fn purge_queue_and_search_pages() {
     let service = setup(true).await;
-    let created = body(send(
-        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
-            .add_header("Authorization", "Bearer retention-token", true)
-            .json(&json!({"room_version":"11", "preset":"public_chat"})),
-        &service,
-    ).await).await;
+    let created = body(
+        send(
+            TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+                .add_header("Authorization", "Bearer retention-token", true)
+                .json(&json!({"room_version":"11", "preset":"public_chat"})),
+            &service,
+        )
+        .await,
+    )
+    .await;
     let room_id = RoomId::parse(created["room_id"].as_str().unwrap()).unwrap();
     let prefix = format!("/_matrix/client/v3/rooms/{room_id}");
-    body(put(&service, &format!("{prefix}/state/{EVENT_TYPE}"), json!({"max_lifetime":3_600_000})).await).await;
+    body(
+        put(
+            &service,
+            &format!("{prefix}/state/{EVENT_TYPE}"),
+            json!({"max_lifetime":3_600_000}),
+        )
+        .await,
+    )
+    .await;
     let mut ids = Vec::new();
     for i in 0..4 {
-        let text = if i < 2 { "pageneedle ".repeat(20) } else { "pageneedle".to_owned() };
-        let sent = body(put(&service, &format!("{prefix}/send/m.room.message/page-{i}"), json!({"msgtype":"m.text", "body":text})).await).await;
+        let text = if i < 2 {
+            "pageneedle ".repeat(20)
+        } else {
+            "pageneedle".to_owned()
+        };
+        let sent = body(
+            put(
+                &service,
+                &format!("{prefix}/send/m.room.message/page-{i}"),
+                json!({"msgtype":"m.text", "body":text}),
+            )
+            .await,
+        )
+        .await;
         ids.push(EventId::parse(sent["event_id"].as_str().unwrap()).unwrap());
     }
     for id in &ids[..2] {
-        diesel::update(events::table.find(id)).set(events::origin_server_ts.eq(UnixMillis(0)))
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+        diesel::update(events::table.find(id))
+            .set(events::origin_server_ts.eq(UnixMillis(0)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
         diesel::sql_query("UPDATE event_datas SET json_data = jsonb_set(json_data::jsonb, '{origin_server_ts}', '0')::json WHERE event_id = $1")
             .bind::<diesel::sql_types::Text,_>(id.as_str()).execute(&mut connect().await.unwrap()).await.unwrap();
         assert!(!was_expired(id).await.unwrap());
     }
-    assert_eq!(event_searches::table.filter(event_searches::room_id.eq(&room_id)).count()
-        .get_result::<i64>(&mut connect().await.unwrap()).await.unwrap(), 4);
+    assert_eq!(
+        event_searches::table
+            .filter(event_searches::room_id.eq(&room_id))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap(),
+        4
+    );
     // Higher-ranked expired hits remain indexed: both pages must still be full,
     // and the count must exclude expired hits before any sweeper or PDU read.
     let user = UserId::parse("@alice:retention.example").unwrap();
     let criteria = serde_json::from_value(json!({"search_term":"pageneedle", "filter":{"limit":1}, "event_context":{"before_limit":0,"after_limit":0}})).unwrap();
-    let first = crate::event::search::search_pdus(&user, None, &criteria, None).await.unwrap();
+    let first = crate::event::search::search_pdus(&user, None, &criteria, None)
+        .await
+        .unwrap();
     assert_eq!(first.count, Some(2));
     assert_eq!(first.results.len(), 1);
-    let second = crate::event::search::search_pdus(&user, None, &criteria, first.next_batch.as_deref()).await.unwrap();
+    let second =
+        crate::event::search::search_pdus(&user, None, &criteria, first.next_batch.as_deref())
+            .await
+            .unwrap();
     assert_eq!(second.count, Some(2));
     assert_eq!(second.results.len(), 1);
     let first_json = serde_json::to_value(&first.results).unwrap();
     let second_json = serde_json::to_value(&second.results).unwrap();
-    assert_ne!(first_json[0]["result"]["event_id"], second_json[0]["result"]["event_id"]);
+    assert_ne!(
+        first_json[0]["result"]["event_id"],
+        second_json[0]["result"]["event_id"]
+    );
     for page in [&first_json, &second_json] {
-        assert!(ids[2..].iter().any(|id| page[0]["result"]["event_id"] == id.as_str()));
+        assert!(
+            ids[2..]
+                .iter()
+                .any(|id| page[0]["result"]["event_id"] == id.as_str())
+        );
     }
     assert!(!was_expired(&ids[0]).await.unwrap());
     // No registration exists: reaching the appservice delivery code would fail.
@@ -429,29 +475,71 @@ async fn purge_queue_and_search_pages() {
         crate::sending::OutgoingKind::Appservice("retention-test-unregistered".to_owned()),
         crate::sending::OutgoingKind::Push(user.clone(), "retention-test-push".to_owned()),
     ] {
-        crate::sending::send_events(kind, vec![crate::sending::SendingEventType::Pdu(ids[0].clone())])
-            .await.unwrap();
+        crate::sending::send_events(
+            kind,
+            vec![crate::sending::SendingEventType::Pdu(ids[0].clone())],
+        )
+        .await
+        .unwrap();
     }
     assert!(was_expired(&ids[0]).await.unwrap());
     // Save the original event row/payload, then exercise the real administrative purge.
     let mut conn = connect().await.unwrap();
-    diesel::sql_query("CREATE TEMP TABLE retention_saved_events AS SELECT * FROM events WHERE id = $1")
-        .bind::<diesel::sql_types::Text,_>(ids[0].as_str()).execute(&mut conn).await.unwrap();
-    diesel::sql_query("CREATE TEMP TABLE retention_saved_data AS SELECT * FROM event_datas WHERE event_id = $1")
-        .bind::<diesel::sql_types::Text,_>(ids[0].as_str()).execute(&mut conn).await.unwrap();
-    assert_eq!(crate::data::room::timeline::purge_room_history(&room_id, 1).await.unwrap(), 2);
+    diesel::sql_query(
+        "CREATE TEMP TABLE retention_saved_events AS SELECT * FROM events WHERE id = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(ids[0].as_str())
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    diesel::sql_query(
+        "CREATE TEMP TABLE retention_saved_data AS SELECT * FROM event_datas WHERE event_id = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(ids[0].as_str())
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        crate::data::room::timeline::purge_room_history(&room_id, 1)
+            .await
+            .unwrap(),
+        2
+    );
     assert!(was_expired(&ids[0]).await.unwrap());
     // A queued retry after the parent event was deleted must also be dropped.
-    crate::sending::send_events(crate::sending::OutgoingKind::Appservice("retention-test-unregistered".to_owned()),
-        vec![crate::sending::SendingEventType::Pdu(ids[0].clone())]).await.unwrap();
-    diesel::sql_query("INSERT INTO events SELECT * FROM retention_saved_events").execute(&mut conn).await.unwrap();
+    crate::sending::send_events(
+        crate::sending::OutgoingKind::Appservice("retention-test-unregistered".to_owned()),
+        vec![crate::sending::SendingEventType::Pdu(ids[0].clone())],
+    )
+    .await
+    .unwrap();
+    diesel::sql_query("INSERT INTO events SELECT * FROM retention_saved_events")
+        .execute(&mut conn)
+        .await
+        .unwrap();
     diesel::sql_query("UPDATE retention_saved_data SET json_data = jsonb_set(json_data::jsonb, '{content}', '{\"body\":\"resurrectedsecret\",\"msgtype\":\"m.text\"}')::json").execute(&mut conn).await.unwrap();
-    diesel::sql_query("INSERT INTO event_datas SELECT * FROM retention_saved_data").execute(&mut conn).await.unwrap();
+    diesel::sql_query("INSERT INTO event_datas SELECT * FROM retention_saved_data")
+        .execute(&mut conn)
+        .await
+        .unwrap();
     diesel::sql_query("INSERT INTO event_searches (event_id, event_sn, room_id, sender_id, key, vector, origin_server_ts) SELECT id, sn, room_id, sender_id, 'content.message', to_tsvector('english', 'resurrectedsecret'), origin_server_ts FROM events WHERE id = $1")
         .bind::<diesel::sql_types::Text,_>(ids[0].as_str()).execute(&mut conn).await.unwrap();
-    let stored = event_datas::table.find(&ids[0]).select(event_datas::json_data).first::<Value>(&mut conn).await.unwrap();
+    let stored = event_datas::table
+        .find(&ids[0])
+        .select(event_datas::json_data)
+        .first::<Value>(&mut conn)
+        .await
+        .unwrap();
     assert_eq!(stored["content"], json!({}));
-    assert_eq!(event_searches::table.filter(event_searches::event_id.eq(&ids[0])).count().get_result::<i64>(&mut conn).await.unwrap(), 0);
+    assert_eq!(
+        event_searches::table
+            .filter(event_searches::event_id.eq(&ids[0]))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

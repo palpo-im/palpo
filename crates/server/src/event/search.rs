@@ -305,10 +305,7 @@ pub async fn search_pdus(
     let count_query = searchable_events(&room_ids, criteria, &keys);
     #[cfg(feature = "unstable-msc1763")]
     let count_query = crate::retention::filter_search(count_query, &room_ids).await?;
-    let count: i64 = count_query
-        .count()
-        .first(&mut connect().await?)
-        .await?;
+    let count: i64 = count_query.count().first(&mut connect().await?).await?;
     let next_batch = if items.len() < limit {
         None
     } else {

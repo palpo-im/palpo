@@ -202,7 +202,12 @@ pub async fn filter_search<'a>(
                     .filter(events::room_id.eq(room_id.to_owned()))
                     .filter(events::state_key.is_null())
                     .filter(events::origin_server_ts.le(UnixMillis(cutoff)))
-                    .filter(events::id.ne_all(event_forward_extremities::table.select(event_forward_extremities::event_id)))
+                    .filter(
+                        events::id.ne_all(
+                            event_forward_extremities::table
+                                .select(event_forward_extremities::event_id),
+                        ),
+                    )
                     .select(events::id);
                 query = query.filter(event_searches::event_id.ne_all(expired));
             }
