@@ -14,7 +14,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 chrono.workspace = true
-jiff = "=0.2.32"
+jiff = "=0.2.38"
 aes-gcm = "=0.10.3"
 sha2.workspace = true
 subtle = "2.6.1"
