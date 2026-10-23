@@ -111,6 +111,8 @@ jobs:
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_retention_on cargo test -p palpo --lib --all-features retention_http_expiry -- --ignored
+          sudo -u postgres createdb -O palpo_test palpo_retention_review
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_retention_review cargo test -p palpo --lib --all-features retention_http_purge_queue -- --ignored
           sudo -u postgres createdb -O palpo_test palpo_retention_off
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_retention_off cargo test -p palpo --lib --all-features retention_http_disabled -- --ignored
 

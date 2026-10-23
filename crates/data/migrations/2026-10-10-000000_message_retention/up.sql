@@ -1,7 +1,8 @@
 -- Permanent content-expiry markers retain the event graph and prevent backfill
 -- or a later, longer policy from resurrecting purged content.
 CREATE TABLE event_retention_expired (
-    event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+    -- Tombstones must survive administrative history purges and later backfill.
+    event_id TEXT PRIMARY KEY,
     expired_at BIGINT NOT NULL
 );
 

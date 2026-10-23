@@ -184,6 +184,33 @@ async fn sanitize_json_inner(
     Ok(())
 }
 
+/// Apply retention before search LIMIT, counts and cursors, even before the sweeper runs.
+pub async fn filter_search<'a>(
+    mut query: event_searches::BoxedQuery<'a, diesel::pg::Pg>,
+    room_ids: &[OwnedRoomId],
+) -> AppResult<event_searches::BoxedQuery<'a, diesel::pg::Pg>> {
+    query = query.filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+        "NOT EXISTS (SELECT 1 FROM event_retention_expired AS expired WHERE expired.event_id = event_searches.event_id)",
+    ));
+    if enabled() {
+        let now = UnixMillis::now().get();
+        for room_id in room_ids {
+            if let Some(lifetime) = effective_policy(room_id).await?.max_lifetime
+                && let Some(cutoff) = now.checked_sub(lifetime)
+            {
+                let expired = events::table
+                    .filter(events::room_id.eq(room_id.to_owned()))
+                    .filter(events::state_key.is_null())
+                    .filter(events::origin_server_ts.le(UnixMillis(cutoff)))
+                    .filter(events::id.ne_all(event_forward_extremities::table.select(event_forward_extremities::event_id)))
+                    .select(events::id);
+                query = query.filter(event_searches::event_id.ne_all(expired));
+            }
+        }
+    }
+    Ok(query)
+}
+
 pub fn validate_local(event_type: &str, state_key: Option<&str>, content: &str) -> AppResult<()> {
     if event_type != EVENT_TYPE {
         return Ok(());
