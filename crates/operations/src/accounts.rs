@@ -119,7 +119,7 @@ impl Configuration {
         let iv = rand::random::<[u8; 12]>();
         let encrypted = cipher
             .encrypt(
-                Nonce::from_slice(&iv),
+                &Nonce::from(iv),
                 Payload {
                     msg: password.as_bytes(),
                     aad: id.as_bytes(),
@@ -146,13 +146,15 @@ impl Configuration {
         if iv.len() != 12 || tag.len() != 16 || data.len() > 1024 {
             return Err(fail(503, "invalid_account_secret"));
         }
+        let nonce =
+            Nonce::try_from(iv.as_slice()).map_err(|_| fail(503, "invalid_account_secret"))?;
         data.extend(tag);
         let key = bytes(&self.password_key)?;
         let cipher =
             Aes256Gcm::new_from_slice(&key).map_err(|_| fail(503, "invalid_account_secret"))?;
         let clear = cipher
             .decrypt(
-                Nonce::from_slice(&iv),
+                &nonce,
                 Payload {
                     msg: &data,
                     aad: id.as_bytes(),
@@ -308,6 +310,19 @@ mod tests {
         // the production Node sealing and binding formats, not the Rust writer.
         let row = json!({"id":"a".repeat(32),"password":{"iv":"000102030405060708090a0b","data":"3b0a493bfbf5712ceed4842aafb1f7bcf6c12c82ed6a6052","tag":"0ceca4c73474222e7bb033248052beea"}});
         assert_eq!(config.unseal(&row).unwrap(), "Node migration password!");
+        let sealed = config
+            .seal("Rust upgrade password!", row["id"].as_str().unwrap())
+            .unwrap();
+        let roundtrip = json!({"id":row["id"],"password":sealed});
+        assert_eq!(config.unseal(&roundtrip).unwrap(), "Rust upgrade password!");
+        for len in [0, 11, 13] {
+            let mut malformed = row.clone();
+            malformed["password"]["iv"] = json!("00".repeat(len));
+            assert_eq!(
+                config.unseal(&malformed).unwrap_err().code,
+                "invalid_account_secret"
+            );
+        }
         let mut wrong = row.clone();
         wrong["id"] = json!("b".repeat(32));
         assert_eq!(
