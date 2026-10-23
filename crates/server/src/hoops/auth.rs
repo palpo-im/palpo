@@ -52,7 +52,7 @@ enum AccessTokenPolicy {
 }
 
 #[cfg(feature = "unstable-msc4484")]
-const ADMIN_SCOPE: &str = "urn:matrix:client:cc.c10y.msc4484.server_administration";
+pub(crate) const ADMIN_SCOPE: &str = "urn:matrix:client:cc.c10y.msc4484.server_administration";
 
 impl AccessTokenPolicy {
     fn authorize_oauth(
@@ -222,7 +222,14 @@ async fn auth_by_delegated_token(
     policy: AccessTokenPolicy,
     depot: &mut Depot,
 ) -> AppResult<()> {
-    let result = super::introspection::introspect_token(token).await?;
+    #[cfg(feature = "unstable-msc4363")]
+    let use_cache = !matches!(policy, AccessTokenPolicy::ServerAdministration)
+        || !config::get()
+            .enabled_delegated_auth()
+            .is_some_and(|da| da.admin_max_age.is_some() || da.admin_acr_values.is_some());
+    #[cfg(not(feature = "unstable-msc4363"))]
+    let use_cache = true;
+    let result = super::introspection::introspect_token_with_cache(token, use_cache).await?;
 
     if !result.active {
         return Err(MatrixError::unknown_token("Token is not active", true).into());
@@ -270,6 +277,17 @@ async fn auth_by_delegated_token(
         .map_err(|_| MatrixError::unknown_token("Device not found (not yet provisioned?)", true))?;
 
     // Challenge only a verified, provisioned identity, before changing account state.
+    #[cfg(feature = "unstable-msc4363")]
+    if matches!(policy, AccessTokenPolicy::ServerAdministration) {
+        super::step_up::authorize_admin(
+            &scopes,
+            user.is_admin,
+            &result,
+            conf.enabled_delegated_auth()
+                .expect("delegated auth enabled"),
+            super::step_up::now(),
+        )?;
+    }
     policy.authorize_oauth(&scopes, user.is_admin)?;
     if user.is_guest {
         crate::data::user::set_guest(&user_id, false).await?;
