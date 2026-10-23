@@ -215,6 +215,15 @@ impl<'de> Visitor<'de> for ErrorKindVisitor {
                 .map_err(de::Error::custom)?,
             },
             ErrorCode::InvalidParam => ErrorKind::InvalidParam,
+            #[cfg(feature = "unstable-msc4363")]
+            ErrorCode::InsufficientUserAuthentication => {
+                ErrorKind::InsufficientUserAuthentication {
+                    challenge: from_json_value(
+                        serde_json::to_value(extra).map_err(de::Error::custom)?,
+                    )
+                    .map_err(de::Error::custom)?,
+                }
+            }
             ErrorCode::KeyTooLarge => ErrorKind::KeyTooLarge,
             ErrorCode::ProfileTooLarge => ErrorKind::ProfileTooLarge,
             ErrorCode::InvalidRoomState => ErrorKind::InvalidRoomState,
@@ -435,6 +444,14 @@ pub enum ErrorCode {
     /// A parameter that was specified has the wrong value. For example, the
     /// server expected an integer and instead received a string.
     InvalidParam,
+
+    /// Experimental MSC4363 step-up authentication challenge.
+    #[cfg(feature = "unstable-msc4363")]
+    #[palpo_enum(
+        rename = "org.matrix.msc4363.M_INSUFFICIENT_USER_AUTHENTICATION",
+        alias = "M_INSUFFICIENT_USER_AUTHENTICATION"
+    )]
+    InsufficientUserAuthentication,
 
     /// `M_KEY_TOO_LARGE`: the profile key exceeds 255 bytes.
     KeyTooLarge,
@@ -733,6 +750,13 @@ impl Serialize for ErrorKind {
         let mut st = serializer.serialize_map(None)?;
         st.serialize_entry("errcode", &self.code())?;
         match self {
+            #[cfg(feature = "unstable-msc4363")]
+            Self::InsufficientUserAuthentication { challenge } => {
+                let fields = serde_json::to_value(challenge).map_err(ser::Error::custom)?;
+                for (key, value) in fields.as_object().expect("challenge object") {
+                    st.serialize_entry(key, value)?;
+                }
+            }
             Self::UnknownToken { soft_logout: true } => {
                 st.serialize_entry("soft_logout", &true)?;
             }
