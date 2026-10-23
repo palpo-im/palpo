@@ -1509,3 +1509,14 @@
 
 # Acceptable OIDC ACR values, in preference order. Requires unstable-msc4363.
 # admin_acr_values = "urn:example:mfa urn:example:hardware-key"
+
+# Optional experimental MSC1763 message retention. Build with unstable-msc1763.
+# Retains state/auth/event graphs; purged content cannot be restored by a longer policy.
+# See docs/development/message-retention.md for policy precedence and guarantees.
+# [retention]
+# enable = false
+# [retention.policies."*"]
+# max_lifetime = 2592000000
+# [retention.limits.max_lifetime]
+# min = 3600000
+# max = 7776000000

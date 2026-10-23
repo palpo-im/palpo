@@ -33,6 +33,8 @@ pub mod federation;
 pub mod media;
 pub mod membership;
 pub mod registration_email;
+#[cfg(feature = "unstable-msc1763")]
+pub mod retention;
 pub mod room;
 pub mod sending;
 pub mod server_key;
@@ -724,6 +726,10 @@ impl MatrixServer {
         // offline.
         if config::get().delayed_events.enable {
             crate::delayed_event::start();
+        }
+        #[cfg(feature = "unstable-msc1763")]
+        if crate::retention::enabled() {
+            crate::retention::start();
         }
 
         // MSC2444: periodically renew our outbound room peeks and drop lapsed inbound

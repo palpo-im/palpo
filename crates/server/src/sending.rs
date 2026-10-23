@@ -467,8 +467,29 @@ pub async fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> App
     Ok(())
 }
 
+/// Queued integrations must discard expired events, including on retries.
+async fn integration_pdu(event_id: &EventId) -> AppResult<Option<crate::SnPduEvent>> {
+    #[cfg(feature = "unstable-msc1763")]
+    if crate::retention::was_expired(event_id).await? {
+        return Ok(None);
+    }
+    let pdu = timeline::get_pdu(event_id).await?;
+    #[cfg(feature = "unstable-msc1763")]
+    if crate::retention::is_expired(
+        &pdu.event_id,
+        &pdu.room_id,
+        pdu.state_key.as_deref(),
+        pdu.origin_server_ts,
+    )
+    .await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(pdu))
+}
+
 #[tracing::instrument(skip(events, kind))]
-async fn send_events(
+pub(crate) async fn send_events(
     kind: OutgoingKind,
     events: Vec<SendingEventType>,
 ) -> Result<OutgoingKind, (OutgoingKind, AppError)> {
@@ -478,12 +499,12 @@ async fn send_events(
             for event in &events {
                 match event {
                     SendingEventType::Pdu(event_id) => {
-                        pdu_jsons.push(
-                            timeline::get_pdu(event_id)
-                                .await
-                                .map_err(|e| (kind.clone(), e))?
-                                .to_room_event_without_transaction_id(),
-                        );
+                        if let Some(pdu) = integration_pdu(event_id)
+                            .await
+                            .map_err(|e| (kind.clone(), e))?
+                        {
+                            pdu_jsons.push(pdu.to_room_event_without_transaction_id());
+                        }
                     }
                     SendingEventType::Edu(_) => {
                         // Appservices don't need EDUs (?)
@@ -492,6 +513,9 @@ async fn send_events(
                 }
             }
 
+            if pdu_jsons.is_empty() {
+                return Ok(kind);
+            }
             let max_request = crate::sending::max_request();
             let permit = max_request.acquire().await;
 
@@ -554,11 +578,12 @@ async fn send_events(
             for event in &events {
                 match event {
                     SendingEventType::Pdu(event_id) => {
-                        pdus.push(
-                            timeline::get_pdu(event_id)
-                                .await
-                                .map_err(|e| (kind.clone(), e))?,
-                        );
+                        if let Some(pdu) = integration_pdu(event_id)
+                            .await
+                            .map_err(|e| (kind.clone(), e))?
+                        {
+                            pdus.push(pdu);
+                        }
                     }
                     SendingEventType::Edu(_) => {
                         // Push gateways don't need EDUs (?)
