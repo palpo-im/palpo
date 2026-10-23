@@ -15,6 +15,25 @@ pub struct IntrospectionResult {
     pub username: Option<String>,
     pub sub: Option<String>,
     pub device_id: Option<String>,
+    /// Unix seconds of the active authentication event, supplied by the trusted issuer.
+    pub auth_time: Option<u64>,
+    /// The authentication context of that event, supplied by the trusted issuer.
+    pub acr: Option<String>,
+    /// Token expiry in Unix seconds. Cached results may not outlive it.
+    pub exp: Option<u64>,
+}
+
+impl IntrospectionResult {
+    fn is_unexpired(&self) -> bool {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok_and(|now| self.is_unexpired_at(now))
+    }
+
+    fn is_unexpired_at(&self, now: Duration) -> bool {
+        self.exp
+            .is_none_or(|expiry| now < Duration::from_secs(expiry))
+    }
 }
 
 struct CachedEntry {
@@ -38,6 +57,13 @@ fn token_cache_key(token: &str) -> [u8; 32] {
 }
 
 pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
+    introspect_token_with_cache(token, true).await
+}
+
+pub(super) async fn introspect_token_with_cache(
+    token: &str,
+    use_cache: bool,
+) -> AppResult<IntrospectionResult> {
     let conf = config::get();
     let ttl = conf
         .delegated_auth
@@ -46,11 +72,14 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
         .unwrap_or(300);
 
     // Check cache
-    if ttl > 0 {
+    if use_cache && ttl > 0 {
         let key = token_cache_key(token);
         if let Ok(mut cache) = CACHE.lock() {
             let hit = match cache.get_mut(&key) {
-                Some(entry) if entry.cached_at.elapsed() < Duration::from_secs(ttl) => {
+                Some(entry)
+                    if entry.cached_at.elapsed() < Duration::from_secs(ttl)
+                        && entry.result.is_unexpired() =>
+                {
                     Some(entry.result.clone())
                 }
                 Some(_) => None, // expired
@@ -92,13 +121,16 @@ pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
         return Err(MatrixError::unknown("Authentication service error").into());
     }
 
-    let result: IntrospectionResult = response.json().await.map_err(|e| {
+    let mut result: IntrospectionResult = response.json().await.map_err(|e| {
         tracing::error!("Failed to parse introspection response: {e}");
         MatrixError::unknown("Invalid introspection response")
     })?;
+    if !result.is_unexpired() {
+        result.active = false;
+    }
 
     // Cache the result
-    if ttl > 0 {
+    if use_cache && ttl > 0 {
         let key = token_cache_key(token);
         if let Ok(mut cache) = CACHE.lock() {
             cache.insert(
@@ -174,6 +206,15 @@ pub fn has_matrix_api_scope(scope: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_introspection_may_not_outlive_token_expiry() {
+        let result: IntrospectionResult =
+            serde_json::from_value(serde_json::json!({"active":true, "exp":1000})).unwrap();
+        assert!(result.is_unexpired_at(Duration::from_millis(999_999)));
+        assert!(!result.is_unexpired_at(Duration::from_secs(1000)));
+        assert!(!result.is_unexpired_at(Duration::from_secs(1001)));
+    }
 
     #[test]
     fn oauth_scope_syntax_is_strict_and_matches_exact_tokens() {
