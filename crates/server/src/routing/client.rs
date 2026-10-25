@@ -12,6 +12,8 @@ mod profile;
 mod push_rule;
 mod pusher;
 mod register;
+#[cfg(feature = "unstable-msc1763")]
+mod retention;
 mod room;
 mod room_key;
 mod session;
@@ -217,6 +219,11 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
     let mut body = supported_versions_body(config::get().delayed_events.enable);
+    #[cfg(feature = "unstable-msc1763")]
+    if crate::retention::enabled() {
+        body.unstable_features
+            .insert("org.matrix.msc1763".to_owned(), true);
+    }
     body.unstable_features.insert(
         "org.palpo.registration.email_otp".to_owned(),
         config::get().registration_email.is_some(),

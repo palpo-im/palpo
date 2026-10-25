@@ -13,7 +13,6 @@ use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::identifiers::*;
-use crate::core::serde::JsonValue;
 use crate::core::serde::canonical_json::{CanonicalJsonObject, CanonicalJsonValue};
 use crate::core::{RoomVersionId, UnixMillis};
 use crate::data::schema::*;
@@ -267,18 +266,17 @@ pub async fn latest_pdu_in_room(room_id: PathParam<OwnedRoomId>) -> JsonResult<P
 }
 
 async fn latest_pdu(room_id: &RoomId) -> AppResult<Option<PduEvent>> {
-    event_datas::table
+    let event_id = event_datas::table
         .filter(event_datas::room_id.eq(room_id))
         .order(event_datas::event_sn.desc())
-        .select((event_datas::event_id, event_datas::json_data))
-        .first::<(OwnedEventId, JsonValue)>(&mut crate::data::connect().await?)
+        .select(event_datas::event_id)
+        .first::<OwnedEventId>(&mut crate::data::connect().await?)
         .await
-        .optional()?
-        .map(|(event_id, json)| {
-            PduEvent::from_json_value(room_id, &event_id, json)
-                .map_err(|_| AppError::internal("invalid pdu in db"))
-        })
-        .transpose()
+        .optional()?;
+    match event_id {
+        Some(event_id) => Ok(Some(crate::room::timeline::get_pdu(&event_id).await?.pdu)),
+        None => Ok(None),
+    }
 }
 
 fn pdu_response(pdu: PduEvent, outlier: bool) -> AppResult<PduResponse> {
