@@ -13,6 +13,33 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// A legacy room ID carries a server name even when the joining server has
+// never seen the room and the client provides no routing query parameters.
+func TestMixedJoinByRoomIDWithoutVia(t *testing.T) {
+	d := complement.Deploy(t, 2)
+	defer d.Destroy(t)
+	owner := d.Register(t, "hs2", helpers.RegistrationOpts{})
+	remote := d.Register(t, "hs1", helpers.RegistrationOpts{})
+	room := owner.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat", "room_version": "10",
+	})
+	// Use the HTTP route directly so a client helper cannot add via/server_name.
+	joined := jsonResponse(t, remote.Do(t, "POST", []string{
+		"_matrix", "client", "v3", "join", room,
+	}, client.WithJSONBody(t, map[string]interface{}{})), 200)
+	if joined.Get("room_id").Str != room {
+		t.Fatalf("joined %s, want %s", joined.Raw, room)
+	}
+	owner.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(remote.UserID, room))
+	since := remote.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(remote.UserID, room))
+	event := owner.SendEventSynced(t, room, b.Event{
+		Type: "m.room.message", Content: map[string]interface{}{
+			"msgtype": "m.text", "body": "joined without via hints",
+		},
+	})
+	remote.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(room, event))
+}
+
 // Cover real server-to-server PDUs and EDUs, not just HTTP success on the
 // sending client. Each assertion waits for the remote user's incremental sync.
 func TestMixedRoomLifecycle(t *testing.T) {
