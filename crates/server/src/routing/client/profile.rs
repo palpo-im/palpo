@@ -199,9 +199,14 @@ async fn get_profile(_aa: AuthArgs, user_id: PathParam<OwnedUserId>) -> JsonResu
             .await?;
         return json_ok(profile_from_federation_response(profile)?);
     }
-    let profile = data::user::get_profile(&user_id, None)
-        .await?
-        .ok_or_else(|| MatrixError::not_found("Profile not found."))?;
+    let Some(profile) = data::user::get_profile(&user_id, None).await? else {
+        // Legacy and externally provisioned accounts may have no global profile row.
+        // Profile discovery is also how clients check an invitee's existence.
+        if data::user::active_local_user_exists(&user_id).await? {
+            return json_ok(ProfileResBody::default());
+        }
+        return Err(MatrixError::not_found("Profile not found.").into());
+    };
     let DbProfile {
         blurhash,
         avatar_url,

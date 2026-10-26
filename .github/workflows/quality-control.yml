@@ -116,6 +116,11 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_retention_off
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_retention_off cargo test -p palpo --lib --all-features retention_http_disabled -- --ignored
 
+      - name: Profile discovery regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_profile_lookup
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_profile_lookup cargo test -p palpo --lib --all-features profile_lookup_routes -- --ignored
+
       - name: OAuth administration scope regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_oauth_scopes_on
