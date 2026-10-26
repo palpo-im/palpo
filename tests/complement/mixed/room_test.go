@@ -3,6 +3,7 @@ package mixed_tests
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"testing"
 
 	"github.com/matrix-org/complement"
@@ -13,13 +14,25 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// A legacy room ID carries a server name even when the joining server has
-// never seen the room and the client provides no routing query parameters.
+// Palpo can use a legacy room ID's server name without client routing hints.
+// Synapse requires hints, so Palpo must be the joiner in either image layout.
 func TestMixedJoinByRoomIDWithoutVia(t *testing.T) {
+	palpoImage := os.Getenv("PALPO_IMAGE")
+	if palpoImage == "" {
+		t.Fatal("PALPO_IMAGE is required to select the Palpo joiner")
+	}
+	ownerServer, joiningServer := "hs2", "hs1"
+	if os.Getenv("COMPLEMENT_BASE_IMAGE_hs2") == palpoImage {
+		ownerServer, joiningServer = "hs1", "hs2"
+	}
+	if os.Getenv("COMPLEMENT_BASE_IMAGE_"+joiningServer) != palpoImage ||
+		os.Getenv("COMPLEMENT_BASE_IMAGE_"+ownerServer) == palpoImage {
+		t.Fatal("expected exactly one Palpo image among hs1 and hs2")
+	}
 	d := complement.Deploy(t, 2)
 	defer d.Destroy(t)
-	owner := d.Register(t, "hs2", helpers.RegistrationOpts{})
-	remote := d.Register(t, "hs1", helpers.RegistrationOpts{})
+	owner := d.Register(t, ownerServer, helpers.RegistrationOpts{})
+	remote := d.Register(t, joiningServer, helpers.RegistrationOpts{})
 	room := owner.MustCreateRoom(t, map[string]interface{}{
 		"preset": "public_chat", "room_version": "10",
 	})
