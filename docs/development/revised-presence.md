@@ -50,3 +50,12 @@ The opt-in database regression test requires an **empty dedicated PostgreSQL dat
 ```text
 PALPO_TEST_DATABASE_URL=postgres://... cargo test -p palpo --lib --features unstable-msc4532 durable_multidevice_overrides_status_and_remote_recovery -- --ignored
 ```
+
+The `Revised presence federation` CI job builds the Complement image with
+`PALPO_FEATURES=unstable-msc4532` and runs the repository's
+`tests/complement/revised_presence` overlay against the pinned Complement revision.
+It starts two actual homeservers and requires every test to pass in both directions:
+revised states and extensible status via incremental sync, legacy-client projection,
+status removal, explicit offline, and exclusion of an unauthorized room member.
+This job is separate from the default-feature Complement and mixed-Synapse jobs;
+those jobs alone do not establish MSC4532 interoperability.
