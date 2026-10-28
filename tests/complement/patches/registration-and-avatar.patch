@@ -1,0 +1,201 @@
+diff --git a/internal/instruction/runner.go b/internal/instruction/runner.go
+index d2f1421..8204b53 100644
+--- a/internal/instruction/runner.go
++++ b/internal/instruction/runner.go
+@@ -202,6 +202,7 @@ func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []ins
+ 		return err
+ 	}
+ 	req, instr, i := r.next(instrs, hsURL, i)
++	retriedRegistration := false
+ 	for req != nil {
+ 		if r.terminate.Load().(bool) {
+ 			return fmt.Errorf("terminated")
+@@ -234,6 +235,16 @@ func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []ins
+ 					return err
+ 				}
+ 			}
++			if res.StatusCode == http.StatusUnauthorized && !retriedRegistration {
++				if retry, ok := registrationDummyRetry(*instr, body); ok {
++					// Replay the same registration with the issued UIAA session. Do
++					// not advance the instruction index or retry other auth flows.
++					res.Body.Close()
++					req, instr, _ = r.next([]instruction{retry}, hsURL, 0)
++					retriedRegistration = true
++					continue
++				}
++			}
+ 			if res.StatusCode < 200 || res.StatusCode >= 300 {
+ 				r.log("INSTRUCTION: %+v\n", instr)
+ 				err = isFatalErr(fmt.Errorf("%s : request %s returned HTTP %s : %s", contextStr, req.URL.String(), res.Status, string(body)))
+@@ -255,10 +266,50 @@ func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []ins
+ 			}
+ 		}
+ 		req, instr, i = r.next(instrs, hsURL, i)
++		retriedRegistration = false
+ 	}
+ 	return nil
+ }
+ 
++// registrationDummyRetry completes only a server-advertised dummy-only flow.
++// Token/email/password stages must still fail rather than being bypassed.
++func registrationDummyRetry(instr instruction, response []byte) (instruction, bool) {
++	if instr.method != http.MethodPost || instr.path != "/_matrix/client/v3/register" || instr.accessToken != "" {
++		return instruction{}, false
++	}
++	var challenge struct {
++		Session string `json:"session"`
++		Flows   []struct {
++			Stages []string `json:"stages"`
++		} `json:"flows"`
++	}
++	if json.Unmarshal(response, &challenge) != nil || challenge.Session == "" {
++		return instruction{}, false
++	}
++	dummyOnly := false
++	for _, flow := range challenge.Flows {
++		if len(flow.Stages) == 1 && flow.Stages[0] == "m.login.dummy" {
++			dummyOnly = true
++		}
++	}
++	body, ok := instr.body.(map[string]interface{})
++	if !dummyOnly || !ok {
++		return instruction{}, false
++	}
++	auth, ok := body["auth"].(map[string]string)
++	if !ok || auth["type"] != "m.login.dummy" || auth["session"] != "" {
++		return instruction{}, false
++	}
++	// Do not mutate the original instruction's map, which may be reused.
++	retryBody := make(map[string]interface{}, len(body))
++	for key, value := range body {
++		retryBody[key] = value
++	}
++	retryBody["auth"] = map[string]string{"type": "m.login.dummy", "session": challenge.Session}
++	instr.body = retryBody
++	return instr, true
++}
++
+ // next returns the next request to make, along with its instruction. Return nil if there are no more instructions.
+ func (r *Runner) next(instrs []instruction, hsURL string, i int) (*http.Request, *instruction, int) {
+ 	if i >= len(instrs) {
+diff --git a/tests/csapi/room_profile_test.go b/tests/csapi/room_profile_test.go
+index d98c437..b707e5a 100644
+--- a/tests/csapi/room_profile_test.go
++++ b/tests/csapi/room_profile_test.go
+@@ -23,7 +23,10 @@ func testProfileFieldUpdate(t *testing.T, field string) {
+ 	deployment := complement.Deploy(t, 1)
+ 	defer deployment.Destroy(t)
+ 
+-	const bogusData = "LemurLover"
++	data := "LemurLover"
++	if field == "avatar_url" {
++		data = "mxc://example.com/LemurLover"
++	}
+ 
+ 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+ 
+@@ -38,11 +41,11 @@ func testProfileFieldUpdate(t *testing.T, field string) {
+ 		"PUT",
+ 		[]string{"_matrix", "client", "v3", "profile", alice.UserID, field},
+ 		client.WithJSONBody(t, map[string]interface{}{
+-			field: bogusData,
++			field: data,
+ 		}),
+ 	)
+ 
+ 	alice.MustSyncUntil(t, client.SyncReq{Since: sinceToken}, client.SyncJoinedTo(alice.UserID, roomID, func(result gjson.Result) bool {
+-		return result.Get("content."+field).Str == bogusData
++		return result.Get("content."+field).Str == data
+ 	}))
+ }
+diff --git a/internal/instruction/registration_uiaa_test.go b/internal/instruction/registration_uiaa_test.go
+new file mode 100644
+index 0000000..8ba24fe
+--- /dev/null
++++ b/internal/instruction/registration_uiaa_test.go
+@@ -0,0 +1,85 @@
++package instruction
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/matrix-org/complement/b"
++)
++
++func TestRegistrationDummySession(t *testing.T) {
++	for _, tc := range []struct {
++		name        string
++		challenge   string
++		acceptRetry bool
++		wantCalls   int
++		wantSuccess bool
++	}{
++		{"direct success", "", true, 1, true},
++		{"session", `{"session":"issued-session","flows":[{"stages":["m.login.dummy"]}]}`, true, 2, true},
++		{"retry rejected", `{"session":"issued-session","flows":[{"stages":["m.login.dummy"]}]}`, false, 2, false},
++		{"missing session", `{"flows":[{"stages":["m.login.dummy"]}]}`, false, 1, false},
++		{"token required", `{"session":"issued-session","flows":[{"stages":["m.login.registration_token","m.login.dummy"]}]}`, false, 1, false},
++		{"email required", `{"session":"issued-session","flows":[{"stages":["m.login.email.identity"]}]}`, false, 1, false},
++		{"malformed", `{`, false, 1, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			calls := 0
++			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
++				calls++
++				var body map[string]interface{}
++				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
++					t.Error(err)
++				}
++				if req.Method != http.MethodPost || req.URL.Path != "/_matrix/client/v3/register" || body["username"] != "alice" {
++					t.Errorf("incorrect registration request: %s %s %+v", req.Method, req.URL.Path, body)
++				}
++				if calls == 2 {
++					auth, _ := body["auth"].(map[string]interface{})
++					if auth["session"] != "issued-session" || auth["type"] != "m.login.dummy" || body["password"] != "complement_meets_min_pasword_req_alice" {
++						t.Errorf("retry lost credentials/session: %+v", body)
++					}
++					if tc.acceptRetry {
++						w.Write([]byte(`{"access_token":"token","device_id":"device"}`))
++						return
++					}
++				}
++				if tc.challenge == "" {
++					w.Write([]byte(`{"access_token":"token","device_id":"device"}`))
++					return
++				}
++				w.WriteHeader(http.StatusUnauthorized)
++				w.Write([]byte(tc.challenge))
++			}))
++			defer srv.Close()
++			runner := NewRunner("uiaa", false, false)
++			instr := instructionRegister(b.Homeserver{Name: "hs1"}, b.User{Localpart: "alice"})
++			err := runner.runInstructionSet("test", srv.URL, []instruction{instr})
++			if (err == nil) != tc.wantSuccess || calls != tc.wantCalls {
++				t.Fatalf("got err=%v calls=%d; want success=%v calls=%d", err, calls, tc.wantSuccess, tc.wantCalls)
++			}
++			if tc.wantSuccess && runner.AccessTokens("hs1")["@alice:hs1"] != "token" {
++				t.Fatal("retry response was not stored")
++			}
++			if _, exists := instr.body.(map[string]interface{})["auth"].(map[string]string)["session"]; exists {
++				t.Fatal("mutated original instruction")
++			}
++		})
++	}
++}
++
++func TestRegistrationRetryDoesNotHandleOtherEndpoints(t *testing.T) {
++	challenge := []byte(`{"session":"s","flows":[{"stages":["m.login.dummy"]}]}`)
++	for _, instr := range []instruction{
++		{method: http.MethodGet, path: "/_matrix/client/v3/register"},
++		{method: http.MethodPost, path: "/_matrix/client/v3/login"},
++		{method: http.MethodPost, path: "/_matrix/client/v3/register", accessToken: "as-token"},
++	} {
++		instr.body = map[string]interface{}{"username": "alice", "auth": map[string]string{"type": "m.login.dummy"}}
++		if _, ok := registrationDummyRetry(instr, challenge); ok {
++			t.Fatalf("retried non-blueprint registration: %+v", instr)
++		}
++	}
++}

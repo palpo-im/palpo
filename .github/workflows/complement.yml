@@ -55,6 +55,13 @@ jobs:
           git -C /tmp/complement fetch --depth 1 origin "$COMPLEMENT_REVISION"
           git -C /tmp/complement checkout --detach FETCH_HEAD
 
+      - name: Apply audited Complement fixture fixes
+        run: |
+          git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/registration-and-avatar.patch"
+          git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/registration-and-avatar.patch"
+          cd /tmp/complement
+          go test ./internal/instruction -count=1
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -102,6 +109,32 @@ jobs:
           echo "Fail events:  $(grep -c '"fail"' __test_all.result.jsonl || true)"
           echo "Skip events:  $(grep -c '"skip"' __test_all.result.jsonl || true)"
 
+      - name: Verify corrected fixtures without the suite allowance
+        id: corrected-fixtures
+        if: always()
+        continue-on-error: true
+        run: |
+          cd /tmp/complement
+          COMPLEMENT_BASE_IMAGE=complement-palpo \
+            COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
+            go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 20m \
+            -run '^(TestAvatarUrlUpdate|TestJoinFederatedRoomFromApplicationServiceBridgeUser|TestJumpToDateEndpoint)$' \
+            ./tests/csapi ./tests | tee fixture-results.jsonl
+          # A missing or skipped test must not silently satisfy this strict gate.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          expected = {
+              "TestAvatarUrlUpdate",
+              "TestJoinFederatedRoomFromApplicationServiceBridgeUser",
+              "TestJumpToDateEndpoint",
+          }
+          results = [json.loads(line) for line in Path("fixture-results.jsonl").read_text().splitlines() if line.startswith("{")]
+          passed = {row.get("Test") for row in results if row.get("Action") == "pass"}
+          assert expected <= passed, f"Missing successful tests: {expected - passed}"
+          assert not any(row.get("Action") == "fail" for row in results), "Fixture regression failed"
+          PY
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
@@ -111,12 +144,19 @@ jobs:
             /tmp/complement/__test_all.result.jsonl
             /tmp/complement/results.jsonl
             /tmp/complement/results.log
+            /tmp/complement/fixture-results.jsonl
           if-no-files-found: warn
           retention-days: 14
 
       - name: Evaluate test results
         if: always()
+        env:
+          FIXTURE_OUTCOME: ${{ steps.corrected-fixtures.outcome }}
         run: |
+          if [ "$FIXTURE_OUTCOME" != "success" ]; then
+            echo "::error::The corrected fixture tests must all pass (no percentage allowance)"
+            exit 1
+          fi
           RESULTS="/tmp/complement/__test_all.result.jsonl"
           if [ ! -f "$RESULTS" ]; then
             echo "::error::Test results file not found"
