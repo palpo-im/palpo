@@ -42,7 +42,10 @@ func setPresence(t *testing.T, c *client.CSAPI, state string) {
 
 func sync(t *testing.T, c *client.CSAPI, since string, revised bool) gjson.Result {
 	t.Helper()
-	query := url.Values{"since": {since}, "timeout": {"1000"}}
+	query := url.Values{"timeout": {"1000"}}
+	if since != "" {
+		query.Set("since", since)
+	}
 	if revised {
 		query.Set(prefix+".revised_presence", "true")
 	}

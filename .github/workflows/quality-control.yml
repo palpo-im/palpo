@@ -11,6 +11,7 @@ on:
       - '**/Cargo.toml'         # or dependency updates
       - 'Cargo.lock'            # or lockfile updates
       - 'deny.toml'             # or supply-chain policy changes
+      - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
   push:
     branches:
@@ -20,6 +21,7 @@ on:
       - '**/Cargo.toml'         # or dependency updates
       - 'Cargo.lock'            # or lockfile updates
       - 'deny.toml'             # or supply-chain policy changes
+      - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
 
 jobs:
