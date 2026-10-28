@@ -18,6 +18,7 @@ use crate::core::presence::PresenceContent;
 use crate::core::presence::PresenceUpdate;
 use crate::core::serde::RawJsonValue;
 use crate::core::to_device::DeviceIdOrAllDevices;
+#[cfg(not(feature = "unstable-msc4532"))]
 use crate::data::user::NewDbPresence;
 use crate::event::{handler, parse_incoming_pdu};
 use crate::sending::{EDU_LIMIT, PDU_LIMIT};
@@ -189,6 +190,26 @@ async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
             continue;
         }
 
+        #[cfg(feature = "unstable-msc4532")]
+        {
+            if let Err(error) = crate::user::presence::revised::incoming(
+                &update.user_id,
+                update.presence.as_str(),
+                update.currently_active,
+                update.status.clone(),
+                update.status_msg.clone(),
+            )
+            .await
+            {
+                warn!(?error, "failed to persist revised presence");
+            } else if let Err(error) =
+                crate::sending::send_presence_appservices(&update.user_id).await
+            {
+                warn!(?error, "failed to queue appservice presence");
+            }
+            continue;
+        }
+        #[cfg(not(feature = "unstable-msc4532"))]
         crate::data::user::set_presence(
             NewDbPresence {
                 user_id: update.user_id.clone(),
@@ -488,7 +509,7 @@ mod tests {
             "pdus": [pdu],
             "edus": [
                 {"edu_type": "m.presence", "content": {"push": [
-                    {"user_id": "@alice:remote.example", "presence": "online"}
+                    {"user_id": "@alice:remote.example", "presence": 7}
                 ]}},
                 {"edu_type": "m.typing", "content": {
                     "room_id": "!room:remote.example",

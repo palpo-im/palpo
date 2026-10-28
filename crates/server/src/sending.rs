@@ -467,6 +467,64 @@ pub async fn send_pdu_appservice(appservice_id: String, pdu_id: &EventId) -> App
     Ok(())
 }
 
+#[cfg(feature = "unstable-msc4532")]
+pub async fn send_presence_appservices(user: &UserId) -> AppResult<()> {
+    let event = data::user::last_presence(user).await?;
+    let mut event = serde_json::to_value(event)?;
+    crate::user::presence::revised::project(user, &mut event["content"], true).await?;
+    let bytes = serde_json::to_vec(&event)?;
+    for (registration, disabled) in crate::appservice::list_all_registrations().await? {
+        if disabled {
+            continue;
+        }
+        let info: crate::appservice::RegistrationInfo = registration.try_into()?;
+        if !info.registration.receive_ephemeral {
+            continue;
+        }
+        if !appservice_may_receive_presence(&info, user).await? {
+            continue;
+        }
+        let kind = OutgoingKind::Appservice(info.registration.id.clone());
+        queue_requests(&[(&kind, SendingEventType::Edu(bytes.clone()))]).await?;
+        notify(kind)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "unstable-msc4532")]
+async fn appservice_may_receive_presence(
+    info: &crate::appservice::RegistrationInfo,
+    user: &UserId,
+) -> AppResult<bool> {
+    if user.server_name() == config::server_name() && info.is_exclusive_user_match(user) {
+        return Ok(true);
+    }
+    if user.server_name() != config::server_name() {
+        if let Some((_, recipients)) = crate::user::presence::recipients::remote_set(user).await? {
+            return Ok(recipients.iter().any(|recipient| {
+                recipient.server_name() == config::server_name()
+                    && info.is_exclusive_user_match(recipient)
+            }));
+        }
+        for room in crate::user::presence::sharing::shared_rooms(user).await? {
+            if room.members.iter().any(|member| {
+                member.server_name() == config::server_name()
+                    && info.is_exclusive_user_match(member)
+            }) {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    Ok(crate::user::presence::sharing::recipients_of(user)
+        .await?
+        .iter()
+        .any(|recipient| {
+            recipient.server_name() == config::server_name()
+                && info.is_exclusive_user_match(recipient)
+        }))
+}
+
 /// Queued integrations must discard expired events, including on retries.
 async fn integration_pdu(event_id: &EventId) -> AppResult<Option<crate::SnPduEvent>> {
     #[cfg(feature = "unstable-msc1763")]
@@ -496,6 +554,8 @@ pub(crate) async fn send_events(
     match &kind {
         OutgoingKind::Appservice(id) => {
             let mut pdu_jsons = Vec::new();
+            #[allow(unused_mut)]
+            let mut ephemeral = Vec::new();
             for event in &events {
                 match event {
                     SendingEventType::Pdu(event_id) => {
@@ -506,14 +566,43 @@ pub(crate) async fn send_events(
                             pdu_jsons.push(pdu.to_room_event_without_transaction_id());
                         }
                     }
-                    SendingEventType::Edu(_) => {
-                        // Appservices don't need EDUs (?)
+                    SendingEventType::Edu(bytes) => {
+                        #[cfg(feature = "unstable-msc4532")]
+                        if let Ok(event) = serde_json::from_slice::<
+                            crate::core::events::presence::PresenceEvent,
+                        >(bytes)
+                        {
+                            let registration = data::appservice::find_registration(id)
+                                .await
+                                .map_err(|e| (kind.clone(), e.into()))?;
+                            if let Some(registration) = registration {
+                                if registration.disabled {
+                                    continue;
+                                }
+                                let info =
+                                    crate::appservice::RegistrationInfo::try_from(registration)
+                                        .map_err(|e| (kind.clone(), e.into()))?;
+                                if info.registration.receive_ephemeral
+                                    && appservice_may_receive_presence(&info, &event.sender)
+                                        .await
+                                        .map_err(|e| (kind.clone(), e))?
+                                {
+                                    ephemeral.push(
+                                        crate::core::appservice::event::EphemeralData::Presence(
+                                            event,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "unstable-msc4532"))]
+                        let _ = bytes;
                     }
                     SendingEventType::Flush => {}
                 }
             }
 
-            if pdu_jsons.is_empty() {
+            if pdu_jsons.is_empty() && ephemeral.is_empty() {
                 return Ok(kind);
             }
             let max_request = crate::sending::max_request();
@@ -532,7 +621,7 @@ pub(crate) async fn send_events(
                 })?;
             let req_body = PushEventsReqBody {
                 events: pdu_jsons.clone(),
-                ephemeral: vec![],
+                ephemeral,
                 to_device: vec![],
             };
 

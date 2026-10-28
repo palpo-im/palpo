@@ -126,6 +126,10 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
             Some(response) = futures.next() => {
                 match response {
                     Ok(outgoing_kind) => {
+                        #[cfg(feature = "unstable-msc4532")]
+                        if let Err(error) = crate::user::presence::revised::delivery(&outgoing_kind, true).await {
+                            warn!(?error, "presence delivery recovery failed");
+                        }
                         if let Some((edu_sn, has_presence)) = pending_edu_cursors.remove(&outgoing_kind)
                             && let OutgoingKind::Normal(server_name) = &outgoing_kind
                         {
@@ -230,6 +234,10 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                         }
                     }
                     Err((outgoing_kind, event)) => {
+                        #[cfg(feature = "unstable-msc4532")]
+                        if let Err(error) = crate::user::presence::revised::delivery(&outgoing_kind, false).await {
+                            warn!(?error, "presence delivery failure recording failed");
+                        }
                         error!("failed to send event: {event:?}  outgoing_kind:{outgoing_kind:?}");
                         // Do not advance the cursor: the same EDU window is
                         // re-selected once the destination is reachable again.
@@ -824,6 +832,12 @@ async fn select_edus_presence(
         };
 
         let update = PresenceUpdate {
+            #[cfg(feature = "unstable-msc4532")]
+            status: {
+                let mut wire = serde_json::to_value(&presence_event.content)?;
+                crate::user::presence::revised::project(&user_id, &mut wire, true).await?;
+                wire.get(crate::core::presence::revised::STATUS).cloned()
+            },
             user_id: user_id.clone(),
             presence: presence_event.content.presence,
             currently_active: presence_event.content.currently_active.unwrap_or(false),

@@ -90,6 +90,10 @@ pub struct SyncEventsReqArgs {
 /// Request type for the `sync` endpoint.
 #[derive(ToSchema, Deserialize, Clone, Debug)]
 pub struct SyncEventsReqBody {
+    /// Per-device availability for revised social presence.
+    #[cfg(feature = "unstable-msc4532")]
+    #[serde(default)]
+    pub set_presence: crate::presence::PresenceState,
     /// A unique string identifier for this connection to the server.
     ///
     /// Optional. If this is missing, only one sliding sync connection can be
