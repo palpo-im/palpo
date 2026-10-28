@@ -26,7 +26,8 @@ pub fn authed_router() -> Router {
 async fn get_status(
     user_id: PathParam<OwnedUserId>,
     depot: &mut Depot,
-) -> JsonResult<PresenceResBody> {
+    req: &mut Request,
+) -> JsonResult<serde_json::Value> {
     if !crate::config::get().presence.allow_local {
         return Err(MatrixError::forbidden("presence is disabled on this server", None).into());
     }
@@ -43,13 +44,30 @@ async fn get_status(
 
     let content = crate::data::user::last_presence(&user_id).await?.content;
 
-    json_ok(PresenceResBody {
+    let body = PresenceResBody {
         // TODO: Should just use the presenceeventcontent type here?
         status_msg: content.status_msg,
         currently_active: content.currently_active,
         last_active_ago: content.last_active_ago.map(Duration::from_millis),
         presence: content.presence,
-    })
+    };
+    #[allow(unused_mut)]
+    let mut value = serde_json::to_value(body)?;
+    #[cfg(feature = "unstable-msc4532")]
+    if let Some(status) = content.status {
+        value[crate::core::presence::revised::STATUS] = status;
+    }
+    #[cfg(feature = "unstable-msc4532")]
+    crate::user::presence::revised::project(
+        &user_id,
+        &mut value,
+        req.query::<bool>(crate::core::presence::revised::REVISED)
+            .unwrap_or(false),
+    )
+    .await?;
+    #[cfg(not(feature = "unstable-msc4532"))]
+    let _ = req;
+    json_ok(value)
 }
 
 /// #PUT /_matrix/client/r0/presence/{user_id}/status
@@ -88,6 +106,29 @@ async fn set_status(
         presence,
         status_msg,
     } = body.into_inner();
+    #[cfg(feature = "unstable-msc4532")]
+    {
+        crate::core::presence::revised::State::parse(presence.as_str(), true)
+            .ok_or_else(|| MatrixError::invalid_param("Unknown presence state"))?;
+        if let Some(message) = status_msg {
+            crate::user::presence::revised::legacy_message(&user_id, message).await?;
+        }
+        let client = if let Some(service) = authed.appservice() {
+            format!("as:{}", service.registration.id)
+        } else {
+            format!("device:{}", authed.require_device_id()?)
+        };
+        crate::user::presence::revised::touch(
+            &user_id,
+            &client,
+            presence.as_str(),
+            authed
+                .appservice()
+                .is_some_and(|service| service.is_exclusive_user_match(&user_id)),
+        )
+        .await?;
+    }
+    #[cfg(not(feature = "unstable-msc4532"))]
     crate::user::set_presence(authed.user_id(), Some(presence), status_msg.clone(), true).await?;
 
     empty_ok()

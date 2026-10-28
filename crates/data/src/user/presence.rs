@@ -25,6 +25,7 @@ pub struct DbPresence {
     pub currently_active: Option<bool>,
     pub occur_sn: i64,
     pub updated_at: UnixMillis,
+    pub revised_status: serde_json::Value,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
@@ -73,6 +74,8 @@ impl DbPresence {
         Ok(PresenceEvent {
             sender: user_id.to_owned(),
             content: PresenceEventContent {
+                #[cfg(feature = "unstable-msc4532")]
+                status: Some(self.revised_status.clone()),
                 presence: state,
                 status_msg: self.status_msg.clone(),
                 currently_active: self.currently_active,

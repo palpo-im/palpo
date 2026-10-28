@@ -57,6 +57,9 @@ event_enum! {
         #[cfg(feature = "unstable-msc4495")]
         #[palpo_enum(ident = PresenceSharing)]
         "org.continuwuity.presence_v2.msc4495.presence.sharing" => super::presence::sharing,
+        #[cfg(feature = "unstable-msc4532")]
+        #[palpo_enum(ident = PresencePersistent)]
+        "org.continuwuity.presence_v2.msc4532.presence.persistent" => super::presence::persistent,
         "m.secret_storage.default_key" => super::secret_storage::default_key,
         "m.secret_storage.key.*" => super::secret_storage::key,
          #[cfg(feature = "unstable-msc4278")]

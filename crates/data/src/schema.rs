@@ -1071,6 +1071,7 @@ diesel::table! {
         currently_active -> Nullable<Bool>,
         occur_sn -> Int8,
         updated_at -> Int8,
+        revised_status -> Jsonb,
     }
 }
 

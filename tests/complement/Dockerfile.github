@@ -17,6 +17,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
+ARG PALPO_FEATURES=""
 
 # Make crate downloads resilient to transient network failures (e.g. the
 # intermittent "Error in the HTTP2 framing layer" from crates.io). Retry more
@@ -42,7 +43,7 @@ RUN mkdir -p crates/core-macros/src crates/core/src crates/data/src \
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build 2>/dev/null || true
+    cargo build --features "$PALPO_FEATURES" 2>/dev/null || true
 
 COPY crates crates
 
@@ -54,7 +55,7 @@ RUN find crates -name '*.rs' -exec touch {} +
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build \
+    cargo build --features "$PALPO_FEATURES" \
     && cp target/debug/palpo palpo \
     && rm -rf target
 

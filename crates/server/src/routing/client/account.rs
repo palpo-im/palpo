@@ -179,6 +179,10 @@ pub(super) async fn delete_account_data_msc3391(
     }
 
     data::user::delete_global_data(authed.user_id(), &account_type).await?;
+    #[cfg(feature = "unstable-msc4532")]
+    if account_type.as_str() == crate::core::presence::revised::PERSISTENT {
+        crate::user::presence::revised::refresh(authed.user_id()).await?;
+    }
 
     #[cfg(feature = "unstable-msc4495")]
     if account_type == crate::core::events::presence::sharing::PresenceSharingEventContent::TYPE {

@@ -181,6 +181,11 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "org.continuwuity.presence_v2.msc4495")]
     Msc4495,
 
+    /// Revised social presence (MSC4532).
+    #[cfg(feature = "unstable-msc4532")]
+    #[palpo_enum(rename = "org.continuwuity.presence_v2.msc4532")]
+    Msc4532,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
 }

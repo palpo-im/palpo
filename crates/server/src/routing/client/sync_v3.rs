@@ -46,12 +46,22 @@ pub(super) async fn sync_events_v3(
     _aa: AuthArgs,
     args: sync_events::v3::SyncEventsReqArgs,
     depot: &mut Depot,
+    req: &mut Request,
 ) -> JsonResult<sync_events::v3::SyncEventsResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
     let device_id = authed.require_device_id()?;
 
+    #[cfg(not(feature = "unstable-msc4532"))]
     crate::user::ping_presence(sender_id, &args.set_presence).await?;
+    #[cfg(feature = "unstable-msc4532")]
+    crate::user::presence::revised::touch(
+        sender_id,
+        device_id.as_str(),
+        args.set_presence.as_str(),
+        false,
+    )
+    .await?;
     let mut body = crate::sync_v3::sync_events(sender_id, device_id, &args).await?;
 
     if !args.full_state
@@ -72,5 +82,26 @@ pub(super) async fn sync_events_v3(
         // Retry returning data
         body = crate::sync_v3::sync_events(sender_id, device_id, &args).await?;
     }
+    #[cfg(feature = "unstable-msc4532")]
+    {
+        crate::user::presence::revised::touch(
+            sender_id,
+            device_id.as_str(),
+            args.set_presence.as_str(),
+            false,
+        )
+        .await?;
+        let revised = req
+            .query::<bool>(crate::core::presence::revised::REVISED)
+            .unwrap_or(false);
+        for raw in &mut body.presence.events {
+            let mut event = serde_json::to_value(&*raw)?;
+            let user = crate::core::UserId::parse(event["sender"].as_str().unwrap_or_default())?;
+            crate::user::presence::revised::project(&user, &mut event["content"], revised).await?;
+            *raw = crate::core::serde::RawJson::from_value(&event)?;
+        }
+    }
+    #[cfg(not(feature = "unstable-msc4532"))]
+    let _ = req;
     json_ok(body)
 }

@@ -11,6 +11,7 @@ on:
       - '**/Cargo.toml'         # or dependency updates
       - 'Cargo.lock'            # or lockfile updates
       - 'deny.toml'             # or supply-chain policy changes
+      - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
   push:
     branches:
@@ -20,6 +21,7 @@ on:
       - '**/Cargo.toml'         # or dependency updates
       - 'Cargo.lock'            # or lockfile updates
       - 'deny.toml'             # or supply-chain policy changes
+      - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
 
 jobs:
@@ -106,6 +108,11 @@ jobs:
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE palpo_test WITH LOGIN PASSWORD 'palpo_test';"
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
+
+      - name: Revised presence regression tests
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_revised_presence
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_revised_presence cargo test -p palpo --lib --all-features durable_multidevice_overrides_status_and_remote_recovery -- --ignored
 
       - name: Message retention regression tests
         run: |

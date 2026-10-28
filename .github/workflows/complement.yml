@@ -34,6 +34,52 @@ defaults:
     shell: bash
 
 jobs:
+  revised-presence:
+    name: Revised presence federation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Prepare pinned Complement and presence tests
+        run: |
+          git init /tmp/complement
+          git -C /tmp/complement remote add origin https://github.com/matrix-org/complement.git
+          git -C /tmp/complement fetch --depth 1 origin "$COMPLEMENT_REVISION"
+          git -C /tmp/complement checkout --detach FETCH_HEAD
+          mkdir -p /tmp/complement/tests/palpo_revised_presence
+          cp tests/complement/revised_presence/*_test.go /tmp/complement/tests/palpo_revised_presence/
+          cd /tmp/complement
+          go test -c -o /tmp/revised-presence.test ./tests/palpo_revised_presence
+      - uses: docker/setup-buildx-action@v4
+      - name: Build MSC4532-enabled Palpo
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: tests/complement/Dockerfile.github
+          build-args: PALPO_FEATURES=unstable-msc4532
+          tags: complement-palpo-revised-presence
+          load: true
+          cache-from: type=gha,scope=revised-presence
+          cache-to: type=gha,mode=max,scope=revised-presence
+      - name: Require all revised presence federation tests to pass
+        run: |
+          cd /tmp/complement
+          COMPLEMENT_BASE_IMAGE=complement-palpo-revised-presence \
+            go test -p=1 -parallel=1 -count=1 -timeout 10m -json ./tests/palpo_revised_presence \
+            | tee /tmp/revised-presence-results.jsonl
+      - name: Upload revised presence results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: revised-presence-results
+          path: /tmp/revised-presence-results.jsonl
+          if-no-files-found: warn
+          retention-days: 14
+
   complement:
     name: Complement
     runs-on: ubuntu-latest
