@@ -239,7 +239,7 @@ fn card(c: &Configuration, row: &Value) -> Result<Value> {
         .ok_or_else(|| fail(503, "invalid_account_state"))?
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     Ok(
-        json!({"msgtype":"m.text","body":format!("Account request: {}\nName: {}\nReason: {}\nApprove creates an ordinary Matrix account. Project and agent resources require their separate approvals.",text("userId"),text("displayName"),text("reason")),
+        json!({"msgtype":"m.text","body":format!("Account request: {}\nName: {}\nReason: {}\nApprove creates an ordinary Matrix account without administrator privileges.",text("userId"),text("displayName"),text("reason")),
         "org.octos.approval_request":{"request_id":row["id"],"tool_name":"palpo.register_account","tool_args_digest":row["digest"],"title":format!("Register {}",text("userId")),"summary":format!("{}\n{}\nOrdinary user account; no administrator privileges.",text("displayName"),text("reason")),"risk_level":"normal","authorized_approvers":c.approvers,"expires_at":expires,"on_timeout":"notify"},
         "org.octos.actions":[{"id":"approve","label":"Approve","style":"primary"},{"id":"deny","label":"Reject","style":"danger"}]}),
     )
