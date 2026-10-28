@@ -21,8 +21,10 @@ pub enum Focus {
 #[derive(ToSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LivekitFocus {
     /// The alias where the LiveKit sessions can be reached.
+    ///
+    /// Newer Element Call versions omit this legacy field.
     #[serde(rename = "livekit_alias")]
-    pub alias: String,
+    pub alias: Option<String>,
 
     /// The URL of the JWT service for the LiveKit instance.
     #[serde(rename = "livekit_service_url")]
@@ -36,7 +38,7 @@ impl LivekitFocus {
     ///
     /// * `alias` - The alias with which the LiveKit sessions can be reached.
     /// * `service_url` - The url of the JWT server for the LiveKit instance.
-    pub fn new(alias: String, service_url: String) -> Self {
+    pub fn new(alias: Option<String>, service_url: String) -> Self {
         Self { alias, service_url }
     }
 }
@@ -82,4 +84,38 @@ pub enum FocusSelection {
 
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::call::member::CallMemberEventContent;
+    use serde_json::json;
+
+    #[test]
+    fn rtc_membership_accepts_livekit_with_or_without_alias() {
+        for alias in [None, Some("room")] {
+            let mut focus =
+                json!({"type": "livekit", "livekit_service_url": "https://livekit.example.org"});
+            if let Some(alias) = alias {
+                focus["livekit_alias"] = json!(alias);
+            }
+            let content: CallMemberEventContent = serde_json::from_value(json!({
+                "application": "m.call", "call_id": "call", "scope": "m.room",
+                "device_id": "DEVICE", "expires": 14400000,
+                "focus_active": {"type": "livekit", "focus_selection": "oldest_membership"},
+                "foci_preferred": [focus]
+            }))
+            .unwrap();
+            let CallMemberEventContent::SessionContent(session) = content else {
+                panic!("membership must not fall back to an empty event");
+            };
+            let Focus::Livekit(focus) = &session.foci_preferred[0];
+            assert_eq!(focus.alias.as_deref(), alias);
+            let decoded: Focus =
+                serde_json::from_value(serde_json::to_value(&session.foci_preferred[0]).unwrap())
+                    .unwrap();
+            assert_eq!(decoded, session.foci_preferred[0]);
+        }
+    }
 }

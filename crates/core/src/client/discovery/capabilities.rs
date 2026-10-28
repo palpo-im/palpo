@@ -51,7 +51,7 @@ impl CapabilitiesResBody {
 }
 
 /// Contains information about all the capabilities that the server supports.
-#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(ToSchema, Clone, Debug, Default, Serialize)]
 pub struct Capabilities {
     /// Capability to indicate if the user can change their password.
     #[serde(rename = "m.change_password", default)]
@@ -116,6 +116,98 @@ pub struct Capabilities {
     #[salvo(schema(skip))]
     #[salvo(schema(value_type = Object, additional_properties = true))]
     pub custom_capabilities: BTreeMap<String, JsonValue>,
+}
+
+impl<'de> Deserialize<'de> for Capabilities {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Helper {
+            #[serde(rename = "m.change_password", default)]
+            change_password: ChangePasswordCapability,
+            #[serde(rename = "m.room_versions", default)]
+            room_versions: RoomVersionsCapability,
+            #[serde(rename = "m.set_displayname", alias = "m.set_display_name", default)]
+            set_display_name: SetDisplayNameCapability,
+            #[serde(rename = "m.set_avatar_url", default)]
+            set_avatar_url: SetAvatarUrlCapability,
+            #[serde(rename = "m.3pid_changes", default)]
+            thirdparty_id_changes: ThirdPartyIdChangesCapability,
+            #[serde(rename = "m.profile_fields", alias = "uk.tcpip.msc4133.profile_fields")]
+            profile_fields: Option<ProfileFieldsCapability>,
+            #[serde(rename = "m.forget_forced_upon_leave", default)]
+            forget_forced_upon_leave: ForgetForcedUponLeaveCapability,
+            #[serde(rename = "m.account_moderation", default)]
+            account_moderation: AccountModerationCapability,
+            #[cfg(feature = "unstable-msc4540")]
+            #[serde(rename = "org.continuwuity.msc4540.admin")]
+            admin: Option<AdminCapability>,
+            #[serde(flatten)]
+            custom_capabilities: BTreeMap<String, JsonValue>,
+        }
+
+        let mut map = serde_json::Map::deserialize(deserializer)?;
+        // A server can advertise both names during the transition to the stable capability.
+        if map.contains_key("m.profile_fields") {
+            map.remove("uk.tcpip.msc4133.profile_fields");
+        }
+        let helper =
+            Helper::deserialize(JsonValue::Object(map)).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            change_password: helper.change_password,
+            room_versions: helper.room_versions,
+            set_display_name: helper.set_display_name,
+            set_avatar_url: helper.set_avatar_url,
+            thirdparty_id_changes: helper.thirdparty_id_changes,
+            profile_fields: helper.profile_fields,
+            forget_forced_upon_leave: helper.forget_forced_upon_leave,
+            account_moderation: helper.account_moderation,
+            #[cfg(feature = "unstable-msc4540")]
+            admin: helper.admin,
+            custom_capabilities: helper.custom_capabilities,
+        })
+    }
+}
+
+#[cfg(test)]
+mod profile_alias_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stable_profile_fields_win_and_custom_capabilities_survive() {
+        for stable in [json!({"enabled": true}), JsonValue::Null] {
+            let caps: Capabilities = from_json_value(json!({
+                "m.profile_fields": stable,
+                "uk.tcpip.msc4133.profile_fields": {"enabled": false},
+                "org.example.custom": {"value": 42}
+            }))
+            .unwrap();
+            assert_eq!(
+                caps.profile_fields.as_ref().map(|v| v.enabled),
+                if stable.is_null() { None } else { Some(true) }
+            );
+            assert_eq!(caps.custom_capabilities.len(), 1);
+            let serialized = to_json_value(&caps).unwrap();
+            let copy: Capabilities = from_json_value(serialized.clone()).unwrap();
+            assert_eq!(to_json_value(copy).unwrap(), serialized);
+        }
+    }
+
+    #[test]
+    fn unstable_only_is_accepted_and_invalid_stable_is_rejected() {
+        let caps: Capabilities = from_json_value(json!({
+            "uk.tcpip.msc4133.profile_fields": {"enabled": true}
+        }))
+        .unwrap();
+        assert!(caps.profile_fields.unwrap().enabled);
+        assert!(
+            from_json_value::<Capabilities>(json!({
+                "m.profile_fields": {"enabled": "invalid"},
+                "uk.tcpip.msc4133.profile_fields": {"enabled": true}
+            }))
+            .is_err()
+        );
+    }
 }
 
 impl Capabilities {
