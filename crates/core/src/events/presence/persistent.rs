@@ -1,8 +1,9 @@
 //! User-controlled persistent presence configuration (MSC4532).
-use crate::macros::EventContent;
-use crate::presence::revised::Status;
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::macros::EventContent;
+use crate::presence::revised::Status;
 
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize, EventContent)]
 #[palpo_event(type = "org.continuwuity.presence_v2.msc4532.presence.persistent", kind = GlobalAccountData)]

@@ -1,13 +1,12 @@
 //! Durable per-client social presence. All publication uses the existing presence stream lock.
+use diesel::sql_types::{BigInt, Jsonb, Nullable, Text};
+use diesel::{QueryableByName, sql_query};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use serde_json::Value;
+
 use crate::core::presence::revised::{self, Persistent, State, Status};
 use crate::core::{UnixMillis, UserId};
 use crate::{AppResult, MatrixError, data};
-use diesel::{
-    QueryableByName, sql_query,
-    sql_types::{BigInt, Jsonb, Nullable, Text},
-};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use serde_json::Value;
 
 #[derive(QueryableByName)]
 struct Client {
@@ -312,8 +311,9 @@ async fn publish_outage(destination: &str, recovered: bool) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]

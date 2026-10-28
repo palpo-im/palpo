@@ -131,10 +131,11 @@ mod tests {
 
     #[test]
     fn federation_and_appservice_status_roundtrip() {
+        use serde_json::json;
+
         use crate::appservice::event::EphemeralData;
         use crate::events::presence::PresenceEvent;
         use crate::presence::PresenceUpdate;
-        use serde_json::json;
 
         let status = json!({"msg": "busy", "example.icon": {"name": "moon"}});
         let mut update = json!({
