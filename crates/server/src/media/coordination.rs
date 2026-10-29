@@ -5,7 +5,8 @@ use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::ServerName;
-use crate::data::{connect, schema::*};
+use crate::data::connect;
+use crate::data::schema::*;
 use crate::{AppError, AppResult, data, storage};
 
 const MEDIA_LOCK_NAMESPACE: i64 = 7_252_664_865;
