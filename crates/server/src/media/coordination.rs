@@ -60,7 +60,10 @@ pub(super) async fn delete_locked(
 ) -> AppResult<()> {
     // Include objects left unreferenced by interrupted thumbnail publication.
     let key = storage::media_key(storage_origin, media_id);
-    operator.remove_all(&format!("{key}.thumbnails/")).await?;
+    operator
+        .delete_with(&format!("{key}.thumbnails/"))
+        .recursive(true)
+        .await?;
     // Older federation code stored dimension-keyed files. Delete only dimensions
     // represented in this media's rows, never an arbitrary media-ID prefix.
     let dimensions = media_thumbnails::table
