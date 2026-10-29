@@ -213,9 +213,6 @@ pub fn federation_client() -> ClientWithMiddleware {
     FEDERATION_CLIENT
         .get_or_init(|| {
             let conf = crate::config::get();
-            // Client is cheap to clone (Arc wrapper) and avoids lifetime issues
-            let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
-
             let retry_policy = ExponentialBackoff::builder()
                 .retry_bounds(
                     Duration::from_secs(5),
@@ -223,11 +220,8 @@ pub fn federation_client() -> ClientWithMiddleware {
                 )
                 .build_with_max_retries(conf.http_client.federation_retries);
 
-            let client = reqwest_client_builder(conf)
+            let client = restricted_client_builder(conf, 10)
                 .expect("build reqwest client failed")
-                .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
-                    tls_name_override,
-                )))
                 .timeout(Duration::from_secs(2 * 60))
                 .build()
                 .expect("build reqwest client failed");
