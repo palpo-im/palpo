@@ -1051,7 +1051,9 @@ mod joined_room_failure_tests {
             }))
             .unwrap()
         });
-        let user: OwnedUserId = "@reader:sync-failure.example".try_into().unwrap();
+        let user =
+            UserId::parse_with_server_name("sync_failure_reader", crate::config::server_name())
+                .unwrap();
         let failed: OwnedRoomId = "!failed:sync-failure.example".try_into().unwrap();
         for name in ["healthy", "failed"] {
             let room: OwnedRoomId = format!("!{name}:sync-failure.example").try_into().unwrap();
@@ -1077,6 +1079,36 @@ mod joined_room_failure_tests {
                 .await
                 .unwrap();
         }
+        // A SQL failure during state lookup is not a missing state frame.
+        diesel::sql_query(
+            "ALTER TABLE rooms RENAME COLUMN state_frame_id TO unavailable_state_frame",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        let lookup_failure = load_joined_room(
+            &user,
+            "TEST".into(),
+            &failed,
+            false,
+            None,
+            None,
+            BatchToken::new_live(100),
+            false,
+            &FilterDefinition::default(),
+            false,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        )
+        .await;
+        diesel::sql_query(
+            "ALTER TABLE rooms RENAME COLUMN unavailable_state_frame TO state_frame_id",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        assert!(!lookup_failure.unwrap_err().is_not_found());
         let args = SyncEventsReqArgs::default();
         *FAIL_ROOM.lock().unwrap() = Some(failed.clone());
         let response = sync_events(&user, "TEST".into(), &args).await;
