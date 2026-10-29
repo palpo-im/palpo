@@ -498,6 +498,7 @@ mod transaction_tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::core::UserId;
     use crate::data::connect;
     use crate::data::schema::*;
 
