@@ -525,24 +525,31 @@ pub async fn claim_one_time_key(
     device_id: &DeviceId,
     key_algorithm: &DeviceKeyAlgorithm,
 ) -> DataResult<Option<(OwnedDeviceKeyId, OneTimeKey)>> {
-    let one_time_key = e2e_one_time_keys::table
-        .filter(e2e_one_time_keys::user_id.eq(user_id))
-        .filter(e2e_one_time_keys::device_id.eq(device_id))
-        .filter(e2e_one_time_keys::algorithm.eq(key_algorithm.as_ref()))
-        .order(e2e_one_time_keys::id.asc())
-        .first::<DbOneTimeKey>(&mut connect().await?)
-        .await
-        .optional()?;
-    if let Some(DbOneTimeKey {
-        id,
-        key_id,
-        key_data,
-        ..
-    }) = one_time_key
-    {
-        diesel::delete(e2e_one_time_keys::table.find(id))
-            .execute(&mut connect().await?)
-            .await?;
+    #[derive(QueryableByName)]
+    struct ClaimedKey {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        key_id: OwnedDeviceKeyId,
+        #[diesel(sql_type = diesel::sql_types::Json)]
+        key_data: JsonValue,
+    }
+
+    // Select and delete on the same connection in one statement. Returning only a
+    // successfully deleted row prevents concurrent callers from receiving the
+    // same key. Locked candidates belong to another claim and may be skipped.
+    let one_time_key = diesel::sql_query(
+        "DELETE FROM e2e_one_time_keys WHERE id = (\
+             SELECT id FROM e2e_one_time_keys \
+             WHERE user_id = $1 AND device_id = $2 AND algorithm = $3 \
+             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED\
+         ) RETURNING key_id, key_data",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(key_algorithm.as_ref())
+    .get_result::<ClaimedKey>(&mut connect().await?)
+    .await
+    .optional()?;
+    if let Some(ClaimedKey { key_id, key_data }) = one_time_key {
         Ok(Some((
             key_id,
             serde_json::from_value::<OneTimeKey>(key_data)?,
