@@ -24,10 +24,21 @@ fn slots() -> Arc<Semaphore> {
         .clone()
 }
 
+fn thumbnail_pipeline_slots() -> Arc<Semaphore> {
+    static PIPELINES: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    PIPELINES
+        .get_or_init(|| {
+            let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+            Arc::new(Semaphore::new(parallelism.clamp(1, 4)))
+        })
+        .clone()
+}
+
 /// Admit the whole input-read/CPU pipeline before polling the read future. This
 /// prevents queued thumbnail requests from retaining full originals outside the
-/// bounded worker budget. Cancellation during read releases the permit; after
-/// dispatch the blocking closure owns it until the CPU work actually finishes.
+/// separate thumbnail budget. Slow storage reads never reserve CPU slots needed
+/// by password work. Cancellation during read releases the pipeline permit;
+/// after dispatch the worker owns both permits until CPU work actually finishes.
 pub async fn pipeline<R, T, RF, F>(read: RF, task: F) -> AppResult<T>
 where
     R: Send + 'static,
@@ -35,22 +46,33 @@ where
     RF: Future<Output = AppResult<R>> + Send,
     F: FnOnce(R) -> AppResult<T> + Send + 'static,
 {
-    pipeline_with_slots(slots(), read, task).await
+    pipeline_with_slots(thumbnail_pipeline_slots(), slots(), read, task).await
 }
 
-async fn pipeline_with_slots<R, T, RF, F>(slots: Arc<Semaphore>, read: RF, task: F) -> AppResult<T>
+async fn pipeline_with_slots<R, T, RF, F>(
+    pipeline_slots: Arc<Semaphore>,
+    cpu_slots: Arc<Semaphore>,
+    read: RF,
+    task: F,
+) -> AppResult<T>
 where
     R: Send + 'static,
     T: Send + 'static,
     RF: Future<Output = AppResult<R>> + Send,
     F: FnOnce(R) -> AppResult<T> + Send + 'static,
 {
-    let permit = slots
+    let pipeline_permit = pipeline_slots
         .acquire_owned()
         .await
-        .map_err(|_| AppError::internal("CPU worker pool closed"))?;
+        .map_err(|_| AppError::internal("Thumbnail pipeline closed"))?;
     let input = read.await?;
-    run_with_permit(permit, move || task(input)).await
+    run_with_slots(cpu_slots, move || {
+        // While queued for CPU, both the full original and this permit stay
+        // together. Abort drops them; once dispatched only the worker may free them.
+        let _pipeline_permit = pipeline_permit;
+        task(input)
+    })
+    .await
 }
 
 async fn run_with_slots<T, F>(slots: Arc<Semaphore>, task: F) -> AppResult<T>
@@ -123,11 +145,13 @@ mod tests {
     async fn queued_original_reads_do_not_allocate_outside_pipeline_budget() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let slots = Arc::new(Semaphore::new(1));
+        let cpu_slots = Arc::new(Semaphore::new(1));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let first_slots = slots.clone();
         let first = tokio::spawn(pipeline_with_slots(
             first_slots,
+            cpu_slots.clone(),
             async move {
                 let _ = started_tx.send(());
                 release_rx.await.unwrap();
@@ -140,6 +164,7 @@ mod tests {
         let second_reads = reads.clone();
         let second = tokio::spawn(pipeline_with_slots(
             slots.clone(),
+            cpu_slots.clone(),
             async move {
                 second_reads.fetch_add(1, Ordering::SeqCst);
                 Ok(vec![2u8; 4096])
@@ -152,6 +177,16 @@ mod tests {
             0,
             "queued request polled its storage read before admission"
         );
+        // A password-style CPU job must run even while every thumbnail read
+        // slot is occupied by slow I/O and another read waits for admission.
+        let cpu_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_with_slots(cpu_slots.clone(), || Ok(42)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(cpu_result, 42);
         release_tx.send(()).unwrap();
         assert_eq!(first.await.unwrap().unwrap(), 4096);
         assert_eq!(second.await.unwrap().unwrap(), 4096);
@@ -161,6 +196,7 @@ mod tests {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let pending = tokio::spawn(pipeline_with_slots(
             slots.clone(),
+            cpu_slots.clone(),
             async move {
                 let _ = started_tx.send(());
                 std::future::pending::<AppResult<Vec<u8>>>().await
@@ -172,5 +208,56 @@ mod tests {
         pending.abort();
         let _ = pending.await;
         assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn buffered_thumbnail_waiting_for_cpu_keeps_its_read_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let pipeline_slots = Arc::new(Semaphore::new(1));
+        let cpu_slots = Arc::new(Semaphore::new(1));
+        let busy_cpu = cpu_slots.clone().acquire_owned().await.unwrap();
+        let (read_tx, read_rx) = tokio::sync::oneshot::channel();
+        let first = tokio::spawn(pipeline_with_slots(
+            pipeline_slots.clone(),
+            cpu_slots.clone(),
+            async move {
+                let _ = read_tx.send(());
+                Ok(vec![1u8; 4096])
+            },
+            |bytes| Ok(bytes.len()),
+        ));
+        read_rx.await.unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let queued_reads = reads.clone();
+        let second = tokio::spawn(pipeline_with_slots(
+            pipeline_slots.clone(),
+            cpu_slots.clone(),
+            async move {
+                queued_reads.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![2u8; 4096])
+            },
+            |bytes| Ok(bytes.len()),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "buffered CPU waiter released its read budget too soon"
+        );
+        assert_eq!(pipeline_slots.available_permits(), 0);
+        first.abort();
+        let _ = first.await;
+        // Cancelling the CPU waiter releases its input and admits the next read.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while reads.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(busy_cpu);
+        assert_eq!(second.await.unwrap().unwrap(), 4096);
+        assert_eq!(pipeline_slots.available_permits(), 1);
+        assert_eq!(cpu_slots.available_permits(), 1);
     }
 }
