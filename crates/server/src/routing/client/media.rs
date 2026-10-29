@@ -417,13 +417,12 @@ pub async fn get_thumbnail(
     {
         // Generate a thumbnail: read original image from storage
         let image_key = media_storage_key(&args.server_name, &args.media_id);
-        let image_data = storage::read(&image_key).await?;
         let ct = content_type
             .as_deref()
             .unwrap_or("application/octet-stream");
 
         let (thumbnail_bytes, image_data) =
-            crate::media::thumbnail::render(image_data, width, height, crop).await?;
+            crate::media::thumbnail::render_stored(&image_key, width, height, crop).await?;
         if let Some(thumbnail_bytes) = thumbnail_bytes {
             // Save thumbnail in database so we don't have to generate it again next time
             let thumbnail_id = crate::media::publish_thumbnail(
