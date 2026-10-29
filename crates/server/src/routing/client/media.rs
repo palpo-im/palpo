@@ -501,20 +501,14 @@ pub async fn get_thumbnail(
                 .await?;
                 thumbnail_id
             } else {
-                media_thumbnails::table
-                    .filter(media_thumbnails::media_id.eq(&args.media_id))
-                    .filter(media_thumbnails::width.eq(args.width as i32))
-                    .filter(media_thumbnails::height.eq(args.height as i32))
-                    .filter(
-                        media_thumbnails::resize_method.eq(&args
-                            .method
-                            .clone()
-                            .unwrap_or_default()
-                            .to_string()),
-                    )
-                    .select(media_thumbnails::id)
-                    .first::<i64>(&mut connect().await?)
-                    .await?
+                find_cached_thumbnail_id(
+                    &args.server_name,
+                    &args.media_id,
+                    width,
+                    height,
+                    &args.method.clone().unwrap_or_default().to_string(),
+                )
+                .await?
             };
 
             // Return the newly generated thumbnail
@@ -531,5 +525,101 @@ pub async fn get_thumbnail(
         }
     } else {
         Err(MatrixError::not_found("file not found").into())
+    }
+}
+
+/// Use the exact key that was inserted, including the normalized dimensions and origin.
+async fn find_cached_thumbnail_id(
+    origin: &ServerName,
+    media_id: &str,
+    width: u32,
+    height: u32,
+    method: &str,
+) -> AppResult<i64> {
+    Ok(media_thumbnails::table
+        .filter(media_thumbnails::origin_server.eq(origin))
+        .filter(media_thumbnails::media_id.eq(media_id))
+        .filter(media_thumbnails::width.eq(width as i32))
+        .filter(media_thumbnails::height.eq(height as i32))
+        .filter(media_thumbnails::resize_method.eq(method))
+        .select(media_thumbnails::id)
+        .first::<i64>(&mut connect().await?)
+        .await?)
+}
+
+#[cfg(test)]
+mod thumbnail_key_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn concurrent_normalized_thumbnails_reuse_the_same_origin_and_dimensions() {
+        crate::test_database::init();
+        let media_id = format!("q19-{}", Uuid::new_v4());
+        let origin = ServerName::parse("q19-origin.test").unwrap();
+        let other_origin = ServerName::parse("q19-other.test").unwrap();
+        let (width, height, _) = thumbnail_properties(64, 64).unwrap();
+        assert_eq!((width, height), (96, 96));
+        // A same-ID object on another origin must never supply the conflict result.
+        let mut row = NewDbThumbnail {
+            media_id: media_id.clone(),
+            origin_server: other_origin,
+            content_type: Some("image/png".into()),
+            disposition_type: None,
+            file_size: 1,
+            width: width as i32,
+            height: height as i32,
+            resize_method: "scale".into(),
+            created_at: UnixMillis::now(),
+        };
+        diesel::insert_into(media_thumbnails::table)
+            .values(&row)
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        row.origin_server = origin.clone();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let create = |barrier: std::sync::Arc<tokio::sync::Barrier>| {
+            let row = row.clone();
+            async move {
+                barrier.wait().await;
+                let inserted = diesel::insert_into(media_thumbnails::table)
+                    .values(&row)
+                    .on_conflict_do_nothing()
+                    .returning(media_thumbnails::id)
+                    .get_result::<i64>(&mut connect().await.unwrap())
+                    .await
+                    .optional()
+                    .unwrap();
+                inserted.unwrap_or(
+                    find_cached_thumbnail_id(
+                        &row.origin_server,
+                        &row.media_id,
+                        width,
+                        height,
+                        &row.resize_method,
+                    )
+                    .await
+                    .unwrap(),
+                )
+            }
+        };
+        let (first, second) = tokio::join!(create(barrier.clone()), create(barrier));
+        assert_eq!(first, second);
+        assert_eq!(
+            find_cached_thumbnail_id(&origin, &media_id, 96, 96, "scale")
+                .await
+                .unwrap(),
+            first
+        );
+        assert!(
+            find_cached_thumbnail_id(&origin, &media_id, 64, 64, "scale")
+                .await
+                .is_err()
+        );
+        diesel::delete(media_thumbnails::table.filter(media_thumbnails::media_id.eq(media_id)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
     }
 }
