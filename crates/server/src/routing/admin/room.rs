@@ -306,7 +306,7 @@ fn filter_room_page(
                 .is_none_or(|value| room.encryption.is_some() == value)
     });
     // Filter by search term
-    if let Some(ref term) = search_term {
+    if let Some(term) = search_term {
         let term_lower = term.to_lowercase();
         rooms.retain(|r| {
             r.room_id.to_lowercase().contains(&term_lower)
