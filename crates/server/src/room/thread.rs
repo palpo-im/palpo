@@ -43,6 +43,7 @@ impl ThreadCursor {
 
 pub async fn get_threads(
     room_id: &RoomId,
+    user_id: &UserId,
     _include: &IncludeThreads,
     limit: i64,
     from_token: Option<&str>,
@@ -53,18 +54,43 @@ pub async fn get_threads(
     let cursor = from_token
         .map(|token| ThreadCursor::parse(token, room_id))
         .transpose()?;
-    let mut items = data::room::list_threads(
-        room_id,
-        cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
-        limit + 1,
-    )
-    .await?;
-    let has_more = items.len() as i64 > limit;
-    items.truncate(limit as usize);
-    let next_token = items
+    let mut scan_cursor = cursor;
+    let mut visible = Vec::with_capacity((limit + 1) as usize);
+    // Keep internal scan positions private. Only an event the user may actually
+    // read can become a public pagination cursor, including the lookahead page.
+    'scan: loop {
+        let items = data::room::list_threads(
+            room_id,
+            scan_cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
+            128,
+        )
+        .await?;
+        let exhausted = items.len() < 128;
+        for (event_id, last_sn) in items {
+            scan_cursor = Some(ThreadCursor {
+                room_id: room_id.to_owned(),
+                last_sn,
+                event_id: event_id.clone(),
+            });
+            let pdu = timeline::get_pdu(&event_id).await?;
+            if !pdu.user_can_see(user_id).await? {
+                continue;
+            }
+            visible.push((event_id, last_sn, pdu));
+            if visible.len() as i64 > limit {
+                break 'scan;
+            }
+        }
+        if exhausted {
+            break;
+        }
+    }
+    let has_more = visible.len() as i64 > limit;
+    visible.truncate(limit as usize);
+    let next_token = visible
         .last()
         .filter(|_| has_more)
-        .map(|(event_id, last_sn)| {
+        .map(|(event_id, last_sn, _)| {
             ThreadCursor {
                 room_id: room_id.to_owned(),
                 last_sn: *last_sn,
@@ -72,11 +98,10 @@ pub async fn get_threads(
             }
             .encode()
         });
-
-    let mut events = Vec::with_capacity(items.len());
-    for (event_id, _) in items {
-        events.push((event_id.clone(), timeline::get_pdu(&event_id).await?));
-    }
+    let events = visible
+        .into_iter()
+        .map(|(event_id, _, pdu)| (event_id, pdu))
+        .collect();
     Ok((events, next_token))
 }
 
