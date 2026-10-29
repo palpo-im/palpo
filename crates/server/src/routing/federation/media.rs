@@ -1,7 +1,6 @@
 use std::io::Cursor;
 use std::str::FromStr;
 
-use diesel_async::RunQueryDsl;
 use image::imageops::FilterType;
 use mime::Mime;
 use palpo_core::http_headers::ContentDispositionType;
@@ -9,9 +8,7 @@ use salvo::prelude::*;
 
 use crate::core::UnixMillis;
 use crate::core::federation::media::*;
-use crate::data::connect;
 use crate::data::media::*;
-use crate::data::schema::*;
 use crate::media::{media_storage_key, thumbnail_storage_key};
 use crate::utils::content_disposition::make_content_disposition;
 use crate::{AppResult, AuthArgs, MatrixError, config, hoops, storage};
@@ -91,13 +88,8 @@ pub async fn get_thumbnail(
     let server_name = &config::get().server_name;
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) = crate::data::media::get_thumbnail_by_dimension(
-        server_name,
-        &args.media_id,
-        args.width,
-        args.height,
-    )
-    .await?
+    }) =
+        crate::media::cached_thumbnail(server_name, &args.media_id, args.width, args.height).await?
     {
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
         // Try presigned URL redirect for S3 storage
@@ -133,9 +125,7 @@ pub async fn get_thumbnail(
 
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) =
-        crate::data::media::get_thumbnail_by_dimension(server_name, &args.media_id, width, height)
-            .await?
+    }) = crate::media::cached_thumbnail(server_name, &args.media_id, width, height).await?
     {
         // Using saved thumbnail
         let key = thumbnail_storage_key(server_name, &args.media_id, id);
@@ -238,8 +228,8 @@ pub async fn get_thumbnail(
             )?;
 
             // Save thumbnail in database so we don't have to generate it again next time
-            diesel::insert_into(media_thumbnails::table)
-                .values(&NewDbThumbnail {
+            crate::media::publish_thumbnail(
+                NewDbThumbnail {
                     media_id: args.media_id.clone(),
                     origin_server: server_name.to_owned(),
                     content_type: Some("image/png".to_owned()),
@@ -249,14 +239,10 @@ pub async fn get_thumbnail(
                     height: height as i32,
                     resize_method: args.method.clone().unwrap_or_default().to_string(),
                     created_at: UnixMillis::now(),
-                })
-                .execute(&mut connect().await?)
-                .await?;
-
-            // Save to storage backend
-            let thumb_key =
-                media_storage_key(server_name, &format!("{}.{width}x{height}", args.media_id));
-            storage::write(&thumb_key, &thumbnail_bytes).await?;
+                },
+                &thumbnail_bytes,
+            )
+            .await?;
 
             let content_disposition = make_content_disposition(
                 Some(ContentDispositionType::Inline),
@@ -265,7 +251,7 @@ pub async fn get_thumbnail(
             );
             let content = Content {
                 file: thumbnail_bytes,
-                content_type,
+                content_type: Some("image/png".to_owned()),
                 content_disposition: Some(content_disposition),
             };
 
