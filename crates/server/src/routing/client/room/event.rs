@@ -328,7 +328,6 @@ pub(super) async fn get_context(
 
 /// #PUT /_matrix/client/r0/rooms/{room_id}/redact/{event_id}/{txn_id}
 /// Tries to send a redaction event into the room.
-///
 #[endpoint]
 pub(super) async fn send_redact(
     _aa: AuthArgs,
@@ -493,12 +492,14 @@ pub(super) async fn timestamp_to_event(
 
 #[cfg(test)]
 mod transaction_tests {
-    use super::*;
-    use crate::data::{connect, schema::*};
     use diesel::prelude::*;
     use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
     use salvo::test::{RequestBuilder, ResponseExt, TestClient};
     use serde_json::Value;
+
+    use super::*;
+    use crate::data::connect;
+    use crate::data::schema::*;
 
     async fn request(service: &Service, request: RequestBuilder) -> (Option<StatusCode>, Value) {
         request_as(service, "redact-transaction", request).await

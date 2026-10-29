@@ -388,8 +388,9 @@ fn ensure_registration_admission(
 
 #[cfg(test)]
 mod registration_admission_tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     fn configuration() -> crate::ServerConfig {
         serde_json::from_value(json!({

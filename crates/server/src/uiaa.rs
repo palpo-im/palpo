@@ -195,7 +195,8 @@ async fn verify_uiaa_password(user: &data::user::DbUser, password: &str) -> AppR
 #[cfg(test)]
 mod password_uiaa_rate_tests {
     use super::*;
-    use crate::core::{UnixMillis, error::ErrorKind};
+    use crate::core::UnixMillis;
+    use crate::core::error::ErrorKind;
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]

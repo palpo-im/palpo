@@ -124,14 +124,16 @@ async fn change_password(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::encryption::{DeviceKeys, OneTimeKey};
-    use crate::core::{DeviceKeyAlgorithm, DeviceKeyId, OwnedDeviceId, UnixMillis, UserId};
-    use crate::data::{connect, schema::*};
     use diesel::prelude::*;
     use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
+
+    use super::*;
+    use crate::core::encryption::{DeviceKeys, OneTimeKey};
+    use crate::core::{DeviceKeyAlgorithm, DeviceKeyId, OwnedDeviceId, UnixMillis, UserId};
+    use crate::data::connect;
+    use crate::data::schema::*;
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]

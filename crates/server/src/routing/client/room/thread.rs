@@ -43,11 +43,12 @@ pub(super) async fn list_threads(
 
 #[cfg(test)]
 mod private_cursor_tests {
+    use salvo::test::{RequestBuilder, ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
     use super::*;
     use crate::core::{EventId, RoomId, UserId};
     use crate::data;
-    use salvo::test::{RequestBuilder, ResponseExt, TestClient};
-    use serde_json::{Value, json};
 
     async fn request(service: &Service, token: &str, request: RequestBuilder) -> Value {
         let mut response = request
@@ -203,9 +204,10 @@ mod private_cursor_tests {
 
 #[cfg(test)]
 mod participation_tests {
-    use super::*;
     use salvo::test::{RequestBuilder, ResponseExt, TestClient};
     use serde_json::{Value, json};
+
+    use super::*;
 
     async fn request(service: &Service, token: &str, builder: RequestBuilder) -> Value {
         let builder = builder.add_header("authorization", format!("Bearer {token}"), true);
