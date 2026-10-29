@@ -576,53 +576,11 @@ async fn load_joined_room(
                 let joined_member_count = room::joined_member_count(room_id).await.unwrap_or(0);
                 let invited_member_count = room::invited_member_count(room_id).await.unwrap_or(0);
 
-                // Recalculate heroes (first 5 members)
-                let mut heroes = Vec::new();
-
-                if joined_member_count + invited_member_count <= 5 {
-                    // Go through all PDUs and for each member event, check if the user is still
-                    // joined or invited until we have 5 or we reach the end
-                    for (_, pdu) in
-                        timeline::stream::load_all_pdus(Some(sender_id), room_id, until_tk)
-                            .await?
-                            .into_iter() // Ignore all broken pdus
-                            .filter(|(_, pdu)| pdu.event_ty == TimelineEventType::RoomMember)
-                    {
-                        let hero = {
-                            let content = pdu.get_content::<RoomMemberEventContent>()?;
-
-                            if let Some(state_key) = &pdu.state_key {
-                                let user_id = UserId::parse(state_key.clone()).map_err(|_| {
-                                    AppError::public("invalid UserId in member PDU.")
-                                })?;
-
-                                // The membership was and still is invite or join
-                                if matches!(
-                                    content.membership,
-                                    MembershipState::Join | MembershipState::Invite
-                                ) && (room::user::is_joined(&user_id, room_id).await?
-                                    || room::user::is_invited(&user_id, room_id).await?)
-                                {
-                                    Ok::<_, AppError>(Some(state_key.clone()))
-                                } else {
-                                    Ok(None)
-                                }
-                            } else {
-                                Ok(None)
-                            }
-                        };
-                        // Filter out buggy users and filter for possible heroes
-                        let Some(hero) = hero.ok().flatten() else {
-                            continue;
-                        };
-
-                        if heroes.contains(&hero) || hero == sender_id.as_str() {
-                            continue;
-                        }
-
-                        heroes.push(hero);
-                    }
-                }
+                let heroes = if joined_member_count + invited_member_count <= 5 {
+                    load_room_heroes(sender_id, room_id, next_batch.event_sn()).await?
+                } else {
+                    Vec::new()
+                };
                 Ok::<_, AppError>((
                     Some(joined_member_count),
                     Some(invited_member_count),
@@ -1627,5 +1585,112 @@ mod pagination_database_tests {
         assert!(timeline_contains_own_join(&recovered, &join.sender));
         assert!(recovered.events.contains_key(&profile.event_sn));
         assert!(!recovered.events.contains_key(&105));
+    }
+}
+
+/// Resolve at most five heroes from membership rows, without reading messages.
+async fn load_room_heroes(
+    sender_id: &UserId,
+    room_id: &RoomId,
+    until_sn: i64,
+) -> AppResult<Vec<String>> {
+    #[derive(diesel::QueryableByName)]
+    struct Hero {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        user_id: String,
+    }
+    let rows = diesel::sql_query(
+        "SELECT user_id FROM (
+            SELECT DISTINCT ON (user_id) user_id, membership, event_sn
+            FROM room_users WHERE room_id = $1 AND event_sn < $2
+            ORDER BY user_id, event_sn DESC, id DESC
+        ) AS current_members
+        WHERE membership IN ('join', 'invite') AND user_id <> $3
+        ORDER BY event_sn, user_id LIMIT 5",
+    )
+    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(until_sn)
+    .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
+    .load::<Hero>(&mut connect().await?)
+    .await?;
+    Ok(rows.into_iter().map(|row| row.user_id).collect())
+}
+
+#[cfg(test)]
+mod hero_database_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_heroes_use_bounded_current_membership_without_history() {
+        crate::test_database::init();
+        let room: OwnedRoomId = "!heroes:example.org".try_into().unwrap();
+        let sender: OwnedUserId = "@sender:example.org".try_into().unwrap();
+        for (name, membership, sn) in [
+            ("sender", "join", 1),
+            ("alice", "join", 2),
+            ("bob", "join", 3),
+            ("carol", "invite", 4),
+            ("dave", "ban", 5),
+            ("alice", "join", 8),
+            ("bob", "leave", 9),
+            ("future", "join", 20),
+            ("carol", "leave", 30),
+        ] {
+            let user: OwnedUserId = format!("@{name}:example.org").try_into().unwrap();
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$hero-{sn}:example.org").try_into().unwrap(),
+                    event_sn: sn,
+                    room_id: room.clone(),
+                    room_server_id: None,
+                    user_id: user,
+                    user_server_id: "example.org".try_into().unwrap(),
+                    sender_id: sender.clone(),
+                    membership: membership.into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: UnixMillis::now(),
+                })
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        // No events/event_datas exist: scanning the timeline cannot supply heroes.
+        assert_eq!(
+            load_room_heroes(&sender, &room, 10).await.unwrap(),
+            ["@carol:example.org", "@alice:example.org"]
+        );
+        assert_eq!(
+            load_room_heroes(&sender, &room, 31).await.unwrap(),
+            ["@alice:example.org", "@future:example.org"]
+        );
+        for sn in 40..60 {
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$hero-{sn}:example.org").try_into().unwrap(),
+                    event_sn: sn,
+                    room_id: room.clone(),
+                    room_server_id: None,
+                    user_id: format!("@member{sn}:example.org").try_into().unwrap(),
+                    user_server_id: "example.org".try_into().unwrap(),
+                    sender_id: sender.clone(),
+                    membership: "join".into(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: UnixMillis::now(),
+                })
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            load_room_heroes(&sender, &room, 100).await.unwrap().len(),
+            5
+        );
     }
 }
