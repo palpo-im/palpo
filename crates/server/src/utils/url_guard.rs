@@ -95,6 +95,20 @@ mod outbound_transport_policy_tests {
     use super::*;
 
     #[test]
+    fn push_redirect_chain_keeps_two_public_hops_but_never_follows_internal_targets() {
+        let denied = [IPAddress::parse("127.0.0.0/8").unwrap()];
+        let public = Url::parse("https://gateway.example/notify").unwrap();
+        let internal = Url::parse("http://127.0.0.1/notify").unwrap();
+        for previous in 1..=2 {
+            assert!(redirect_destination_allowed(&public, previous, 2, &denied));
+            assert!(!redirect_destination_allowed(
+                &internal, previous, 2, &denied
+            ));
+        }
+        assert!(!redirect_destination_allowed(&public, 3, 2, &denied));
+    }
+
+    #[test]
     fn redirect_policy_rejects_private_ipv4_ipv6_schemes_and_excess_hops() {
         let denied: Vec<_> = [
             "127.0.0.0/8",
