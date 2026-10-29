@@ -77,15 +77,22 @@ mod claim_tests {
                         .clone()
                 }));
             }
-            let mut once_count = 0;
-            while let Some(claim) = claims.next().await {
-                let claimed = claim.unwrap();
-                if claimed == key_id {
-                    once_count += 1;
-                } else {
-                    assert_eq!(claimed, fallback_id);
+            let once_count = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut once_count = 0;
+                while let Some(claim) = claims.next().await {
+                    let claimed = claim.unwrap();
+                    if claimed == key_id {
+                        once_count += 1;
+                    } else {
+                        assert_eq!(claimed, fallback_id);
+                    }
                 }
-            }
+                once_count
+            })
+            .await
+            .expect(
+                "concurrent key claims exceeded five seconds; check connection-pool starvation",
+            );
             assert_eq!(once_count, 1, "one-time key reused in round {round}");
             assert!(
                 data::user::count_one_time_keys(&user, &device)

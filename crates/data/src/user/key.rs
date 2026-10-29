@@ -590,6 +590,11 @@ pub async fn claim_one_time_key(
         key_data: JsonValue,
     }
 
+    // Keep a single checkout through fallback selection and its used-state
+    // update. A connection temporary in the if-let condition otherwise lives
+    // through the body and can exhaust the pool when every claimant updates it.
+    let mut conn = connect().await?;
+
     // Select and delete on the same connection in one statement. Returning only a
     // successfully deleted row prevents concurrent callers from receiving the
     // same key. Locked candidates belong to another claim and may be skipped.
@@ -603,7 +608,7 @@ pub async fn claim_one_time_key(
     .bind::<diesel::sql_types::Text, _>(user_id.as_str())
     .bind::<diesel::sql_types::Text, _>(device_id.as_str())
     .bind::<diesel::sql_types::Text, _>(key_algorithm.as_ref())
-    .get_result::<ClaimedKey>(&mut connect().await?)
+    .get_result::<ClaimedKey>(&mut conn)
     .await
     .optional()?;
     if let Some(ClaimedKey { key_id, key_data }) = one_time_key {
@@ -622,7 +627,7 @@ pub async fn claim_one_time_key(
         .filter(e2e_fallback_keys::device_id.eq(device_id))
         .filter(e2e_fallback_keys::algorithm.eq(key_algorithm.as_ref()))
         .order(e2e_fallback_keys::id.desc())
-        .first::<DbFallbackKey>(&mut connect().await?)
+        .first::<DbFallbackKey>(&mut conn)
         .await
         .optional()?
     {
@@ -633,7 +638,7 @@ pub async fn claim_one_time_key(
                     .filter(e2e_fallback_keys::key_id.eq(&key_id)),
             )
             .set(e2e_fallback_keys::used_at.eq(UnixMillis::now().get() as i64))
-            .execute(&mut connect().await?)
+            .execute(&mut conn)
             .await?;
         }
         Ok(Some((
