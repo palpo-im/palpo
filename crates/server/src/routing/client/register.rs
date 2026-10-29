@@ -239,11 +239,10 @@ async fn register(
             appservice_id: None,
             created_at: UnixMillis::now(),
         };
-        let hash = body
-            .password
-            .as_deref()
-            .map(crate::utils::hash_password)
-            .transpose()?;
+        let hash = match body.password.as_deref() {
+            Some(password) => Some(crate::utils::hash_password_async(password).await?),
+            None => None,
+        };
         data::user::registration_email::create_registered_user(
             &new_user,
             hash.as_deref(),
