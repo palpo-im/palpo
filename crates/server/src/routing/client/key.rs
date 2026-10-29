@@ -71,6 +71,16 @@ async fn upload_keys(
 ) -> JsonResult<UploadKeysResBody> {
     let authed = depot.authed_info()?;
 
+    let mut fallback_algorithms = HashSet::new();
+    for key_id in body.fallback_keys.keys() {
+        if !fallback_algorithms.insert(key_id.algorithm()) {
+            return Err(crate::MatrixError::invalid_param(
+                "Only one fallback key per algorithm may be uploaded.",
+            )
+            .into());
+        }
+    }
+
     for (key_id, one_time_key) in &body.one_time_keys {
         crate::user::add_one_time_key(
             authed.user_id(),
@@ -86,7 +96,15 @@ async fn upload_keys(
             .await?;
     }
 
-    // TODO: fallback keys. e2e_keys.py 848
+    for (key_id, fallback_key) in &body.fallback_keys {
+        crate::user::add_fallback_key(
+            authed.user_id(),
+            authed.require_device_id()?,
+            key_id,
+            fallback_key,
+        )
+        .await?;
+    }
 
     json_ok(UploadKeysResBody {
         one_time_key_counts: data::user::count_one_time_keys(
@@ -127,4 +145,126 @@ async fn get_key_changes(
         changed: device_list_updates.into_iter().collect(),
         left: Vec::new(), // TODO
     })
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    async fn post(service: &Service, path: &str, body: Value) -> (Option<StatusCode>, Value) {
+        let mut response = TestClient::post(format!("http://localhost/keys/{path}"))
+            .add_header("authorization", "Bearer fallback-upload", true)
+            .json(&body)
+            .send(service)
+            .await;
+        (response.status_code, response.take_json().await.unwrap())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_normal_fallback_upload_claim_and_sync_lifecycle() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"fallback.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user =
+            crate::core::UserId::parse(format!("@fallbackupload:{}", crate::config::server_name()))
+                .unwrap();
+        crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: user.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user.localpart().into(),
+            server_name: user.server_name().to_owned(),
+            appservice_id: None,
+            created_at: crate::core::UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let device: crate::core::OwnedDeviceId = "FALLBACK_UPLOAD".into();
+        crate::data::user::device::create_device(&user, &device, "fallback-upload", None, None)
+            .await
+            .unwrap();
+        let service = Service::new(
+            Router::new()
+                .hoop(crate::hoops::auth_by_access_token)
+                .push(authed_router()),
+        );
+        let upload = json!({"fallback_keys":{"signed_curve25519:first":{"key":"ZmFsbGJhY2s","fallback":true,"signatures":{}}},
+            "one_time_keys":{"signed_curve25519:once":"b25jZQ"}});
+        assert_eq!(
+            post(&service, "upload", upload.clone()).await.0,
+            Some(StatusCode::OK)
+        );
+        let args = serde_json::from_value(json!({})).unwrap();
+        let sync = crate::sync_v3::sync_events(&user, &device, &args)
+            .await
+            .unwrap();
+        assert_eq!(
+            sync.device_unused_fallback_key_types,
+            Some(vec![crate::core::DeviceKeyAlgorithm::SignedCurve25519])
+        );
+        let claim = json!({"one_time_keys":{user.as_str():{device.as_str():"signed_curve25519"}}});
+        let (status, keys) = post(&service, "claim", claim.clone()).await;
+        assert_eq!(status, Some(StatusCode::OK), "{keys}");
+        assert!(
+            keys["one_time_keys"][user.as_str()][device.as_str()]
+                .get("signed_curve25519:once")
+                .is_some()
+        );
+        for _ in 0..2 {
+            let (status, keys) = post(&service, "claim", claim.clone()).await;
+            assert_eq!(status, Some(StatusCode::OK), "{keys}");
+            assert!(
+                keys["one_time_keys"][user.as_str()][device.as_str()]
+                    .get("signed_curve25519:first")
+                    .is_some()
+            );
+        }
+        let sync = crate::sync_v3::sync_events(&user, &device, &args)
+            .await
+            .unwrap();
+        assert_eq!(sync.device_unused_fallback_key_types, Some(vec![]));
+        let retry = json!({"fallback_keys":upload["fallback_keys"]});
+        assert_eq!(
+            post(&service, "upload", retry).await.0,
+            Some(StatusCode::OK)
+        );
+        assert!(
+            data::user::key::unused_fallback_key_types(&user, &device)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let replacement = json!({"fallback_keys":{"signed_curve25519:second":{"key":"bmV3","fallback":true,"signatures":{}}}});
+        let (first, second) = tokio::join!(
+            post(&service, "upload", replacement.clone()),
+            post(&service, "upload", replacement)
+        );
+        assert_eq!(first.0, Some(StatusCode::OK), "{:?}", first.1);
+        assert_eq!(second.0, Some(StatusCode::OK), "{:?}", second.1);
+        assert_eq!(
+            data::user::key::unused_fallback_key_types(&user, &device)
+                .await
+                .unwrap(),
+            vec![crate::core::DeviceKeyAlgorithm::SignedCurve25519]
+        );
+        let (_, keys) = post(&service, "claim", claim).await;
+        assert!(
+            keys["one_time_keys"][user.as_str()][device.as_str()]
+                .get("signed_curve25519:second")
+                .is_some()
+        );
+        let invalid =
+            json!({"fallback_keys":{"signed_curve25519:a":"YQ", "signed_curve25519:b":"Yg"}});
+        let (status, _) = post(&service, "upload", invalid).await;
+        assert_eq!(status, Some(StatusCode::BAD_REQUEST));
+    }
 }
