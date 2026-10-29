@@ -1491,6 +1491,30 @@ async fn presence_visible_to(sender_id: &UserId, viewer_id: &UserId) -> AppResul
     }
 }
 
+/// Resolve at most five heroes from membership rows, without reading messages.
+async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec<String>> {
+    use diesel_async::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Hero {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        user_id: String,
+    }
+    let rows = diesel::sql_query(
+        "SELECT user_id FROM (
+            SELECT DISTINCT ON (user_id) user_id, membership, event_sn
+            FROM room_users WHERE room_id = $1
+            ORDER BY user_id, id DESC
+        ) AS current_members
+        WHERE membership IN ('join', 'invite') AND user_id <> $2
+        ORDER BY event_sn, user_id LIMIT 5",
+    )
+    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
+    .load::<Hero>(&mut connect().await?)
+    .await?;
+    Ok(rows.into_iter().map(|row| row.user_id).collect())
+}
+
 #[cfg(test)]
 mod pagination_database_tests {
     use super::*;
@@ -1597,30 +1621,6 @@ mod pagination_database_tests {
         assert!(recovered.events.contains_key(&profile.event_sn));
         assert!(!recovered.events.contains_key(&105));
     }
-}
-
-/// Resolve at most five heroes from membership rows, without reading messages.
-async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec<String>> {
-    use diesel_async::RunQueryDsl;
-    #[derive(diesel::QueryableByName)]
-    struct Hero {
-        #[diesel(sql_type = diesel::sql_types::Text)]
-        user_id: String,
-    }
-    let rows = diesel::sql_query(
-        "SELECT user_id FROM (
-            SELECT DISTINCT ON (user_id) user_id, membership, event_sn
-            FROM room_users WHERE room_id = $1
-            ORDER BY user_id, id DESC
-        ) AS current_members
-        WHERE membership IN ('join', 'invite') AND user_id <> $2
-        ORDER BY event_sn, user_id LIMIT 5",
-    )
-    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
-    .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
-    .load::<Hero>(&mut connect().await?)
-    .await?;
-    Ok(rows.into_iter().map(|row| row.user_id).collect())
 }
 
 #[cfg(test)]
