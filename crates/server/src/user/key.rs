@@ -329,64 +329,6 @@ fn filter_federated_key_response(
     invalid
 }
 
-#[cfg(test)]
-mod federated_response_tests {
-    use super::*;
-
-    #[test]
-    fn filters_all_key_classes_before_they_can_be_written_or_returned() {
-        let server = ServerName::parse("remote.example").unwrap();
-        let requested = BTreeMap::from([
-            (
-                UserId::parse("@alice:remote.example").unwrap(),
-                vec!["A".into()],
-            ),
-            (UserId::parse("@all:remote.example").unwrap(), Vec::new()),
-        ]);
-        let mut response: QueryKeysResBody = serde_json::from_value(json!({
-            "device_keys": {
-                "@alice:remote.example": {
-                    "A": {"user_id":"@alice:remote.example", "device_id":"A", "algorithms":[], "keys":{}, "signatures":{}},
-                    "B": {"user_id":"@alice:remote.example", "device_id":"B", "algorithms":[], "keys":{}, "signatures":{}},
-                    "C": {"user_id":"@victim:local.example", "device_id":"C", "algorithms":[], "keys":{}, "signatures":{}}
-                },
-                "@all:remote.example": {"ANY": {"user_id":"@all:remote.example", "device_id":"ANY", "algorithms":[], "keys":{}, "signatures":{}}},
-                "@victim:local.example": {"V": {"user_id":"@victim:local.example", "device_id":"V", "algorithms":[], "keys":{}, "signatures":{}}}
-            },
-            "master_keys": {
-                "@alice:remote.example": {"user_id":"@alice:remote.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}},
-                "@victim:local.example": {"user_id":"@victim:local.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}},
-                "@unrequested:remote.example": {"user_id":"@unrequested:remote.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}}
-            },
-            "self_signing_keys": {
-                "@alice:remote.example": {"user_id":"@alice:remote.example", "usage":["self_signing"], "keys":{"ed25519:self":"AQID"}},
-                "@all:remote.example": {"user_id":"@victim:local.example", "usage":["self_signing"], "keys":{"ed25519:self":"AQID"}}
-            }
-        })).unwrap();
-        assert!(filter_federated_key_response(
-            &server,
-            &requested,
-            &mut response
-        ));
-        assert_eq!(response.master_keys.len(), 1);
-        assert_eq!(response.self_signing_keys.len(), 1);
-        assert_eq!(response.device_keys.len(), 2);
-        assert_eq!(
-            response.device_keys[&UserId::parse("@alice:remote.example").unwrap()].len(),
-            1
-        );
-        assert_eq!(
-            response.device_keys[&UserId::parse("@all:remote.example").unwrap()].len(),
-            1
-        );
-        assert!(!filter_federated_key_response(
-            &server,
-            &requested,
-            &mut response
-        ));
-    }
-}
-
 /// Keep the peer identity even when request construction or transport fails.
 /// A failed peer is one stream item, never the end of the entire collection.
 async fn tagged_key_query<'a>(
@@ -1018,5 +960,63 @@ mod device_list_database_tests {
                 .unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod federated_response_tests {
+    use super::*;
+
+    #[test]
+    fn filters_all_key_classes_before_they_can_be_written_or_returned() {
+        let server = ServerName::parse("remote.example").unwrap();
+        let requested = BTreeMap::from([
+            (
+                UserId::parse("@alice:remote.example").unwrap(),
+                vec!["A".into()],
+            ),
+            (UserId::parse("@all:remote.example").unwrap(), Vec::new()),
+        ]);
+        let mut response: QueryKeysResBody = serde_json::from_value(json!({
+            "device_keys": {
+                "@alice:remote.example": {
+                    "A": {"user_id":"@alice:remote.example", "device_id":"A", "algorithms":[], "keys":{}, "signatures":{}},
+                    "B": {"user_id":"@alice:remote.example", "device_id":"B", "algorithms":[], "keys":{}, "signatures":{}},
+                    "C": {"user_id":"@victim:local.example", "device_id":"C", "algorithms":[], "keys":{}, "signatures":{}}
+                },
+                "@all:remote.example": {"ANY": {"user_id":"@all:remote.example", "device_id":"ANY", "algorithms":[], "keys":{}, "signatures":{}}},
+                "@victim:local.example": {"V": {"user_id":"@victim:local.example", "device_id":"V", "algorithms":[], "keys":{}, "signatures":{}}}
+            },
+            "master_keys": {
+                "@alice:remote.example": {"user_id":"@alice:remote.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}},
+                "@victim:local.example": {"user_id":"@victim:local.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}},
+                "@unrequested:remote.example": {"user_id":"@unrequested:remote.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}}
+            },
+            "self_signing_keys": {
+                "@alice:remote.example": {"user_id":"@alice:remote.example", "usage":["self_signing"], "keys":{"ed25519:self":"AQID"}},
+                "@all:remote.example": {"user_id":"@victim:local.example", "usage":["self_signing"], "keys":{"ed25519:self":"AQID"}}
+            }
+        })).unwrap();
+        assert!(filter_federated_key_response(
+            &server,
+            &requested,
+            &mut response
+        ));
+        assert_eq!(response.master_keys.len(), 1);
+        assert_eq!(response.self_signing_keys.len(), 1);
+        assert_eq!(response.device_keys.len(), 2);
+        assert_eq!(
+            response.device_keys[&UserId::parse("@alice:remote.example").unwrap()].len(),
+            1
+        );
+        assert_eq!(
+            response.device_keys[&UserId::parse("@all:remote.example").unwrap()].len(),
+            1
+        );
+        assert!(!filter_federated_key_response(
+            &server,
+            &requested,
+            &mut response
+        ));
     }
 }
