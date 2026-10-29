@@ -270,7 +270,7 @@ async fn validate_cached_thumbnail(
 
 pub(crate) async fn publish_thumbnail(record: NewDbThumbnail, bytes: &[u8]) -> AppResult<i64> {
     let storage_origin = effective_server_name(&record.origin_server).to_owned();
-    let require_original = record.origin_server == config::server_name();
+    let require_original = record.origin_server.as_str() == config::server_name().as_str();
     publish_thumbnail_with_operator(
         storage::operator(),
         &storage_origin,
