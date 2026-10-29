@@ -3,30 +3,12 @@ use serde::Deserialize;
 
 use crate::AppResult;
 
-/// ## Examples:
-/// - No proxy (default):
-/// ```toml
-/// proxy ="none"
-/// ```
-/// - Global proxy
-/// ```toml
-/// [global.proxy]
-/// global = { url = "socks5h://localhost:9050" }
-/// ```
-/// - Proxy some domains
-/// ```toml
-/// [global.proxy]
-/// [[global.proxy.by_domain]]
-/// url = "socks5h://localhost:9050"
-/// include = ["*.onion", "matrix.myspecial.onion"]
-/// exclude = ["*.myspecial.onion"]
-/// ```
-/// ## Include vs. Exclude
-/// If include is an empty list, it is assumed to be `["*"]`.
-///
-/// If a domain matches both the exclude and include list, the proxy will only be used if it was
-/// included because of a more specific rule than it was excluded. In the above example, the proxy
-/// would be used for `ordinary.onion`, `matrix.myspecial.onion`, but not `hello.myspecial.onion`.
+/// Outbound proxy configuration is currently unsupported by the restricted
+/// federation/discovery/push transports. Startup rejects `Global` and nonempty
+/// `ByDomain` rules rather than silently bypassing an operator's egress policy.
+/// `None` and empty domain rules are accepted only when the process has no
+/// active HTTP_PROXY, HTTPS_PROXY, or ALL_PROXY variables (case-insensitive).
+/// See `docs/outbound-network-policy.md` for deployment requirements.
 #[derive(Default, Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyConfig {
@@ -47,6 +29,94 @@ impl ProxyConfig {
                 proxies.iter().find_map(|proxy| proxy.for_url(url)).cloned() // first matching proxy
             })),
         })
+    }
+}
+
+/// Fail before publishing configuration or opening resources: a proxy may
+/// resolve the destination itself and defeat local DNS address validation.
+/// Only names/presence are inspected; credentials never enter error messages.
+pub(crate) fn validate_restricted_outbound_proxy(proxy: Option<&ProxyConfig>) -> AppResult<()> {
+    let environment_proxy = std::env::vars_os().any(|(name, value)| {
+        !value.is_empty() && name.to_str().is_some_and(is_forward_proxy_variable)
+    });
+    validate_restricted_proxy_policy(proxy, environment_proxy)
+}
+
+fn is_forward_proxy_variable(name: &str) -> bool {
+    ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+        .iter()
+        .any(|expected| name.eq_ignore_ascii_case(expected))
+}
+
+fn validate_restricted_proxy_policy(
+    proxy: Option<&ProxyConfig>,
+    environment_proxy: bool,
+) -> AppResult<()> {
+    let configured = match proxy {
+        None | Some(ProxyConfig::None) => false,
+        Some(ProxyConfig::ByDomain(rules)) => !rules.is_empty(),
+        Some(ProxyConfig::Global { .. }) => true,
+    };
+    if configured {
+        return Err(crate::AppError::internal(
+            "Outbound proxy configuration is unsupported by restricted HTTP transports; remove active proxy rules before starting Palpo. Direct outbound connections must be permitted by deployment policy.",
+        ));
+    }
+    if environment_proxy {
+        return Err(crate::AppError::internal(
+            "Restricted outbound HTTP cannot honor proxy environment variables; unset HTTP_PROXY, HTTPS_PROXY and ALL_PROXY (including lowercase forms) before starting Palpo. NO_PROXY does not enable proxy support.",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod restricted_proxy_policy_tests {
+    use super::*;
+
+    #[test]
+    fn direct_policy_accepts_only_absent_disabled_or_empty_proxy_configuration() {
+        for config in [
+            None,
+            Some(ProxyConfig::None),
+            Some(ProxyConfig::ByDomain(Vec::new())),
+        ] {
+            assert!(validate_restricted_proxy_policy(config.as_ref(), false).is_ok());
+            assert!(validate_restricted_proxy_policy(config.as_ref(), true).is_err());
+        }
+        let global = ProxyConfig::Global {
+            url: Url::parse("http://user:secret@proxy.example:8080").unwrap(),
+        };
+        let partial = ProxyConfig::ByDomain(vec![PartialProxyConfig {
+            url: Url::parse("http://user:secret@proxy.example:8080").unwrap(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+        }]);
+        for config in [global, partial] {
+            let error = validate_restricted_proxy_policy(Some(&config), false)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unsupported"));
+            assert!(!error.contains("secret"));
+            assert!(!error.contains("proxy.example"));
+        }
+    }
+
+    #[test]
+    fn environment_detection_covers_case_variants_without_treating_no_proxy_as_egress() {
+        for name in [
+            "HTTP_PROXY",
+            "https_proxy",
+            "All_Proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+        ] {
+            assert!(is_forward_proxy_variable(name));
+        }
+        for name in ["NO_PROXY", "no_proxy", "PALPO_PROXY", "OTHER"] {
+            assert!(!is_forward_proxy_variable(name));
+        }
     }
 }
 
