@@ -598,12 +598,12 @@ impl KeysResBody {
 
 #[derive(ToSchema, Serialize, Debug)]
 pub struct KeysForRoomResBody {
-    /// A map from room IDs to session IDs to key data.
-    pub sessions: BTreeMap<OwnedRoomId, RawJson<RoomKeyBackup>>,
+    /// A map from session IDs to key data for the requested room.
+    pub sessions: BTreeMap<String, KeyBackupData>,
 }
 impl KeysForRoomResBody {
-    /// Creates a new `Response` with the given room key backups.
-    pub fn new(sessions: BTreeMap<OwnedRoomId, RawJson<RoomKeyBackup>>) -> Self {
+    /// Creates a new `Response` with the given session key backups.
+    pub fn new(sessions: BTreeMap<String, KeyBackupData>) -> Self {
         Self { sessions }
     }
 }
@@ -631,3 +631,25 @@ pub struct UpdateVersionReqBody(
     /// The algorithm used for storing backups.
     pub BackupAlgorithm,
 );
+
+#[cfg(test)]
+mod room_backup_response_tests {
+    use super::*;
+
+    #[test]
+    fn room_backup_response_is_keyed_by_session_not_room_id() {
+        let key: KeyBackupData = serde_json::from_value(serde_json::json!({
+            "first_message_index": 4, "forwarded_count": 0, "is_verified": true,
+            "session_data": {"ciphertext":"ciphertext", "ephemeral":"ephemeral", "mac":"mac"}
+        }))
+        .unwrap();
+        let response = KeysForRoomResBody::new(BTreeMap::from([("session-one".to_owned(), key)]));
+        let body = serde_json::to_value(response).unwrap();
+        assert_eq!(body["sessions"]["session-one"]["first_message_index"], 4);
+        assert!(body["sessions"]["session-one"].get("sessions").is_none());
+        assert_eq!(
+            serde_json::to_value(KeysForRoomResBody::new(BTreeMap::new())).unwrap(),
+            serde_json::json!({"sessions":{}})
+        );
+    }
+}
