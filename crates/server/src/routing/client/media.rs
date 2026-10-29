@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::str::FromStr;
 
+#[cfg(test)]
 use diesel::prelude::*;
 #[cfg(test)]
 use diesel_async::RunQueryDsl;
