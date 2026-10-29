@@ -403,7 +403,11 @@ mod deletion_tests {
                 .is_some()
         );
         // Storage was partly removed, but persistent DB identities survive a new attempt.
-        operator.remove_all(&format!("{original}/")).await.unwrap();
+        operator
+            .delete_with(&format!("{original}/"))
+            .recursive(true)
+            .await
+            .unwrap();
         operator.write(&original, b"file".to_vec()).await.unwrap();
         let restarted_operator = opendal::Operator::new(
             opendal::services::Fs::default().root(directory.path().to_str().unwrap()),
