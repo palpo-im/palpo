@@ -471,12 +471,17 @@ async fn load_joined_room(
         _ => false,
     };
 
-    let Ok(current_frame_id) = room::get_frame_id(room_id, None).await else {
-        return Ok((JoinedRoom::default(), None));
+    let current_frame_id = match room::get_frame_id(room_id, None).await {
+        Ok(frame) => frame,
+        Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
+        Err(error) => return Err(error),
     };
-    let since_frame_id = crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn()))
-        .await
-        .ok();
+    let since_frame_id =
+        match crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn())).await {
+            Ok(frame) => Some(frame),
+            Err(error) if error.is_not_found() => None,
+            Err(error) => return Err(error),
+        };
 
     let mut timeline = load_timeline(
         sender_id,
