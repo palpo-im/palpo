@@ -351,13 +351,8 @@ pub async fn get_thumbnail(
         return Ok(());
     }
 
-    match crate::data::media::get_thumbnail_by_dimension(
-        &args.server_name,
-        &args.media_id,
-        args.width,
-        args.height,
-    )
-    .await
+    match crate::media::cached_thumbnail(&args.server_name, &args.media_id, args.width, args.height)
+        .await
     {
         Ok(Some(DbThumbnail {
             id, content_type, ..
@@ -389,13 +384,7 @@ pub async fn get_thumbnail(
 
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) = crate::data::media::get_thumbnail_by_dimension(
-        &args.server_name,
-        &args.media_id,
-        width,
-        height,
-    )
-    .await?
+    }) = crate::media::cached_thumbnail(&args.server_name, &args.media_id, width, height).await?
     {
         let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
         // Try presigned URL redirect for S3 storage
@@ -474,8 +463,8 @@ pub async fn get_thumbnail(
             )?;
 
             // Save thumbnail in database so we don't have to generate it again next time
-            let thumbnail_id = diesel::insert_into(media_thumbnails::table)
-                .values(&NewDbThumbnail {
+            let thumbnail_id = crate::media::publish_thumbnail(
+                NewDbThumbnail {
                     media_id: args.media_id.clone(),
                     origin_server: args.server_name.clone(),
                     content_type: Some("image/png".to_owned()),
@@ -485,31 +474,10 @@ pub async fn get_thumbnail(
                     height: height as i32,
                     resize_method: args.method.clone().unwrap_or_default().to_string(),
                     created_at: UnixMillis::now(),
-                })
-                .on_conflict_do_nothing()
-                .returning(media_thumbnails::id)
-                .get_result::<i64>(&mut connect().await?)
-                .await
-                .optional()?;
-            let thumbnail_id = if let Some(thumbnail_id) = thumbnail_id {
-                crate::media::save_thumbnail_file(
-                    &args.server_name,
-                    &args.media_id,
-                    thumbnail_id,
-                    &thumbnail_bytes,
-                )
-                .await?;
-                thumbnail_id
-            } else {
-                find_cached_thumbnail_id(
-                    &args.server_name,
-                    &args.media_id,
-                    width,
-                    height,
-                    &args.method.clone().unwrap_or_default().to_string(),
-                )
-                .await?
-            };
+                },
+                &thumbnail_bytes,
+            )
+            .await?;
 
             // Return the newly generated thumbnail
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, thumbnail_id);
@@ -526,25 +494,6 @@ pub async fn get_thumbnail(
     } else {
         Err(MatrixError::not_found("file not found").into())
     }
-}
-
-/// Use the exact key that was inserted, including the normalized dimensions and origin.
-async fn find_cached_thumbnail_id(
-    origin: &ServerName,
-    media_id: &str,
-    width: u32,
-    height: u32,
-    method: &str,
-) -> AppResult<i64> {
-    Ok(media_thumbnails::table
-        .filter(media_thumbnails::origin_server.eq(origin))
-        .filter(media_thumbnails::media_id.eq(media_id))
-        .filter(media_thumbnails::width.eq(width as i32))
-        .filter(media_thumbnails::height.eq(height as i32))
-        .filter(media_thumbnails::resize_method.eq(method))
-        .select(media_thumbnails::id)
-        .first::<i64>(&mut connect().await?)
-        .await?)
 }
 
 #[cfg(test)]

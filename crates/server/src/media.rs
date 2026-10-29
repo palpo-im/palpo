@@ -12,7 +12,7 @@ use crate::core::http_headers::ContentDisposition;
 use crate::core::media::ResizeMethod;
 use crate::core::{Mxc, OwnedMxcUri, ServerName, UnixMillis, UserId};
 use crate::data::connect;
-use crate::data::media::NewDbThumbnail;
+use crate::data::media::{DbThumbnail, NewDbThumbnail};
 use crate::data::schema::*;
 use crate::{AppResult, config, data, storage};
 
@@ -201,17 +201,7 @@ pub async fn save_thumbnail(
         resize_method: dim.method.to_string(),
         created_at: UnixMillis::now(),
     };
-    let id = diesel::insert_into(media_thumbnails::table)
-        .values(&db_thumbnail)
-        .on_conflict_do_nothing()
-        .returning(media_thumbnails::id)
-        .get_result::<i64>(&mut connect().await?)
-        .await
-        .optional()?;
-
-    if let Some(id) = id {
-        save_thumbnail_file(mxc.server_name, mxc.media_id, id, file).await?;
-    }
+    publish_thumbnail(db_thumbnail, file).await?;
 
     Ok(())
 }
@@ -234,4 +224,192 @@ pub async fn save_thumbnail_file(
     let key = thumbnail_storage_key(server_name, media_id, thumbnail_id);
     storage::write(&key, file).await?;
     Ok(key)
+}
+
+/// Missing cache objects from interrupted older writes must not remain cache hits.
+pub async fn cached_thumbnail(
+    origin: &ServerName,
+    media_id: &str,
+    width: u32,
+    height: u32,
+) -> AppResult<Option<DbThumbnail>> {
+    let Some(thumbnail) =
+        data::media::get_thumbnail_by_dimension(origin, media_id, width, height).await?
+    else {
+        return Ok(None);
+    };
+    validate_cached_thumbnail(
+        storage::operator(),
+        effective_server_name(origin),
+        thumbnail,
+    )
+    .await
+}
+
+async fn validate_cached_thumbnail(
+    operator: &opendal::Operator,
+    storage_origin: &str,
+    thumbnail: DbThumbnail,
+) -> AppResult<Option<DbThumbnail>> {
+    let key = storage::thumbnail_key(storage_origin, &thumbnail.media_id, thumbnail.id);
+    if operator.exists(&key).await? {
+        return Ok(Some(thumbnail));
+    }
+    // Only NotFound invalidates metadata. Permission/network errors propagate above.
+    diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(None)
+}
+
+pub(crate) async fn publish_thumbnail(record: NewDbThumbnail, bytes: &[u8]) -> AppResult<i64> {
+    let storage_origin = effective_server_name(&record.origin_server).to_owned();
+    publish_thumbnail_with_operator(storage::operator(), &storage_origin, record, bytes).await
+}
+
+async fn publish_thumbnail_with_operator(
+    operator: &opendal::Operator,
+    storage_origin: &str,
+    record: NewDbThumbnail,
+    bytes: &[u8],
+) -> AppResult<i64> {
+    // Reserve the ID without publishing a cache row. A crash during storage write can
+    // leave an unreferenced object, but cannot publish a permanently broken cache hit.
+    let id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+        "SELECT nextval(pg_get_serial_sequence('media_thumbnails', 'id'))",
+    )
+    .get_result::<i64>(&mut connect().await?)
+    .await?;
+    let key = storage::thumbnail_key(storage_origin, &record.media_id, id);
+    operator.write(&key, bytes.to_vec()).await?;
+    let inserted = diesel::insert_into(media_thumbnails::table)
+        .values((media_thumbnails::id.eq(id), &record))
+        .on_conflict_do_nothing()
+        .returning(media_thumbnails::id)
+        .get_result::<i64>(&mut connect().await?)
+        .await
+        .optional()?;
+    if let Some(id) = inserted {
+        return Ok(id);
+    }
+    // The unique-key winner has already stored its file. Discard only our own,
+    // definitely unpublished object; on an ambiguous DB error keep it recoverable.
+    operator.delete(&key).await?;
+    find_cached_thumbnail_id(
+        &record.origin_server,
+        &record.media_id,
+        record.width as u32,
+        record.height as u32,
+        &record.resize_method,
+    )
+    .await
+}
+
+pub(crate) async fn find_cached_thumbnail_id(
+    origin: &ServerName,
+    media_id: &str,
+    width: u32,
+    height: u32,
+    method: &str,
+) -> AppResult<i64> {
+    Ok(media_thumbnails::table
+        .filter(media_thumbnails::origin_server.eq(origin))
+        .filter(media_thumbnails::media_id.eq(media_id))
+        .filter(media_thumbnails::width.eq(width as i32))
+        .filter(media_thumbnails::height.eq(height as i32))
+        .filter(media_thumbnails::resize_method.eq(method))
+        .select(media_thumbnails::id)
+        .first::<i64>(&mut connect().await?)
+        .await?)
+}
+
+#[cfg(test)]
+mod thumbnail_publication_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn storage_failure_and_missing_legacy_thumbnail_can_be_retried() {
+        crate::test_database::init();
+        let dir = tempfile::tempdir().unwrap();
+        let operator = opendal::Operator::new(
+            opendal::services::Fs::default().root(dir.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let media_id = format!("q18-{}", uuid::Uuid::new_v4());
+        let record = NewDbThumbnail {
+            media_id: media_id.clone(),
+            origin_server: ServerName::parse("q18.test").unwrap(),
+            content_type: Some("image/png".into()),
+            disposition_type: None,
+            file_size: 3,
+            width: 96,
+            height: 96,
+            resize_method: "scale".into(),
+            created_at: UnixMillis::now(),
+        };
+        // Make the expected object prefix a file so the first write deterministically fails.
+        operator
+            .write("media", b"not a directory".to_vec())
+            .await
+            .unwrap();
+        assert!(
+            publish_thumbnail_with_operator(&operator, "_", record.clone(), b"png")
+                .await
+                .is_err()
+        );
+        assert!(
+            data::media::get_thumbnail_by_dimension(&record.origin_server, &media_id, 96, 96)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        operator.delete("media").await.unwrap();
+        let id = publish_thumbnail_with_operator(&operator, "_", record.clone(), b"png")
+            .await
+            .unwrap();
+        let row = data::media::get_thumbnail_by_dimension(&record.origin_server, &media_id, 96, 96)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            validate_cached_thumbnail(&operator, "_", row.clone())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        // Simulate a legacy cache row committed before the interrupted object write.
+        operator
+            .delete(&storage::thumbnail_key("_", &media_id, id))
+            .await
+            .unwrap();
+        assert!(
+            validate_cached_thumbnail(&operator, "_", row)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let next = publish_thumbnail_with_operator(&operator, "_", record.clone(), b"new")
+            .await
+            .unwrap();
+        assert_ne!(id, next);
+        assert_eq!(
+            operator
+                .read(&storage::thumbnail_key("_", &media_id, next))
+                .await
+                .unwrap()
+                .to_vec(),
+            b"new"
+        );
+        let (left, right) = tokio::join!(
+            publish_thumbnail_with_operator(&operator, "_", record.clone(), b"new"),
+            publish_thumbnail_with_operator(&operator, "_", record, b"new"),
+        );
+        assert_eq!(left.unwrap(), next);
+        assert_eq!(right.unwrap(), next);
+        diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(next)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+    }
 }
