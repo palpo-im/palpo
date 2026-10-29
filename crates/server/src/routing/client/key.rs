@@ -73,7 +73,7 @@ async fn upload_keys(
 
     let mut fallback_algorithms = HashSet::new();
     for key_id in body.fallback_keys.keys() {
-        if !fallback_algorithms.insert(key_id.algorithm()) {
+        if !fallback_algorithms.insert(key_id.algorithm().to_string()) {
             return Err(crate::MatrixError::invalid_param(
                 "Only one fallback key per algorithm may be uploaded.",
             )
