@@ -1,3 +1,4 @@
+mod coordination;
 mod preview;
 mod remote;
 pub(crate) mod thumbnail;
@@ -141,35 +142,7 @@ async fn delete_media_with_operator(
     server_name: &ServerName,
     media_id: &str,
 ) -> AppResult<()> {
-    // Include objects left unreferenced by interrupted thumbnail publication.
-    let key = storage::media_key(storage_origin, media_id);
-    operator.remove_all(&format!("{key}.thumbnails/")).await?;
-    // Older federation code stored dimension-keyed files. Delete only dimensions
-    // represented in this media's rows, never an arbitrary media-ID prefix.
-    let dimensions = media_thumbnails::table
-        .filter(media_thumbnails::origin_server.eq(server_name))
-        .filter(media_thumbnails::media_id.eq(media_id))
-        .select((media_thumbnails::width, media_thumbnails::height))
-        .distinct()
-        .load::<(i32, i32)>(&mut connect().await?)
-        .await?;
-    for (width, height) in dimensions {
-        let legacy_id = format!("{media_id}.{width}x{height}");
-        // A legitimate separately uploaded media ID takes precedence over an
-        // ambiguous old cache filename.
-        if data::media::get_metadata(server_name, &legacy_id)
-            .await?
-            .is_none()
-        {
-            operator
-                .delete(&storage::media_key(storage_origin, &legacy_id))
-                .await?;
-        }
-    }
-    operator.delete(&key).await?;
-    // Never discard cleanup identities if ANY object deletion failed above.
-    data::media::delete_media(server_name, media_id).await?;
-    Ok(())
+    coordination::delete_media(operator, storage_origin, server_name, media_id).await
 }
 
 pub async fn delete_media_by_ids(
@@ -224,22 +197,26 @@ pub async fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64)
         .load::<data::media::DbThumbnail>(&mut connect().await?)
         .await?;
     for thumbnail in thumbnails {
-        let key =
-            thumbnail_storage_key(&thumbnail.origin_server, &thumbnail.media_id, thumbnail.id);
-        storage::delete(&key).await?;
-        let legacy_id = format!(
-            "{}.{}x{}",
-            thumbnail.media_id, thumbnail.width, thumbnail.height
-        );
-        if data::media::get_metadata(&thumbnail.origin_server, &legacy_id)
-            .await?
-            .is_none()
-        {
-            storage::delete(&media_storage_key(&thumbnail.origin_server, &legacy_id)).await?;
-        }
-        diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
-            .execute(&mut connect().await?)
-            .await?;
+        coordination::with_lock(&thumbnail.origin_server, &thumbnail.media_id, async {
+            let key =
+                thumbnail_storage_key(&thumbnail.origin_server, &thumbnail.media_id, thumbnail.id);
+            storage::delete(&key).await?;
+            let legacy_id = format!(
+                "{}.{}x{}",
+                thumbnail.media_id, thumbnail.width, thumbnail.height
+            );
+            if data::media::get_metadata(&thumbnail.origin_server, &legacy_id)
+                .await?
+                .is_none()
+            {
+                storage::delete(&media_storage_key(&thumbnail.origin_server, &legacy_id)).await?;
+            }
+            diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
+                .execute(&mut connect().await?)
+                .await?;
+            Ok(())
+        })
+        .await?;
         deleted += 1;
     }
     Ok(deleted)
@@ -623,6 +600,99 @@ mod deletion_tests {
         for key in [&other_origin, &other_media] {
             assert!(operator.exists(key).await.unwrap());
         }
+        assert!(
+            data::media::get_metadata(&origin, &media_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            data::media::get_thumbnail_by_dimension(&origin, &media_id, 96, 96)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn deletion_waits_for_cross_instance_thumbnail_publication() {
+        crate::test_database::init();
+        let directory = tempfile::tempdir().unwrap();
+        let operator = opendal::Operator::new(
+            opendal::services::Fs::default().root(directory.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let origin = ServerName::parse("q06-fence.test").unwrap();
+        let media_id = format!("q06-fence-{}", uuid::Uuid::new_v4());
+        data::media::insert_metadata(&data::media::NewDbMetadata {
+            media_id: media_id.clone(),
+            origin_server: origin.clone(),
+            content_type: None,
+            disposition_type: None,
+            file_name: None,
+            file_extension: None,
+            file_size: 4,
+            file_hash: None,
+            created_by: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let original_key = storage::media_key("_", &media_id);
+        operator
+            .write(&original_key, b"file".to_vec())
+            .await
+            .unwrap();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (write_origin, write_id, write_operator) =
+            (origin.clone(), media_id.clone(), operator.clone());
+        let publisher = tokio::spawn(async move {
+            coordination::with_lock(&write_origin, &write_id, async {
+                let _ = acquired_tx.send(());
+                release_rx.await.unwrap();
+                // Exercise the publication protocol using a different coordination
+                // connection from the real deletion service below.
+                let id = diesel::insert_into(media_thumbnails::table)
+                    .values(NewDbThumbnail {
+                        media_id: write_id.clone(),
+                        origin_server: write_origin.clone(),
+                        content_type: None,
+                        disposition_type: None,
+                        file_size: 3,
+                        width: 96,
+                        height: 96,
+                        resize_method: "scale".into(),
+                        created_at: UnixMillis::now(),
+                    })
+                    .returning(media_thumbnails::id)
+                    .get_result::<i64>(&mut connect().await?)
+                    .await?;
+                let thumbnail_key = storage::thumbnail_key("_", &write_id, id);
+                write_operator
+                    .write(&thumbnail_key, b"png".to_vec())
+                    .await?;
+                Ok(thumbnail_key)
+            })
+            .await
+        });
+        acquired_rx.await.unwrap();
+        let (delete_origin, delete_id, delete_operator) =
+            (origin.clone(), media_id.clone(), operator.clone());
+        let deletion = tokio::spawn(async move {
+            delete_media_with_operator(&delete_operator, "_", &delete_origin, &delete_id).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !deletion.is_finished(),
+            "deletion bypassed the publisher's database fence"
+        );
+        release_tx.send(()).unwrap();
+        let thumbnail_key = publisher.await.unwrap().unwrap();
+        deletion.await.unwrap().unwrap();
+        assert!(!operator.exists(&original_key).await.unwrap());
+        assert!(!operator.exists(&thumbnail_key).await.unwrap());
         assert!(
             data::media::get_metadata(&origin, &media_id)
                 .await
