@@ -583,7 +583,8 @@ async fn load_joined_room(
                 if joined_member_count + invited_member_count <= 5 {
                     // Go through all PDUs and for each member event, check if the user is still
                     // joined or invited until we have 5 or we reach the end
-                    for (_, pdu) in timeline::stream::load_all_pdus(Some(sender_id), room_id, until_tk)
+                    for (_, pdu) in
+                        timeline::stream::load_all_pdus(Some(sender_id), room_id, until_tk)
                             .await?
                             .into_iter() // Ignore all broken pdus
                             .filter(|(_, pdu)| pdu.event_ty == TimelineEventType::RoomMember)

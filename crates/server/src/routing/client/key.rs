@@ -149,9 +149,10 @@ async fn get_key_changes(
 
 #[cfg(test)]
 mod fallback_tests {
-    use super::*;
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
+
+    use super::*;
 
     async fn post(service: &Service, path: &str, body: Value) -> (Option<StatusCode>, Value) {
         let mut response = TestClient::post(format!("http://localhost/keys/{path}"))
