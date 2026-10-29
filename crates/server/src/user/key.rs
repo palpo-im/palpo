@@ -210,42 +210,6 @@ async fn tagged_key_query<'a>(
     (server, query.await)
 }
 
-#[cfg(test)]
-mod federated_query_failure_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn failed_query_keeps_its_peer_and_does_not_discard_later_successes() {
-        let servers = ["fast.example", "failed.example", "slow.example"]
-            .map(|name| ServerName::parse(name).unwrap());
-        let mut queries = FuturesUnordered::new();
-        for (index, server) in servers.iter().enumerate() {
-            queries.push(tagged_key_query(server, async move {
-                if index == 1 {
-                    return Err(AppError::public("transport failed"));
-                }
-                if index == 2 {
-                    tokio::task::yield_now().await;
-                }
-                Ok(QueryKeysResBody::default())
-            }));
-        }
-        // The slow result is intentionally polled after an error; both successes
-        // and the failed peer must remain observable to the aggregation loop.
-        let mut successes = Vec::new();
-        let mut failures = Vec::new();
-        while let Some((server, result)) = queries.next().await {
-            match result {
-                Ok(_) => successes.push(server.to_string()),
-                Err(_) => failures.push(server.to_string()),
-            }
-        }
-        successes.sort();
-        assert_eq!(successes, ["fast.example", "slow.example"]);
-        assert_eq!(failures, ["failed.example"]);
-    }
-}
-
 pub async fn claim_one_time_keys(
     one_time_keys_input: &BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, DeviceKeyAlgorithm>>,
 ) -> AppResult<ClaimKeysResBody> {
@@ -832,5 +796,41 @@ mod device_list_database_tests {
                 .unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod federated_query_failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_query_keeps_its_peer_and_does_not_discard_later_successes() {
+        let servers = ["fast.example", "failed.example", "slow.example"]
+            .map(|name| ServerName::parse(name).unwrap());
+        let mut queries = FuturesUnordered::new();
+        for (index, server) in servers.iter().enumerate() {
+            queries.push(tagged_key_query(server, async move {
+                if index == 1 {
+                    return Err(AppError::public("transport failed"));
+                }
+                if index == 2 {
+                    tokio::task::yield_now().await;
+                }
+                Ok(QueryKeysResBody::default())
+            }));
+        }
+        // The slow result is intentionally polled after an error; both successes
+        // and the failed peer must remain observable to the aggregation loop.
+        let mut successes = Vec::new();
+        let mut failures = Vec::new();
+        while let Some((server, result)) = queries.next().await {
+            match result {
+                Ok(_) => successes.push(server.to_string()),
+                Err(_) => failures.push(server.to_string()),
+            }
+        }
+        successes.sort();
+        assert_eq!(successes, ["fast.example", "slow.example"]);
+        assert_eq!(failures, ["failed.example"]);
     }
 }
