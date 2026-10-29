@@ -557,6 +557,7 @@ pub async fn list_threads(
     room_id: &RoomId,
     before: Option<(i64, &EventId)>,
     limit: i64,
+    participant: Option<&UserId>,
 ) -> DataResult<Vec<(OwnedEventId, i64)>> {
     let mut query = threads::table
         .filter(threads::room_id.eq(room_id))
@@ -568,6 +569,18 @@ pub async fn list_threads(
                 .and(threads::event_id.lt(before_id))),
         );
     }
+    if let Some(user_id) = participant {
+        query = query.filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "(EXISTS (SELECT 1 FROM events root WHERE root.id = threads.event_id \
+             AND root.room_id = threads.room_id AND root.sender_id = ",
+        ).bind::<diesel::sql_types::Text, _>(user_id.as_str())
+        .sql(") OR EXISTS (SELECT 1 FROM event_relations r JOIN events reply ON reply.id = r.child_id \
+              WHERE r.room_id = threads.room_id AND r.event_id = threads.event_id \
+              AND r.rel_type = 'm.thread' AND reply.room_id = threads.room_id \
+              AND NOT reply.is_outlier AND NOT reply.is_rejected AND NOT reply.soft_failed \
+              AND NOT reply.is_redacted AND reply.sender_id = ")
+        .bind::<diesel::sql_types::Text, _>(user_id.as_str()).sql("))"));
+    }
     query
         .select((threads::event_id, threads::last_sn))
         .order_by((threads::last_sn.desc(), threads::event_id.desc()))
@@ -575,6 +588,31 @@ pub async fn list_threads(
         .load::<(OwnedEventId, i64)>(&mut connect().await?)
         .await
         .map_err(Into::into)
+}
+
+/// Senders of currently published, unredacted thread replies. Kept outside the
+/// event JSON so the recipient-dependent aggregation never becomes shared state.
+pub async fn thread_participants(
+    room_id: &RoomId,
+    root: &EventId,
+) -> DataResult<std::collections::BTreeSet<OwnedUserId>> {
+    Ok(event_relations::table
+        .inner_join(events::table.on(events::id.eq(event_relations::child_id)))
+        .filter(event_relations::room_id.eq(room_id))
+        .filter(event_relations::event_id.eq(root))
+        .filter(event_relations::rel_type.eq("m.thread"))
+        .filter(events::room_id.eq(room_id))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_redacted.eq(false))
+        .select(events::sender_id)
+        .distinct()
+        .load::<Option<OwnedUserId>>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// Set the thread id an event belongs to.
