@@ -1,3 +1,5 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::core::client::room::IncludeThreads;
@@ -6,22 +8,74 @@ use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
 use crate::data::room::DbThread;
 use crate::room::timeline;
-use crate::{AppResult, SnPduEvent, data};
+use crate::{AppResult, MatrixError, SnPduEvent, data};
+
+#[derive(Serialize, Deserialize)]
+struct ThreadCursor {
+    room_id: OwnedRoomId,
+    last_sn: i64,
+    event_id: OwnedEventId,
+}
+
+impl ThreadCursor {
+    fn parse(token: &str, room_id: &RoomId) -> Result<Self, MatrixError> {
+        let invalid = || MatrixError::invalid_param("Invalid thread pagination token.");
+        if token.len() > 4096 {
+            return Err(invalid());
+        }
+        let bytes = URL_SAFE_NO_PAD
+            .decode(token.strip_prefix("t1.").ok_or_else(invalid)?)
+            .map_err(|_| invalid())?;
+        let cursor: Self = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+        if cursor.room_id != room_id || cursor.last_sn < 0 {
+            return Err(invalid());
+        }
+        Ok(cursor)
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "t1.{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).expect("thread cursor serializes"))
+        )
+    }
+}
 
 pub async fn get_threads(
     room_id: &RoomId,
     _include: &IncludeThreads,
     limit: i64,
-    from_token: Option<i64>,
-) -> AppResult<(Vec<(OwnedEventId, SnPduEvent)>, Option<i64>)> {
-    let items = data::room::list_threads(room_id, from_token, limit).await?;
-    let next_token = items.last().map(|(_, sn)| *sn - 1);
+    from_token: Option<&str>,
+) -> AppResult<(Vec<(OwnedEventId, SnPduEvent)>, Option<String>)> {
+    if !(1..=100).contains(&limit) {
+        return Err(MatrixError::invalid_param("Thread limit must be between 1 and 100.").into());
+    }
+    let cursor = from_token
+        .map(|token| ThreadCursor::parse(token, room_id))
+        .transpose()?;
+    let mut items = data::room::list_threads(
+        room_id,
+        cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
+        limit + 1,
+    )
+    .await?;
+    let has_more = items.len() as i64 > limit;
+    items.truncate(limit as usize);
+    let next_token = items
+        .last()
+        .filter(|_| has_more)
+        .map(|(event_id, last_sn)| {
+            ThreadCursor {
+                room_id: room_id.to_owned(),
+                last_sn: *last_sn,
+                event_id: event_id.clone(),
+            }
+            .encode()
+        });
 
     let mut events = Vec::with_capacity(items.len());
     for (event_id, _) in items {
-        if let Ok(pdu) = timeline::get_pdu(&event_id).await {
-            events.push((event_id, pdu));
-        }
+        events.push((event_id.clone(), timeline::get_pdu(&event_id).await?));
     }
     Ok((events, next_token))
 }
@@ -85,4 +139,111 @@ pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<(
     })
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn thread_cursors_validate_version_room_and_position() {
+        let room = crate::core::room_id!("!thread:example.test");
+        let cursor = ThreadCursor {
+            room_id: room.to_owned(),
+            last_sn: 100,
+            event_id: crate::core::event_id!("$root").to_owned(),
+        };
+        let decoded = ThreadCursor::parse(&cursor.encode(), room).unwrap();
+        assert_eq!(decoded.last_sn, 100);
+        assert_eq!(decoded.event_id, cursor.event_id);
+        assert!(
+            ThreadCursor::parse(
+                &cursor.encode(),
+                crate::core::room_id!("!other:example.test")
+            )
+            .is_err()
+        );
+        for token in ["99", "t2.invalid", "t1.???", "t1.e30"] {
+            assert!(ThreadCursor::parse(token, room).is_err());
+        }
+        let negative = ThreadCursor {
+            last_sn: -1,
+            ..cursor
+        };
+        assert!(ThreadCursor::parse(&negative.encode(), room).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_thread_activity_pagination_has_no_gaps_or_duplicates() {
+        crate::test_database::init();
+        let room = crate::core::room_id!("!thread-pagination:example.test");
+        let fixtures = [
+            ("$oldest-root", 10, 100),
+            ("$middle-root", 20, 90),
+            ("$newest-root", 30, 80),
+            ("$tie-z", 40, 80),
+        ];
+        for (root, event_sn, last_sn) in fixtures {
+            let event_id = EventId::parse(root).unwrap();
+            data::room::upsert_thread(DbThread {
+                event_id: event_id.clone(),
+                event_sn,
+                room_id: room.to_owned(),
+                last_id: EventId::parse(format!("$reply{last_sn}-{event_sn}")).unwrap(),
+                last_sn,
+            })
+            .await
+            .unwrap();
+        }
+        let mut token: Option<String> = None;
+        let mut seen = Vec::new();
+        loop {
+            let cursor = token
+                .as_deref()
+                .map(|token| ThreadCursor::parse(token, room).unwrap());
+            let page = data::room::list_threads(
+                room,
+                cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
+                1,
+            )
+            .await
+            .unwrap();
+            let Some((id, last_sn)) = page.first() else {
+                break;
+            };
+            seen.push(id.to_string());
+            token = Some(
+                ThreadCursor {
+                    room_id: room.to_owned(),
+                    event_id: id.clone(),
+                    last_sn: *last_sn,
+                }
+                .encode(),
+            );
+            if seen.len() == 1 {
+                // A new reply in an already returned thread must not make it
+                // reappear when the client follows its previous cursor.
+                data::room::upsert_thread(DbThread {
+                    event_id: id.clone(),
+                    event_sn: 10,
+                    room_id: room.to_owned(),
+                    last_id: crate::core::event_id!("$new-reply").to_owned(),
+                    last_sn: 110,
+                })
+                .await
+                .unwrap();
+            }
+            assert!(
+                seen.len() <= fixtures.len(),
+                "pagination does not terminate"
+            );
+        }
+        assert_eq!(
+            seen,
+            ["$oldest-root", "$middle-root", "$tie-z", "$newest-root"]
+        );
+        assert_eq!(seen.iter().collect::<HashSet<_>>().len(), fixtures.len());
+    }
 }

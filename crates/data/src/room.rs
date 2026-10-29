@@ -551,22 +551,26 @@ pub async fn remove_alias(alias_id: &RoomAliasId) -> DataResult<()> {
     Ok(())
 }
 
-/// List a room's thread roots as `(event_id, event_sn)`, newest activity first,
-/// optionally only those with `event_sn <= before_sn`.
+/// List thread roots as `(event_id, last_sn)`, newest activity first. The cursor
+/// uses the same compound ordering as the query, including the deterministic tie.
 pub async fn list_threads(
     room_id: &RoomId,
-    before_sn: Option<i64>,
+    before: Option<(i64, &EventId)>,
     limit: i64,
 ) -> DataResult<Vec<(OwnedEventId, i64)>> {
     let mut query = threads::table
         .filter(threads::room_id.eq(room_id))
         .into_boxed();
-    if let Some(before_sn) = before_sn {
-        query = query.filter(threads::event_sn.le(before_sn));
+    if let Some((before_sn, before_id)) = before {
+        query = query.filter(
+            threads::last_sn.lt(before_sn).or(threads::last_sn
+                .eq(before_sn)
+                .and(threads::event_id.lt(before_id))),
+        );
     }
     query
-        .select((threads::event_id, threads::event_sn))
-        .order_by(threads::last_sn.desc())
+        .select((threads::event_id, threads::last_sn))
+        .order_by((threads::last_sn.desc(), threads::event_id.desc()))
         .limit(limit)
         .load::<(OwnedEventId, i64)>(&mut connect().await?)
         .await
