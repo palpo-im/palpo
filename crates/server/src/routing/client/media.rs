@@ -2,6 +2,7 @@ use std::io::Cursor;
 use std::str::FromStr;
 
 use diesel::prelude::*;
+#[cfg(test)]
 use diesel_async::RunQueryDsl;
 use image::imageops::FilterType;
 use mime::Mime;
@@ -14,8 +15,10 @@ use uuid::Uuid;
 use crate::core::UnixMillis;
 use crate::core::client::media::*;
 use crate::core::identifiers::*;
+#[cfg(test)]
 use crate::data::connect;
 use crate::data::media::{DbMetadata, DbThumbnail, NewDbMetadata, NewDbThumbnail};
+#[cfg(test)]
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::media::*;
