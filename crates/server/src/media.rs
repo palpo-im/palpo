@@ -342,20 +342,33 @@ async fn validate_cached_thumbnail(
     storage_origin: &str,
     thumbnail: DbThumbnail,
 ) -> AppResult<Option<DbThumbnail>> {
-    let key = storage::thumbnail_key(storage_origin, &thumbnail.media_id, thumbnail.id);
-    if operator.exists(&key).await? {
-        return Ok(Some(thumbnail));
-    }
-    // Only NotFound invalidates metadata. Permission/network errors propagate above.
-    diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(None)
+    let origin = thumbnail.origin_server.clone();
+    let media_id = thumbnail.media_id.clone();
+    coordination::with_lock(&origin, &media_id, async {
+        let key = storage::thumbnail_key(storage_origin, &thumbnail.media_id, thumbnail.id);
+        if operator.exists(&key).await? {
+            return Ok(Some(thumbnail));
+        }
+        // Only NotFound invalidates metadata. Permission/network errors propagate above.
+        diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
+            .execute(&mut connect().await?)
+            .await?;
+        Ok(None)
+    })
+    .await
 }
 
 pub(crate) async fn publish_thumbnail(record: NewDbThumbnail, bytes: &[u8]) -> AppResult<i64> {
     let storage_origin = effective_server_name(&record.origin_server).to_owned();
-    publish_thumbnail_with_operator(storage::operator(), &storage_origin, record, bytes).await
+    let require_original = record.origin_server.as_str() == config::server_name().as_str();
+    publish_thumbnail_with_operator(
+        storage::operator(),
+        &storage_origin,
+        record,
+        bytes,
+        require_original,
+    )
+    .await
 }
 
 async fn publish_thumbnail_with_operator(
@@ -363,37 +376,85 @@ async fn publish_thumbnail_with_operator(
     storage_origin: &str,
     record: NewDbThumbnail,
     bytes: &[u8],
+    require_original: bool,
 ) -> AppResult<i64> {
-    // Reserve the ID without publishing a cache row. A crash during storage write can
-    // leave an unreferenced object, but cannot publish a permanently broken cache hit.
-    let id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
-        "SELECT nextval(pg_get_serial_sequence('media_thumbnails', 'id'))",
-    )
-    .get_result::<i64>(&mut connect().await?)
-    .await?;
-    let key = storage::thumbnail_key(storage_origin, &record.media_id, id);
-    operator.write(&key, bytes.to_vec()).await?;
-    let inserted = diesel::insert_into(media_thumbnails::table)
-        .values((media_thumbnails::id.eq(id), &record))
-        .on_conflict_do_nothing()
-        .returning(media_thumbnails::id)
-        .get_result::<i64>(&mut connect().await?)
-        .await
-        .optional()?;
-    if let Some(id) = inserted {
-        return Ok(id);
-    }
-    // The unique-key winner has already stored its file. Discard only our own,
-    // definitely unpublished object; on an ambiguous DB error keep it recoverable.
-    operator.delete(&key).await?;
-    find_cached_thumbnail_id(
-        &record.origin_server,
-        &record.media_id,
-        record.width as u32,
-        record.height as u32,
-        &record.resize_method,
-    )
+    let origin = record.origin_server.clone();
+    let media_id = record.media_id.clone();
+    coordination::with_lock(&origin, &media_id, async {
+        publish_thumbnail_locked(operator, storage_origin, record, bytes, require_original).await
+    })
     .await
+}
+
+async fn publish_thumbnail_locked(
+    operator: &opendal::Operator,
+    storage_origin: &str,
+    record: NewDbThumbnail,
+    bytes: &[u8],
+    require_original: bool,
+) -> AppResult<i64> {
+    // Local CPU work can finish after a concurrent deletion. Never republish the
+    // captured image once that deletion has removed its original. Remote-only
+    // thumbnail caches intentionally do not require an original on this server.
+    if require_original
+        && (data::media::get_metadata(&record.origin_server, &record.media_id)
+            .await?
+            .is_none()
+            || !operator
+                .exists(&storage::media_key(storage_origin, &record.media_id))
+                .await?)
+    {
+        return Err(crate::MatrixError::not_found(
+            "Original media was deleted before thumbnail publication.",
+        )
+        .into());
+    }
+    for _ in 0..3 {
+        let existing = media_thumbnails::table
+            .filter(media_thumbnails::origin_server.eq(&record.origin_server))
+            .filter(media_thumbnails::media_id.eq(&record.media_id))
+            .filter(media_thumbnails::width.eq(record.width))
+            .filter(media_thumbnails::height.eq(record.height))
+            .filter(media_thumbnails::resize_method.eq(&record.resize_method))
+            .first::<DbThumbnail>(&mut connect().await?)
+            .await
+            .optional()?;
+        if let Some(existing) = existing {
+            let key = storage::thumbnail_key(storage_origin, &record.media_id, existing.id);
+            if operator.exists(&key).await? {
+                return Ok(existing.id);
+            }
+            // Heal an exact-key winner left by an older interrupted publication.
+            diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(existing.id)))
+                .execute(&mut connect().await?)
+                .await?;
+        }
+        // Reserve the ID without publishing metadata until the object exists.
+        let id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            "SELECT nextval(pg_get_serial_sequence('media_thumbnails', 'id'))",
+        )
+        .get_result::<i64>(&mut connect().await?)
+        .await?;
+        let key = storage::thumbnail_key(storage_origin, &record.media_id, id);
+        operator.write(&key, bytes.to_vec()).await?;
+        let inserted = diesel::insert_into(media_thumbnails::table)
+            .values((media_thumbnails::id.eq(id), &record))
+            .on_conflict_do_nothing()
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await?)
+            .await
+            .optional()?;
+        if let Some(id) = inserted {
+            return Ok(id);
+        }
+        // A non-cooperating old process may still race. Remove only our known
+        // unused object, then recheck the winner's file on the next iteration.
+        // On ambiguous SQL error the ? above keeps the possibly published file.
+        operator.delete(&key).await?;
+    }
+    Err(crate::AppError::internal(
+        "Thumbnail cache changed repeatedly during publication",
+    ))
 }
 
 pub(crate) async fn find_cached_thumbnail_id(
@@ -445,7 +506,7 @@ mod thumbnail_publication_tests {
             .await
             .unwrap();
         assert!(
-            publish_thumbnail_with_operator(&operator, "_", record.clone(), b"png")
+            publish_thumbnail_with_operator(&operator, "_", record.clone(), b"png", false)
                 .await
                 .is_err()
         );
@@ -456,7 +517,7 @@ mod thumbnail_publication_tests {
                 .is_none()
         );
         operator.delete("media").await.unwrap();
-        let id = publish_thumbnail_with_operator(&operator, "_", record.clone(), b"png")
+        let id = publish_thumbnail_with_operator(&operator, "_", record.clone(), b"png", false)
             .await
             .unwrap();
         let row = data::media::get_thumbnail_by_dimension(&record.origin_server, &media_id, 96, 96)
@@ -480,7 +541,7 @@ mod thumbnail_publication_tests {
                 .unwrap()
                 .is_none()
         );
-        let next = publish_thumbnail_with_operator(&operator, "_", record.clone(), b"new")
+        let next = publish_thumbnail_with_operator(&operator, "_", record.clone(), b"new", false)
             .await
             .unwrap();
         assert_ne!(id, next);
@@ -493,8 +554,8 @@ mod thumbnail_publication_tests {
             b"new"
         );
         let (left, right) = tokio::join!(
-            publish_thumbnail_with_operator(&operator, "_", record.clone(), b"new"),
-            publish_thumbnail_with_operator(&operator, "_", record, b"new"),
+            publish_thumbnail_with_operator(&operator, "_", record.clone(), b"new", false),
+            publish_thumbnail_with_operator(&operator, "_", record, b"new", false),
         );
         assert_eq!(left.unwrap(), next);
         assert_eq!(right.unwrap(), next);
@@ -502,6 +563,121 @@ mod thumbnail_publication_tests {
             .execute(&mut connect().await.unwrap())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn stale_winner_is_repaired_and_delayed_local_publication_does_not_resurrect_media() {
+        crate::test_database::init();
+        let directory = tempfile::tempdir().unwrap();
+        let operator = opendal::Operator::new(
+            opendal::services::Fs::default().root(directory.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let origin = ServerName::parse("q18-fence.test").unwrap();
+        let media_id = format!("q18-fence-{}", uuid::Uuid::new_v4());
+        let record = NewDbThumbnail {
+            media_id: media_id.clone(),
+            origin_server: origin.clone(),
+            content_type: Some("image/png".into()),
+            disposition_type: None,
+            file_size: 3,
+            width: 96,
+            height: 96,
+            resize_method: "scale".into(),
+            created_at: UnixMillis::now(),
+        };
+        // Remote-only thumbnail caches remain supported without original metadata.
+        let missing_id = diesel::insert_into(media_thumbnails::table)
+            .values(&record)
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let valid_id = publish_thumbnail_with_operator(
+            &operator,
+            "q18-fence.test",
+            record.clone(),
+            b"png",
+            false,
+        )
+        .await
+        .unwrap();
+        assert_ne!(valid_id, missing_id);
+        assert!(
+            operator
+                .exists(&storage::thumbnail_key(
+                    "q18-fence.test",
+                    &media_id,
+                    valid_id
+                ))
+                .await
+                .unwrap()
+        );
+        // Local publication must observe deletion while waiting for the same DB fence.
+        data::media::insert_metadata(&data::media::NewDbMetadata {
+            media_id: media_id.clone(),
+            origin_server: origin.clone(),
+            content_type: None,
+            disposition_type: None,
+            file_name: None,
+            file_extension: None,
+            file_size: 4,
+            file_hash: None,
+            created_by: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let original = storage::media_key("_", &media_id);
+        operator.write(&original, b"file".to_vec()).await.unwrap();
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let (delete_origin, delete_id, delete_operator) =
+            (origin.clone(), media_id.clone(), operator.clone());
+        let deletion = tokio::spawn(async move {
+            coordination::with_lock(&delete_origin, &delete_id, async {
+                let _ = locked_tx.send(());
+                finish_rx.await.unwrap();
+                // Run the same storage/metadata deletion used by the Q06 service,
+                // while the test controls the moment it releases the shared fence.
+                coordination::delete_locked(&delete_operator, "_", &delete_origin, &delete_id)
+                    .await?;
+                Ok(())
+            })
+            .await
+        });
+        locked_rx.await.unwrap();
+        let (publish_operator, publish_record) = (operator.clone(), record.clone());
+        let publisher = tokio::spawn(async move {
+            publish_thumbnail_with_operator(&publish_operator, "_", publish_record, b"png", true)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !publisher.is_finished(),
+            "publisher bypassed deletion fence"
+        );
+        finish_tx.send(()).unwrap();
+        deletion.await.unwrap().unwrap();
+        assert!(publisher.await.unwrap().is_err());
+        assert!(!operator.exists(&original).await.unwrap());
+        assert!(
+            data::media::get_thumbnail_by_dimension(&origin, &media_id, 96, 96)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            operator
+                .list(&format!(
+                    "{}.thumbnails/",
+                    storage::media_key("_", &media_id)
+                ))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
