@@ -431,6 +431,8 @@ pub struct PduEvent {
     pub(crate) transaction_device: Option<OwnedDeviceId>,
     #[serde(skip)]
     pub(crate) thread_participants: std::collections::BTreeSet<OwnedUserId>,
+    #[serde(skip)]
+    pub(crate) transaction_endpoint: Option<String>,
 }
 
 impl PduEvent {
@@ -563,11 +565,14 @@ impl PduEvent {
     }
 
     fn transaction_metadata(&self) -> Option<JsonValue> {
-        let device = self.transaction_device.as_ref()?;
+        if self.transaction_device.is_none() && self.transaction_endpoint.is_none() {
+            return None;
+        }
         let txn: OwnedTransactionId =
             serde_json::from_str(self.unsigned.get("transaction_id")?.get()).ok()?;
         Some(
-            json!({"transaction_device": device, "transaction_id": txn, "transaction_user": self.sender}),
+            json!({"transaction_device": self.transaction_device, "transaction_endpoint": self.transaction_endpoint,
+                "transaction_id": txn, "transaction_user": self.sender}),
         )
     }
 
@@ -1096,6 +1101,8 @@ pub struct PduBuilder {
     /// Authenticated local provenance; never accept this field from JSON.
     #[serde(skip)]
     pub transaction_device: Option<OwnedDeviceId>,
+    #[serde(skip)]
+    pub transaction_endpoint: Option<String>,
     /// How long the event should stay sticky, per [MSC4354].
     ///
     /// This becomes the top-level `msc4354_sticky` object, which is part of the PDU and so
@@ -1217,6 +1224,7 @@ impl PduBuilder {
             redacts,
             timestamp,
             transaction_device,
+            transaction_endpoint,
             sticky_duration_ms,
             ..
         } = self;
@@ -1305,6 +1313,7 @@ impl PduBuilder {
             rejection_reason: None,
             transaction_device,
             thread_participants: Default::default(),
+            transaction_endpoint,
         };
 
         // MSC4354: the sticky object is top level, not inside `content`, so that it stays
@@ -1433,6 +1442,7 @@ impl Default for PduBuilder {
             redacts: None,
             timestamp: None,
             transaction_device: None,
+            transaction_endpoint: None,
             sticky_duration_ms: None,
         }
     }
@@ -1514,6 +1524,7 @@ mod sender_only_unsigned_tests {
             rejection_reason: None,
             transaction_device: None,
             thread_participants: Default::default(),
+            transaction_endpoint: None,
         }
     }
 
@@ -1829,6 +1840,7 @@ mod filter_tests {
             rejection_reason: None,
             transaction_device: None,
             thread_participants: Default::default(),
+            transaction_endpoint: None,
         }
     }
 

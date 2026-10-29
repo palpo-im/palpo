@@ -501,15 +501,19 @@ mod transaction_tests {
     use serde_json::Value;
 
     async fn request(service: &Service, request: RequestBuilder) -> (Option<StatusCode>, Value) {
+        request_as(service, "redact-transaction", request).await
+    }
+
+    async fn request_as(
+        service: &Service,
+        token: &str,
+        request: RequestBuilder,
+    ) -> (Option<StatusCode>, Value) {
         let router = service.router();
-        let mut response = tokio::spawn(async move {
-            request
-                .add_header("authorization", "Bearer redact-transaction", true)
-                .send(router)
-                .await
-        })
-        .await
-        .unwrap();
+        let request = request.add_header("authorization", format!("Bearer {token}"), true);
+        let mut response = tokio::spawn(async move { request.send(router).await })
+            .await
+            .unwrap();
         (response.status_code, response.take_json().await.unwrap())
     }
 
@@ -648,5 +652,96 @@ mod transaction_tests {
         let (_, replayed) =
             request(&service, TestClient::put(&recovery_url).json(&json!({}))).await;
         assert_eq!(replayed["event_id"], recovered["event_id"]);
+
+        // A normal /send of the same event type, target and transaction string
+        // belongs to a different endpoint and must never satisfy /redact recovery.
+        let (status, normal_redaction) = request(
+            &service,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/send/m.room.redaction/cross-endpoint"
+            ))
+            .json(&json!({"redacts":target})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{normal_redaction}");
+        let (status, dedicated_redaction) = request(
+            &service,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/redact/{target}/cross-endpoint"
+            ))
+            .json(&json!({})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{dedicated_redaction}");
+        assert_ne!(
+            normal_redaction["event_id"],
+            dedicated_redaction["event_id"]
+        );
+
+        // Appservice sender authentication has no device assertion. Trusted
+        // provenance must still be stored with an explicit NULL device.
+        let (sender, _receiver) = tokio::sync::mpsc::channel(64);
+        let _ = crate::sending::MPSC_SENDER.set(sender);
+        crate::appservice::register_appservice(
+            serde_json::from_value(json!({
+                "id":"redact-device-less", "url":null, "as_token":"redact-device-less",
+                "hs_token":"fixture-hs", "sender_localpart":"redacttransaction",
+                "namespaces":{"users":[],"aliases":[],"rooms":[]}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_as_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'as-recover' THEN RAISE EXCEPTION 'injected AS receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_as_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_as_receipt();").await.unwrap();
+        let as_url = format!("http://localhost/rooms/{room}/redact/{target}/as-recover");
+        let (status, failed_as) = request_as(
+            &service,
+            "redact-device-less",
+            TestClient::put(&as_url).json(&json!({})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "{failed_as}"
+        );
+        let before: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_as_receipt ON event_idempotents; DROP FUNCTION q15_fail_as_receipt();").await.unwrap();
+        let (status, recovered_as) = request_as(
+            &service,
+            "redact-device-less",
+            TestClient::put(&as_url).json(&json!({})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{recovered_as}");
+        let after: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "device-less recovery appended another redaction"
+        );
+        let metadata: Option<Value> = event_datas::table
+            .filter(event_datas::event_id.eq(recovered_as["event_id"].as_str().unwrap()))
+            .select(event_datas::internal_metadata)
+            .first(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let metadata = metadata.unwrap();
+        assert!(metadata["transaction_device"].is_null());
+        assert_eq!(
+            metadata["transaction_endpoint"],
+            format!("room/redact/{target}")
+        );
     }
 }

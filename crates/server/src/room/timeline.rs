@@ -889,13 +889,17 @@ pub async fn build_and_append_pdu(
 /// Build a local event while fencing both transaction lookup and event append
 /// across processes. A published event can be recovered if receipt recording fails.
 pub(crate) async fn build_and_append_pdu_with_transaction(
-    pdu_builder: PduBuilder,
+    mut pdu_builder: PduBuilder,
     sender: &UserId,
     room_id: &RoomId,
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
     transaction: Option<(&str, &TransactionId, Option<&DeviceId>)>,
 ) -> AppResult<SnPduEvent> {
+    if let Some((endpoint, _, device_id)) = transaction {
+        pdu_builder.transaction_endpoint = Some(endpoint.to_owned());
+        pdu_builder.transaction_device = device_id.map(ToOwned::to_owned);
+    }
     // The process-local state mutex held by the caller is not sufficient when several
     // Palpo processes serve the same database. Keep a transaction-scoped PostgreSQL lock
     // from the first current-state/prev-event read through timeline publication.
@@ -936,6 +940,7 @@ pub(crate) async fn build_and_append_pdu_with_transaction(
                         room_id,
                         &pdu_builder.event_type.to_string(),
                         pdu_builder.redacts.as_deref(),
+                        endpoint,
                     )
                     .await?
                 {

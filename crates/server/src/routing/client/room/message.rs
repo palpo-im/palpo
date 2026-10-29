@@ -302,6 +302,7 @@ pub(super) async fn send_message(
             content: to_raw_value(&content)?,
             unsigned,
             transaction_device: authed.device_id().map(ToOwned::to_owned),
+            transaction_endpoint: Some(endpoint.clone()),
             timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()

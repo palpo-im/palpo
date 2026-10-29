@@ -1123,6 +1123,7 @@ async fn load_left_room(
             rejection_reason: None,
             transaction_device: None,
             thread_participants: Default::default(),
+            transaction_endpoint: None,
         };
         return Ok(LeftRoom {
             account_data: RoomAccountData::default(),
