@@ -70,56 +70,6 @@ fn validate_restricted_proxy_policy(
     Ok(())
 }
 
-#[cfg(test)]
-mod restricted_proxy_policy_tests {
-    use super::*;
-
-    #[test]
-    fn direct_policy_accepts_only_absent_disabled_or_empty_proxy_configuration() {
-        for config in [
-            None,
-            Some(ProxyConfig::None),
-            Some(ProxyConfig::ByDomain(Vec::new())),
-        ] {
-            assert!(validate_restricted_proxy_policy(config.as_ref(), false).is_ok());
-            assert!(validate_restricted_proxy_policy(config.as_ref(), true).is_err());
-        }
-        let global = ProxyConfig::Global {
-            url: Url::parse("http://user:secret@proxy.example:8080").unwrap(),
-        };
-        let partial = ProxyConfig::ByDomain(vec![PartialProxyConfig {
-            url: Url::parse("http://user:secret@proxy.example:8080").unwrap(),
-            include: Vec::new(),
-            exclude: Vec::new(),
-        }]);
-        for config in [global, partial] {
-            let error = validate_restricted_proxy_policy(Some(&config), false)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("unsupported"));
-            assert!(!error.contains("secret"));
-            assert!(!error.contains("proxy.example"));
-        }
-    }
-
-    #[test]
-    fn environment_detection_covers_case_variants_without_treating_no_proxy_as_egress() {
-        for name in [
-            "HTTP_PROXY",
-            "https_proxy",
-            "All_Proxy",
-            "http_proxy",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-        ] {
-            assert!(is_forward_proxy_variable(name));
-        }
-        for name in ["NO_PROXY", "no_proxy", "PALPO_PROXY", "OTHER"] {
-            assert!(!is_forward_proxy_variable(name));
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct PartialProxyConfig {
     #[serde(deserialize_with = "crate::utils::deserialize_from_str")]
@@ -211,5 +161,55 @@ impl<'de> Deserialize<'de> for WildCardedDomain {
         D: serde::de::Deserializer<'de>,
     {
         crate::utils::deserialize_from_str(deserializer)
+    }
+}
+
+#[cfg(test)]
+mod restricted_proxy_policy_tests {
+    use super::*;
+
+    #[test]
+    fn direct_policy_accepts_only_absent_disabled_or_empty_proxy_configuration() {
+        for config in [
+            None,
+            Some(ProxyConfig::None),
+            Some(ProxyConfig::ByDomain(Vec::new())),
+        ] {
+            assert!(validate_restricted_proxy_policy(config.as_ref(), false).is_ok());
+            assert!(validate_restricted_proxy_policy(config.as_ref(), true).is_err());
+        }
+        let global = ProxyConfig::Global {
+            url: Url::parse("http://user:secret@proxy.example:8080").unwrap(),
+        };
+        let partial = ProxyConfig::ByDomain(vec![PartialProxyConfig {
+            url: Url::parse("http://user:secret@proxy.example:8080").unwrap(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+        }]);
+        for config in [global, partial] {
+            let error = validate_restricted_proxy_policy(Some(&config), false)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unsupported"));
+            assert!(!error.contains("secret"));
+            assert!(!error.contains("proxy.example"));
+        }
+    }
+
+    #[test]
+    fn environment_detection_covers_case_variants_without_treating_no_proxy_as_egress() {
+        for name in [
+            "HTTP_PROXY",
+            "https_proxy",
+            "All_Proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+        ] {
+            assert!(is_forward_proxy_variable(name));
+        }
+        for name in ["NO_PROXY", "no_proxy", "PALPO_PROXY", "OTHER"] {
+            assert!(!is_forward_proxy_variable(name));
+        }
     }
 }

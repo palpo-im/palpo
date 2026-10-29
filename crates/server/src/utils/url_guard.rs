@@ -90,6 +90,15 @@ fn redirect_destination_allowed(
         && ensure_ip_literal_host_allowed_with(url, denied).is_ok()
 }
 
+/// Pre-flight boundary check for an outbound URL supplied by a client:
+/// scheme allowlist + IP-literal denylist. Hostnames that need DNS
+/// resolution are validated at connect time by the safe resolver.
+pub fn ensure_safe_outbound_url(url: &Url) -> AppResult<()> {
+    ensure_http_scheme(url)?;
+    ensure_ip_literal_host_allowed(url)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod outbound_transport_policy_tests {
     use super::*;
@@ -144,13 +153,4 @@ mod outbound_transport_policy_tests {
             &[]
         ));
     }
-}
-
-/// Pre-flight boundary check for an outbound URL supplied by a client:
-/// scheme allowlist + IP-literal denylist. Hostnames that need DNS
-/// resolution are validated at connect time by the safe resolver.
-pub fn ensure_safe_outbound_url(url: &Url) -> AppResult<()> {
-    ensure_http_scheme(url)?;
-    ensure_ip_literal_host_allowed(url)?;
-    Ok(())
 }
