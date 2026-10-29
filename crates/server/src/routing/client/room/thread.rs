@@ -1,7 +1,6 @@
 use salvo::prelude::*;
 
 use crate::core::client::room::{ThreadsReqArgs, ThreadsResBody};
-use crate::room::state;
 use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, json_ok};
 
 /// #GET /_matrix/client/r0/rooms/{room_id}/threads
@@ -24,7 +23,7 @@ pub(super) async fn list_threads(
         .unwrap_or(10)
         .min(100);
 
-    let (events, next_batch) = crate::room::thread::get_threads(
+    let (threads, next_batch) = crate::room::thread::get_threads(
         &args.room_id,
         authed.user_id(),
         &args.include,
@@ -33,16 +32,6 @@ pub(super) async fn list_threads(
     )
     .await?;
 
-    let mut threads = Vec::new();
-    for (sn, pdu) in events.into_iter() {
-        if state::user_can_see_event(authed.user_id(), &pdu.event_id)
-            .await
-            .unwrap_or(false)
-        {
-            threads.push((sn, pdu));
-        }
-    }
-
     json_ok(ThreadsResBody {
         chunk: threads
             .into_iter()
@@ -50,6 +39,166 @@ pub(super) async fn list_threads(
             .collect(),
         next_batch,
     })
+}
+
+#[cfg(test)]
+mod private_cursor_tests {
+    use super::*;
+    use crate::core::{EventId, RoomId, UserId};
+    use crate::data;
+    use salvo::test::{RequestBuilder, ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    async fn request(service: &Service, token: &str, request: RequestBuilder) -> Value {
+        let mut response = request
+            .add_header("authorization", format!("Bearer {token}"), true)
+            .send(service)
+            .await;
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        body
+    }
+
+    #[test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+    fn database_thread_cursors_never_expose_private_or_prejoin_root_ids() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn run() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"thread-privacy.example", "db":{"url":"unused"}
+            }))
+            .unwrap()
+        });
+        let mut users = Vec::new();
+        for name in ["owner", "reader", "outsider"] {
+            let user =
+                UserId::parse(format!("@q16{name}:{}", crate::config::server_name())).unwrap();
+            data::user::create_user(&data::user::NewDbUser {
+                id: user.clone(),
+                localpart: user.localpart().into(),
+                server_name: user.server_name().to_owned(),
+                is_local: true,
+                ty: None,
+                is_admin: true,
+                is_guest: false,
+                appservice_id: None,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .await
+            .unwrap();
+            data::user::device::create_device(&user, "Q16".into(), name, None, None)
+                .await
+                .unwrap();
+            users.push(user);
+        }
+        let service = Service::new(
+            Router::new()
+                .hoop(crate::hoops::auth_by_access_token)
+                .push(
+                    Router::with_path("createRoom").post(crate::routing::client::room::create_room),
+                )
+                .push(crate::routing::client::room::authed_router()),
+        );
+        let created = request(&service, "owner", TestClient::post("http://localhost/createRoom").json(&json!({
+            "room_version":"11", "preset":"private_chat", "invite":[users[1]],
+            "initial_state":[{"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}}]
+        }))).await;
+        let room = RoomId::parse(created["room_id"].as_str().unwrap()).unwrap();
+        let mut roots = Vec::new();
+        for name in ["hidden-a", "hidden-b", "visible-a", "visible-b"] {
+            if name == "visible-a" {
+                request(
+                    &service,
+                    "reader",
+                    TestClient::post(format!("http://localhost/rooms/{room}/join"))
+                        .json(&json!({})),
+                )
+                .await;
+            }
+            let sent = request(
+                &service,
+                "owner",
+                TestClient::put(format!(
+                    "http://localhost/rooms/{room}/send/m.room.message/{name}"
+                ))
+                .json(&json!({"msgtype":"m.text", "body":name})),
+            )
+            .await;
+            let id = EventId::parse(sent["event_id"].as_str().unwrap()).unwrap();
+            let pdu = crate::room::timeline::get_pdu(&id).await.unwrap();
+            // Place hidden roots first by activity to exercise visibility-aware scanning.
+            let activity = if name.starts_with("hidden") {
+                10000 + roots.len() as i64
+            } else {
+                pdu.event_sn
+            };
+            data::room::upsert_thread(data::room::DbThread {
+                event_id: id.clone(),
+                event_sn: pdu.event_sn,
+                room_id: room.clone(),
+                last_id: id.clone(),
+                last_sn: activity,
+            })
+            .await
+            .unwrap();
+            roots.push(id);
+        }
+        let outsider = request(
+            &service,
+            "outsider",
+            TestClient::get(format!("http://localhost/rooms/{room}/threads?limit=1")),
+        )
+        .await;
+        assert!(outsider["chunk"].as_array().unwrap().is_empty());
+        assert!(outsider.get("next_batch").is_none_or(Value::is_null));
+        let first = request(
+            &service,
+            "reader",
+            TestClient::get(format!("http://localhost/rooms/{room}/threads?limit=1")),
+        )
+        .await;
+        assert_eq!(first["chunk"][0]["event_id"], roots[3].as_str());
+        let token = first["next_batch"]
+            .as_str()
+            .expect("another visible root remains");
+        let decoded = base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            token.strip_prefix("t1.").unwrap(),
+        )
+        .unwrap();
+        let cursor: Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(cursor["event_id"], roots[3].as_str());
+        assert!(
+            !roots[..2]
+                .iter()
+                .any(|id| cursor["event_id"] == id.as_str())
+        );
+        let second = request(
+            &service,
+            "reader",
+            TestClient::get(format!(
+                "http://localhost/rooms/{room}/threads?limit=1&from={token}"
+            )),
+        )
+        .await;
+        assert_eq!(second["chunk"][0]["event_id"], roots[2].as_str());
+        assert!(second.get("next_batch").is_none_or(Value::is_null));
+    }
 }
 
 #[cfg(test)]
