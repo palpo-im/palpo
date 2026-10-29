@@ -208,7 +208,26 @@ pub fn connection_url(config: &DbConfig, url: &str) -> Result<String, url::Parse
     let mut url = Url::parse(url)?;
 
     if config.enforce_tls {
-        maybe_append_url_param(&mut url, "sslmode", "require");
+        // A URL must not weaken the configured transport policy. Collapse duplicate
+        // modes as well, preserving certificate verification when it was requested.
+        let pairs: Vec<_> = url.query_pairs().into_owned().collect();
+        let mode = if pairs
+            .iter()
+            .any(|(key, value)| key == "sslmode" && value == "verify-full")
+        {
+            "verify-full"
+        } else if pairs
+            .iter()
+            .any(|(key, value)| key == "sslmode" && value == "verify-ca")
+        {
+            "verify-ca"
+        } else {
+            "require"
+        };
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(pairs.iter().filter(|(key, _)| key != "sslmode"))
+            .append_pair("sslmode", mode);
     }
 
     // Configure the time it takes for diesel to return an error when there is full packet loss
@@ -265,6 +284,72 @@ mod migration_tests {
             statement_timeout: 0,
             enforce_tls: false,
         }
+    }
+
+    #[test]
+    fn enforced_tls_cannot_be_downgraded_by_the_connection_url() {
+        let mut config = db_config(10, None);
+        config.enforce_tls = true;
+        for mode in [
+            "disable",
+            "allow",
+            "prefer",
+            "",
+            "unknown",
+            "require",
+            "verify-ca",
+            "verify-full",
+        ] {
+            let input = format!(
+                "postgres://test@localhost/db?sslmode={mode}&application_name=quality%20test"
+            );
+            let output = super::connection_url(&config, &input).unwrap();
+            let url = url::Url::parse(&output).unwrap();
+            let modes: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| key == "sslmode")
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            let expected = match mode {
+                "verify-ca" | "verify-full" => mode,
+                _ => "require",
+            };
+            assert_eq!(modes, [expected]);
+            assert!(
+                url.query_pairs()
+                    .any(|(key, value)| key == "application_name" && value == "quality test")
+            );
+        }
+        for query in [
+            "sslmode=disable&sslmode=verify-full",
+            "sslmode=verify-full&sslmode=disable",
+            "sslmode=verify-ca&sslmode=prefer",
+        ] {
+            let output =
+                super::connection_url(&config, &format!("postgres://test@localhost/db?{query}"))
+                    .unwrap();
+            let url = url::Url::parse(&output).unwrap();
+            let modes: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| key == "sslmode")
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            assert_eq!(modes.len(), 1);
+            assert_eq!(
+                modes[0],
+                if query.contains("verify-full") {
+                    "verify-full"
+                } else {
+                    "verify-ca"
+                }
+            );
+        }
+        let output = super::connection_url(&config, "postgres://test@localhost/db").unwrap();
+        assert!(output.contains("sslmode=require"));
+        config.enforce_tls = false;
+        let output =
+            super::connection_url(&config, "postgres://test@localhost/db?sslmode=disable").unwrap();
+        assert!(output.contains("sslmode=disable"));
     }
 
     #[test]
