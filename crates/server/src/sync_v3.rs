@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use state::DbRoomStateField;
 
@@ -20,6 +21,7 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::serde::RawJson;
 use crate::core::{Seqnum, UnixMillis};
+use crate::data::connect;
 use crate::event::{BatchToken, EventHash, PduEvent, SnPduEvent};
 use crate::room::{state, timeline};
 use crate::{AppError, AppResult, MatrixError, config, data, extract_variant, room};
@@ -1719,7 +1721,10 @@ async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec
 
 #[cfg(test)]
 mod hero_database_tests {
+    use diesel::prelude::*;
+
     use super::*;
+    use crate::data::schema::room_users;
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
