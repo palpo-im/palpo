@@ -367,24 +367,6 @@ async fn publish_thumbnail_locked(
     ))
 }
 
-pub(crate) async fn find_cached_thumbnail_id(
-    origin: &ServerName,
-    media_id: &str,
-    width: u32,
-    height: u32,
-    method: &str,
-) -> AppResult<i64> {
-    Ok(media_thumbnails::table
-        .filter(media_thumbnails::origin_server.eq(origin))
-        .filter(media_thumbnails::media_id.eq(media_id))
-        .filter(media_thumbnails::width.eq(width as i32))
-        .filter(media_thumbnails::height.eq(height as i32))
-        .filter(media_thumbnails::resize_method.eq(method))
-        .select(media_thumbnails::id)
-        .first::<i64>(&mut connect().await?)
-        .await?)
-}
-
 #[cfg(test)]
 mod thumbnail_publication_tests {
     use super::*;
