@@ -571,7 +571,7 @@ impl PduEvent {
         )
     }
 
-    /// Hydrate device provenance only from trusted local metadata or a legacy idempotency record.
+    /// Hydrate device provenance and thread participation from trusted local state.
     pub(crate) async fn load_client_metadata(&mut self) -> AppResult<()> {
         self.transaction_device = None;
         if let Some(txn_id) = self.unsigned.get("transaction_id")
