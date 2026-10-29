@@ -1068,7 +1068,7 @@ mod joined_room_failure_tests {
         .await
         .unwrap();
         assert!(!lookup_failure.unwrap_err().is_not_found());
-        let args = SyncEventsReqArgs::default();
+        let args: SyncEventsReqArgs = serde_json::from_value(serde_json::json!({})).unwrap();
         *FAIL_ROOM.lock().unwrap() = Some(failed.clone());
         let response = sync_events(&user, "TEST".into(), &args).await;
         *FAIL_ROOM.lock().unwrap() = None;
