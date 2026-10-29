@@ -1,7 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use diesel_async::RunQueryDsl;
 use indexmap::IndexMap;
 use state::DbRoomStateField;
 
@@ -1698,6 +1697,7 @@ mod pagination_database_tests {
 
 /// Resolve at most five heroes from membership rows, without reading messages.
 async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec<String>> {
+    use diesel_async::RunQueryDsl;
     #[derive(diesel::QueryableByName)]
     struct Hero {
         #[diesel(sql_type = diesel::sql_types::Text)]
@@ -1722,6 +1722,7 @@ async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec
 #[cfg(test)]
 mod hero_database_tests {
     use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
 
     use super::*;
     use crate::data::schema::room_users;
