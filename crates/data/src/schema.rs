@@ -283,6 +283,7 @@ diesel::table! {
         room_id -> Nullable<Text>,
         event_id -> Nullable<Text>,
         created_at -> Int8,
+        endpoint -> Text,
     }
 }
 
