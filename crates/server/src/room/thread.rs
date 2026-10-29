@@ -43,7 +43,8 @@ impl ThreadCursor {
 
 pub async fn get_threads(
     room_id: &RoomId,
-    _include: &IncludeThreads,
+    user_id: &UserId,
+    include: &IncludeThreads,
     limit: i64,
     from_token: Option<&str>,
 ) -> AppResult<(Vec<(OwnedEventId, SnPduEvent)>, Option<String>)> {
@@ -57,6 +58,7 @@ pub async fn get_threads(
         room_id,
         cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
         limit + 1,
+        matches!(include, IncludeThreads::Participated).then_some(user_id),
     )
     .await?;
     let has_more = items.len() as i64 > limit;
@@ -112,7 +114,9 @@ pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<(
             let relations = BundledThread {
                 latest_event: pdu.to_message_like_event_without_transaction_id(),
                 count: 1,
-                current_user_participated: true,
+                // This shared bundle is recipient-neutral. Serialization fills
+                // the authenticated user's participation from trusted relations.
+                current_user_participated: false,
             };
 
             let content = serde_json::to_value(relations).expect("to_value always works");
@@ -207,6 +211,7 @@ mod pagination_tests {
                 room,
                 cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
                 1,
+                None,
             )
             .await
             .unwrap();
