@@ -40,21 +40,96 @@ pub fn ensure_http_scheme(url: &Url) -> AppResult<()> {
 /// bypass the CIDR filter installed on the reqwest resolver, so they must be
 /// caught here.
 pub fn ensure_ip_literal_host_allowed(url: &Url) -> AppResult<()> {
-    let conf = crate::config::get();
-    if conf.ip_range_denylist.is_empty() {
-        return Ok(());
-    }
-    let Some(host) = url.host_str() else {
-        return Err(MatrixError::forbidden("URL has no host", None).into());
+    ensure_ip_literal_host_allowed_with(url, crate::config::cidr_range_denylist())
+}
+
+fn ensure_ip_literal_host_allowed_with(url: &Url, denied: &[IPAddress]) -> AppResult<()> {
+    let ip = match url.host() {
+        Some(url::Host::Ipv4(ip)) => Some(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => Some(std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(_)) => None,
+        None => return Err(MatrixError::forbidden("URL has no host", None).into()),
     };
-    if let Ok(ip) = IPAddress::parse(host)
-        && !crate::config::valid_cidr_range(&ip)
-    {
-        return Err(
-            MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
-        );
+    if let Some(ip) = ip {
+        let ip = IPAddress::parse(ip.to_string())
+            .map_err(|_| MatrixError::forbidden("Invalid outbound IP address", None))?;
+        if denied.iter().any(|network| network.includes(&ip)) {
+            return Err(
+                MatrixError::forbidden("Requesting from this address is forbidden.", None).into(),
+            );
+        }
     }
     Ok(())
+}
+
+/// Validate every redirect, including IP literals which bypass the DNS resolver.
+/// Callers must also validate the initial URL and install the filtering resolver.
+pub fn safe_redirect_policy(max_hops: usize) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if redirect_destination_allowed(
+            attempt.url(),
+            attempt.previous().len(),
+            max_hops,
+            crate::config::cidr_range_denylist(),
+        ) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+fn redirect_destination_allowed(
+    url: &Url,
+    previous: usize,
+    max_hops: usize,
+    denied: &[IPAddress],
+) -> bool {
+    previous <= max_hops
+        && ensure_http_scheme(url).is_ok()
+        && ensure_ip_literal_host_allowed_with(url, denied).is_ok()
+}
+
+#[cfg(test)]
+mod outbound_transport_policy_tests {
+    use super::*;
+
+    #[test]
+    fn redirect_policy_rejects_private_ipv4_ipv6_schemes_and_excess_hops() {
+        let denied: Vec<_> = [
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "169.254.0.0/16",
+            "::1/128",
+            "fc00::/7",
+        ]
+        .into_iter()
+        .map(|cidr| IPAddress::parse(cidr).unwrap())
+        .collect();
+        for target in [
+            "http://127.0.0.1/a",
+            "http://10.0.0.1/a",
+            "http://169.254.169.254/a",
+            "http://[::1]/a",
+            "https://[fd00::1]/a",
+            "file:///a",
+        ] {
+            assert!(
+                !redirect_destination_allowed(&Url::parse(target).unwrap(), 1, 2, &denied),
+                "{target}"
+            );
+        }
+        let public = Url::parse("https://public.example/delegation").unwrap();
+        assert!(redirect_destination_allowed(&public, 1, 2, &denied));
+        assert!(redirect_destination_allowed(&public, 2, 2, &denied));
+        assert!(!redirect_destination_allowed(&public, 3, 2, &denied));
+        assert!(redirect_destination_allowed(
+            &Url::parse("http://127.0.0.1/a").unwrap(),
+            1,
+            2,
+            &[]
+        ));
+    }
 }
 
 /// Pre-flight boundary check for an outbound URL supplied by a client:

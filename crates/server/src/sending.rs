@@ -178,6 +178,35 @@ pub fn default_client() -> reqwest::Client {
         .clone()
 }
 
+/// A transport for destinations influenced by untrusted remote servers.
+/// Proxies cannot enforce this resolver's destination policy, so these requests
+/// connect directly and validate both DNS answers and redirect IP literals.
+fn restricted_client_builder(
+    config: &ServerConfig,
+    max_redirects: usize,
+) -> AppResult<reqwest::ClientBuilder> {
+    let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
+    Ok(reqwest_client_builder(config)?
+        .no_proxy()
+        .redirect(crate::utils::url_guard::safe_redirect_policy(max_redirects))
+        .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
+            tls_name_override,
+        ))))
+}
+
+/// Federation discovery must have the same destination boundaries as federation traffic.
+pub fn well_known_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            restricted_client_builder(crate::config::get(), 10)
+                .expect("failed to configure discovery client")
+                .build()
+                .expect("failed to build discovery client")
+        })
+        .clone()
+}
+
 /// Returns a client used for resolving .well-knowns
 pub fn federation_client() -> ClientWithMiddleware {
     static FEDERATION_CLIENT: OnceLock<ClientWithMiddleware> = OnceLock::new();
