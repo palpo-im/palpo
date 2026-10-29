@@ -1034,101 +1034,6 @@ async fn load_joined_room(
     Ok((joined_room, timeline.next_batch))
 }
 
-#[cfg(test)]
-mod joined_room_failure_tests {
-    use diesel_async::RunQueryDsl;
-
-    use super::*;
-    use crate::data::connect;
-    use crate::data::schema::room_users;
-
-    pub(super) static FAIL_ROOM: std::sync::Mutex<Option<OwnedRoomId>> =
-        std::sync::Mutex::new(None);
-
-    #[tokio::test]
-    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
-    async fn database_joined_room_failure_cannot_advance_sync_cursor() {
-        crate::test_database::init();
-        crate::config::CONFIG.get_or_init(|| {
-            serde_json::from_value(serde_json::json!({
-                "server_name": "sync-failure.example", "db": {"url": "unused-test-config"}
-            }))
-            .unwrap()
-        });
-        let user =
-            UserId::parse_with_server_name("sync_failure_reader", crate::config::server_name())
-                .unwrap();
-        let failed: OwnedRoomId = "!failed:sync-failure.example".try_into().unwrap();
-        for name in ["healthy", "failed"] {
-            let room: OwnedRoomId = format!("!{name}:sync-failure.example").try_into().unwrap();
-            diesel::insert_into(room_users::table)
-                .values(data::room::NewDbRoomUser {
-                    event_id: format!("$member-{name}:sync-failure.example")
-                        .try_into()
-                        .unwrap(),
-                    event_sn: data::next_sn().await.unwrap(),
-                    room_id: room,
-                    room_server_id: None,
-                    user_id: user.clone(),
-                    user_server_id: user.server_name().to_owned(),
-                    sender_id: user.clone(),
-                    membership: "join".to_owned(),
-                    forgotten: false,
-                    display_name: None,
-                    avatar_url: None,
-                    state_data: None,
-                    created_at: UnixMillis::now(),
-                })
-                .execute(&mut connect().await.unwrap())
-                .await
-                .unwrap();
-        }
-        // A SQL failure during state lookup is not a missing state frame.
-        diesel::sql_query(
-            "ALTER TABLE rooms RENAME COLUMN state_frame_id TO unavailable_state_frame",
-        )
-        .execute(&mut connect().await.unwrap())
-        .await
-        .unwrap();
-        let lookup_failure = load_joined_room(
-            &user,
-            "TEST".into(),
-            &failed,
-            false,
-            None,
-            None,
-            BatchToken::new_live(100),
-            false,
-            &FilterDefinition::default(),
-            false,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
-            &mut HashSet::new(),
-        )
-        .await;
-        diesel::sql_query(
-            "ALTER TABLE rooms RENAME COLUMN unavailable_state_frame TO state_frame_id",
-        )
-        .execute(&mut connect().await.unwrap())
-        .await
-        .unwrap();
-        assert!(!lookup_failure.unwrap_err().is_not_found());
-        let args: SyncEventsReqArgs = serde_json::from_value(serde_json::json!({})).unwrap();
-        *FAIL_ROOM.lock().unwrap() = Some(failed.clone());
-        let response = sync_events(&user, "TEST".into(), &args).await;
-        *FAIL_ROOM.lock().unwrap() = None;
-        assert!(
-            response
-                .unwrap_err()
-                .to_string()
-                .contains("injected joined room database failure")
-        );
-        let retry = sync_events(&user, "TEST".into(), &args).await.unwrap();
-        assert!(retry.rooms.join.contains_key(&failed));
-        assert_eq!(retry.rooms.join.len(), 2);
-    }
-}
-
 #[tracing::instrument(skip_all)]
 async fn load_left_room(
     sender_id: &UserId,
@@ -1729,5 +1634,100 @@ mod pagination_database_tests {
         assert!(timeline_contains_own_join(&recovered, &join.sender));
         assert!(recovered.events.contains_key(&profile.event_sn));
         assert!(!recovered.events.contains_key(&105));
+    }
+}
+
+#[cfg(test)]
+mod joined_room_failure_tests {
+    use diesel_async::RunQueryDsl;
+
+    use super::*;
+    use crate::data::connect;
+    use crate::data::schema::room_users;
+
+    pub(super) static FAIL_ROOM: std::sync::Mutex<Option<OwnedRoomId>> =
+        std::sync::Mutex::new(None);
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_joined_room_failure_cannot_advance_sync_cursor() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name": "sync-failure.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user =
+            UserId::parse_with_server_name("sync_failure_reader", crate::config::server_name())
+                .unwrap();
+        let failed: OwnedRoomId = "!failed:sync-failure.example".try_into().unwrap();
+        for name in ["healthy", "failed"] {
+            let room: OwnedRoomId = format!("!{name}:sync-failure.example").try_into().unwrap();
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$member-{name}:sync-failure.example")
+                        .try_into()
+                        .unwrap(),
+                    event_sn: data::next_sn().await.unwrap(),
+                    room_id: room,
+                    room_server_id: None,
+                    user_id: user.clone(),
+                    user_server_id: user.server_name().to_owned(),
+                    sender_id: user.clone(),
+                    membership: "join".to_owned(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: UnixMillis::now(),
+                })
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        // A SQL failure during state lookup is not a missing state frame.
+        diesel::sql_query(
+            "ALTER TABLE rooms RENAME COLUMN state_frame_id TO unavailable_state_frame",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        let lookup_failure = load_joined_room(
+            &user,
+            "TEST".into(),
+            &failed,
+            false,
+            None,
+            None,
+            BatchToken::new_live(100),
+            false,
+            &FilterDefinition::default(),
+            false,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        )
+        .await;
+        diesel::sql_query(
+            "ALTER TABLE rooms RENAME COLUMN unavailable_state_frame TO state_frame_id",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        assert!(!lookup_failure.unwrap_err().is_not_found());
+        let args: SyncEventsReqArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        *FAIL_ROOM.lock().unwrap() = Some(failed.clone());
+        let response = sync_events(&user, "TEST".into(), &args).await;
+        *FAIL_ROOM.lock().unwrap() = None;
+        assert!(
+            response
+                .unwrap_err()
+                .to_string()
+                .contains("injected joined room database failure")
+        );
+        let retry = sync_events(&user, "TEST".into(), &args).await.unwrap();
+        assert!(retry.rooms.join.contains_key(&failed));
+        assert_eq!(retry.rooms.join.len(), 2);
     }
 }
