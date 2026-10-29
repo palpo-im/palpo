@@ -549,23 +549,10 @@ mod thumbnail_publication_tests {
             coordination::with_lock(&delete_origin, &delete_id, async {
                 let _ = locked_tx.send(());
                 finish_rx.await.unwrap();
-                delete_operator
-                    .remove_all(&format!(
-                        "{}.thumbnails/",
-                        storage::media_key("_", &delete_id)
-                    ))
+                // Run the same storage/metadata deletion used by the Q06 service,
+                // while the test controls the moment it releases the shared fence.
+                coordination::delete_locked(&delete_operator, "_", &delete_origin, &delete_id)
                     .await?;
-                delete_operator
-                    .delete(&storage::media_key("_", &delete_id))
-                    .await?;
-                diesel::delete(
-                    media_thumbnails::table
-                        .filter(media_thumbnails::origin_server.eq(&delete_origin))
-                        .filter(media_thumbnails::media_id.eq(&delete_id)),
-                )
-                .execute(&mut connect().await?)
-                .await?;
-                data::media::delete_media(&delete_origin, &delete_id).await?;
                 Ok(())
             })
             .await
