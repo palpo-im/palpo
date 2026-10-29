@@ -577,7 +577,7 @@ async fn load_joined_room(
                 let invited_member_count = room::invited_member_count(room_id).await.unwrap_or(0);
 
                 let heroes = if joined_member_count + invited_member_count <= 5 {
-                    load_room_heroes(sender_id, room_id, next_batch.event_sn()).await?
+                    load_room_heroes(sender_id, room_id).await?
                 } else {
                     Vec::new()
                 };
@@ -1589,11 +1589,7 @@ mod pagination_database_tests {
 }
 
 /// Resolve at most five heroes from membership rows, without reading messages.
-async fn load_room_heroes(
-    sender_id: &UserId,
-    room_id: &RoomId,
-    until_sn: i64,
-) -> AppResult<Vec<String>> {
+async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec<String>> {
     #[derive(diesel::QueryableByName)]
     struct Hero {
         #[diesel(sql_type = diesel::sql_types::Text)]
@@ -1602,14 +1598,13 @@ async fn load_room_heroes(
     let rows = diesel::sql_query(
         "SELECT user_id FROM (
             SELECT DISTINCT ON (user_id) user_id, membership, event_sn
-            FROM room_users WHERE room_id = $1 AND event_sn < $2
-            ORDER BY user_id, event_sn DESC, id DESC
+            FROM room_users WHERE room_id = $1
+            ORDER BY user_id, id DESC
         ) AS current_members
-        WHERE membership IN ('join', 'invite') AND user_id <> $3
+        WHERE membership IN ('join', 'invite') AND user_id <> $2
         ORDER BY event_sn, user_id LIMIT 5",
     )
     .bind::<diesel::sql_types::Text, _>(room_id.as_str())
-    .bind::<diesel::sql_types::BigInt, _>(until_sn)
     .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
     .load::<Hero>(&mut connect().await?)
     .await?;
@@ -1635,9 +1630,16 @@ mod hero_database_tests {
             ("alice", "join", 8),
             ("bob", "leave", 9),
             ("future", "join", 20),
-            ("carol", "leave", 30),
         ] {
             let user: OwnedUserId = format!("@{name}:example.org").try_into().unwrap();
+            diesel::delete(
+                room_users::table
+                    .filter(room_users::room_id.eq(&room))
+                    .filter(room_users::user_id.eq(&user)),
+            )
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
             diesel::insert_into(room_users::table)
                 .values(data::room::NewDbRoomUser {
                     event_id: format!("$hero-{sn}:example.org").try_into().unwrap(),
@@ -1660,11 +1662,24 @@ mod hero_database_tests {
         }
         // No events/event_datas exist: scanning the timeline cannot supply heroes.
         assert_eq!(
-            load_room_heroes(&sender, &room, 10).await.unwrap(),
-            ["@carol:example.org", "@alice:example.org"]
+            load_room_heroes(&sender, &room).await.unwrap(),
+            [
+                "@carol:example.org",
+                "@alice:example.org",
+                "@future:example.org"
+            ]
         );
+        diesel::update(
+            room_users::table
+                .filter(room_users::room_id.eq(&room))
+                .filter(room_users::user_id.eq("@carol:example.org")),
+        )
+        .set(room_users::membership.eq("leave"))
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
         assert_eq!(
-            load_room_heroes(&sender, &room, 31).await.unwrap(),
+            load_room_heroes(&sender, &room).await.unwrap(),
             ["@alice:example.org", "@future:example.org"]
         );
         for sn in 40..60 {
@@ -1688,9 +1703,6 @@ mod hero_database_tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(
-            load_room_heroes(&sender, &room, 100).await.unwrap().len(),
-            5
-        );
+        assert_eq!(load_room_heroes(&sender, &room).await.unwrap().len(), 5);
     }
 }
