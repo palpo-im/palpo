@@ -1,5 +1,6 @@
 mod preview;
 mod remote;
+pub(crate) mod thumbnail;
 use std::cmp;
 use std::num::Saturating;
 
