@@ -387,43 +387,6 @@ fn ensure_registration_admission(
     Ok(())
 }
 
-#[cfg(test)]
-mod registration_admission_tests {
-    use serde_json::json;
-
-    use super::*;
-
-    fn configuration() -> crate::ServerConfig {
-        serde_json::from_value(json!({
-            "server_name": "registration.example", "db": {"url": "unused"},
-            "allow_registration": false
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn untrusted_appservice_flag_does_not_open_closed_registration() {
-        let conf = configuration();
-        let args: AuthArgs = serde_json::from_value(json!({"from_appservice": true})).unwrap();
-        assert!(args.from_appservice);
-        assert!(ensure_registration_admission(&conf, false, false).is_err());
-        assert!(ensure_registration_admission(&conf, true, false).is_ok());
-    }
-
-    #[test]
-    fn guest_switch_and_required_token_are_both_enforced() {
-        let mut conf = configuration();
-        conf.allow_registration = true;
-        assert!(ensure_registration_admission(&conf, false, true).is_err());
-        conf.allow_guest_registration = true;
-        assert!(ensure_registration_admission(&conf, false, true).is_ok());
-        conf.registration_token = Some("registration-secret".into());
-        assert!(ensure_registration_admission(&conf, false, true).is_err());
-        // Normal accounts may continue into UIAA to prove the required token.
-        assert!(ensure_registration_admission(&conf, false, false).is_ok());
-    }
-}
-
 /// #GET /_matrix/client/r0/register/available
 /// Checks if a username is valid and available on this server.
 ///
@@ -526,4 +489,41 @@ async fn validate_token(
 async fn token_via_msisdn(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let _authed = depot.authed_info()?;
     empty_ok()
+}
+
+#[cfg(test)]
+mod registration_admission_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn configuration() -> crate::ServerConfig {
+        serde_json::from_value(json!({
+            "server_name": "registration.example", "db": {"url": "unused"},
+            "allow_registration": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn untrusted_appservice_flag_does_not_open_closed_registration() {
+        let conf = configuration();
+        let args: AuthArgs = serde_json::from_value(json!({"from_appservice": true})).unwrap();
+        assert!(args.from_appservice);
+        assert!(ensure_registration_admission(&conf, false, false).is_err());
+        assert!(ensure_registration_admission(&conf, true, false).is_ok());
+    }
+
+    #[test]
+    fn guest_switch_and_required_token_are_both_enforced() {
+        let mut conf = configuration();
+        conf.allow_registration = true;
+        assert!(ensure_registration_admission(&conf, false, true).is_err());
+        conf.allow_guest_registration = true;
+        assert!(ensure_registration_admission(&conf, false, true).is_ok());
+        conf.registration_token = Some("registration-secret".into());
+        assert!(ensure_registration_admission(&conf, false, true).is_err());
+        // Normal accounts may continue into UIAA to prove the required token.
+        assert!(ensure_registration_admission(&conf, false, false).is_ok());
+    }
 }
