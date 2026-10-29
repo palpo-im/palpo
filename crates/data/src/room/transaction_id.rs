@@ -206,6 +206,7 @@ pub async fn find_published_transaction_event(
     room_id: &RoomId,
     event_type: &str,
     redacts: Option<&EventId>,
+    endpoint: &str,
 ) -> DataResult<Option<OwnedEventId>> {
     #[derive(QueryableByName)]
     struct Event {
@@ -218,6 +219,7 @@ pub async fn find_published_transaction_event(
          AND NOT e.is_outlier AND NOT e.is_rejected AND NOT e.soft_failed \
          AND d.internal_metadata->>'transaction_user' = $2 \
          AND d.internal_metadata->>'transaction_id' = $4 \
+         AND d.internal_metadata->>'transaction_endpoint' = $7 \
          AND (d.internal_metadata->>'transaction_device') IS NOT DISTINCT FROM $5 \
          AND ($6::text IS NULL OR COALESCE(d.json_data->'content'->>'redacts', d.json_data->>'redacts') = $6) \
          ORDER BY e.sn LIMIT 1",
@@ -228,5 +230,6 @@ pub async fn find_published_transaction_event(
     .bind::<diesel::sql_types::Text, _>(txn_id.as_str())
     .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(device_id.map(DeviceId::as_str))
     .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(redacts.map(EventId::as_str))
+    .bind::<diesel::sql_types::Text, _>(endpoint)
     .get_result::<Event>(&mut connect().await?).await.optional()?.map(|event| event.event_id))
 }

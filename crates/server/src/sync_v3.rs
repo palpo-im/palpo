@@ -1065,6 +1065,7 @@ async fn load_left_room(
             extra_data: Default::default(),
             rejection_reason: None,
             transaction_device: None,
+            transaction_endpoint: None,
         };
         return Ok(LeftRoom {
             account_data: RoomAccountData::default(),
