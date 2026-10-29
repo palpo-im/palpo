@@ -92,12 +92,26 @@ async fn change_password(
 
     crate::user::set_password(authed.user_id(), &body.new_password).await?;
     if body.logout_devices {
-        // Device removal also revokes encryption keys and queued messages, and
-        // publishes the device-list change to local clients and federation.
-        for device_id in crate::data::user::all_device_ids(authed.user_id()).await? {
-            if device_id != authed.require_device_id()? {
-                crate::user::remove_device(authed.user_id(), &device_id).await?;
-            }
+        let rooms = crate::data::user::joined_rooms(authed.user_id()).await?;
+        let servers: Vec<_> = crate::data::room::joined_servers_for_rooms(&rooms)
+            .await?
+            .into_iter()
+            .filter(|server| {
+                server != &crate::config::get().server_name
+                    && crate::config::get().federation.is_server_allowed(server)
+            })
+            .collect();
+        let removed = crate::data::user::device::remove_other_devices(
+            authed.user_id(),
+            authed.require_device_id()?,
+            &rooms,
+            &servers,
+        )
+        .await?;
+        if !removed.is_empty() {
+            // The transaction already revoked every target and persisted all
+            // notification intents. A failed wakeup cannot leave later devices active.
+            crate::sending::wake_servers(servers.into_iter(), None).await?;
         }
     }
 
@@ -322,6 +336,116 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+
+        // All target devices and notification intents must commit before a
+        // notification wakeup can fail, rather than aborting a per-device loop.
+        let targets: [OwnedDeviceId; 2] = ["REVOKE_NOTIFY_A".into(), "REVOKE_NOTIFY_B".into()];
+        for (index, device) in targets.iter().enumerate() {
+            crate::data::user::device::create_device(
+                &user,
+                device,
+                &format!("revoke-notify-{index}"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let keys: DeviceKeys = serde_json::from_value(json!({
+                "user_id":user,"device_id":device,"algorithms":[],"keys":{},"signatures":{}
+            }))
+            .unwrap();
+            crate::data::user::key::add_device_keys(&user, device, &keys)
+                .await
+                .unwrap();
+        }
+        let remote = crate::core::ServerName::parse("remote-revoke.example").unwrap();
+        let room = crate::core::room_id!("!password-revoke:example.test");
+        diesel::insert_into(room_users::table)
+            .values(crate::data::room::NewDbRoomUser {
+                event_id: crate::core::event_id!("$password-revoke").to_owned(),
+                event_sn: 1,
+                room_id: room.to_owned(),
+                room_server_id: None,
+                user_id: user.clone(),
+                user_server_id: user.server_name().to_owned(),
+                sender_id: user.clone(),
+                membership: "join".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: None,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        crate::data::room::add_joined_server(room, &remote)
+            .await
+            .unwrap();
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q07_fail_wakeup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.server_id = 'remote-revoke.example' AND NEW.edu_json IS NULL THEN RAISE EXCEPTION 'injected wakeup failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q07_fail_wakeup BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q07_fail_wakeup();").await.unwrap();
+        let mut failed = TestClient::post("http://localhost/password")
+            .add_header("authorization", "Bearer revoke-current", true)
+            .json(&json!({"new_password":"newer password","logout_devices":true,
+                "auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":user},"password":"new password"}}))
+            .send(&service).await;
+        let body: Value = failed.take_json().await.unwrap();
+        assert_eq!(
+            failed.status_code,
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "{body}"
+        );
+        for target in &targets {
+            assert!(
+                !crate::data::user::device::is_device_exists(&user, target)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                crate::data::user::get_device_keys(&user, target)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            user_access_tokens::table
+                .filter(user_access_tokens::user_id.eq(&user))
+                .count()
+                .get_result::<i64>(&mut connect().await.unwrap())
+                .await
+                .unwrap(),
+            1
+        );
+        let queued: Vec<Option<Vec<u8>>> = outgoing_requests::table
+            .filter(outgoing_requests::server_id.eq(&remote))
+            .select(outgoing_requests::edu_json)
+            .load(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            queued.len(),
+            2,
+            "all deletion intents must be durable before wakeup"
+        );
+        let mut notified = std::collections::BTreeSet::new();
+        for bytes in queued {
+            let edu: Value = serde_json::from_slice(&bytes.unwrap()).unwrap();
+            assert_eq!(edu["content"]["deleted"], true);
+            notified.insert(edu["content"]["device_id"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(notified, targets.iter().map(ToString::to_string).collect());
+        connect().await.unwrap().batch_execute("DROP TRIGGER q07_fail_wakeup ON outgoing_requests; DROP FUNCTION q07_fail_wakeup();").await.unwrap();
+        assert!(
+            crate::data::user::device::remove_other_devices(
+                &user,
+                &current,
+                &[room.to_owned()],
+                &[remote]
+            )
+            .await
+            .unwrap()
+            .is_empty()
         );
     }
 }
