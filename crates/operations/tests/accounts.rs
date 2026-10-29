@@ -699,6 +699,102 @@ async fn signup_navigation_requires_exact_grant_current_admin_and_original_card(
 }
 
 #[tokio::test]
+async fn retired_workflow_capabilities_and_routes_are_unavailable() {
+    let f = Fixture::new().await;
+    for service in [
+        "palpo.fleets.install",
+        "palpo.inbox.decide",
+        "palpo.catalog.list",
+        "palpo.requests.create",
+        "palpo.agents.control",
+    ] {
+        let (status, _) = f
+            .post(
+                "/_palpo/miniapp/v1/session",
+                json!({"appId":api::APP_ID,"bundleDigest":"d".repeat(64),"services":[service]}),
+                Some("admin-secret"),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{service}");
+    }
+    for path in [
+        "/_palpo/miniapp/v1/association-start",
+        "/_palpo/miniapp/v1/association-status",
+        "/_palpo/miniapp/v1/association-request",
+    ] {
+        assert_eq!(
+            f.post(path, json!({}), Some("admin-secret")).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for path in [
+        "/api/fleet/v2/hf_00000000000000000000000000000000/poll",
+        "/api/relay/v2/hf_00000000000000000000000000000000/_matrix/app/v1/transactions/retired",
+    ] {
+        let response = TestClient::get(format!("https://operations.test{path}"))
+            .send(&f.service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND));
+    }
+    assert_eq!(f.server.lock().unwrap().registration_calls, 0);
+}
+
+#[tokio::test]
+async fn account_sessions_keep_scopes_revalidation_and_independent_disconnect() {
+    let f = Fixture::prepared().await;
+    let session = f
+        .session(
+            "admin-secret",
+            vec![
+                "palpo.accounts.list",
+                "palpo.session.open",
+                "palpo.session.disconnect",
+            ],
+        )
+        .await;
+    let (status, identity) = f.call(&session, "palpo.session.open", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(identity["features"], json!({"accounts":true}));
+    assert_eq!(
+        identity["services"],
+        json!([
+            "palpo.accounts.list",
+            "palpo.session.open",
+            "palpo.session.disconnect",
+        ])
+    );
+    assert_eq!(
+        f.call(&session, "palpo.accounts.list", json!({})).await.0,
+        StatusCode::OK
+    );
+    f.server
+        .lock()
+        .unwrap()
+        .users
+        .insert("@admin:example.test".into(), json!({"admin":false}));
+    assert_eq!(
+        f.call(&session, "palpo.accounts.list", json!({})).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.call(&session, "palpo.session.disconnect", json!({}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.call(&session, "palpo.session.open", json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Disconnect revoked only the app session; the same Matrix token is usable.
+    let fresh = f.session("admin-secret", vec!["palpo.session.open"]).await;
+    assert_eq!(
+        f.call(&fresh, "palpo.session.open", json!({})).await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
 async fn signup_public_receipts_changes_origins_and_rate_limits_fail_closed() {
     let f = Fixture::new().await;
     let input = applicant("alice");

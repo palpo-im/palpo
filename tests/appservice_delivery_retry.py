@@ -9,6 +9,7 @@ against production. The receiver alone is a controlled HTTP peer.
 import argparse
 import hashlib
 import json
+import re
 import secrets
 import stat
 import threading
@@ -34,7 +35,10 @@ def main():
     parser.add_argument("--accounts", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--server-name", required=True, help="Disposable homeserver name ending in .test")
     args = parser.parse_args()
+    if not args.server_name.endswith(".test") or any(c.isspace() or c in "/:#?" for c in args.server_name):
+        parser.error("server-name must be a disposable .test hostname")
     origin = urllib.parse.urlsplit(args.origin)
     if origin.scheme != "http" or origin.hostname != "127.0.0.1" or origin.path or origin.query or origin.fragment or origin.username:
         parser.error("origin must be an explicit loopback HTTP origin")
@@ -43,8 +47,8 @@ def main():
         parser.error("accounts must be a private regular JSON file, at most 64 KiB")
     accounts = json.loads(args.accounts.read_text())
     for role in ("admin", "manager"):
-        if not accounts[role]["user_id"].endswith(":rinx-adr0011.test"):
-            parser.error("only the isolated rinx-adr0011.test accounts are supported")
+        if not accounts[role]["user_id"].endswith(":" + args.server_name):
+            parser.error("accounts must belong to the selected disposable homeserver")
     binary_hash = binary_digest(args.binary)
     args.output.mkdir(parents=True, exist_ok=False)
 
@@ -65,7 +69,7 @@ def main():
     accepted = threading.Event()
     hs_token = secrets.token_hex(32)
     as_token = secrets.token_hex(32)
-    tag = "adr_retry_" + secrets.token_hex(4)
+    tag = "palpo_retry_" + secrets.token_hex(4)
 
     class Receiver(BaseHTTPRequestHandler):
         def do_PUT(self):
@@ -99,13 +103,13 @@ def main():
         request("/_palpo/admin/v1/appservices", {
             "id": tag, "url": f"http://127.0.0.1:{server.server_port}",
             "as_token": as_token, "hs_token": hs_token, "sender_localpart": tag,
-            "namespaces": {"users": [{"exclusive": True, "regex": "^@" + tag + ".*:rinx-adr0011\\.test$"}]},
+            "namespaces": {"users": [{"exclusive": True, "regex": "^@" + tag + ".*:" + re.escape(args.server_name) + "$"}]},
             "rate_limited": False,
         }, accounts["admin"]["access_token"])
         registered = True
-        request("/_matrix/client/v3/account/whoami?" + urllib.parse.urlencode({"user_id": "@" + tag + ":rinx-adr0011.test"}), token=as_token)
-        request("/_matrix/client/v3/login", {"type": "m.login.application_service", "identifier": {"type": "m.id.user", "user": tag}, "device_id": "ADR_RETRY"}, as_token)
-        request("/_matrix/client/v3/createRoom", {"name": "ADR delivery retry", "preset": "private_chat", "invite": ["@" + tag + ":rinx-adr0011.test"]}, accounts["manager"]["access_token"])
+        request("/_matrix/client/v3/account/whoami?" + urllib.parse.urlencode({"user_id": "@" + tag + ":" + args.server_name}), token=as_token)
+        request("/_matrix/client/v3/login", {"type": "m.login.application_service", "identifier": {"type": "m.id.user", "user": tag}, "device_id": "PALPO_RETRY"}, as_token)
+        request("/_matrix/client/v3/createRoom", {"name": "Appservice delivery retry", "preset": "private_chat", "invite": ["@" + tag + ":" + args.server_name]}, accounts["manager"]["access_token"])
         deadline = time.monotonic() + 20
         while not records and time.monotonic() < deadline:
             time.sleep(.1)

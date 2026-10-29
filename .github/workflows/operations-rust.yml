@@ -1,4 +1,4 @@
-name: Rust Operations
+name: Account approvals
 
 permissions:
   contents: read
@@ -6,16 +6,20 @@ permissions:
 on:
   pull_request:
     paths:
-      - 'crates/hagency-contract/**'
       - 'crates/operations/**'
+      - 'crates/core/**'
+      - 'crates/core-macros/**'
+      - 'crates/identifiers-validation/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/operations-rust.yml'
   push:
     branches: [main]
     paths:
-      - 'crates/hagency-contract/**'
       - 'crates/operations/**'
+      - 'crates/core/**'
+      - 'crates/core-macros/**'
+      - 'crates/identifiers-validation/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/operations-rust.yml'
@@ -34,16 +38,13 @@ jobs:
         with:
           toolchain: nightly
           components: rustfmt
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev cmake
       - name: Scoped formatting
-        run: cargo +nightly fmt -p palpo-hagency-contract -p palpo-operations -- --check
-      - name: Coordinator contract and Rust service tests
-        run: cargo +stable test --locked -p palpo-hagency-contract -p palpo-operations
+        run: cargo +nightly fmt -p palpo-operations -- --check
+      - name: Account approval and session tests
+        run: cargo +stable test --locked -p palpo-operations
       - name: Scoped Clippy
-        run: cargo +stable clippy --locked -p palpo-hagency-contract -p palpo-operations --all-targets -- -D warnings
+        run: cargo +stable clippy --locked -p palpo-operations --all-targets -- -D warnings
       - name: Build the Rust executable
         run: cargo +stable build --locked -p palpo-operations
-      - name: Node database migration and Rust process smoke test
-        run: python3 crates/operations/tests/node_migration.py --node node --binary target/debug/palpo-operations

@@ -1,8 +1,8 @@
-//! Signup approval is separate from project and resource authority. Its legacy
-//! IDs, sealed passwords and registration-device proof survive Rust cutover.
+//! Ordinary account signup approvals, with sealed passwords, receipt-based
+//! status reads and registration-device proof after lost responses.
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use palpo_hagency_contract::{MatrixUserId, ServerName};
+use palpo_core::{OwnedServerName as ServerName, OwnedUserId as MatrixUserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -73,14 +73,16 @@ fn hex_id(value: &str, len: usize) -> bool {
 }
 impl Configuration {
     pub(crate) fn bind(&self, state: &mut Value, server: &ServerName) -> Result<()> {
-        if !self.bot_mxid.belongs_to(server)
+        if !crate::matrix::valid_account_id(&self.bot_mxid)
+            || self.bot_mxid.server_name() != server
             || !hex_id(&self.password_key, 64)
             || self.approvers.is_empty()
             || self.approvers.len() > 32
-            || self
-                .approvers
-                .iter()
-                .any(|a| a == &self.bot_mxid || !a.belongs_to(server))
+            || self.approvers.iter().any(|a| {
+                !crate::matrix::valid_account_id(a)
+                    || a == &self.bot_mxid
+                    || a.server_name() != server
+            })
             || [&self.bot_token, &self.admin_token, &self.registration_token]
                 .iter()
                 .any(|s| s.is_empty() || s.len() > 8192 || s.chars().any(char::is_control))
@@ -331,6 +333,20 @@ mod tests {
         );
         let mut state = json!({"accountAccess":{"binding":"066f474171f6170212773979f646e70087e0132ee2f4a55717792513ce1b4f42","requests":{"original":row},"cursor":"preserved-cursor"}});
         let server = "example.test".to_owned().try_into().unwrap();
+        for invalid in ["@:example.test", "@has space:example.test"] {
+            let mut malformed = config.clone();
+            malformed.bot_mxid = invalid.try_into().unwrap();
+            assert_eq!(
+                malformed.bind(&mut state, &server).unwrap_err().code,
+                "invalid_account_configuration"
+            );
+            let mut malformed = config.clone();
+            malformed.approvers = vec![invalid.try_into().unwrap()];
+            assert_eq!(
+                malformed.bind(&mut state, &server).unwrap_err().code,
+                "invalid_account_configuration"
+            );
+        }
         config.bind(&mut state, &server).unwrap();
         assert_eq!(state["accountAccess"]["cursor"], "preserved-cursor");
         assert_eq!(state["accountAccess"]["requests"]["original"], row);
