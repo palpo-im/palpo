@@ -127,7 +127,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
         pdu.is_outlier = event.is_outlier;
         pdu.soft_failed = event.soft_failed;
         pdu.rejection_reason = event.rejection_reason;
-        pdu.load_transaction_device().await?;
+        pdu.load_client_metadata().await?;
     }
     Ok(pdu)
 }
@@ -153,7 +153,7 @@ pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
-    pdu.load_transaction_device().await?;
+    pdu.load_client_metadata().await?;
     Ok(SnPduEvent {
         pdu,
         event_sn,
@@ -186,7 +186,7 @@ pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, Cano
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
-    pdu.load_transaction_device().await?;
+    pdu.load_client_metadata().await?;
     Ok((
         SnPduEvent {
             pdu,
