@@ -270,7 +270,10 @@ async fn delete_device(
         Ok(result) => result,
         Err(e) => {
             if let AppError::Matrix(e) = e
-                && let ErrorKind::Forbidden = e.kind
+                && matches!(
+                    e.kind,
+                    ErrorKind::Forbidden | ErrorKind::LimitExceeded { .. }
+                )
             {
                 return Err(e.into());
             }
