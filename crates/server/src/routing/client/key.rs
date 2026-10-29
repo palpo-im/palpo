@@ -243,6 +243,20 @@ mod fallback_tests {
                 .unwrap()
                 .is_empty()
         );
+        let changed_material = json!({"fallback_keys":{"signed_curve25519:first":{"key":"ZGlmZmVyZW50","fallback":true,"signatures":{}}}});
+        let (status, rejected) = post(&service, "upload", changed_material).await;
+        assert_eq!(status, Some(StatusCode::BAD_REQUEST), "{rejected}");
+        let (_, retained) = post(&service, "claim", claim.clone()).await;
+        assert_eq!(
+            retained["one_time_keys"][user.as_str()][device.as_str()]["signed_curve25519:first"]["key"],
+            "ZmFsbGJhY2s"
+        );
+        assert!(
+            data::user::key::unused_fallback_key_types(&user, &device)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let replacement = json!({"fallback_keys":{"signed_curve25519:second":{"key":"bmV3","fallback":true,"signatures":{}}}});
         let (first, second) = tokio::join!(
             post(&service, "upload", replacement.clone()),

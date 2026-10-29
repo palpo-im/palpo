@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
 use crate::core::identifiers::*;
@@ -504,26 +504,53 @@ pub async fn add_fallback_key(
         used_at: None,
         created_at: UnixMillis::now(),
     };
-    let insert = diesel::insert_into(e2e_fallback_keys::table)
-        .values(&new_key)
-        .on_conflict((
-            e2e_fallback_keys::user_id,
-            e2e_fallback_keys::device_id,
-            e2e_fallback_keys::algorithm,
-        ))
-        .do_update()
-        .set((
-            e2e_fallback_keys::key_id.eq(key_id),
-            e2e_fallback_keys::key_data.eq(serde_json::to_value(fallback_key)?),
-            e2e_fallback_keys::used_at.eq(None::<i64>),
-            e2e_fallback_keys::created_at.eq(UnixMillis::now()),
-        ));
-    // Re-uploading the same key after a lost response must not advertise an
-    // already used fallback key as unused. Replacement is atomic per algorithm.
-    diesel::query_dsl::methods::FilterDsl::filter(insert, e2e_fallback_keys::key_id.ne(key_id))
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
+    connect()
+        .await?
+        .transaction::<_, crate::DataError, _>(async |conn| {
+            let identity =
+                serde_json::to_string(&(user_id.as_str(), device_id.as_str(), &new_key.algorithm))?;
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, 7141313))")
+                .bind::<diesel::sql_types::Text, _>(identity)
+                .execute(conn)
+                .await?;
+            let previous = e2e_fallback_keys::table
+                .filter(e2e_fallback_keys::user_id.eq(user_id))
+                .filter(e2e_fallback_keys::device_id.eq(device_id))
+                .filter(e2e_fallback_keys::algorithm.eq(&new_key.algorithm))
+                .first::<DbFallbackKey>(conn)
+                .await
+                .optional()?;
+            if let Some(previous) = previous
+                && previous.key_id == key_id
+            {
+                if previous.key_data != new_key.key_data {
+                    return Err(crate::core::MatrixError::invalid_param(
+                        "A fallback key ID cannot be reused for different key material.",
+                    )
+                    .into());
+                }
+                // Identical retries after a claim preserve the already-used state.
+                return Ok(());
+            }
+            diesel::insert_into(e2e_fallback_keys::table)
+                .values(&new_key)
+                .on_conflict((
+                    e2e_fallback_keys::user_id,
+                    e2e_fallback_keys::device_id,
+                    e2e_fallback_keys::algorithm,
+                ))
+                .do_update()
+                .set((
+                    e2e_fallback_keys::key_id.eq(key_id.as_str()),
+                    e2e_fallback_keys::key_data.eq(&new_key.key_data),
+                    e2e_fallback_keys::used_at.eq(None::<i64>),
+                    e2e_fallback_keys::created_at.eq(UnixMillis::now()),
+                ))
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
+        .await
 }
 
 pub async fn unused_fallback_key_types(
