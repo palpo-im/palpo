@@ -122,13 +122,126 @@ pub fn media_storage_key(server_name: &ServerName, media_id: &str) -> String {
     storage::media_key(effective_server_name(server_name), media_id)
 }
 
+/// Delete stored objects before discarding the metadata needed for retry.
+/// Storage failures propagate; retrying after an error or restart is idempotent.
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> AppResult<()> {
-    data::media::delete_media(server_name, media_id).await?;
-    let key = media_storage_key(server_name, media_id);
-    if let Err(e) = storage::delete(&key).await {
-        tracing::error!("failed to delete media file '{key}': {e}");
+    delete_media_with_operator(
+        storage::operator(),
+        effective_server_name(server_name),
+        server_name,
+        media_id,
+    )
+    .await
+}
+
+async fn delete_media_with_operator(
+    operator: &opendal::Operator,
+    storage_origin: &str,
+    server_name: &ServerName,
+    media_id: &str,
+) -> AppResult<()> {
+    // Include objects left unreferenced by interrupted thumbnail publication.
+    let key = storage::media_key(storage_origin, media_id);
+    operator.remove_all(&format!("{key}.thumbnails/")).await?;
+    // Older federation code stored dimension-keyed files. Delete only dimensions
+    // represented in this media's rows, never an arbitrary media-ID prefix.
+    let dimensions = media_thumbnails::table
+        .filter(media_thumbnails::origin_server.eq(server_name))
+        .filter(media_thumbnails::media_id.eq(media_id))
+        .select((media_thumbnails::width, media_thumbnails::height))
+        .distinct()
+        .load::<(i32, i32)>(&mut connect().await?)
+        .await?;
+    for (width, height) in dimensions {
+        let legacy_id = format!("{media_id}.{width}x{height}");
+        // A legitimate separately uploaded media ID takes precedence over an
+        // ambiguous old cache filename.
+        if data::media::get_metadata(server_name, &legacy_id)
+            .await?
+            .is_none()
+        {
+            operator
+                .delete(&storage::media_key(storage_origin, &legacy_id))
+                .await?;
+        }
     }
+    operator.delete(&key).await?;
+    // Never discard cleanup identities if ANY object deletion failed above.
+    data::media::delete_media(server_name, media_id).await?;
     Ok(())
+}
+
+pub async fn delete_media_by_ids(
+    server_name: &ServerName,
+    media_ids: &[String],
+) -> AppResult<(Vec<String>, i64)> {
+    let mut deleted = Vec::new();
+    for media_id in media_ids {
+        if data::media::get_metadata(server_name, media_id)
+            .await?
+            .is_some()
+        {
+            delete_media(server_name, media_id).await?;
+            deleted.push(media_id.clone());
+        }
+    }
+    let total = deleted.len() as i64;
+    Ok((deleted, total))
+}
+
+pub async fn delete_old_local_media(
+    server_name: &ServerName,
+    before_ts: i64,
+    size_gt: i64,
+) -> AppResult<(Vec<String>, i64)> {
+    let media_ids = media_metadatas::table
+        .filter(media_metadatas::origin_server.eq(server_name))
+        .filter(media_metadatas::created_at.lt(UnixMillis(before_ts as u64)))
+        .filter(media_metadatas::file_size.gt(size_gt))
+        .select(media_metadatas::media_id)
+        .load::<String>(&mut connect().await?)
+        .await?;
+    delete_media_by_ids(server_name, &media_ids).await
+}
+
+pub async fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64) -> AppResult<i64> {
+    let originals = media_metadatas::table
+        .filter(media_metadatas::origin_server.ne(local_server))
+        .filter(media_metadatas::created_at.lt(UnixMillis(before_ts as u64)))
+        .select((media_metadatas::origin_server, media_metadatas::media_id))
+        .load::<(crate::core::OwnedServerName, String)>(&mut connect().await?)
+        .await?;
+    let mut deleted = 0;
+    for (origin, media_id) in originals {
+        delete_media(&origin, &media_id).await?;
+        deleted += 1;
+    }
+    // Old thumbnails of newer originals can be evicted without removing the original.
+    let thumbnails = media_thumbnails::table
+        .filter(media_thumbnails::origin_server.ne(local_server))
+        .filter(media_thumbnails::created_at.lt(UnixMillis(before_ts as u64)))
+        .load::<data::media::DbThumbnail>(&mut connect().await?)
+        .await?;
+    for thumbnail in thumbnails {
+        let key =
+            thumbnail_storage_key(&thumbnail.origin_server, &thumbnail.media_id, thumbnail.id);
+        storage::delete(&key).await?;
+        let legacy_id = format!(
+            "{}.{}x{}",
+            thumbnail.media_id, thumbnail.width, thumbnail.height
+        );
+        if data::media::get_metadata(&thumbnail.origin_server, &legacy_id)
+            .await?
+            .is_none()
+        {
+            storage::delete(&media_storage_key(&thumbnail.origin_server, &legacy_id)).await?;
+        }
+        diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
+            .execute(&mut connect().await?)
+            .await?;
+        deleted += 1;
+    }
+    Ok(deleted)
 }
 
 /// Returns width, height of the thumbnail and whether it should be cropped. Returns None when
@@ -234,4 +347,114 @@ pub async fn save_thumbnail_file(
     let key = thumbnail_storage_key(server_name, media_id, thumbnail_id);
     storage::write(&key, file).await?;
     Ok(key)
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn deletion_removes_objects_and_retains_metadata_until_storage_succeeds() {
+        crate::test_database::init();
+        let directory = tempfile::tempdir().unwrap();
+        let operator = opendal::Operator::new(
+            opendal::services::Fs::default().root(directory.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let origin = ServerName::parse("q06.test").unwrap();
+        let media_id = format!("q06-{}", uuid::Uuid::new_v4());
+        data::media::insert_metadata(&data::media::NewDbMetadata {
+            media_id: media_id.clone(),
+            origin_server: origin.clone(),
+            content_type: None,
+            disposition_type: None,
+            file_name: None,
+            file_extension: None,
+            file_size: 4,
+            file_hash: None,
+            created_by: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let thumbnail_id = diesel::insert_into(media_thumbnails::table)
+            .values(NewDbThumbnail {
+                media_id: media_id.clone(),
+                origin_server: origin.clone(),
+                content_type: None,
+                disposition_type: None,
+                file_size: 5,
+                width: 96,
+                height: 96,
+                resize_method: "scale".into(),
+                created_at: UnixMillis::now(),
+            })
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let original = storage::media_key("_", &media_id);
+        let thumbnail = storage::thumbnail_key("_", &media_id, thumbnail_id);
+        let orphan = storage::thumbnail_key("_", &media_id, thumbnail_id + 1);
+        let legacy = storage::media_key("_", &format!("{media_id}.96x96"));
+        let other_origin = storage::media_key("other.test", &media_id);
+        let other_media = storage::media_key("_", &format!("{media_id}-other"));
+        for key in [&thumbnail, &orphan, &legacy, &other_origin, &other_media] {
+            operator.write(key, b"bytes".to_vec()).await.unwrap();
+        }
+        // A nonempty directory at the original file key deterministically fails DELETE.
+        operator
+            .write(&format!("{original}/blocker"), b"fail".to_vec())
+            .await
+            .unwrap();
+        assert!(
+            delete_media_with_operator(&operator, "_", &origin, &media_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            data::media::get_metadata(&origin, &media_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            data::media::get_thumbnail_by_dimension(&origin, &media_id, 96, 96)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        // Storage was partly removed, but persistent DB identities survive a new attempt.
+        operator.remove_all(&format!("{original}/")).await.unwrap();
+        operator.write(&original, b"file".to_vec()).await.unwrap();
+        let restarted_operator = opendal::Operator::new(
+            opendal::services::Fs::default().root(directory.path().to_str().unwrap()),
+        )
+        .unwrap();
+        delete_media_with_operator(&restarted_operator, "_", &origin, &media_id)
+            .await
+            .unwrap();
+        delete_media_with_operator(&restarted_operator, "_", &origin, &media_id)
+            .await
+            .unwrap();
+        for key in [&original, &thumbnail, &orphan, &legacy] {
+            assert!(!operator.exists(key).await.unwrap());
+        }
+        for key in [&other_origin, &other_media] {
+            assert!(operator.exists(key).await.unwrap());
+        }
+        assert!(
+            data::media::get_metadata(&origin, &media_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            data::media::get_thumbnail_by_dimension(&origin, &media_id, 96, 96)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 }
