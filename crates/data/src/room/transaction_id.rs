@@ -195,3 +195,38 @@ pub async fn commit_to_device_transaction(
         })
         .await
 }
+
+/// Recover a published local event after a crash between timeline publication
+/// and recording the completed HTTP transaction. Internal metadata is trusted
+/// provenance written by the local event builder, unlike unsigned client JSON.
+pub async fn find_published_transaction_event(
+    txn_id: &TransactionId,
+    user_id: &UserId,
+    device_id: Option<&DeviceId>,
+    room_id: &RoomId,
+    event_type: &str,
+    redacts: Option<&EventId>,
+) -> DataResult<Option<OwnedEventId>> {
+    #[derive(QueryableByName)]
+    struct Event {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        event_id: OwnedEventId,
+    }
+    Ok(diesel::sql_query(
+        "SELECT e.id AS event_id FROM events e JOIN event_datas d ON d.event_id = e.id \
+         WHERE e.room_id = $1 AND e.sender_id = $2 AND e.ty = $3 \
+         AND NOT e.is_outlier AND NOT e.is_rejected AND NOT e.soft_failed \
+         AND d.internal_metadata->>'transaction_user' = $2 \
+         AND d.internal_metadata->>'transaction_id' = $4 \
+         AND (d.internal_metadata->>'transaction_device') IS NOT DISTINCT FROM $5 \
+         AND ($6::text IS NULL OR COALESCE(d.json_data->'content'->>'redacts', d.json_data->>'redacts') = $6) \
+         ORDER BY e.sn LIMIT 1",
+    )
+    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(event_type)
+    .bind::<diesel::sql_types::Text, _>(txn_id.as_str())
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(device_id.map(DeviceId::as_str))
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(redacts.map(EventId::as_str))
+    .get_result::<Event>(&mut connect().await?).await.optional()?.map(|event| event.event_id))
+}
