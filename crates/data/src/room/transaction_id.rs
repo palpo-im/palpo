@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::{DeviceId, TransactionId, UnixMillis, UserId};
@@ -15,6 +15,17 @@ pub async fn add_txn_id(
     room_id: Option<&RoomId>,
     event_id: Option<&EventId>,
 ) -> DataResult<()> {
+    add_scoped_txn_id(txn_id, user_id, device_id, room_id, event_id, "").await
+}
+
+pub async fn add_scoped_txn_id(
+    txn_id: &TransactionId,
+    user_id: &UserId,
+    device_id: Option<&DeviceId>,
+    room_id: Option<&RoomId>,
+    event_id: Option<&EventId>,
+    endpoint: &str,
+) -> DataResult<()> {
     diesel::insert_into(event_idempotents::table)
         .values(&NewDbEventIdempotent {
             txn_id: txn_id.to_owned(),
@@ -23,6 +34,7 @@ pub async fn add_txn_id(
             room_id: room_id.map(|r| r.to_owned()),
             event_id: event_id.map(|e| e.to_owned()),
             created_at: UnixMillis::now(),
+            endpoint: endpoint.to_owned(),
         })
         .execute(&mut connect().await?)
         .await?;
@@ -37,6 +49,7 @@ pub async fn txn_id_exists(
 ) -> DataResult<bool> {
     if let Some(device_id) = device_id {
         let query = event_idempotents::table
+            .filter(event_idempotents::endpoint.eq(""))
             .filter(event_idempotents::user_id.eq(user_id))
             .filter(event_idempotents::device_id.eq(device_id))
             .filter(event_idempotents::txn_id.eq(txn_id))
@@ -44,6 +57,7 @@ pub async fn txn_id_exists(
         diesel_exists!(query, &mut connect().await?).map_err(Into::into)
     } else {
         let query = event_idempotents::table
+            .filter(event_idempotents::endpoint.eq(""))
             .filter(event_idempotents::user_id.eq(user_id))
             .filter(event_idempotents::device_id.is_null())
             .filter(event_idempotents::txn_id.eq(txn_id))
@@ -59,7 +73,18 @@ pub async fn get_event_id(
     device_id: Option<&DeviceId>,
     room_id: Option<&RoomId>,
 ) -> DataResult<Option<OwnedEventId>> {
+    get_scoped_event_id(txn_id, user_id, device_id, room_id, "").await
+}
+
+pub async fn get_scoped_event_id(
+    txn_id: &TransactionId,
+    user_id: &UserId,
+    device_id: Option<&DeviceId>,
+    room_id: Option<&RoomId>,
+    endpoint: &str,
+) -> DataResult<Option<OwnedEventId>> {
     let mut query = event_idempotents::table
+        .filter(event_idempotents::endpoint.eq(endpoint))
         .filter(event_idempotents::user_id.eq(user_id))
         .filter(event_idempotents::txn_id.eq(txn_id))
         .into_boxed();
@@ -126,4 +151,47 @@ pub async fn get_event_device(
         .optional()
         .map(|v| v.flatten())
         .map_err(Into::into)
+}
+
+/// Commit all effects of a client to-device send together with its endpoint-scoped
+/// receipt. The unique insert serializes competing retries across processes.
+pub async fn commit_to_device_transaction(
+    receipt: &NewDbEventIdempotent,
+    inboxes: &[crate::user::device::NewDbDeviceInbox],
+    outgoing: &[crate::sending::NewDbOutgoingRequest],
+) -> DataResult<bool> {
+    connect()
+        .await?
+        .transaction::<_, crate::DataError, _>(async |conn| {
+            let inserted = diesel::insert_into(event_idempotents::table)
+                .values(receipt)
+                .on_conflict_do_nothing()
+                .execute(conn)
+                .await?;
+            if inserted == 0 {
+                return Ok(false);
+            }
+            // Lock in a common order so overlapping multi-inbox sends cannot deadlock.
+            let targets: std::collections::BTreeSet<_> = inboxes
+                .iter()
+                .map(|inbox| (&*inbox.user_id, &*inbox.device_id))
+                .collect();
+            for (user, device) in targets {
+                crate::user::device::lock_inbox_stream(conn, user, device).await?;
+            }
+            if !inboxes.is_empty() {
+                diesel::insert_into(device_inboxes::table)
+                    .values(inboxes)
+                    .execute(conn)
+                    .await?;
+            }
+            if !outgoing.is_empty() {
+                diesel::insert_into(outgoing_requests::table)
+                    .values(outgoing)
+                    .execute(conn)
+                    .await?;
+            }
+            Ok(true)
+        })
+        .await
 }

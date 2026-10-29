@@ -87,7 +87,7 @@ fn notify_sender(sender: &mpsc::Sender<WakeupMessage>, message: WakeupMessage) -
 /// transactions for destinations whose wakeups were lost. A missing or closed
 /// queue means there is no guard to perform that recovery, so it is returned
 /// to the caller as an error.
-fn notify(outgoing_kind: OutgoingKind) -> AppResult<()> {
+pub(crate) fn notify(outgoing_kind: OutgoingKind) -> AppResult<()> {
     let sender = MPSC_SENDER
         .get()
         .ok_or_else(|| AppError::internal("sending wakeup queue is not initialized"))?;

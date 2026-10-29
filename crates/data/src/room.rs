@@ -395,6 +395,7 @@ pub struct NewDbEventIdempotent {
     pub room_id: Option<OwnedRoomId>,
     pub event_id: Option<OwnedEventId>,
     pub created_at: UnixMillis,
+    pub endpoint: String,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
