@@ -24,9 +24,11 @@ use crate::{AppError, AppResult, BAD_QUERY_RATE_LIMITER, MatrixError, config, da
 
 #[cfg(test)]
 mod claim_tests {
-    use super::*;
     use std::sync::Arc;
+
     use tokio::sync::Barrier;
+
+    use super::*;
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
