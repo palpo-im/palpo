@@ -1036,7 +1036,12 @@ async fn load_joined_room(
 
 #[cfg(test)]
 mod joined_room_failure_tests {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
     use super::*;
+    use crate::data::connect;
+    use crate::data::schema::room_users;
 
     pub(super) static FAIL_ROOM: std::sync::Mutex<Option<OwnedRoomId>> =
         std::sync::Mutex::new(None);
