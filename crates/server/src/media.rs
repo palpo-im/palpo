@@ -141,38 +141,7 @@ async fn delete_media_with_operator(
     server_name: &ServerName,
     media_id: &str,
 ) -> AppResult<()> {
-    coordination::with_lock(server_name, media_id, async {
-        // Include objects left unreferenced by interrupted thumbnail publication.
-        let key = storage::media_key(storage_origin, media_id);
-        operator.remove_all(&format!("{key}.thumbnails/")).await?;
-        // Older federation code stored dimension-keyed files. Delete only dimensions
-        // represented in this media's rows, never an arbitrary media-ID prefix.
-        let dimensions = media_thumbnails::table
-            .filter(media_thumbnails::origin_server.eq(server_name))
-            .filter(media_thumbnails::media_id.eq(media_id))
-            .select((media_thumbnails::width, media_thumbnails::height))
-            .distinct()
-            .load::<(i32, i32)>(&mut connect().await?)
-            .await?;
-        for (width, height) in dimensions {
-            let legacy_id = format!("{media_id}.{width}x{height}");
-            // A legitimate separately uploaded media ID takes precedence over an
-            // ambiguous old cache filename.
-            if data::media::get_metadata(server_name, &legacy_id)
-                .await?
-                .is_none()
-            {
-                operator
-                    .delete(&storage::media_key(storage_origin, &legacy_id))
-                    .await?;
-            }
-        }
-        operator.delete(&key).await?;
-        // Never discard cleanup identities if ANY object deletion failed above.
-        data::media::delete_media(server_name, media_id).await?;
-        Ok(())
-    })
-    .await
+    coordination::delete_media(operator, storage_origin, server_name, media_id).await
 }
 
 pub async fn delete_media_by_ids(
