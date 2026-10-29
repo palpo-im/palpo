@@ -185,6 +185,7 @@ fn restricted_client_builder(
     config: &ServerConfig,
     max_redirects: usize,
 ) -> AppResult<reqwest::ClientBuilder> {
+    crate::config::validate_restricted_outbound_proxy(config.proxy.as_ref())?;
     let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
     Ok(reqwest_client_builder(config)?
         .no_proxy()
