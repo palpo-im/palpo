@@ -459,8 +459,58 @@ pub async fn get_thumbnail(
 }
 
 #[cfg(test)]
+/// Retain the independent Q19 reservation regression while this route uses
+/// the durable publication flow. Reserve or reuse the exact key the route caches. Normalization
+/// belongs here so callers cannot accidentally query a conflict using the original dimensions.
+async fn reserve_thumbnail_cache_row(
+    args: &ThumbnailReqArgs,
+    file_size: usize,
+) -> AppResult<(i64, bool)> {
+    let (width, height, _) = thumbnail_properties(args.width, args.height).unwrap_or((0, 0, false));
+    let method = args.method.clone().unwrap_or_default().to_string();
+    let inserted = diesel::insert_into(media_thumbnails::table)
+        .values(&NewDbThumbnail {
+            media_id: args.media_id.clone(),
+            origin_server: args.server_name.clone(),
+            content_type: Some("image/png".to_owned()),
+            disposition_type: None,
+            file_size: file_size as i64,
+            width: width as i32,
+            height: height as i32,
+            resize_method: method.clone(),
+            created_at: UnixMillis::now(),
+        })
+        .on_conflict_do_nothing()
+        .returning(media_thumbnails::id)
+        .get_result::<i64>(&mut connect().await?)
+        .await
+        .optional()?;
+    if let Some(id) = inserted {
+        return Ok((id, true));
+    }
+    let id = media_thumbnails::table
+        .filter(media_thumbnails::origin_server.eq(&args.server_name))
+        .filter(media_thumbnails::media_id.eq(&args.media_id))
+        .filter(media_thumbnails::width.eq(width as i32))
+        .filter(media_thumbnails::height.eq(height as i32))
+        .filter(media_thumbnails::resize_method.eq(&method))
+        .select(media_thumbnails::id)
+        .first::<i64>(&mut connect().await?)
+        .await?;
+    Ok((id, false))
+}
+
+#[cfg(test)]
 mod thumbnail_key_tests {
     use super::*;
+
+    fn request(origin: &ServerName, media_id: &str, width: u32, method: &str) -> ThumbnailReqArgs {
+        serde_json::from_value(serde_json::json!({
+            "server_name": origin, "media_id": media_id, "width": width, "height": width,
+            "method": method,
+        }))
+        .unwrap()
+    }
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
@@ -469,64 +519,74 @@ mod thumbnail_key_tests {
         let media_id = format!("q19-{}", Uuid::new_v4());
         let origin = ServerName::parse("q19-origin.test").unwrap();
         let other_origin = ServerName::parse("q19-other.test").unwrap();
-        let (width, height, _) = thumbnail_properties(64, 64).unwrap();
-        assert_eq!((width, height), (96, 96));
-        // A same-ID object on another origin must never supply the conflict result.
+        // Decoys exercise both origin and method filters of the actual route helper.
         let mut row = NewDbThumbnail {
             media_id: media_id.clone(),
-            origin_server: other_origin,
+            origin_server: other_origin.clone(),
             content_type: Some("image/png".into()),
             disposition_type: None,
             file_size: 1,
-            width: width as i32,
-            height: height as i32,
+            width: 96,
+            height: 96,
             resize_method: "scale".into(),
             created_at: UnixMillis::now(),
         };
-        diesel::insert_into(media_thumbnails::table)
+        let other_id = diesel::insert_into(media_thumbnails::table)
             .values(&row)
-            .execute(&mut connect().await.unwrap())
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await.unwrap())
             .await
             .unwrap();
         row.origin_server = origin.clone();
+        row.resize_method = "crop".into();
+        let crop_id = diesel::insert_into(media_thumbnails::table)
+            .values(&row)
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
-        let create = |barrier: std::sync::Arc<tokio::sync::Barrier>| {
-            let row = row.clone();
+        let reserve = |barrier: std::sync::Arc<tokio::sync::Barrier>| {
+            let args = request(&origin, &media_id, 64, "scale");
             async move {
                 barrier.wait().await;
-                let inserted = diesel::insert_into(media_thumbnails::table)
-                    .values(&row)
-                    .on_conflict_do_nothing()
-                    .returning(media_thumbnails::id)
-                    .get_result::<i64>(&mut connect().await.unwrap())
-                    .await
-                    .optional()
-                    .unwrap();
-                inserted.unwrap_or(
-                    find_cached_thumbnail_id(
-                        &row.origin_server,
-                        &row.media_id,
-                        width,
-                        height,
-                        &row.resize_method,
-                    )
-                    .await
-                    .unwrap(),
-                )
+                reserve_thumbnail_cache_row(&args, 3).await.unwrap()
             }
         };
-        let (first, second) = tokio::join!(create(barrier.clone()), create(barrier));
-        assert_eq!(first, second);
+        // No copy of insertion/conflict handling: both requests invoke production code.
+        let (first, second) = tokio::join!(reserve(barrier.clone()), reserve(barrier));
+        assert_eq!(first.0, second.0);
+        assert_ne!(
+            first.1, second.1,
+            "exactly one request creates the cache row"
+        );
+        assert_ne!(first.0, other_id);
+        assert_ne!(first.0, crop_id);
+        let stored = media_thumbnails::table
+            .find(first.0)
+            .first::<DbThumbnail>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!((stored.width, stored.height), (96, 96));
+        assert_eq!(stored.origin_server, origin);
+        assert_eq!(stored.resize_method, "scale");
         assert_eq!(
-            find_cached_thumbnail_id(&origin, &media_id, 96, 96, "scale")
+            reserve_thumbnail_cache_row(&request(&origin, &media_id, 96, "scale"), 3)
                 .await
                 .unwrap(),
-            first
+            (first.0, false)
         );
-        assert!(
-            find_cached_thumbnail_id(&origin, &media_id, 64, 64, "scale")
+        assert_eq!(
+            reserve_thumbnail_cache_row(&request(&origin, &media_id, 64, "crop"), 3)
                 .await
-                .is_err()
+                .unwrap(),
+            (crop_id, false)
+        );
+        assert_eq!(
+            reserve_thumbnail_cache_row(&request(&other_origin, &media_id, 64, "scale"), 3)
+                .await
+                .unwrap(),
+            (other_id, false)
         );
         diesel::delete(media_thumbnails::table.filter(media_thumbnails::media_id.eq(media_id)))
             .execute(&mut connect().await.unwrap())
