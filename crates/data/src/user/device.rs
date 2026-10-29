@@ -245,30 +245,63 @@ pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult
     // during the window between the row deletion and the post-delete eviction in
     // `delete_access_tokens` below.
     super::access_token::invalidate_user(user_id);
-    let count = diesel::delete(
-        user_devices::table
-            .filter(user_devices::user_id.eq(user_id))
-            .filter(user_devices::device_id.eq(device_id)),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-    if count == 0 {
-        if diesel_exists!(
-            user_devices::table.filter(user_devices::device_id.eq(device_id)),
-            &mut connect().await?
-        )? {
-            return Err(MatrixError::forbidden("Device not owned by user.", None).into());
-        } else {
-            return Err(MatrixError::not_found("Device not found.").into());
-        }
-    }
+    let result = connect()
+        .await?
+        .transaction::<_, DataError, _>(async |conn| {
+            let count = diesel::delete(
+                user_devices::table
+                    .filter(user_devices::user_id.eq(user_id))
+                    .filter(user_devices::device_id.eq(device_id)),
+            )
+            .execute(conn)
+            .await?;
+            if count == 0 {
+                if diesel_exists!(
+                    user_devices::table.filter(user_devices::device_id.eq(device_id)),
+                    conn
+                )? {
+                    return Err(MatrixError::forbidden("Device not owned by user.", None).into());
+                } else {
+                    return Err(MatrixError::not_found("Device not found.").into());
+                }
+            }
 
-    delete_access_tokens(user_id, device_id).await?;
-    delete_refresh_tokens(user_id, device_id).await?;
-    super::key::delete_device_key_material(user_id, device_id).await?;
-    remove_all_to_device_events(user_id, device_id).await?;
-    super::pusher::delete_device_pushers(user_id, device_id).await?;
-    Ok(())
+            diesel::delete(
+                user_access_tokens::table
+                    .filter(user_access_tokens::user_id.eq(user_id))
+                    .filter(user_access_tokens::device_id.eq(device_id)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::delete(
+                user_refresh_tokens::table
+                    .filter(user_refresh_tokens::user_id.eq(user_id))
+                    .filter(user_refresh_tokens::device_id.eq(device_id)),
+            )
+            .execute(conn)
+            .await?;
+            super::key::delete_device_key_material_on_connection(conn, user_id, device_id).await?;
+            diesel::delete(
+                device_inboxes::table
+                    .filter(device_inboxes::user_id.eq(user_id))
+                    .filter(device_inboxes::device_id.eq(device_id)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::delete(
+                user_pushers::table
+                    .filter(user_pushers::user_id.eq(user_id))
+                    .filter(user_pushers::device_id.eq(device_id)),
+            )
+            .execute(conn)
+            .await?;
+            Ok(())
+        })
+        .await;
+    // Invalidate after either commit or rollback: authentication may have
+    // populated the cache while the deletion transaction was in progress.
+    super::access_token::invalidate_user(user_id);
+    result
 }
 
 pub async fn set_refresh_token(
