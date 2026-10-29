@@ -1027,4 +1027,3 @@ mod claim_tests {
         );
     }
 }
-
