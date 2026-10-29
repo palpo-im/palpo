@@ -257,13 +257,15 @@ fn resolve_limit(limit: Option<usize>) -> usize {
 
 #[cfg(test)]
 mod transaction_tests {
-    use super::*;
-    use crate::data::{connect, schema::*};
     use diesel::prelude::*;
     use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
     use futures_util::stream::{FuturesUnordered, StreamExt};
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
+
+    use super::*;
+    use crate::data::connect;
+    use crate::data::schema::*;
 
     async fn send(
         service: &Service,
