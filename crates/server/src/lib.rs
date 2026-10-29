@@ -402,6 +402,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn embedding_rejects_active_proxy_policy_before_global_or_resource_initialization() {
+        const TEST: &str =
+            "tests::embedding_rejects_active_proxy_policy_before_global_or_resource_initialization";
+        if std::env::var("PALPO_PROXY_STARTUP_TEST_CHILD").as_deref() != Ok("1") {
+            for mode in ["configuration", "environment"] {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .arg("--exact")
+                    .arg(TEST)
+                    .arg("--nocapture")
+                    .env("PALPO_PROXY_STARTUP_TEST_CHILD", "1")
+                    .env("PALPO_PROXY_STARTUP_TEST_MODE", mode);
+                for key in [
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "ALL_PROXY",
+                    "http_proxy",
+                    "https_proxy",
+                    "all_proxy",
+                ] {
+                    command.env_remove(key);
+                }
+                if mode == "environment" {
+                    command.env(
+                        "HTTPS_PROXY",
+                        "http://user:do-not-print-this@proxy.example:8080",
+                    );
+                }
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+        let mut conf = embedding_config();
+        conf.well_known.client = Some("https://matrix.example.com".to_owned());
+        if std::env::var("PALPO_PROXY_STARTUP_TEST_MODE").as_deref() == Ok("configuration") {
+            conf.proxy = Some(config::ProxyConfig::Global {
+                url: url::Url::parse("http://user:do-not-print-this@proxy.example:8080").unwrap(),
+            });
+        }
+        let error = MatrixServer::initialize(conf)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.to_lowercase().contains("proxy"));
+        assert!(!error.contains("do-not-print-this"));
+        assert!(!error.contains("proxy.example"));
+        assert_startup_state_unset();
+    }
+
+    #[tokio::test]
     async fn embedding_startup_failures_can_be_retried() {
         const TEST: &str = "tests::embedding_startup_failures_can_be_retried";
         if std::env::var("PALPO_EMBEDDING_TEST_CHILD").as_deref() != Ok(TEST) {
