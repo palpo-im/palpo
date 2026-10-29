@@ -1036,7 +1036,6 @@ async fn load_joined_room(
 
 #[cfg(test)]
 mod joined_room_failure_tests {
-    use diesel::prelude::*;
     use diesel_async::RunQueryDsl;
 
     use super::*;
