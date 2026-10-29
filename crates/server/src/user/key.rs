@@ -247,10 +247,10 @@ fn filter_federated_key_response(
 
 /// Keep the peer identity even when request construction or transport fails.
 /// A failed peer is one stream item, never the end of the entire collection.
-async fn tagged_key_query<'a>(
-    server: &'a ServerName,
+async fn tagged_key_query(
+    server: &ServerName,
     query: impl std::future::Future<Output = AppResult<QueryKeysResBody>>,
-) -> (&'a ServerName, AppResult<QueryKeysResBody>) {
+) -> (&ServerName, AppResult<QueryKeysResBody>) {
     (server, query.await)
 }
 
