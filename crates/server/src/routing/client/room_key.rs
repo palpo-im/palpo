@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
@@ -86,22 +84,22 @@ async fn get_keys_for_room(
     depot: &mut Depot,
 ) -> JsonResult<KeysForRoomResBody> {
     let authed = depot.authed_info()?;
-    let DbRoomKey {
-        room_id,
-        session_data,
-        ..
-    } = key_backup::get_room_key(authed.user_id(), &args.room_id, args.version)
+    // An existing backup with no sessions for this room is a successful empty
+    // read, not a missing backup. In particular, invites to a fresh encrypted
+    // room must not require sending a first message just to create a session.
+    key_backup::get_room_keys_version(authed.user_id(), args.version)
         .await?
-        .ok_or(MatrixError::not_found(
-            "Backup key not found for this user's room.",
-        ))?;
-    json_ok(KeysForRoomResBody::new(BTreeMap::from_iter(
-        [(
-            room_id,
-            RawJson::<RoomKeyBackup>::from_value(&session_data).unwrap(),
-        )]
-        .into_iter(),
-    )))
+        .ok_or(MatrixError::not_found("Unknown backup version"))?;
+    let sessions = e2e_room_keys::table
+        .filter(e2e_room_keys::user_id.eq(authed.user_id()))
+        .filter(e2e_room_keys::version.eq(args.version))
+        .filter(e2e_room_keys::room_id.eq(&args.room_id))
+        .load::<DbRoomKey>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .map(|key| (key.session_id.clone(), key.into()))
+        .collect();
+    json_ok(KeysForRoomResBody::new(sessions))
 }
 /// #GET /_matrix/client/r0/room_keys/keys/{room_id}/{session_id}
 /// Retrieves a key from the backup.
@@ -405,4 +403,142 @@ async fn delete_session_keys(
         count: (key_backup::count_keys(authed.user_id(), args.version).await? as u32).into(),
         etag: key_backup::get_etag(authed.user_id(), args.version).await?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use salvo::http::StatusCode;
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::core::UnixMillis;
+    use crate::data::user::NewDbUser;
+
+    async fn account(user: &crate::core::UserId, token: &str) {
+        crate::data::user::create_user(&NewDbUser {
+            id: user.to_owned(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user.localpart().to_owned(),
+            server_name: user.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let device: crate::core::OwnedDeviceId = "BACKUP_TEST".into();
+        crate::data::user::device::create_device(user, &device, token, None, None)
+            .await
+            .unwrap();
+    }
+
+    async fn read(
+        service: &Service,
+        path: &str,
+        token: Option<&str>,
+    ) -> (Option<StatusCode>, Value) {
+        let mut request = TestClient::get(format!("http://localhost/room_keys/{path}"));
+        if let Some(token) = token {
+            request = request.add_header("authorization", format!("Bearer {token}"), true);
+        }
+        let mut response = request.send(service).await;
+        (
+            response.status_code,
+            response.take_json::<Value>().await.unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_room_backup_distinguishes_empty_sessions_from_missing_versions() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"backup.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let local = crate::config::get().server_name.to_string();
+        let alice = crate::core::UserId::parse(format!("@roombackupalice:{local}")).unwrap();
+        let bob = crate::core::UserId::parse(format!("@roombackupbob:{local}")).unwrap();
+        account(&alice, "room-backup-alice").await;
+        account(&bob, "room-backup-bob").await;
+        let algorithm = RawJson::from_value(&json!({
+            "algorithm":"m.megolm_backup.v1.curve25519-aes-sha2",
+            "auth_data":{"public_key":"Zml4dHVyZQ","signatures":{}}
+        }))
+        .unwrap();
+        let backup = key_backup::create_backup(&alice, &algorithm).await.unwrap();
+        let service = Service::new(
+            Router::new()
+                .hoop(hoops::auth_by_access_token)
+                .push(authed_router()),
+        );
+        let room = crate::core::room_id!("!empty-backup:example.test");
+        let path = format!("keys/{room}?version={}", backup.version);
+        assert_eq!(
+            read(&service, &path, None).await.0,
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        let (status, body) = read(&service, &path, Some("room-backup-alice")).await;
+        assert_eq!(status, Some(StatusCode::OK), "{body}");
+        assert_eq!(body, json!({"sessions":{}}));
+        // A valid backup belonging to somebody else is still missing for Bob.
+        let (status, body) = read(&service, &path, Some("room-backup-bob")).await;
+        assert_eq!(status, Some(StatusCode::NOT_FOUND));
+        assert_eq!(body["errcode"], "M_NOT_FOUND");
+        assert_eq!(
+            read(
+                &service,
+                &format!("keys/{room}?version=1"),
+                Some("room-backup-alice")
+            )
+            .await
+            .0,
+            Some(StatusCode::NOT_FOUND)
+        );
+        let data: KeyBackupData = serde_json::from_value(json!({
+            "first_message_index":7, "forwarded_count":2, "is_verified":true,
+            "session_data":{"ciphertext":"fixture-ciphertext","ephemeral":"fixture-ephemeral","mac":"fixture-mac"}
+        })).unwrap();
+        for session in ["first-session", "second-session"] {
+            key_backup::add_key(&alice, backup.version, room, &session.to_owned(), &data)
+                .await
+                .unwrap();
+        }
+        key_backup::add_key(
+            &alice,
+            backup.version,
+            crate::core::room_id!("!other-backup:example.test"),
+            &"other-room-session".to_owned(),
+            &data,
+        )
+        .await
+        .unwrap();
+        let (status, body) = read(&service, &path, Some("room-backup-alice")).await;
+        assert_eq!(status, Some(StatusCode::OK));
+        assert_eq!(
+            body,
+            json!({"sessions":{"first-session":data,"second-session":data}})
+        );
+        assert_eq!(
+            read(
+                &service,
+                &format!("keys/{room}/missing-session?version={}", backup.version),
+                Some("room-backup-alice")
+            )
+            .await
+            .0,
+            Some(StatusCode::NOT_FOUND)
+        );
+        key_backup::delete_backup(&alice, backup.version)
+            .await
+            .unwrap();
+        let (status, body) = read(&service, &path, Some("room-backup-alice")).await;
+        assert_eq!(status, Some(StatusCode::NOT_FOUND));
+        assert_eq!(body["errcode"], "M_NOT_FOUND");
+    }
 }
