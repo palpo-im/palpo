@@ -192,6 +192,29 @@ async fn verify_uiaa_password(user: &data::user::DbUser, password: &str) -> AppR
     }
 }
 
+/// Store the UIAA request body in the database for cross-instance access.
+pub async fn set_uiaa_request(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    session: &str,
+    request: CanonicalJsonValue,
+) -> AppResult<()> {
+    data::user::uiaa::set_uiaa_request(user_id, device_id, session, &request).await?;
+    Ok(())
+}
+
+/// Get the UIAA request body from the database.
+pub async fn get_uiaa_request(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    session: &str,
+) -> Option<CanonicalJsonValue> {
+    data::user::uiaa::get_uiaa_request(user_id, device_id, session)
+        .await
+        .ok()
+        .flatten()
+}
+
 #[cfg(test)]
 mod password_uiaa_rate_tests {
     use super::*;
@@ -248,27 +271,4 @@ mod password_uiaa_rate_tests {
         // This is the same budget checked by password change and account deactivation.
         assert!(crate::hoops::check_password_attempt(id.as_str()).is_err());
     }
-}
-
-/// Store the UIAA request body in the database for cross-instance access.
-pub async fn set_uiaa_request(
-    user_id: &UserId,
-    device_id: &DeviceId,
-    session: &str,
-    request: CanonicalJsonValue,
-) -> AppResult<()> {
-    data::user::uiaa::set_uiaa_request(user_id, device_id, session, &request).await?;
-    Ok(())
-}
-
-/// Get the UIAA request body from the database.
-pub async fn get_uiaa_request(
-    user_id: &UserId,
-    device_id: &DeviceId,
-    session: &str,
-) -> Option<CanonicalJsonValue> {
-    data::user::uiaa::get_uiaa_request(user_id, device_id, session)
-        .await
-        .ok()
-        .flatten()
 }
