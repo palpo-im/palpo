@@ -1,7 +1,8 @@
 //! Bound CPU work before placing it on Tokio's blocking executor.
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{AppError, AppResult};
 
@@ -10,12 +11,46 @@ where
     T: Send + 'static,
     F: FnOnce() -> AppResult<T> + Send + 'static,
 {
+    run_with_slots(slots(), task).await
+}
+
+fn slots() -> Arc<Semaphore> {
     static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    let slots = SLOTS.get_or_init(|| {
-        let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-        Arc::new(Semaphore::new(parallelism.clamp(1, 4)))
-    });
-    run_with_slots(slots.clone(), task).await
+    SLOTS
+        .get_or_init(|| {
+            let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+            Arc::new(Semaphore::new(parallelism.clamp(1, 4)))
+        })
+        .clone()
+}
+
+/// Admit the whole input-read/CPU pipeline before polling the read future. This
+/// prevents queued thumbnail requests from retaining full originals outside the
+/// bounded worker budget. Cancellation during read releases the permit; after
+/// dispatch the blocking closure owns it until the CPU work actually finishes.
+pub async fn pipeline<R, T, RF, F>(read: RF, task: F) -> AppResult<T>
+where
+    R: Send + 'static,
+    T: Send + 'static,
+    RF: Future<Output = AppResult<R>> + Send,
+    F: FnOnce(R) -> AppResult<T> + Send + 'static,
+{
+    pipeline_with_slots(slots(), read, task).await
+}
+
+async fn pipeline_with_slots<R, T, RF, F>(slots: Arc<Semaphore>, read: RF, task: F) -> AppResult<T>
+where
+    R: Send + 'static,
+    T: Send + 'static,
+    RF: Future<Output = AppResult<R>> + Send,
+    F: FnOnce(R) -> AppResult<T> + Send + 'static,
+{
+    let permit = slots
+        .acquire_owned()
+        .await
+        .map_err(|_| AppError::internal("CPU worker pool closed"))?;
+    let input = read.await?;
+    run_with_permit(permit, move || task(input)).await
 }
 
 async fn run_with_slots<T, F>(slots: Arc<Semaphore>, task: F) -> AppResult<T>
@@ -29,6 +64,14 @@ where
         .acquire_owned()
         .await
         .map_err(|_| AppError::internal("CPU worker pool closed"))?;
+    run_with_permit(permit, task).await
+}
+
+async fn run_with_permit<T, F>(permit: OwnedSemaphorePermit, task: F) -> AppResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> AppResult<T> + Send + 'static,
+{
     tokio::task::spawn_blocking(move || {
         // Cancellation of the HTTP task must not release a slot while work still runs.
         let _permit = permit;
@@ -74,5 +117,60 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_original_reads_do_not_allocate_outside_pipeline_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let slots = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let first_slots = slots.clone();
+        let first = tokio::spawn(pipeline_with_slots(
+            first_slots,
+            async move {
+                let _ = started_tx.send(());
+                release_rx.await.unwrap();
+                Ok(vec![1u8; 4096])
+            },
+            |input| Ok(input.len()),
+        ));
+        started_rx.await.unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let second_reads = reads.clone();
+        let second = tokio::spawn(pipeline_with_slots(
+            slots.clone(),
+            async move {
+                second_reads.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![2u8; 4096])
+            },
+            |input| Ok(input.len()),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "queued request polled its storage read before admission"
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(first.await.unwrap().unwrap(), 4096);
+        assert_eq!(second.await.unwrap().unwrap(), 4096);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(slots.available_permits(), 1);
+        // Cancellation of an admitted storage read promptly restores the budget.
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let pending = tokio::spawn(pipeline_with_slots(
+            slots.clone(),
+            async move {
+                let _ = started_tx.send(());
+                std::future::pending::<AppResult<Vec<u8>>>().await
+            },
+            |input| Ok(input.len()),
+        ));
+        started_rx.await.unwrap();
+        assert_eq!(slots.available_permits(), 0);
+        pending.abort();
+        let _ = pending.await;
+        assert_eq!(slots.available_permits(), 1);
     }
 }

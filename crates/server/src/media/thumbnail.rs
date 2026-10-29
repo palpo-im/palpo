@@ -4,13 +4,16 @@ use image::imageops::FilterType;
 
 use crate::{AppResult, MatrixError};
 
-pub(crate) async fn render(
-    image_data: Vec<u8>,
+pub(crate) async fn render_stored(
+    key: &str,
     width: u32,
     height: u32,
     crop: bool,
 ) -> AppResult<(Option<Vec<u8>>, Vec<u8>)> {
-    crate::utils::cpu::run(move || create_thumbnail(image_data, width, height, crop)).await
+    crate::utils::cpu::pipeline(crate::storage::read(key), move |image_data| {
+        create_thumbnail(image_data, width, height, crop)
+    })
+    .await
 }
 
 /// Decode only inside the bounded CPU pool. Limits apply to the original image,
