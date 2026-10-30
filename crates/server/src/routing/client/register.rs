@@ -460,6 +460,8 @@ fn registration_attempt_fingerprint(
         "type": &body.login_type,
         "refresh_token": body.refresh_token,
     });
+    // Canonical object order is stable across instances and serde_json features.
+    let identity = crate::core::serde::to_canonical_value(identity)?;
     Ok(utils::hash_data_sha2_256(&serde_json::to_vec(&identity)?)?.to_hex_uppercase())
 }
 

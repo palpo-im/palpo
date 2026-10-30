@@ -148,6 +148,7 @@ pub async fn registration_session(
     // JSONB numeric comparison avoids casting arbitrary legacy request bodies.
     diesel::sql_query(
         "DELETE FROM user_uiaa_datas WHERE user_id = $1 AND device_id = $2
+         AND octet_length(request_body->'palpo.registration'->>'fingerprint') = 64
          AND request_body->'palpo.registration'->>'fingerprint' = $3
          AND request_body->'palpo.registration'->'expires_at' <= to_jsonb($4::bigint)",
     )
@@ -159,6 +160,7 @@ pub async fn registration_session(
     .await?;
     let stored = diesel::sql_query(
         "SELECT uiaa_info FROM user_uiaa_datas WHERE user_id = $1 AND device_id = $2
+         AND octet_length(request_body->'palpo.registration'->>'fingerprint') = 64
          AND request_body->'palpo.registration'->>'fingerprint' = $3
          AND jsonb_typeof(request_body->'palpo.registration'->'expires_at') = 'number'
          AND request_body->'palpo.registration'->'expires_at' > to_jsonb($4::bigint)
