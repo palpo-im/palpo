@@ -133,7 +133,11 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
 
     while let Some(Ok((server, response))) = futures.next().await {
         match response {
-            Ok(response) => {
+            Ok(mut response) => {
+                if filter_federated_key_response(server, device_keys_input, &mut response) {
+                    back_off(server.to_owned());
+                    failures.insert(server.to_string(), json!({}));
+                }
                 for (user_id, mut master_key) in response.master_keys {
                     if let Some(our_master_key) = crate::user::get_allowed_master_key(
                         sender_id,
@@ -200,6 +204,46 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
         device_keys,
         failures,
     })
+}
+
+/// Remove unrequested or foreign identities before either persistence or aggregation.
+/// Returns whether the peer supplied any invalid entries.
+fn filter_federated_key_response(
+    server: &ServerName,
+    requested: &BTreeMap<OwnedUserId, Vec<OwnedDeviceId>>,
+    response: &mut QueryKeysResBody,
+) -> bool {
+    let mut invalid = false;
+    let allowed_user =
+        |user_id: &OwnedUserId| user_id.server_name() == server && requested.contains_key(user_id);
+    response.master_keys.retain(|user_id, key| {
+        let valid = allowed_user(user_id)
+            && validate_cross_signing_key(user_id, CrossSigningKeyKind::Master, key).is_ok();
+        invalid |= !valid;
+        valid
+    });
+    response.self_signing_keys.retain(|user_id, key| {
+        let valid = allowed_user(user_id)
+            && validate_cross_signing_key(user_id, CrossSigningKeyKind::SelfSigning, key).is_ok();
+        invalid |= !valid;
+        valid
+    });
+    response.device_keys.retain(|user_id, devices| {
+        if !allowed_user(user_id) {
+            invalid = true;
+            return false;
+        }
+        let requested_devices = &requested[user_id];
+        devices.retain(|device_id, key| {
+            let valid = key.user_id == *user_id
+                && key.device_id == *device_id
+                && (requested_devices.is_empty() || requested_devices.contains(device_id));
+            invalid |= !valid;
+            valid
+        });
+        true
+    });
+    invalid
 }
 
 pub async fn claim_one_time_keys(
@@ -879,5 +923,63 @@ mod claim_tests {
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod federated_response_tests {
+    use super::*;
+
+    #[test]
+    fn filters_all_key_classes_before_they_can_be_written_or_returned() {
+        let server = ServerName::parse("remote.example").unwrap();
+        let requested = BTreeMap::from([
+            (
+                UserId::parse("@alice:remote.example").unwrap(),
+                vec!["A".into()],
+            ),
+            (UserId::parse("@all:remote.example").unwrap(), Vec::new()),
+        ]);
+        let mut response: QueryKeysResBody = serde_json::from_value(json!({
+            "device_keys": {
+                "@alice:remote.example": {
+                    "A": {"user_id":"@alice:remote.example", "device_id":"A", "algorithms":[], "keys":{}, "signatures":{}},
+                    "B": {"user_id":"@alice:remote.example", "device_id":"B", "algorithms":[], "keys":{}, "signatures":{}},
+                    "C": {"user_id":"@victim:local.example", "device_id":"C", "algorithms":[], "keys":{}, "signatures":{}}
+                },
+                "@all:remote.example": {"ANY": {"user_id":"@all:remote.example", "device_id":"ANY", "algorithms":[], "keys":{}, "signatures":{}}},
+                "@victim:local.example": {"V": {"user_id":"@victim:local.example", "device_id":"V", "algorithms":[], "keys":{}, "signatures":{}}}
+            },
+            "master_keys": {
+                "@alice:remote.example": {"user_id":"@alice:remote.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}},
+                "@victim:local.example": {"user_id":"@victim:local.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}},
+                "@unrequested:remote.example": {"user_id":"@unrequested:remote.example", "usage":["master"], "keys":{"ed25519:master":"AQID"}}
+            },
+            "self_signing_keys": {
+                "@alice:remote.example": {"user_id":"@alice:remote.example", "usage":["self_signing"], "keys":{"ed25519:self":"AQID"}},
+                "@all:remote.example": {"user_id":"@victim:local.example", "usage":["self_signing"], "keys":{"ed25519:self":"AQID"}}
+            }
+        })).unwrap();
+        assert!(filter_federated_key_response(
+            &server,
+            &requested,
+            &mut response
+        ));
+        assert_eq!(response.master_keys.len(), 1);
+        assert_eq!(response.self_signing_keys.len(), 1);
+        assert_eq!(response.device_keys.len(), 2);
+        assert_eq!(
+            response.device_keys[&UserId::parse("@alice:remote.example").unwrap()].len(),
+            1
+        );
+        assert_eq!(
+            response.device_keys[&UserId::parse("@all:remote.example").unwrap()].len(),
+            1
+        );
+        assert!(!filter_federated_key_response(
+            &server,
+            &requested,
+            &mut response
+        ));
     }
 }

@@ -240,22 +240,34 @@ pub async fn is_device_exists(user_id: &UserId, device_id: &DeviceId) -> DataRes
 }
 
 pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
-    // Evict before deleting the device row: a cache hit (which checks only TTL,
-    // not generation) would otherwise keep serving this device's cloned auth
-    // during the window between the row deletion and the post-delete eviction in
-    // `delete_access_tokens` below.
+    // Evict both before revocation and after commit/rollback.
     super::access_token::invalidate_user(user_id);
+    let result = connect()
+        .await?
+        .transaction::<_, DataError, _>(async |conn| {
+            remove_device_on_connection(conn, user_id, device_id).await
+        })
+        .await;
+    super::access_token::invalidate_user(user_id);
+    result
+}
+
+async fn remove_device_on_connection(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<()> {
     let count = diesel::delete(
         user_devices::table
             .filter(user_devices::user_id.eq(user_id))
             .filter(user_devices::device_id.eq(device_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(conn)
     .await?;
     if count == 0 {
         if diesel_exists!(
             user_devices::table.filter(user_devices::device_id.eq(device_id)),
-            &mut connect().await?
+            conn
         )? {
             return Err(MatrixError::forbidden("Device not owned by user.", None).into());
         } else {
@@ -263,12 +275,136 @@ pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult
         }
     }
 
-    delete_access_tokens(user_id, device_id).await?;
-    delete_refresh_tokens(user_id, device_id).await?;
-    super::key::delete_device_key_material(user_id, device_id).await?;
-    remove_all_to_device_events(user_id, device_id).await?;
-    super::pusher::delete_device_pushers(user_id, device_id).await?;
+    diesel::delete(
+        user_access_tokens::table
+            .filter(user_access_tokens::user_id.eq(user_id))
+            .filter(user_access_tokens::device_id.eq(device_id)),
+    )
+    .execute(conn)
+    .await?;
+    diesel::delete(
+        user_refresh_tokens::table
+            .filter(user_refresh_tokens::user_id.eq(user_id))
+            .filter(user_refresh_tokens::device_id.eq(device_id)),
+    )
+    .execute(conn)
+    .await?;
+    super::key::delete_device_key_material_on_connection(conn, user_id, device_id).await?;
+    diesel::delete(
+        device_inboxes::table
+            .filter(device_inboxes::user_id.eq(user_id))
+            .filter(device_inboxes::device_id.eq(device_id)),
+    )
+    .execute(conn)
+    .await?;
+    diesel::delete(
+        user_pushers::table
+            .filter(user_pushers::user_id.eq(user_id))
+            .filter(user_pushers::device_id.eq(device_id)),
+    )
+    .execute(conn)
+    .await?;
     Ok(())
+}
+
+/// Revoke the complete target set before any best-effort queue wakeup can fail.
+/// Local device-list markers and federation deletion EDUs are durable in the same
+/// transaction, so a lost wakeup or restart cannot lose the deletion intent.
+pub async fn remove_other_devices(
+    user_id: &UserId,
+    keep_device: &DeviceId,
+    joined_rooms: &[OwnedRoomId],
+    remote_servers: &[OwnedServerName],
+) -> DataResult<Vec<OwnedDeviceId>> {
+    super::access_token::invalidate_user(user_id);
+    let result = connect()
+        .await?
+        .transaction::<_, DataError, _>(async |conn| {
+            let device_ids = user_devices::table
+                .filter(user_devices::user_id.eq(user_id))
+                .filter(user_devices::device_id.ne(keep_device))
+                .order_by(user_devices::device_id.asc())
+                .select(user_devices::device_id)
+                .for_update()
+                .load::<OwnedDeviceId>(conn)
+                .await?;
+            for device_id in &device_ids {
+                remove_device_on_connection(conn, user_id, device_id).await?;
+            }
+            if device_ids.is_empty() {
+                return Ok(device_ids);
+            }
+            let changed_at = UnixMillis::now();
+            let occur_sn =
+                diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                    .get_result::<i64>(conn)
+                    .await?;
+            for room in joined_rooms.iter().map(Some).chain(std::iter::once(None)) {
+                let mut previous = e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(user_id))
+                    .into_boxed();
+                previous = match room {
+                    Some(room) => previous.filter(e2e_key_changes::room_id.eq(room)),
+                    None => previous.filter(e2e_key_changes::room_id.is_null()),
+                };
+                let ids = previous
+                    .select(e2e_key_changes::id)
+                    .load::<i64>(conn)
+                    .await?;
+                diesel::delete(e2e_key_changes::table.filter(e2e_key_changes::id.eq_any(ids)))
+                    .execute(conn)
+                    .await?;
+                diesel::insert_into(e2e_key_changes::table)
+                    .values(super::NewDbKeyChange {
+                        user_id: user_id.to_owned(),
+                        room_id: room.cloned(),
+                        occur_sn,
+                        changed_at,
+                    })
+                    .execute(conn)
+                    .await?;
+            }
+            for device_id in &device_ids {
+                let stream_id =
+                    diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                        .get_result::<i64>(conn)
+                        .await?;
+                diesel::insert_into(device_streams::table)
+                    .values((
+                        device_streams::id.eq(stream_id),
+                        device_streams::user_id.eq(user_id),
+                        device_streams::device_id.eq(device_id),
+                    ))
+                    .execute(conn)
+                    .await?;
+                let mut update = crate::core::device::DeviceListUpdateContent::new(
+                    user_id.to_owned(),
+                    device_id.clone(),
+                    stream_id as u64,
+                );
+                update.deleted = Some(true);
+                let edu = crate::core::federation::transaction::Edu::DeviceListUpdate(update);
+                let bytes = serde_json::to_vec(&edu)?;
+                for server in remote_servers {
+                    diesel::insert_into(outgoing_requests::table)
+                        .values(crate::sending::NewDbOutgoingRequest {
+                            kind: "normal".into(),
+                            appservice_id: None,
+                            user_id: None,
+                            pushkey: None,
+                            server_id: Some(server.clone()),
+                            pdu_id: None,
+                            edu_json: Some(bytes.clone()),
+                        })
+                        .execute(conn)
+                        .await?;
+                }
+            }
+            Ok(device_ids)
+        })
+        .await;
+    super::access_token::invalidate_user(user_id);
+    result
 }
 
 pub async fn set_refresh_token(
