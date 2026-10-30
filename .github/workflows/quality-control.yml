@@ -107,6 +107,11 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
+      - name: Default-feature idle fallback key regression
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_idle_fallback
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_idle_fallback cargo test -p palpo --lib routing::client::key::fallback_tests::database_normal_fallback_upload_claim_and_sync_lifecycle -- --ignored --exact --test-threads=1
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on

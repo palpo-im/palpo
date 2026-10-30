@@ -212,6 +212,8 @@ mod fallback_tests {
             sync.device_unused_fallback_key_types,
             Some(vec![crate::core::DeviceKeyAlgorithm::SignedCurve25519])
         );
+        let idle_args = serde_json::from_value(json!({"since":sync.next_batch})).unwrap();
+        let stream_before_claim = data::curr_sn().await.unwrap();
         let claim = json!({"one_time_keys":{user.as_str():{device.as_str():"signed_curve25519"}}});
         let (status, keys) = post(&service, "claim", claim.clone()).await;
         assert_eq!(status, Some(StatusCode::OK), "{keys}");
@@ -229,6 +231,15 @@ mod fallback_tests {
                     .is_some()
             );
         }
+        assert_eq!(data::curr_sn().await.unwrap(), stream_before_claim);
+        let idle_sync = crate::sync_v3::sync_events(&user, &device, &idle_args)
+            .await
+            .unwrap();
+        assert_eq!(
+            idle_sync.device_unused_fallback_key_types,
+            Some(vec![]),
+            "a claimed fallback key must be reported on an idle incremental sync"
+        );
         let sync = crate::sync_v3::sync_events(&user, &device, &args)
             .await
             .unwrap();
