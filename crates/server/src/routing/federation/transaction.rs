@@ -565,6 +565,7 @@ mod tests {
 
 #[cfg(test)]
 mod device_version_tests {
+    use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
