@@ -1515,6 +1515,25 @@ async fn late_published_timeline(
         .execute(&mut data::connect().await.unwrap())
         .await
         .unwrap();
+    let newest_gap = super::load_timeline(
+        alice,
+        &room,
+        Some(lower.parse().unwrap()),
+        Some(next.parse().unwrap()),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(newest_gap.limited);
+    assert_eq!(
+        newest_gap
+            .events
+            .values()
+            .map(|pdu| pdu.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![pending[1].0.event_id.as_str()],
+        "a gap before an accepted PDU must retain that newest PDU"
+    );
     let filtered_gap = sync(
         service,
         Some(lower),

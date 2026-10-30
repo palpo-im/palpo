@@ -1485,7 +1485,7 @@ pub(crate) async fn load_timeline(
             for (identity, pdu) in timeline_pdus {
                 if timeline::publication::position(room_id, identity)
                     .await?
-                    .is_some_and(|position| position > *last_gap)
+                    .is_some_and(|position| position >= *last_gap)
                 {
                     after_gap.insert(identity, pdu);
                 }
