@@ -573,13 +573,16 @@ async fn partial_join_period() {
     );
 
     // A malformed selected payload is a real decoder/storage failure, not
-    // unavailable history. It must still fail the HTTP request.
+    // unavailable history. Keep its state identity and timestamp intact so
+    // retention-enabled reads reach the same PDU decoder as ordinary reads.
+    let mut malformed = stored.clone();
+    malformed["sender"] = json!(42);
     let mut restored = data::room::DbEventData {
         event_id: historic.event_id.clone(),
         event_sn: historic.event_sn,
         room_id: room.clone(),
         internal_metadata: None,
-        json_data: json!(["invalid stored historical member"]),
+        json_data: malformed,
         format_version: None,
     };
     restored
