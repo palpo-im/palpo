@@ -474,15 +474,24 @@ async fn load_joined_room(
         .unwrap_or_else(|| next_batch.event_sn().saturating_sub(1));
     // Another worker may already have appended state past this captured sync
     // window. Resolve the delta against the frame this response can include.
-    let Ok(current_frame_id) = room::get_frame_id(room_id, Some(until_sn)).await else {
-        return Ok((JoinedRoom::default(), None));
+    let current_frame_id = match room::get_frame_id(room_id, Some(until_sn)).await {
+        Ok(frame) => frame,
+        Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
+        Err(error) => return Err(error),
     };
     // V3 next_batch is the first unseen position, and timeline reads include
     // `since`. Its previous state must therefore be strictly before that point.
-    let since_frame_id =
-        crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn().saturating_sub(1)))
+    let since_frame_id = if let Some(since_tk) = since_tk {
+        match crate::event::get_last_frame_id(room_id, Some(since_tk.event_sn().saturating_sub(1)))
             .await
-            .ok();
+        {
+            Ok(frame) => Some(frame),
+            Err(error) if error.is_not_found() => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        Some(current_frame_id)
+    };
 
     let mut timeline = load_timeline(
         sender_id,
@@ -716,10 +725,7 @@ async fn load_joined_room(
 
                 // && encrypted_room || new_encrypted_room {
                 // If the user is in a new encrypted room, give them all joined users
-                *joined_users = room::joined_users(room_id, None)
-                    .await?
-                    .into_iter()
-                    .collect();
+                *joined_users = joined_users_at_frame(current_frame_id).await?;
                 // .into_iter()
                 // .filter(|user_id| {
                 //     // Don't send key updates from the sender to the sender
@@ -818,14 +824,19 @@ async fn load_joined_room(
                     )
                     .await?
                         || lazy_load_send_redundant)
-                        && let Ok(member_event) = room::get_state(
+                    {
+                        let member_event = match room::get_state(
                             room_id,
                             &StateEventType::RoomMember,
                             event.sender.as_str(),
-                            None,
+                            Some(until_sn),
                         )
                         .await
-                    {
+                        {
+                            Ok(member_event) => member_event,
+                            Err(error) if error.is_not_found() => continue,
+                            Err(error) => return Err(error),
+                        };
                         lazy_loaded.insert(event.sender.clone());
                         if member_event.can_pass_filter(&filter.room.state) {
                             state_events.push(member_event);
@@ -859,7 +870,7 @@ async fn load_joined_room(
                     // && encrypted_room || new_encrypted_room {
                     // If the user is in a new encrypted room, give them all joined users
                     device_list_updates.extend(
-                        room::joined_users(room_id, None)
+                        joined_users_at_frame(current_frame_id)
                             .await?
                             .into_iter()
                             .filter(|user_id| {
@@ -1004,6 +1015,26 @@ async fn load_joined_room(
         unread_count,
     };
     Ok((joined_room, timeline.next_batch))
+}
+
+/// Current membership rows can already have been overwritten by later joins or
+/// leaves. The captured state frame retains both the members present then and
+/// the absence of members whose joins fall outside this response window.
+async fn joined_users_at_frame(frame_id: i64) -> AppResult<HashSet<OwnedUserId>> {
+    let mut users = HashSet::new();
+    for (field_id, event_id) in state::get_full_state_ids(frame_id).await? {
+        let field = state::get_field(field_id).await?;
+        if field.event_ty != StateEventType::RoomMember {
+            continue;
+        }
+        let pdu = timeline::get_pdu(&event_id).await?;
+        if pdu.get_content::<RoomMemberEventContent>()?.membership == MembershipState::Join {
+            let user = UserId::parse(&field.state_key)
+                .map_err(|_| AppError::public("invalid UserId in member pdu"))?;
+            users.insert(user);
+        }
+    }
+    Ok(users)
 }
 
 async fn collect_membership_change(
