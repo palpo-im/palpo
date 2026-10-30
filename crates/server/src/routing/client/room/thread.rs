@@ -306,7 +306,13 @@ mod private_cursor_tests {
         )
         .await;
         let mut hidden = Vec::new();
+        let message_rate = crate::config::get().rc_message.per_second;
         for number in 0..513 {
+            // Prepare the large history at the configured send rate, keeping
+            // the real message limiter enabled throughout this HTTP fixture.
+            if message_rate > 0.0 {
+                tokio::time::sleep(std::time::Duration::from_secs_f64(1.1 / message_rate)).await;
+            }
             let sent = request(
                 &service,
                 "owner",
