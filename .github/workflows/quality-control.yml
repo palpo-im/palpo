@@ -133,6 +133,35 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_pending_auth_events
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_pending_auth_events cargo test -p palpo --lib --all-features missing_events_signed_predecessors_preserve_pending_state -- --ignored --exact event::outlier::missing_events_tests::missing_events_signed_predecessors_preserve_pending_state
 
+      - name: Remote device version HTTP regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_versions
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_versions \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_remote_device_versions_are_durable_and_idempotent \
+            -- --exact --ignored
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_many_rooms
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_many_rooms \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_remote_device_versions_cover_many_shared_rooms \
+            -- --exact --ignored
+
+      - name: Join device notification producer regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_join_device_versions
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_join_device_versions \
+            cargo test -p palpo --lib --all-features \
+            membership::join::device_list_producer_tests::http_join_device_list_version_matches_other_producers \
+            -- --exact --ignored
+
+      - name: Initial remote device snapshot race regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_snapshot
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_snapshot \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_join_snapshot_preserves_device_version_races \
+            -- --exact --ignored
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
