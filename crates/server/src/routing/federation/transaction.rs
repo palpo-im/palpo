@@ -94,7 +94,7 @@ async fn send_message(
 
     let txn_start_time = Instant::now();
     let resolved_map = process_pdus(&body.pdus, &body.origin, &txn_start_time).await?;
-    process_edus(parse_edus(body.edus), &body.origin).await;
+    process_edus(parse_edus(body.edus), &body.origin).await?;
 
     json_ok(SendMessageResBody {
         pdus: resolved_map
@@ -153,13 +153,15 @@ async fn process_pdus(
     Ok(resolved_map)
 }
 
-async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) {
+async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) -> AppResult<()> {
     for edu in edus {
         match edu {
             Edu::Presence(presence) => process_edu_presence(origin, presence).await,
             Edu::Receipt(receipt) => process_edu_receipt(origin, receipt).await,
             Edu::Typing(typing) => process_edu_typing(origin, typing).await,
-            Edu::DeviceListUpdate(content) => process_edu_device_list_update(origin, content).await,
+            Edu::DeviceListUpdate(content) => {
+                process_edu_device_list_update(origin, content).await?
+            }
             Edu::DirectToDevice(content) => process_edu_direct_to_device(origin, content).await,
             Edu::SigningKeyUpdate(content) => process_edu_signing_key_update(origin, content).await,
             Edu::_Custom(ref _custom) => {
@@ -167,6 +169,7 @@ async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) {
             }
         }
     }
+    Ok(())
 }
 
 async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
@@ -374,9 +377,12 @@ async fn process_edu_typing(origin: &ServerName, typing: TypingContent) {
     }
 }
 
-async fn process_edu_device_list_update(origin: &ServerName, content: DeviceListUpdateContent) {
+async fn process_edu_device_list_update(
+    origin: &ServerName,
+    content: DeviceListUpdateContent,
+) -> AppResult<()> {
     let DeviceListUpdateContent {
-        user_id, device_id, ..
+        user_id, stream_id, ..
     } = content;
 
     if user_id.server_name() != origin {
@@ -384,10 +390,15 @@ async fn process_edu_device_list_update(origin: &ServerName, content: DeviceList
             %user_id, %origin,
             "received device list update edu for user not belonging to origin"
         );
-        return;
+        return Ok(());
     }
-
-    let _ = crate::user::mark_device_key_update(&user_id, &device_id).await;
+    crate::data::user::key::apply_remote_device_list_version(
+        &user_id,
+        stream_id,
+        crate::config::server_name(),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDeviceContent) {
@@ -549,5 +560,359 @@ mod tests {
             body.validate(&ServerName::parse("another.example").unwrap())
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod device_version_tests {
+    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
+    use crate::core::serde::CanonicalJsonObject;
+    use crate::core::signatures::{Ed25519KeyPair, sign_json};
+    use crate::data::schema::{remote_device_list_versions, room_users, rooms};
+
+    const LOCAL: &str = "device-versions.example";
+    const REMOTE: &str = "remote-devices.example";
+    const TOKEN: &str = "device-version-alice";
+
+    async fn send_update(
+        service: &Service,
+        key: &Ed25519KeyPair,
+        txn: &str,
+        stream: u64,
+        device: &str,
+    ) -> (StatusCode, Value) {
+        let path = format!("/_matrix/federation/v1/send/{txn}");
+        let body = json!({"origin":REMOTE,"origin_server_ts":1,"pdus":[],"edus":[{
+            "edu_type":"m.device_list_update","content":{
+                "user_id":format!("@bob:{REMOTE}"),"device_id":device,
+                "stream_id":stream,"prev_id":[]
+            }
+        }]});
+        let mut signed: CanonicalJsonObject = serde_json::from_value(json!({
+            "method":"PUT","uri":path,"origin":REMOTE,"destination":LOCAL,"content":body
+        }))
+        .unwrap();
+        sign_json(REMOTE, key, &mut signed).unwrap();
+        let signed = serde_json::to_value(signed).unwrap();
+        let signature = signed["signatures"][REMOTE]["ed25519:versions"]
+            .as_str()
+            .unwrap();
+        let mut response = TestClient::put(format!("http://localhost{path}"))
+            .json(&body)
+            .add_header("authorization", format!(
+                "X-Matrix origin=\"{REMOTE}\",destination=\"{LOCAL}\",key=\"ed25519:versions\",sig=\"{signature}\""
+            ), true)
+            .send(service).await;
+        (
+            response.status_code.unwrap(),
+            response.take_json().await.unwrap(),
+        )
+    }
+
+    async fn sync(service: &Service, since: Option<&str>) -> Value {
+        let since = since
+            .map(|since| format!("&since={since}"))
+            .unwrap_or_default();
+        let request = TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/sync?timeout=0{since}"
+        ))
+        .add_header("authorization", format!("Bearer {TOKEN}"), true);
+        let mut response = request.send(service).await;
+        let result: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{result}");
+        result
+    }
+
+    async fn join_current_membership(room: &RoomId, user: &UserId) {
+        diesel::insert_into(room_users::table)
+            .values(crate::data::room::NewDbRoomUser {
+                event_id: format!("$device-{}", user.localpart()).try_into().unwrap(),
+                event_sn: 1,
+                room_id: room.to_owned(),
+                room_server_id: Some(LOCAL.try_into().unwrap()),
+                user_id: user.to_owned(),
+                user_server_id: user.server_name().to_owned(),
+                sender_id: user.to_owned(),
+                membership: "join".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: None,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn run() {
+        crate::test_database::init();
+        crate::config::CONFIG
+            .set(
+                serde_json::from_value(json!({
+                    "server_name":LOCAL,"db":{"url":"unused-test-config"},
+                    "presence":{"allow_local":false,"allow_incoming":false,"allow_outgoing":false}
+                }))
+                .unwrap(),
+            )
+            .expect("run this HTTP regression alone");
+        let alice = UserId::parse(format!("@alice:{LOCAL}")).unwrap();
+        let bob = UserId::parse(format!("@bob:{REMOTE}")).unwrap();
+        crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: alice.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: alice.localpart().into(),
+            server_name: alice.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        crate::data::user::device::create_device(&alice, "ALICE".into(), TOKEN, None, None)
+            .await
+            .unwrap();
+        let room: OwnedRoomId = format!("!device-versions:{LOCAL}").try_into().unwrap();
+        let mut conn = crate::data::connect().await.unwrap();
+        diesel::insert_into(rooms::table)
+            .values(crate::data::room::NewDbRoom {
+                id: room.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        // Device tracking is scoped by the current joined membership rows. No
+        // room event is involved in accepting or replaying a device-list EDU.
+        drop(conn);
+        join_current_membership(&room, &alice).await;
+        let key = Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "versions".into())
+            .unwrap();
+        let mut keys = ServerSigningKeys::new(
+            REMOTE.try_into().unwrap(),
+            UnixMillis(UnixMillis::now().0 + 86_400_000),
+        );
+        keys.verify_keys.insert(
+            "ed25519:versions".try_into().unwrap(),
+            VerifyKey::from_bytes(key.public_key().to_vec()),
+        );
+        crate::server_key::add_signing_keys(keys).await.unwrap();
+        let service = Service::new(crate::routing::matrix());
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "not-yet-shared", 0, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "untracked user consumed a version"
+        );
+        join_current_membership(&room, &bob).await;
+        let initial = sync(&service, None).await;
+        let response = send_update(&service, &key, "first", 0, "BOB").await;
+        assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        let acknowledged = sync(&service, initial["next_batch"].as_str()).await;
+        assert_eq!(acknowledged["device_lists"]["changed"], json!([bob]));
+
+        // A placeholder and the explicit device can describe the same opaque
+        // version in separate transactions. Replaying it after acknowledgement
+        // must not pollute Alice's own new-device change with Bob again.
+        let before = crate::data::curr_sn().await.unwrap();
+        let response = send_update(&service, &key, "duplicate", 0, "placeholder").await;
+        assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "duplicate EDU allocated a new stream position"
+        );
+        crate::data::user::device::create_device(
+            &alice,
+            "SECOND".into(),
+            "device-version-second",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut response = TestClient::post("http://localhost/_matrix/client/v3/keys/upload")
+            .add_header("authorization", "Bearer device-version-second", true)
+            .json(&json!({"device_keys":{"user_id":alice,"device_id":"SECOND",
+                "algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{},"signatures":{}}}))
+            .send(&service)
+            .await;
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        let own_change = sync(&service, acknowledged["next_batch"].as_str()).await;
+        assert_eq!(own_change["device_lists"]["changed"], json!([alice]));
+
+        let before = crate::data::curr_sn().await.unwrap();
+        let transaction_ids = (0..8)
+            .map(|i| format!("concurrent-{i}"))
+            .collect::<Vec<_>>();
+        let sends = transaction_ids
+            .iter()
+            .map(|txn| send_update(&service, &key, txn, 37, "BOB"));
+        for response in futures_util::future::join_all(sends).await {
+            assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        }
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before + 1,
+            "concurrent duplicate deliveries invalidated more than once"
+        );
+
+        // IDs are opaque, not ordered: a new lower value is a new version too.
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "lower-version", 12, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        let mut conn = crate::data::connect().await.unwrap();
+        conn.batch_execute("CREATE FUNCTION fail_device_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.user_id = '@bob:remote-devices.example' THEN RAISE EXCEPTION 'injected device marker failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_device_version BEFORE INSERT ON e2e_key_changes FOR EACH ROW EXECUTE FUNCTION fail_device_version();").await.unwrap();
+        drop(conn);
+        let response = send_update(&service, &key, "failure", 55, "BOB").await;
+        assert_eq!(
+            response.0,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{:?}",
+            response.1
+        );
+        let mut conn = crate::data::connect().await.unwrap();
+        conn.batch_execute("DROP TRIGGER fail_device_version ON e2e_key_changes; DROP FUNCTION fail_device_version();").await.unwrap();
+        drop(conn);
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "retry-after-failure", 55, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before + 1,
+            "failed invalidation incorrectly remembered the version"
+        );
+
+        // The decoded content type permits all u64 values, while the transport's
+        // canonical-JSON signature range is narrower. Exercise the handler's
+        // persistence boundary directly for the maximum value, without a cast.
+        let large: DeviceListUpdateContent = serde_json::from_value(json!({
+            "user_id":bob,"device_id":"BOB","stream_id":u64::MAX,"prev_id":[]
+        }))
+        .unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        let remote = ServerName::parse(REMOTE).unwrap();
+        process_edu_device_list_update(&remote, large.clone())
+            .await
+            .unwrap();
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        process_edu_device_list_update(&remote, large)
+            .await
+            .unwrap();
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        for stream in 1_000..1_260 {
+            let response =
+                send_update(&service, &key, &format!("window-{stream}"), stream, "BOB").await;
+            assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        }
+        let count: i64 = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .count()
+            .get_result(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 256,
+            "remote version history grew beyond its durable window"
+        );
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "window-recent", 1_259, "placeholder")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before);
+        // An evicted low ID is conservatively invalidated and retained as the
+        // newest receipt, proving eviction does not sort opaque remote IDs.
+        assert_eq!(
+            send_update(&service, &key, "window-evicted", 1_000, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        let retained: bool = diesel::select(diesel::dsl::exists(
+            remote_device_list_versions::table
+                .filter(remote_device_list_versions::user_id.eq(&bob))
+                .filter(remote_device_list_versions::stream_id.eq("1000")),
+        ))
+        .get_result(&mut crate::data::connect().await.unwrap())
+        .await
+        .unwrap();
+        assert!(retained);
+        diesel::delete(room_users::table.filter(room_users::user_id.eq(&alice)))
+            .execute(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "no-local-member", 1_259, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before);
+        let count: i64 = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .count()
+            .get_result(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "unshared user's retained window was not cleared");
+        join_current_membership(&room, &alice).await;
+        assert_eq!(
+            send_update(&service, &key, "shared-again", 1_259, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+    }
+
+    #[test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_remote_device_versions_are_durable_and_idempotent() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

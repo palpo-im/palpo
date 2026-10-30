@@ -689,3 +689,110 @@ pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
         .await?;
     Ok(())
 }
+
+/// Accept a tracked remote user's opaque version and publish its invalidation
+/// atomically. The latest 256 accepted versions survive process restarts, ordered
+/// by local receipt rather than the remote ID. Older evicted versions conservatively
+/// invalidate again; the cache cannot grow with a user's entire device history.
+pub async fn apply_remote_device_list_version(
+    user_id: &UserId,
+    stream_id: u64,
+    local_server: &ServerName,
+) -> DataResult<bool> {
+    let stream_id = stream_id.to_string();
+    let changed_at = UnixMillis::now();
+    let applied = connect()
+        .await?
+        .transaction::<_, diesel::result::Error, _>(async |conn| {
+            // Different versions for one user also replace the same marker rows.
+            // Serialize that replacement without holding a second pool connection.
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+                .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+                .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
+                .execute(conn)
+                .await?;
+            let memberships = room_users::table
+                .filter(room_users::user_id.eq(user_id))
+                .distinct_on(room_users::room_id)
+                .select((room_users::room_id, room_users::membership))
+                .order_by((room_users::room_id.desc(), room_users::id.desc()))
+                .load::<(OwnedRoomId, String)>(conn)
+                .await?;
+            let joined_rooms = memberships
+                .into_iter()
+                .filter_map(|(room, membership)| (membership == "join").then_some(room))
+                .collect::<Vec<_>>();
+            // Retained remote membership alone does not imply that this server
+            // still has anyone in the room. Only track users sharing a room with
+            // a current local member, using the same transaction for the markers.
+            let joined_rooms = room_users::table
+                .filter(room_users::room_id.eq_any(&joined_rooms))
+                .filter(room_users::user_server_id.eq(local_server))
+                .filter(room_users::membership.eq("join"))
+                .select(room_users::room_id)
+                .distinct()
+                .load::<OwnedRoomId>(conn)
+                .await?;
+            if joined_rooms.is_empty() {
+                diesel::delete(remote_device_list_versions::table.filter(
+                    remote_device_list_versions::user_id.eq(user_id),
+                ))
+                .execute(conn)
+                .await?;
+                return Ok(false);
+            }
+            let inserted = diesel::insert_into(remote_device_list_versions::table)
+                .values((
+                    remote_device_list_versions::user_id.eq(user_id),
+                    remote_device_list_versions::stream_id.eq(&stream_id),
+                ))
+                .on_conflict_do_nothing()
+                .execute(conn)
+                .await?;
+            if inserted == 0 {
+                return Ok(false);
+            }
+            let occur_sn =
+                diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                    .get_result::<Seqnum>(conn)
+                    .await?;
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(user_id))
+                    .filter(
+                        e2e_key_changes::room_id
+                            .eq_any(&joined_rooms)
+                            .or(e2e_key_changes::room_id.is_null()),
+                    ),
+            )
+            .execute(conn)
+            .await?;
+            let changes = joined_rooms
+                .iter()
+                .cloned()
+                .map(Some)
+                .chain(std::iter::once(None))
+                .map(|room_id| NewDbKeyChange {
+                    user_id: user_id.to_owned(),
+                    room_id,
+                    occur_sn,
+                    changed_at,
+                })
+                .collect::<Vec<_>>();
+            diesel::insert_into(e2e_key_changes::table)
+                .values(&changes)
+                .execute(conn)
+                .await?;
+            diesel::sql_query(
+                "DELETE FROM remote_device_list_versions WHERE user_id = $1 AND received_order NOT IN \
+                 (SELECT received_order FROM remote_device_list_versions WHERE user_id = $1 \
+                  ORDER BY received_order DESC LIMIT 256)",
+            )
+            .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+            .execute(conn)
+            .await?;
+            Ok(true)
+        })
+        .await?;
+    Ok(applied)
+}
