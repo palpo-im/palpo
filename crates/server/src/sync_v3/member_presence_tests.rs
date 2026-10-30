@@ -290,7 +290,47 @@ async fn member_presence() {
 
     // The room's current state may move beyond a sync worker's captured end.
     // Future membership and state must not enter that earlier response window.
+    data::user::device::create_device(&alice, "WINDOW".into(), "alice-window", None, None)
+        .await
+        .unwrap();
+    let previous_alice_member = room::get_state(
+        &room,
+        &crate::core::events::StateEventType::RoomMember,
+        alice.as_str(),
+        None,
+    )
+    .await
+    .unwrap();
+    let message = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/window-message"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text", "body":"within captured window"})),
+        &service,
+    )
+    .await;
+    let message_id = crate::core::EventId::parse(message["event_id"].as_str().unwrap()).unwrap();
+    let message_sn = room::timeline::get_pdu(&message_id).await.unwrap().event_sn;
     let captured_until = data::curr_sn().await.unwrap();
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/profile/{alice}/displayname"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"displayname":"future Alice beyond captured window"})),
+        &service,
+    )
+    .await;
+    let future_alice_member = room::get_state(
+        &room,
+        &crate::core::events::StateEventType::RoomMember,
+        alice.as_str(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(future_alice_member.event_sn > captured_until);
     request(
         TestClient::put(format!(
             "http://localhost/_matrix/client/v3/rooms/{room}/state/m.room.name"
@@ -318,6 +358,71 @@ async fn member_presence() {
     .await;
     assert!(room::user::join_sn(&eve, &room).await.unwrap() > captured_until);
     assert!(room::user::left_sn(&room, &bob).await.unwrap() > captured_until);
+    for since in [Some(token), None] {
+        let (mut keys, mut joined, mut left) = (
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+        );
+        let (bounded_room, _) = super::load_joined_room(
+            &alice,
+            "D".into(),
+            &room,
+            false,
+            since,
+            Some(BatchToken::new_live(captured_until)),
+            BatchToken::new_live(captured_until + 1),
+            false,
+            &crate::core::client::filter::FilterDefinition::default(),
+            false,
+            &mut keys,
+            &mut joined,
+            &mut left,
+        )
+        .await
+        .unwrap();
+        assert!(!joined.contains(&eve));
+        assert!(!keys.contains(&eve));
+        assert!(!left.contains(&bob));
+        if since.is_none() {
+            assert!(
+                joined.contains(&bob),
+                "historical join was overwritten by a later leave"
+            );
+            assert!(keys.contains(&bob));
+        }
+        let bounded = serde_json::to_value(bounded_room).unwrap();
+        for section in ["state", "timeline"] {
+            for event in bounded[section]["events"].as_array().into_iter().flatten() {
+                assert_ne!(
+                    event["content"]["name"],
+                    "future name beyond captured window"
+                );
+                assert_ne!(
+                    event["content"]["displayname"],
+                    "future Alice beyond captured window"
+                );
+                assert!(!(event["type"] == "m.room.member" && event["state_key"] == eve.as_str()));
+                assert!(
+                    !(event["type"] == "m.room.member"
+                        && event["state_key"] == bob.as_str()
+                        && event["content"]["membership"] == "leave")
+                );
+            }
+        }
+    }
+
+    // An unchanged in-window membership must also be used when a cold device
+    // needs the timeline sender's member event as lazy-loading supplementation.
+    assert!(
+        !room::lazy_loading::lazy_load_was_sent_before(&alice, "WINDOW".into(), &room, &alice)
+            .await
+            .unwrap()
+    );
+    let lazy_filter = serde_json::from_value(json!({"room": {
+        "state": {"lazy_load_members":true}, "timeline":{"limit":1}
+    }}))
+    .unwrap();
     let (mut keys, mut joined, mut left) = (
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
@@ -325,14 +430,14 @@ async fn member_presence() {
     );
     let (bounded_room, _) = super::load_joined_room(
         &alice,
-        "D".into(),
+        "WINDOW".into(),
         &room,
         false,
-        Some(token),
+        Some(BatchToken::new_live(message_sn)),
         Some(BatchToken::new_live(captured_until)),
         BatchToken::new_live(captured_until + 1),
         false,
-        &crate::core::client::filter::FilterDefinition::default(),
+        &lazy_filter,
         false,
         &mut keys,
         &mut joined,
@@ -340,22 +445,26 @@ async fn member_presence() {
     )
     .await
     .unwrap();
-    assert!(!joined.contains(&eve));
-    assert!(!keys.contains(&eve));
-    assert!(!left.contains(&bob));
     let bounded = serde_json::to_value(bounded_room).unwrap();
-    for section in ["state", "timeline"] {
-        for event in bounded[section]["events"].as_array().into_iter().flatten() {
-            assert_ne!(
-                event["content"]["name"],
-                "future name beyond captured window"
-            );
-            assert!(!(event["type"] == "m.room.member" && event["state_key"] == eve.as_str()));
-            assert!(
-                !(event["type"] == "m.room.member"
-                    && event["state_key"] == bob.as_str()
-                    && event["content"]["membership"] == "leave")
-            );
-        }
-    }
+    assert!(
+        bounded["timeline"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_id"] == message_id.as_str())
+    );
+    let sender_member = bounded["state"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "m.room.member" && event["state_key"] == alice.as_str())
+        .expect("cold lazy-load cache must receive the message sender's membership");
+    assert_eq!(
+        sender_member["event_id"],
+        previous_alice_member.event_id.as_str()
+    );
+    assert_ne!(
+        sender_member["event_id"],
+        future_alice_member.event_id.as_str()
+    );
 }
