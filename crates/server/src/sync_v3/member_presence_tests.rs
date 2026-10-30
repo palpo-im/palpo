@@ -168,8 +168,8 @@ async fn member_presence() {
         let imported_id = "$cached-import-after-live-join";
         let mut connection = data::connect().await.unwrap();
         diesel::sql_query("INSERT INTO events
-            (id,sn,ty,room_id,depth,topological_ordering,stream_ordering,origin_server_ts,is_outlier)
-            VALUES ($1,$2,'m.room.message',$3,1,1,$2,0,true)")
+            (id,sn,ty,room_id,depth,topological_ordering,stream_ordering,origin_server_ts,contains_url,is_outlier)
+            VALUES ($1,$2,'m.room.message',$3,1,1,$2,0,false,true)")
             .bind::<Text,_>(imported_id).bind::<BigInt,_>(imported_sn)
             .bind::<Text,_>(room.as_str()).execute(&mut connection).await.unwrap();
         diesel::sql_query(
