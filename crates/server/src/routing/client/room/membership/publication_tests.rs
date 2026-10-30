@@ -503,9 +503,6 @@ async fn partial_join_period() {
     .await
     .unwrap();
     assert_ne!(current.event_id, first_join.event_id);
-    let original_before = room::state::get_pdu_before_frame_id(&current.event_id)
-        .await
-        .unwrap();
     let own_field = room::state::ensure_field_id(
         &crate::core::events::StateEventType::RoomMember,
         alice.as_str(),
@@ -630,8 +627,50 @@ async fn partial_join_period() {
         "{completed}"
     );
 
-    // An unrelated unavailable state entry cannot poison the own-member proof.
-    let mut before = (*room::state::load_frame_info(original_before)
+    // Use a new member and a new profile event: neither joined-period proof has
+    // been requested, so this cannot pass through the completed Alice cache.
+    let (unrelated_user, unrelated_token) = provision(&format!("{prefix}-unrelated")).await;
+    ok(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/join"
+        ))
+        .add_header("Authorization", format!("Bearer {unrelated_token}"), true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    let unrelated_first_join = room::get_state(
+        &room,
+        &crate::core::events::StateEventType::RoomMember,
+        unrelated_user.as_str(),
+        None,
+    )
+    .await
+    .unwrap();
+    ok(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/state/m.room.member/{unrelated_user}"
+        ))
+        .add_header("Authorization", format!("Bearer {unrelated_token}"), true)
+        .json(&json!({"membership":"join","displayname":"uncached unrelated proof"})),
+        &service,
+    )
+    .await;
+    let unrelated_current = room::get_state(
+        &room,
+        &crate::core::events::StateEventType::RoomMember,
+        unrelated_user.as_str(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_ne!(unrelated_current.event_id, unrelated_first_join.event_id);
+    let unrelated_before = room::state::get_pdu_before_frame_id(&unrelated_current.event_id)
+        .await
+        .unwrap();
+
+    // An unrelated unavailable state entry cannot poison this own-member proof.
+    let mut before = (*room::state::load_frame_info(unrelated_before)
         .await
         .unwrap()
         .last()
@@ -663,16 +702,20 @@ async fn partial_join_period() {
             .unwrap_err()
             .is_not_found()
     );
-    crate::event::update_before_frame_id(&current.event_id, unrelated)
+    crate::event::update_before_frame_id(&unrelated_current.event_id, unrelated)
         .await
         .unwrap();
-    let full = join_period_sync(&service, &token).await;
+    let full = join_period_sync(&service, &unrelated_token).await;
     assert!(full["rooms"]["join"].get(room.as_str()).is_some(), "{full}");
     assert_eq!(
-        room::user::join_sn_for_event(&alice, current.event_id.clone(), current.event_sn)
-            .await
-            .unwrap(),
-        first_join.event_sn,
+        room::user::join_sn_for_event(
+            &unrelated_user,
+            unrelated_current.event_id.clone(),
+            unrelated_current.event_sn,
+        )
+        .await
+        .unwrap(),
+        unrelated_first_join.event_sn,
         "unrelated missing state must not affect the own-member joined period"
     );
 
