@@ -106,5 +106,8 @@ ulid = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
+[dev-dependencies]
+pq-sys = "=0.7.5"
+
 [lints]
 workspace = true

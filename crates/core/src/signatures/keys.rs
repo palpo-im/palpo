@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, SecretKey, Signer, SigningKey};
+use hmac::{Hmac, KeyInit, Mac};
 use pkcs8::der::asn1::{BitStringRef, OctetStringRef};
 use pkcs8::der::zeroize::Zeroizing;
 use pkcs8::spki::AlgorithmIdentifierRef;
@@ -203,6 +204,32 @@ impl Ed25519KeyPair {
     pub fn public_key(&self) -> [u8; PUBLIC_KEY_LENGTH] {
         self.signing_key.verifying_key().to_bytes()
     }
+
+    /// Derive a domain-separated secret without exposing the private signing seed.
+    ///
+    /// Uses HKDF-SHA256 (RFC 5869) with a fixed protocol salt. Callers must supply
+    /// a distinct context for each purpose, algorithm and protocol version.
+    /// Persist the signing key to preserve derived secrets across server restarts.
+    pub fn derive_secret(&self, context: &[u8]) -> Zeroizing<[u8; 32]> {
+        hkdf_sha256_32(
+            self.signing_key.as_bytes(),
+            b"palpo/secret-derivation/v1",
+            context,
+        )
+    }
+}
+
+fn hkdf_sha256_32(input: &[u8], salt: &[u8], context: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut extract = Hmac::<sha2::Sha256>::new_from_slice(salt)
+        .expect("HMAC-SHA256 accepts arbitrary key lengths");
+    extract.update(input);
+    let pseudorandom_key = Zeroizing::new(<[u8; 32]>::from(extract.finalize().into_bytes()));
+    let mut expand = Hmac::<sha2::Sha256>::new_from_slice(pseudorandom_key.as_ref())
+        .expect("HMAC-SHA256 accepts a 32-byte key");
+    expand.update(context);
+    // Exactly one SHA256 block is needed for a 32-byte derived secret.
+    expand.update(&[1]);
+    Zeroizing::new(expand.finalize().into_bytes().into())
 }
 
 impl KeyPair for Ed25519KeyPair {
@@ -243,6 +270,34 @@ pub type PublicKeySet = BTreeMap<String, Base64>;
 #[cfg(test)]
 mod tests {
     use super::Ed25519KeyPair;
+
+    #[test]
+    fn derived_secrets_are_stable_private_and_domain_separated() {
+        let first = Ed25519KeyPair::from_der(WELL_FORMED_DOC, "first".into()).unwrap();
+        let same = Ed25519KeyPair::from_der(WELL_FORMED_DOC, "other-key-version".into()).unwrap();
+        let key = first.derive_secret(b"thread-cursor-v2");
+        assert_eq!(*key, *same.derive_secret(b"thread-cursor-v2"));
+        assert_ne!(*key, *first.derive_secret(b"different-protocol"));
+        assert_ne!(*key, first.public_key());
+        let other =
+            Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "other".into()).unwrap();
+        assert_ne!(*key, *other.derive_secret(b"thread-cursor-v2"));
+    }
+
+    #[test]
+    fn secret_derivation_matches_rfc5869_sha256_case_one() {
+        let salt: Vec<u8> = (0..=12).collect();
+        let info: Vec<u8> = (240..=249).collect();
+        let result = super::hkdf_sha256_32(&[11; 22], &salt, &info);
+        assert_eq!(
+            *result,
+            [
+                0x3c, 0xb2, 0x5f, 0x25, 0xfa, 0xac, 0xd5, 0x7a, 0x90, 0x43, 0x4f, 0x64, 0xd0, 0x36,
+                0x2f, 0x2a, 0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a, 0x5a, 0x4c, 0x5d, 0xb0, 0x2d, 0x56,
+                0xec, 0xc4, 0xc5, 0xbf,
+            ]
+        );
+    }
 
     const WELL_FORMED_DOC: &[u8] = &[
         0x30, 0x72, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70, 0x04, 0x22, 0x04,
