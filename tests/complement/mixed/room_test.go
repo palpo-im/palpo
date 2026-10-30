@@ -3,6 +3,7 @@ package mixed_tests
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"testing"
 
 	"github.com/matrix-org/complement"
@@ -12,6 +13,45 @@ import (
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
 )
+
+// Palpo can use a legacy room ID's server name without client routing hints.
+// Synapse requires hints, so Palpo must be the joiner in either image layout.
+func TestMixedJoinByRoomIDWithoutVia(t *testing.T) {
+	palpoImage := os.Getenv("PALPO_IMAGE")
+	if palpoImage == "" {
+		t.Fatal("PALPO_IMAGE is required to select the Palpo joiner")
+	}
+	ownerServer, joiningServer := "hs2", "hs1"
+	if os.Getenv("COMPLEMENT_BASE_IMAGE_hs2") == palpoImage {
+		ownerServer, joiningServer = "hs1", "hs2"
+	}
+	if os.Getenv("COMPLEMENT_BASE_IMAGE_"+joiningServer) != palpoImage ||
+		os.Getenv("COMPLEMENT_BASE_IMAGE_"+ownerServer) == palpoImage {
+		t.Fatal("expected exactly one Palpo image among hs1 and hs2")
+	}
+	d := complement.Deploy(t, 2)
+	defer d.Destroy(t)
+	owner := d.Register(t, ownerServer, helpers.RegistrationOpts{})
+	remote := d.Register(t, joiningServer, helpers.RegistrationOpts{})
+	room := owner.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat", "room_version": "10",
+	})
+	// Use the HTTP route directly so a client helper cannot add via/server_name.
+	joined := jsonResponse(t, remote.Do(t, "POST", []string{
+		"_matrix", "client", "v3", "join", room,
+	}, client.WithJSONBody(t, map[string]interface{}{})), 200)
+	if joined.Get("room_id").Str != room {
+		t.Fatalf("joined %s, want %s", joined.Raw, room)
+	}
+	owner.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(remote.UserID, room))
+	since := remote.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(remote.UserID, room))
+	event := owner.SendEventSynced(t, room, b.Event{
+		Type: "m.room.message", Content: map[string]interface{}{
+			"msgtype": "m.text", "body": "joined without via hints",
+		},
+	})
+	remote.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(room, event))
+}
 
 // Cover real server-to-server PDUs and EDUs, not just HTTP success on the
 // sending client. Each assertion waits for the remote user's incremental sync.

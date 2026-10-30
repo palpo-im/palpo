@@ -35,4 +35,5 @@ tests/palpo_mixed TestMixedPublicRooms
 tests/palpo_mixed TestMixedRemoteProfile
 tests/palpo_mixed TestMixedRemoteAlias
 tests/palpo_mixed TestMixedRoomLifecycle
+tests/palpo_mixed TestMixedJoinByRoomIDWithoutVia
 tests/palpo_mixed TestMixedRemoteHierarchy

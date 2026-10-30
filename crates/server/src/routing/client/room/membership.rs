@@ -204,6 +204,20 @@ pub(super) async fn joined_members(
     json_ok(JoinedMembersResBody { joined })
 }
 
+/// Legacy room IDs provide a routing fallback when no hint, cached route or
+/// inviter is available. Hash-based room IDs need an explicit route instead.
+fn with_room_id_fallback(
+    room_id: &RoomId,
+    mut servers: Vec<OwnedServerName>,
+) -> Vec<OwnedServerName> {
+    if servers.is_empty()
+        && let Ok(server) = room_id.server_name()
+    {
+        servers.push(server.to_owned());
+    }
+    servers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +232,28 @@ mod tests {
         let member = joined.get(&user_id).expect("joined user must be present");
         assert_eq!(member.display_name, None);
         assert_eq!(member.avatar_url, None);
+    }
+
+    #[test]
+    fn legacy_room_id_without_join_hints_routes_to_its_server() {
+        let room_id = RoomId::parse("!room:remote.example").unwrap();
+        let servers = with_room_id_fallback(&room_id, Vec::new());
+        assert_eq!(servers, vec![ServerName::parse("remote.example").unwrap()]);
+    }
+
+    #[test]
+    fn provided_join_hints_take_precedence_over_the_room_id_server() {
+        let room_id = RoomId::parse("!room:old.example").unwrap();
+        let hints = vec![ServerName::parse("current.example").unwrap()];
+        assert_eq!(with_room_id_fallback(&room_id, hints.clone()), hints);
+    }
+
+    #[test]
+    fn hash_room_ids_do_not_invent_a_join_server() {
+        let room_id = RoomId::parse("!opaque").unwrap();
+        assert!(with_room_id_fallback(&room_id, Vec::new()).is_empty());
+        let hints = vec![ServerName::parse("via.example").unwrap()];
+        assert_eq!(with_room_id_fallback(&room_id, hints.clone()), hints);
     }
 }
 
@@ -431,11 +467,7 @@ pub(crate) async fn join_room_by_id_or_alias(
 
             servers.extend(state_servers);
 
-            // if let Ok(server) = room_id.server_name() {
-            //     if sender_id.is_local() {
-            //         servers.push(server.to_owned());
-            //     }
-            // }
+            servers = with_room_id_fallback(&room_id, servers);
 
             servers.sort_unstable();
             servers.dedup();
