@@ -208,7 +208,42 @@ pub fn connection_url(config: &DbConfig, url: &str) -> Result<String, url::Parse
     let mut url = Url::parse(url)?;
 
     if config.enforce_tls {
-        maybe_append_url_param(&mut url, "sslmode", "require");
+        // A URL must not weaken the configured transport policy. Collapse duplicate
+        // modes as well, preserving certificate verification when it was requested.
+        let pairs: Vec<_> = url.query_pairs().into_owned().collect();
+        let mode = if pairs
+            .iter()
+            .any(|(key, value)| key == "sslmode" && value == "verify-full")
+        {
+            "verify-full"
+        } else if pairs
+            .iter()
+            .any(|(key, value)| key == "sslmode" && value == "verify-ca")
+        {
+            "verify-ca"
+        } else {
+            "require"
+        };
+        // libpq uses percent decoding, not form decoding: a literal '+' is
+        // part of a password/path, while '%20' is a space. Retain unrelated
+        // raw parameters so enforcing TLS never rewrites either spelling.
+        let retained: Vec<_> = url
+            .query()
+            .into_iter()
+            .flat_map(|query| query.split('&'))
+            .filter(|pair| {
+                !url::form_urlencoded::parse(pair.as_bytes())
+                    .next()
+                    .is_some_and(|(key, _)| key == "sslmode")
+            })
+            .collect();
+        let mut query = retained.join("&");
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str("sslmode=");
+        query.push_str(mode);
+        url.set_query(Some(&query));
     }
 
     // Configure the time it takes for diesel to return an error when there is full packet loss
@@ -264,6 +299,133 @@ mod migration_tests {
             connection_timeout: 0,
             statement_timeout: 0,
             enforce_tls: false,
+        }
+    }
+
+    #[test]
+    fn enforced_tls_cannot_be_downgraded_by_the_connection_url() {
+        let mut config = db_config(10, None);
+        config.enforce_tls = true;
+        for mode in [
+            "disable",
+            "allow",
+            "prefer",
+            "",
+            "unknown",
+            "require",
+            "verify-ca",
+            "verify-full",
+        ] {
+            let input = format!(
+                "postgres://test@localhost/db?sslmode={mode}&application_name=quality%20test"
+            );
+            let output = super::connection_url(&config, &input).unwrap();
+            let url = url::Url::parse(&output).unwrap();
+            let modes: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| key == "sslmode")
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            let expected = match mode {
+                "verify-ca" | "verify-full" => mode,
+                _ => "require",
+            };
+            assert_eq!(modes, [expected]);
+            assert!(
+                url.query_pairs()
+                    .any(|(key, value)| key == "application_name" && value == "quality test")
+            );
+        }
+        for query in [
+            "sslmode=disable&sslmode=verify-full",
+            "sslmode=verify-full&sslmode=disable",
+            "sslmode=verify-ca&sslmode=prefer",
+        ] {
+            let output =
+                super::connection_url(&config, &format!("postgres://test@localhost/db?{query}"))
+                    .unwrap();
+            let url = url::Url::parse(&output).unwrap();
+            let modes: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| key == "sslmode")
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            assert_eq!(modes.len(), 1);
+            assert_eq!(
+                modes[0],
+                if query.contains("verify-full") {
+                    "verify-full"
+                } else {
+                    "verify-ca"
+                }
+            );
+        }
+        let output = super::connection_url(&config, "postgres://test@localhost/db").unwrap();
+        assert!(output.contains("sslmode=require"));
+        config.enforce_tls = false;
+        let output =
+            super::connection_url(&config, "postgres://test@localhost/db?sslmode=disable").unwrap();
+        assert!(output.contains("sslmode=disable"));
+    }
+
+    #[test]
+    fn postgres_tls_rewrite_preserves_libpq_parameter_values() {
+        use std::ffi::{CStr, CString};
+
+        fn parsed_option(input: &str, key: &str) -> String {
+            let input = CString::new(input).unwrap();
+            let mut error = std::ptr::null_mut();
+            // Use the actual parser used by synchronous Diesel migrations,
+            // rather than round-tripping through form-url-encoded query APIs.
+            let options = unsafe { pq_sys::PQconninfoParse(input.as_ptr(), &mut error) };
+            if options.is_null() {
+                let message = if error.is_null() {
+                    "no parser error supplied".to_owned()
+                } else {
+                    let message = unsafe { CStr::from_ptr(error) }
+                        .to_string_lossy()
+                        .into_owned();
+                    unsafe { pq_sys::PQfreemem(error.cast()) };
+                    message
+                };
+                panic!("synthetic test connection string rejected: {message}");
+            }
+            let mut result = None;
+            let mut cursor = options;
+            unsafe {
+                while !(*cursor).keyword.is_null() {
+                    if CStr::from_ptr((*cursor).keyword).to_bytes() == key.as_bytes()
+                        && !(*cursor).val.is_null()
+                    {
+                        result = Some(CStr::from_ptr((*cursor).val).to_string_lossy().into_owned());
+                    }
+                    cursor = cursor.add(1);
+                }
+                pq_sys::PQconninfoFree(options);
+            }
+            result.expect("requested test option must be present")
+        }
+
+        let input = "postgres://localhost/db?user=space%20user&password=some%20secret%2Bplus+literal&application_name=quality%20test&sslrootcert=D%3A%2Fcert%20folder%2Fca.pem&options=-c%20application_name%3Dfoo%20bar&sslmode=disable&%73slmode=verify%2Dfull";
+        let mut config = db_config(10, None);
+        for enforce in [false, true] {
+            config.enforce_tls = enforce;
+            let output = super::connection_url(&config, input).unwrap();
+            for key in [
+                "user",
+                "password",
+                "application_name",
+                "sslrootcert",
+                "options",
+            ] {
+                assert_eq!(
+                    parsed_option(&output, key),
+                    parsed_option(input, key),
+                    "{key}"
+                );
+            }
+            assert_eq!(parsed_option(&output, "sslmode"), "verify-full");
+            assert_eq!(parsed_option(&output, "tcp_user_timeout"), "0");
         }
     }
 

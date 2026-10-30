@@ -8,7 +8,7 @@ use subtle::ConstantTimeEq;
 use crate::core::UnixMillis;
 use crate::core::client::account::{LoginType, RegistrationKind};
 use crate::core::client::register::*;
-use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+use crate::core::client::uiaa::{AuthData, AuthFlow, AuthType, UiaaInfo};
 use crate::core::events::GlobalAccountDataEventType;
 use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::identifiers::*;
@@ -145,14 +145,52 @@ async fn register(
         let uiaa_user_id =
             UserId::parse_with_server_name("", &conf.server_name).expect("we know this is valid");
         let uiaa_device_id = body.device_id.clone().unwrap_or_else(|| "".into());
-        // A registration UIA attempt must continue a challenge issued by this
-        // server. A bare m.login.dummy response is not proof that a
-        // registration session was started.
-        match body.auth.as_ref().filter(|auth| auth.session().is_some()) {
-            Some(auth) => {
+        let fingerprint = registration_attempt_fingerprint(&body, &user_id)?;
+        let now = crate::registration_email::now();
+        match body.auth.as_ref() {
+            // Dummy-only registration needs no prior challenge: Matrix permits
+            // omitting its session. Stronger configured flows still require the
+            // issued session below, and a supplied session is always validated.
+            Some(auth @ AuthData::Dummy(_))
+                if auth.session().is_none()
+                    && uiaa_info.flows.len() == 1
+                    && uiaa_info.flows[0].stages == [AuthType::Dummy] =>
+            {
+                if let Some(challenge) = data::user::uiaa::registration_session(
+                    &uiaa_user_id,
+                    &uiaa_device_id,
+                    &fingerprint,
+                    now,
+                )
+                .await?
+                .filter(dummy_only_registration)
+                {
+                    // A first Dummy request needs no session. Once challenged,
+                    // this attempt must use the nonce the server already issued.
+                    return Err(challenge.into());
+                }
+                let (authed, uiaa) =
+                    crate::uiaa::try_auth(&uiaa_user_id, &uiaa_device_id, auth, &uiaa_info).await?;
+                if !authed {
+                    return Err(AppError::Uiaa(uiaa));
+                }
+                completed_session = uiaa.session;
+            }
+            Some(auth) if auth.session().is_some() => {
                 // Only claim after checking that this server issued the UIAA session.
-                let session = auth.session().expect("filtered above");
-                crate::uiaa::get_session(&uiaa_user_id, &uiaa_device_id, session).await?;
+                let session = auth.session().expect("guard checked the session");
+                let stored =
+                    crate::uiaa::get_session(&uiaa_user_id, &uiaa_device_id, session).await?;
+                validate_registration_session(
+                    &uiaa_user_id,
+                    &uiaa_device_id,
+                    session,
+                    &fingerprint,
+                    now,
+                    &stored,
+                    &uiaa_info,
+                )
+                .await?;
                 if let crate::core::client::uiaa::AuthData::EmailIdentity(email) = auth
                     && (!email_required
                         || email.thirdparty_id_creds.id_server.is_some()
@@ -180,11 +218,29 @@ async fn register(
                 }
                 completed_session = uiaa.session;
             }
-            None => {
-                crate::uiaa::create_challenge_session(
+            _ => {
+                // Only Dummy-only challenges may be reused without a session.
+                // Never disclose a partially completed token/email session.
+                if dummy_only_registration(&uiaa_info)
+                    && let Some(challenge) = data::user::uiaa::registration_session(
+                        &uiaa_user_id,
+                        &uiaa_device_id,
+                        &fingerprint,
+                        now,
+                    )
+                    .await?
+                    .filter(dummy_only_registration)
+                {
+                    return Err(challenge.into());
+                }
+                uiaa_info.session = Some(utils::random_string(crate::SESSION_ID_LENGTH));
+                let expires_at = now.saturating_add(conf.session_ttl.min(3_600_000) as i64);
+                data::user::uiaa::create_registration_session(
                     &uiaa_user_id,
                     &uiaa_device_id,
-                    &mut uiaa_info,
+                    &uiaa_info,
+                    &fingerprint,
+                    expires_at,
                 )
                 .await?;
                 return Err(uiaa_info.into());
@@ -360,6 +416,69 @@ async fn register(
     }))
 }
 
+fn dummy_only_registration(info: &UiaaInfo) -> bool {
+    info.flows.len() == 1 && info.flows[0].stages == [AuthType::Dummy]
+}
+
+/// Bind client-proposed identity/options, without retaining credentials or a fast
+/// password verifier. Anonymous requests use None, not a freshly generated ID.
+fn registration_attempt_fingerprint(
+    body: &RegisterReqBody,
+    proposed: &UserId,
+) -> crate::AppResult<String> {
+    let identity = serde_json::json!({
+        "username": body.username.as_ref().map(|_| proposed.as_str()),
+        "device_id": &body.device_id,
+        "initial_device_display_name": &body.initial_device_display_name,
+        "kind": &body.kind,
+        "inhibit_login": body.inhibit_login,
+        "type": &body.login_type,
+        "refresh_token": body.refresh_token,
+    });
+    // Canonical object order is stable across instances and serde_json features.
+    let identity = crate::core::serde::to_canonical_value(identity)?;
+    Ok(utils::hash_data_sha2_256(&serde_json::to_vec(&identity)?)?.to_hex_uppercase())
+}
+
+async fn validate_registration_session(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    session: &str,
+    fingerprint: &str,
+    now: i64,
+    stored: &UiaaInfo,
+    current: &UiaaInfo,
+) -> crate::AppResult<()> {
+    let request = data::user::uiaa::get_uiaa_request(user_id, device_id, session).await?;
+    let binding = request
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .and_then(|body| body.get("palpo.registration"))
+        .and_then(|value| value.as_object());
+    let expires_at = binding
+        .and_then(|binding| binding.get("expires_at"))
+        .and_then(|value| value.as_integer());
+    if expires_at.is_some_and(|expires| expires <= now) {
+        crate::uiaa::update_session(user_id, device_id, session, None).await?;
+        return Err(MatrixError::unauthorized("Registration session expired. Start again.").into());
+    }
+    let matching = binding
+        .and_then(|binding| binding.get("fingerprint"))
+        .and_then(|value| value.as_str())
+        == Some(fingerprint);
+    let matching_flows = stored
+        .flows
+        .iter()
+        .map(|flow| &flow.stages)
+        .eq(current.flows.iter().map(|flow| &flow.stages));
+    if !matching || expires_at.is_none() || !matching_flows {
+        return Err(
+            MatrixError::unauthorized("Registration session does not match this request.").into(),
+        );
+    }
+    Ok(())
+}
+
 /// Admission is based only on authenticated appservice identity and server policy.
 fn ensure_registration_admission(
     conf: &crate::ServerConfig,
@@ -488,6 +607,354 @@ async fn validate_token(
 async fn token_via_msisdn(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let _authed = depot.authed_info()?;
     empty_ok()
+}
+
+#[cfg(test)]
+mod dummy_registration_tests {
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    // Run each policy test in its own process and empty dedicated database:
+    // the production configuration is immutable for the lifetime of a server.
+    fn service(policy: &str) -> Service {
+        crate::test_database::init();
+        let mut conf = json!({
+            "server_name": "dummy-registration.example", "db": {"url": "unused-test-config"},
+            "allow_registration": policy != "closed", "auto_join_rooms": []
+        });
+        if policy == "token" {
+            conf["allow_registration"] = json!(false);
+            conf["registration_token"] = json!("required-registration-token");
+        }
+        if policy == "email" {
+            conf["registration_email"] = json!({
+                "agentmail_inbox": "registration@example.test",
+                "agentmail_api_key_file": std::env::temp_dir().join("palpo-dummy-registration-unread-api-key"),
+                "otp_secret_file": std::env::temp_dir().join("palpo-dummy-registration-unread-otp-key")
+            });
+        }
+        crate::config::CONFIG
+            .set(serde_json::from_value(conf).unwrap())
+            .expect("run each registration policy test in its own process");
+        Service::new(
+            Router::new().push(public_router()).push(
+                Router::new()
+                    .hoop(hoops::auth_by_access_token)
+                    .push(crate::routing::client::account::authed_router()),
+            ),
+        )
+    }
+
+    async fn register_request(service: &Service, body: Value) -> (StatusCode, Value) {
+        let mut response = TestClient::post("http://localhost/register")
+            .json(&body)
+            .send(service)
+            .await;
+        (
+            response.status_code.unwrap(),
+            response.take_json::<Value>().await.unwrap(),
+        )
+    }
+
+    async fn assert_no_account(localpart: &str) {
+        let user = UserId::parse(format!("@{localpart}:dummy-registration.example")).unwrap();
+        assert!(!data::user::user_exists(&user).await.unwrap());
+    }
+
+    async fn session_rows(session: &str) -> i64 {
+        user_uiaa_datas::table
+            .filter(user_uiaa_datas::session.eq(session))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn expire_session(session: &str) {
+        diesel::sql_query("UPDATE user_uiaa_datas SET request_body = jsonb_set(request_body, '{palpo.registration,expires_at}', '0'::jsonb) WHERE session = $1")
+            .bind::<diesel::sql_types::Text,_>(session)
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+    }
+
+    async fn assert_registration_continuation(service: &Service) {
+        let base = json!({"username":"bound-attempt", "password":"never-persist-this-password", "device_id":"BIND"});
+        let (status, challenge) = register_request(service, base.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{challenge}");
+        let session = challenge["session"].as_str().unwrap();
+        assert_eq!(session_rows(session).await, 1);
+        let stored: Value = user_uiaa_datas::table
+            .filter(user_uiaa_datas::session.eq(session))
+            .select(user_uiaa_datas::request_body)
+            .first::<Option<Value>>(&mut connect().await.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stored.to_string().contains("never-persist-this-password"));
+        assert!(stored.get("password").is_none() && stored.get("auth").is_none());
+        let mut omitted = base.clone();
+        omitted["auth"] = json!({"type":"m.login.dummy"});
+        let (status, retry) = register_request(service, omitted).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{retry}");
+        assert_eq!(retry["session"], challenge["session"]);
+        assert_no_account("bound-attempt").await;
+        let (status, fresh) = register_request(service, json!({"username":"fresh-while-bound", "device_id":"BIND", "auth":{"type":"m.login.dummy"}})).await;
+        assert_eq!(status, StatusCode::OK, "{fresh}");
+        let (status, fresh) = register_request(service, json!({"username":"fresh-other-device", "device_id":"OTHER", "auth":{"type":"m.login.dummy"}})).await;
+        assert_eq!(status, StatusCode::OK, "{fresh}");
+
+        let mut wrong = base.clone();
+        wrong["username"] = json!("wrong-attempt");
+        wrong["auth"] = json!({"type":"m.login.dummy", "session":session});
+        let (status, error) = register_request(service, wrong).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+        assert_no_account("wrong-attempt").await;
+        assert_eq!(
+            session_rows(session).await,
+            1,
+            "cross-attempt failure consumed the original challenge"
+        );
+        let mut changed = base.clone();
+        changed["initial_device_display_name"] = json!("changed attempt");
+        changed["auth"] = json!({"type":"m.login.dummy", "session":session});
+        let (status, error) = register_request(service, changed).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+        assert_no_account("bound-attempt").await;
+        let mut correct = base;
+        correct["auth"] = json!({"type":"m.login.dummy", "session":session});
+        let (status, account) = register_request(service, correct).await;
+        assert_eq!(status, StatusCode::OK, "{account}");
+        assert_eq!(
+            account["user_id"],
+            "@bound-attempt:dummy-registration.example"
+        );
+        assert_eq!(
+            session_rows(session).await,
+            0,
+            "completed challenge and metadata survived"
+        );
+    }
+
+    async fn assert_anonymous_registration_continuation(service: &Service) {
+        let (status, first) =
+            register_request(service, json!({"auth":{"type":"m.login.dummy"}})).await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        let base = json!({"password":"anonymous-password"});
+        let (status, challenge) = register_request(service, base.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{challenge}");
+        let session = challenge["session"].as_str().unwrap();
+        let (status, fresh) = register_request(
+            service,
+            json!({"device_id":"ANON-OTHER", "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{fresh}");
+        let mut omitted = base.clone();
+        omitted["auth"] = json!({"type":"m.login.dummy"});
+        let (status, retry) = register_request(service, omitted).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{retry}");
+        assert_eq!(retry["session"], challenge["session"]);
+        let mut correct = base;
+        correct["auth"] = json!({"type":"m.login.dummy", "session":session});
+        let (status, account) = register_request(service, correct).await;
+        assert_eq!(status, StatusCode::OK, "{account}");
+        assert!(
+            account["user_id"]
+                .as_str()
+                .unwrap()
+                .ends_with(":dummy-registration.example")
+        );
+        assert_eq!(session_rows(session).await, 0);
+    }
+
+    async fn assert_registration_session_expiry(service: &Service) {
+        let (status, challenge) =
+            register_request(service, json!({"username":"expired-binding"})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let session = challenge["session"].as_str().unwrap();
+        expire_session(session).await;
+        let (status, error) = register_request(service, json!({"username":"expired-binding", "auth":{"type":"m.login.dummy", "session":session}})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+        assert_no_account("expired-binding").await;
+        assert_eq!(session_rows(session).await, 0);
+        let (status, account) = register_request(
+            service,
+            json!({"username":"expired-binding", "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{account}");
+        let (_, challenge) = register_request(service, json!({"username":"expired-lookup"})).await;
+        let session = challenge["session"].as_str().unwrap();
+        expire_session(session).await;
+        let (status, account) = register_request(
+            service,
+            json!({"username":"expired-lookup", "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{account}");
+        assert_eq!(
+            session_rows(session).await,
+            0,
+            "expired binding was not pruned by the sessionless lookup"
+        );
+
+        let (_, challenge) = register_request(service, json!({"username":"changed-policy"})).await;
+        let session = challenge["session"].as_str().unwrap();
+        let mut info: Value = user_uiaa_datas::table
+            .filter(user_uiaa_datas::session.eq(session))
+            .select(user_uiaa_datas::uiaa_info)
+            .first(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        info["flows"] = json!([{"stages":["m.login.registration_token"]}]);
+        diesel::update(user_uiaa_datas::table.filter(user_uiaa_datas::session.eq(session)))
+            .set(user_uiaa_datas::uiaa_info.eq(info))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let (status, error) = register_request(service, json!({"username":"changed-policy", "auth":{"type":"m.login.dummy", "session":session}})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+        assert_no_account("changed-policy").await;
+    }
+
+    #[test]
+    fn registration_attempt_binding_contains_no_credential_verifier() {
+        let first: RegisterReqBody = serde_json::from_value(
+            json!({"username":"BIND", "password":"one", "auth":{"type":"m.login.dummy"}}),
+        )
+        .unwrap();
+        let second: RegisterReqBody = serde_json::from_value(json!({"username":"bind", "password":"two", "auth":{"type":"m.login.registration_token", "token":"private-token"}})).unwrap();
+        let user = UserId::parse("@bind:dummy-registration.example").unwrap();
+        assert_eq!(
+            registration_attempt_fingerprint(&first, &user).unwrap(),
+            registration_attempt_fingerprint(&second, &user).unwrap()
+        );
+        let anonymous: RegisterReqBody =
+            serde_json::from_value(json!({"password":"anonymous"})).unwrap();
+        let generated = UserId::parse("@generated:dummy-registration.example").unwrap();
+        assert_eq!(
+            registration_attempt_fingerprint(&anonymous, &user).unwrap(),
+            registration_attempt_fingerprint(&anonymous, &generated).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_open_policy() {
+        let service = service("open");
+        for (name, body) in [
+            (
+                "minimal",
+                json!({"username":"minimal", "auth":{"type":"m.login.dummy"}}),
+            ),
+            (
+                "blueprint",
+                json!({"username":"blueprint", "password":"complement_meets_min_password_req",
+                    "device_id":"BLUEPRINT", "auth":{"type":"m.login.dummy"}}),
+            ),
+        ] {
+            let (status, result) = register_request(&service, body).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            let user = format!("@{name}:dummy-registration.example");
+            assert_eq!(result["user_id"], user);
+            assert!(
+                data::user::user_exists(UserId::parse(&user).unwrap().as_ref())
+                    .await
+                    .unwrap()
+            );
+            let mut response = TestClient::get("http://localhost/account/whoami")
+                .add_header(
+                    "authorization",
+                    format!("Bearer {}", result["access_token"].as_str().unwrap()),
+                    true,
+                )
+                .send(&service)
+                .await;
+            assert_eq!(response.status_code, Some(StatusCode::OK));
+            let identity: Value = response.take_json().await.unwrap();
+            assert_eq!(identity["user_id"], user);
+        }
+        let (status, challenge) = register_request(&service, json!({"username":"challenge"})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(challenge["session"].is_string());
+        let (status, error) = register_request(
+            &service,
+            json!({"username":"unknownsession",
+            "auth":{"type":"m.login.dummy", "session":"not-issued"}}),
+        )
+        .await;
+        assert!(!status.is_success(), "{error}");
+        assert_no_account("unknownsession").await;
+        assert_no_account("challenge").await;
+        assert_registration_continuation(&service).await;
+        assert_anonymous_registration_continuation(&service).await;
+        assert_registration_session_expiry(&service).await;
+    }
+
+    async fn assert_policy_requires_stage(policy: &str, stage: &str) {
+        let service = service(policy);
+        let (status, challenge) = register_request(
+            &service,
+            json!({"username":"blocked",
+            "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{challenge}");
+        assert_eq!(challenge["flows"][0]["stages"], json!([stage]));
+        // Dummy also cannot complete a real, issued stronger-flow session.
+        let (status, error) = register_request(
+            &service,
+            json!({"username":"blocked",
+            "auth":{"type":"m.login.dummy", "session":challenge["session"]}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+        assert_no_account("blocked").await;
+        let (status, fresh) = register_request(
+            &service,
+            json!({"username":"blocked", "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{fresh}");
+        assert_ne!(
+            fresh["session"], challenge["session"],
+            "strong-flow session was exposed to a caller without its session"
+        );
+        assert!(
+            fresh
+                .get("completed")
+                .and_then(Value::as_array)
+                .is_none_or(|stages| stages.is_empty())
+        );
+        assert_no_account("blocked").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_preserves_token_policy() {
+        assert_policy_requires_stage("token", "m.login.registration_token").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_preserves_email_policy() {
+        assert_policy_requires_stage("email", "m.login.email.identity").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_preserves_closed_policy() {
+        let service = service("closed");
+        let (status, error) = register_request(
+            &service,
+            json!({"username":"blocked",
+            "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+        assert_no_account("blocked").await;
+    }
 }
 
 #[cfg(test)]
