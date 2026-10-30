@@ -19,9 +19,10 @@ struct RemoteDeviceSnapshot {
 }
 
 pub(crate) async fn fetch_remote_device_snapshot(user: &UserId, origin: &str) -> AppResult<u64> {
-    let url = reqwest::Url::parse(&format!(
-        "{origin}/_matrix/federation/v1/user/devices/{user}"
-    ))?;
+    let mut url = reqwest::Url::parse(&format!("{origin}/_matrix/federation/v1/user/devices"))?;
+    url.path_segments_mut()
+        .map_err(|_| MatrixError::bad_json("invalid device snapshot origin"))?
+        .push(user.as_str());
     let request = crate::core::sending::get(url).into_inner();
     let snapshot = sending::send_federation_request(user.server_name(), request, Some(2))
         .await?

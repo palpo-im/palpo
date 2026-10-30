@@ -987,7 +987,10 @@ mod device_version_tests {
         use crate::core::federation::authentication::XMatrix;
         use crate::core::serde::Base64;
         use crate::core::signatures::{PublicKeyMap, verify_json};
-        let request_path = format!("/_matrix/federation/v1/user/devices/{bob}");
+        let mut url =
+            reqwest::Url::parse("http://snapshot.test/_matrix/federation/v1/user/devices").unwrap();
+        url.path_segments_mut().unwrap().push(bob.as_str());
+        let request_path = url.path();
         assert_eq!(
             request.lines().next().unwrap(),
             format!("GET {request_path} HTTP/1.1")
@@ -1024,6 +1027,20 @@ mod device_version_tests {
 
     async fn bootstrap_races() {
         let (service, key, _alice, bob, room) = setup_with_local_peer(true).await;
+        let slash_user = UserId::parse(format!("@bob/with=slash:{REMOTE}")).unwrap();
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":slash_user,"stream_id":42,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = slash_user.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &slash_user);
+        release.send(()).unwrap();
+        assert_eq!(fetching.await.unwrap().unwrap(), 42);
+        peer.join().unwrap();
         // The fake peer only overrides the resolved URL for this real signed
         // transport call; production resolution always supplies its HTTPS URL.
         let (origin, seen, release, peer) = snapshot_peer(
