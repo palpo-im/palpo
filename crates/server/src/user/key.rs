@@ -108,30 +108,29 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
 
     let mut futures: FuturesUnordered<_> = get_over_federation
         .into_iter()
-        .map(|(server, vec)| async move {
-            let mut device_keys_input_fed = BTreeMap::new();
-            for (user_id, keys) in vec {
-                device_keys_input_fed.insert(user_id.to_owned(), keys.clone());
-            }
-
-            let request = query_keys_request(
-                &server.origin().await,
-                QueryKeysReqBody {
-                    device_keys: device_keys_input_fed,
-                },
-            )?
-            .into_inner();
-
-            let response_body = crate::sending::send_federation_request(server, request, None)
-                .await?
-                .json::<QueryKeysResBody>()
-                .await
-                .map_err(|_e| AppError::public("Query took too long"));
-            Ok::<(&ServerName, AppResult<QueryKeysResBody>), AppError>((server, response_body))
+        .map(|(server, vec)| {
+            tagged_key_query(server, async move {
+                let mut device_keys_input_fed = BTreeMap::new();
+                for (user_id, keys) in vec {
+                    device_keys_input_fed.insert(user_id.to_owned(), keys.clone());
+                }
+                let request = query_keys_request(
+                    &server.origin().await,
+                    QueryKeysReqBody {
+                        device_keys: device_keys_input_fed,
+                    },
+                )?
+                .into_inner();
+                crate::sending::send_federation_request(server, request, None)
+                    .await?
+                    .json::<QueryKeysResBody>()
+                    .await
+                    .map_err(|_e| AppError::public("Query took too long"))
+            })
         })
         .collect();
 
-    while let Some(Ok((server, response))) = futures.next().await {
+    while let Some((server, response)) = futures.next().await {
         match response {
             Ok(mut response) => {
                 if filter_federated_key_response(server, device_keys_input, &mut response) {
@@ -204,6 +203,15 @@ pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
         device_keys,
         failures,
     })
+}
+
+/// Keep the peer identity even when request construction or transport fails.
+/// A failed peer is one stream item, never the end of the entire collection.
+async fn tagged_key_query(
+    server: &ServerName,
+    query: impl std::future::Future<Output = AppResult<QueryKeysResBody>>,
+) -> (&ServerName, AppResult<QueryKeysResBody>) {
+    (server, query.await)
 }
 
 /// Remove unrequested or foreign identities before either persistence or aggregation.
@@ -981,5 +989,41 @@ mod federated_response_tests {
             &requested,
             &mut response
         ));
+    }
+}
+
+#[cfg(test)]
+mod federated_query_failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_query_keeps_its_peer_and_does_not_discard_later_successes() {
+        let servers = ["fast.example", "failed.example", "slow.example"]
+            .map(|name| ServerName::parse(name).unwrap());
+        let mut queries = FuturesUnordered::new();
+        for (index, server) in servers.iter().enumerate() {
+            queries.push(tagged_key_query(server, async move {
+                if index == 1 {
+                    return Err(AppError::public("transport failed"));
+                }
+                if index == 2 {
+                    tokio::task::yield_now().await;
+                }
+                Ok(QueryKeysResBody::default())
+            }));
+        }
+        // The slow result is intentionally polled after an error; both successes
+        // and the failed peer must remain observable to the aggregation loop.
+        let mut successes = Vec::new();
+        let mut failures = Vec::new();
+        while let Some((server, result)) = queries.next().await {
+            match result {
+                Ok(_) => successes.push(server.to_string()),
+                Err(_) => failures.push(server.to_string()),
+            }
+        }
+        successes.sort();
+        assert_eq!(successes, ["fast.example", "slow.example"]);
+        assert_eq!(failures, ["failed.example"]);
     }
 }
