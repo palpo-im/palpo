@@ -33,7 +33,7 @@ pub async fn publish_live_frame_with_conn(
 
     lock_sticky_stream(conn).await?;
     let stamped = diesel::update(
-        let _published = event_points::table
+        event_points::table
             .find(&*pdu.event_id)
             .filter(event_points::live_published_sn.is_null()),
     )
@@ -48,7 +48,7 @@ pub async fn publish_live_frame_with_conn(
     if stamped == 0 {
         // An existing publication is immutable on retry; a missing identity
         // row is an error rather than permission to publish without a cursor.
-        event_points::table
+        let _published = event_points::table
             .find(&*pdu.event_id)
             .select(event_points::live_published_sn)
             .first::<Option<Seqnum>>(conn)
