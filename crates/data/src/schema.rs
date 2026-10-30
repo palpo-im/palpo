@@ -83,6 +83,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    remote_device_list_versions (user_id, stream_id) {
+        user_id -> Text,
+        stream_id -> Text,
+        received_order -> Int8,
+        is_initial_snapshot -> Bool,
+    }
+}
+
+diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
@@ -283,6 +292,7 @@ diesel::table! {
         room_id -> Nullable<Text>,
         event_id -> Nullable<Text>,
         created_at -> Int8,
+        endpoint -> Text,
     }
 }
 
@@ -1272,6 +1282,7 @@ diesel::joinable!(user_external_ids -> users (user_id));
 diesel::joinable!(user_ratelimit_override -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    remote_device_list_versions,
     appservice_registrations,
     banned_rooms,
     delayed_events,
