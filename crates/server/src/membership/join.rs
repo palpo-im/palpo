@@ -531,10 +531,14 @@ async fn notify_remote_join_device_list(
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::room_server_id.eq(room_server_id));
         if !diesel_exists!(query, &mut connect().await?)? {
+            // Joining changes who receives the list, not the list itself.
+            // Use the persisted revision also served by snapshots and queued
+            // placeholders; allocating an unrelated event position invents a
+            // second version for the same list (including the initial zero).
             let content = DeviceListUpdateContent::new(
                 sender_id.to_owned(),
                 device_id.to_owned(),
-                data::next_sn().await? as u64,
+                data::user::key::device_list_stream_id(sender_id).await? as u64,
             );
             let edu = Edu::DeviceListUpdate(content);
             send_edu_server(room_server_id, &edu).await?;

@@ -120,6 +120,14 @@ jobs:
             routing::federation::transaction::device_version_tests::http_remote_device_versions_cover_many_shared_rooms \
             -- --exact --ignored
 
+      - name: Join device notification producer regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_join_device_versions
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_join_device_versions \
+            cargo test -p palpo --lib --all-features \
+            membership::join::device_list_producer_tests::http_join_device_list_version_matches_other_producers \
+            -- --exact --ignored
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
