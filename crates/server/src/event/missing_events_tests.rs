@@ -80,7 +80,7 @@ async fn assert_retry_without_storage(
 ) {
     let id = candidate.event_id.clone();
     let result = candidate
-        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), false, recovery)
+        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), true, false, recovery)
         .await;
     assert!(
         matches!(result, Err(AppError::HttpStatus(ref e)) if e.code == StatusCode::SERVICE_UNAVAILABLE)
@@ -385,7 +385,7 @@ async fn recovery_cases() {
     );
     let bad_child = child(&template, "$bad-json-child", std::slice::from_ref(&unknown));
     let (rejected, ..) = bad_child
-        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), false, bad_response)
+        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), true, false, bad_response)
         .await
         .unwrap();
     assert!(rejected.rejected() && rejected.soft_failed);
@@ -433,7 +433,7 @@ async fn recovery_cases() {
     .unwrap();
     assert_eq!(recovery, MissingEventsRecovery::Incomplete);
     let (reconnected, ..) = reconnect
-        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), false, Ok(recovery))
+        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), true, false, Ok(recovery))
         .await
         .unwrap();
     assert!(!reconnected.rejected() && !reconnected.soft_failed);
@@ -499,12 +499,111 @@ async fn recovery_cases() {
     .unwrap();
     assert_eq!(recovery, MissingEventsRecovery::Incomplete);
     let (reconnected, ..) = reconnect
-        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), false, Ok(recovery))
+        .finish_missing_events_recovery(REMOTE.try_into().unwrap(), true, false, Ok(recovery))
         .await
         .unwrap();
     assert!(!reconnected.rejected() && !reconnected.soft_failed);
 
     // The live-only guard does not disable pulled/backfill state recovery.
+    let imported = child(
+        &template,
+        "$incomplete-non-timeline",
+        std::slice::from_ref(&unknown),
+    );
+    let (imported, ..) = imported
+        .finish_missing_events_recovery(
+            REMOTE.try_into().unwrap(),
+            false,
+            false,
+            Ok(MissingEventsRecovery::Incomplete),
+        )
+        .await
+        .unwrap();
+    assert!(
+        imported.is_outlier
+            && imported.soft_failed
+            && !imported.rejected()
+            && !imported.is_backfill
+    );
+
+    // Run identical signed state through the actual live and send_join entry
+    // points. Only the live timeline push should get the new retryable error;
+    // historical imports retain their recoverable outlier for later state fetch.
+    let (_, mut imported_state) = PduBuilder {
+        event_type: "m.room.topic".into(),
+        state_key: Some("".into()),
+        content: serde_json::value::to_raw_value(
+            &json!({"topic":"imported with a missing predecessor"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(
+        &UserId::parse("@alice:missing.example").unwrap(),
+        &room_id,
+        &RoomVersionId::V11,
+    )
+    .await
+    .unwrap();
+    imported_state.remove("event_id");
+    imported_state.insert(
+        "prev_events".into(),
+        crate::core::serde::CanonicalJsonValue::Array(vec![
+            crate::core::serde::CanonicalJsonValue::String(unknown.to_string()),
+        ]),
+    );
+    crate::server_key::hash_and_sign_event(&mut imported_state, &RoomVersionId::V11).unwrap();
+    let imported_id = crate::event::gen_event_id(&imported_state, &RoomVersionId::V11).unwrap();
+    let live = crate::event::handler::process_incoming_pdu(
+        REMOTE.try_into().unwrap(),
+        &imported_id,
+        &room_id,
+        &RoomVersionId::V11,
+        imported_state.clone(),
+        true,
+        false,
+    )
+    .await;
+    assert!(
+        matches!(live, Err(AppError::HttpStatus(ref error)) if error.code == StatusCode::SERVICE_UNAVAILABLE)
+    );
+    assert_eq!(
+        events::table
+            .filter(events::id.eq(&imported_id))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        event_datas::table
+            .filter(event_datas::event_id.eq(&imported_id))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap(),
+        0
+    );
+    crate::event::handler::process_join_response_pdu(
+        REMOTE.try_into().unwrap(),
+        &imported_id,
+        &room_id,
+        &RoomVersionId::V11,
+        imported_state,
+    )
+    .await
+    .unwrap();
+    let imported = crate::room::timeline::get_pdu(&imported_id).await.unwrap();
+    assert!(
+        imported.is_outlier
+            && imported.soft_failed
+            && !imported.rejected()
+            && !imported.is_backfill
+    );
+    assert_eq!(imported.event_ty.to_string(), "m.room.topic");
+    assert_eq!(imported.state_key.as_deref(), Some(""));
+
     // With the sentinel transport denied, those paths retain a recoverable
     // outlier instead of returning the new live 503 or permanently rejecting it.
     let backfill = child(
@@ -515,6 +614,7 @@ async fn recovery_cases() {
     let (backfill, ..) = backfill
         .finish_missing_events_recovery(
             REMOTE.try_into().unwrap(),
+            true,
             true,
             Ok(MissingEventsRecovery::Incomplete),
         )
@@ -541,6 +641,7 @@ async fn recovery_cases() {
     )
     .finish_missing_events_recovery(
         REMOTE.try_into().unwrap(),
+        true,
         false,
         Err(AppError::Diesel(diesel::result::Error::RollbackTransaction)),
     )
