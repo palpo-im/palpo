@@ -70,6 +70,7 @@ pub async fn load_pdus_backward_captured(
             Some(super::publication::Window {
                 lower: None,
                 upper: Some(before.event_sn()),
+                ..Default::default()
             }),
         ),
     )
