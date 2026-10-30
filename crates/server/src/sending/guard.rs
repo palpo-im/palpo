@@ -577,6 +577,10 @@ async fn select_edus_device_changes(
             // Empty prev id forces synapse to resync; because synapse resyncs,
             // we can just insert placeholder data
             let stream_id = data::user::key::device_list_stream_id(&user_id).await? as u64;
+            tracing::debug!(target: "palpo::device_list_trace", phase = "placeholder_device_edu_selected",
+                node = %crate::config::server_name(), destination = %server_name,
+                user_id = %user_id, remote_stream_id = stream_id,
+                room_id = %room_id, since_sn, through_sn = *_max_edu_sn);
             let edu = Edu::DeviceListUpdate(DeviceListUpdateContent {
                 user_id,
                 device_id: device_id!("placeholder").to_owned(),

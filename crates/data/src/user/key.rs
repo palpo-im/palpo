@@ -668,6 +668,9 @@ pub async fn apply_remote_device_list_version(
             .into_iter()
             .map(|room| room.room_id)
             .collect::<Vec<_>>();
+            tracing::debug!(target: "palpo::device_list_trace", phase = "receiver_scope",
+                node = %local_server, user_id = %user_id, remote_stream_id = %stream_id,
+                shared_room_count = joined_rooms.len());
             if joined_rooms.is_empty() {
                 diesel::delete(remote_device_list_versions::table.filter(
                     remote_device_list_versions::user_id.eq(user_id),
@@ -685,12 +688,17 @@ pub async fn apply_remote_device_list_version(
                 .execute(conn)
                 .await?;
             if inserted == 0 {
+                tracing::debug!(target: "palpo::device_list_trace", phase = "receiver_duplicate",
+                    node = %local_server, user_id = %user_id, remote_stream_id = %stream_id);
                 return Ok(false);
             }
             let occur_sn =
                 diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
                     .get_result::<Seqnum>(conn)
                     .await?;
+            tracing::debug!(target: "palpo::device_list_trace", phase = "receiver_marker_allocated",
+                node = %local_server, user_id = %user_id, remote_stream_id = %stream_id,
+                local_sn = occur_sn, shared_room_count = joined_rooms.len());
             diesel::delete(
                 e2e_key_changes::table
                     .filter(e2e_key_changes::user_id.eq(user_id))

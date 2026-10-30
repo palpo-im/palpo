@@ -701,6 +701,10 @@ pub async fn mark_device_key_update(user_id: &UserId, _device_id: &DeviceId) -> 
 
     data::user::key::replace_key_change(&change).await?;
 
+    tracing::debug!(target: "palpo::device_list_trace", phase = "local_key_marker_committed",
+        node = %crate::config::server_name(), user_id = %user_id, device_id = %_device_id,
+        local_sn = occur_sn, room_count = joined_rooms.len());
+
     Ok(())
 }
 
@@ -721,6 +725,9 @@ pub async fn mark_device_key_update_with_joined_rooms(
 
         data::user::key::replace_key_change(&change).await?;
     }
+    tracing::debug!(target: "palpo::device_list_trace", phase = "membership_key_marker_committed",
+        node = %crate::config::server_name(), user_id = %user_id, device_id = %_device_id,
+        local_sn = occur_sn, room_count = joined_rooms.len());
     Ok(())
 }
 
@@ -747,6 +754,9 @@ async fn send_device_key_update_with_joined_rooms(
         .execute(&mut data::connect().await?)
         .await?;
     let remote_servers = data::room::joined_servers_for_rooms(joined_rooms).await?;
+    tracing::debug!(target: "palpo::device_list_trace", phase = "explicit_device_edu_queued",
+        node = %crate::config::server_name(), user_id = %user_id, device_id = %device_id,
+        remote_stream_id = stream_id, destinations = ?remote_servers);
 
     let content =
         DeviceListUpdateContent::new(user_id.to_owned(), device_id.to_owned(), stream_id as u64);

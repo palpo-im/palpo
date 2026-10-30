@@ -109,6 +109,9 @@ async fn get_devices(
         });
     }
 
+    tracing::debug!(target: "palpo::device_list_trace", phase = "device_snapshot_requested",
+        node = %crate::config::server_name(), requester = %origin,
+        user_id = %user_id, remote_stream_id = stream_id, device_count = devices.len());
     json_ok(DevicesResBody {
         stream_id: stream_id as u64,
         devices,

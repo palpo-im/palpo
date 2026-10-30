@@ -526,6 +526,10 @@ pub async fn join_room(
                 device_id.to_owned(),
                 data::next_sn().await? as u64,
             );
+            tracing::debug!(target: "palpo::device_list_trace", phase = "remote_join_device_edu_queued",
+                node = %crate::config::server_name(), destination = %room_server_id,
+                user_id = %sender_id, device_id = %device_id,
+                remote_stream_id = content.stream_id, room_id = %room_id);
             let edu = Edu::DeviceListUpdate(content);
             send_edu_server(room_server_id, &edu).await?;
         }

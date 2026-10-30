@@ -76,6 +76,10 @@ pub async fn sync_events(
     .await?;
     let curr_sn = invite_snapshot.until_sn;
     let next_batch = BatchToken::new_live(curr_sn + 1);
+    tracing::debug!(target: "palpo::device_list_trace", phase = "sync_snapshot",
+        node = %config::server_name(), viewer = %sender_id, device_id = %device_id,
+        since_sn = ?since_tk.map(|t| t.event_sn()), through_sn = curr_sn,
+        next_sn = next_batch.event_sn());
 
     // Load filter
     let filter = match &args.filter {
@@ -103,14 +107,16 @@ pub async fn sync_events(
     let mut device_list_left = HashSet::new();
 
     // Look for device list updates of this account
-    device_list_updates.extend(
-        data::user::keys_changed_users(
-            sender_id,
-            since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
-            Some(curr_sn),
-        )
-        .await?,
-    );
+    let account_key_changes = data::user::keys_changed_users(
+        sender_id,
+        since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
+        Some(curr_sn),
+    )
+    .await?;
+    tracing::debug!(target: "palpo::device_list_trace", phase = "sync_account_key_candidates",
+        node = %config::server_name(), viewer = %sender_id,
+        users = ?account_key_changes, since_sn = ?since_tk.map(|t| t.event_sn()), through_sn = curr_sn);
+    device_list_updates.extend(account_key_changes);
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     for room_id in &all_joined_rooms {
@@ -394,6 +400,10 @@ pub async fn sync_events(
             .map(|v| RawJson::new(&v).expect("PresenceEvent always serializes successfully"))
             .collect(),
     };
+    tracing::debug!(target: "palpo::device_list_trace", phase = "sync_final_device_lists",
+        node = %config::server_name(), viewer = %sender_id, device_id = %device_id,
+        changed = ?device_list_updates, left = ?device_list_left,
+        since_sn = ?since_tk.map(|t| t.event_sn()), next_sn = next_batch.event_sn());
     let device_lists = DeviceLists {
         changed: device_list_updates.into_iter().collect(),
         left: device_list_left.into_iter().collect(),
@@ -475,6 +485,10 @@ async fn load_joined_room(
     let since_frame_id = crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn()))
         .await
         .ok();
+    tracing::debug!(target: "palpo::device_list_trace", phase = "sync_room_frames",
+        node = %config::server_name(), viewer = %sender_id, room_id = %room_id,
+        since_sn = ?since_tk.map(|t| t.event_sn()), since_frame = ?since_frame_id,
+        current_frame = current_frame_id);
 
     let mut timeline = load_timeline(
         sender_id,
@@ -712,6 +726,9 @@ async fn load_joined_room(
                     .await?
                     .into_iter()
                     .collect();
+                tracing::debug!(target: "palpo::device_list_trace", phase = "sync_initial_room_members",
+                    node = %config::server_name(), viewer = %sender_id, room_id = %room_id,
+                    users = ?joined_users, since_sn = since_tk.event_sn());
                 // .into_iter()
                 // .filter(|user_id| {
                 //     // Don't send key updates from the sender to the sender
@@ -863,6 +880,10 @@ async fn load_joined_room(
                                     .is_empty()
                                 {
                                     device_list_updates.insert(user_id.clone());
+                                    tracing::debug!(target: "palpo::device_list_trace", phase = "sync_membership_join_candidate",
+                                        node = %config::server_name(), viewer = %sender_id,
+                                        room_id = %room_id, user_id = %user_id,
+                                        member_sn = state_event.event_sn, since_sn = since_tk.event_sn());
                                     joined_users.insert(user_id);
                                 }
                             }
@@ -914,10 +935,14 @@ async fn load_joined_room(
         };
 
     // Look for device list updates in this room
-    device_list_updates.extend(
+    let room_key_changes =
         room::keys_changed_users(room_id, since_tk.event_sn(), until_tk.map(|t| t.event_sn()))
-            .await?,
-    );
+            .await?;
+    tracing::debug!(target: "palpo::device_list_trace", phase = "sync_room_key_candidates",
+        node = %config::server_name(), viewer = %sender_id, room_id = %room_id,
+        users = ?room_key_changes, since_sn = since_tk.event_sn(),
+        through_sn = ?until_tk.map(|t| t.event_sn()));
+    device_list_updates.extend(room_key_changes);
 
     let mut limited = timeline.limited || joined_since_last_sync;
     if let Some((_, first_event)) = timeline.events.first()

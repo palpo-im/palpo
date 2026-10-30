@@ -64,7 +64,9 @@ COPY tests/complement/startup.sh startup.sh
 
 ENV PALPO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/palpo"
 ENV PALPO_CONFIG=/work/palpo.toml
-ENV RUST_LOG="warn,palpo=info"
+ENV RUST_LOG="warn,palpo=info,palpo::device_list_trace=debug"
+# Palpo's console subscriber reads logger.level, independently of RUST_LOG.
+ENV PALPO_LOGGER__LEVEL="warn,palpo::device_list_trace=debug"
 ENV LOG_FORMAT=text
 
 RUN PG_VERSION=$(ls /etc/postgresql/) && \

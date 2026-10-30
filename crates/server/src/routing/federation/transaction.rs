@@ -367,7 +367,11 @@ async fn process_edu_device_list_update(
     content: DeviceListUpdateContent,
 ) -> AppResult<()> {
     let DeviceListUpdateContent {
-        user_id, stream_id, ..
+        user_id,
+        stream_id,
+        device_id,
+        prev_id,
+        ..
     } = content;
 
     if user_id.server_name() != origin {
@@ -377,12 +381,19 @@ async fn process_edu_device_list_update(
         );
         return Ok(());
     }
-    crate::data::user::key::apply_remote_device_list_version(
+    tracing::debug!(target: "palpo::device_list_trace", phase = "receiver_edu",
+        node = %crate::config::server_name(), origin = %origin,
+        user_id = %user_id, device_id = %device_id, remote_stream_id = stream_id,
+        prev_ids = ?prev_id);
+    let applied = crate::data::user::key::apply_remote_device_list_version(
         &user_id,
         stream_id,
         crate::config::server_name(),
     )
     .await?;
+    tracing::debug!(target: "palpo::device_list_trace", phase = "receiver_committed",
+        node = %crate::config::server_name(), user_id = %user_id,
+        remote_stream_id = stream_id, applied);
     Ok(())
 }
 
