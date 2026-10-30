@@ -238,21 +238,16 @@ pub fn federation_client() -> ClientWithMiddleware {
 /// `config::cidr_range_denylist`, defending against SSRF where an
 /// authenticated user configures an internal URL as a push target.
 ///
-/// Redirects are limited to two hops; redirect targets are also subject to
-/// the same DNS-level CIDR filtering.
+/// Redirects are limited to two hops. Every redirect validates IP literals,
+/// and DNS results are filtered at connect time. Proxy resolution is disabled.
 pub fn push_gateway_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             let conf = crate::config::get();
-            let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
-            reqwest_client_builder(conf)
-                .expect("failed to build push gateway client")
+            restricted_client_builder(conf, 2)
+                .expect("failed to configure push gateway client")
                 .timeout(Duration::from_secs(60))
-                .redirect(reqwest::redirect::Policy::limited(2))
-                .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
-                    tls_name_override,
-                )))
                 .build()
                 .expect("failed to build push gateway client")
         })
