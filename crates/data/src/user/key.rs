@@ -604,7 +604,7 @@ pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
     use diesel::query_dsl::methods::FilterDsl;
     diesel::insert_into(e2e_key_changes::table)
         .values(change)
-        .on_conflict((e2e_key_changes::user_id,e2e_key_changes::room_id))
+        .on_conflict((e2e_key_changes::user_id, e2e_key_changes::room_id))
         .do_update()
         .set((
             e2e_key_changes::occur_sn.eq(diesel::upsert::excluded(e2e_key_changes::occur_sn)),
