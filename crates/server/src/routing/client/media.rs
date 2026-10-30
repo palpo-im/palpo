@@ -1,9 +1,7 @@
-use std::io::Cursor;
 use std::str::FromStr;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use image::imageops::FilterType;
 use mime::Mime;
 use reqwest::Url;
 use salvo::http::header::CONTENT_TYPE;
@@ -418,61 +416,13 @@ pub async fn get_thumbnail(
     {
         // Generate a thumbnail: read original image from storage
         let image_key = media_storage_key(&args.server_name, &args.media_id);
-        let image_data = storage::read(&image_key).await?;
         let ct = content_type
             .as_deref()
             .unwrap_or("application/octet-stream");
 
-        if let Ok(image) = image::load_from_memory(&image_data) {
-            let original_width = image.width();
-            let original_height = image.height();
-            if width > original_width || height > original_height {
-                res.add_header(CONTENT_TYPE, ct, true)?;
-                res.body = ResBody::Once(image_data.into());
-                return Ok(());
-            }
-
-            let thumbnail = if crop {
-                image.resize_to_fill(width, height, FilterType::CatmullRom)
-            } else {
-                let (exact_width, exact_height) = {
-                    let ratio = u64::from(original_width) * u64::from(height);
-                    let nratio = u64::from(width) * u64::from(original_height);
-
-                    let use_width = nratio <= ratio;
-                    let intermediate = if use_width {
-                        u64::from(original_height) * u64::from(width) / u64::from(original_width)
-                    } else {
-                        u64::from(original_width) * u64::from(height) / u64::from(original_height)
-                    };
-                    if use_width {
-                        if intermediate <= u64::from(u32::MAX) {
-                            (width, intermediate as u32)
-                        } else {
-                            (
-                                (u64::from(width) * u64::from(u32::MAX) / intermediate) as u32,
-                                u32::MAX,
-                            )
-                        }
-                    } else if intermediate <= u64::from(u32::MAX) {
-                        (intermediate as u32, height)
-                    } else {
-                        (
-                            u32::MAX,
-                            (u64::from(height) * u64::from(u32::MAX) / intermediate) as u32,
-                        )
-                    }
-                };
-
-                image.thumbnail_exact(exact_width, exact_height)
-            };
-
-            let mut thumbnail_bytes = Vec::new();
-            thumbnail.write_to(
-                &mut Cursor::new(&mut thumbnail_bytes),
-                image::ImageFormat::Png,
-            )?;
-
+        let (thumbnail_bytes, image_data) =
+            crate::media::thumbnail::render_stored(&image_key, width, height, crop).await?;
+        if let Some(thumbnail_bytes) = thumbnail_bytes {
             // Save thumbnail in database so we don't have to generate it again next time
             let (thumbnail_id, created) =
                 reserve_thumbnail_cache_row(&args, thumbnail_bytes.len()).await?;
