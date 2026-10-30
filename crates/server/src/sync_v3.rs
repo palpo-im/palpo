@@ -474,7 +474,7 @@ async fn load_joined_room(
         .unwrap_or_else(|| next_batch.event_sn().saturating_sub(1));
     // Another worker may already have appended state past this captured sync
     // window. Resolve the delta against the frame this response can include.
-    let current_frame_id = match room::get_frame_id(room_id, Some(until_sn)).await {
+    let current_frame_id = match captured_sync_frame(room_id, until_sn).await {
         Ok(frame) => frame,
         Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
         Err(error) => return Err(error),
@@ -482,9 +482,7 @@ async fn load_joined_room(
     // V3 next_batch is the first unseen position, and timeline reads include
     // `since`. Its previous state must therefore be strictly before that point.
     let since_frame_id = if let Some(since_tk) = since_tk {
-        match crate::event::get_last_frame_id(room_id, Some(since_tk.event_sn().saturating_sub(1)))
-            .await
-        {
+        match captured_sync_frame(room_id, since_tk.event_sn().saturating_sub(1)).await {
             Ok(frame) => Some(frame),
             Err(error) if error.is_not_found() => None,
             Err(error) => return Err(error),
@@ -825,11 +823,10 @@ async fn load_joined_room(
                     .await?
                         || lazy_load_send_redundant
                     {
-                        let member_event = match room::get_state(
-                            room_id,
+                        let member_event = match state::get_state(
+                            current_frame_id,
                             &StateEventType::RoomMember,
                             event.sender.as_str(),
-                            Some(until_sn),
                         )
                         .await
                         {
@@ -1015,6 +1012,35 @@ async fn load_joined_room(
         unread_count,
     };
     Ok((joined_room, timeline.next_batch))
+}
+
+/// Imported auth/state outliers can receive sequence numbers after the local
+/// join while retaining an older historical frame. They do not describe the
+/// state published by this sync stream, nor do negative backfill positions.
+async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    use crate::data::schema::{event_points, events};
+
+    event_points::table
+        .inner_join(
+            events::table.on(events::id
+                .eq(event_points::event_id)
+                .and(events::room_id.eq(event_points::room_id))),
+        )
+        .filter(event_points::room_id.eq(room_id))
+        .filter(event_points::frame_id.is_not_null())
+        .filter(events::is_outlier.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::stream_ordering.ge(0))
+        .filter(events::stream_ordering.le(until))
+        .select(event_points::frame_id)
+        .order_by(events::stream_ordering.desc())
+        .first::<Option<i64>>(&mut data::connect().await?)
+        .await?
+        .ok_or_else(|| MatrixError::not_found("captured sync frame is not found").into())
 }
 
 /// Current membership rows can already have been overwritten by later joins or
