@@ -107,6 +107,32 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
+      - name: Profile avatar HTTP regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_profile_avatar
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_profile_avatar cargo test -p palpo --lib --all-features profile_http_avatar_updates -- --ignored --exact routing::client::profile::avatar_http_tests::profile_http_avatar_updates_preserve_opaque_values_and_ownership
+
+      - name: Dummy registration policy regression tests
+        run: |
+          # Configuration is immutable; give each policy its own process and empty database.
+          for policy in open token email closed; do
+            case "$policy" in
+              open) test=http_dummy_registration_open_policy ;;
+              *) test=http_dummy_registration_preserves_${policy}_policy ;;
+            esac
+            sudo -u postgres createdb -O palpo_test palpo_dummy_${policy}
+            PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_dummy_${policy} \
+              cargo test -p palpo --lib --all-features \
+              routing::client::register::dummy_registration_tests::${test} -- --exact --ignored
+          done
+
+      - name: Incomplete missing-event recovery regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_missing_events
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_missing_events cargo test -p palpo --lib --all-features missing_events_http_recovery_requires_usable_predecessors -- --ignored --exact event::outlier::missing_events_tests::missing_events_http_recovery_requires_usable_predecessors
+          sudo -u postgres createdb -O palpo_test palpo_pending_auth_events
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_pending_auth_events cargo test -p palpo --lib --all-features missing_events_signed_predecessors_preserve_pending_state -- --ignored --exact event::outlier::missing_events_tests::missing_events_signed_predecessors_preserve_pending_state
+
       - name: Remote device version HTTP regression test
         run: |
           sudo -u postgres createdb -O palpo_test palpo_remote_device_versions
