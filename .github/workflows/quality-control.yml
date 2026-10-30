@@ -124,6 +124,8 @@ jobs:
         run: |
           sudo -u postgres createdb -O palpo_test palpo_publication_members_default
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_publication_members_default cargo test -p palpo --lib -- --ignored --exact routing::client::room::membership::publication_tests::database_members_publication_points_preserve_snapshot_and_leave_cap --test-threads=1
+          sudo -u postgres createdb -O palpo_test palpo_publication_members_initial_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_publication_members_initial_default cargo test -p palpo --lib -- --ignored --exact routing::client::room::membership::publication_tests::database_members_initial_sync_prev_batch_preserves_members_point --test-threads=1
           sudo -u postgres createdb -O palpo_test palpo_publication_relations_default
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_publication_relations_default cargo test -p palpo --lib -- --ignored --exact room::pdu_metadata::publication_tests::database_relations_preserve_publication_windows_and_legacy_identity_pages --test-threads=1
 

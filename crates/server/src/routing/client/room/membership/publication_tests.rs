@@ -279,3 +279,130 @@ async fn members_publication() {
         "{body}"
     );
 }
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+fn database_members_initial_sync_prev_batch_preserves_members_point() {
+    std::thread::Builder::new()
+        .name("members-initial-prev-http".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(initial_sync_members());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn initial_sync_members() {
+    crate::test_database::init();
+    let _ = config::CONFIG.set(
+        serde_json::from_value(json!({
+            "server_name":"members-publication.example", "db":{"url":"unused-test-config"},
+            "ip_range_denylist":[], "auto_join_rooms":[]
+        }))
+        .unwrap(),
+    );
+    let prefix = format!("members-initial-{}", uuid::Uuid::new_v4().simple());
+    let (alice, alice_token) = provision(&format!("{prefix}-alice")).await;
+    let (bob, bob_token) = provision(&format!("{prefix}-bob")).await;
+    let service = Service::new(crate::routing::root());
+    let created = ok(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", format!("Bearer {alice_token}"), true)
+            .json(&json!({"room_version":"11", "preset":"public_chat"})),
+        &service,
+    )
+    .await;
+    let room: OwnedRoomId = created["room_id"].as_str().unwrap().try_into().unwrap();
+    let hello = ok(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/hello"
+        ))
+        .add_header("Authorization", format!("Bearer {alice_token}"), true)
+        .json(&json!({"msgtype":"m.text", "body":"Hello world!"})),
+        &service,
+    )
+    .await;
+    // Match Complement TestGetRoomMembersAtPoint: an initial sync with no
+    // timeline limit/filter. The limited incremental fixture above is distinct.
+    let initial = ok(
+        TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0").add_header(
+            "Authorization",
+            format!("Bearer {alice_token}"),
+            true,
+        ),
+        &service,
+    )
+    .await;
+    let timeline = &initial["rooms"]["join"][room.as_str()]["timeline"];
+    assert_eq!(timeline["limited"], false, "{initial}");
+    assert_eq!(timeline["events"][0]["type"], "m.room.create", "{initial}");
+    assert_eq!(
+        timeline["events"].as_array().unwrap().last().unwrap()["event_id"],
+        hello["event_id"],
+        "{initial}"
+    );
+    let previous = timeline["prev_batch"].as_str().unwrap();
+    assert!(matches!(
+        previous.parse().unwrap(),
+        BatchToken::Publication { .. }
+    ));
+    ok(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/join"
+        ))
+        .add_header("Authorization", format!("Bearer {bob_token}"), true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    ok(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/hello-back"
+        ))
+        .add_header("Authorization", format!("Bearer {bob_token}"), true)
+        .json(&json!({"msgtype":"m.text", "body":"Hello back"})),
+        &service,
+    )
+    .await;
+    let historical = ok(members_request(&room, &alice_token, previous), &service).await;
+    assert_eq!(
+        historical["chunk"].as_array().unwrap().len(),
+        1,
+        "{historical}"
+    );
+    assert_eq!(
+        member(&historical, &alice).unwrap()["content"]["membership"],
+        "join",
+        "{historical}"
+    );
+    assert!(member(&historical, &bob).is_none(), "{historical}");
+
+    // Positive control: the later actual sync position includes Bob, so the
+    // old snapshot cannot pass merely because the join was never published.
+    let current = ok(
+        TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0").add_header(
+            "Authorization",
+            format!("Bearer {alice_token}"),
+            true,
+        ),
+        &service,
+    )
+    .await;
+    let current = ok(
+        members_request(&room, &alice_token, current["next_batch"].as_str().unwrap()),
+        &service,
+    )
+    .await;
+    assert_eq!(current["chunk"].as_array().unwrap().len(), 2, "{current}");
+    assert_eq!(
+        member(&current, &bob).unwrap()["content"]["membership"],
+        "join",
+        "{current}"
+    );
+}

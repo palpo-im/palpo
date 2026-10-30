@@ -1493,12 +1493,14 @@ pub(crate) async fn load_timeline(
             timeline_pdus = after_gap;
         }
     }
-    let oldest = if is_backward {
-        timeline_pdus.last()
-    } else {
+    // Preserve the existing non-limited sync boundary. Only a limited
+    // forward batch starts a gap before its oldest returned event.
+    let boundary = if limited && !is_backward {
         timeline_pdus.first()
+    } else {
+        timeline_pdus.last()
     };
-    let prev_batch = if let Some((identity, _)) = oldest {
+    let prev_batch = if let Some((identity, _)) = boundary {
         timeline::publication::position(room_id, *identity)
             .await?
             .map(BatchToken::new_publication)
