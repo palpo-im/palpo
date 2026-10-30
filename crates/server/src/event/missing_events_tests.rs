@@ -274,6 +274,34 @@ async fn recovery_cases() {
         MissingEventsRecovery::Incomplete
     );
 
+    // A legacy/partial metadata row without its room-scoped JSON payload is
+    // not a usable predecessor, even when its flags claim timeline acceptance.
+    let orphan = child(&template, "$orphan-metadata", &[]);
+    let (orphan, ..) = orphan.save_to_database(false).await.unwrap();
+    diesel::update(events::table.find(&orphan.event_id))
+        .set((events::is_outlier.eq(false), events::soft_failed.eq(false)))
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+    diesel::delete(event_datas::table.filter(event_datas::event_id.eq(&orphan.event_id)))
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+    let recovery = response(&room_id, std::slice::from_ref(&orphan.event_id), vec![]).await;
+    assert_eq!(
+        recovery.as_ref().unwrap(),
+        &MissingEventsRecovery::Incomplete
+    );
+    assert_retry_without_storage(
+        child(
+            &template,
+            "$orphan-metadata-child",
+            std::slice::from_ref(&orphan.event_id),
+        ),
+        recovery,
+    )
+    .await;
+
     // A cached raw outlier is not a usable anchor, even if it has parsed JSON.
     let raw = child(
         &template,
@@ -410,18 +438,56 @@ async fn recovery_cases() {
         .unwrap();
     assert!(!reconnected.rejected() && !reconnected.soft_failed);
 
-    let imported = child(
-        &template,
-        "$state-import",
-        std::slice::from_ref(&cached.event_id),
-    );
+    // Use a genuinely signed and authorized state PDU, not a message whose ID
+    // merely suggests that it is imported state.
+    let (state_pdu, mut state_json) = PduBuilder {
+        event_type: "m.room.topic".into(),
+        state_key: Some("".into()),
+        content: serde_json::value::to_raw_value(&json!({"topic":"imported historical topic"}))
+            .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(
+        &UserId::parse("@alice:missing.example").unwrap(),
+        &room_id,
+        &RoomVersionId::V11,
+    )
+    .await
+    .unwrap();
+    state_json.remove("event_id");
+    let mut imported = crate::event::handler::process_to_outlier_pdu(
+        REMOTE.try_into().unwrap(),
+        &state_pdu.event_id,
+        &room_id,
+        &RoomVersionId::V11,
+        state_json,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!imported.soft_failed && !imported.rejected());
+    imported.soft_failed = true;
     let (imported, ..) = imported.save_to_database(false).await.unwrap();
     assert!(imported.is_outlier);
+    assert_eq!(imported.event_ty.to_string(), "m.room.topic");
+    assert_eq!(imported.state_key.as_deref(), Some(""));
     let reconnect = child(
         &template,
         "$state-import-child",
         std::slice::from_ref(&imported.event_id),
     );
+    let resolved = crate::event::resolver::resolve_state_at_incoming(
+        &reconnect,
+        &crate::room::get_version_rules(&RoomVersionId::V11).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let topic_field =
+        crate::room::state::ensure_field_id(&crate::core::events::StateEventType::RoomTopic, "")
+            .await
+            .unwrap();
+    assert_eq!(resolved.get(&topic_field), Some(&imported.event_id));
     let recovery = fetch_and_process_missing_events(
         REMOTE.try_into().unwrap(),
         &room_id,
