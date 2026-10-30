@@ -157,7 +157,7 @@ pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoom
 }
 
 pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
-    let (mut event_id, mut event_sn) = room_users::table
+    let (event_id, event_sn) = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("join"))
@@ -165,6 +165,14 @@ pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
         .first::<(OwnedEventId, Seqnum)>(&mut connect().await?)
         .await?;
 
+    join_sn_for_event(user_id, event_id, event_sn).await
+}
+
+pub(crate) async fn join_sn_for_event(
+    user_id: &UserId,
+    mut event_id: OwnedEventId,
+    mut event_sn: Seqnum,
+) -> AppResult<Seqnum> {
     // room_users records the latest membership event, including join-to-join
     // name/avatar changes. Sync needs the beginning of the current joined
     // period instead. Follow the server's stored before-state, not unsigned
@@ -474,7 +482,17 @@ pub async fn left_rooms(
         ]))
         .into_boxed();
     let query = if let Some(since_tk) = since_tk {
-        query.filter(room_users::event_sn.ge(since_tk.event_sn()))
+        if matches!(since_tk, BatchToken::Publication { .. }) {
+            query.filter(
+                room_users::event_id.eq_any(
+                    event_points::table
+                        .filter(event_points::live_published_sn.ge(since_tk.stream_ordering()))
+                        .select(event_points::event_id),
+                ),
+            )
+        } else {
+            query.filter(room_users::event_sn.ge(since_tk.event_sn()))
+        }
     } else {
         query.filter(room_users::forgotten.eq(false))
     };

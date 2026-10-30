@@ -724,6 +724,128 @@ pub async fn get_event_relations(
         .map_err(Into::into)
 }
 
+/// A publication window with optional historical positions at each endpoint.
+/// Publication bounds are half-open; historical positions use the same
+/// `(depth, signed original stream position)` ordering as room messages.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RelationPublicationWindow {
+    pub lower: Option<Seqnum>,
+    pub upper: Option<Seqnum>,
+    pub from: Option<(i64, Seqnum)>,
+    pub to: Option<(i64, Seqnum)>,
+}
+
+/// Load relations inside a frozen publication window before applying LIMIT.
+/// This is separate from the legacy child-identity pagination above.
+pub async fn get_event_relations_publication(
+    room_id: &RoomId,
+    event_id: &EventId,
+    child_ty: Option<&str>,
+    rel_type: Option<&str>,
+    window: RelationPublicationWindow,
+    forward: bool,
+    limit: usize,
+) -> DataResult<Vec<DbEventRelation>> {
+    if window
+        .lower
+        .zip(window.upper)
+        .is_some_and(|(lower, upper)| lower >= upper)
+    {
+        return Ok(Vec::new());
+    }
+    let mut query = event_relations::table
+        .inner_join(
+            events::table.on(events::id
+                .eq(event_relations::child_id)
+                .and(events::room_id.eq(event_relations::room_id))),
+        )
+        .filter(event_relations::room_id.eq(room_id))
+        .filter(event_relations::event_id.eq(event_id))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .select(event_relations::all_columns)
+        .into_boxed();
+    if let Some(child_ty) = child_ty {
+        query = query.filter(event_relations::child_ty.eq(child_ty));
+    }
+    if let Some(rel_type) = rel_type {
+        query = query.filter(event_relations::rel_type.eq(rel_type));
+    }
+    let mut published = event_points::table
+        .filter(event_points::room_id.eq(room_id))
+        .filter(event_points::live_published_sn.is_not_null())
+        .select(event_points::event_id)
+        .into_boxed();
+    if let Some(lower) = window.lower {
+        published = published.filter(event_points::live_published_sn.ge(lower));
+    }
+    if let Some(upper) = window.upper {
+        published = published.filter(event_points::live_published_sn.lt(upper));
+    }
+    let live = events::stream_ordering
+        .ge(0)
+        .and(events::id.eq_any(published));
+    if window.lower.is_none() {
+        // As for /messages, unbounded history includes negative backfill.
+        query = query.filter(live.or(events::stream_ordering.lt(0)));
+    } else {
+        query = query.filter(live);
+    }
+    if forward {
+        if let Some((depth, stream)) = window.from {
+            query = query.filter(
+                events::topological_ordering
+                    .gt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.gt(stream))),
+            );
+        }
+        if let Some((depth, stream)) = window.to {
+            query = query.filter(
+                events::topological_ordering
+                    .lt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.le(stream))),
+            );
+        }
+        query = query.order_by((
+            events::topological_ordering.asc(),
+            events::stream_ordering.asc(),
+        ));
+    } else {
+        if let Some((depth, stream)) = window.from {
+            query = query.filter(
+                events::topological_ordering
+                    .lt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.le(stream))),
+            );
+        }
+        if let Some((depth, stream)) = window.to {
+            query = query.filter(
+                events::topological_ordering
+                    .gt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.gt(stream))),
+            );
+        }
+        query = query.order_by((
+            events::topological_ordering.desc(),
+            events::stream_ordering.desc(),
+        ));
+    }
+    query
+        .limit(limit as i64)
+        .load::<DbEventRelation>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 /// Mark an event as soft-failed.
 pub async fn set_event_soft_failed(event_id: &EventId) -> DataResult<()> {
     diesel::update(events::table.filter(events::id.eq(event_id)))

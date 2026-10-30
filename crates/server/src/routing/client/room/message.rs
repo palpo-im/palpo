@@ -127,47 +127,53 @@ pub(super) async fn get_messages(
     let next_token;
     let mut resp = MessagesResBody::default();
     let mut lazy_loaded = HashSet::new();
-    match args.dir {
-        Direction::Forward => {
-            let events = topolo::load_pdus_forward(
-                Some(sender_id),
-                &args.room_id,
-                Some(from_tk),
-                until_tk,
-                Some(&args.filter),
-                limit,
-            )
-            .await?;
-
-            for (_, event) in &events {
-                // TODO: Remove this when these are resolved:
-                // https://github.com/vector-im/element-android/issues/3417
-                // https://github.com/vector-im/element-web/issues/21034
-                // if !crate::room::lazy_loading.lazy_load_was_sent_before(
-                // sender_id,
-                // sender_id,
-                // &body.room_id,
-                // &event.sender,
-                // )? {
-                // lazy_loaded.insert(event.sender.clone());
-                // }
-                lazy_loaded.insert(event.sender.clone());
+    if timeline::publication::uses_publication(from_tk)
+        || until_tk.is_some_and(timeline::publication::uses_publication)
+    {
+        let mut page = timeline::publication::page(
+            sender_id,
+            &args.room_id,
+            from_tk,
+            until_tk,
+            &args.filter,
+            limit,
+            args.dir,
+        )
+        .await?;
+        if args.dir == Direction::Backward {
+            let filled =
+                timeline::backfill_if_required(&args.room_id, &from_tk, &page.events, limit)
+                    .await?;
+            if !filled.is_empty() {
+                page = timeline::publication::page(
+                    sender_id,
+                    &args.room_id,
+                    from_tk,
+                    until_tk,
+                    &args.filter,
+                    limit,
+                    args.dir,
+                )
+                .await?;
+                let events = timeline::trim_pdus_until_backfill_gap(page.events.clone()).await?;
+                page.replace_events(events, args.dir);
             }
-
-            next_token = events.last().map(|(_, pdu)| pdu.historic_token());
-
-            let events: Vec<_> = events
-                .into_iter()
-                .map(|(_, pdu)| pdu.to_room_event_for(sender_id, authed.device_id()))
-                .collect();
-
-            resp.start = from_tk.to_string();
-            resp.end = next_token.map(|tk| tk.to_string());
-            resp.chunk = events;
         }
-        Direction::Backward => {
-            let mut events: indexmap::IndexMap<i64, crate::SnPduEvent> =
-                topolo::load_pdus_backward(
+        for event in page.events.values() {
+            lazy_loaded.insert(event.sender.clone());
+        }
+        next_token = page.end;
+        resp.start = from_tk.to_string();
+        resp.end = next_token.map(|token| token.to_string());
+        resp.chunk = page
+            .events
+            .values()
+            .map(|pdu| pdu.to_room_event_for(sender_id, authed.device_id()))
+            .collect();
+    } else {
+        match args.dir {
+            Direction::Forward => {
+                let events = topolo::load_pdus_forward(
                     Some(sender_id),
                     &args.room_id,
                     Some(from_tk),
@@ -176,50 +182,88 @@ pub(super) async fn get_messages(
                     limit,
                 )
                 .await?;
-            // Backfill if the local page is short on history. Backfilled events
-            // may have higher depth than what we already loaded (e.g. on a fresh
-            // join, locally we only have low-depth state events while the
-            // backfilled timeline messages live above them), so re-run the page
-            // load whenever we filled anything.
-            let filled_events =
-                timeline::backfill_if_required(&args.room_id, &from_tk, &events, limit).await?;
-            if !filled_events.is_empty() {
-                events = topolo::load_pdus_backward(
-                    Some(sender_id),
-                    &args.room_id,
-                    Some(from_tk),
-                    until_tk,
-                    Some(&args.filter),
-                    limit,
-                )
-                .await?;
-                events = timeline::trim_pdus_until_backfill_gap(events).await?;
-            }
 
-            for (_, event) in &events {
-                // TODO: Remove this when these are resolved:
-                // https://github.com/vector-im/element-android/issues/3417
-                // https://github.com/vector-im/element-web/issues/21034
-                // if !crate::room::lazy_loading.lazy_load_was_sent_before(
-                // sender_id,
-                // authed.require_device_id()?,
-                // &args.room_id,
-                // &event.sender,
-                // )? {
-                // lazy_loaded.insert(event.sender.clone());
-                // }
-                lazy_loaded.insert(event.sender.clone());
+                for (_, event) in &events {
+                    // TODO: Remove this when these are resolved:
+                    // https://github.com/vector-im/element-android/issues/3417
+                    // https://github.com/vector-im/element-web/issues/21034
+                    // if !crate::room::lazy_loading.lazy_load_was_sent_before(
+                    // sender_id,
+                    // sender_id,
+                    // &body.room_id,
+                    // &event.sender,
+                    // )? {
+                    // lazy_loaded.insert(event.sender.clone());
+                    // }
+                    lazy_loaded.insert(event.sender.clone());
+                }
+
+                next_token = events.last().map(|(_, pdu)| pdu.historic_token());
+
+                let events: Vec<_> = events
+                    .into_iter()
+                    .map(|(_, pdu)| pdu.to_room_event_for(sender_id, authed.device_id()))
+                    .collect();
+
+                resp.start = from_tk.to_string();
+                resp.end = next_token.map(|tk| tk.to_string());
+                resp.chunk = events;
             }
-            next_token = events.last().map(|(_, pdu)| pdu.prev_historic_token());
-            resp.start = from_tk.to_string();
-            resp.end = next_token.map(|tk| tk.to_string());
-            resp.chunk = events
-                .values()
-                .map(|pdu| pdu.to_room_event_for(sender_id, authed.device_id()))
-                .collect();
+            Direction::Backward => {
+                let mut events: indexmap::IndexMap<i64, crate::SnPduEvent> =
+                    topolo::load_pdus_backward(
+                        Some(sender_id),
+                        &args.room_id,
+                        Some(from_tk),
+                        until_tk,
+                        Some(&args.filter),
+                        limit,
+                    )
+                    .await?;
+                // Backfill if the local page is short on history. Backfilled events
+                // may have higher depth than what we already loaded (e.g. on a fresh
+                // join, locally we only have low-depth state events while the
+                // backfilled timeline messages live above them), so re-run the page
+                // load whenever we filled anything.
+                let filled_events =
+                    timeline::backfill_if_required(&args.room_id, &from_tk, &events, limit).await?;
+                if !filled_events.is_empty() {
+                    events = topolo::load_pdus_backward(
+                        Some(sender_id),
+                        &args.room_id,
+                        Some(from_tk),
+                        until_tk,
+                        Some(&args.filter),
+                        limit,
+                    )
+                    .await?;
+                    events = timeline::trim_pdus_until_backfill_gap(events).await?;
+                }
+
+                for (_, event) in &events {
+                    // TODO: Remove this when these are resolved:
+                    // https://github.com/vector-im/element-android/issues/3417
+                    // https://github.com/vector-im/element-web/issues/21034
+                    // if !crate::room::lazy_loading.lazy_load_was_sent_before(
+                    // sender_id,
+                    // authed.require_device_id()?,
+                    // &args.room_id,
+                    // &event.sender,
+                    // )? {
+                    // lazy_loaded.insert(event.sender.clone());
+                    // }
+                    lazy_loaded.insert(event.sender.clone());
+                }
+                next_token = events.last().map(|(_, pdu)| pdu.prev_historic_token());
+                resp.start = from_tk.to_string();
+                resp.end = next_token.map(|tk| tk.to_string());
+                resp.chunk = events
+                    .values()
+                    .map(|pdu| pdu.to_room_event_for(sender_id, authed.device_id()))
+                    .collect();
+            }
         }
     }
-
     resp.state = Vec::new();
     for ll_id in &lazy_loaded {
         if let Ok(member_event) = room::get_state(

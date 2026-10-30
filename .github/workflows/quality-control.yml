@@ -120,6 +120,13 @@ jobs:
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_publication_default cargo test -p palpo --lib http_delayed_membership_promotion_uses_publication_order -- --ignored --exact sync_v3::member_presence_tests::http_delayed_membership_promotion_uses_publication_order
           sudo -u postgres createdb -O palpo_test palpo_member_publication_all
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_publication_all cargo test -p palpo --lib --all-features http_delayed_membership_promotion_uses_publication_order -- --ignored --exact sync_v3::member_presence_tests::http_delayed_membership_promotion_uses_publication_order
+      - name: Default-feature publication cursor consumers
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_publication_members_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_publication_members_default cargo test -p palpo --lib -- --ignored --exact routing::client::room::membership::publication_tests::database_members_publication_points_preserve_snapshot_and_leave_cap --test-threads=1
+          sudo -u postgres createdb -O palpo_test palpo_publication_relations_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_publication_relations_default cargo test -p palpo --lib -- --ignored --exact room::pdu_metadata::publication_tests::database_relations_preserve_publication_windows_and_legacy_identity_pages --test-threads=1
+
       - name: Default-feature idle fallback key regression
         run: |
           sudo -u postgres createdb -O palpo_test palpo_idle_fallback

@@ -918,6 +918,42 @@ async fn delayed_member_publication() {
         .await
         .unwrap();
     assert_eq!(history_publication, (None, None));
+    // A second genuinely backfilled PDU has a later depth but a more negative
+    // stream ordering. Publication pagination must retain topology, not sort
+    // negative receipt identities as if they were a live clock.
+    let (history_two, history_two_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        timestamp: Some(UnixMillis(2)),
+        content: serde_json::value::to_raw_value(
+            &json!({"body":"second recovered history","msgtype":"m.text"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (mut history_two, history_two_json, guard) =
+        crate::event::PduBuilder::save_as_outlier(history_two, history_two_json, &alice)
+            .await
+            .unwrap();
+    assert!(history_two.depth > history.depth);
+    history_two.is_backfill = true;
+    crate::event::update_before_frame_id(&history_two.event_id, before_promotion)
+        .await
+        .unwrap();
+    room::timeline::append_pdu(
+        &history_two,
+        history_two_json,
+        &room::lock_state(&room).await,
+    )
+    .await
+    .unwrap();
+    drop(guard);
+    let history_two = room::timeline::get_pdu(&history_two.event_id)
+        .await
+        .unwrap();
+    assert!(history_two.is_backfill && !history_two.is_outlier);
     let old_next = BatchToken::new_live(old_until + 1);
     // Positive control: ordinary historical pagination still follows original
     // topology and identity; only a captured sync adds the publication bound.
@@ -1010,6 +1046,83 @@ async fn delayed_member_publication() {
     diesel::sql_query("DELETE FROM event_backward_extremities WHERE room_id=$1 AND event_id='$missing-history-frontier'")
         .bind::<diesel::sql_types::Text,_>(room.as_str())
         .execute(&mut data::connect().await.unwrap()).await.unwrap();
+    let history_upper = BatchToken::new_publication(data::curr_sn().await.unwrap() + 1);
+    let mut from = history_upper.to_string();
+    let mut history_seen = Vec::new();
+    let mut all_seen = std::collections::HashSet::new();
+    for _ in 0..100 {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "b")
+            .append_pair("limit", "1")
+            .append_pair("from", &from);
+        let page = request(
+            TestClient::get(url.as_str()).add_header(
+                "Authorization",
+                "Bearer alice-presence",
+                true,
+            ),
+            &service,
+        )
+        .await;
+        let events = page["chunk"].as_array().unwrap();
+        if events.is_empty() {
+            break;
+        }
+        for event in events {
+            let id = event["event_id"].as_str().unwrap().to_owned();
+            assert!(
+                all_seen.insert(id.clone()),
+                "qualified history repeated a PDU"
+            );
+            if id == history.event_id.as_str() || id == history_two.event_id.as_str() {
+                history_seen.push(id);
+            }
+        }
+        from = page["end"].as_str().unwrap().to_owned();
+        assert!(matches!(
+            from.parse::<BatchToken>().unwrap(),
+            BatchToken::PublicationPage { .. }
+        ));
+    }
+    assert_eq!(
+        history_seen,
+        vec![
+            history_two.event_id.to_string(),
+            history.event_id.to_string()
+        ]
+    );
+    // The history-oriented initial response keeps a valid legacy topology prev.
+    let initial_history = sync(
+        &service,
+        None,
+        Some(json!({"room":{"timeline":{"limit":2}}})),
+    )
+    .await;
+    let actual_prev = initial_history["rooms"]["join"][room.as_str()]["timeline"]["prev_batch"]
+        .as_str()
+        .unwrap();
+    assert!(matches!(
+        actual_prev.parse::<BatchToken>().unwrap(),
+        BatchToken::Historic { .. }
+    ));
+    let mut members_url = url::Url::parse(&format!(
+        "http://localhost/_matrix/client/v3/rooms/{room}/members"
+    ))
+    .unwrap();
+    members_url.query_pairs_mut().append_pair("at", actual_prev);
+    request(
+        TestClient::get(members_url.as_str()).add_header(
+            "Authorization",
+            "Bearer alice-presence",
+            true,
+        ),
+        &service,
+    )
+    .await;
     late_published_timeline(&service, &alice, &history.event_id).await;
 }
 
@@ -1070,6 +1183,16 @@ async fn late_published_timeline(
     let old = sync(service, None, None).await;
     let lower = old["next_batch"].as_str().unwrap();
     let lower_sn = lower.parse::<BatchToken>().unwrap().event_sn();
+    let newer = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/newer-live"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"newer live identity"})),
+        service,
+    )
+    .await;
+    let newer_id = newer["event_id"].as_str().unwrap();
     for (cached, json) in &pending {
         assert!(cached.event_sn < lower_sn);
         assert!(!timeline_ids(&old, &room).contains(&cached.event_id.as_str()));
@@ -1107,16 +1230,6 @@ async fn late_published_timeline(
             cached.event_sn, lower_sn, publication
         );
     }
-    let newer = request(
-        TestClient::put(format!(
-            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/newer-live"
-        ))
-        .add_header("Authorization", "Bearer alice-presence", true)
-        .json(&json!({"msgtype":"m.text","body":"newer live identity"})),
-        service,
-    )
-    .await;
-    let newer_id = newer["event_id"].as_str().unwrap();
     let full = sync(service, Some(lower), None).await;
     let ids = timeline_ids(&full, &room);
     for (cached, _) in &pending {
@@ -1131,11 +1244,11 @@ async fn late_published_timeline(
     assert_eq!(
         ids,
         vec![
+            newer_id,
             pending[0].0.event_id.as_str(),
-            pending[1].0.event_id.as_str(),
-            newer_id
+            pending[1].0.event_id.as_str()
         ],
-        "publication selection must preserve original timeline chronology"
+        "sync must deliver publication order even when identities arrive late"
     );
     let next = full["next_batch"].as_str().unwrap();
     request(
@@ -1164,13 +1277,36 @@ async fn late_published_timeline(
     )
     .await;
     let room_data = &limited["rooms"]["join"][room.as_str()];
-    assert_eq!(timeline_ids(&limited, &room), vec![newer_id]);
+    assert_eq!(
+        timeline_ids(&limited, &room),
+        vec![pending[1].0.event_id.as_str()]
+    );
     assert_eq!(room_data["timeline"]["limited"], true);
     let start = room_data["timeline"]["prev_batch"]
         .as_str()
         .unwrap()
         .to_owned();
-    for to in [Some(lower), None] {
+    assert!(matches!(
+        start.parse::<BatchToken>().unwrap(),
+        BatchToken::Publication { .. }
+    ));
+    let mut members_url = url::Url::parse(&format!(
+        "http://localhost/_matrix/client/v3/rooms/{room}/members"
+    ))
+    .unwrap();
+    members_url.query_pairs_mut().append_pair("at", &start);
+    request(
+        TestClient::get(members_url.as_str()).add_header(
+            "Authorization",
+            "Bearer alice-presence",
+            true,
+        ),
+        service,
+    )
+    .await;
+    let missing = [pending[0].0.event_id.as_str(), newer_id];
+    let legacy_lower = format!("s{lower_sn}");
+    for to in [Some(lower), Some(legacy_lower.as_str()), None] {
         let mut from = start.clone();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..20 {
@@ -1203,13 +1339,14 @@ async fn late_published_timeline(
                 if to.is_some() {
                     assert_ne!(id, anchor_id, "bounded gap leaked the already seen anchor");
                 }
-                assert_ne!(id, newer_id, "history repeated the limited sync event");
+                assert_ne!(
+                    id,
+                    pending[1].0.event_id.as_str(),
+                    "history repeated the limited sync event"
+                );
                 assert!(seen.insert(id), "history continuation repeated an event");
             }
-            if pending
-                .iter()
-                .all(|(pdu, _)| seen.contains(pdu.event_id.as_str()))
-            {
+            if missing.iter().all(|id| seen.contains(*id)) {
                 break;
             }
             let end = page["end"].as_str().unwrap().to_owned();
@@ -1217,11 +1354,58 @@ async fn late_published_timeline(
             from = end;
         }
         assert!(
-            pending
-                .iter()
-                .all(|(pdu, _)| seen.contains(pdu.event_id.as_str())),
+            missing.iter().all(|id| seen.contains(*id)),
             "limited history continuation lost a late publication"
         );
+    }
+    // Forward pages use the same frozen publication window, retaining topology
+    // inside it. A topology endpoint can be paired with a publication endpoint.
+    let historic_to = room::timeline::get_pdu(pending[1].0.event_id.as_ref())
+        .await
+        .unwrap()
+        .historic_token();
+    for to in [next.to_owned(), historic_to.to_string()] {
+        let mut from = lower.to_owned();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let mut url = url::Url::parse(&format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+            ))
+            .unwrap();
+            url.query_pairs_mut()
+                .append_pair("dir", "f")
+                .append_pair("limit", "1")
+                .append_pair("from", &from)
+                .append_pair("to", &to);
+            let page = request(
+                TestClient::get(url.as_str()).add_header(
+                    "Authorization",
+                    "Bearer alice-presence",
+                    true,
+                ),
+                service,
+            )
+            .await;
+            let chunk = page["chunk"].as_array().unwrap();
+            if chunk.is_empty() {
+                break;
+            }
+            for event in chunk {
+                let id = event["event_id"].as_str().unwrap().to_owned();
+                assert_ne!(id, anchor_id);
+                assert!(seen.insert(id), "forward continuation repeated a PDU");
+            }
+            from = page["end"].as_str().unwrap().to_owned();
+        }
+        for (cached, _) in &pending {
+            assert!(
+                seen.contains(cached.event_id.as_str()),
+                "forward publication window lost cached event"
+            );
+        }
+        if to == next {
+            assert!(seen.contains(newer_id));
+        }
     }
     let unbounded = room::timeline::stream::load_pdus_backward_captured(
         Some(alice),
@@ -1267,6 +1451,80 @@ async fn late_published_timeline(
     for (cached, _) in &pending {
         assert!(captured.events.contains_key(&cached.event_sn));
     }
+    // Corrupt only a selected timeline message's stored payload. Selection SQL
+    // and room-state loading still succeed; both new readers must surface the
+    // backend failure instead of acknowledging a cursor past this event.
+    let original_json = data::schema::event_datas::table
+        .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str()))
+        .select(data::schema::event_datas::json_data)
+        .first::<Value>(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    diesel::update(
+        data::schema::event_datas::table
+            .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str())),
+    )
+    .set(data::schema::event_datas::json_data.eq(json!(["invalid stored pdu"])))
+    .execute(&mut data::connect().await.unwrap())
+    .await
+    .unwrap();
+    assert!(
+        super::load_timeline(
+            alice,
+            &room,
+            Some(lower.parse().unwrap()),
+            Some(next.parse().unwrap()),
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        room::timeline::publication::page(
+            alice,
+            &room,
+            start.parse().unwrap(),
+            Some(lower.parse().unwrap()),
+            &Default::default(),
+            100,
+            crate::core::Direction::Backward
+        )
+        .await
+        .is_err()
+    );
+    diesel::update(
+        data::schema::event_datas::table
+            .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str())),
+    )
+    .set(data::schema::event_datas::json_data.eq(original_json))
+    .execute(&mut data::connect().await.unwrap())
+    .await
+    .unwrap();
+    diesel::insert_into(data::schema::timeline_gaps::table)
+        .values((
+            data::schema::timeline_gaps::room_id.eq(&room),
+            data::schema::timeline_gaps::event_id.eq(pending[1].0.event_id.as_str()),
+            data::schema::timeline_gaps::event_sn.eq(pending[1].0.event_sn),
+        ))
+        .execute(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    let filtered_gap = sync(
+        service,
+        Some(lower),
+        Some(json!({"room":{"timeline":{"limit":100,"not_types":["m.room.server_acl"]}}})),
+    )
+    .await;
+    assert_eq!(
+        filtered_gap["rooms"]["join"][room.as_str()]["timeline"]["limited"],
+        true,
+        "filtered gap marker must still mark the publication window limited"
+    );
+    assert_eq!(
+        timeline_ids(&filtered_gap, &room),
+        vec![future_id.as_str()],
+        "visible events before a filtered gap must not imply continuity"
+    );
 }
 
 fn timeline_ids<'a>(sync: &'a Value, room: &crate::core::RoomId) -> Vec<&'a str> {

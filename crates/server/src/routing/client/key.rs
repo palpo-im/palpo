@@ -130,6 +130,12 @@ async fn get_key_changes(
 
     let from_tk: BatchToken = args.from.parse()?;
     let to_tk: BatchToken = args.to.parse()?;
+    if from_tk.is_publication_page() || to_tk.is_publication_page() {
+        return Err(crate::MatrixError::invalid_param(
+            "message page cursor is not a sync position",
+        )
+        .into());
+    }
     let mut device_list_updates = HashSet::new();
     device_list_updates.extend(
         data::user::keys_changed_users(sender_id, from_tk.event_sn(), Some(to_tk.event_sn()))

@@ -58,14 +58,20 @@ pub async fn load_pdus_backward_captured(
     filter: Option<&RoomEventFilter>,
     limit: usize,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
-    load_pdus_with_publication_bound(
+    load_pdus_selected(
         user_id,
         room_id,
-        Some(before),
+        None,
         None,
         limit,
         filter,
-        (Direction::Backward, Some(before.event_sn())),
+        (
+            Direction::Backward,
+            Some(super::publication::Window {
+                lower: None,
+                upper: Some(before.event_sn()),
+            }),
+        ),
     )
     .await
 }
@@ -83,7 +89,7 @@ pub async fn load_pdus(
     filter: Option<&RoomEventFilter>,
     dir: Direction,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
-    load_pdus_with_publication_bound(
+    load_pdus_selected(
         user_id,
         room_id,
         since_tk,
@@ -95,15 +101,47 @@ pub async fn load_pdus(
     .await
 }
 
-async fn load_pdus_with_publication_bound(
+/// Retain historical ordering and boundaries inside a frozen publication window.
+pub(crate) async fn load_publication_window(
     user_id: Option<&UserId>,
     room_id: &RoomId,
     since_tk: Option<BatchToken>,
     until_tk: Option<BatchToken>,
     limit: usize,
     filter: Option<&RoomEventFilter>,
-    (dir, published_before): (Direction, Option<Seqnum>),
+    selection: (Direction, super::publication::Window),
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    load_pdus_selected(
+        user_id,
+        room_id,
+        since_tk,
+        until_tk,
+        limit,
+        filter,
+        (selection.0, Some(selection.1)),
+    )
+    .await
+}
+
+async fn load_pdus_selected(
+    user_id: Option<&UserId>,
+    room_id: &RoomId,
+    since_tk: Option<BatchToken>,
+    until_tk: Option<BatchToken>,
+    limit: usize,
+    filter: Option<&RoomEventFilter>,
+    (dir, publication_window): (Direction, Option<super::publication::Window>),
+) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    if since_tk
+        .into_iter()
+        .chain(until_tk)
+        .any(super::publication::uses_publication)
+    {
+        return Err(crate::MatrixError::invalid_param(
+            "publication cursor requires a qualified reader",
+        )
+        .into());
+    }
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
     let ignored_users = match user_id {
         Some(user_id) => Some(crate::user::ignored_users(user_id).await),
@@ -117,14 +155,31 @@ async fn load_pdus_with_publication_bound(
             .filter(events::soft_failed.eq(false))
             .into_boxed();
 
-        if let Some(before) = published_before {
+        if let Some(window) = publication_window {
+            let mut published = event_points::table
+                .filter(event_points::room_id.eq(room_id))
+                .filter(event_points::live_published_sn.is_not_null())
+                .select(event_points::event_id)
+                .into_boxed();
+            if let Some(lower) = window.lower {
+                published = published.filter(event_points::live_published_sn.ge(lower));
+            }
+            if let Some(upper) = window.upper {
+                published = published.filter(event_points::live_published_sn.lt(upper));
+            }
             query = query.filter(
-                events::stream_ordering.lt(0).or(events::id.eq_any(
-                    event_points::table
-                        .filter(event_points::room_id.eq(room_id))
-                        .filter(event_points::live_published_sn.lt(before))
-                        .select(event_points::event_id),
-                )),
+                events::stream_ordering
+                    .ge(0)
+                    .and(events::id.eq_any(published))
+                    .or(events::stream_ordering.lt(0).and(diesel::dsl::sql::<
+                        diesel::sql_types::Bool,
+                    >(
+                        if window.lower.is_none() {
+                            "TRUE"
+                        } else {
+                            "FALSE"
+                        },
+                    ))),
             );
         }
 
@@ -150,6 +205,12 @@ async fn load_pdus_with_publication_bound(
                             ),
                         );
                     }
+                    _ => {
+                        return Err(crate::MatrixError::invalid_param(
+                            "publication cursor requires a qualified reader",
+                        )
+                        .into());
+                    }
                 }
             }
             if let Some(until_tk) = until_tk {
@@ -168,6 +229,12 @@ async fn load_pdus_with_publication_bound(
                                     .and(events::stream_ordering.le(stream_ordering)),
                             ),
                         );
+                    }
+                    _ => {
+                        return Err(crate::MatrixError::invalid_param(
+                            "publication cursor requires a qualified reader",
+                        )
+                        .into());
                     }
                 }
             }
@@ -188,6 +255,12 @@ async fn load_pdus_with_publication_bound(
                                     .and(events::stream_ordering.le(stream_ordering)),
                             ),
                         );
+                    }
+                    _ => {
+                        return Err(crate::MatrixError::invalid_param(
+                            "publication cursor requires a qualified reader",
+                        )
+                        .into());
                     }
                 }
             }
@@ -274,7 +347,15 @@ async fn load_pdus_with_publication_bound(
         offset += count as i64;
 
         for (event_id, event_sn, _) in events {
-            if let Ok(mut pdu) = super::get_pdu(&event_id).await {
+            let loaded = super::get_pdu(&event_id).await;
+            if publication_window.is_some() {
+                if let Err(error) = &loaded
+                    && !error.is_not_found()
+                {
+                    return Err(loaded.err().expect("matched backend error"));
+                }
+            }
+            if let Ok(mut pdu) = loaded {
                 if let Some(user_id) = user_id {
                     if !pdu.user_can_see(user_id).await? {
                         continue;
