@@ -658,15 +658,29 @@ mod device_version_tests {
         OwnedUserId,
         OwnedRoomId,
     ) {
+        setup_with_local_peer(false).await
+    }
+
+    async fn setup_with_local_peer(
+        allow_local_peer: bool,
+    ) -> (
+        Service,
+        Ed25519KeyPair,
+        OwnedUserId,
+        OwnedUserId,
+        OwnedRoomId,
+    ) {
         crate::test_database::init();
+        let mut config: crate::config::ServerConfig = serde_json::from_value(json!({
+            "server_name":LOCAL,"db":{"url":"unused-test-config"},
+            "presence":{"allow_local":false,"allow_incoming":false,"allow_outgoing":false}
+        }))
+        .unwrap();
+        if allow_local_peer {
+            config.ip_range_denylist.clear();
+        }
         crate::config::CONFIG
-            .set(
-                serde_json::from_value(json!({
-                    "server_name":LOCAL,"db":{"url":"unused-test-config"},
-                    "presence":{"allow_local":false,"allow_incoming":false,"allow_outgoing":false}
-                }))
-                .unwrap(),
-            )
+            .set(config)
             .expect("run this HTTP regression alone");
         let alice = UserId::parse(format!("@alice:{LOCAL}")).unwrap();
         let bob = UserId::parse(format!("@bob:{REMOTE}")).unwrap();
@@ -960,6 +974,283 @@ mod device_version_tests {
             cached, 0,
             "a never-shared membership pair consumed remote versions"
         );
+    }
+
+    fn snapshot_peer(
+        body: String,
+        status: &str,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<String>,
+        std::sync::mpsc::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let status = status.to_owned();
+        let thread = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 16_384);
+            }
+            seen_tx.send(String::from_utf8(request).unwrap()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        (origin, seen_rx, release_tx, thread)
+    }
+
+    fn verify_snapshot_request(request: &str, bob: &UserId) {
+        use crate::core::federation::authentication::XMatrix;
+        use crate::core::serde::Base64;
+        use crate::core::signatures::{PublicKeyMap, verify_json};
+        let mut url =
+            reqwest::Url::parse("http://snapshot.test/_matrix/federation/v1/user/devices").unwrap();
+        url.path_segments_mut().unwrap().push(bob.as_str());
+        let request_path = url.path();
+        assert_eq!(
+            request.lines().next().unwrap(),
+            format!("GET {request_path} HTTP/1.1")
+        );
+        let authorization = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim())
+            })
+            .unwrap();
+        let auth = XMatrix::parse(authorization).unwrap();
+        assert_eq!(auth.origin.as_str(), LOCAL);
+        assert_eq!(auth.destination.as_deref(), Some(bob.server_name()));
+        let mut object = json!({
+            "method":"GET", "uri":request_path,"origin":LOCAL,"destination":REMOTE,
+            "signatures":{}
+        });
+        object["signatures"][LOCAL] = json!({});
+        object["signatures"][LOCAL][auth.key.as_str()] = serde_json::to_value(auth.sig).unwrap();
+        let object: CanonicalJsonObject = serde_json::from_value(object).unwrap();
+        let keys: PublicKeyMap = [(
+            LOCAL.to_owned(),
+            [(
+                auth.key.to_string(),
+                Base64::new(crate::config::keypair().public_key().to_vec()),
+            )]
+            .into(),
+        )]
+        .into();
+        verify_json(&keys, &object).unwrap();
+    }
+
+    async fn bootstrap_races() {
+        let (service, key, _alice, bob, room) = setup_with_local_peer(true).await;
+        let slash_user = UserId::parse(format!("@bob/with=slash:{REMOTE}")).unwrap();
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":slash_user,"stream_id":42,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = slash_user.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &slash_user);
+        release.send(()).unwrap();
+        assert_eq!(fetching.await.unwrap().unwrap(), 42);
+        peer.join().unwrap();
+        // The fake peer only overrides the resolved URL for this real signed
+        // transport call; production resolution always supplies its HTTPS URL.
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":bob,"stream_id":0,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = bob.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &bob);
+        release.send(()).unwrap();
+        let version = fetching.await.unwrap().unwrap();
+        peer.join().unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        assert!(
+            crate::data::user::key::initialize_remote_device_list_snapshot(
+                &bob,
+                version,
+                LOCAL.try_into().unwrap()
+            )
+            .await
+            .unwrap()
+        );
+        // Both the same version and a genuine other version can reach the
+        // receiver before publication. Neither unsolicited EDU is consumed,
+        // and neither erases the proven initial snapshot.
+        for (txn, version) in [
+            ("bootstrap-untracked-same", 0),
+            ("bootstrap-untracked-new", 37),
+        ] {
+            assert_eq!(
+                send_update(&service, &key, txn, version, "BOB").await.0,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before);
+        let versions: Vec<String> = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .select(remote_device_list_versions::stream_id)
+            .load(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(versions, ["0"]);
+        join_current_membership(&room, &bob).await;
+        assert_eq!(
+            send_update(&service, &key, "bootstrap-late-initial", 0, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "the proven pre-membership snapshot became a second invalidation"
+        );
+        assert_eq!(
+            send_update(&service, &key, "bootstrap-real-after-visible", 37, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before + 1,
+            "a genuine post-publication change was swallowed"
+        );
+        assert!(
+            !crate::data::user::key::initialize_remote_device_list_snapshot(
+                &bob,
+                99,
+                LOCAL.try_into().unwrap()
+            )
+            .await
+            .unwrap(),
+            "a snapshot replaced an already tracked device stream"
+        );
+        let initialized: Vec<String> = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .filter(remote_device_list_versions::is_initial_snapshot.eq(true))
+            .select(remote_device_list_versions::stream_id)
+            .load(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert!(initialized.is_empty());
+
+        // A response delayed across publication is not eligible to initialize
+        // the stream. Barriers establish this order without timing or sleeps.
+        diesel::delete(room_users::table.filter(room_users::user_id.eq(&bob)))
+            .execute(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":bob,"stream_id":100,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = bob.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &bob);
+        join_current_membership(&room, &bob).await;
+        release.send(()).unwrap();
+        let snapshot = fetching.await.unwrap().unwrap();
+        peer.join().unwrap();
+        assert!(
+            !crate::data::user::key::initialize_remote_device_list_snapshot(
+                &bob,
+                snapshot,
+                LOCAL.try_into().unwrap()
+            )
+            .await
+            .unwrap()
+        );
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "snapshot-after-visible", 100, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        // Unsupported, malformed and wrong-user snapshots cannot authorize
+        // suppressing any version, even when the peer returns HTTP success.
+        for (index, (body, status)) in [
+            ("{}".to_owned(), "404 Not Found"),
+            ("not-json".to_owned(), "200 OK"),
+            (
+                json!({"user_id":format!("@other:{REMOTE}"),"stream_id":200,"devices":[]})
+                    .to_string(),
+                "200 OK",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (origin, seen, release, peer) = snapshot_peer(body, status);
+            let fetching_user = bob.clone();
+            let fetching = tokio::spawn(async move {
+                crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                    .await
+            });
+            verify_snapshot_request(&seen.await.unwrap(), &bob);
+            release.send(()).unwrap();
+            assert!(fetching.await.unwrap().is_err());
+            peer.join().unwrap();
+            let before = crate::data::curr_sn().await.unwrap();
+            assert_eq!(
+                send_update(
+                    &service,
+                    &key,
+                    &format!("snapshot-failure-{index}"),
+                    200 + index as u64,
+                    "BOB"
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+            assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        }
+    }
+
+    #[test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_join_snapshot_preserves_device_version_races() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(bootstrap_races())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     async fn many_rooms() {

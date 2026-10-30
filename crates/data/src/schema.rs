@@ -87,6 +87,7 @@ diesel::table! {
         user_id -> Text,
         stream_id -> Text,
         received_order -> Int8,
+        is_initial_snapshot -> Bool,
     }
 }
 

@@ -690,6 +690,97 @@ pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
     Ok(())
 }
 
+async fn remote_device_shared_rooms(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: &UserId,
+    local_server: &ServerName,
+) -> diesel::QueryResult<Vec<OwnedRoomId>> {
+    #[derive(diesel::QueryableByName)]
+    struct SharedRoom {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        room_id: OwnedRoomId,
+    }
+    // One statement keeps remote and local membership in one MVCC snapshot.
+    // INTERSECT also avoids a quadratic join for users in many shared rooms.
+    Ok(diesel::sql_query(
+        "WITH remote_memberships AS MATERIALIZED (
+            SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
+            WHERE user_id = $1 ORDER BY room_id, id DESC
+         ), local_memberships AS MATERIALIZED (
+            SELECT DISTINCT ON (room_id, user_id) room_id, membership FROM room_users
+            WHERE user_server_id = $2 AND room_id IN
+                (SELECT room_id FROM remote_memberships WHERE membership = 'join')
+            ORDER BY room_id, user_id, id DESC
+         )
+         SELECT room_id FROM remote_memberships WHERE membership = 'join'
+         INTERSECT
+         SELECT room_id FROM local_memberships WHERE membership = 'join'",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(local_server.as_str())
+    .load::<SharedRoom>(conn)
+    .await?
+    .into_iter()
+    .map(|room| room.room_id)
+    .collect())
+}
+
+pub async fn is_remote_device_list_tracked(
+    user_id: &UserId,
+    local_server: &ServerName,
+) -> DataResult<bool> {
+    let mut conn = connect().await?;
+    Ok(
+        !remote_device_shared_rooms(&mut conn, user_id, local_server)
+            .await?
+            .is_empty(),
+    )
+}
+
+/// Remember only a successfully fetched snapshot that predates local tracking.
+/// The caller must finish fetching before calling this function, then publish
+/// the first membership afterwards. A concurrent already-published membership
+/// makes initialization ineligible; it must never replace an active stream.
+pub async fn initialize_remote_device_list_snapshot(
+    user_id: &UserId,
+    stream_id: u64,
+    local_server: &ServerName,
+) -> DataResult<bool> {
+    let initialized = connect()
+        .await?
+        .transaction::<_, diesel::result::Error, _>(async |conn| {
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+                .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+                .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
+                .execute(conn)
+                .await?;
+            let shared = remote_device_shared_rooms(conn, user_id, local_server).await?;
+            if !shared.is_empty() {
+                return Ok(false);
+            }
+            // Start a new tracking epoch from a proven current snapshot.
+            // Neither old opaque versions nor arbitrary unsolicited EDUs may
+            // be mistaken for a snapshot of the newly established relation.
+            diesel::delete(
+                remote_device_list_versions::table
+                    .filter(remote_device_list_versions::user_id.eq(user_id)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::insert_into(remote_device_list_versions::table)
+                .values((
+                    remote_device_list_versions::user_id.eq(user_id),
+                    remote_device_list_versions::stream_id.eq(stream_id.to_string()),
+                    remote_device_list_versions::is_initial_snapshot.eq(true),
+                ))
+                .execute(conn)
+                .await?;
+            Ok(true)
+        })
+        .await?;
+    Ok(initialized)
+}
+
 /// Accept a tracked remote user's opaque version and publish its invalidation
 /// atomically. The latest 256 accepted versions survive process restarts, ordered
 /// by local receipt rather than the remote ID. Older evicted versions conservatively
@@ -699,12 +790,6 @@ pub async fn apply_remote_device_list_version(
     stream_id: u64,
     local_server: &ServerName,
 ) -> DataResult<bool> {
-    #[derive(diesel::QueryableByName)]
-    struct SharedRoom {
-        #[diesel(sql_type = diesel::sql_types::Text)]
-        room_id: OwnedRoomId,
-    }
-
     let stream_id = stream_id.to_string();
     let changed_at = UnixMillis::now();
     let applied = connect()
@@ -720,31 +805,15 @@ pub async fn apply_remote_device_list_version(
             // One statement gives both sides the same READ COMMITTED snapshot.
             // Two SELECTs could otherwise combine a departed remote member with
             // a newly joined local member who never shared the room with them.
-            let joined_rooms = diesel::sql_query(
-                "WITH remote_memberships AS MATERIALIZED (
-                    SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
-                    WHERE user_id = $1 ORDER BY room_id, id DESC
-                 ), local_memberships AS MATERIALIZED (
-                    SELECT DISTINCT ON (room_id, user_id) room_id, membership FROM room_users
-                    WHERE user_server_id = $2 AND room_id IN
-                        (SELECT room_id FROM remote_memberships WHERE membership = 'join')
-                    ORDER BY room_id, user_id, id DESC
-                 )
-                 SELECT room_id FROM remote_memberships WHERE membership = 'join'
-                 INTERSECT
-                 SELECT room_id FROM local_memberships WHERE membership = 'join'",
-            )
-            .bind::<diesel::sql_types::Text, _>(user_id.as_str())
-            .bind::<diesel::sql_types::Text, _>(local_server.as_str())
-            .load::<SharedRoom>(conn)
-            .await?
-            .into_iter()
-            .map(|room| room.room_id)
-            .collect::<Vec<_>>();
+            let joined_rooms = remote_device_shared_rooms(conn, user_id, local_server).await?;
             if joined_rooms.is_empty() {
-                diesel::delete(remote_device_list_versions::table.filter(
-                    remote_device_list_versions::user_id.eq(user_id),
-                ))
+                // A verified snapshot was fetched before the first shared
+                // membership is published. Unsolicited EDUs must not erase
+                // that proven baseline in this publication gap, nor insert
+                // any version of their own while the user remains untracked.
+                diesel::delete(remote_device_list_versions::table
+                    .filter(remote_device_list_versions::user_id.eq(user_id))
+                    .filter(remote_device_list_versions::is_initial_snapshot.eq(false)))
                 .execute(conn)
                 .await?;
                 return Ok(false);
@@ -758,6 +827,13 @@ pub async fn apply_remote_device_list_version(
                 .execute(conn)
                 .await?;
             if inserted == 0 {
+                diesel::update(remote_device_list_versions::table
+                    .filter(remote_device_list_versions::user_id.eq(user_id))
+                    .filter(remote_device_list_versions::stream_id.eq(&stream_id))
+                    .filter(remote_device_list_versions::is_initial_snapshot.eq(true)))
+                    .set(remote_device_list_versions::is_initial_snapshot.eq(false))
+                    .execute(conn)
+                    .await?;
                 return Ok(false);
             }
             let occur_sn =
