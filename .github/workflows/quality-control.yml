@@ -126,6 +126,11 @@ jobs:
               routing::client::register::dummy_registration_tests::${test} -- --exact --ignored
           done
 
+      - name: Incomplete missing-event recovery regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_missing_events
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_missing_events cargo test -p palpo --lib --all-features missing_events_http_recovery_requires_usable_predecessors -- --ignored --exact event::outlier::missing_events_tests::missing_events_http_recovery_requires_usable_predecessors
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
