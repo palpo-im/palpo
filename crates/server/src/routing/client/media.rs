@@ -340,12 +340,24 @@ pub async fn get_thumbnail(
             utils::read_response_limited(response, config::get().media.max_remote_thumbnail_size)
                 .await?;
 
-        // Cache the remote thumbnail via storage backend
-        let cache_key = media_storage_key(
-            &args.server_name,
-            &format!("{}.{}x{}", args.media_id, args.width, args.height),
-        );
-        if let Err(e) = storage::write(&cache_key, &bytes).await {
+        // Register the cache object so media deletion can find and remove it.
+        let content_type = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        if let Err(e) = crate::media::save_thumbnail(
+            &crate::core::Mxc {
+                server_name: &args.server_name,
+                media_id: &args.media_id,
+            },
+            None,
+            content_type,
+            None,
+            &Dimension::new(args.width, args.height, args.method.clone()),
+            &bytes,
+        )
+        .await
+        {
             tracing::warn!("Failed to cache remote thumbnail: {e}");
         }
 
