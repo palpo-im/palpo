@@ -408,7 +408,12 @@ async fn initial_sync_members() {
 }
 
 async fn join_period_frame(room: &OwnedRoomId, state: room::state::CompressedState) -> i64 {
-    let hash = crate::utils::hash_keys(state.iter().map(|entry| entry.as_bytes()));
+    // These deliberately incomplete snapshots must not reuse a production
+    // delta's fingerprint, whose reconstructed full state can be different.
+    let hash = crate::utils::hash_keys(
+        std::iter::once(b"partial-join-period-fixture".as_slice())
+            .chain(state.iter().map(|entry| entry.as_bytes().as_slice())),
+    );
     let frame = room::state::ensure_frame(room, hash).await.unwrap();
     room::state::save_state_delta(
         room,
