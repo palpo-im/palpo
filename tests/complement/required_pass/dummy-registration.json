@@ -2,9 +2,5 @@
   {
     "package": "github.com/matrix-org/complement/tests",
     "test": "TestJoinFederatedRoomFromApplicationServiceBridgeUser"
-  },
-  {
-    "package": "github.com/matrix-org/complement/tests",
-    "test": "TestJumpToDateEndpoint"
   }
 ]

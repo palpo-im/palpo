@@ -576,6 +576,10 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                     event_id: pdu.event_id.clone(),
                     event_sn: pdu.event_sn,
                 })
+                // Promotion and backfill can revisit the same still-missing
+                // predecessor. Keep the existing gap when they race or retry.
+                .on_conflict((timeline_gaps::room_id, timeline_gaps::event_sn))
+                .do_nothing()
                 .execute(&mut connect().await?)
                 .await?;
         }
@@ -1301,6 +1305,10 @@ pub fn allowed_room_ids(join_rule: JoinRule) -> Vec<OwnedRoomId> {
     }
     room_ids
 }
+
+#[cfg(test)]
+#[path = "state/gap_tests.rs"]
+mod gap_tests;
 
 #[cfg(test)]
 mod invite_state_tests {
