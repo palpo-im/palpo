@@ -114,6 +114,13 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_member_presence_all
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_presence_all cargo test -p palpo --lib --all-features http_incremental_member_presence_survives_other_sync_and_member_filters -- --ignored --exact sync_v3::member_presence_tests::http_incremental_member_presence_survives_other_sync_and_member_filters
 
+      - name: Delayed membership publication regression tests
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_member_publication_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_publication_default cargo test -p palpo --lib http_delayed_membership_promotion_uses_publication_order -- --ignored --exact sync_v3::member_presence_tests::http_delayed_membership_promotion_uses_publication_order
+          sudo -u postgres createdb -O palpo_test palpo_member_publication_all
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_publication_all cargo test -p palpo --lib --all-features http_delayed_membership_promotion_uses_publication_order -- --ignored --exact sync_v3::member_presence_tests::http_delayed_membership_promotion_uses_publication_order
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on

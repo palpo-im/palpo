@@ -772,8 +772,6 @@ async fn load_joined_room(
                                 collect_membership_change(
                                     &pdu,
                                     sender_id,
-                                    since_tk.event_sn(),
-                                    until_sn,
                                     device_list_updates,
                                     joined_users,
                                     left_users,
@@ -1014,9 +1012,11 @@ async fn load_joined_room(
     Ok((joined_room, timeline.next_batch))
 }
 
-/// Imported auth/state outliers can receive sequence numbers after the local
-/// join while retaining an older historical frame. They do not describe the
-/// state published by this sync stream, nor do negative backfill positions.
+/// Event identity is assigned before an outlier may reach the live timeline.
+/// Capture the immutable after-frame at its actual publication position, so a
+/// cached old membership promoted after newer events cannot disappear here.
+/// The migration initializes only legacy accepted live rows; outliers never
+/// gain a fabricated publication through a fallback to their identity.
 async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> {
     use diesel::prelude::*;
     use diesel_async::RunQueryDsl;
@@ -1030,14 +1030,14 @@ async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> 
                 .and(events::room_id.eq(event_points::room_id))),
         )
         .filter(event_points::room_id.eq(room_id))
-        .filter(event_points::frame_id.is_not_null())
+        .filter(event_points::live_published_frame_id.is_not_null())
         .filter(events::is_outlier.eq(false))
         .filter(events::soft_failed.eq(false))
         .filter(events::is_rejected.eq(false))
         .filter(events::stream_ordering.ge(0))
-        .filter(events::stream_ordering.le(until))
-        .select(event_points::frame_id)
-        .order_by(events::stream_ordering.desc())
+        .filter(event_points::live_published_sn.le(until))
+        .select(event_points::live_published_frame_id)
+        .order_by(event_points::live_published_sn.desc())
         .first::<Option<i64>>(&mut data::connect().await?)
         .await?
         .ok_or_else(|| MatrixError::not_found("captured sync frame is not found").into())
@@ -1066,15 +1066,13 @@ async fn joined_users_at_frame(frame_id: i64) -> AppResult<HashSet<OwnedUserId>>
 async fn collect_membership_change(
     event: &SnPduEvent,
     sender_id: &UserId,
-    since: Seqnum,
-    until: Seqnum,
     device_list_updates: &mut HashSet<OwnedUserId>,
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<()> {
-    if event.event_sn < since || event.event_sn > until {
-        return Ok(());
-    }
+    // The changed state frames already certify the publication window. Its
+    // member PDU can have an older cached identity; filtering that identity
+    // would lose a genuinely new publication of an old outlier.
     let Some(state_key) = &event.state_key else {
         return Ok(());
     };
@@ -1421,7 +1419,7 @@ pub(crate) async fn load_timeline(
                 (until_tk, since_tk)
             };
 
-            timeline::stream::load_pdus_backward(
+            timeline::stream::load_pdus_backward_captured(
                 Some(user_id),
                 room_id,
                 Some(max),
@@ -1431,7 +1429,7 @@ pub(crate) async fn load_timeline(
             )
             .await?
         } else {
-            timeline::stream::load_pdus_backward(
+            timeline::stream::load_pdus_backward_captured(
                 Some(user_id),
                 room_id,
                 None,
@@ -1442,7 +1440,7 @@ pub(crate) async fn load_timeline(
             .await?
         }
     } else {
-        timeline::stream::load_pdus_backward(
+        timeline::stream::load_pdus_backward_captured(
             Some(user_id),
             room_id,
             until_tk,

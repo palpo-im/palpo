@@ -58,6 +58,28 @@ pub async fn load_pdus_backward(
     .await
 }
 
+/// V3's captured upper bound is a publication cursor, independent of an
+/// outlier's earlier event identity. Apply it before limiting the timeline.
+pub async fn load_pdus_backward_captured(
+    user_id: Option<&UserId>,
+    room_id: &RoomId,
+    since_tk: Option<BatchToken>,
+    until_tk: Option<BatchToken>,
+    filter: Option<&RoomEventFilter>,
+    limit: usize,
+) -> AppResult<IndexMap<i64, SnPduEvent>> {
+    load_pdus_with_publication_bound(
+        user_id,
+        room_id,
+        since_tk,
+        until_tk,
+        limit,
+        filter,
+        (Direction::Backward, since_tk.map(|token| token.event_sn())),
+    )
+    .await
+}
+
 /// Returns an iterator over all events and their tokens in a room that happened before the
 /// event with id `until` in reverse-chronological order.
 /// Skips events before user joined the room.
@@ -70,6 +92,27 @@ pub async fn load_pdus(
     limit: usize,
     filter: Option<&RoomEventFilter>,
     dir: Direction,
+) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    load_pdus_with_publication_bound(
+        user_id,
+        room_id,
+        since_tk,
+        until_tk,
+        limit,
+        filter,
+        (dir, None),
+    )
+    .await
+}
+
+async fn load_pdus_with_publication_bound(
+    user_id: Option<&UserId>,
+    room_id: &RoomId,
+    since_tk: Option<BatchToken>,
+    until_tk: Option<BatchToken>,
+    limit: usize,
+    filter: Option<&RoomEventFilter>,
+    (dir, published_before): (Direction, Option<Seqnum>),
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
     let ignored_users = match user_id {
@@ -100,6 +143,16 @@ pub async fn load_pdus(
             .filter(events::is_outlier.eq(false))
             .filter(events::soft_failed.eq(false))
             .into_boxed();
+        if let Some(before) = published_before {
+            query = query.filter(
+                events::id.eq_any(
+                    event_points::table
+                        .filter(event_points::room_id.eq(room_id))
+                        .filter(event_points::live_published_sn.lt(before))
+                        .select(event_points::event_id),
+                ),
+            );
+        }
         if dir == Direction::Forward {
             if let Some(since_tk) = since_tk {
                 query = query.filter(events::stream_ordering.ge(since_tk.stream_ordering()));

@@ -599,6 +599,9 @@ pub async fn append_pdu(
         _ => {}
     }
 
+    // Prepare the exact after-state while the PDU is still an outlier. Its
+    // publication cursor, immutable snapshot and live visibility commit below.
+    let frame_id = state::append_to_state(pdu).await?;
     let event_data = DbEventData {
         event_id: pdu.event_id.clone(),
         event_sn: pdu.event_sn,
@@ -614,7 +617,7 @@ pub async fn append_pdu(
         .await?
         .transaction::<_, AppError, _>(async |conn| {
             event_data.save_with_conn(conn).await?;
-            crate::event::sticky::promote_to_timeline_with_conn(conn, pdu).await?;
+            crate::event::sticky::publish_live_frame_with_conn(conn, pdu, frame_id).await?;
             Ok(())
         })
         .await?;
@@ -641,7 +644,6 @@ pub async fn append_pdu(
 
     crate::event::search::save_pdu(pdu, &pdu_json).await?;
 
-    let frame_id = state::append_to_state(pdu).await?;
     // We set the room state after inserting the pdu, so that we never have a moment in time
     // where events in the current room state do not exist
     state::set_room_state(&pdu.room_id, frame_id).await?;

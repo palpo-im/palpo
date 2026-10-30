@@ -588,6 +588,8 @@ fn http_delayed_membership_promotion_uses_publication_order() {
 }
 
 async fn delayed_member_publication() {
+    use diesel::prelude::*;
+    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
     crate::test_database::init();
     config::CONFIG
         .set(
@@ -661,14 +663,79 @@ async fn delayed_member_publication() {
     assert!(!presence_users(&previous).contains(&bob.as_str()));
     let before_promotion = super::captured_sync_frame(&room, old_until).await.unwrap();
 
+    // Pause after allocation of the publication cursor but before commit.
+    // With the original cached identity guard gone, the sync watermark lock
+    // itself must prevent a reader from advancing past this uncommitted write.
+    let mut blocker = data::connect().await.unwrap();
+    blocker
+        .batch_execute(
+            "CREATE TABLE publication_test_target(event_id TEXT PRIMARY KEY);
+        CREATE FUNCTION block_member_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF EXISTS(SELECT 1 FROM publication_test_target WHERE event_id=NEW.event_id) THEN
+            PERFORM pg_advisory_xact_lock(616,404);
+        END IF; RETURN NEW; END $$;
+        CREATE TRIGGER block_member_publication BEFORE UPDATE OF live_published_sn ON event_points
+        FOR EACH ROW WHEN (OLD.live_published_sn IS NULL AND NEW.live_published_sn IS NOT NULL)
+        EXECUTE FUNCTION block_member_publication();",
+        )
+        .await
+        .unwrap();
+    diesel::sql_query("INSERT INTO publication_test_target(event_id) VALUES ($1)")
+        .bind::<diesel::sql_types::Text, _>(cached.event_id.as_str())
+        .execute(&mut blocker)
+        .await
+        .unwrap();
+    blocker
+        .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(616,404)")
+        .await
+        .unwrap();
     join.remove("event_id");
-    crate::federation::membership::send_join_v2(
-        SERVER.try_into().unwrap(),
-        &room,
-        &serde_json::value::to_raw_value(&join).unwrap(),
-    )
+    let joining_room = room.clone();
+    let promotion = tokio::spawn(async move {
+        crate::federation::membership::send_join_v2(
+            SERVER.try_into().unwrap(),
+            &joining_room,
+            &serde_json::value::to_raw_value(&join).unwrap(),
+        )
+        .await
+    });
+    let waiting_sync = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        wait_for_publication_lock(616, 404, 2, "ExclusiveLock").await;
+        let pending = tokio::spawn(async {
+            let service = Service::new(crate::routing::root());
+            sync(&service, None, None).await
+        });
+        wait_for_publication_lock(0, 1_346_456_654, 1, "ShareLock").await;
+        pending
+    })
     .await
-    .unwrap();
+    .expect("writer and sync must meet the deterministic publication barriers");
+    assert_eq!(
+        super::captured_sync_frame(&room, old_until).await.unwrap(),
+        before_promotion
+    );
+    assert!(
+        data::schema::events::table
+            .find(&*cached.event_id)
+            .select(data::schema::events::is_outlier)
+            .first::<bool>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap()
+    );
+    blocker
+        .batch_execute(
+            "COMMIT; DROP TRIGGER block_member_publication ON event_points;
+        DROP FUNCTION block_member_publication(); DROP TABLE publication_test_target;",
+        )
+        .await
+        .unwrap();
+    drop(blocker);
+    promotion.await.unwrap().unwrap();
+    let committed_reader = waiting_sync.await.unwrap();
+    assert!(
+        presence_users(&committed_reader).contains(&bob.as_str()),
+        "{committed_reader}"
+    );
     assert!(room::user::is_joined(&bob, &room).await.unwrap());
     assert_eq!(
         room::user::join_sn(&bob, &room).await.unwrap(),
@@ -705,9 +772,19 @@ async fn delayed_member_publication() {
                 .any(|user| user.as_str() == Some(bob.as_str())),
             "{response}"
         );
-        assert!(response["rooms"]["join"][room.as_str()]["state"]["events"].as_array().unwrap()
-            .iter().any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str()),
-            "the late member state must be in the publication delta: {response}");
+        assert!(
+            ["state", "timeline"]
+                .iter()
+                .any(
+                    |section| response["rooms"]["join"][room.as_str()][section]["events"]
+                        .as_array()
+                        .is_some_and(|events| events
+                            .iter()
+                            .any(|event| event["type"] == "m.room.member"
+                                && event["state_key"] == bob.as_str()))
+                ),
+            "the late member must be in initial timeline/state or incremental state: {response}"
+        );
     }
     // Old captured state remains free of the newly promoted member, even
     // though their original identity N falls below this old upper bound.
@@ -731,11 +808,36 @@ async fn delayed_member_publication() {
     .unwrap();
     assert!(!changed.contains(&bob) && !joined.contains(&bob));
     let state = serde_json::to_value(bounded).unwrap();
-    assert!(
-        !state["state"]["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str())
-    );
+    for section in ["state", "timeline"] {
+        assert!(!state[section]["events"].as_array().unwrap().iter()
+            .any(|event| event["type"]=="m.room.member" && event["state_key"]==bob.as_str()));
+    }
+}
+
+async fn wait_for_publication_lock(class_id: i64, key: i64, sub_id: i16, mode: &str) {
+    use diesel_async::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Waiting {
+        #[diesel(sql_type=diesel::sql_types::Bool)]
+        found: bool,
+    }
+    loop {
+        let waiting = diesel::sql_query(
+            "SELECT EXISTS(SELECT 1 FROM pg_locks
+            WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database())
+            AND locktype='advisory' AND NOT granted AND classid::bigint=$1 AND objid::bigint=$2
+            AND objsubid=$3 AND mode=$4) AS found",
+        )
+        .bind::<diesel::sql_types::BigInt, _>(class_id)
+        .bind::<diesel::sql_types::BigInt, _>(key)
+        .bind::<diesel::sql_types::SmallInt, _>(sub_id)
+        .bind::<diesel::sql_types::Text, _>(mode)
+        .get_result::<Waiting>(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+        if waiting.found {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
 }

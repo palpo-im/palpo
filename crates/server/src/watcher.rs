@@ -83,11 +83,12 @@ pub async fn watch(
 
     let last_event_sn = event_points::table
         .filter(event_points::room_id.eq_any(&room_ids))
-        .filter(event_points::frame_id.is_not_null())
-        .order_by(event_points::event_sn.desc())
-        .select(event_points::event_sn)
-        .first::<Seqnum>(&mut conn)
+        .filter(event_points::live_published_sn.is_not_null())
+        .order_by(event_points::live_published_sn.desc())
+        .select(event_points::live_published_sn)
+        .first::<Option<Seqnum>>(&mut conn)
         .await
+        .unwrap_or_default()
         .unwrap_or_default();
 
     let push_rule_sn = user_datas::table
@@ -198,11 +199,12 @@ pub async fn watch(
 
             let new_event_sn = event_points::table
                 .filter(event_points::room_id.eq_any(&current_room_ids))
-                .filter(event_points::frame_id.is_not_null())
-                .order_by(event_points::event_sn.desc())
-                .select(event_points::event_sn)
-                .first::<Seqnum>(&mut conn)
+                .filter(event_points::live_published_sn.is_not_null())
+                .order_by(event_points::live_published_sn.desc())
+                .select(event_points::live_published_sn)
+                .first::<Option<Seqnum>>(&mut conn)
                 .await
+                .unwrap_or_default()
                 .unwrap_or_default();
             if last_event_sn < new_event_sn {
                 return Ok(());
