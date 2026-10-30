@@ -1,4 +1,4 @@
-name: Complement tests
+name: Device bootstrap regression probe (diagnostic only)
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ defaults:
 
 jobs:
   complement:
-    name: Complement
+    name: Original device scenarios and join compatibility (diagnostic)
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -83,9 +83,12 @@ jobs:
         run: |
           cd /tmp/complement
           # Use clean deployments so stopped-server backoff cannot affect later tests.
+          # Selected original regressions only; never full-suite evidence.
           set +e
           COMPLEMENT_BASE_IMAGE=complement-palpo \
+            COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 \
             go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m \
+            -run '^(TestDeviceListsUpdateOverFederation|TestUnrejectRejectedEvents)$' \
             ./tests/csapi \
             ./tests \
             ./tests/msc3930 \

@@ -1,0 +1,6 @@
+[
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestUnrejectRejectedEvents"
+  }
+]
