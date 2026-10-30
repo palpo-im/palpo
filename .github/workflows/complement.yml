@@ -72,8 +72,8 @@ jobs:
         id: complement-tests
         run: |
           cd /tmp/complement
+          # Use clean deployments so stopped-server backoff cannot affect later tests.
           COMPLEMENT_BASE_IMAGE=complement-palpo \
-            COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
             go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m \
             ./tests/csapi \
             ./tests \
