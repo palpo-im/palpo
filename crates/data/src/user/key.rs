@@ -233,13 +233,20 @@ pub async fn get_device_keys_and_sigs(
 
 pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     let mut conn = connect().await?;
+    delete_device_key_material_on_connection(&mut conn, user_id, device_id).await
+}
 
+pub(super) async fn delete_device_key_material_on_connection(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<()> {
     diesel::delete(
         e2e_device_keys::table
             .filter(e2e_device_keys::user_id.eq(user_id))
             .filter(e2e_device_keys::device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     diesel::delete(
@@ -247,7 +254,7 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
             .filter(e2e_one_time_keys::user_id.eq(user_id))
             .filter(e2e_one_time_keys::device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     diesel::delete(
@@ -255,7 +262,7 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
             .filter(e2e_fallback_keys::user_id.eq(user_id))
             .filter(e2e_fallback_keys::device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     // Drop cross-signing signatures targeting this device so a later reuse of the
@@ -265,7 +272,7 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
             .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
             .filter(e2e_cross_signing_sigs::target_device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     Ok(())
