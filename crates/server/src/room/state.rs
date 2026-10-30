@@ -325,9 +325,8 @@ pub async fn append_to_state(new_pdu: &SnPduEvent) -> AppResult<i64> {
             .unwrap_or_default();
 
         if Some(&new_compressed_event) == replaces {
-            let frame_id = prev_frame_id.ok_or_else(|| {
-                MatrixError::invalid_param("Room previous point must exists.").into()
-            })?;
+            let frame_id = prev_frame_id
+                .ok_or_else(|| MatrixError::invalid_param("Room previous point must exists."))?;
             // Federation may have already resolved this event into current
             // state. Its own publication still needs the accurate after-frame.
             update_frame_id(&new_pdu.event_id, frame_id).await?;
