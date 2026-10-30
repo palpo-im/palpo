@@ -866,8 +866,13 @@ async fn delayed_member_publication() {
     assert!(!changed.contains(&bob) && !joined.contains(&bob));
     let state = serde_json::to_value(bounded).unwrap();
     for section in ["state", "timeline"] {
-        assert!(!state[section]["events"].as_array().unwrap().iter()
-            .any(|event| event["type"]=="m.room.member" && event["state_key"]==bob.as_str()));
+        assert!(
+            !state[section]["events"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str())
+        );
     }
 }
 
