@@ -193,11 +193,32 @@ pub(crate) async fn join_sn_for_event(
         };
         let field_id =
             super::state::get_field_id(&StateEventType::RoomMember, user_id.as_str()).await?;
-        let before = super::state::get_full_state_ids(frame_id).await?;
-        let Some(previous_id) = before.get(&field_id) else {
+        // Only this member's before-state proves the joined period. Other
+        // imported state fields can legitimately have unavailable history.
+        let layers = super::state::load_frame_info(frame_id).await?;
+        let before = layers
+            .last()
+            .ok_or_else(|| AppError::internal("membership before-state has no layers"))?;
+        let Some(compressed) = before
+            .full_state
+            .iter()
+            .find(|entry| entry.field_id() == field_id)
+            .copied()
+        else {
             break;
         };
-        let previous = super::timeline::get_pdu(previous_id).await?;
+        let previous_id = match compressed.split().await {
+            Ok((_, event_id)) => event_id,
+            // The selected historical membership is not available yet. Do not
+            // cache this provisional start: a later fetch can extend the proof.
+            Err(error) if error.is_not_found() => return Ok(event_sn),
+            Err(error) => return Err(error),
+        };
+        let previous = match super::timeline::get_pdu(&previous_id).await {
+            Ok(previous) => previous,
+            Err(error) if error.is_not_found() => return Ok(event_sn),
+            Err(error) => return Err(error),
+        };
         if previous.get_content::<RoomMemberEventContent>()?.membership != MembershipState::Join {
             break;
         }

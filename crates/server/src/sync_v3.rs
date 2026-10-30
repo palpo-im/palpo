@@ -522,14 +522,17 @@ async fn load_joined_room(
         Some(next_batch),
         Some(&filter.room.timeline),
     )
-    .await?;
+    .await
+    .inspect_err(|error| warn!(stage="captured_timeline", %room_id, %error, "failed to load captured room sync data"))?;
 
     let initial_sync = since_tk.is_none();
     let join_sn = joined_period_at(current_frame_id, sender_id)
-        .await?
+        .await
+        .inspect_err(|error| warn!(stage="joined_period_current", %room_id, %error, "failed to load captured room sync data"))?
         .unwrap_or_default();
     let previous_join = if let Some(frame) = since_frame_id {
-        joined_period_at(frame, sender_id).await?
+        joined_period_at(frame, sender_id).await
+            .inspect_err(|error| warn!(stage="joined_period_previous", %room_id, %error, "failed to load captured room sync data"))?
     } else {
         None
     };
