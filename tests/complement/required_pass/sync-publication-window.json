@@ -1,0 +1,10 @@
+[
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestACLs"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestACLsForEDUs"
+  }
+]

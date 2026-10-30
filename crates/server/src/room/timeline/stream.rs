@@ -58,8 +58,9 @@ pub async fn load_pdus_backward(
     .await
 }
 
-/// V3's captured upper bound is a publication cursor, independent of an
-/// outlier's earlier event identity. Apply it before limiting the timeline.
+/// Select a sync window by publication, independently of an outlier's earlier
+/// identity. Keep identity ordering and seek positions for the timeline and
+/// its existing historical continuation tokens.
 pub async fn load_pdus_backward_captured(
     user_id: Option<&UserId>,
     room_id: &RoomId,
@@ -75,7 +76,13 @@ pub async fn load_pdus_backward_captured(
         until_tk,
         limit,
         filter,
-        (Direction::Backward, since_tk.map(|token| token.event_sn())),
+        (
+            Direction::Backward,
+            Some(
+                until_tk.map_or(Seqnum::MIN, |token| token.stream_ordering())
+                    ..since_tk.map_or(Seqnum::MAX, |token| token.stream_ordering()),
+            ),
+        ),
     )
     .await
 }
@@ -112,7 +119,7 @@ async fn load_pdus_with_publication_bound(
     until_tk: Option<BatchToken>,
     limit: usize,
     filter: Option<&RoomEventFilter>,
-    (dir, published_before): (Direction, Option<Seqnum>),
+    (dir, publication_window): (Direction, Option<std::ops::Range<Seqnum>>),
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
     let ignored_users = match user_id {
@@ -143,17 +150,26 @@ async fn load_pdus_with_publication_bound(
             .filter(events::is_outlier.eq(false))
             .filter(events::soft_failed.eq(false))
             .into_boxed();
-        if let Some(before) = published_before {
+        if let Some(window) = &publication_window {
+            // Only the selection interval uses publication positions. The
+            // identity seek/order below must remain in the same original domain
+            // as /messages and the prev_batch tokens emitted for this timeline.
             query = query.filter(
-                events::stream_ordering.lt(0).or(events::id.eq_any(
-                    event_points::table
-                        .filter(event_points::room_id.eq(room_id))
-                        .filter(event_points::live_published_sn.lt(before))
-                        .select(event_points::event_id),
-                )),
+                events::stream_ordering
+                    .lt(0)
+                    .and(events::stream_ordering.ge(window.start))
+                    .and(events::stream_ordering.lt(window.end))
+                    .or(events::stream_ordering.ge(0).and(
+                        events::id.eq_any(
+                            event_points::table
+                                .filter(event_points::room_id.eq(room_id))
+                                .filter(event_points::live_published_sn.ge(window.start))
+                                .filter(event_points::live_published_sn.lt(window.end))
+                                .select(event_points::event_id),
+                        ),
+                    )),
             );
-        }
-        if dir == Direction::Forward {
+        } else if dir == Direction::Forward {
             if let Some(since_tk) = since_tk {
                 query = query.filter(events::stream_ordering.ge(since_tk.stream_ordering()));
             }
