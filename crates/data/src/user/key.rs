@@ -657,10 +657,9 @@ pub async fn apply_remote_device_list_version(
                         (SELECT room_id FROM remote_memberships WHERE membership = 'join')
                     ORDER BY room_id, user_id, id DESC
                  )
-                 SELECT DISTINCT remote_memberships.room_id
-                 FROM remote_memberships JOIN local_memberships USING (room_id)
-                 WHERE remote_memberships.membership = 'join'
-                   AND local_memberships.membership = 'join'",
+                 SELECT room_id FROM remote_memberships WHERE membership = 'join'
+                 INTERSECT
+                 SELECT room_id FROM local_memberships WHERE membership = 'join'",
             )
             .bind::<diesel::sql_types::Text, _>(user_id.as_str())
             .bind::<diesel::sql_types::Text, _>(local_server.as_str())
