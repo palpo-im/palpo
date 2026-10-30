@@ -545,7 +545,7 @@ mod device_version_tests {
     use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
     use crate::core::serde::CanonicalJsonObject;
     use crate::core::signatures::{Ed25519KeyPair, sign_json};
-    use crate::data::schema::{remote_device_list_versions, room_users, rooms};
+    use crate::data::schema::{e2e_key_changes, remote_device_list_versions, room_users, rooms};
 
     const LOCAL: &str = "device-versions.example";
     const REMOTE: &str = "remote-devices.example";
@@ -622,7 +622,13 @@ mod device_version_tests {
             .unwrap();
     }
 
-    async fn run() {
+    async fn setup() -> (
+        Service,
+        Ed25519KeyPair,
+        OwnedUserId,
+        OwnedUserId,
+        OwnedRoomId,
+    ) {
         crate::test_database::init();
         crate::config::CONFIG
             .set(
@@ -681,6 +687,11 @@ mod device_version_tests {
         );
         crate::server_key::add_signing_keys(keys).await.unwrap();
         let service = Service::new(crate::routing::matrix());
+        (service, key, alice, bob, room)
+    }
+
+    async fn run() {
+        let (service, key, alice, bob, room) = setup().await;
         let before = crate::data::curr_sn().await.unwrap();
         assert_eq!(
             send_update(&service, &key, "not-yet-shared", 0, "BOB")
@@ -869,6 +880,103 @@ mod device_version_tests {
             StatusCode::OK
         );
         assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        // Each atomic membership transition has exactly one joined side. A
+        // single statement must never invent shared membership by combining
+        // remote and local rows from different READ COMMITTED snapshots.
+        let mut conn = crate::data::connect().await.unwrap();
+        diesel::sql_query("UPDATE room_users SET membership = CASE WHEN user_id = $1 THEN 'leave' ELSE 'join' END WHERE user_id IN ($1, $2) AND room_id = $3")
+            .bind::<diesel::sql_types::Text,_>(alice.as_str())
+            .bind::<diesel::sql_types::Text,_>(bob.as_str())
+            .bind::<diesel::sql_types::Text,_>(room.as_str())
+            .execute(&mut conn).await.unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        let writers = async {
+            for phase in 0..128 {
+                diesel::sql_query("UPDATE room_users SET membership = CASE WHEN user_id = $1 THEN CASE WHEN $3 THEN 'join' ELSE 'leave' END ELSE CASE WHEN $3 THEN 'leave' ELSE 'join' END END WHERE user_id IN ($1, $2) AND room_id = $4")
+                    .bind::<diesel::sql_types::Text,_>(alice.as_str())
+                    .bind::<diesel::sql_types::Text,_>(bob.as_str())
+                    .bind::<diesel::sql_types::Bool,_>(phase%2==0)
+                    .bind::<diesel::sql_types::Text,_>(room.as_str())
+                    .execute(&mut conn).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        };
+        let readers = async {
+            for version in 2_000..2_064 {
+                let response = send_update(
+                    &service,
+                    &key,
+                    &format!("snapshot-{version}"),
+                    version,
+                    "BOB",
+                )
+                .await;
+                assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+            }
+        };
+        let ((), ()) = tokio::join!(writers, readers);
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "membership snapshots invented a shared room"
+        );
+        let cached: i64 = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            cached, 0,
+            "a never-shared membership pair consumed remote versions"
+        );
+    }
+
+    async fn many_rooms() {
+        let (service, key, _alice, bob, _room) = setup().await;
+        let mut conn = crate::data::connect().await.unwrap();
+        diesel::sql_query("INSERT INTO rooms (id, version, is_public, min_depth, has_auth_chain_index, created_at) SELECT '!device-many-' || number || ':' || $1, '11', false, 0, false, 0 FROM generate_series(1, 16500) AS seed(number)")
+            .bind::<diesel::sql_types::Text,_>(LOCAL)
+            .execute(&mut conn).await.unwrap();
+        diesel::sql_query("INSERT INTO room_users (event_id, event_sn, room_id, room_server_id, user_id, user_server_id, sender_id, membership, forgotten, created_at) SELECT '$many-' || number || '-' || member.localpart, 1, '!device-many-' || number || ':' || $1, $1, member.user_id, member.server_id, member.user_id, 'join', false, 0 FROM generate_series(1, 16500) AS seed(number) CROSS JOIN (VALUES ($2, $1, 'alice'), ($3, $4, 'bob')) AS member(user_id, server_id, localpart)")
+            .bind::<diesel::sql_types::Text,_>(LOCAL)
+            .bind::<diesel::sql_types::Text,_>(format!("@alice:{LOCAL}"))
+            .bind::<diesel::sql_types::Text,_>(bob.as_str())
+            .bind::<diesel::sql_types::Text,_>(REMOTE)
+            .execute(&mut conn).await.unwrap();
+        drop(conn);
+        let before = crate::data::curr_sn().await.unwrap();
+        let response = send_update(&service, &key, "many-shared-rooms", 1, "BOB").await;
+        assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        let mut conn = crate::data::connect().await.unwrap();
+        let count: i64 = e2e_key_changes::table
+            .filter(e2e_key_changes::user_id.eq(&bob))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 16_501,
+            "a shared room or the global marker was dropped"
+        );
+        let positions: Vec<i64> = e2e_key_changes::table
+            .filter(e2e_key_changes::user_id.eq(&bob))
+            .select(e2e_key_changes::occur_sn)
+            .distinct()
+            .load(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(positions, vec![before + 1]);
+        let global: i64 = e2e_key_changes::table
+            .filter(e2e_key_changes::user_id.eq(&bob))
+            .filter(e2e_key_changes::room_id.is_null())
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(global, 1);
     }
 
     #[test]
@@ -882,6 +990,23 @@ mod device_version_tests {
                     .build()
                     .unwrap()
                     .block_on(run())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_remote_device_versions_cover_many_shared_rooms() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(many_rooms())
             })
             .unwrap()
             .join()
