@@ -347,14 +347,12 @@ async fn load_pdus_selected(
         offset += count as i64;
 
         for (event_id, event_sn, _) in events {
-            let loaded = super::get_pdu(&event_id).await;
-            if publication_window.is_some() {
-                if let Err(error) = &loaded
-                    && !error.is_not_found()
-                {
-                    return Err(loaded.err().expect("matched backend error"));
+            let loaded = match super::get_pdu(&event_id).await {
+                Err(error) if publication_window.is_some() && !error.is_not_found() => {
+                    return Err(error);
                 }
-            }
+                result => result,
+            };
             if let Ok(mut pdu) = loaded {
                 if let Some(user_id) = user_id {
                     if !pdu.user_can_see(user_id).await? {
