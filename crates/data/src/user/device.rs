@@ -93,6 +93,19 @@ pub struct NewDbDeviceInbox {
 }
 
 const INBOX_STREAM_LOCK_NAMESPACE: i64 = 1_346_456_656;
+const INBOX_BATCH_STREAM_LOCK_NAMESPACE: i32 = 1_346_456_656;
+
+/// Fence a large atomic delivery with one lock in the separate two-integer
+/// advisory-key space. All shared-database instances must adopt the shared
+/// fence below before enabling large batches during a coordinated upgrade.
+pub async fn lock_inbox_batch_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind::<diesel::sql_types::Integer, _>(INBOX_BATCH_STREAM_LOCK_NAMESPACE)
+        .bind::<diesel::sql_types::Integer, _>(0)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
 
 fn inbox_stream_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
     // Length-prefix the user ID so opaque device IDs cannot make two pairs produce the
@@ -112,6 +125,13 @@ pub async fn lock_inbox_stream(
     user_id: &UserId,
     device_id: &DeviceId,
 ) -> Result<(), DieselError> {
+    // Shared fencing retains ordinary inbox concurrency while excluding a
+    // large atomic batch before the reader captures the global sequence.
+    diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1, $2)")
+        .bind::<diesel::sql_types::Integer, _>(INBOX_BATCH_STREAM_LOCK_NAMESPACE)
+        .bind::<diesel::sql_types::Integer, _>(0)
+        .execute(conn)
+        .await?;
     diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
         .bind::<diesel::sql_types::Text, _>(inbox_stream_lock_key(user_id, device_id))
         .bind::<diesel::sql_types::BigInt, _>(INBOX_STREAM_LOCK_NAMESPACE)

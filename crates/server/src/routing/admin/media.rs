@@ -148,7 +148,7 @@ pub async fn delete_media(
         .ok_or_else(|| MatrixError::not_found("Unknown media"))?;
 
     let (deleted_media, total) =
-        data::media::delete_media_by_ids(&server_name, &[media_id]).await?;
+        crate::media::delete_media_by_ids(&server_name, &[media_id]).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -174,7 +174,7 @@ pub async fn delete_media_by_date_size(
 
     let local_server = &config::get().server_name;
     let (deleted_media, total) =
-        data::media::delete_old_local_media(local_server, before_ts, size_gt).await?;
+        crate::media::delete_old_local_media(local_server, before_ts, size_gt).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -258,7 +258,8 @@ pub async fn delete_user_media(
     let media_ids: Vec<String> = media_list.iter().map(|m| m.media_id.clone()).collect();
 
     let local_server = &config::get().server_name;
-    let (deleted_media, total) = data::media::delete_media_by_ids(local_server, &media_ids).await?;
+    let (deleted_media, total) =
+        crate::media::delete_media_by_ids(local_server, &media_ids).await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
@@ -288,7 +289,7 @@ pub async fn purge_media_cache(
     }
 
     let local_server = &config::get().server_name;
-    let deleted = data::media::purge_remote_media_cache(local_server, before_ts).await?;
+    let deleted = crate::media::purge_remote_media_cache(local_server, before_ts).await?;
 
     json_ok(PurgeMediaCacheResponse { deleted })
 }

@@ -125,6 +125,7 @@ form_urlencoded = { workspace = true }
 futures-util = { workspace = true, features = ["io"] }
 globwalk = { workspace = true }
 html5ever = { workspace = true }
+hmac = { workspace = true }
 http = { workspace = true }
 http-auth = { workspace = true }
 indexmap = { workspace = true }

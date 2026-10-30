@@ -502,28 +502,78 @@ pub async fn add_fallback_key(
     key_id: &DeviceKeyId,
     fallback_key: &OneTimeKey,
 ) -> DataResult<()> {
-    diesel::delete(
-        e2e_fallback_keys::table
-            .filter(e2e_fallback_keys::user_id.eq(user_id))
-            .filter(e2e_fallback_keys::device_id.eq(device_id))
-            .filter(e2e_fallback_keys::algorithm.eq(key_id.algorithm().to_string())),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-
-    diesel::insert_into(e2e_fallback_keys::table)
-        .values(&NewDbFallbackKey {
-            user_id: user_id.to_owned(),
-            device_id: device_id.to_owned(),
-            algorithm: key_id.algorithm().to_string(),
-            key_id: key_id.to_owned(),
-            key_data: serde_json::to_value(fallback_key)?,
-            used_at: None,
-            created_at: UnixMillis::now(),
+    let new_key = NewDbFallbackKey {
+        user_id: user_id.to_owned(),
+        device_id: device_id.to_owned(),
+        algorithm: key_id.algorithm().to_string(),
+        key_id: key_id.to_owned(),
+        key_data: serde_json::to_value(fallback_key)?,
+        used_at: None,
+        created_at: UnixMillis::now(),
+    };
+    connect()
+        .await?
+        .transaction::<_, crate::DataError, _>(async |conn| {
+            let identity =
+                serde_json::to_string(&(user_id.as_str(), device_id.as_str(), &new_key.algorithm))?;
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, 7141313))")
+                .bind::<diesel::sql_types::Text, _>(identity)
+                .execute(conn)
+                .await?;
+            let previous = e2e_fallback_keys::table
+                .filter(e2e_fallback_keys::user_id.eq(user_id))
+                .filter(e2e_fallback_keys::device_id.eq(device_id))
+                .filter(e2e_fallback_keys::algorithm.eq(&new_key.algorithm))
+                .first::<DbFallbackKey>(conn)
+                .await
+                .optional()?;
+            if let Some(previous) = previous
+                && previous.key_id == key_id
+            {
+                if previous.key_data != new_key.key_data {
+                    return Err(crate::core::MatrixError::invalid_param(
+                        "A fallback key ID cannot be reused for different key material.",
+                    )
+                    .into());
+                }
+                // Identical retries after a claim preserve the already-used state.
+                return Ok(());
+            }
+            diesel::insert_into(e2e_fallback_keys::table)
+                .values(&new_key)
+                .on_conflict((
+                    e2e_fallback_keys::user_id,
+                    e2e_fallback_keys::device_id,
+                    e2e_fallback_keys::algorithm,
+                ))
+                .do_update()
+                .set((
+                    e2e_fallback_keys::key_id.eq(key_id.as_str()),
+                    e2e_fallback_keys::key_data.eq(&new_key.key_data),
+                    e2e_fallback_keys::used_at.eq(None::<i64>),
+                    e2e_fallback_keys::created_at.eq(UnixMillis::now()),
+                ))
+                .execute(conn)
+                .await?;
+            Ok(())
         })
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
+        .await
+}
+
+pub async fn unused_fallback_key_types(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Vec<DeviceKeyAlgorithm>> {
+    Ok(e2e_fallback_keys::table
+        .filter(e2e_fallback_keys::user_id.eq(user_id))
+        .filter(e2e_fallback_keys::device_id.eq(device_id))
+        .filter(e2e_fallback_keys::used_at.is_null())
+        .select(e2e_fallback_keys::algorithm)
+        .load::<String>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 /// Claim (read and remove) the oldest one-time key for a device and algorithm.
@@ -582,10 +632,14 @@ pub async fn claim_one_time_key(
         .optional()?
     {
         if used_at.is_none() {
-            diesel::update(e2e_fallback_keys::table.find(id))
-                .set(e2e_fallback_keys::used_at.eq(UnixMillis::now().get() as i64))
-                .execute(&mut conn)
-                .await?;
+            diesel::update(
+                e2e_fallback_keys::table
+                    .find(id)
+                    .filter(e2e_fallback_keys::key_id.eq(&key_id)),
+            )
+            .set(e2e_fallback_keys::used_at.eq(UnixMillis::now().get() as i64))
+            .execute(&mut conn)
+            .await?;
         }
         Ok(Some((
             key_id,

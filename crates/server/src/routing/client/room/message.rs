@@ -277,11 +277,13 @@ pub(super) async fn send_message(
 
     let state_lock = room::lock_state(&args.room_id).await;
     // Check if this is a new transaction id
-    if let Some(event_id) = crate::transaction_id::get_event_id(
+    let endpoint = format!("room/send/{}", args.event_type);
+    if let Some(event_id) = crate::data::room::transaction_id::get_scoped_event_id(
         &args.txn_id,
         authed.user_id(),
         authed.device_id(),
         Some(&args.room_id),
+        &endpoint,
     )
     .await?
     {
@@ -300,6 +302,7 @@ pub(super) async fn send_message(
             content: to_raw_value(&content)?,
             unsigned,
             transaction_device: authed.device_id().map(ToOwned::to_owned),
+            transaction_endpoint: Some(endpoint.clone()),
             timestamp: appservice_timestamp(authed.appservice().is_some(), args.timestamp),
             sticky_duration_ms: args.sticky_duration_ms,
             ..Default::default()
@@ -313,12 +316,13 @@ pub(super) async fn send_message(
     .pdu
     .event_id;
 
-    crate::transaction_id::add_txn_id(
+    crate::data::room::transaction_id::add_scoped_txn_id(
         &args.txn_id,
         authed.user_id(),
         authed.device_id(),
         Some(&args.room_id),
         Some(&event_id),
+        &endpoint,
     )
     .await?;
 
