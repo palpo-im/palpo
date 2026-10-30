@@ -1,5 +1,9 @@
 [
   {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestUserAppearsInChangedDeviceListOnJoinOverFederation"
+  },
+  {
     "package": "github.com/matrix-org/complement/tests/csapi",
     "test": "TestMembersLocal/Parallel/Existing_members_see_new_members'_presence_(in_incremental_sync)"
   }

@@ -162,7 +162,6 @@ async fn member_presence() {
     // The unqualified historical lookup must demonstrably select the stale
     // frame, while the actual sync must retain the published Bob membership.
     {
-        use diesel::prelude::*;
         use diesel::sql_types::{BigInt, Text};
         use diesel_async::RunQueryDsl;
         let imported_sn = data::next_sn().await.unwrap();
