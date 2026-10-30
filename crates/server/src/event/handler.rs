@@ -253,6 +253,29 @@ pub(crate) async fn process_pulled_pdu(
     value: BTreeMap<String, CanonicalJsonValue>,
     is_backfill: bool,
 ) -> AppResult<()> {
+    process_pulled_pdu_with_pending_state(
+        remote_server,
+        event_id,
+        room_id,
+        room_version_id,
+        value,
+        is_backfill,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Report a pending outlier only after this call checked the supplied event's
+/// signatures and ran pulled-event recovery. This is not an authorization or a
+/// timeline verdict; callers must still check the persisted room and rejection.
+pub(super) async fn process_pulled_pdu_with_pending_state(
+    remote_server: &ServerName,
+    event_id: &EventId,
+    room_id: &RoomId,
+    room_version_id: &RoomVersionId,
+    value: BTreeMap<String, CanonicalJsonValue>,
+    is_backfill: bool,
+) -> AppResult<bool> {
     // 1.3.1 Check room ACL on origin field/server
     handler::acl_check(remote_server, room_id).await?;
 
@@ -272,20 +295,23 @@ pub(crate) async fn process_pulled_pdu(
 
     // 1. Skip the PDU if we already have it as a timeline event
     if timeline::get_non_outlier_pdu(event_id).await?.is_some() {
-        return Ok(());
+        return Ok(false);
     }
 
     let Some(outlier_pdu) =
         process_to_outlier_pdu(remote_server, event_id, room_id, room_version_id, value).await?
     else {
-        return Ok(());
+        return Ok(false);
     };
     let (pdu, json_data, _) = outlier_pdu
         .process_pulled(remote_server, is_backfill)
         .await?;
 
-    if pdu.soft_failed || pdu.rejected() {
-        return Ok(());
+    if pdu.rejected() {
+        return Ok(false);
+    }
+    if pdu.soft_failed {
+        return Ok(true);
     }
 
     if let Err(e) = process_to_timeline_pdu(pdu, json_data, Some(remote_server)).await {
@@ -348,7 +374,7 @@ pub(crate) async fn process_pulled_pdu(
             next_ids = new_timlined_event_ids;
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 #[tracing::instrument(skip_all)]

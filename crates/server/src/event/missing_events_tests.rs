@@ -651,3 +651,258 @@ async fn recovery_cases() {
         Err(AppError::Diesel(diesel::result::Error::RollbackTransaction))
     ));
 }
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+fn missing_events_signed_predecessors_preserve_pending_state() {
+    std::thread::Builder::new()
+        .name("missing-events-pending-state".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(pending_state_cases())
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn signed_pending(
+    room_id: &RoomId,
+    profile: bool,
+    body: &str,
+    prev: &[OwnedEventId],
+    missing_auth: &OwnedEventId,
+) -> (PduEvent, crate::core::serde::CanonicalJsonObject) {
+    let user = UserId::parse("@alice:missing.example").unwrap();
+    let content = if profile {
+        json!({"membership":"join", "displayname":body})
+    } else {
+        json!({"msgtype":"m.text", "body":body})
+    };
+    let (_, mut value) = PduBuilder {
+        event_type: if profile {
+            "m.room.member"
+        } else {
+            "m.room.message"
+        }
+        .into(),
+        state_key: profile.then(|| user.to_string()),
+        content: serde_json::value::to_raw_value(&content).unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&user, room_id, &RoomVersionId::V11)
+    .await
+    .unwrap();
+    value.remove("event_id");
+    value.insert(
+        "prev_events".into(),
+        crate::core::serde::to_canonical_value(prev).unwrap(),
+    );
+    let mut auth: Vec<OwnedEventId> =
+        serde_json::from_value(value["auth_events"].clone().into()).unwrap();
+    auth.push(missing_auth.clone());
+    value.insert(
+        "auth_events".into(),
+        crate::core::serde::to_canonical_value(auth).unwrap(),
+    );
+    crate::server_key::hash_and_sign_event(&mut value, &RoomVersionId::V11).unwrap();
+    let id = crate::event::gen_event_id(&value, &RoomVersionId::V11).unwrap();
+    let mut pdu_json = value.clone();
+    pdu_json.insert("event_id".into(), id.to_string().into());
+    let pdu =
+        PduEvent::from_json_value(room_id, &id, serde_json::to_value(pdu_json).unwrap()).unwrap();
+    (pdu, value)
+}
+
+async fn pending_state_cases() {
+    let room_id = setup_room().await;
+    let remote = REMOTE.try_into().unwrap();
+    let missing_auth: OwnedEventId = "$unavailable-auth-B".try_into().unwrap();
+    let state_ids_event: OwnedEventId = "$snapshot-predecessor".try_into().unwrap();
+
+    // E is signed but its auth ancestry cannot be completed. Passing it through
+    // the production pulled pipeline must not publish its profile change.
+    let (profile, profile_json) = signed_pending(
+        &room_id,
+        true,
+        "poisoned profile E",
+        std::slice::from_ref(&missing_auth),
+        &missing_auth,
+    )
+    .await;
+    crate::event::handler::process_pulled_pdu(
+        remote,
+        &profile.event_id,
+        &room_id,
+        &RoomVersionId::V11,
+        profile_json,
+        false,
+    )
+    .await
+    .unwrap();
+    let stored = crate::room::timeline::get_pdu(&profile.event_id)
+        .await
+        .unwrap();
+    assert!(stored.is_outlier && stored.soft_failed && !stored.rejected());
+
+    // Like TestCorruptedAuthChain, GME really supplies the immediate predecessor,
+    // whose earlier snapshot/auth cannot be fetched. The closed-world transport
+    // denies the snapshot request; it never contacts an external server.
+    let (gme, gme_json) = signed_pending(
+        &room_id,
+        false,
+        "actual signed GME predecessor",
+        std::slice::from_ref(&state_ids_event),
+        &profile.event_id,
+    )
+    .await;
+    let gme_raw = serde_json::value::to_raw_value(&gme_json).unwrap();
+    let recovery = response(
+        &room_id,
+        std::slice::from_ref(&gme.event_id),
+        vec![gme_raw.clone()],
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        recovery,
+        MissingEventsRecovery::Incomplete,
+        "a supplied signature-checked predecessor may retain pending state recovery"
+    );
+    assert_ne!(
+        recovery,
+        MissingEventsRecovery::Complete,
+        "pending auth is never an accepted timeline anchor"
+    );
+    let stored = crate::room::timeline::get_pdu(&gme.event_id).await.unwrap();
+    assert!(stored.is_outlier && stored.soft_failed && !stored.rejected());
+
+    let (second, second_json) = signed_pending(
+        &room_id,
+        false,
+        "second actual signed GME predecessor",
+        std::slice::from_ref(&state_ids_event),
+        &profile.event_id,
+    )
+    .await;
+    assert_eq!(
+        response(
+            &room_id,
+            &[gme.event_id.clone(), second.event_id.clone()],
+            vec![
+                gme_raw.clone(),
+                serde_json::value::to_raw_value(&second_json).unwrap()
+            ],
+        )
+        .await
+        .unwrap(),
+        MissingEventsRecovery::PendingState
+    );
+    let (accepted, accepted_raw) = pending(&room_id, "accepted complete anchor").await;
+    assert_eq!(
+        response(
+            &room_id,
+            &[gme.event_id.clone(), accepted.event_id.clone()],
+            vec![gme_raw.clone(), accepted_raw],
+        )
+        .await
+        .unwrap(),
+        MissingEventsRecovery::PendingState
+    );
+
+    let (send, send_json) = signed_pending(
+        &room_id,
+        false,
+        "live child with unavailable auth",
+        std::slice::from_ref(&gme.event_id),
+        &profile.event_id,
+    )
+    .await;
+    let candidate = crate::event::handler::process_to_outlier_pdu(
+        remote,
+        &send.event_id,
+        &room_id,
+        &RoomVersionId::V11,
+        send_json,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(candidate.soft_failed && !candidate.rejected());
+    let (retained, value, _) = candidate
+        .finish_missing_events_recovery(remote, true, false, Ok(recovery))
+        .await
+        .unwrap();
+    assert!(retained.is_outlier && retained.soft_failed && !retained.rejected());
+    assert!(
+        crate::event::handler::process_to_timeline_pdu(retained, value, Some(remote))
+            .await
+            .is_err()
+    );
+    for id in [&profile.event_id, &gme.event_id, &send.event_id] {
+        assert!(
+            crate::room::timeline::get_non_outlier_pdu(id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    let current = crate::room::get_state(
+        &room_id,
+        &crate::core::events::StateEventType::RoomMember,
+        "@alice:missing.example",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_ne!(current.event_id, profile.event_id);
+
+    // An earlier successful pull is not provenance for a later empty response.
+    assert_eq!(
+        response(&room_id, std::slice::from_ref(&gme.event_id), vec![])
+            .await
+            .unwrap(),
+        MissingEventsRecovery::Incomplete
+    );
+    let unknown: OwnedEventId = "$omitted-second-anchor".try_into().unwrap();
+    assert_eq!(
+        response(
+            &room_id,
+            &[gme.event_id.clone(), unknown],
+            vec![gme_raw.clone()]
+        )
+        .await
+        .unwrap(),
+        MissingEventsRecovery::Incomplete
+    );
+
+    // Cached soft-failed JSON cannot stand in for signature verification of the
+    // current response. Rejected cached IDs remain immutable as well.
+    let mut forged: Value = serde_json::from_str(gme_raw.get()).unwrap();
+    forged["signatures"] = json!({});
+    assert_eq!(
+        response(
+            &room_id,
+            std::slice::from_ref(&gme.event_id),
+            vec![serde_json::value::to_raw_value(&forged).unwrap()]
+        )
+        .await
+        .unwrap(),
+        MissingEventsRecovery::Incomplete
+    );
+    diesel::update(events::table.find(&gme.event_id))
+        .set(events::is_rejected.eq(true))
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response(&room_id, std::slice::from_ref(&gme.event_id), vec![gme_raw])
+            .await
+            .unwrap(),
+        MissingEventsRecovery::Incomplete
+    );
+}
