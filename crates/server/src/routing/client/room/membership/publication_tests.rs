@@ -412,7 +412,7 @@ async fn join_period_frame(room: &OwnedRoomId, state: room::state::CompressedSta
     // delta's fingerprint, whose reconstructed full state can be different.
     let hash = crate::utils::hash_keys(
         std::iter::once(b"partial-join-period-fixture".as_slice())
-            .chain(state.iter().map(|entry| entry.as_bytes().as_slice())),
+            .chain(state.iter().map(|entry| entry.as_bytes())),
     );
     let frame = room::state::ensure_frame(room, hash).await.unwrap();
     room::state::save_state_delta(
