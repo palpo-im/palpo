@@ -1072,12 +1072,16 @@ async fn late_published_timeline(
     for (cached, json) in &pending {
         assert!(cached.event_sn < lower_sn);
         assert!(!timeline_ids(&old, &room).contains(&cached.event_id.as_str()));
+        // V11 federation PDUs omit the local storage-only event_id, which was
+        // added after signing and must not enter signature verification.
+        let mut wire = json.clone();
+        wire.remove("event_id");
         crate::event::handler::process_incoming_pdu(
             SERVER.try_into().unwrap(),
             &cached.event_id,
             &room,
             &crate::core::RoomVersionId::V11,
-            json.clone(),
+            wire,
             true,
             false,
         )
