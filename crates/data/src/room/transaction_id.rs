@@ -171,13 +171,19 @@ pub async fn commit_to_device_transaction(
             if inserted == 0 {
                 return Ok(false);
             }
-            // Lock in a common order so overlapping multi-inbox sends cannot deadlock.
+            // Small sends retain independent inbox concurrency. A large send
+            // holds one exclusive batch fence rather than exhausting the
+            // shared advisory-lock table with one lock per recipient.
             let targets: std::collections::BTreeSet<_> = inboxes
                 .iter()
                 .map(|inbox| (&*inbox.user_id, &*inbox.device_id))
                 .collect();
-            for (user, device) in targets {
-                crate::user::device::lock_inbox_stream(conn, user, device).await?;
+            if targets.len() > 32 {
+                crate::user::device::lock_inbox_batch_stream(conn).await?;
+            } else {
+                for (user, device) in targets {
+                    crate::user::device::lock_inbox_stream(conn, user, device).await?;
+                }
             }
             // PostgreSQL permits at most 65,535 bind parameters per statement.
             // These rows use four/seven columns; leave ample headroom while
@@ -235,12 +241,12 @@ mod bulk_tests {
         }
         assert_eq!(counts().await, (0, 0, 0), "fixture needs a fresh database");
         let user: OwnedUserId = "@bulk:transaction.example".try_into().unwrap();
-        // Reuse one stream lock to isolate the wire-protocol bind limit from
-        // PostgreSQL's independently configured advisory-lock capacity.
+        // Exercise real distinct targets under PostgreSQL's ordinary advisory
+        // lock capacity as well as its wire-protocol parameter limit.
         let inboxes: Vec<_> = (0..17_000)
             .map(|index| NewDbDeviceInbox {
                 user_id: user.clone(),
-                device_id: "D".into(),
+                device_id: format!("D{index}").into(),
                 json_data: serde_json::json!({"index": index}),
                 created_at: 0,
             })
@@ -311,5 +317,100 @@ mod bulk_tests {
                 .unwrap()
         );
         assert_eq!(counts().await, (34_000, 46_000, 2));
+
+        #[derive(diesel::QueryableByName)]
+        struct Waiting {
+            #[diesel(sql_type = diesel::sql_types::Bool)]
+            waiting: bool,
+        }
+        async fn wait_for_lock(slot: i32, mode: &str) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let waiting = diesel::sql_query("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=1346456656::oid AND objid=$1::oid AND objsubid=2 AND mode=$2 AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())) AS waiting")
+                        .bind::<diesel::sql_types::Integer,_>(slot)
+                        .bind::<diesel::sql_types::Text,_>(mode)
+                        .get_result::<Waiting>(&mut connect().await.unwrap()).await.unwrap();
+                    if waiting.waiting { break; }
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("expected database lock waiter");
+        }
+        let mut probe_receipt = second_receipt.clone();
+        probe_receipt.txn_id = "reader-before-batch".into();
+        let probe_inboxes = inboxes[..64].to_vec();
+        let probe_user = probe_inboxes[0].user_id.clone();
+        let probe_device = probe_inboxes[0].device_id.clone();
+        let mut reader_conn = connect().await.unwrap();
+        diesel::sql_query("BEGIN")
+            .execute(&mut reader_conn)
+            .await
+            .unwrap();
+        crate::user::device::lock_inbox_stream(&mut reader_conn, &probe_user, &probe_device)
+            .await
+            .unwrap();
+        let before = crate::curr_sn().await.unwrap();
+        let writer = tokio::spawn(async move {
+            commit_to_device_transaction(&probe_receipt, &probe_inboxes, &[]).await
+        });
+        wait_for_lock(0, "ExclusiveLock").await;
+        assert_eq!(
+            crate::curr_sn().await.unwrap(),
+            before,
+            "blocked batch cannot allocate positions before the reader completes"
+        );
+        diesel::sql_query("COMMIT")
+            .execute(&mut reader_conn)
+            .await
+            .unwrap();
+        assert!(writer.await.unwrap().unwrap());
+
+        // Pause a real insertion after allocation but before commit. A sync
+        // must wait even though the large writer holds no individual locks.
+        diesel::sql_query("CREATE FUNCTION pause_bulk_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.json_data->>'barrier'='true' THEN PERFORM pg_advisory_xact_lock(1346456656,17); END IF; RETURN NEW; END $$")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        diesel::sql_query("CREATE TRIGGER pause_bulk_insert BEFORE INSERT ON device_inboxes FOR EACH ROW EXECUTE FUNCTION pause_bulk_insert()")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        let mut controller = connect().await.unwrap();
+        diesel::sql_query("BEGIN")
+            .execute(&mut controller)
+            .await
+            .unwrap();
+        diesel::sql_query("SELECT pg_advisory_xact_lock(1346456656,17)")
+            .execute(&mut controller)
+            .await
+            .unwrap();
+        let mut probe_receipt = second_receipt.clone();
+        probe_receipt.txn_id = "batch-before-reader".into();
+        let mut probe_inboxes = inboxes[..64].to_vec();
+        probe_inboxes[0].json_data = serde_json::json!({"barrier": true});
+        let writer = tokio::spawn(async move {
+            commit_to_device_transaction(&probe_receipt, &probe_inboxes, &[]).await
+        });
+        wait_for_lock(17, "ExclusiveLock").await;
+        let snapshot = tokio::spawn(async move {
+            crate::user::device::curr_sn_after_inbox_writes(&probe_user, &probe_device).await
+        });
+        wait_for_lock(0, "ShareLock").await;
+        assert!(!snapshot.is_finished());
+        diesel::sql_query("COMMIT")
+            .execute(&mut controller)
+            .await
+            .unwrap();
+        assert!(writer.await.unwrap().unwrap());
+        assert_eq!(
+            snapshot.await.unwrap().unwrap(),
+            crate::curr_sn().await.unwrap()
+        );
+
+        let mut probe_receipt = second_receipt;
+        probe_receipt.txn_id = "competing-large-retry".into();
+        let probe_inboxes = inboxes[..64].to_vec();
+        let before = counts().await;
+        let (left, right) = tokio::join!(
+            commit_to_device_transaction(&probe_receipt, &probe_inboxes, &[]),
+            commit_to_device_transaction(&probe_receipt, &probe_inboxes, &[]),
+        );
+        assert_ne!(left.unwrap(), right.unwrap());
+        assert_eq!(counts().await, (before.0 + 64, before.1, before.2 + 1));
     }
 }
