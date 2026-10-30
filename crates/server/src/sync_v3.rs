@@ -392,6 +392,7 @@ pub async fn sync_events(
         changed: device_list_updates.into_iter().collect(),
         left: device_list_left.into_iter().collect(),
     };
+    tracing::debug!(target: "palpo::captured_frame_trace", %sender_id, ?since_tk, ?next_batch, ?device_lists, "sync response devices");
 
     let to_device = ToDevice {
         events: data::user::device::get_to_device_events(
@@ -494,6 +495,14 @@ async fn load_joined_room(
     } else {
         Some(current_frame_id)
     };
+    tracing::debug!(target: "palpo::captured_frame_trace", %sender_id, %room_id, ?since_tk, until_sn, current_frame_id, ?since_frame_id, "sync captured frames");
+    for (field, id) in state::get_full_state_ids(current_frame_id).await? {
+        let field = state::get_field(field).await?;
+        if field.event_ty == StateEventType::RoomMember {
+            let pdu = timeline::get_pdu(&id).await?;
+            tracing::debug!(target: "palpo::captured_frame_trace", %sender_id, %room_id, %id, member = %field.state_key, sn = pdu.event_sn, content = ?pdu.content, "captured member");
+        }
+    }
 
     let mut timeline = load_timeline(
         sender_id,
@@ -1034,7 +1043,9 @@ async fn collect_membership_change(
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<()> {
+    tracing::debug!(target: "palpo::captured_frame_trace", %sender_id, room = %event.room_id, event = %event.event_id, member = ?event.state_key, sn = event.event_sn, since, until, "membership delta candidate");
     if event.event_sn < since || event.event_sn > until {
+        tracing::debug!(target: "palpo::captured_frame_trace", "candidate outside event window");
         return Ok(());
     }
     let Some(state_key) = &event.state_key else {
@@ -1051,6 +1062,9 @@ async fn collect_membership_change(
         .membership;
     match membership {
         MembershipState::Join => {
+            let shared =
+                room::user::shared_rooms(vec![sender_id.to_owned(), user_id.to_owned()]).await?;
+            tracing::debug!(target: "palpo::captured_frame_trace", %sender_id, %user_id, ?shared, "membership shared rooms");
             if !room::user::shared_rooms(vec![sender_id.to_owned(), user_id.to_owned()])
                 .await?
                 .is_empty()
