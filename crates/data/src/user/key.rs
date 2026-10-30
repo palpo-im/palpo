@@ -699,6 +699,12 @@ pub async fn apply_remote_device_list_version(
     stream_id: u64,
     local_server: &ServerName,
 ) -> DataResult<bool> {
+    #[derive(diesel::QueryableByName)]
+    struct SharedRoom {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        room_id: OwnedRoomId,
+    }
+
     let stream_id = stream_id.to_string();
     let changed_at = UnixMillis::now();
     let applied = connect()
@@ -711,28 +717,31 @@ pub async fn apply_remote_device_list_version(
                 .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
                 .execute(conn)
                 .await?;
-            let memberships = room_users::table
-                .filter(room_users::user_id.eq(user_id))
-                .distinct_on(room_users::room_id)
-                .select((room_users::room_id, room_users::membership))
-                .order_by((room_users::room_id.desc(), room_users::id.desc()))
-                .load::<(OwnedRoomId, String)>(conn)
-                .await?;
-            let joined_rooms = memberships
-                .into_iter()
-                .filter_map(|(room, membership)| (membership == "join").then_some(room))
-                .collect::<Vec<_>>();
-            // Retained remote membership alone does not imply that this server
-            // still has anyone in the room. Only track users sharing a room with
-            // a current local member, using the same transaction for the markers.
-            let joined_rooms = room_users::table
-                .filter(room_users::room_id.eq_any(&joined_rooms))
-                .filter(room_users::user_server_id.eq(local_server))
-                .filter(room_users::membership.eq("join"))
-                .select(room_users::room_id)
-                .distinct()
-                .load::<OwnedRoomId>(conn)
-                .await?;
+            // One statement gives both sides the same READ COMMITTED snapshot.
+            // Two SELECTs could otherwise combine a departed remote member with
+            // a newly joined local member who never shared the room with them.
+            let joined_rooms = diesel::sql_query(
+                "WITH remote_memberships AS MATERIALIZED (
+                    SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
+                    WHERE user_id = $1 ORDER BY room_id, id DESC
+                 ), local_memberships AS MATERIALIZED (
+                    SELECT DISTINCT ON (room_id, user_id) room_id, membership FROM room_users
+                    WHERE user_server_id = $2 AND room_id IN
+                        (SELECT room_id FROM remote_memberships WHERE membership = 'join')
+                    ORDER BY room_id, user_id, id DESC
+                 )
+                 SELECT DISTINCT remote_memberships.room_id
+                 FROM remote_memberships JOIN local_memberships USING (room_id)
+                 WHERE remote_memberships.membership = 'join'
+                   AND local_memberships.membership = 'join'",
+            )
+            .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+            .bind::<diesel::sql_types::Text, _>(local_server.as_str())
+            .load::<SharedRoom>(conn)
+            .await?
+            .into_iter()
+            .map(|room| room.room_id)
+            .collect::<Vec<_>>();
             if joined_rooms.is_empty() {
                 diesel::delete(remote_device_list_versions::table.filter(
                     remote_device_list_versions::user_id.eq(user_id),
@@ -779,10 +788,14 @@ pub async fn apply_remote_device_list_version(
                     changed_at,
                 })
                 .collect::<Vec<_>>();
-            diesel::insert_into(e2e_key_changes::table)
-                .values(&changes)
-                .execute(conn)
-                .await?;
+            // Keep every marker and its sequence in the same transaction while
+            // staying below PostgreSQL's bind-parameter limit for large accounts.
+            for chunk in changes.chunks(1_000) {
+                diesel::insert_into(e2e_key_changes::table)
+                    .values(chunk)
+                    .execute(conn)
+                    .await?;
+            }
             diesel::sql_query(
                 "DELETE FROM remote_device_list_versions WHERE user_id = $1 AND received_order NOT IN \
                  (SELECT received_order FROM remote_device_list_versions WHERE user_id = $1 \
