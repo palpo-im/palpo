@@ -568,3 +568,174 @@ async fn member_presence() {
         future_alice_member.event_id.as_str()
     );
 }
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+fn http_delayed_membership_promotion_uses_publication_order() {
+    std::thread::Builder::new()
+        .name("delayed-member-publication-http".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(delayed_member_publication());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn delayed_member_publication() {
+    crate::test_database::init();
+    config::CONFIG
+        .set(
+            serde_json::from_value(json!({
+                "server_name": SERVER, "db": {"url":"unused-test-config"},
+                "ip_range_denylist":[], "auto_join_rooms":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    for name in ["alice", "bob", "eve"] {
+        provision(name).await;
+    }
+    let service = Service::new(crate::routing::root());
+    let bob = UserId::parse(format!("@bob:{SERVER}")).unwrap();
+    let alice = UserId::parse(format!("@alice:{SERVER}")).unwrap();
+    let room = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"room_version":"11","preset":"public_chat"})),
+        &service,
+    )
+    .await;
+    let room: OwnedRoomId = room["room_id"].as_str().unwrap().try_into().unwrap();
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/presence/{bob}/status"
+        ))
+        .add_header("Authorization", "Bearer bob-presence", true)
+        .json(&json!({"presence":"online"})),
+        &service,
+    )
+    .await;
+    let before_frame = room::get_frame_id(&room, None).await.unwrap();
+
+    // Cache the real signed join at N, without publishing it or retaining its
+    // original sequence guard. A different live event then overtakes it.
+    let (join_pdu, mut join) = crate::event::PduBuilder {
+        event_type: "m.room.member".into(),
+        state_key: Some(bob.to_string()),
+        content: serde_json::value::to_raw_value(&json!({"membership":"join"})).unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&bob, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (cached, _, guard) =
+        crate::event::PduBuilder::save_as_outlier(join_pdu.clone(), join.clone(), &bob)
+            .await
+            .unwrap();
+    crate::event::update_frame_id(&cached.event_id, before_frame)
+        .await
+        .unwrap();
+    drop(guard);
+    let message = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/overtakes-outlier"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"newer live event"})),
+        &service,
+    )
+    .await;
+    let message_id = crate::core::EventId::parse(message["event_id"].as_str().unwrap()).unwrap();
+    let message_sn = room::timeline::get_pdu(&message_id).await.unwrap().event_sn;
+    assert!(message_sn > cached.event_sn);
+    let previous = sync(&service, None, None).await;
+    let since = previous["next_batch"].as_str().unwrap();
+    let old_until = since.parse::<BatchToken>().unwrap().event_sn() - 1;
+    assert!(old_until >= message_sn);
+    assert!(!presence_users(&previous).contains(&bob.as_str()));
+    let before_promotion = super::captured_sync_frame(&room, old_until).await.unwrap();
+
+    join.remove("event_id");
+    crate::federation::membership::send_join_v2(
+        SERVER.try_into().unwrap(),
+        &room,
+        &serde_json::value::to_raw_value(&join).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(room::user::is_joined(&bob, &room).await.unwrap());
+    assert_eq!(
+        room::user::join_sn(&bob, &room).await.unwrap(),
+        cached.event_sn,
+        "the cached event identity must not be restamped"
+    );
+    let now = data::curr_sn().await.unwrap();
+    assert_eq!(
+        super::captured_sync_frame(&room, now).await.unwrap(),
+        room::get_frame_id(&room, None).await.unwrap(),
+        "maximum original stream position selected the pre-promotion frame"
+    );
+    assert_eq!(
+        super::captured_sync_frame(&room, old_until).await.unwrap(),
+        before_promotion,
+        "late publication must not enter an already captured response window"
+    );
+
+    // Both an initial sync and the old cursor must see publication without
+    // needing another room event, an incidental presence write, or a retry.
+    for response in [
+        sync(&service, None, None).await,
+        sync(&service, Some(since), None).await,
+    ] {
+        assert!(
+            presence_users(&response).contains(&bob.as_str()),
+            "{response}"
+        );
+        assert!(
+            response["device_lists"]["changed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|user| user.as_str() == Some(bob.as_str())),
+            "{response}"
+        );
+        assert!(response["rooms"]["join"][room.as_str()]["state"]["events"].as_array().unwrap()
+            .iter().any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str()),
+            "the late member state must be in the publication delta: {response}");
+    }
+    // Old captured state remains free of the newly promoted member, even
+    // though their original identity N falls below this old upper bound.
+    let (mut changed, mut joined, mut left) = Default::default();
+    let (bounded, _) = super::load_joined_room(
+        &alice,
+        "D".into(),
+        &room,
+        false,
+        None,
+        Some(BatchToken::new_live(old_until)),
+        BatchToken::new_live(old_until + 1),
+        false,
+        &Default::default(),
+        false,
+        &mut changed,
+        &mut joined,
+        &mut left,
+    )
+    .await
+    .unwrap();
+    assert!(!changed.contains(&bob) && !joined.contains(&bob));
+    let state = serde_json::to_value(bounded).unwrap();
+    assert!(
+        !state["state"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str())
+    );
+}
