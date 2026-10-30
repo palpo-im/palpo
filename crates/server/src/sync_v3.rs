@@ -1037,6 +1037,7 @@ async fn load_left_room(
             extra_data: Default::default(),
             rejection_reason: None,
             transaction_device: None,
+            transaction_endpoint: None,
             thread_participants: Default::default(),
         };
         return Ok(LeftRoom {
