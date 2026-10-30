@@ -165,6 +165,13 @@ jobs:
             routing::federation::transaction::device_version_tests::http_join_snapshot_preserves_device_version_races \
             -- --exact --ignored
 
+      - name: Incremental member presence regression tests
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_member_presence_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_presence_default cargo test -p palpo --lib http_incremental_member_presence_survives_other_sync_and_member_filters -- --ignored --exact sync_v3::member_presence_tests::http_incremental_member_presence_survives_other_sync_and_member_filters
+          sudo -u postgres createdb -O palpo_test palpo_member_presence_all
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_presence_all cargo test -p palpo --lib --all-features http_incremental_member_presence_survives_other_sync_and_member_filters -- --ignored --exact sync_v3::member_presence_tests::http_incremental_member_presence_survives_other_sync_and_member_filters
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
