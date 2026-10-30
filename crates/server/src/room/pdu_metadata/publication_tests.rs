@@ -363,4 +363,338 @@ async fn run() {
             BatchToken::Live { .. }
         ));
     }
+    mixed_identity_windows(&service, &user).await;
+}
+
+#[test]
+fn relation_legacy_bounds_keep_absolute_inclusive_child_axis() {
+    for direction in [Direction::Forward, Direction::Backward] {
+        for from in [true, false] {
+            let mut window = timeline::publication::Window {
+                identity_lower: Some(-100),
+                identity_upper: Some(-10),
+                ..Default::default()
+            };
+            assert!(
+                relation_bound(BatchToken::new_live(-7), from, direction, &mut window)
+                    .unwrap()
+                    .is_none()
+            );
+            if (direction == Direction::Forward) == from {
+                assert_eq!(window.child_lower, Some(7));
+                assert_eq!(window.child_upper, None);
+            } else {
+                assert_eq!(window.child_lower, None);
+                assert_eq!(window.child_upper, Some(8));
+            }
+            assert_eq!(
+                (window.identity_lower, window.identity_upper),
+                (Some(-100), Some(-10))
+            );
+            assert_eq!((window.lower, window.upper), (None, None));
+        }
+    }
+    let mut window = timeline::publication::Window::default();
+    relation_bound(
+        BatchToken::new_live(Seqnum::MAX),
+        true,
+        Direction::Backward,
+        &mut window,
+    )
+    .unwrap();
+    assert_eq!(
+        window.child_upper, None,
+        "inclusive MAX is unbounded, never MAX+1 overflow"
+    );
+    assert!(
+        relation_bound(
+            BatchToken::new_live(Seqnum::MIN),
+            true,
+            Direction::Forward,
+            &mut window
+        )
+        .is_err()
+    );
+}
+
+async fn messages_page(
+    service: &Service,
+    room: &RoomId,
+    from: &str,
+    to: Option<&str>,
+    direction: &str,
+    limit: usize,
+) -> Value {
+    let mut url = url::Url::parse(&format!(
+        "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+    ))
+    .unwrap();
+    url.query_pairs_mut()
+        .append_pair("from", from)
+        .append_pair("dir", direction)
+        .append_pair("limit", &limit.to_string());
+    if let Some(to) = to {
+        url.query_pairs_mut().append_pair("to", to);
+    }
+    request(
+        TestClient::get(url.as_str()).add_header("Authorization", authorization(), true),
+        service,
+    )
+    .await
+}
+
+async fn mixed_identity_windows(service: &Service, user: &UserId) {
+    let created = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", authorization(), true)
+            .json(&json!({"room_version":"11","preset":"public_chat"})),
+        service,
+    )
+    .await;
+    let room: OwnedRoomId = created["room_id"].as_str().unwrap().try_into().unwrap();
+    let root = send(
+        service,
+        &room,
+        "mixed-root",
+        json!({"msgtype":"m.text","body":"mixed root"}),
+    )
+    .await;
+    // Sign a valid lower-depth branch now, but defer its identity allocation.
+    let (low_pdu, low_wire) = PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(&relation(&root, "lower depth, later identity"))
+            .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(user, &room, &RoomVersionId::V11)
+    .await
+    .unwrap();
+    for step in ["advance-a", "advance-b"] {
+        send(
+            service,
+            &room,
+            step,
+            json!({"msgtype":"m.text","body":step}),
+        )
+        .await;
+    }
+    let (old_pdu, old_wire) = PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(&relation(&root, "higher depth, older identity"))
+            .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(user, &room, &RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (old, old_wire, guard) = PduBuilder::save_as_outlier(old_pdu, old_wire, user)
+        .await
+        .unwrap();
+    drop(guard);
+    let (low, low_wire, guard) = PduBuilder::save_as_outlier(low_pdu, low_wire, user)
+        .await
+        .unwrap();
+    drop(guard);
+    assert!(
+        old.event_sn < low.event_sn && old.depth > low.depth,
+        "fixture must create real identity/topology inversion"
+    );
+    promote(&room, &low, low_wire).await;
+    promote(&room, &old, old_wire).await;
+    let last = send(
+        service,
+        &room,
+        "mixed-last",
+        relation(&root, "last valid identity"),
+    )
+    .await;
+    let last_pdu = timeline::get_pdu(&last).await.unwrap();
+    let upper = sync(service).await;
+    let upper_sn = upper.parse::<BatchToken>().unwrap().stream_ordering();
+    assert!(publication(&old.event_id).await < upper_sn);
+    assert!(publication(&low.event_id).await < upper_sn);
+    let positive = BatchToken::new_live(low.event_sn).to_string();
+    let negative = BatchToken::new_live(-low.event_sn).to_string();
+    for from in [&positive, &negative] {
+        let first = page(service, &room, &root, "", from, Some(&upper), "f", 1).await;
+        assert_eq!(
+            ids(&first),
+            vec![low.event_id.to_string()],
+            "legacy inclusive child identity changed: {first}"
+        );
+        let continuation = first["next_batch"].as_str().unwrap();
+        assert!(matches!(continuation.parse::<BatchToken>().unwrap(),
+            BatchToken::PublicationPage { child_lower:Some(lower), identity_lower:None, .. } if lower==low.event_sn));
+        let second = page(service, &room, &root, "", continuation, None, "f", 1).await;
+        assert_eq!(
+            ids(&second),
+            vec![last.to_string()],
+            "q lost child identity floor and exposed older identity: {second}"
+        );
+        let done = page(
+            service,
+            &room,
+            &root,
+            "",
+            second["next_batch"].as_str().unwrap(),
+            None,
+            "f",
+            1,
+        )
+        .await;
+        assert!(ids(&done).is_empty());
+        let backwards = page(service, &room, &root, "", &upper, Some(from), "b", 1).await;
+        assert_eq!(ids(&backwards), vec![last.to_string()]);
+        let back_end = backwards["next_batch"].as_str().unwrap();
+        let back_second = page(service, &room, &root, "", back_end, None, "b", 1).await;
+        assert_eq!(
+            ids(&back_second),
+            vec![low.event_id.to_string()],
+            "q lost backward child identity floor"
+        );
+        let cross = messages_page(service, &room, back_end, None, "b", 100).await;
+        assert_eq!(
+            ids(&cross),
+            vec![low.event_id.to_string()],
+            "/messages did not retain relation child axis"
+        );
+        let legacy = page(
+            service,
+            &room,
+            &root,
+            "",
+            from,
+            Some(&BatchToken::LIVE_MAX.to_string()),
+            "f",
+            100,
+        )
+        .await;
+        assert_eq!(
+            ids(&legacy),
+            vec![low.event_id.to_string(), last.to_string()]
+        );
+        assert!(matches!(
+            legacy["next_batch"]
+                .as_str()
+                .unwrap()
+                .parse::<BatchToken>()
+                .unwrap(),
+            BatchToken::Live { .. }
+        ));
+    }
+    // A messages q carries signed-stream identity bounds. Adding a relations
+    // s endpoint must intersect its separate child-SN axis without overwriting it.
+    let message = messages_page(service, &room, &positive, Some(&upper), "f", 1).await;
+    assert_eq!(ids(&message), vec![low.event_id.to_string()]);
+    let message_end = message["end"].as_str().unwrap();
+    let cap = BatchToken::new_live(-last_pdu.event_sn).to_string();
+    let intersected = page(service, &room, &root, "", message_end, Some(&cap), "f", 1).await;
+    assert_eq!(ids(&intersected), vec![last.to_string()]);
+    let both_end = intersected["next_batch"].as_str().unwrap();
+    assert!(
+        matches!(both_end.parse::<BatchToken>().unwrap(), BatchToken::PublicationPage {
+        identity_lower:Some(lower), child_upper:Some(cap), ..
+    } if lower==low.event_sn && cap==last_pdu.event_sn+1)
+    );
+    let reverse = messages_page(service, &room, both_end, None, "b", 100).await;
+    assert_eq!(
+        ids(&reverse),
+        vec![last.to_string(), low.event_id.to_string()],
+        "cross-endpoint q dropped one identity axis"
+    );
+
+    // Import genuine negative history through the authenticated backfill path.
+    let (history, history_wire) = PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(&relation(&root, "negative historical child"))
+            .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(user, &room, &RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (history, mut history_wire, guard) =
+        PduBuilder::save_as_outlier(history, history_wire, user)
+            .await
+            .unwrap();
+    drop(guard);
+    history_wire.remove("event_id");
+    crate::event::handler::process_incoming_pdu(
+        crate::config::server_name(),
+        &history.event_id,
+        &room,
+        &RoomVersionId::V11,
+        history_wire,
+        true,
+        true,
+    )
+    .await
+    .unwrap();
+    let history = timeline::get_pdu(&history.event_id).await.unwrap();
+    assert!(history.is_backfill && !history.is_outlier && !history.soft_failed);
+    let stored = data::schema::events::table
+        .find(&*history.event_id)
+        .select(data::schema::events::stream_ordering)
+        .first::<Seqnum>(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(stored, -history.event_sn);
+    // Backfill intentionally avoids live relation aggregation. Populate its
+    // relation index using the same production metadata writer as live imports.
+    add_relation(&room, &root, &history.event_id, Some(RelationType::Thread))
+        .await
+        .unwrap();
+    let legacy_history = BatchToken::new_live(-history.event_sn).to_string();
+    let qualified_history = page(
+        service,
+        &room,
+        &root,
+        "",
+        &legacy_history,
+        Some(&upper),
+        "f",
+        100,
+    )
+    .await;
+    assert_eq!(
+        ids(&qualified_history),
+        vec![history.event_id.to_string()],
+        "absolute child lower must not become signed stream lower"
+    );
+    let old_history = page(service, &room, &root, "", &legacy_history, None, "b", 100).await;
+    assert!(ids(&old_history).contains(&history.event_id.to_string()));
+    let q = BatchToken::new_publication_page_with_bounds(
+        None,
+        Some(upper_sn),
+        history.depth as i64,
+        stored - 1,
+        Some(stored),
+        Some(stored + 1),
+        Some(history.event_sn),
+        Some(history.event_sn + 1),
+    )
+    .to_string();
+    let exact_history = page(service, &room, &root, "", &q, None, "f", 1).await;
+    assert_eq!(ids(&exact_history), vec![history.event_id.to_string()]);
+    let history_end = exact_history["next_batch"].as_str().unwrap();
+    assert!(
+        matches!(history_end.parse::<BatchToken>().unwrap(), BatchToken::PublicationPage {
+        identity_lower:Some(stream_lower), child_lower:Some(child_lower), ..
+    } if stream_lower==stored && child_lower==history.event_sn)
+    );
+    let cross_history = messages_page(service, &room, &q, None, "f", 1).await;
+    assert_eq!(ids(&cross_history), vec![history.event_id.to_string()]);
+    let excluded = BatchToken::new_publication_page_with_bounds(
+        None,
+        Some(upper_sn),
+        history.depth as i64,
+        stored - 1,
+        Some(stored),
+        Some(stored + 1),
+        Some(history.event_sn + 1),
+        None,
+    )
+    .to_string();
+    assert!(ids(&page(service, &room, &root, "", &excluded, None, "f", 1).await).is_empty());
+    assert!(ids(&messages_page(service, &room, &excluded, None, "f", 1).await).is_empty());
 }

@@ -167,6 +167,34 @@ pub async fn get_relations(
     Ok(pdus)
 }
 
+/// Legacy relation tokens name absolute child identities with inclusive
+/// endpoints. Keep that axis distinct from a /messages q page's signed stream.
+fn relation_bound(
+    token: BatchToken,
+    from: bool,
+    direction: Direction,
+    window: &mut timeline::publication::Window,
+) -> AppResult<Option<BatchToken>> {
+    if let BatchToken::Live { stream_ordering } = token {
+        let identity = stream_ordering.checked_abs().ok_or_else(|| {
+            crate::MatrixError::invalid_param("relation identity is out of range")
+        })?;
+        if (direction == Direction::Forward) == from {
+            window.child_lower = window.child_lower.into_iter().chain(Some(identity)).max();
+        } else {
+            // MAX is an inclusive last identity, hence no finite exclusive cap.
+            window.child_upper = window
+                .child_upper
+                .into_iter()
+                .chain(identity.checked_add(1))
+                .min();
+        }
+        Ok(None)
+    } else {
+        timeline::publication::bound(token, from, direction, window)
+    }
+}
+
 async fn get_publication_relations(
     user_id: &UserId,
     room_id: &RoomId,
@@ -179,9 +207,9 @@ async fn get_publication_relations(
     limit: usize,
 ) -> AppResult<(Vec<(Seqnum, SnPduEvent)>, Option<BatchToken>)> {
     let mut window = timeline::publication::Window::default();
-    let from = timeline::publication::bound(from, true, dir, &mut window)?;
+    let from = relation_bound(from, true, dir, &mut window)?;
     let to = to
-        .map(|token| timeline::publication::bound(token, false, dir, &mut window))
+        .map(|token| relation_bound(token, false, dir, &mut window))
         .transpose()?
         .flatten();
     let seek = |token: BatchToken| {
@@ -202,6 +230,10 @@ async fn get_publication_relations(
         data::room::RelationPublicationWindow {
             lower: window.lower,
             upper: window.upper,
+            identity_lower: window.identity_lower,
+            identity_upper: window.identity_upper,
+            child_lower: window.child_lower,
+            child_upper: window.child_upper,
             from: from.map(seek),
             to: to.map(seek),
         },
@@ -230,13 +262,17 @@ async fn get_publication_relations(
         } else {
             pdu.prev_historic_token()
         };
-        BatchToken::new_publication_page(
+        BatchToken::new_publication_page_with_bounds(
             window.lower,
             window.upper,
             historic
                 .topological_ordering()
                 .expect("historic relation cursor"),
             historic.stream_ordering(),
+            window.identity_lower,
+            window.identity_upper,
+            window.child_lower,
+            window.child_upper,
         )
     });
     Ok((events, next))

@@ -731,6 +731,10 @@ pub async fn get_event_relations(
 pub struct RelationPublicationWindow {
     pub lower: Option<Seqnum>,
     pub upper: Option<Seqnum>,
+    pub identity_lower: Option<Seqnum>,
+    pub identity_upper: Option<Seqnum>,
+    pub child_lower: Option<Seqnum>,
+    pub child_upper: Option<Seqnum>,
     pub from: Option<(i64, Seqnum)>,
     pub to: Option<(i64, Seqnum)>,
 }
@@ -750,6 +754,14 @@ pub async fn get_event_relations_publication(
         .lower
         .zip(window.upper)
         .is_some_and(|(lower, upper)| lower >= upper)
+        || window
+            .identity_lower
+            .zip(window.identity_upper)
+            .is_some_and(|(lower, upper)| lower >= upper)
+        || window
+            .child_lower
+            .zip(window.child_upper)
+            .is_some_and(|(lower, upper)| lower >= upper)
     {
         return Ok(Vec::new());
     }
@@ -791,6 +803,20 @@ pub async fn get_event_relations_publication(
         query = query.filter(live.or(events::stream_ordering.lt(0)));
     } else {
         query = query.filter(live);
+    }
+    // These are independent axes: a backfill's positive child identity is
+    // not its negative historical stream position.
+    if let Some(lower) = window.identity_lower {
+        query = query.filter(events::stream_ordering.ge(lower));
+    }
+    if let Some(upper) = window.identity_upper {
+        query = query.filter(events::stream_ordering.lt(upper));
+    }
+    if let Some(lower) = window.child_lower {
+        query = query.filter(event_relations::child_sn.ge(lower));
+    }
+    if let Some(upper) = window.child_upper {
+        query = query.filter(event_relations::child_sn.lt(upper));
     }
     if forward {
         if let Some((depth, stream)) = window.from {

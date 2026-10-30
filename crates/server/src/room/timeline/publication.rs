@@ -16,12 +16,30 @@ use crate::{AppResult, MatrixError, SnPduEvent};
 pub(crate) struct Window {
     pub lower: Option<Seqnum>,
     pub upper: Option<Seqnum>,
+    /// Legacy /messages signed stream-ordering interval.
+    pub identity_lower: Option<Seqnum>,
+    pub identity_upper: Option<Seqnum>,
+    /// Legacy /relations absolute child identity interval.
+    pub child_lower: Option<Seqnum>,
+    pub child_upper: Option<Seqnum>,
 }
 
 impl Window {
     fn intersect(&mut self, other: Self) {
         self.lower = self.lower.into_iter().chain(other.lower).max();
         self.upper = self.upper.into_iter().chain(other.upper).min();
+        self.identity_lower = self
+            .identity_lower
+            .into_iter()
+            .chain(other.identity_lower)
+            .max();
+        self.identity_upper = self
+            .identity_upper
+            .into_iter()
+            .chain(other.identity_upper)
+            .min();
+        self.child_lower = self.child_lower.into_iter().chain(other.child_lower).max();
+        self.child_upper = self.child_upper.into_iter().chain(other.child_upper).min();
     }
     fn point(&mut self, position: Seqnum, lower: bool) -> AppResult<()> {
         if position < 0 {
@@ -31,17 +49,27 @@ impl Window {
             Self {
                 lower: Some(position),
                 upper: None,
+                ..Self::default()
             }
         } else {
             Self {
                 lower: None,
                 upper: Some(position),
+                ..Self::default()
             }
         });
         Ok(())
     }
     pub(crate) fn empty(self) -> bool {
         self.lower.zip(self.upper).is_some_and(|(l, u)| l >= u)
+            || self
+                .identity_lower
+                .zip(self.identity_upper)
+                .is_some_and(|(l, u)| l >= u)
+            || self
+                .child_lower
+                .zip(self.child_upper)
+                .is_some_and(|(l, u)| l >= u)
     }
 }
 
@@ -69,11 +97,15 @@ fn page_end(
         } else {
             pdu.historic_token()
         };
-        BatchToken::new_publication_page(
+        BatchToken::new_publication_page_with_bounds(
             window.lower,
             window.upper,
             historic.topological_ordering().expect("historic cursor"),
             historic.stream_ordering(),
+            window.identity_lower,
+            window.identity_upper,
+            window.child_lower,
+            window.child_upper,
         )
     })
 }
@@ -85,9 +117,9 @@ pub(crate) fn uses_publication(token: BatchToken) -> bool {
     )
 }
 
-/// A legacy live bound is interpreted as an old sync publication point only
-/// inside this explicitly selected publication context. Pure s/t routes do not
-/// call this function.
+/// Each cursor retains its own coordinate domain. Legacy live cursors select
+/// signed stream identities even when the other endpoint is a publication point.
+/// Qualified pages retain all windows independently across endpoint handoffs.
 pub(crate) fn bound(
     token: BatchToken,
     from: bool,
@@ -95,8 +127,23 @@ pub(crate) fn bound(
     window: &mut Window,
 ) -> AppResult<Option<BatchToken>> {
     match token {
-        BatchToken::Publication { stream_ordering } | BatchToken::Live { stream_ordering } => {
+        BatchToken::Publication { stream_ordering } => {
             window.point(stream_ordering, (direction == Direction::Forward) == from)?;
+            Ok(None)
+        }
+        BatchToken::Live { stream_ordering } => {
+            let lower = (direction == Direction::Forward) == from;
+            window.intersect(if lower {
+                Window {
+                    identity_lower: Some(stream_ordering),
+                    ..Window::default()
+                }
+            } else {
+                Window {
+                    identity_upper: Some(stream_ordering),
+                    ..Window::default()
+                }
+            });
             Ok(None)
         }
         BatchToken::PublicationPage {
@@ -104,8 +151,19 @@ pub(crate) fn bound(
             upper,
             topological_ordering,
             stream_ordering,
+            identity_lower,
+            identity_upper,
+            child_lower,
+            child_upper,
         } => {
-            window.intersect(Window { lower, upper });
+            window.intersect(Window {
+                lower,
+                upper,
+                identity_lower,
+                identity_upper,
+                child_lower,
+                child_upper,
+            });
             Ok(Some(BatchToken::new_historic(
                 stream_ordering,
                 topological_ordering,

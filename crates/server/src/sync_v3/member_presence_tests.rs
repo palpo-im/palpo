@@ -1136,6 +1136,8 @@ async fn delayed_member_publication() {
 // Preserve the actual legacy /context cursor contract even when the other
 // endpoint comes from a new publication-aware /sync response.
 async fn legacy_context_publication_window(service: &Service, alice: &UserId) {
+    let before_room = sync(service, None, None).await;
+    let before_room = before_room["next_batch"].as_str().unwrap();
     let created = request(
         TestClient::post("http://localhost/_matrix/client/v3/createRoom")
             .add_header("Authorization", "Bearer alice-presence", true)
@@ -1255,6 +1257,156 @@ async fn legacy_context_publication_window(service: &Service, alice: &UserId) {
         ids(&legacy),
         "adding a publication upper bound reinterpreted the actual context identity cursor: {mixed}"
     );
+    let mut cursor = from.to_owned();
+    let mut seen = Vec::new();
+    for page_number in 0..4 {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "f")
+            .append_pair("from", &cursor)
+            .append_pair("limit", "1");
+        if page_number == 0 {
+            url.query_pairs_mut().append_pair("to", upper);
+        }
+        let page = request(
+            TestClient::get(url.as_str()).add_header(
+                "Authorization",
+                "Bearer alice-presence",
+                true,
+            ),
+            service,
+        )
+        .await;
+        let page_ids = ids(&page);
+        if page_ids.is_empty() {
+            break;
+        }
+        assert_eq!(page_ids.len(), 1);
+        assert_ne!(
+            page_ids[0],
+            late.event_id.as_str(),
+            "qualified continuation dropped its immutable legacy identity floor"
+        );
+        assert!(
+            !seen.contains(&page_ids[0]),
+            "mixed context pages repeated an event"
+        );
+        seen.extend(page_ids);
+        cursor = page["end"].as_str().unwrap().to_owned();
+        match cursor.parse::<BatchToken>().unwrap() {
+            BatchToken::PublicationPage {
+                lower,
+                upper: stored_upper,
+                identity_lower,
+                identity_upper,
+                child_lower,
+                child_upper,
+                ..
+            } => {
+                assert_eq!(lower, None);
+                assert_eq!(
+                    stored_upper,
+                    Some(upper.parse::<BatchToken>().unwrap().stream_ordering())
+                );
+                assert_eq!(identity_lower, Some(base.event_sn));
+                assert_eq!(identity_upper, None);
+                assert_eq!((child_lower, child_upper), (None, None));
+            }
+            _ => panic!("mixed page must retain its independent cursor windows"),
+        }
+    }
+    assert_eq!(
+        seen,
+        ids(&legacy),
+        "dropping the original to argument must not change the continuation window"
+    );
+    // The opposite direction must preserve the original exclusive s upper
+    // bound on every continuation, including a lower-topology base event.
+    let backward_from = context["start"].as_str().unwrap();
+    assert_eq!(backward_from, from);
+    let backwards = |cursor: &str, to: Option<&str>, limit: usize| {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "b")
+            .append_pair("from", cursor)
+            .append_pair("limit", &limit.to_string());
+        if let Some(to) = to {
+            url.query_pairs_mut().append_pair("to", to);
+        }
+        TestClient::get(url.as_str()).add_header("Authorization", "Bearer alice-presence", true)
+    };
+    let pure_back = request(
+        backwards(backward_from, Some(&BatchToken::LIVE_MIN.to_string()), 100),
+        service,
+    )
+    .await;
+    assert!(ids(&pure_back).contains(&late.event_id.to_string()));
+    assert!(!ids(&pure_back).contains(&base.event_id.to_string()));
+    let mixed_back = request(backwards(backward_from, Some(before_room), 100), service).await;
+    assert_eq!(
+        ids(&mixed_back),
+        ids(&pure_back),
+        "publication lower bound changed legacy context start"
+    );
+    let mut cursor = backward_from.to_owned();
+    let mut backward_seen = Vec::new();
+    for page_number in 0..100 {
+        let page = request(
+            backwards(
+                &cursor,
+                if page_number == 0 {
+                    Some(before_room)
+                } else {
+                    None
+                },
+                1,
+            ),
+            service,
+        )
+        .await;
+        let page_ids = ids(&page);
+        if page_ids.is_empty() {
+            break;
+        }
+        assert_eq!(page_ids.len(), 1);
+        assert_ne!(
+            page_ids[0],
+            base.event_id.as_str(),
+            "q continuation dropped its original exclusive identity upper bound"
+        );
+        assert_ne!(page_ids[0], later);
+        assert!(!backward_seen.contains(&page_ids[0]));
+        backward_seen.extend(page_ids);
+        cursor = page["end"].as_str().unwrap().to_owned();
+        match cursor.parse::<BatchToken>().unwrap() {
+            BatchToken::PublicationPage {
+                lower,
+                upper,
+                identity_lower,
+                identity_upper,
+                child_lower,
+                child_upper,
+                ..
+            } => {
+                assert_eq!(
+                    lower,
+                    Some(before_room.parse::<BatchToken>().unwrap().stream_ordering())
+                );
+                assert_eq!(upper, None);
+                assert_eq!(identity_lower, None);
+                assert_eq!(identity_upper, Some(base.event_sn));
+                assert_eq!((child_lower, child_upper), (None, None));
+            }
+            _ => panic!("backward mixed page must retain all original windows"),
+        }
+    }
+    assert_eq!(backward_seen, ids(&pure_back));
 }
 
 async fn promote_context_pdu(
@@ -1460,6 +1612,12 @@ async fn late_published_timeline(
     let missing = [pending[0].0.event_id.as_str(), newer_id];
     let legacy_lower = format!("s{lower_sn}");
     for to in [Some(lower), Some(legacy_lower.as_str()), None] {
+        let identity_window = to == Some(legacy_lower.as_str());
+        let expected = if identity_window {
+            vec![newer_id]
+        } else {
+            missing.to_vec()
+        };
         let mut from = start.clone();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..20 {
@@ -1497,9 +1655,16 @@ async fn late_published_timeline(
                     pending[1].0.event_id.as_str(),
                     "history repeated the limited sync event"
                 );
+                if identity_window {
+                    assert_ne!(
+                        id,
+                        pending[0].0.event_id.as_str(),
+                        "legacy identity lower bound was replaced by a publication bound"
+                    );
+                }
                 assert!(seen.insert(id), "history continuation repeated an event");
             }
-            if missing.iter().all(|id| seen.contains(*id)) {
+            if !identity_window && expected.iter().all(|id| seen.contains(*id)) {
                 break;
             }
             let end = page["end"].as_str().unwrap().to_owned();
@@ -1507,8 +1672,8 @@ async fn late_published_timeline(
             from = end;
         }
         assert!(
-            missing.iter().all(|id| seen.contains(*id)),
-            "limited history continuation lost a late publication"
+            expected.iter().all(|id| seen.contains(*id)),
+            "limited history continuation lost an eligible event"
         );
     }
     // Forward pages use the same frozen publication window, retaining topology

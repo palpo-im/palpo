@@ -156,6 +156,21 @@ async fn load_pdus_selected(
             .into_boxed();
 
         if let Some(window) = publication_window {
+            if window.empty() {
+                return Ok(list);
+            }
+            if let Some(lower) = window.identity_lower {
+                query = query.filter(events::stream_ordering.ge(lower));
+            }
+            if let Some(upper) = window.identity_upper {
+                query = query.filter(events::stream_ordering.lt(upper));
+            }
+            if let Some(lower) = window.child_lower {
+                query = query.filter(events::sn.ge(lower));
+            }
+            if let Some(upper) = window.child_upper {
+                query = query.filter(events::sn.lt(upper));
+            }
             let mut published = event_points::table
                 .filter(event_points::room_id.eq(room_id))
                 .filter(event_points::live_published_sn.is_not_null())
