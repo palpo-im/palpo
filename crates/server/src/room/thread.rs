@@ -69,11 +69,23 @@ pub(crate) async fn parse_cursor(
     // Legacy tokens contain a visible anchor and its activity at issuance. A
     // later reply may have moved threads.last_sn, so validate the historical
     // activity by its indexed sequence rather than comparing mutable state.
-    let activity_id = match crate::event::get_event_id_by_sn(cursor.last_sn).await {
-        Ok(id) => id,
-        Err(error) if error.is_not_found() => return Err(pagination::invalid()),
-        Err(error) => return Err(error),
-    };
+    let activity_id = {
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+
+        use crate::data::schema::event_points;
+
+        // Match the existing (room_id, event_sn) index. An attacker-chosen
+        // legacy position must not cause a scan of the global event stream.
+        event_points::table
+            .filter(event_points::room_id.eq(room))
+            .filter(event_points::event_sn.eq(cursor.last_sn))
+            .select(event_points::event_id)
+            .first::<OwnedEventId>(&mut data::connect().await?)
+            .await
+            .optional()?
+    }
+    .ok_or_else(pagination::invalid)?;
     let activity = match timeline::get_pdu(&activity_id).await {
         Ok(pdu) => pdu,
         Err(error) if error.is_not_found() => return Err(pagination::invalid()),
