@@ -107,6 +107,12 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
+      - name: Profile avatar HTTP regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_profile_avatar
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_profile_avatar cargo test -p palpo --lib --all-features profile_http_avatar_updates -- --ignored --exact routing::client::profile::avatar_http_tests::profile_http_avatar_updates_preserve_opaque_values_and_ownership
+
+
       - name: Dummy registration policy regression tests
         run: |
           # Configuration is immutable; give each policy its own process and empty database.
@@ -120,6 +126,42 @@ jobs:
               cargo test -p palpo --lib --all-features \
               routing::client::register::dummy_registration_tests::${test} -- --exact --ignored
           done
+
+      - name: Incomplete missing-event recovery regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_missing_events
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_missing_events cargo test -p palpo --lib --all-features missing_events_http_recovery_requires_usable_predecessors -- --ignored --exact event::outlier::missing_events_tests::missing_events_http_recovery_requires_usable_predecessors
+          sudo -u postgres createdb -O palpo_test palpo_pending_auth_events
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_pending_auth_events cargo test -p palpo --lib --all-features missing_events_signed_predecessors_preserve_pending_state -- --ignored --exact event::outlier::missing_events_tests::missing_events_signed_predecessors_preserve_pending_state
+
+      - name: Remote device version HTTP regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_versions
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_versions \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_remote_device_versions_are_durable_and_idempotent \
+            -- --exact --ignored
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_many_rooms
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_many_rooms \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_remote_device_versions_cover_many_shared_rooms \
+            -- --exact --ignored
+
+      - name: Join device notification producer regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_join_device_versions
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_join_device_versions \
+            cargo test -p palpo --lib --all-features \
+            membership::join::device_list_producer_tests::http_join_device_list_version_matches_other_producers \
+            -- --exact --ignored
+
+      - name: Initial remote device snapshot race regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_snapshot
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_snapshot \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_join_snapshot_preserves_device_version_races \
+            -- --exact --ignored
 
       - name: Timestamp gap recovery regression test
         run: |

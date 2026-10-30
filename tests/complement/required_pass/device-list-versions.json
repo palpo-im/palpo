@@ -1,0 +1,14 @@
+[
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestDeviceListsUpdateOverFederation/good_connectivity"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestDeviceListsUpdateOverFederation/interrupted_connectivity"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestDeviceListsUpdateOverFederation/stopped_server"
+  }
+]
