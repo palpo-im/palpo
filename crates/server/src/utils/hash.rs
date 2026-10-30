@@ -54,6 +54,12 @@ pub fn hash_password(password: &str) -> Result<String, argon2::Error> {
     argon2::hash_encoded(password.as_bytes(), salt.as_bytes(), &hashing_conf)
 }
 
+/// Hash a password without blocking an async worker or enqueueing unbounded blocking jobs.
+pub async fn hash_password_async(password: &str) -> crate::AppResult<String> {
+    let password = password.to_owned();
+    super::cpu::run(move || Ok(hash_password(&password)?)).await
+}
+
 #[tracing::instrument(skip(keys))]
 pub fn hash_keys<'a, T, I>(keys: I) -> Vec<u8>
 where
@@ -65,4 +71,16 @@ where
         hash.update(key.as_ref());
     }
     hash.digest().as_bytes().to_vec()
+}
+
+#[cfg(test)]
+mod cpu_hash_tests {
+    #[tokio::test]
+    async fn offloaded_password_hash_retains_verification_semantics() {
+        let hash = super::hash_password_async("q22-correct-password")
+            .await
+            .unwrap();
+        assert!(argon2::verify_encoded(&hash, b"q22-correct-password").unwrap());
+        assert!(!argon2::verify_encoded(&hash, b"q22-wrong-password").unwrap());
+    }
 }
