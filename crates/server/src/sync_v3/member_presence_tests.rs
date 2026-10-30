@@ -143,6 +143,7 @@ async fn member_presence() {
     let previous = sync(&service, None, None).await;
     let since = previous["next_batch"].as_str().unwrap();
     let token: BatchToken = since.parse().unwrap();
+    let before_bob_join_frame = room::get_frame_id(&room, None).await.unwrap();
     assert!(!presence_users(&previous).contains(&bob.as_str()));
     request(
         TestClient::post(format!("http://localhost/_matrix/client/v3/join/{room}"))
@@ -156,6 +157,38 @@ async fn member_presence() {
         token.event_sn(),
         "fixture must put the membership exactly at the inclusive timeline cursor"
     );
+    // send_join imports can allocate newer local positions for older cached
+    // auth/state. Model that metadata without publishing it on the timeline.
+    // The unqualified historical lookup must demonstrably select the stale
+    // frame, while the actual sync must retain the published Bob membership.
+    {
+        use diesel::sql_types::{BigInt, Text};
+        use diesel_async::RunQueryDsl;
+        let imported_sn = data::next_sn().await.unwrap();
+        let imported_id = "$cached-import-after-live-join";
+        let mut connection = data::connect().await.unwrap();
+        diesel::sql_query("INSERT INTO events
+            (id,sn,ty,room_id,depth,topological_ordering,stream_ordering,origin_server_ts,is_outlier)
+            VALUES ($1,$2,'m.room.message',$3,1,1,$2,0,true)")
+            .bind::<Text,_>(imported_id).bind::<BigInt,_>(imported_sn)
+            .bind::<Text,_>(room.as_str()).execute(&mut connection).await.unwrap();
+        diesel::sql_query(
+            "INSERT INTO event_points (event_id,event_sn,room_id,frame_id)
+            VALUES ($1,$2,$3,$4)",
+        )
+        .bind::<Text, _>(imported_id)
+        .bind::<BigInt, _>(imported_sn)
+        .bind::<Text, _>(room.as_str())
+        .bind::<BigInt, _>(before_bob_join_frame)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        drop(connection);
+        assert_eq!(
+            room::get_frame_id(&room, Some(imported_sn)).await.unwrap(),
+            before_bob_join_frame
+        );
+    }
     // Reproduce another initial sync winning the upstream parallel test race.
     let initial = sync(&service, None, None).await;
     assert!(presence_users(&initial).contains(&bob.as_str()));
