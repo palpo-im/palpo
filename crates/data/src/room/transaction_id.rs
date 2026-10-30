@@ -179,19 +179,137 @@ pub async fn commit_to_device_transaction(
             for (user, device) in targets {
                 crate::user::device::lock_inbox_stream(conn, user, device).await?;
             }
-            if !inboxes.is_empty() {
+            // PostgreSQL permits at most 65,535 bind parameters per statement.
+            // These rows use four/seven columns; leave ample headroom while
+            // retaining one transaction for every chunk and the receipt.
+            for chunk in inboxes.chunks(1_000) {
                 diesel::insert_into(device_inboxes::table)
-                    .values(inboxes)
+                    .values(chunk)
                     .execute(conn)
                     .await?;
             }
-            if !outgoing.is_empty() {
+            for chunk in outgoing.chunks(1_000) {
                 diesel::insert_into(outgoing_requests::table)
-                    .values(outgoing)
+                    .values(chunk)
                     .execute(conn)
                     .await?;
             }
             Ok(true)
         })
         .await
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    use super::*;
+    use crate::sending::NewDbOutgoingRequest;
+    use crate::user::device::NewDbDeviceInbox;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; explicitly executed in CI"]
+    async fn database_large_to_device_transaction_chunks_and_rolls_back() {
+        let config = serde_json::from_value(serde_json::json!({
+            "url": std::env::var("PALPO_TEST_DATABASE_URL").expect("dedicated database required")
+        }))
+        .unwrap();
+        crate::init(&config).unwrap();
+        async fn counts() -> (i64, i64, i64) {
+            let mut conn = connect().await.unwrap();
+            (
+                device_inboxes::table
+                    .count()
+                    .get_result(&mut conn)
+                    .await
+                    .unwrap(),
+                outgoing_requests::table
+                    .count()
+                    .get_result(&mut conn)
+                    .await
+                    .unwrap(),
+                event_idempotents::table
+                    .count()
+                    .get_result(&mut conn)
+                    .await
+                    .unwrap(),
+            )
+        }
+        assert_eq!(counts().await, (0, 0, 0), "fixture needs a fresh database");
+        let user: OwnedUserId = "@bulk:transaction.example".try_into().unwrap();
+        // Reuse one stream lock to isolate the wire-protocol bind limit from
+        // PostgreSQL's independently configured advisory-lock capacity.
+        let inboxes: Vec<_> = (0..17_000)
+            .map(|index| NewDbDeviceInbox {
+                user_id: user.clone(),
+                device_id: "D".into(),
+                json_data: serde_json::json!({"index": index}),
+                created_at: 0,
+            })
+            .collect();
+        let outgoing: Vec<_> = (0..23_000)
+            .map(|index| {
+                NewDbOutgoingRequest {
+                kind: "normal".into(),
+                appservice_id: None,
+                user_id: None,
+                pushkey: None,
+                server_id: Some("remote.example".try_into().unwrap()),
+                pdu_id: None,
+                edu_json: Some(serde_json::to_vec(&serde_json::json!({
+                    "edu_type": "m.direct_to_device", "content": {"message_id": index.to_string()}
+                })).unwrap()),
+            }
+            })
+            .collect();
+        let receipt = NewDbEventIdempotent {
+            txn_id: "bulk-first".into(),
+            user_id: user,
+            device_id: Some("D".into()),
+            room_id: None,
+            event_id: None,
+            created_at: UnixMillis::now(),
+            endpoint: "to_device".into(),
+        };
+        assert!(
+            commit_to_device_transaction(&receipt, &inboxes, &outgoing)
+                .await
+                .unwrap()
+        );
+        assert_eq!(counts().await, (17_000, 23_000, 1));
+        assert!(
+            !commit_to_device_transaction(&receipt, &inboxes, &outgoing)
+                .await
+                .unwrap()
+        );
+        assert_eq!(counts().await, (17_000, 23_000, 1));
+
+        diesel::sql_query("ALTER TABLE outgoing_requests ADD CONSTRAINT reject_late_chunk CHECK (kind <> 'reject_late_chunk')")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        let mut second_receipt = receipt;
+        second_receipt.txn_id = "bulk-retry".into();
+        let mut failed_outgoing = outgoing;
+        failed_outgoing.last_mut().unwrap().kind = "reject_late_chunk".into();
+        assert!(
+            commit_to_device_transaction(&second_receipt, &inboxes, &failed_outgoing)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            counts().await,
+            (17_000, 23_000, 1),
+            "a late outgoing chunk must roll back every inbox, outgoing chunk and receipt"
+        );
+        failed_outgoing.last_mut().unwrap().kind = "normal".into();
+        assert!(
+            commit_to_device_transaction(&second_receipt, &inboxes, &failed_outgoing)
+                .await
+                .unwrap()
+        );
+        assert_eq!(counts().await, (34_000, 46_000, 2));
+        assert!(
+            !commit_to_device_transaction(&second_receipt, &inboxes, &failed_outgoing)
+                .await
+                .unwrap()
+        );
+        assert_eq!(counts().await, (34_000, 46_000, 2));
+    }
 }
