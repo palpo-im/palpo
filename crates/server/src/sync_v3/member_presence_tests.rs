@@ -144,14 +144,73 @@ async fn member_presence() {
     let since = previous["next_batch"].as_str().unwrap();
     let token: BatchToken = since.parse().unwrap();
     let before_bob_join_frame = room::get_frame_id(&room, None).await.unwrap();
-    assert!(!presence_users(&previous).contains(&bob.as_str()));
-    request(
-        TestClient::post(format!("http://localhost/_matrix/client/v3/join/{room}"))
-            .add_header("Authorization", "Bearer bob-presence", true)
-            .json(&json!({})),
-        &service,
+    let alice_member = room::get_state(
+        &room,
+        &crate::core::events::StateEventType::RoomMember,
+        alice.as_str(),
+        None,
     )
-    .await;
+    .await
+    .unwrap();
+    let alice_before_frame = room::state::get_pdu_before_frame_id(&alice_member.event_id)
+        .await
+        .unwrap();
+    let alice_after_frame = room::state::get_pdu_frame_id(&alice_member.event_id)
+        .await
+        .unwrap();
+    assert!(!presence_users(&previous).contains(&bob.as_str()));
+    // Public-room federation joins resolve the full state before promotion.
+    // Use the actual send_join pipeline, including signed PDU validation, so
+    // it cannot silently move an old event's historical frame past this token.
+    let (join_pdu, mut join) = crate::event::PduBuilder {
+        event_type: "m.room.member".into(),
+        state_key: Some(bob.to_string()),
+        content: serde_json::value::to_raw_value(&json!({"membership":"join"})).unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&bob, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    // An already cached outlier may have a historical frame. Only promotion
+    // of that event may replace it; retaining other events must never do so.
+    let (_, _, guard) =
+        crate::event::PduBuilder::save_as_outlier(join_pdu.clone(), join.clone(), &bob)
+            .await
+            .unwrap();
+    crate::event::update_frame_id(&join_pdu.event_id, before_bob_join_frame)
+        .await
+        .unwrap();
+    drop(guard);
+    join.remove("event_id");
+    let join = serde_json::value::to_raw_value(&join).unwrap();
+    crate::federation::membership::send_join_v2(SERVER.try_into().unwrap(), &room, &join)
+        .await
+        .unwrap();
+    assert_eq!(
+        super::captured_sync_frame(&room, token.event_sn() - 1)
+            .await
+            .unwrap(),
+        before_bob_join_frame,
+        "federated state resolution must preserve the pre-join historical frame"
+    );
+    assert_eq!(
+        room::state::get_pdu_before_frame_id(&alice_member.event_id)
+            .await
+            .unwrap(),
+        alice_before_frame
+    );
+    assert_eq!(
+        room::state::get_pdu_frame_id(&alice_member.event_id)
+            .await
+            .unwrap(),
+        alice_after_frame
+    );
+    assert_eq!(
+        room::state::get_pdu_frame_id(&join_pdu.event_id)
+            .await
+            .unwrap(),
+        room::get_frame_id(&room, None).await.unwrap()
+    );
     assert_eq!(
         room::user::join_sn(&bob, &room).await.unwrap(),
         token.event_sn(),
@@ -197,6 +256,14 @@ async fn member_presence() {
     // old cursor. Initial sync can put Bob only in timeline, so run that real
     // incremental sibling rather than assuming initial state marked the cache.
     let sibling = sync(&service, Some(since), None).await;
+    assert!(
+        sibling["device_lists"]["changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|user| user.as_str() == Some(bob.as_str())),
+        "the real federated join must report Bob's device list: {sibling}"
+    );
     assert!(
         presence_users(&sibling).contains(&bob.as_str()),
         "{sibling}"
