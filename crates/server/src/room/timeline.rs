@@ -25,6 +25,7 @@ use crate::{
 };
 
 mod backfill;
+pub(crate) mod publication;
 pub mod stream;
 pub mod topolo;
 pub use backfill::*;

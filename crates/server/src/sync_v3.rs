@@ -45,6 +45,15 @@ pub async fn sync_events(
     crate::seqnum_reach(curr_sn).await;
     let since_tk = if let Some(since_str) = args.since.as_ref() {
         let since_tk: BatchToken = since_str.parse()?;
+        if since_tk.is_publication_page() {
+            return Err(
+                MatrixError::invalid_param("message page cursor is not a sync position").into(),
+            );
+        }
+        let since_tk = match since_tk {
+            BatchToken::Live { stream_ordering } => BatchToken::new_publication(stream_ordering),
+            other => other,
+        };
         // An issued next token is C + 1 even while the event stream is idle.
         // MSC4494 must still check current eligibility and delayed admissions,
         // which can change without allocating another event position.
@@ -81,7 +90,7 @@ pub async fn sync_events(
     )
     .await?;
     let curr_sn = invite_snapshot.until_sn;
-    let next_batch = BatchToken::new_live(curr_sn + 1);
+    let next_batch = BatchToken::new_publication(curr_sn + 1);
 
     // Load filter
     let filter = match &args.filter {
@@ -214,7 +223,13 @@ pub async fn sync_events(
             continue;
         };
         // Left before last sync
-        if since_tk.map(|t| t.stream_ordering()) > Some(left_sn) {
+        let Some(left_publication) = timeline::publication::position(room_id, left_sn).await?
+        else {
+            continue;
+        };
+        if left_publication > curr_sn
+            || since_tk.map(|t| t.stream_ordering()) > Some(left_publication)
+        {
             continue;
         }
         let left_room = match load_left_room(
@@ -507,14 +522,21 @@ async fn load_joined_room(
         Some(next_batch),
         Some(&filter.room.timeline),
     )
-    .await?;
+    .await
+    .inspect_err(|error| warn!(stage="captured_timeline", %room_id, %error, "failed to load captured room sync data"))?;
 
-    let join_sn = crate::room::user::join_sn(sender_id, room_id)
+    let initial_sync = since_tk.is_none();
+    let join_sn = joined_period_at(current_frame_id, sender_id)
         .await
+        .inspect_err(|error| warn!(stage="joined_period_current", %room_id, %error, "failed to load captured room sync data"))?
         .unwrap_or_default();
-    let joined_since_incremental = since_tk
-        .map(|since_tk| join_sn >= since_tk.event_sn())
-        .unwrap_or(false);
+    let previous_join = if let Some(frame) = since_frame_id {
+        joined_period_at(frame, sender_id).await
+            .inspect_err(|error| warn!(stage="joined_period_previous", %room_id, %error, "failed to load captured room sync data"))?
+    } else {
+        None
+    };
+    let joined_since_incremental = !initial_sync && join_sn != 0 && Some(join_sn) != previous_join;
     let should_fill_join_history = joined_since_incremental
         || (since_tk.is_none() && timeline_contains_own_join(&timeline, sender_id));
     if should_fill_join_history {
@@ -612,8 +634,8 @@ async fn load_joined_room(
                 ))
             };
 
-            let joined_since_last_sync = join_sn >= since_tk.event_sn();
-            if since_tk.event_sn() == 0 || joined_since_last_sync {
+            let joined_since_last_sync = joined_since_incremental;
+            if initial_sync || since_tk.event_sn() == 0 || joined_since_last_sync {
                 // Probably since = 0, we will do an initial sync
                 let (joined_member_count, invited_member_count, heroes) =
                     calculate_counts().await?;
@@ -984,7 +1006,7 @@ async fn load_joined_room(
 /// cached old membership promoted after newer events cannot disappear here.
 /// The migration initializes only legacy accepted live rows; outliers never
 /// gain a fabricated publication through a fallback to their identity.
-async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> {
+pub(crate) async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> {
     use diesel::prelude::*;
     use diesel_async::RunQueryDsl;
 
@@ -1028,6 +1050,21 @@ async fn joined_users_at_frame(frame_id: i64) -> AppResult<HashSet<OwnedUserId>>
         }
     }
     Ok(users)
+}
+
+async fn joined_period_at(frame_id: i64, user_id: &UserId) -> AppResult<Option<Seqnum>> {
+    let member =
+        match state::get_state(frame_id, &StateEventType::RoomMember, user_id.as_str()).await {
+            Ok(member) => member,
+            Err(error) if error.is_not_found() => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    if member.get_content::<RoomMemberEventContent>()?.membership != MembershipState::Join {
+        return Ok(None);
+    }
+    Ok(Some(
+        room::user::join_sn_for_event(user_id, member.event_id.clone(), member.event_sn).await?,
+    ))
 }
 
 async fn collect_membership_change(
@@ -1196,17 +1233,7 @@ async fn load_left_room(
     {
         limited = false;
     }
-    let prev_batch = if limited {
-        timeline
-            .events
-            .first()
-            .map(|(sn, _)| BatchToken::new_live(*sn).to_string())
-    } else {
-        timeline
-            .events
-            .last()
-            .map(|(sn, _)| BatchToken::new_live(*sn).to_string())
-    };
+    let prev_batch = timeline.prev_batch.map(|token| token.to_string());
 
     Ok(LeftRoom {
         account_data: RoomAccountData { events: Vec::new() },
@@ -1376,6 +1403,17 @@ pub(crate) async fn load_timeline(
     until_tk: Option<BatchToken>,
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
+    // Genuine backfill is ordered by topology, never by a negated receipt ID.
+    // Keep historical sync prev_batch in the legacy t domain; q is messages-only.
+    if since_tk.is_none() && timeline::publication::has_history(room_id).await? {
+        return load_timeline_with_backfilled_history(
+            user_id,
+            room_id,
+            until_tk.unwrap_or(BatchToken::LIVE_MAX),
+            filter,
+        )
+        .await;
+    }
     let limit = filter.and_then(|f| f.limit).unwrap_or(10);
     let mut is_backward = false;
     let mut timeline_pdus = if let Some(since_tk) = since_tk {
@@ -1432,98 +1470,61 @@ pub(crate) async fn load_timeline(
         timeline_pdus = timeline_pdus.into_iter().rev().collect();
     }
 
-    let pdu_sns = timeline_pdus.keys().cloned().collect::<Vec<_>>();
-    // let mut prev_batch = None;
-    let mut next_batch = None;
-    if is_backward {
-        let mut pdu_sns = pdu_sns.clone();
-        if let Some(since_tk) = since_tk {
-            // This can happen if there are no new events since since_tk
-            pdu_sns.push(since_tk.event_sn());
-        }
-        let min_sn = pdu_sns.iter().min().cloned().unwrap_or_default();
-        let max_sn = pdu_sns.iter().max().cloned().unwrap_or_default();
-        if let Ok(mut gap_sns) = data::room::get_timeline_gaps(room_id, min_sn, max_sn).await
-            && !gap_sns.is_empty()
-        {
-            let mut filtered_pdus = vec![];
-            if let Some(gap_sn) = gap_sns.pop() {
-                filtered_pdus = timeline_pdus
-                    .iter()
-                    .filter(|(sn, _)| *sn > &gap_sn)
-                    .collect();
-                if !filtered_pdus.is_empty() {
-                    limited = false;
-                } else {
-                    filtered_pdus = timeline_pdus
-                        .iter()
-                        .filter(|(sn, _)| *sn >= &gap_sn)
-                        .collect();
-                    if !filtered_pdus.is_empty() {
-                        limited = true;
-                    }
+    // A filtered-out gap still separates visible events. Query its publication
+    // position across the captured window, independently of selected PDU types.
+    let (lower, upper) = match (since_tk, until_tk) {
+        (Some(a), Some(b)) => (
+            Some(a.stream_ordering().min(b.stream_ordering())),
+            Some(a.stream_ordering().max(b.stream_ordering())),
+        ),
+        (Some(a), None) => (Some(a.stream_ordering()), None),
+        (None, b) => (None, b.map(|token| token.stream_ordering())),
+    };
+    let gaps = timeline::publication::gaps(room_id, lower, upper).await?;
+    if let Some(last_gap) = gaps.iter().max() {
+        limited = true;
+        if !is_backward {
+            let mut after_gap = IndexMap::new();
+            for (identity, pdu) in timeline_pdus {
+                if timeline::publication::position(room_id, identity)
+                    .await?
+                    .is_some_and(|position| position >= *last_gap)
+                {
+                    after_gap.insert(identity, pdu);
                 }
             }
-            if filtered_pdus.is_empty() {
-                while let Some(gap_sn) = gap_sns.pop() {
-                    filtered_pdus = timeline_pdus
-                        .iter()
-                        .filter(|(sn, _)| *sn >= &gap_sn)
-                        .collect();
-                    if !filtered_pdus.is_empty() {
-                        limited = true;
-                        break;
-                    }
-                }
-            }
-            next_batch = timeline_pdus
-                .first()
-                .map(|(sn, _)| BatchToken::new_live(*sn + 1));
-        }
-    } else if since_tk.is_some() {
-        // Incremental sync (forward direction). If there are timeline gaps in
-        // the range covered by this batch, we want to return events AFTER the
-        // last gap (the freshest batch) and mark the response as "limited" so
-        // the client knows older events between since_tk and the first event
-        // we returned are missing. This matches Synapse's behaviour and what
-        // tests like TestSyncTimelineGap expect.
-        let mut pdu_sns = pdu_sns.clone();
-        if let Some(since_tk) = since_tk {
-            // This can happen if there are no new events since since_tk
-            pdu_sns.push(since_tk.event_sn());
-        }
-        let min_sn = pdu_sns.iter().min().cloned().unwrap_or_default();
-        let max_sn = pdu_sns.iter().max().cloned().unwrap_or_default();
-        if let Ok(gap_sns) = data::room::get_timeline_gaps(room_id, min_sn, max_sn).await
-            && !gap_sns.is_empty()
-        {
-            // Pick the LARGEST gap_sn (the most recent gap). Events with sn
-            // strictly greater than that form the freshest, contiguous batch.
-            if let Some(&largest_gap_sn) = gap_sns.iter().max() {
-                let after_gap: Vec<_> = timeline_pdus
-                    .iter()
-                    .filter(|(sn, _)| **sn > largest_gap_sn)
-                    .map(|(sn, pdu)| (*sn, pdu.clone()))
-                    .collect();
-                if !after_gap.is_empty() {
-                    timeline_pdus = after_gap.into_iter().collect();
-                    limited = true;
-                }
-            }
-
-            next_batch = timeline_pdus
-                .last()
-                .map(|(sn, _)| BatchToken::new_live(*sn + 1));
+            timeline_pdus = after_gap;
         }
     }
-    let prev_batch = if limited {
-        timeline_pdus
-            .first()
-            .map(|(_, pdu)| BatchToken::new_live(pdu.event_sn))
+    // Preserve the existing non-limited sync boundary. Only a limited
+    // forward batch starts a gap before its oldest returned event.
+    let boundary = if limited && !is_backward {
+        timeline_pdus.first()
     } else {
-        timeline_pdus
-            .last()
-            .map(|(_, pdu)| BatchToken::new_live(pdu.event_sn))
+        timeline_pdus.last()
+    };
+    let prev_batch = if let Some((identity, _)) = boundary {
+        timeline::publication::position(room_id, *identity)
+            .await?
+            .map(BatchToken::new_publication)
+    } else {
+        None
+    };
+    let next_batch = if !gaps.is_empty() {
+        let newest = if is_backward {
+            timeline_pdus.first()
+        } else {
+            timeline_pdus.last()
+        };
+        if let Some((identity, _)) = newest {
+            timeline::publication::position(room_id, *identity)
+                .await?
+                .map(|position| BatchToken::new_publication(position + 1))
+        } else {
+            None
+        }
+    } else {
+        None
     };
     Ok(TimelineData {
         events: timeline_pdus,

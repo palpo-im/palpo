@@ -918,6 +918,48 @@ async fn delayed_member_publication() {
         .await
         .unwrap();
     assert_eq!(history_publication, (None, None));
+    // A second genuinely backfilled PDU has a later depth but a more negative
+    // stream ordering. Publication pagination must retain topology, not sort
+    // negative receipt identities as if they were a live clock.
+    request(
+        TestClient::put(format!("http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/history-depth-anchor"))
+            .add_header("Authorization","Bearer alice-presence",true)
+            .json(&json!({"body":"advance the genuine DAG depth","msgtype":"m.text"})),
+        &service,
+    ).await;
+    let (history_two, history_two_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        timestamp: Some(UnixMillis(2)),
+        content: serde_json::value::to_raw_value(
+            &json!({"body":"second recovered history","msgtype":"m.text"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (mut history_two, history_two_json, guard) =
+        crate::event::PduBuilder::save_as_outlier(history_two, history_two_json, &alice)
+            .await
+            .unwrap();
+    assert!(history_two.depth > history.depth);
+    history_two.is_backfill = true;
+    crate::event::update_before_frame_id(&history_two.event_id, before_promotion)
+        .await
+        .unwrap();
+    room::timeline::append_pdu(
+        &history_two,
+        history_two_json,
+        &room::lock_state(&room).await,
+    )
+    .await
+    .unwrap();
+    drop(guard);
+    let history_two = room::timeline::get_pdu(&history_two.event_id)
+        .await
+        .unwrap();
+    assert!(history_two.is_backfill && !history_two.is_outlier);
     let old_next = BatchToken::new_live(old_until + 1);
     // Positive control: ordinary historical pagination still follows original
     // topology and identity; only a captured sync adds the publication bound.
@@ -1007,6 +1049,828 @@ async fn delayed_member_publication() {
         injected.calls, 2,
         "both sync windows must take the nonempty backfill branch"
     );
+    diesel::sql_query("DELETE FROM event_backward_extremities WHERE room_id=$1 AND event_id='$missing-history-frontier'")
+        .bind::<diesel::sql_types::Text,_>(room.as_str())
+        .execute(&mut data::connect().await.unwrap()).await.unwrap();
+    let history_upper = BatchToken::new_publication(data::curr_sn().await.unwrap() + 1);
+    let mut from = history_upper.to_string();
+    let mut history_seen = Vec::new();
+    let mut all_seen = std::collections::HashSet::new();
+    for _ in 0..100 {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "b")
+            .append_pair("limit", "1")
+            .append_pair("from", &from);
+        let page = request(
+            TestClient::get(url.as_str()).add_header(
+                "Authorization",
+                "Bearer alice-presence",
+                true,
+            ),
+            &service,
+        )
+        .await;
+        let events = page["chunk"].as_array().unwrap();
+        if events.is_empty() {
+            break;
+        }
+        for event in events {
+            let id = event["event_id"].as_str().unwrap().to_owned();
+            assert!(
+                all_seen.insert(id.clone()),
+                "qualified history repeated a PDU"
+            );
+            if id == history.event_id.as_str() || id == history_two.event_id.as_str() {
+                history_seen.push(id);
+            }
+        }
+        from = page["end"].as_str().unwrap().to_owned();
+        assert!(matches!(
+            from.parse::<BatchToken>().unwrap(),
+            BatchToken::PublicationPage { .. }
+        ));
+    }
+    assert_eq!(
+        history_seen,
+        vec![
+            history_two.event_id.to_string(),
+            history.event_id.to_string()
+        ]
+    );
+    // The history-oriented initial response keeps a valid legacy topology prev.
+    let initial_history = sync(
+        &service,
+        None,
+        Some(json!({"room":{"timeline":{"limit":2}}})),
+    )
+    .await;
+    let actual_prev = initial_history["rooms"]["join"][room.as_str()]["timeline"]["prev_batch"]
+        .as_str()
+        .unwrap();
+    assert!(matches!(
+        actual_prev.parse::<BatchToken>().unwrap(),
+        BatchToken::Historic { .. }
+    ));
+    let mut members_url = url::Url::parse(&format!(
+        "http://localhost/_matrix/client/v3/rooms/{room}/members"
+    ))
+    .unwrap();
+    members_url.query_pairs_mut().append_pair("at", actual_prev);
+    request(
+        TestClient::get(members_url.as_str()).add_header(
+            "Authorization",
+            "Bearer alice-presence",
+            true,
+        ),
+        &service,
+    )
+    .await;
+    legacy_context_publication_window(&service, &alice).await;
+    late_published_timeline(&service, &alice, &history.event_id).await;
+}
+
+// Preserve the actual legacy /context cursor contract even when the other
+// endpoint comes from a new publication-aware /sync response.
+async fn legacy_context_publication_window(service: &Service, alice: &UserId) {
+    let before_room = sync(service, None, None).await;
+    let before_room = before_room["next_batch"].as_str().unwrap();
+    let created = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"room_version":"11","preset":"public_chat"})),
+        service,
+    )
+    .await;
+    let room: OwnedRoomId = created["room_id"].as_str().unwrap().try_into().unwrap();
+    let (base, base_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(
+            &json!({"msgtype":"m.text","body":"context base"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    for (txn, body) in [
+        ("context-depth-one", "first real successor"),
+        ("context-depth-two", "second real successor"),
+    ] {
+        request(
+            TestClient::put(format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/{txn}"
+            ))
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"msgtype":"m.text","body":body})),
+            service,
+        )
+        .await;
+    }
+    let (late, late_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(
+            &json!({"msgtype":"m.text","body":"older identity, later topology and publication"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (late, late_json, guard) =
+        crate::event::PduBuilder::save_as_outlier(late, late_json, alice)
+            .await
+            .unwrap();
+    drop(guard);
+    let (base, base_json, guard) =
+        crate::event::PduBuilder::save_as_outlier(base, base_json, alice)
+            .await
+            .unwrap();
+    drop(guard);
+    assert!(late.event_sn < base.event_sn && late.depth > base.depth);
+    promote_context_pdu(&room, &base, base_json).await;
+    let context = request(
+        TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/context/{}?limit=0",
+            base.event_id
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true),
+        service,
+    )
+    .await;
+    let from = context["end"].as_str().unwrap();
+    assert_eq!(
+        from,
+        base.live_token().to_string(),
+        "actual context output must remain in the legacy identity domain"
+    );
+    promote_context_pdu(&room, &late, late_json).await;
+    let later = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/context-later"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"after context"})),
+        service,
+    )
+    .await;
+    let later = later["event_id"].as_str().unwrap();
+    let upper = sync(service, None, None).await;
+    let upper = upper["next_batch"].as_str().unwrap();
+    let query = |to: &str| {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "f")
+            .append_pair("from", from)
+            .append_pair("to", to)
+            .append_pair("limit", "100");
+        TestClient::get(url.as_str()).add_header("Authorization", "Bearer alice-presence", true)
+    };
+    let legacy = request(query(&BatchToken::LIVE_MAX.to_string()), service).await;
+    let ids = |body: &Value| {
+        body["chunk"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&legacy),
+        vec![base.event_id.to_string(), later.to_owned()]
+    );
+    eprintln!(
+        "legacy context witness old_identity={} old_depth={} base_identity={} base_depth={} actual_context_end={} publication_upper={}",
+        late.event_sn, late.depth, base.event_sn, base.depth, from, upper
+    );
+    let mixed = request(query(upper), service).await;
+    assert_eq!(
+        ids(&mixed),
+        ids(&legacy),
+        "adding a publication upper bound reinterpreted the actual context identity cursor: {mixed}"
+    );
+    let mut cursor = from.to_owned();
+    let mut seen = Vec::new();
+    for page_number in 0..4 {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "f")
+            .append_pair("from", &cursor)
+            .append_pair("limit", "1");
+        if page_number == 0 {
+            url.query_pairs_mut().append_pair("to", upper);
+        }
+        let page = request(
+            TestClient::get(url.as_str()).add_header(
+                "Authorization",
+                "Bearer alice-presence",
+                true,
+            ),
+            service,
+        )
+        .await;
+        let page_ids = ids(&page);
+        if page_ids.is_empty() {
+            break;
+        }
+        assert_eq!(page_ids.len(), 1);
+        assert_ne!(
+            page_ids[0],
+            late.event_id.as_str(),
+            "qualified continuation dropped its immutable legacy identity floor"
+        );
+        assert!(
+            !seen.contains(&page_ids[0]),
+            "mixed context pages repeated an event"
+        );
+        seen.extend(page_ids);
+        cursor = page["end"].as_str().unwrap().to_owned();
+        match cursor.parse::<BatchToken>().unwrap() {
+            BatchToken::PublicationPage {
+                lower,
+                upper: stored_upper,
+                identity_lower,
+                identity_upper,
+                child_lower,
+                child_upper,
+                ..
+            } => {
+                assert_eq!(lower, None);
+                assert_eq!(
+                    stored_upper,
+                    Some(upper.parse::<BatchToken>().unwrap().stream_ordering())
+                );
+                assert_eq!(identity_lower, Some(base.event_sn));
+                assert_eq!(identity_upper, None);
+                assert_eq!((child_lower, child_upper), (None, None));
+            }
+            _ => panic!("mixed page must retain its independent cursor windows"),
+        }
+    }
+    assert_eq!(
+        seen,
+        ids(&legacy),
+        "dropping the original to argument must not change the continuation window"
+    );
+    // The opposite direction must preserve the original exclusive s upper
+    // bound on every continuation, including a lower-topology base event.
+    let backward_from = context["start"].as_str().unwrap();
+    assert_eq!(backward_from, from);
+    let backwards = |cursor: &str, to: Option<&str>, limit: usize| {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "b")
+            .append_pair("from", cursor)
+            .append_pair("limit", &limit.to_string());
+        if let Some(to) = to {
+            url.query_pairs_mut().append_pair("to", to);
+        }
+        TestClient::get(url.as_str()).add_header("Authorization", "Bearer alice-presence", true)
+    };
+    let pure_back = request(
+        backwards(backward_from, Some(&BatchToken::LIVE_MIN.to_string()), 100),
+        service,
+    )
+    .await;
+    assert!(ids(&pure_back).contains(&late.event_id.to_string()));
+    assert!(!ids(&pure_back).contains(&base.event_id.to_string()));
+    let mixed_back = request(backwards(backward_from, Some(before_room), 100), service).await;
+    assert_eq!(
+        ids(&mixed_back),
+        ids(&pure_back),
+        "publication lower bound changed legacy context start"
+    );
+    let mut cursor = backward_from.to_owned();
+    let mut backward_seen = Vec::new();
+    for page_number in 0..100 {
+        let page = request(
+            backwards(
+                &cursor,
+                if page_number == 0 {
+                    Some(before_room)
+                } else {
+                    None
+                },
+                1,
+            ),
+            service,
+        )
+        .await;
+        let page_ids = ids(&page);
+        if page_ids.is_empty() {
+            break;
+        }
+        assert_eq!(page_ids.len(), 1);
+        assert_ne!(
+            page_ids[0],
+            base.event_id.as_str(),
+            "q continuation dropped its original exclusive identity upper bound"
+        );
+        assert_ne!(page_ids[0], later);
+        assert!(!backward_seen.contains(&page_ids[0]));
+        backward_seen.extend(page_ids);
+        cursor = page["end"].as_str().unwrap().to_owned();
+        match cursor.parse::<BatchToken>().unwrap() {
+            BatchToken::PublicationPage {
+                lower,
+                upper,
+                identity_lower,
+                identity_upper,
+                child_lower,
+                child_upper,
+                ..
+            } => {
+                assert_eq!(
+                    lower,
+                    Some(before_room.parse::<BatchToken>().unwrap().stream_ordering())
+                );
+                assert_eq!(upper, None);
+                assert_eq!(identity_lower, None);
+                assert_eq!(identity_upper, Some(base.event_sn));
+                assert_eq!((child_lower, child_upper), (None, None));
+            }
+            _ => panic!("backward mixed page must retain all original windows"),
+        }
+    }
+    assert_eq!(backward_seen, ids(&pure_back));
+}
+
+async fn promote_context_pdu(
+    room: &crate::core::RoomId,
+    pdu: &crate::SnPduEvent,
+    mut wire: crate::core::serde::CanonicalJsonObject,
+) {
+    wire.remove("event_id");
+    crate::event::handler::process_incoming_pdu(
+        SERVER.try_into().unwrap(),
+        &pdu.event_id,
+        room,
+        &crate::core::RoomVersionId::V11,
+        wire,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    let accepted = room::timeline::get_pdu(&pdu.event_id).await.unwrap();
+    assert!(!accepted.is_outlier && !accepted.soft_failed);
+    assert_eq!(accepted.event_sn, pdu.event_sn);
+}
+
+async fn late_published_timeline(
+    service: &Service,
+    alice: &UserId,
+    history_id: &crate::core::EventId,
+) {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    let created = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"room_version":"11","preset":"public_chat"})),
+        service,
+    )
+    .await;
+    let room: OwnedRoomId = created["room_id"].as_str().unwrap().try_into().unwrap();
+    let mut pending = Vec::new();
+    for (event_type, state_key, content) in [
+        (
+            "m.room.message",
+            None,
+            json!({"msgtype":"m.text","body":"cached before sync, accepted later"}),
+        ),
+        (
+            "m.room.server_acl",
+            Some("".to_owned()),
+            json!({"allow":["*"],"deny":[],"allow_ip_literals":true}),
+        ),
+    ] {
+        let (pdu, json) = crate::event::PduBuilder {
+            event_type: event_type.into(),
+            state_key,
+            content: serde_json::value::to_raw_value(&content).unwrap(),
+            ..Default::default()
+        }
+        .hash_sign(alice, &room, &crate::core::RoomVersionId::V11)
+        .await
+        .unwrap();
+        let (cached, json, guard) = crate::event::PduBuilder::save_as_outlier(pdu, json, alice)
+            .await
+            .unwrap();
+        drop(guard);
+        pending.push((cached, json));
+    }
+    let anchor = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/earlier-anchor"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"visible before publication"})),
+        service,
+    )
+    .await;
+    let anchor_id = anchor["event_id"].as_str().unwrap();
+    let old = sync(service, None, None).await;
+    let lower = old["next_batch"].as_str().unwrap();
+    let lower_sn = lower.parse::<BatchToken>().unwrap().event_sn();
+    let newer = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/newer-live"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"newer live identity"})),
+        service,
+    )
+    .await;
+    let newer_id = newer["event_id"].as_str().unwrap();
+    for (cached, json) in &pending {
+        assert!(cached.event_sn < lower_sn);
+        assert!(!timeline_ids(&old, &room).contains(&cached.event_id.as_str()));
+        // V11 federation PDUs omit the local storage-only event_id, which was
+        // added after signing and must not enter signature verification.
+        let mut wire = json.clone();
+        wire.remove("event_id");
+        crate::event::handler::process_incoming_pdu(
+            SERVER.try_into().unwrap(),
+            &cached.event_id,
+            &room,
+            &crate::core::RoomVersionId::V11,
+            wire,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        let accepted = room::timeline::get_pdu(&cached.event_id).await.unwrap();
+        assert!(!accepted.is_outlier && !accepted.soft_failed);
+        assert_eq!(
+            accepted.event_sn, cached.event_sn,
+            "event identity was rewritten"
+        );
+        let publication = data::schema::event_points::table
+            .find(&*cached.event_id)
+            .select(data::schema::event_points::live_published_sn)
+            .first::<Option<i64>>(&mut data::connect().await.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(lower_sn <= publication);
+        eprintln!(
+            "late timeline witness identity={} http_since={} publication={}",
+            cached.event_sn, lower_sn, publication
+        );
+    }
+    let full = sync(service, Some(lower), None).await;
+    let ids = timeline_ids(&full, &room);
+    for (cached, _) in &pending {
+        assert_eq!(
+            ids.iter()
+                .filter(|id| **id == cached.event_id.as_str())
+                .count(),
+            1,
+            "published old identity was lost from actual incremental HTTP timeline: {full}"
+        );
+    }
+    assert_eq!(
+        ids,
+        vec![
+            newer_id,
+            pending[0].0.event_id.as_str(),
+            pending[1].0.event_id.as_str()
+        ],
+        "sync must deliver publication order even when identities arrive late"
+    );
+    let next = full["next_batch"].as_str().unwrap();
+    request(
+        TestClient::put(format!("http://localhost/_matrix/client/v3/user/{alice}/account_data/com.example.publication_probe"))
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"after":"captured batch"})), service,
+    ).await;
+    assert!(
+        data::curr_sn().await.unwrap() >= next.parse::<BatchToken>().unwrap().event_sn(),
+        "repeated sync must pass the idle guard and execute captured SQL"
+    );
+    let repeated = sync(service, Some(next), None).await;
+    assert!(
+        timeline_ids(&repeated, &room).is_empty(),
+        "late events were repeated: {repeated}"
+    );
+    assert!(
+        !repeated.to_string().contains(history_id.as_str()),
+        "incremental sync replayed negative history"
+    );
+
+    let limited = sync(
+        service,
+        Some(lower),
+        Some(json!({"room":{"timeline":{"limit":1}}})),
+    )
+    .await;
+    let room_data = &limited["rooms"]["join"][room.as_str()];
+    assert_eq!(
+        timeline_ids(&limited, &room),
+        vec![pending[1].0.event_id.as_str()]
+    );
+    assert_eq!(room_data["timeline"]["limited"], true);
+    let start = room_data["timeline"]["prev_batch"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(matches!(
+        start.parse::<BatchToken>().unwrap(),
+        BatchToken::Publication { .. }
+    ));
+    let mut members_url = url::Url::parse(&format!(
+        "http://localhost/_matrix/client/v3/rooms/{room}/members"
+    ))
+    .unwrap();
+    members_url.query_pairs_mut().append_pair("at", &start);
+    request(
+        TestClient::get(members_url.as_str()).add_header(
+            "Authorization",
+            "Bearer alice-presence",
+            true,
+        ),
+        service,
+    )
+    .await;
+    let missing = [pending[0].0.event_id.as_str(), newer_id];
+    let legacy_lower = format!("s{lower_sn}");
+    for to in [Some(lower), Some(legacy_lower.as_str()), None] {
+        let identity_window = to == Some(legacy_lower.as_str());
+        let expected = if identity_window {
+            vec![newer_id]
+        } else {
+            missing.to_vec()
+        };
+        let mut from = start.clone();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let mut url = url::Url::parse(&format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+            ))
+            .unwrap();
+            url.query_pairs_mut()
+                .append_pair("dir", "b")
+                .append_pair("limit", "1")
+                .append_pair("from", &from);
+            if let Some(to) = to {
+                url.query_pairs_mut().append_pair("to", to);
+            }
+            let page = request(
+                TestClient::get(url.as_str()).add_header(
+                    "Authorization",
+                    "Bearer alice-presence",
+                    true,
+                ),
+                service,
+            )
+            .await;
+            let events = page["chunk"].as_array().unwrap();
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                let id = event["event_id"].as_str().unwrap().to_owned();
+                if to.is_some() {
+                    assert_ne!(id, anchor_id, "bounded gap leaked the already seen anchor");
+                }
+                assert_ne!(
+                    id,
+                    pending[1].0.event_id.as_str(),
+                    "history repeated the limited sync event"
+                );
+                if identity_window {
+                    assert_ne!(
+                        id,
+                        pending[0].0.event_id.as_str(),
+                        "legacy identity lower bound was replaced by a publication bound"
+                    );
+                }
+                assert!(seen.insert(id), "history continuation repeated an event");
+            }
+            if !identity_window && expected.iter().all(|id| seen.contains(*id)) {
+                break;
+            }
+            let end = page["end"].as_str().unwrap().to_owned();
+            assert_ne!(from, end, "history cursor did not advance");
+            from = end;
+        }
+        assert!(
+            expected.iter().all(|id| seen.contains(*id)),
+            "limited history continuation lost an eligible event"
+        );
+    }
+    // Forward pages use the same frozen publication window, retaining topology
+    // inside it. A topology endpoint can be paired with a publication endpoint.
+    let historic_to = room::timeline::get_pdu(pending[1].0.event_id.as_ref())
+        .await
+        .unwrap()
+        .historic_token();
+    for to in [next.to_owned(), historic_to.to_string()] {
+        let mut from = lower.to_owned();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let mut url = url::Url::parse(&format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+            ))
+            .unwrap();
+            url.query_pairs_mut()
+                .append_pair("dir", "f")
+                .append_pair("limit", "1")
+                .append_pair("from", &from)
+                .append_pair("to", &to);
+            let page = request(
+                TestClient::get(url.as_str()).add_header(
+                    "Authorization",
+                    "Bearer alice-presence",
+                    true,
+                ),
+                service,
+            )
+            .await;
+            let chunk = page["chunk"].as_array().unwrap();
+            if chunk.is_empty() {
+                break;
+            }
+            for event in chunk {
+                let id = event["event_id"].as_str().unwrap().to_owned();
+                assert_ne!(id, anchor_id);
+                assert!(seen.insert(id), "forward continuation repeated a PDU");
+            }
+            from = page["end"].as_str().unwrap().to_owned();
+        }
+        for (cached, _) in &pending {
+            assert!(
+                seen.contains(cached.event_id.as_str()),
+                "forward publication window lost cached event"
+            );
+        }
+        if to == next {
+            assert!(seen.contains(newer_id));
+        }
+    }
+    let unbounded = room::timeline::stream::load_pdus_backward_captured(
+        Some(alice),
+        &room,
+        None,
+        Some(lower.parse().unwrap()),
+        None,
+        100,
+    )
+    .await
+    .unwrap();
+    for (cached, _) in &pending {
+        assert!(
+            unbounded.contains_key(&cached.event_sn),
+            "lower-only capture fell back to original identity bounds"
+        );
+    }
+    let future = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/future-live"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"outside captured upper bound"})),
+        service,
+    )
+    .await;
+    let future_id = crate::core::EventId::parse(future["event_id"].as_str().unwrap()).unwrap();
+    let captured = super::load_timeline(
+        alice,
+        &room,
+        Some(lower.parse().unwrap()),
+        Some(next.parse().unwrap()),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        !captured
+            .events
+            .values()
+            .any(|pdu| pdu.event_id == future_id)
+    );
+    for (cached, _) in &pending {
+        assert!(captured.events.contains_key(&cached.event_sn));
+    }
+    // Corrupt only a selected timeline message's stored payload. Selection SQL
+    // and room-state loading still succeed; both new readers must surface the
+    // backend failure instead of acknowledging a cursor past this event.
+    let original_json = data::schema::event_datas::table
+        .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str()))
+        .select(data::schema::event_datas::json_data)
+        .first::<Value>(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    diesel::update(
+        data::schema::event_datas::table
+            .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str())),
+    )
+    .set(data::schema::event_datas::json_data.eq(json!(["invalid stored pdu"])))
+    .execute(&mut data::connect().await.unwrap())
+    .await
+    .unwrap();
+    assert!(
+        super::load_timeline(
+            alice,
+            &room,
+            Some(lower.parse().unwrap()),
+            Some(next.parse().unwrap()),
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        room::timeline::publication::page(
+            alice,
+            &room,
+            start.parse().unwrap(),
+            Some(lower.parse().unwrap()),
+            &Default::default(),
+            100,
+            crate::core::Direction::Backward
+        )
+        .await
+        .is_err()
+    );
+    diesel::update(
+        data::schema::event_datas::table
+            .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str())),
+    )
+    .set(data::schema::event_datas::json_data.eq(original_json))
+    .execute(&mut data::connect().await.unwrap())
+    .await
+    .unwrap();
+    diesel::insert_into(data::schema::timeline_gaps::table)
+        .values((
+            data::schema::timeline_gaps::room_id.eq(&room),
+            data::schema::timeline_gaps::event_id.eq(pending[1].0.event_id.as_str()),
+            data::schema::timeline_gaps::event_sn.eq(pending[1].0.event_sn),
+        ))
+        .execute(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    let newest_gap = super::load_timeline(
+        alice,
+        &room,
+        Some(lower.parse().unwrap()),
+        Some(next.parse().unwrap()),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(newest_gap.limited);
+    assert_eq!(
+        newest_gap
+            .events
+            .values()
+            .map(|pdu| pdu.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![pending[1].0.event_id.as_str()],
+        "a gap before an accepted PDU must retain that newest PDU"
+    );
+    let filtered_gap = sync(
+        service,
+        Some(lower),
+        Some(json!({"room":{"timeline":{"limit":100,"not_types":["m.room.server_acl"]}}})),
+    )
+    .await;
+    assert_eq!(
+        filtered_gap["rooms"]["join"][room.as_str()]["timeline"]["limited"],
+        true,
+        "filtered gap marker must still mark the publication window limited"
+    );
+    assert_eq!(
+        timeline_ids(&filtered_gap, &room),
+        vec![future_id.as_str()],
+        "visible events before a filtered gap must not imply continuity"
+    );
+}
+
+fn timeline_ids<'a>(sync: &'a Value, room: &crate::core::RoomId) -> Vec<&'a str> {
+    sync["rooms"]["join"][room.as_str()]["timeline"]["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| event["event_id"].as_str())
+        .collect()
 }
 
 async fn wait_for_publication_lock(class_id: i64, key: i64, sub_id: i16, mode: &str) {

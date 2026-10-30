@@ -58,8 +58,8 @@ pub async fn load_pdus_backward(
     .await
 }
 
-/// V3's captured upper bound is a publication cursor, independent of an
-/// outlier's earlier event identity. Apply it before limiting the timeline.
+/// Select and seek a live sync window by publication. Historical backfill uses
+/// the separate topological reader; event identities remain unchanged.
 pub async fn load_pdus_backward_captured(
     user_id: Option<&UserId>,
     room_id: &RoomId,
@@ -75,7 +75,13 @@ pub async fn load_pdus_backward_captured(
         until_tk,
         limit,
         filter,
-        (Direction::Backward, since_tk.map(|token| token.event_sn())),
+        (
+            Direction::Backward,
+            Some(
+                until_tk.map_or(Seqnum::MIN, |token| token.stream_ordering())
+                    ..since_tk.map_or(Seqnum::MAX, |token| token.stream_ordering()),
+            ),
+        ),
     )
     .await
 }
@@ -112,7 +118,7 @@ async fn load_pdus_with_publication_bound(
     until_tk: Option<BatchToken>,
     limit: usize,
     filter: Option<&RoomEventFilter>,
-    (dir, published_before): (Direction, Option<Seqnum>),
+    (dir, publication_window): (Direction, Option<std::ops::Range<Seqnum>>),
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
     let ignored_users = match user_id {
@@ -126,11 +132,17 @@ async fn load_pdus_with_publication_bound(
         // Use the max sn observed in the events table for this room as a safer
         // upper bound than data::curr_sn() (which can be stale relative to writes
         // from other sessions when sequence caching is enabled).
-        let max_in_room: Option<Seqnum> = events::table
-            .filter(events::room_id.eq(room_id))
-            .select(diesel::dsl::max(events::sn))
-            .first::<Option<Seqnum>>(&mut connect().await?)
-            .await?;
+        let max_in_room: Option<Seqnum> = if publication_window.is_some() {
+            publication_window
+                .as_ref()
+                .map(|window| window.end.saturating_sub(1))
+        } else {
+            events::table
+                .filter(events::room_id.eq(room_id))
+                .select(diesel::dsl::max(events::sn))
+                .first::<Option<Seqnum>>(&mut connect().await?)
+                .await?
+        };
         match max_in_room {
             Some(sn) => sn + 1,
             None => data::curr_sn().await.unwrap_or(0) + 1,
@@ -143,17 +155,21 @@ async fn load_pdus_with_publication_bound(
             .filter(events::is_outlier.eq(false))
             .filter(events::soft_failed.eq(false))
             .into_boxed();
-        if let Some(before) = published_before {
+        if let Some(window) = &publication_window {
+            // Selection and internal seeks use the same publication clock.
+            // The identity column is returned unchanged for PDU metadata.
             query = query.filter(
-                events::stream_ordering.lt(0).or(events::id.eq_any(
-                    event_points::table
-                        .filter(event_points::room_id.eq(room_id))
-                        .filter(event_points::live_published_sn.lt(before))
-                        .select(event_points::event_id),
-                )),
+                events::stream_ordering.ge(0).and(
+                    events::id.eq_any(
+                        event_points::table
+                            .filter(event_points::room_id.eq(room_id))
+                            .filter(event_points::live_published_sn.ge(window.start))
+                            .filter(event_points::live_published_sn.lt(window.end))
+                            .select(event_points::event_id),
+                    ),
+                ),
             );
-        }
-        if dir == Direction::Forward {
+        } else if dir == Direction::Forward {
             if let Some(since_tk) = since_tk {
                 query = query.filter(events::stream_ordering.ge(since_tk.stream_ordering()));
             }
@@ -202,26 +218,33 @@ async fn load_pdus_with_publication_bound(
         }
         // Stored auth/state and events awaiting DAG recovery are not delivered
         // until they pass timeline promotion. Soft-failed events remain hidden.
-        let events: Vec<(OwnedEventId, Seqnum)> = if dir == Direction::Forward {
+        let position = diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            if publication_window.is_some() {
+                "(SELECT live_published_sn FROM event_points WHERE event_points.event_id = events.id)"
+            } else {
+                "events.sn"
+            },
+        );
+        let events: Vec<(OwnedEventId, Seqnum, Seqnum)> = if dir == Direction::Forward {
             query
                 .filter(events::sn.gt(start_sn))
                 .filter(events::is_rejected.eq(false))
                 .order((events::stream_ordering.asc(), events::sn.asc()))
                 .offset(offset)
                 .limit(utils::usize_to_i64(limit))
-                .select((events::id, events::sn))
-                .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+                .select((events::id, events::sn, position))
+                .load::<(OwnedEventId, Seqnum, Seqnum)>(&mut connect().await?)
                 .await?
                 .into_iter()
                 .collect()
         } else {
             query
-                .filter(events::sn.lt(start_sn))
+                .filter(position.clone().lt(start_sn))
                 .filter(events::is_rejected.eq(false))
-                .order(events::sn.desc())
+                .order(position.clone().desc())
                 .limit(utils::usize_to_i64(limit))
-                .select((events::id, events::sn))
-                .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+                .select((events::id, events::sn, position))
+                .load::<(OwnedEventId, Seqnum, Seqnum)>(&mut connect().await?)
                 .await?
                 .into_iter()
                 .collect()
@@ -233,13 +256,13 @@ async fn load_pdus_with_publication_bound(
         if dir == Direction::Forward {
             offset += count as i64;
         } else {
-            start_sn = if let Some(sn) = events.iter().map(|(_, sn)| sn).min() {
+            start_sn = if let Some(sn) = events.iter().map(|(_, _, position)| position).min() {
                 *sn
             } else {
                 break;
             };
         }
-        for (event_id, event_sn) in events {
+        for (event_id, event_sn, _) in events {
             match super::get_pdu(&event_id).await {
                 Ok(mut pdu) => {
                     #[cfg(feature = "unstable-msc1763")]
@@ -253,10 +276,16 @@ async fn load_pdus_with_publication_bound(
                     {
                         continue;
                     }
-                    if let Some(user_id) = user_id
-                        && !pdu.user_can_see(user_id).await.unwrap_or(false)
-                    {
-                        continue;
+                    if let Some(user_id) = user_id {
+                        let visible = pdu.user_can_see(user_id).await;
+                        let visible = if publication_window.is_some() {
+                            visible?
+                        } else {
+                            visible.unwrap_or(false)
+                        };
+                        if !visible {
+                            continue;
+                        }
                     }
                     if let Some(ignored_users) = &ignored_users
                         && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
@@ -267,7 +296,10 @@ async fn load_pdus_with_publication_bound(
                         if pdu.sender != user_id {
                             pdu.remove_sender_only_unsigned()?;
                         }
-                        let _ = pdu.add_unsigned_membership(user_id).await;
+                        let membership = pdu.add_unsigned_membership(user_id).await;
+                        if publication_window.is_some() {
+                            membership?;
+                        }
                     }
                     let _ = pdu.add_age();
                     list.insert(event_sn, pdu);
@@ -276,6 +308,9 @@ async fn load_pdus_with_publication_bound(
                     }
                 }
                 Err(e) => {
+                    if publication_window.is_some() && !e.is_not_found() {
+                        return Err(e);
+                    }
                     warn!(
                         "load_pdus: failed to get_pdu for event {} sn={} in room {}: {}",
                         event_id, event_sn, room_id, e
