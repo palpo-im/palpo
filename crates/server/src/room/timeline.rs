@@ -983,7 +983,9 @@ pub(crate) async fn build_and_append_pdu_with_transaction(
     // Deliver to participating servers only after releasing the append fence. Queueing
     // unrelated destinations must not prevent another process from building the room's
     // next event.
-    if appended {
+    // A completed client receipt can survive a failed federation enqueue.
+    // Retry delivery of the same PDU; federation deduplicates its event ID.
+    if appended || transaction.is_some() {
         let servers = super::participating_servers(room_id, false).await?;
         crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
     }
