@@ -844,38 +844,93 @@ mod device_list_database_tests {
 }
 
 #[cfg(test)]
-mod federated_query_failure_tests {
+mod claim_tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Barrier;
+
     use super::*;
 
     #[tokio::test]
-    async fn failed_query_keeps_its_peer_and_does_not_discard_later_successes() {
-        let servers = ["fast.example", "failed.example", "slow.example"]
-            .map(|name| ServerName::parse(name).unwrap());
-        let mut queries = FuturesUnordered::new();
-        for (index, server) in servers.iter().enumerate() {
-            queries.push(tagged_key_query(server, async move {
-                if index == 1 {
-                    return Err(AppError::public("transport failed"));
-                }
-                if index == 2 {
-                    tokio::task::yield_now().await;
-                }
-                Ok(QueryKeysResBody::default())
-            }));
-        }
-        // The slow result is intentionally polled after an error; both successes
-        // and the failed peer must remain observable to the aggregation loop.
-        let mut successes = Vec::new();
-        let mut failures = Vec::new();
-        while let Some((server, result)) = queries.next().await {
-            match result {
-                Ok(_) => successes.push(server.to_string()),
-                Err(_) => failures.push(server.to_string()),
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_concurrent_one_time_claims_never_return_the_same_key() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"claims.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user = UserId::parse(format!("@atomicclaim:{}", crate::config::server_name())).unwrap();
+        let device: OwnedDeviceId = "ATOMIC_CLAIM".into();
+        let algorithm = DeviceKeyAlgorithm::SignedCurve25519;
+        let fallback_id = DeviceKeyId::parse("signed_curve25519:fallback").unwrap();
+        let fallback: OneTimeKey = serde_json::from_value(json!({
+            "key":"ZmFsbGJhY2s", "fallback":true, "signatures":{}
+        }))
+        .unwrap();
+        add_fallback_key(&user, &device, &fallback_id, &fallback)
+            .await
+            .unwrap();
+
+        for round in 0..8 {
+            let key_id = DeviceKeyId::parse(format!("signed_curve25519:once{round}")).unwrap();
+            let key: OneTimeKey = serde_json::from_value(json!("b25jZQ")).unwrap();
+            add_one_time_key(&user, &device, &key_id, &key)
+                .await
+                .unwrap();
+            let barrier = Arc::new(Barrier::new(24));
+            let mut claims = FuturesUnordered::new();
+            for _ in 0..24 {
+                let (user, device, barrier) = (user.clone(), device.clone(), barrier.clone());
+                let algorithm = algorithm.clone();
+                claims.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    let requests = BTreeMap::from([(
+                        user.clone(),
+                        BTreeMap::from([(device.clone(), algorithm)]),
+                    )]);
+                    let response = claim_one_time_keys(&requests).await.unwrap();
+                    response.one_time_keys[&user][&device]
+                        .keys()
+                        .next()
+                        .unwrap()
+                        .clone()
+                }));
             }
+            let once_count = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut once_count = 0;
+                while let Some(claim) = claims.next().await {
+                    let claimed = claim.unwrap();
+                    if claimed == key_id {
+                        once_count += 1;
+                    } else {
+                        assert_eq!(claimed, fallback_id);
+                    }
+                }
+                once_count
+            })
+            .await
+            .expect(
+                "concurrent key claims exceeded five seconds; check connection-pool starvation",
+            );
+            assert_eq!(once_count, 1, "one-time key reused in round {round}");
+            assert!(
+                data::user::count_one_time_keys(&user, &device)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
         }
-        successes.sort();
-        assert_eq!(successes, ["fast.example", "slow.example"]);
-        assert_eq!(failures, ["failed.example"]);
+        data::user::key::delete_device_key_material(&user, &device)
+            .await
+            .unwrap();
+        assert!(
+            claim_one_time_key(&user, &device, &algorithm)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
 
@@ -934,5 +989,41 @@ mod federated_response_tests {
             &requested,
             &mut response
         ));
+    }
+}
+
+#[cfg(test)]
+mod federated_query_failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_query_keeps_its_peer_and_does_not_discard_later_successes() {
+        let servers = ["fast.example", "failed.example", "slow.example"]
+            .map(|name| ServerName::parse(name).unwrap());
+        let mut queries = FuturesUnordered::new();
+        for (index, server) in servers.iter().enumerate() {
+            queries.push(tagged_key_query(server, async move {
+                if index == 1 {
+                    return Err(AppError::public("transport failed"));
+                }
+                if index == 2 {
+                    tokio::task::yield_now().await;
+                }
+                Ok(QueryKeysResBody::default())
+            }));
+        }
+        // The slow result is intentionally polled after an error; both successes
+        // and the failed peer must remain observable to the aggregation loop.
+        let mut successes = Vec::new();
+        let mut failures = Vec::new();
+        while let Some((server, result)) = queries.next().await {
+            match result {
+                Ok(_) => successes.push(server.to_string()),
+                Err(_) => failures.push(server.to_string()),
+            }
+        }
+        successes.sort();
+        assert_eq!(successes, ["fast.example", "slow.example"]);
+        assert_eq!(failures, ["failed.example"]);
     }
 }
