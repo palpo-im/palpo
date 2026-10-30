@@ -188,7 +188,7 @@ mod private_cursor_tests {
         .await
         .unwrap();
         assert_eq!(cursor.event_id, roots[3]);
-        assert!(!roots[..2].iter().any(|id| cursor.event_id == *id));
+        assert!(!roots[..2].contains(&cursor.event_id));
         let second = request(
             &service,
             "reader",
