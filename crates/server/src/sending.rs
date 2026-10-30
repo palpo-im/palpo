@@ -178,15 +178,42 @@ pub fn default_client() -> reqwest::Client {
         .clone()
 }
 
+/// A transport for destinations influenced by untrusted remote servers.
+/// Proxies cannot enforce this resolver's destination policy, so these requests
+/// connect directly and validate both DNS answers and redirect IP literals.
+fn restricted_client_builder(
+    config: &ServerConfig,
+    max_redirects: usize,
+) -> AppResult<reqwest::ClientBuilder> {
+    crate::config::validate_restricted_outbound_proxy(config.proxy.as_ref())?;
+    let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
+    Ok(reqwest_client_builder(config)?
+        .no_proxy()
+        .redirect(crate::utils::url_guard::safe_redirect_policy(max_redirects))
+        .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
+            tls_name_override,
+        ))))
+}
+
+/// Federation discovery must have the same destination boundaries as federation traffic.
+pub fn well_known_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            restricted_client_builder(crate::config::get(), 10)
+                .expect("failed to configure discovery client")
+                .build()
+                .expect("failed to build discovery client")
+        })
+        .clone()
+}
+
 /// Returns a client used for resolving .well-knowns
 pub fn federation_client() -> ClientWithMiddleware {
     static FEDERATION_CLIENT: OnceLock<ClientWithMiddleware> = OnceLock::new();
     FEDERATION_CLIENT
         .get_or_init(|| {
             let conf = crate::config::get();
-            // Client is cheap to clone (Arc wrapper) and avoids lifetime issues
-            let tls_name_override = Arc::new(RwLock::new(TlsNameMap::new()));
-
             let retry_policy = ExponentialBackoff::builder()
                 .retry_bounds(
                     Duration::from_secs(5),
@@ -194,11 +221,8 @@ pub fn federation_client() -> ClientWithMiddleware {
                 )
                 .build_with_max_retries(conf.http_client.federation_retries);
 
-            let client = reqwest_client_builder(conf)
+            let client = restricted_client_builder(conf, 10)
                 .expect("build reqwest client failed")
-                .dns_resolver(Arc::new(resolver::Resolver::new_with_cidr_denylist(
-                    tls_name_override,
-                )))
                 .timeout(Duration::from_secs(2 * 60))
                 .build()
                 .expect("build reqwest client failed");
