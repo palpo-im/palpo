@@ -589,7 +589,7 @@ fn http_delayed_membership_promotion_uses_publication_order() {
 
 async fn delayed_member_publication() {
     use diesel::prelude::*;
-    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
     crate::test_database::init();
     config::CONFIG
         .set(
@@ -644,6 +644,46 @@ async fn delayed_member_publication() {
         .await
         .unwrap();
     drop(guard);
+    let before_invalid = data::curr_sn().await.unwrap();
+    let mut soft_failed = cached.clone();
+    soft_failed.soft_failed = true;
+    let mut rejected = cached.clone();
+    rejected.pdu.rejection_reason = Some("fixture rejected verdict".into());
+    let mut backfilled = cached.clone();
+    backfilled.is_backfill = true;
+    for invalid in [&soft_failed, &rejected, &backfilled] {
+        let mut conn = data::connect().await.unwrap();
+        let result = conn
+            .transaction::<_, crate::AppError, _>(async |conn| {
+                crate::event::sticky::publish_live_frame_with_conn(conn, invalid, before_frame)
+                    .await
+            })
+            .await;
+        assert!(
+            result.is_err(),
+            "non-live or unauthenticated PDU gained a publication"
+        );
+    }
+    for invalid in [&soft_failed, &rejected] {
+        assert!(
+            room::timeline::append_pdu(invalid, join.clone(), &room::lock_state(&room).await)
+                .await
+                .is_err(),
+            "invalid PDU reached derived membership publication"
+        );
+    }
+    assert_eq!(data::curr_sn().await.unwrap(), before_invalid);
+    assert!(!room::user::is_joined(&bob, &room).await.unwrap());
+    let unpublished = data::schema::event_points::table
+        .find(&*cached.event_id)
+        .select((
+            data::schema::event_points::live_published_sn,
+            data::schema::event_points::live_published_frame_id,
+        ))
+        .first::<(Option<i64>, Option<i64>)>(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unpublished, (None, None));
     let message = request(
         TestClient::put(format!(
             "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/overtakes-outlier"

@@ -286,6 +286,11 @@ pub async fn append_pdu(
     if pdu.is_backfill {
         return append_backfilled_pdu(pdu, pdu_json).await;
     }
+    if pdu.soft_failed || pdu.rejected() {
+        return Err(AppError::internal(
+            "cannot append a soft-failed or rejected event to the live timeline",
+        ));
+    }
     let conf = crate::config::get();
 
     // Make unsigned fields correct. This is not properly documented in the spec, but state

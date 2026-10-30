@@ -31,6 +31,11 @@ pub async fn publish_live_frame_with_conn(
 ) -> AppResult<()> {
     use crate::data::schema::event_points;
 
+    if pdu.is_backfill || pdu.soft_failed || pdu.rejected() {
+        return Err(crate::AppError::internal(
+            "cannot publish a backfilled, soft-failed or rejected live frame",
+        ));
+    }
     lock_sticky_stream(conn).await?;
     let stamped = diesel::update(
         event_points::table
