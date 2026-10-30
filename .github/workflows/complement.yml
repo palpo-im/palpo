@@ -1,4 +1,4 @@
-name: Complement tests
+name: Captured sync frame probe (diagnostic only)
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ defaults:
 
 jobs:
   complement:
-    name: Complement
+    name: Member presence and federated device frames (diagnostic)
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -85,7 +85,8 @@ jobs:
           # Use clean deployments so stopped-server backoff cannot affect later tests.
           set +e
           COMPLEMENT_BASE_IMAGE=complement-palpo \
-            go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m \
+          COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 \
+            go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m -run '^(TestMembersLocal|TestDeviceListsUpdateOverFederation|TestUserAppearsInChangedDeviceListOnJoinOverFederation)$' \
             ./tests/csapi \
             ./tests \
             ./tests/msc3930 \

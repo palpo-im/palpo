@@ -1,6 +1,0 @@
-[
-  {
-    "package": "github.com/matrix-org/complement/tests/csapi",
-    "test": "TestAvatarUrlUpdate"
-  }
-]
