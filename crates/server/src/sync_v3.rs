@@ -1837,6 +1837,15 @@ mod joined_room_failure_tests {
         .execute(&mut connect().await.unwrap())
         .await
         .unwrap();
+        let current_lookup_failure = room::get_frame_id(&failed, None).await;
+        // A captured sync reads historical event points instead of the live
+        // room pointer. Fault both real sources so this regression covers
+        // either loader implementation without relaxing cursor assertions.
+        diesel::sql_query("ALTER TABLE event_points RENAME COLUMN frame_id TO unavailable_frame")
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let historical_lookup_failure = room::get_frame_id(&failed, Some(99)).await;
         let lookup_failure = load_joined_room(
             &user,
             "TEST".into(),
@@ -1853,12 +1862,18 @@ mod joined_room_failure_tests {
             &mut HashSet::new(),
         )
         .await;
+        diesel::sql_query("ALTER TABLE event_points RENAME COLUMN unavailable_frame TO frame_id")
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
         diesel::sql_query(
             "ALTER TABLE rooms RENAME COLUMN unavailable_state_frame TO state_frame_id",
         )
         .execute(&mut connect().await.unwrap())
         .await
         .unwrap();
+        assert!(!current_lookup_failure.unwrap_err().is_not_found());
+        assert!(!historical_lookup_failure.unwrap_err().is_not_found());
         assert!(!lookup_failure.unwrap_err().is_not_found());
         let args: SyncEventsReqArgs = serde_json::from_value(serde_json::json!({})).unwrap();
         *FAIL_ROOM.lock().unwrap() = Some(failed.clone());
