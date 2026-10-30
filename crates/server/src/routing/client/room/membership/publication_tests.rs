@@ -594,10 +594,20 @@ async fn partial_join_period() {
     )
     .await;
     let body: Value = failure.take_json().await.unwrap();
-    assert_eq!(
-        failure.status_code,
-        Some(StatusCode::INTERNAL_SERVER_ERROR),
-        "{body}"
+    assert_eq!(failure.status_code, Some(StatusCode::BAD_REQUEST), "{body}");
+    assert_eq!(body["errcode"], "M_UNKNOWN", "{body}");
+    assert!(
+        body.get("next_batch").is_none(),
+        "failed sync acknowledged a cursor: {body}"
+    );
+    let decoder_error =
+        room::user::join_sn_for_event(&alice, current.event_id.clone(), current.event_sn)
+            .await
+            .unwrap_err();
+    assert!(!decoder_error.is_not_found());
+    assert!(
+        matches!(&decoder_error, crate::AppError::Internal(message) if message == "invalid pdu in db"),
+        "wrong selected-payload failure: {decoder_error:?}"
     );
 
     // Completing the same proof must extend the joined period immediately.
