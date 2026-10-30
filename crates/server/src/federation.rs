@@ -29,6 +29,10 @@ pub(crate) async fn send_request(
         ));
     }
 
+    // Delegation can produce literal destinations, which bypass DNS filtering.
+    // Redirects are checked separately by the federation transport policy.
+    crate::utils::url_guard::ensure_safe_outbound_url(request.url())?;
+
     debug!("preparing to send request to {destination}");
     let mut request_map = serde_json::Map::new();
 
