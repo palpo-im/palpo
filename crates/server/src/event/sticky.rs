@@ -561,6 +561,7 @@ mod tests {
             rejection_reason: None,
             transaction_device: None,
             transaction_endpoint: None,
+            thread_participants: Default::default(),
         }
     }
 

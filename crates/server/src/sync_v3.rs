@@ -53,7 +53,12 @@ pub async fn sync_events(
         #[cfg(not(feature = "unstable-msc4494"))]
         let max_since_sn = curr_sn;
         if since_tk.stream_ordering() > max_since_sn {
-            return Ok(SyncEventsResBody::new(since_str.to_owned()));
+            let mut response = SyncEventsResBody::new(since_str.to_owned());
+            // Key uploads and claims need not allocate a stream position. Even
+            // an idle incremental sync must report their current usage state.
+            response.device_unused_fallback_key_types =
+                Some(data::user::key::unused_fallback_key_types(sender_id, device_id).await?);
+            return Ok(response);
         }
         Some(since_tk)
     } else {
@@ -415,8 +420,9 @@ pub async fn sync_events(
                 .unwrap_or_default()
         },
         to_device,
-        // Fallback keys are not yet supported
-        device_unused_fallback_key_types: None,
+        device_unused_fallback_key_types: Some(
+            data::user::key::unused_fallback_key_types(sender_id, device_id).await?,
+        ),
     };
     let delivery = invite_snapshot
         .record_returned(
@@ -1032,6 +1038,7 @@ async fn load_left_room(
             rejection_reason: None,
             transaction_device: None,
             transaction_endpoint: None,
+            thread_participants: Default::default(),
         };
         return Ok(LeftRoom {
             account_data: RoomAccountData::default(),
