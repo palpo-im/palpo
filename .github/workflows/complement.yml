@@ -132,7 +132,7 @@ jobs:
       - name: Verify required regression cases
         if: always()
         env:
-          REQUIRE_CLEAN_SUITE: ${{ inputs.require_clean_suite }}
+          REQUIRE_CLEAN_SUITE: 'true'
         run: |
           args=()
           if [ "$REQUIRE_CLEAN_SUITE" = "true" ]; then
@@ -173,11 +173,11 @@ jobs:
           fi
           PASS_RATE=$((PASS_COUNT * 100 / TOTAL))
           echo "Pass rate: ${PASS_RATE}%"
-          if [ "$PASS_RATE" -lt 98 ]; then
-            echo "::error::Pass rate ${PASS_RATE}% is below 98% threshold"
+          if [ "$PASS_RATE" -lt 100 ]; then
+            echo "::error::Pass rate ${PASS_RATE}% is below 100% threshold"
             exit 1
           fi
-          echo "✅ Pass rate ${PASS_RATE}% meets the 98% threshold"
+          echo "✅ Pass rate ${PASS_RATE}% meets the 100% threshold"
 
   mixed-federation:
     name: Mixed federation
