@@ -15,7 +15,7 @@ fn token() -> &'static str {
     TOKEN.get_or_init(|| {
         format!(
             "q617-relations-{}",
-            ulid::Ulid::new().to_string().to_lowercase()
+            ulid::Ulid::generate().to_string().to_lowercase()
         )
     })
 }
