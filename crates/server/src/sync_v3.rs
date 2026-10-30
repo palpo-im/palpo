@@ -469,12 +469,20 @@ async fn load_joined_room(
         _ => false,
     };
 
-    let Ok(current_frame_id) = room::get_frame_id(room_id, None).await else {
+    let until_sn = until_tk
+        .map(|token| token.event_sn())
+        .unwrap_or_else(|| next_batch.event_sn().saturating_sub(1));
+    // Another worker may already have appended state past this captured sync
+    // window. Resolve the delta against the frame this response can include.
+    let Ok(current_frame_id) = room::get_frame_id(room_id, Some(until_sn)).await else {
         return Ok((JoinedRoom::default(), None));
     };
-    let since_frame_id = crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn()))
-        .await
-        .ok();
+    // V3 next_batch is the first unseen position, and timeline reads include
+    // `since`. Its previous state must therefore be strictly before that point.
+    let since_frame_id =
+        crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn().saturating_sub(1)))
+            .await
+            .ok();
 
     let mut timeline = load_timeline(
         sender_id,
@@ -744,12 +752,8 @@ async fn load_joined_room(
                     let since_state_ids = state::get_full_state_ids(since_frame_id).await?;
 
                     for (key, id) in current_state_ids {
-                        if let Some(state_limit) = filter.room.state.limit
-                            && state_events.len() >= state_limit
-                        {
-                            break;
-                        }
-                        if full_state || since_state_ids.get(&key) != Some(&id) {
+                        let changed = since_state_ids.get(&key) != Some(&id);
+                        if full_state || changed {
                             let pdu = match timeline::get_pdu(&id).await {
                                 Ok(pdu) => pdu,
                                 Err(_) => {
@@ -757,6 +761,26 @@ async fn load_joined_room(
                                     continue;
                                 }
                             };
+                            // Membership drives independent presence/device streams.
+                            // Read its real delta before response filters or limits,
+                            // even if another request already filled the lazy cache.
+                            if changed && pdu.event_ty == TimelineEventType::RoomMember {
+                                collect_membership_change(
+                                    &pdu,
+                                    sender_id,
+                                    since_tk.event_sn(),
+                                    until_sn,
+                                    device_list_updates,
+                                    joined_users,
+                                    left_users,
+                                )
+                                .await?;
+                            }
+                            if let Some(state_limit) = filter.room.state.limit
+                                && state_events.len() >= state_limit
+                            {
+                                continue;
+                            }
                             if pdu.event_ty == TimelineEventType::RoomMember {
                                 match UserId::parse(
                                     pdu.state_key
@@ -830,51 +854,6 @@ async fn load_joined_room(
                 let send_member_count = state_events
                     .iter()
                     .any(|event| event.event_ty == TimelineEventType::RoomMember);
-
-                // if encrypted_room {
-                for state_event in &state_events {
-                    if state_event.event_ty != TimelineEventType::RoomMember {
-                        continue;
-                    }
-
-                    if let Some(state_key) = &state_event.state_key {
-                        let user_id = UserId::parse(state_key.clone())
-                            .map_err(|_| AppError::public("invalid UserId in member pdu"))?;
-
-                        if user_id == sender_id {
-                            continue;
-                        }
-
-                        let new_membership = state_event
-                            .get_content::<RoomMemberEventContent>()
-                            .map_err(|_| AppError::public("invalid pdu in database"))?
-                            .membership;
-
-                        match new_membership {
-                            MembershipState::Join => {
-                                // A new user joined an encrypted room
-                                // if !share_encrypted_room(sender_id, &user_id, &room_id)? {
-                                if since_tk.event_sn() <= state_event.event_sn
-                                    && !room::user::shared_rooms(vec![
-                                        sender_id.to_owned(),
-                                        user_id.to_owned(),
-                                    ])
-                                    .await?
-                                    .is_empty()
-                                {
-                                    device_list_updates.insert(user_id.clone());
-                                    joined_users.insert(user_id);
-                                }
-                            }
-                            MembershipState::Leave => {
-                                // Write down users that have left encrypted rooms we are in
-                                left_users.insert(user_id);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // }
 
                 if joined_since_last_sync {
                     // && encrypted_room || new_encrypted_room {
@@ -1025,6 +1004,48 @@ async fn load_joined_room(
         unread_count,
     };
     Ok((joined_room, timeline.next_batch))
+}
+
+async fn collect_membership_change(
+    event: &SnPduEvent,
+    sender_id: &UserId,
+    since: Seqnum,
+    until: Seqnum,
+    device_list_updates: &mut HashSet<OwnedUserId>,
+    joined_users: &mut HashSet<OwnedUserId>,
+    left_users: &mut HashSet<OwnedUserId>,
+) -> AppResult<()> {
+    if event.event_sn < since || event.event_sn > until {
+        return Ok(());
+    }
+    let Some(state_key) = &event.state_key else {
+        return Ok(());
+    };
+    let user_id = UserId::parse(state_key.clone())
+        .map_err(|_| AppError::public("invalid UserId in member pdu"))?;
+    if user_id == sender_id {
+        return Ok(());
+    }
+    let membership = event
+        .get_content::<RoomMemberEventContent>()
+        .map_err(|_| AppError::public("invalid pdu in database"))?
+        .membership;
+    match membership {
+        MembershipState::Join => {
+            if !room::user::shared_rooms(vec![sender_id.to_owned(), user_id.to_owned()])
+                .await?
+                .is_empty()
+            {
+                device_list_updates.insert(user_id.clone());
+                joined_users.insert(user_id);
+            }
+        }
+        MembershipState::Leave => {
+            left_users.insert(user_id);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[tracing::instrument(skip_all)]

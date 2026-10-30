@@ -180,6 +180,17 @@ async fn member_presence() {
             .await
             .unwrap()
     );
+    // Give an unrelated user a fresh presence position in this response window,
+    // so privacy is tested against a real candidate rather than an old row.
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/presence/{eve}/status"
+        ))
+        .add_header("Authorization", "Bearer eve-presence", true)
+        .json(&json!({"presence":"unavailable"})),
+        &service,
+    )
+    .await;
 
     let incremental = sync(&service, Some(since), None).await;
     assert!(
@@ -194,20 +205,54 @@ async fn member_presence() {
             .any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str())
     );
     // Presence is a separate stream from response state/timeline filtering.
-    let filtered = sync(
-        &service,
-        Some(since),
-        Some(json!({"room": {
-            "state": {"not_types": ["m.room.member"], "limit": 0},
-            "timeline": {"not_types": ["m.room.member"], "limit": 0}
-        }})),
-    )
-    .await;
+    let member_filter = json!({"room": {
+        "state": {"not_types": ["m.room.member"], "limit": 0},
+        "timeline": {"not_types": ["m.room.member"], "limit": 0}
+    }});
+    let filtered = sync(&service, Some(since), Some(member_filter.clone())).await;
     assert!(
         presence_users(&filtered).contains(&bob.as_str()),
         "{filtered}"
     );
     assert!(!presence_users(&filtered).contains(&eve.as_str()));
+    for section in ["state", "timeline"] {
+        assert!(
+            filtered["rooms"]["join"][room.as_str()][section]["events"]
+                .as_array()
+                .is_none_or(|events| events.is_empty()),
+            "{filtered}"
+        );
+    }
+    // MSC4495 can independently restamp presence after a join. Verify the real
+    // unfiltered membership accumulator as well, so that stream refresh cannot
+    // hide a missing semantic delta in the all-features test.
+    let filter: crate::core::client::filter::FilterDefinition =
+        serde_json::from_value(member_filter).unwrap();
+    let now = data::curr_sn().await.unwrap();
+    let (mut keys, mut joined, mut left) = (
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+    );
+    super::load_joined_room(
+        &alice,
+        "D".into(),
+        &room,
+        false,
+        Some(token),
+        Some(BatchToken::new_live(now)),
+        BatchToken::new_live(now + 1),
+        false,
+        &filter,
+        false,
+        &mut keys,
+        &mut joined,
+        &mut left,
+    )
+    .await
+    .unwrap();
+    assert!(joined.contains(&bob));
+    assert!(!joined.contains(&eve));
 
     let latest = filtered["next_batch"].as_str().unwrap();
     request(
@@ -225,4 +270,92 @@ async fn member_presence() {
         "{unrelated}"
     );
     assert!(!presence_users(&unrelated).contains(&eve.as_str()));
+
+    #[cfg(feature = "unstable-msc4495")]
+    {
+        use crate::core::events::presence::sharing::PresenceSharingEventContent;
+        use crate::core::events::{GlobalAccountDataEventType, StaticEventContent};
+        data::user::set_data(
+            &bob,
+            None,
+            &GlobalAccountDataEventType::from(PresenceSharingEventContent::TYPE).to_string(),
+            json!({"share_locally":true, "users":{(alice.as_str()):"deny"}}),
+        )
+        .await
+        .unwrap();
+        let denied = sync(&service, Some(since), None).await;
+        assert!(!presence_users(&denied).contains(&bob.as_str()), "{denied}");
+        assert!(!presence_users(&denied).contains(&eve.as_str()));
+    }
+
+    // The room's current state may move beyond a sync worker's captured end.
+    // Future membership and state must not enter that earlier response window.
+    let captured_until = data::curr_sn().await.unwrap();
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/state/m.room.name"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"name":"future name beyond captured window"})),
+        &service,
+    )
+    .await;
+    request(
+        TestClient::post(format!("http://localhost/_matrix/client/v3/join/{room}"))
+            .add_header("Authorization", "Bearer eve-presence", true)
+            .json(&json!({})),
+        &service,
+    )
+    .await;
+    request(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/leave"
+        ))
+        .add_header("Authorization", "Bearer bob-presence", true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    assert!(room::user::join_sn(&eve, &room).await.unwrap() > captured_until);
+    assert!(room::user::left_sn(&room, &bob).await.unwrap() > captured_until);
+    let (mut keys, mut joined, mut left) = (
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+    );
+    let (bounded_room, _) = super::load_joined_room(
+        &alice,
+        "D".into(),
+        &room,
+        false,
+        Some(token),
+        Some(BatchToken::new_live(captured_until)),
+        BatchToken::new_live(captured_until + 1),
+        false,
+        &crate::core::client::filter::FilterDefinition::default(),
+        false,
+        &mut keys,
+        &mut joined,
+        &mut left,
+    )
+    .await
+    .unwrap();
+    assert!(!joined.contains(&eve));
+    assert!(!keys.contains(&eve));
+    assert!(!left.contains(&bob));
+    let bounded = serde_json::to_value(bounded_room).unwrap();
+    for section in ["state", "timeline"] {
+        for event in bounded[section]["events"].as_array().into_iter().flatten() {
+            assert_ne!(
+                event["content"]["name"],
+                "future name beyond captured window"
+            );
+            assert!(!(event["type"] == "m.room.member" && event["state_key"] == eve.as_str()));
+            assert!(
+                !(event["type"] == "m.room.member"
+                    && event["state_key"] == bob.as_str()
+                    && event["content"]["membership"] == "leave")
+            );
+        }
+    }
 }
