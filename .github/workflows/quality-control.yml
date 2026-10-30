@@ -144,6 +144,11 @@ jobs:
             routing::federation::transaction::device_version_tests::http_remote_device_versions_cover_many_shared_rooms \
             -- --exact --ignored
 
+      - name: Timestamp gap recovery regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_timestamp_gaps
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_timestamp_gaps cargo test -p palpo --lib --all-features timestamp_gap_http_recovery_is_idempotent -- --ignored --exact room::state::gap_tests::timestamp_gap_http_recovery_is_idempotent
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
