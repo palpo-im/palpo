@@ -921,6 +921,12 @@ async fn delayed_member_publication() {
     // A second genuinely backfilled PDU has a later depth but a more negative
     // stream ordering. Publication pagination must retain topology, not sort
     // negative receipt identities as if they were a live clock.
+    request(
+        TestClient::put(format!("http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/history-depth-anchor"))
+            .add_header("Authorization","Bearer alice-presence",true)
+            .json(&json!({"body":"advance the genuine DAG depth","msgtype":"m.text"})),
+        &service,
+    ).await;
     let (history_two, history_two_json) = crate::event::PduBuilder {
         event_type: "m.room.message".into(),
         timestamp: Some(UnixMillis(2)),
