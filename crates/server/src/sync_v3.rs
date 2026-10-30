@@ -1612,6 +1612,7 @@ mod member_presence_tests;
 
 #[cfg(test)]
 mod pagination_database_tests {
+    use diesel::ExpressionMethods;
     use diesel_async::RunQueryDsl;
 
     use super::*;
