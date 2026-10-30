@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
@@ -54,24 +56,26 @@ async fn get_keys(
 ) -> JsonResult<KeysResBody> {
     let authed = depot.authed_info()?;
     let version = version.into_inner();
-    let rooms = e2e_room_keys::table
+    key_backup::get_room_keys_version(authed.user_id(), version)
+        .await?
+        .ok_or(MatrixError::not_found("Unknown backup version"))?;
+    let keys = e2e_room_keys::table
         .filter(e2e_room_keys::user_id.eq(authed.user_id()))
         .filter(e2e_room_keys::version.eq(version))
         .load::<DbRoomKey>(&mut connect().await?)
-        .await?
+        .await?;
+    let mut rooms = BTreeMap::<_, RoomKeyBackup>::new();
+    for key in keys {
+        rooms
+            .entry(key.room_id.clone())
+            .or_insert_with(|| RoomKeyBackup::new(BTreeMap::new()))
+            .sessions
+            .insert(key.session_id.clone(), key.into());
+    }
+    let rooms = rooms
         .into_iter()
-        .map(|rk| {
-            let DbRoomKey {
-                room_id,
-                session_data,
-                ..
-            } = rk;
-            (
-                room_id,
-                RawJson::<RoomKeyBackup>::from_value(&session_data).unwrap(),
-            )
-        })
-        .collect();
+        .map(|(room, backup)| RawJson::new(&backup).map(|backup| (room, backup)))
+        .collect::<Result<_, _>>()?;
     json_ok(KeysResBody { rooms })
 }
 
@@ -477,6 +481,18 @@ mod tests {
                 .hoop(hoops::auth_by_access_token)
                 .push(authed_router()),
         );
+        let all_path = format!("keys?version={}", backup.version);
+        assert_eq!(
+            read(&service, &all_path, None).await.0,
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            read(&service, &all_path, Some("room-backup-alice")).await.1,
+            json!({"rooms":{}})
+        );
+        let (status, body) = read(&service, &all_path, Some("room-backup-bob")).await;
+        assert_eq!(status, Some(StatusCode::NOT_FOUND));
+        assert_eq!(body["errcode"], "M_NOT_FOUND");
         let room = crate::core::room_id!("!empty-backup:example.test");
         let path = format!("keys/{room}?version={}", backup.version);
         assert_eq!(
@@ -524,6 +540,29 @@ mod tests {
             body,
             json!({"sessions":{"first-session":data,"second-session":data}})
         );
+        let (status, all) = read(&service, &all_path, Some("room-backup-alice")).await;
+        assert_eq!(status, Some(StatusCode::OK));
+        assert_eq!(
+            all,
+            json!({"rooms": {
+                room.as_str(): {"sessions": {"first-session": data, "second-session": data}},
+                "!other-backup:example.test": {"sessions": {"other-room-session": data}}
+            }})
+        );
+        let typed: RoomKeyBackup =
+            serde_json::from_value(all["rooms"][room.as_str()].clone()).unwrap();
+        assert_eq!(typed.sessions.len(), 2);
+        assert_eq!(typed.sessions["first-session"].first_message_index, 7);
+        assert_eq!(typed.sessions["second-session"].forwarded_count, 2);
+        assert!(typed.sessions["second-session"].is_verified);
+        let (status, single) = read(
+            &service,
+            &format!("keys/{room}/first-session?version={}", backup.version),
+            Some("room-backup-alice"),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK));
+        assert_eq!(single, serde_json::to_value(&data).unwrap());
         assert_eq!(
             read(
                 &service,
@@ -538,6 +577,9 @@ mod tests {
             .await
             .unwrap();
         let (status, body) = read(&service, &path, Some("room-backup-alice")).await;
+        assert_eq!(status, Some(StatusCode::NOT_FOUND));
+        assert_eq!(body["errcode"], "M_NOT_FOUND");
+        let (status, body) = read(&service, &all_path, Some("room-backup-alice")).await;
         assert_eq!(status, Some(StatusCode::NOT_FOUND));
         assert_eq!(body["errcode"], "M_NOT_FOUND");
     }
