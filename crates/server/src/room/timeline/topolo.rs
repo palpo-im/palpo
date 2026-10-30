@@ -49,6 +49,27 @@ pub async fn load_pdus_backward(
     .await
 }
 
+/// A captured sync may recover negative history, but not a live event which
+/// was only published after its upper cursor, regardless of the cached identity.
+pub async fn load_pdus_backward_captured(
+    user_id: Option<&UserId>,
+    room_id: &RoomId,
+    before: BatchToken,
+    filter: Option<&RoomEventFilter>,
+    limit: usize,
+) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    load_pdus_with_publication_bound(
+        user_id,
+        room_id,
+        Some(before),
+        None,
+        limit,
+        filter,
+        (Direction::Backward, Some(before.event_sn())),
+    )
+    .await
+}
+
 /// Returns events and their tokens in the requested pagination direction.
 /// Forward pages are chronological; backward pages are reverse chronological.
 /// Skips events before user joined the room.
@@ -62,6 +83,27 @@ pub async fn load_pdus(
     filter: Option<&RoomEventFilter>,
     dir: Direction,
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
+    load_pdus_with_publication_bound(
+        user_id,
+        room_id,
+        since_tk,
+        until_tk,
+        limit,
+        filter,
+        (dir, None),
+    )
+    .await
+}
+
+async fn load_pdus_with_publication_bound(
+    user_id: Option<&UserId>,
+    room_id: &RoomId,
+    since_tk: Option<BatchToken>,
+    until_tk: Option<BatchToken>,
+    limit: usize,
+    filter: Option<&RoomEventFilter>,
+    (dir, published_before): (Direction, Option<Seqnum>),
+) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut list: IndexMap<Seqnum, SnPduEvent> = IndexMap::with_capacity(limit.clamp(10, 100));
     let ignored_users = match user_id {
         Some(user_id) => Some(crate::user::ignored_users(user_id).await),
@@ -74,6 +116,17 @@ pub async fn load_pdus(
             .filter(events::is_outlier.eq(false))
             .filter(events::soft_failed.eq(false))
             .into_boxed();
+
+        if let Some(before) = published_before {
+            query = query.filter(
+                events::stream_ordering.lt(0).or(events::id.eq_any(
+                    event_points::table
+                        .filter(event_points::room_id.eq(room_id))
+                        .filter(event_points::live_published_sn.lt(before))
+                        .select(event_points::event_id),
+                )),
+            );
+        }
 
         // Live sync tokens contain the next stream position, so their bounds form a
         // half-open interval. Historic tokens identify the event immediately before

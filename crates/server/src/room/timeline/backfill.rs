@@ -18,6 +18,17 @@ use crate::event::handler::process_to_timeline_pdu;
 use crate::event::{BatchToken, handler, parse_fetched_pdu};
 use crate::{AppError, AppResult, GetUrlOrigin, SnPduEvent, room};
 
+#[cfg(test)]
+pub(crate) struct BackfillResultForTest {
+    pub room_id: OwnedRoomId,
+    pub event_id: OwnedEventId,
+    pub calls: usize,
+}
+
+#[cfg(test)]
+pub(crate) static BACKFILL_RESULT_FOR_TEST: std::sync::Mutex<Option<BackfillResultForTest>> =
+    std::sync::Mutex::new(None);
+
 /// Rejected events and validated imported state stay outside the timeline, but
 /// are still part of the known DAG. Walk their predecessors to find actual gaps
 /// instead of fetching events whose data is already available locally.
@@ -203,6 +214,31 @@ pub async fn backfill_from_extremities(
     extremities: &[OwnedEventId],
     _limit: usize,
 ) -> AppResult<Vec<SnPduEvent>> {
+    // Substitute only the remote result in the isolated HTTP fixture. Missing
+    // frontier detection and the caller's captured reload still execute normally.
+    #[cfg(test)]
+    {
+        let injected = BACKFILL_RESULT_FOR_TEST
+            .lock()
+            .unwrap()
+            .as_mut()
+            .filter(|result| result.room_id.as_str() == room_id.as_str())
+            .map(|result| {
+                result.calls += 1;
+                result.event_id.clone()
+            });
+        if let Some(event_id) = injected {
+            let pdu = super::get_pdu(&event_id).await?;
+            if !pdu.is_backfill
+                || pdu.is_outlier
+                || pdu.soft_failed
+                || pdu.rejection_reason.is_some()
+            {
+                return Err(AppError::internal("invalid injected history result"));
+            }
+            return Ok(vec![pdu]);
+        }
+    }
     let mut backfill_servers = match room::admin_servers(room_id, false).await {
         Ok(servers) => servers,
         Err(error) if error.is_not_found() => Vec::new(),

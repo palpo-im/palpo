@@ -478,17 +478,27 @@ async fn load_joined_room(
         _ => false,
     };
 
-    let current_frame_id = match room::get_frame_id(room_id, None).await {
+    let until_sn = until_tk
+        .map(|token| token.event_sn())
+        .unwrap_or_else(|| next_batch.event_sn().saturating_sub(1));
+    // Another worker may already have appended state past this captured sync
+    // window. Resolve the delta against the frame this response can include.
+    let current_frame_id = match captured_sync_frame(room_id, until_sn).await {
         Ok(frame) => frame,
         Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
         Err(error) => return Err(error),
     };
-    let since_frame_id =
-        match crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn())).await {
+    // V3 next_batch is the first unseen position, and timeline reads include
+    // `since`. Its previous state must therefore be strictly before that point.
+    let since_frame_id = if let Some(since_tk) = since_tk {
+        match captured_sync_frame(room_id, since_tk.event_sn().saturating_sub(1)).await {
             Ok(frame) => Some(frame),
             Err(error) if error.is_not_found() => None,
             Err(error) => return Err(error),
-        };
+        }
+    } else {
+        Some(current_frame_id)
+    };
 
     let mut timeline = load_timeline(
         sender_id,
@@ -680,10 +690,7 @@ async fn load_joined_room(
 
                 // && encrypted_room || new_encrypted_room {
                 // If the user is in a new encrypted room, give them all joined users
-                *joined_users = room::joined_users(room_id, None)
-                    .await?
-                    .into_iter()
-                    .collect();
+                *joined_users = joined_users_at_frame(current_frame_id).await?;
                 // .into_iter()
                 // .filter(|user_id| {
                 //     // Don't send key updates from the sender to the sender
@@ -716,12 +723,8 @@ async fn load_joined_room(
                     let since_state_ids = state::get_full_state_ids(since_frame_id).await?;
 
                     for (key, id) in current_state_ids {
-                        if let Some(state_limit) = filter.room.state.limit
-                            && state_events.len() >= state_limit
-                        {
-                            break;
-                        }
-                        if full_state || since_state_ids.get(&key) != Some(&id) {
+                        let changed = since_state_ids.get(&key) != Some(&id);
+                        if full_state || changed {
                             let pdu = match timeline::get_pdu(&id).await {
                                 Ok(pdu) => pdu,
                                 Err(_) => {
@@ -729,6 +732,24 @@ async fn load_joined_room(
                                     continue;
                                 }
                             };
+                            // Membership drives independent presence/device streams.
+                            // Read its real delta before response filters or limits,
+                            // even if another request already filled the lazy cache.
+                            if changed && pdu.event_ty == TimelineEventType::RoomMember {
+                                collect_membership_change(
+                                    &pdu,
+                                    sender_id,
+                                    device_list_updates,
+                                    joined_users,
+                                    left_users,
+                                )
+                                .await?;
+                            }
+                            if let Some(state_limit) = filter.room.state.limit
+                                && state_events.len() >= state_limit
+                            {
+                                continue;
+                            }
                             if pdu.event_ty == TimelineEventType::RoomMember {
                                 match UserId::parse(
                                     pdu.state_key
@@ -758,22 +779,26 @@ async fn load_joined_room(
                     if lazy_loaded.contains(&event.sender) {
                         continue;
                     }
-                    if (!room::lazy_loading::lazy_load_was_sent_before(
+                    if !room::lazy_loading::lazy_load_was_sent_before(
                         sender_id,
                         device_id,
                         room_id,
                         &event.sender,
                     )
                     .await?
-                        || lazy_load_send_redundant)
-                        && let Ok(member_event) = room::get_state(
-                            room_id,
+                        || lazy_load_send_redundant
+                    {
+                        let member_event = match state::get_state(
+                            current_frame_id,
                             &StateEventType::RoomMember,
                             event.sender.as_str(),
-                            None,
                         )
                         .await
-                    {
+                        {
+                            Ok(member_event) => member_event,
+                            Err(error) if error.is_not_found() => continue,
+                            Err(error) => return Err(error),
+                        };
                         lazy_loaded.insert(event.sender.clone());
                         if member_event.can_pass_filter(&filter.room.state) {
                             state_events.push(member_event);
@@ -803,56 +828,11 @@ async fn load_joined_room(
                     .iter()
                     .any(|event| event.event_ty == TimelineEventType::RoomMember);
 
-                // if encrypted_room {
-                for state_event in &state_events {
-                    if state_event.event_ty != TimelineEventType::RoomMember {
-                        continue;
-                    }
-
-                    if let Some(state_key) = &state_event.state_key {
-                        let user_id = UserId::parse(state_key.clone())
-                            .map_err(|_| AppError::public("invalid UserId in member pdu"))?;
-
-                        if user_id == sender_id {
-                            continue;
-                        }
-
-                        let new_membership = state_event
-                            .get_content::<RoomMemberEventContent>()
-                            .map_err(|_| AppError::public("invalid pdu in database"))?
-                            .membership;
-
-                        match new_membership {
-                            MembershipState::Join => {
-                                // A new user joined an encrypted room
-                                // if !share_encrypted_room(sender_id, &user_id, &room_id)? {
-                                if since_tk.event_sn() <= state_event.event_sn
-                                    && !room::user::shared_rooms(vec![
-                                        sender_id.to_owned(),
-                                        user_id.to_owned(),
-                                    ])
-                                    .await?
-                                    .is_empty()
-                                {
-                                    device_list_updates.insert(user_id.clone());
-                                    joined_users.insert(user_id);
-                                }
-                            }
-                            MembershipState::Leave => {
-                                // Write down users that have left encrypted rooms we are in
-                                left_users.insert(user_id);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // }
-
                 if joined_since_last_sync {
                     // && encrypted_room || new_encrypted_room {
                     // If the user is in a new encrypted room, give them all joined users
                     device_list_updates.extend(
-                        room::joined_users(room_id, None)
+                        joined_users_at_frame(current_frame_id)
                             .await?
                             .into_iter()
                             .filter(|user_id| {
@@ -997,6 +977,97 @@ async fn load_joined_room(
         unread_count,
     };
     Ok((joined_room, timeline.next_batch))
+}
+
+/// Event identity is assigned before an outlier may reach the live timeline.
+/// Capture the immutable after-frame at its actual publication position, so a
+/// cached old membership promoted after newer events cannot disappear here.
+/// The migration initializes only legacy accepted live rows; outliers never
+/// gain a fabricated publication through a fallback to their identity.
+async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    use crate::data::schema::{event_points, events};
+
+    event_points::table
+        .inner_join(
+            events::table.on(events::id
+                .eq(event_points::event_id)
+                .and(events::room_id.eq(event_points::room_id))),
+        )
+        .filter(event_points::room_id.eq(room_id))
+        .filter(event_points::live_published_frame_id.is_not_null())
+        .filter(events::is_outlier.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::stream_ordering.ge(0))
+        .filter(event_points::live_published_sn.le(until))
+        .select(event_points::live_published_frame_id)
+        .order_by(event_points::live_published_sn.desc())
+        .first::<Option<i64>>(&mut data::connect().await?)
+        .await?
+        .ok_or_else(|| MatrixError::not_found("captured sync frame is not found").into())
+}
+
+/// Current membership rows can already have been overwritten by later joins or
+/// leaves. The captured state frame retains both the members present then and
+/// the absence of members whose joins fall outside this response window.
+async fn joined_users_at_frame(frame_id: i64) -> AppResult<HashSet<OwnedUserId>> {
+    let mut users = HashSet::new();
+    for (field_id, event_id) in state::get_full_state_ids(frame_id).await? {
+        let field = state::get_field(field_id).await?;
+        if field.event_ty != StateEventType::RoomMember {
+            continue;
+        }
+        let pdu = timeline::get_pdu(&event_id).await?;
+        if pdu.get_content::<RoomMemberEventContent>()?.membership == MembershipState::Join {
+            let user = UserId::parse(&field.state_key)
+                .map_err(|_| AppError::public("invalid UserId in member pdu"))?;
+            users.insert(user);
+        }
+    }
+    Ok(users)
+}
+
+async fn collect_membership_change(
+    event: &SnPduEvent,
+    sender_id: &UserId,
+    device_list_updates: &mut HashSet<OwnedUserId>,
+    joined_users: &mut HashSet<OwnedUserId>,
+    left_users: &mut HashSet<OwnedUserId>,
+) -> AppResult<()> {
+    // The changed state frames already certify the publication window. Its
+    // member PDU can have an older cached identity; filtering that identity
+    // would lose a genuinely new publication of an old outlier.
+    let Some(state_key) = &event.state_key else {
+        return Ok(());
+    };
+    let user_id = UserId::parse(state_key.clone())
+        .map_err(|_| AppError::public("invalid UserId in member pdu"))?;
+    if user_id == sender_id {
+        return Ok(());
+    }
+    let membership = event
+        .get_content::<RoomMemberEventContent>()
+        .map_err(|_| AppError::public("invalid pdu in database"))?
+        .membership;
+    match membership {
+        MembershipState::Join => {
+            if !room::user::shared_rooms(vec![sender_id.to_owned(), user_id.to_owned()])
+                .await?
+                .is_empty()
+            {
+                device_list_updates.insert(user_id.clone());
+                joined_users.insert(user_id);
+            }
+        }
+        MembershipState::Leave => {
+            left_users.insert(user_id);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[tracing::instrument(skip_all)]
@@ -1269,11 +1340,10 @@ async fn load_timeline_with_backfilled_history(
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
     let limit = filter.and_then(|f| f.limit).unwrap_or(10);
-    let mut timeline_pdus = timeline::topolo::load_pdus_backward(
+    let mut timeline_pdus = timeline::topolo::load_pdus_backward_captured(
         Some(user_id),
         room_id,
-        Some(until),
-        None,
+        until,
         filter,
         limit + 1,
     )
@@ -1317,7 +1387,7 @@ pub(crate) async fn load_timeline(
                 (until_tk, since_tk)
             };
 
-            timeline::stream::load_pdus_backward(
+            timeline::stream::load_pdus_backward_captured(
                 Some(user_id),
                 room_id,
                 Some(max),
@@ -1327,7 +1397,7 @@ pub(crate) async fn load_timeline(
             )
             .await?
         } else {
-            timeline::stream::load_pdus_backward(
+            timeline::stream::load_pdus_backward_captured(
                 Some(user_id),
                 room_id,
                 None,
@@ -1338,8 +1408,15 @@ pub(crate) async fn load_timeline(
             .await?
         }
     } else {
-        timeline::stream::load_pdus_backward(Some(user_id), room_id, None, None, filter, limit + 1)
-            .await?
+        timeline::stream::load_pdus_backward_captured(
+            Some(user_id),
+            room_id,
+            until_tk,
+            None,
+            filter,
+            limit + 1,
+        )
+        .await?
     };
 
     let mut limited = false;
@@ -1521,7 +1598,14 @@ async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec
 }
 
 #[cfg(test)]
+#[path = "sync_v3/member_presence_tests.rs"]
+mod member_presence_tests;
+
+#[cfg(test)]
 mod pagination_database_tests {
+    use diesel::ExpressionMethods;
+    use diesel_async::RunQueryDsl;
+
     use super::*;
     use crate::core::serde::to_canonical_object;
     use crate::data::room::{DbEventData, NewDbEvent};
@@ -1557,6 +1641,25 @@ mod pagination_database_tests {
         .save_with_conn(&mut conn)
         .await
         .unwrap();
+        // This fixture models accepted, published live events rather than
+        // unsourced event rows. Their identity and publication happen together.
+        diesel::insert_into(data::schema::event_points::table)
+            .values((
+                data::schema::event_points::event_id.eq(&pdu.event_id),
+                data::schema::event_points::event_sn.eq(sn),
+                data::schema::event_points::room_id.eq(&pdu.room_id),
+                data::schema::event_points::live_published_sn.eq(Some(sn)),
+                data::schema::event_points::live_published_frame_id.eq(Some(1)),
+            ))
+            .on_conflict(data::schema::event_points::event_id)
+            .do_update()
+            .set((
+                data::schema::event_points::live_published_sn.eq(Some(sn)),
+                data::schema::event_points::live_published_frame_id.eq(Some(1)),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
         SnPduEvent::new(pdu, sn, false, false, false)
     }
 
@@ -1793,6 +1896,11 @@ mod joined_room_failure_tests {
             .await
             .unwrap();
         let historical_lookup_failure = room::get_frame_id(&failed, Some(99)).await;
+        // Live publication has its own immutable frame source. Keep the
+        // legacy faults above and cover this real captured lookup as well.
+        diesel::sql_query("ALTER TABLE event_points RENAME COLUMN live_published_frame_id TO unavailable_live_frame")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        let captured_lookup_failure = captured_sync_frame(&failed, 99).await;
         let lookup_failure = load_joined_room(
             &user,
             "TEST".into(),
@@ -1809,6 +1917,8 @@ mod joined_room_failure_tests {
             &mut HashSet::new(),
         )
         .await;
+        diesel::sql_query("ALTER TABLE event_points RENAME COLUMN unavailable_live_frame TO live_published_frame_id")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
         diesel::sql_query("ALTER TABLE event_points RENAME COLUMN unavailable_frame TO frame_id")
             .execute(&mut connect().await.unwrap())
             .await
@@ -1821,6 +1931,7 @@ mod joined_room_failure_tests {
         .unwrap();
         assert!(!current_lookup_failure.unwrap_err().is_not_found());
         assert!(!historical_lookup_failure.unwrap_err().is_not_found());
+        assert!(!captured_lookup_failure.unwrap_err().is_not_found());
         assert!(!lookup_failure.unwrap_err().is_not_found());
         let args: SyncEventsReqArgs = serde_json::from_value(serde_json::json!({})).unwrap();
         *FAIL_ROOM.lock().unwrap() = Some(failed.clone());

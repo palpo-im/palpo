@@ -56,7 +56,7 @@ async fn load_watch_snapshot(
           COALESCE((SELECT MAX(id) FROM device_inboxes WHERE user_id = $1 AND device_id = $2), 0) AS inbox_id,
           COALESCE((SELECT MAX(id) FROM e2e_key_changes WHERE user_id = $1), 0) AS key_change_id,
           COALESCE((SELECT MAX(id) FROM room_users WHERE user_id = $1), 0) AS membership_id,
-          COALESCE((SELECT MAX(event_sn) FROM event_points WHERE frame_id IS NOT NULL AND room_id IN (SELECT room_id FROM joined_rooms)), 0) AS event_sn,
+          COALESCE((SELECT MAX(live_published_sn) FROM event_points WHERE live_published_sn IS NOT NULL AND room_id IN (SELECT room_id FROM joined_rooms)), 0) AS event_sn,
           COALESCE((SELECT MAX(occur_sn) FROM user_datas WHERE user_id = $1), 0) AS account_data_sn,
           CASE WHEN $3 THEN COALESCE((
             SELECT MAX(occur_sn) FROM user_profile_changes WHERE user_id = $1 OR user_id IN (
@@ -72,6 +72,16 @@ async fn load_watch_snapshot(
     .bind::<diesel::sql_types::Text, _>(device_id.as_str())
     .bind::<diesel::sql_types::Bool, _>(profiles)
     .get_result(&mut connect().await?).await.map_err(Into::into)
+}
+
+#[cfg(test)]
+pub(crate) async fn live_position_for_test(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> AppResult<i64> {
+    Ok(load_watch_snapshot(user_id, device_id, false)
+        .await?
+        .event_sn)
 }
 
 fn profile_change_is_ready(
@@ -149,7 +159,7 @@ mod database_tests {
             "INSERT INTO device_inboxes(user_id,device_id,json_data,created_at) VALUES ('@watch:example.org','WATCH','{}',0)",
             "INSERT INTO room_typings(room_id,user_id,timeout_at,occur_sn) VALUES ('!watch:example.org','@peer:example.org',999999,20)",
             "INSERT INTO e2e_key_changes(user_id,occur_sn,changed_at) VALUES ('@watch:example.org',30,0)",
-            "INSERT INTO event_points(event_id,event_sn,room_id,frame_id) VALUES ('$watch-event',40,'!watch:example.org',1)",
+            "INSERT INTO event_points(event_id,event_sn,room_id,frame_id,live_published_sn,live_published_frame_id) VALUES ('$watch-event',40,'!watch:example.org',1,40,1)",
             "INSERT INTO user_datas(user_id,data_type,json_data,is_deleted,occur_sn,created_at) VALUES ('@watch:example.org','m.push_rules','{}',false,50,0)",
             "INSERT INTO user_profile_changes(occur_sn,user_id,field,value,removed) VALUES (60,'@watch:example.org','displayname','\"self\"',false)",
             "INSERT INTO user_profile_changes(occur_sn,user_id,field,value,removed) VALUES (70,'@peer:example.org','displayname','\"shared\"',false)",
@@ -175,7 +185,7 @@ mod database_tests {
             0
         );
         // Events in other rooms and events not yet promoted to the timeline do not wake.
-        diesel::sql_query("INSERT INTO event_points(event_id,event_sn,room_id,frame_id) VALUES ('$watch-outside',1000,'!outside:example.org',1),('$watch-outlier',1001,'!watch:example.org',NULL)")
+        diesel::sql_query("INSERT INTO event_points(event_id,event_sn,room_id,frame_id,live_published_sn,live_published_frame_id) VALUES ('$watch-outside',1000,'!outside:example.org',1,1000,1),('$watch-outlier',1001,'!watch:example.org',NULL,NULL,NULL),('$watch-cached',1002,'!watch:example.org',1,NULL,NULL)")
             .execute(&mut connect().await.unwrap()).await.unwrap();
         assert!(
             !load_watch_snapshot(&user, device, true)

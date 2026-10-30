@@ -332,6 +332,8 @@ diesel::table! {
         thread_id -> Nullable<Text>,
         frame_id -> Nullable<Int8>,
         before_frame_id -> Nullable<Int8>,
+        live_published_sn -> Nullable<Int8>,
+        live_published_frame_id -> Nullable<Int8>,
         stripped_state -> Nullable<Json>,
     }
 }
