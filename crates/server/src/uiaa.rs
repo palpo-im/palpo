@@ -92,7 +92,7 @@ pub async fn try_auth(
             let Ok(user) = data::user::get_user(&auth_user_id).await else {
                 return Err(MatrixError::unauthorized("user not found.").into());
             };
-            crate::user::verify_password(&user, password).await?;
+            verify_uiaa_password(&user, password).await?;
             if !uiaa_info.completed.contains(&AuthType::Password) {
                 uiaa_info.completed.push(AuthType::Password);
             }
@@ -179,6 +179,19 @@ pub async fn try_auth(
     Ok((true, uiaa_info))
 }
 
+/// Every password UIAA consumer shares one per-account failure budget, including
+/// device deletion and signing-key changes. Successful verifications are free.
+async fn verify_uiaa_password(user: &data::user::DbUser, password: &str) -> AppResult<()> {
+    crate::hoops::check_password_attempt(user.id.as_str())?;
+    match crate::user::verify_password(user, password).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            crate::hoops::record_password_failure(user.id.as_str())?;
+            Err(error)
+        }
+    }
+}
+
 /// Store the UIAA request body in the database for cross-instance access.
 pub async fn set_uiaa_request(
     user_id: &UserId,
@@ -200,4 +213,62 @@ pub async fn get_uiaa_request(
         .await
         .ok()
         .flatten()
+}
+
+#[cfg(test)]
+mod password_uiaa_rate_tests {
+    use super::*;
+    use crate::core::UnixMillis;
+    use crate::core::error::ErrorKind;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_password_uiaa_consumers_share_failures_and_do_not_charge_success() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name":"uiaa-rate.example", "db":{"url":"unused"},
+                "rc_password":{"per_second":0.000001,"burst":2}
+            }))
+            .unwrap()
+        });
+        let id = UserId::parse("@q11:uiaa-rate.example").unwrap();
+        let user = data::user::create_user(&data::user::NewDbUser {
+            id: id.clone(),
+            localpart: id.localpart().into(),
+            server_name: id.server_name().to_owned(),
+            is_local: true,
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        crate::user::set_password(&id, "correct-password")
+            .await
+            .unwrap();
+        let burst = crate::config::get().rc_password.burst;
+        for _ in 0..=burst {
+            verify_uiaa_password(&user, "correct-password")
+                .await
+                .unwrap();
+        }
+        for _ in 0..burst {
+            assert!(verify_uiaa_password(&user, "wrong-password").await.is_err());
+        }
+        let error = verify_uiaa_password(&user, "correct-password")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::AppError::Matrix(MatrixError {
+                kind: ErrorKind::LimitExceeded { .. },
+                ..
+            })
+        ));
+        // This is the same budget checked by password change and account deactivation.
+        assert!(crate::hoops::check_password_attempt(id.as_str()).is_err());
+    }
 }

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::Deserialize;
@@ -262,6 +264,10 @@ async fn track_presence_recipients(
     Ok(())
 }
 
+fn receipt_user_matches_origin(origin: &ServerName, user_id: &UserId) -> bool {
+    user_id.server_name() == origin
+}
+
 async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
     if !crate::config::get().read_receipt.allow_incoming {
         return;
@@ -277,21 +283,30 @@ async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
         }
 
         for (user_id, user_updates) in room_updates.read {
-            // if user_id.server_name() != origin {
-            //     warn!(
-            //         %user_id, %origin,
-            //         "received read receipt edu for user not belonging to origin"
-            //     );
-            //     continue;
-            // }
-
-            if room::joined_users(&room_id, None)
+            if !receipt_user_matches_origin(origin, &user_id) {
+                warn!(%origin, %user_id, "received read receipt for a foreign user");
+                continue;
+            }
+            if room::user::is_joined(&user_id, &room_id)
                 .await
-                .unwrap_or_default()
-                .iter()
-                .any(|member| member.server_name() == user_id.server_name())
+                .unwrap_or(false)
             {
                 for event_id in &user_updates.event_ids {
+                    // A known event ID is insufficient: its room must match the EDU.
+                    let event_room = crate::data::schema::event_points::table
+                        .find(event_id)
+                        .select(crate::data::schema::event_points::room_id)
+                        .first::<OwnedRoomId>(&mut match crate::data::connect().await {
+                            Ok(conn) => conn,
+                            Err(error) => {
+                                warn!(%error, "failed to check receipt event room");
+                                continue;
+                            }
+                        })
+                        .await;
+                    if !event_room.as_ref().is_ok_and(|actual| actual == &room_id) {
+                        continue;
+                    }
                     let user_receipts =
                         BTreeMap::from([(user_id.clone(), user_updates.data.clone())]);
                     let receipts = BTreeMap::from([(ReceiptType::Read, user_receipts)]);
@@ -516,6 +531,20 @@ mod tests {
         );
         let edus: Vec<_> = parse_edus(body.edus).collect();
         assert!(matches!(edus.as_slice(), [Edu::Typing(content)] if content.typing));
+    }
+
+    #[test]
+    fn federated_receipts_only_accept_users_owned_by_the_signed_origin() {
+        let origin = ServerName::parse("remote.example").unwrap();
+        for (user, allowed) in [
+            ("@alice:remote.example", true),
+            ("@local:local.example", false),
+            ("@other:third.example", false),
+            ("@lookalike:remote.example.attacker.example", false),
+        ] {
+            let user = UserId::parse(user).unwrap();
+            assert_eq!(receipt_user_matches_origin(&origin, &user), allowed);
+        }
     }
 
     #[test]
