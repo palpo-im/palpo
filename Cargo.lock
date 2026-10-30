@@ -3846,6 +3846,7 @@ dependencies = [
  "form_urlencoded",
  "futures-util",
  "globwalk",
+ "hmac 0.13.0",
  "html5ever 0.40.1",
  "http",
  "http-auth",

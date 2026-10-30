@@ -406,10 +406,9 @@ async fn query_srv_record(hostname: &'_ str) -> Option<(FedDest, Instant)> {
 }
 
 async fn request_well_known(destination: &str) -> Option<(String, Instant)> {
-    let response = sending::default_client()
-        .get(format!("https://{destination}/.well-known/matrix/server"))
-        .send()
-        .await;
+    let url = url::Url::parse(&format!("https://{destination}/.well-known/matrix/server")).ok()?;
+    crate::utils::url_guard::ensure_safe_outbound_url(&url).ok()?;
+    let response = sending::well_known_client().get(url).send().await;
     debug!("Got well known response");
     let response = match response {
         Err(e) => {
@@ -438,11 +437,14 @@ async fn request_well_known(destination: &str) -> Option<(String, Instant)> {
         // The recommended sensible default is 24 hours.
         .unwrap_or_else(|| Duration::from_secs(60 * 60 * 24));
 
-    let text = response.text().await;
+    // Discovery documents are small; do not buffer an arbitrary peer response.
+    let body = crate::utils::read_response_limited(response, 64 * 1024)
+        .await
+        .ok()?;
     debug!("Got well known response text");
 
     let host = || {
-        let body: serde_json::Value = serde_json::from_str(&text.ok()?).ok()?;
+        let body: serde_json::Value = serde_json::from_slice(&body).ok()?;
         body.get("m.server")?.as_str().map(ToOwned::to_owned)
     };
 

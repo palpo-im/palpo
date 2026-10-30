@@ -114,7 +114,7 @@ pub async fn sync_events(
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     for room_id in &all_joined_rooms {
-        let loaded = load_joined_room(
+        let (joined_room, _) = load_joined_room(
             sender_id,
             device_id,
             room_id,
@@ -129,15 +129,8 @@ pub async fn sync_events(
             &mut joined_users,
             &mut left_users,
         )
-        .await;
-        let (joined_room, _) = match loaded {
-            Ok(room) => room,
-            Err(error) if error.is_sticky_sync() => return Err(error),
-            Err(error) => {
-                warn!(%room_id, error = ?error, "failed to load joined room for sync");
-                continue;
-            }
-        };
+        // Do not acknowledge a window that a joined room failed to load.
+        .await?;
         if since_tk.is_none() || !joined_room.is_empty() {
             joined_rooms.insert(room_id.to_owned(), joined_room);
         }
@@ -456,6 +449,15 @@ async fn load_joined_room(
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
+    #[cfg(test)]
+    if joined_room_failure_tests::FAIL_ROOM
+        .lock()
+        .unwrap()
+        .as_deref()
+        == Some(room_id)
+    {
+        return Err(AppError::internal("injected joined room database failure"));
+    }
     if since_tk.map(|s| s.event_sn()) > Some(data::curr_sn().await?) {
         return Ok((JoinedRoom::default(), None));
     }
@@ -469,12 +471,17 @@ async fn load_joined_room(
         _ => false,
     };
 
-    let Ok(current_frame_id) = room::get_frame_id(room_id, None).await else {
-        return Ok((JoinedRoom::default(), None));
+    let current_frame_id = match room::get_frame_id(room_id, None).await {
+        Ok(frame) => frame,
+        Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
+        Err(error) => return Err(error),
     };
-    let since_frame_id = crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn()))
-        .await
-        .ok();
+    let since_frame_id =
+        match crate::event::get_last_frame_id(room_id, since_tk.map(|t| t.event_sn())).await {
+            Ok(frame) => Some(frame),
+            Err(error) if error.is_not_found() => None,
+            Err(error) => return Err(error),
+        };
 
     let mut timeline = load_timeline(
         sender_id,
@@ -1628,5 +1635,115 @@ mod pagination_database_tests {
         assert!(timeline_contains_own_join(&recovered, &join.sender));
         assert!(recovered.events.contains_key(&profile.event_sn));
         assert!(!recovered.events.contains_key(&105));
+    }
+}
+
+#[cfg(test)]
+mod joined_room_failure_tests {
+    use diesel_async::RunQueryDsl;
+
+    use super::*;
+    use crate::data::connect;
+    use crate::data::schema::room_users;
+
+    pub(super) static FAIL_ROOM: std::sync::Mutex<Option<OwnedRoomId>> =
+        std::sync::Mutex::new(None);
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_joined_room_failure_cannot_advance_sync_cursor() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name": "sync-failure.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user =
+            UserId::parse_with_server_name("sync_failure_reader", crate::config::server_name())
+                .unwrap();
+        let failed: OwnedRoomId = "!failed:sync-failure.example".try_into().unwrap();
+        for name in ["healthy", "failed"] {
+            let room: OwnedRoomId = format!("!{name}:sync-failure.example").try_into().unwrap();
+            diesel::insert_into(room_users::table)
+                .values(data::room::NewDbRoomUser {
+                    event_id: format!("$member-{name}:sync-failure.example")
+                        .try_into()
+                        .unwrap(),
+                    event_sn: data::next_sn().await.unwrap(),
+                    room_id: room,
+                    room_server_id: None,
+                    user_id: user.clone(),
+                    user_server_id: user.server_name().to_owned(),
+                    sender_id: user.clone(),
+                    membership: "join".to_owned(),
+                    forgotten: false,
+                    display_name: None,
+                    avatar_url: None,
+                    state_data: None,
+                    created_at: UnixMillis::now(),
+                })
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        // A SQL failure during state lookup is not a missing state frame.
+        diesel::sql_query(
+            "ALTER TABLE rooms RENAME COLUMN state_frame_id TO unavailable_state_frame",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        let current_lookup_failure = room::get_frame_id(&failed, None).await;
+        // A captured sync reads historical event points instead of the live
+        // room pointer. Fault both real sources so this regression covers
+        // either loader implementation without relaxing cursor assertions.
+        diesel::sql_query("ALTER TABLE event_points RENAME COLUMN frame_id TO unavailable_frame")
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let historical_lookup_failure = room::get_frame_id(&failed, Some(99)).await;
+        let lookup_failure = load_joined_room(
+            &user,
+            "TEST".into(),
+            &failed,
+            false,
+            None,
+            None,
+            BatchToken::new_live(100),
+            false,
+            &FilterDefinition::default(),
+            false,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        )
+        .await;
+        diesel::sql_query("ALTER TABLE event_points RENAME COLUMN unavailable_frame TO frame_id")
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::sql_query(
+            "ALTER TABLE rooms RENAME COLUMN unavailable_state_frame TO state_frame_id",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        assert!(!current_lookup_failure.unwrap_err().is_not_found());
+        assert!(!historical_lookup_failure.unwrap_err().is_not_found());
+        assert!(!lookup_failure.unwrap_err().is_not_found());
+        let args: SyncEventsReqArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+        *FAIL_ROOM.lock().unwrap() = Some(failed.clone());
+        let response = sync_events(&user, "TEST".into(), &args).await;
+        *FAIL_ROOM.lock().unwrap() = None;
+        assert!(
+            response
+                .unwrap_err()
+                .to_string()
+                .contains("injected joined room database failure")
+        );
+        let retry = sync_events(&user, "TEST".into(), &args).await.unwrap();
+        assert!(retry.rooms.join.contains_key(&failed));
+        assert_eq!(retry.rooms.join.len(), 2);
     }
 }
