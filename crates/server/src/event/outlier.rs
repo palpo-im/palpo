@@ -344,6 +344,8 @@ impl OutlierPdu {
                 .into());
         }
 
+        // PendingState permits recovery, not authorization: leave soft_failed
+        // set so the existing pulled and timeline auth/state checks still run.
         self.process_pulled(remote_server, is_backfill).await
     }
 

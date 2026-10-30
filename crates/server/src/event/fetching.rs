@@ -15,7 +15,7 @@ use crate::core::identifiers::*;
 use crate::core::state::Event;
 use crate::data::diesel_exists;
 use crate::data::schema::*;
-use crate::event::handler::{process_pulled_pdu, process_to_outlier_pdu};
+use crate::event::handler::{process_pulled_pdu_with_pending_state, process_to_outlier_pdu};
 use crate::event::{connect, parse_fetched_pdu, seen_event_ids};
 use crate::exts::*;
 use crate::room::state::ensure_field_id;
@@ -31,6 +31,10 @@ pub struct FetchedState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingEventsRecovery {
     Complete,
+    /// Every missing immediate predecessor was supplied and signature-checked
+    /// in this response, but its earlier state/auth still needs recovery. This
+    /// permits the existing state recovery path, never timeline acceptance.
+    PendingState,
     Incomplete,
 }
 
@@ -164,8 +168,9 @@ pub(super) async fn process_missing_events_response(
         let depth2 = v2.get("depth").and_then(|v| v.as_integer()).unwrap_or(0);
         depth1.cmp(&depth2)
     });
+    let mut pending_state = HashSet::new();
     for (event_id, event_val) in fetched_events {
-        if let Err(e) = process_pulled_pdu(
+        match process_pulled_pdu_with_pending_state(
             remote_server,
             &event_id,
             room_id,
@@ -175,26 +180,59 @@ pub(super) async fn process_missing_events_response(
         )
         .await
         {
-            if matches!(
-                e,
-                AppError::Data(_) | AppError::Diesel(_) | AppError::Pool(_)
-            ) {
-                return Err(e);
+            Ok(true) => {
+                pending_state.insert(event_id);
             }
-            error!(
-                "failed to process fetched missing prev event {}: {}",
-                event_id, e
-            );
+            Ok(false) => {}
+            Err(e) => {
+                if matches!(
+                    e,
+                    AppError::Data(_) | AppError::Diesel(_) | AppError::Pool(_)
+                ) {
+                    return Err(e);
+                }
+                error!(
+                    "failed to process fetched missing prev event {}: {}",
+                    event_id, e
+                );
+            }
         }
     }
     // HTTP success (including an empty or partial body) is not DAG recovery.
     // Recheck every required predecessor, also observing concurrent recovery.
     let recovered = recovered_predecessors(room_id, required).await?;
-    Ok(if required.iter().all(|id| recovered.contains(id)) {
-        MissingEventsRecovery::Complete
-    } else {
-        MissingEventsRecovery::Incomplete
-    })
+    if required.iter().all(|id| recovered.contains(id)) {
+        return Ok(MissingEventsRecovery::Complete);
+    }
+    // A cached outlier alone proves nothing. Only this response's successfully
+    // processed pending events can permit snapshot recovery, and their payload
+    // and non-rejected pending metadata must still exist in this room.
+    let pending_state: HashSet<OwnedEventId> = events::table
+        .inner_join(
+            event_datas::table.on(event_datas::event_id
+                .eq(events::id)
+                .and(event_datas::room_id.eq(events::room_id))),
+        )
+        .filter(events::room_id.eq(room_id))
+        .filter(events::id.eq_any(pending_state))
+        .filter(events::is_outlier.eq(true))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(true))
+        .select(events::id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .collect();
+    Ok(
+        if required
+            .iter()
+            .all(|id| recovered.contains(id) || pending_state.contains(id))
+        {
+            MissingEventsRecovery::PendingState
+        } else {
+            MissingEventsRecovery::Incomplete
+        },
+    )
 }
 
 pub async fn fetch_and_process_auth_chain(

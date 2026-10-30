@@ -1,6 +1,10 @@
 [
   {
     "package": "github.com/matrix-org/complement/tests",
+    "test": "TestCorruptedAuthChain"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
     "test": "TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"
   }
 ]
