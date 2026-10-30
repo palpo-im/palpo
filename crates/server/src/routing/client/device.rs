@@ -89,21 +89,15 @@ async fn update_device(
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let device_id = device_id.into_inner();
-    let device = user_devices::table
-        .filter(user_devices::device_id.eq(&device_id))
-        .first::<DbUserDevice>(&mut connect().await?)
-        .await
-        .optional()?;
+    let device = update_owned_device_metadata(
+        authed.user_id(),
+        &device_id,
+        body.display_name.as_deref(),
+        &req.remote_addr().to_string(),
+    )
+    .await?;
 
     if let Some(device) = device {
-        diesel::update(&device)
-            .set((
-                user_devices::display_name.eq(&body.display_name),
-                user_devices::last_seen_ip.eq(&req.remote_addr().to_string()),
-                user_devices::last_seen_at.eq(UnixMillis::now()),
-            ))
-            .execute(&mut connect().await?)
-            .await?;
         crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
     } else {
         let Some(appservice) = authed.appservice() else {
@@ -132,6 +126,28 @@ async fn update_device(
     }
 
     empty_ok()
+}
+
+/// Scope the mutation itself to the owner, including when device IDs collide.
+async fn update_owned_device_metadata(
+    user_id: &crate::core::UserId,
+    device_id: &crate::core::DeviceId,
+    display_name: Option<&str>,
+    remote_ip: &str,
+) -> crate::AppResult<Option<DbUserDevice>> {
+    Ok(diesel::update(
+        user_devices::table
+            .filter(user_devices::user_id.eq(user_id))
+            .filter(user_devices::device_id.eq(device_id)),
+    )
+    .set((
+        user_devices::display_name.eq(display_name),
+        user_devices::last_seen_ip.eq(remote_ip),
+        user_devices::last_seen_at.eq(UnixMillis::now()),
+    ))
+    .get_result::<DbUserDevice>(&mut connect().await?)
+    .await
+    .optional()?)
 }
 
 /// #DELETE /_matrix/client/r0/devices/{deviceId}
@@ -356,4 +372,69 @@ pub(super) async fn upsert_dehydrated(
     crate::user::add_device_keys(authed.user_id(), &device_id, &device_keys).await?;
 
     json_ok(UpsertDehydratedDeviceResBody::new(device_id))
+}
+
+#[cfg(test)]
+mod device_update_ownership_tests {
+    use super::*;
+    use crate::core::UserId;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_device_metadata_updates_are_scoped_to_the_owner() {
+        crate::test_database::init();
+        let alice = UserId::parse("@q08alice:ownership.example").unwrap();
+        let bob = UserId::parse("@q08bob:ownership.example").unwrap();
+        for owner in [&alice, &bob] {
+            data::user::create_user(&data::user::NewDbUser {
+                id: owner.clone(),
+                localpart: owner.localpart().into(),
+                server_name: owner.server_name().to_owned(),
+                is_local: true,
+                ty: None,
+                is_admin: false,
+                is_guest: false,
+                appservice_id: None,
+                created_at: UnixMillis::now(),
+            })
+            .await
+            .unwrap();
+        }
+        let shared: OwnedDeviceId = "SHARED".into();
+        let bob_only: OwnedDeviceId = "BOB_ONLY".into();
+        for (owner, device_id) in [(&alice, &shared), (&bob, &shared), (&bob, &bob_only)] {
+            let token = format!("q08-{}-{device_id}", owner.localpart());
+            data::user::device::create_device(
+                owner,
+                device_id,
+                &token,
+                Some("original".into()),
+                Some("original-ip".into()),
+            )
+            .await
+            .unwrap();
+        }
+        let changed = update_owned_device_metadata(&alice, &shared, Some("alice-new"), "alice-ip")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.user_id, alice);
+        assert!(
+            update_owned_device_metadata(&alice, &bob_only, Some("unauthorized"), "wrong-ip")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        for device_id in [&shared, &bob_only] {
+            let unchanged = data::user::device::get_device(&bob, device_id)
+                .await
+                .unwrap();
+            assert_eq!(unchanged.display_name.as_deref(), Some("original"));
+            assert_eq!(unchanged.last_seen_ip.as_deref(), Some("original-ip"));
+        }
+        let alice_device = data::user::device::get_device(&alice, &shared)
+            .await
+            .unwrap();
+        assert_eq!(alice_device.display_name.as_deref(), Some("alice-new"));
+    }
 }
