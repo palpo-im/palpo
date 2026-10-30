@@ -13,6 +13,7 @@ use diesel::result::Error as DieselError;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
+use crate::core::state::Event;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
