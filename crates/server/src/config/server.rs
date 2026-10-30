@@ -722,6 +722,8 @@ pub struct ServerConfig {
     pub jwt: Option<JwtConfig>,
 
     // external structure; separate section
+    /// Restricted outbound transports do not support proxies. Active rules or
+    /// forward-proxy environment variables cause startup to fail closed.
     pub proxy: Option<ProxyConfig>,
 
     // // external structure; separate section
@@ -912,6 +914,7 @@ impl ServerConfig {
     }
 
     pub fn check(&self) -> AppResult<()> {
+        super::validate_restricted_outbound_proxy(self.proxy.as_ref())?;
         #[cfg(feature = "unstable-msc1763")]
         self.retention.validate().map_err(AppError::internal)?;
         if cfg!(debug_assertions) {
