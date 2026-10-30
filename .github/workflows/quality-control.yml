@@ -107,6 +107,20 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
+      - name: Dummy registration policy regression tests
+        run: |
+          # Configuration is immutable; give each policy its own process and empty database.
+          for policy in open token email closed; do
+            case "$policy" in
+              open) test=http_dummy_registration_open_policy ;;
+              *) test=http_dummy_registration_preserves_${policy}_policy ;;
+            esac
+            sudo -u postgres createdb -O palpo_test palpo_dummy_${policy}
+            PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_dummy_${policy} \
+              cargo test -p palpo --lib --all-features \
+              routing::client::register::dummy_registration_tests::${test} -- --exact --ignored
+          done
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on

@@ -8,7 +8,7 @@ use subtle::ConstantTimeEq;
 use crate::core::UnixMillis;
 use crate::core::client::account::{LoginType, RegistrationKind};
 use crate::core::client::register::*;
-use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
+use crate::core::client::uiaa::{AuthData, AuthFlow, AuthType, UiaaInfo};
 use crate::core::events::GlobalAccountDataEventType;
 use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::identifiers::*;
@@ -169,13 +169,25 @@ async fn register(
         let uiaa_user_id =
             UserId::parse_with_server_name("", &conf.server_name).expect("we know this is valid");
         let uiaa_device_id = body.device_id.clone().unwrap_or_else(|| "".into());
-        // A registration UIA attempt must continue a challenge issued by this
-        // server. A bare m.login.dummy response is not proof that a
-        // registration session was started.
-        match body.auth.as_ref().filter(|auth| auth.session().is_some()) {
-            Some(auth) => {
+        match body.auth.as_ref() {
+            // Dummy-only registration needs no prior challenge: Matrix permits
+            // omitting its session. Stronger configured flows still require the
+            // issued session below, and a supplied session is always validated.
+            Some(auth @ AuthData::Dummy(_))
+                if auth.session().is_none()
+                    && uiaa_info.flows.len() == 1
+                    && uiaa_info.flows[0].stages == [AuthType::Dummy] =>
+            {
+                let (authed, uiaa) =
+                    crate::uiaa::try_auth(&uiaa_user_id, &uiaa_device_id, auth, &uiaa_info).await?;
+                if !authed {
+                    return Err(AppError::Uiaa(uiaa));
+                }
+                completed_session = uiaa.session;
+            }
+            Some(auth) if auth.session().is_some() => {
                 // Only claim after checking that this server issued the UIAA session.
-                let session = auth.session().expect("filtered above");
+                let session = auth.session().expect("guard checked the session");
                 crate::uiaa::get_session(&uiaa_user_id, &uiaa_device_id, session).await?;
                 if let crate::core::client::uiaa::AuthData::EmailIdentity(email) = auth
                     && (!email_required
@@ -204,7 +216,7 @@ async fn register(
                 }
                 completed_session = uiaa.session;
             }
-            None => {
+            _ => {
                 crate::uiaa::create_challenge_session(
                     &uiaa_user_id,
                     &uiaa_device_id,
@@ -487,4 +499,156 @@ async fn validate_token(
 async fn token_via_msisdn(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let _authed = depot.authed_info()?;
     empty_ok()
+}
+
+#[cfg(test)]
+mod dummy_registration_tests {
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    // Run each policy test in its own process and empty dedicated database:
+    // the production configuration is immutable for the lifetime of a server.
+    fn service(policy: &str) -> Service {
+        crate::test_database::init();
+        let mut conf = json!({
+            "server_name": "dummy-registration.example", "db": {"url": "unused-test-config"},
+            "allow_registration": policy != "closed", "auto_join_rooms": []
+        });
+        if policy == "token" {
+            conf["allow_registration"] = json!(false);
+            conf["registration_token"] = json!("required-registration-token");
+        }
+        if policy == "email" {
+            conf["registration_email"] = json!({
+                "agentmail_inbox": "registration@example.test",
+                "agentmail_api_key_file": std::env::temp_dir().join("palpo-dummy-registration-unread-api-key"),
+                "otp_secret_file": std::env::temp_dir().join("palpo-dummy-registration-unread-otp-key")
+            });
+        }
+        crate::config::CONFIG
+            .set(serde_json::from_value(conf).unwrap())
+            .expect("run each registration policy test in its own process");
+        Service::new(
+            Router::new().push(public_router()).push(
+                Router::new()
+                    .hoop(hoops::auth_by_access_token)
+                    .push(crate::routing::client::account::authed_router()),
+            ),
+        )
+    }
+
+    async fn register_request(service: &Service, body: Value) -> (StatusCode, Value) {
+        let mut response = TestClient::post("http://localhost/register")
+            .json(&body)
+            .send(service)
+            .await;
+        (
+            response.status_code.unwrap(),
+            response.take_json::<Value>().await.unwrap(),
+        )
+    }
+
+    async fn assert_no_account(localpart: &str) {
+        let user = UserId::parse(format!("@{localpart}:dummy-registration.example")).unwrap();
+        assert!(!data::user::user_exists(&user).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_open_policy() {
+        let service = service("open");
+        for (name, body) in [
+            (
+                "minimal",
+                json!({"username":"minimal", "auth":{"type":"m.login.dummy"}}),
+            ),
+            (
+                "blueprint",
+                json!({"username":"blueprint", "password":"complement_meets_min_password_req",
+                    "device_id":"BLUEPRINT", "auth":{"type":"m.login.dummy"}}),
+            ),
+        ] {
+            let (status, result) = register_request(&service, body).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            let user = format!("@{name}:dummy-registration.example");
+            assert_eq!(result["user_id"], user);
+            assert!(
+                data::user::user_exists(UserId::parse(&user).unwrap().as_ref())
+                    .await
+                    .unwrap()
+            );
+            let mut response = TestClient::get("http://localhost/account/whoami")
+                .add_header(
+                    "authorization",
+                    format!("Bearer {}", result["access_token"].as_str().unwrap()),
+                    true,
+                )
+                .send(&service)
+                .await;
+            assert_eq!(response.status_code, Some(StatusCode::OK));
+            let identity: Value = response.take_json().await.unwrap();
+            assert_eq!(identity["user_id"], user);
+        }
+        let (status, challenge) = register_request(&service, json!({"username":"challenge"})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(challenge["session"].is_string());
+        let (status, error) = register_request(
+            &service,
+            json!({"username":"unknownsession",
+            "auth":{"type":"m.login.dummy", "session":"not-issued"}}),
+        )
+        .await;
+        assert!(!status.is_success(), "{error}");
+        assert_no_account("unknownsession").await;
+        assert_no_account("challenge").await;
+    }
+
+    async fn assert_policy_requires_stage(policy: &str, stage: &str) {
+        let service = service(policy);
+        let (status, challenge) = register_request(
+            &service,
+            json!({"username":"blocked",
+            "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{challenge}");
+        assert_eq!(challenge["flows"][0]["stages"], json!([stage]));
+        // Dummy also cannot complete a real, issued stronger-flow session.
+        let (status, error) = register_request(
+            &service,
+            json!({"username":"blocked",
+            "auth":{"type":"m.login.dummy", "session":challenge["session"]}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+        assert_no_account("blocked").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_preserves_token_policy() {
+        assert_policy_requires_stage("token", "m.login.registration_token").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_preserves_email_policy() {
+        assert_policy_requires_stage("email", "m.login.email.identity").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_dummy_registration_preserves_closed_policy() {
+        let service = service("closed");
+        let (status, error) = register_request(
+            &service,
+            json!({"username":"blocked",
+            "auth":{"type":"m.login.dummy"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+        assert_no_account("blocked").await;
+    }
 }
