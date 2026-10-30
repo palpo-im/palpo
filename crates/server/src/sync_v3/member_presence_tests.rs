@@ -756,14 +756,16 @@ async fn delayed_member_publication() {
         )
         .await
     });
-    let waiting_sync = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let (start_sync, started) = tokio::sync::oneshot::channel();
+    let waiting_sync = tokio::spawn(async {
+        started.await.unwrap();
+        let service = Service::new(crate::routing::root());
+        sync(&service, None, None).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
         wait_for_publication_lock(616, 404, 2, "ExclusiveLock").await;
-        let pending = tokio::spawn(async {
-            let service = Service::new(crate::routing::root());
-            sync(&service, None, None).await
-        });
+        start_sync.send(()).unwrap();
         wait_for_publication_lock(0, 1_346_456_654, 1, "ShareLock").await;
-        pending
     })
     .await
     .expect("writer and sync must meet the deterministic publication barriers");
