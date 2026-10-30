@@ -527,17 +527,26 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
             .await?;
     } else {
         let existing_ids = events::table
+            .filter(events::room_id.eq(&pdu.room_id))
             .filter(events::id.eq_any(&pdu.prev_events))
             .filter(events::is_outlier.eq(false))
             .select(events::id)
             .load::<OwnedEventId>(&mut connect().await?)
             .await?;
-        let missing_ids: Vec<OwnedEventId> = pdu
-            .prev_events
-            .iter()
-            .filter(|id| !existing_ids.contains(id))
-            .cloned()
-            .collect();
+        let mut missing_ids = Vec::new();
+        for event_id in &pdu.prev_events {
+            if existing_ids.contains(event_id) {
+                continue;
+            }
+            if timeline::history_has_missing_predecessors(
+                &pdu.room_id,
+                std::slice::from_ref(event_id),
+            )
+            .await?
+            {
+                missing_ids.push(event_id.clone());
+            }
+        }
         if missing_ids.is_empty() {
             diesel::delete(
                 event_backward_extremities::table
@@ -579,6 +588,10 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                     event_id: pdu.event_id.clone(),
                     event_sn: pdu.event_sn,
                 })
+                // Promotion and backfill can revisit the same still-missing
+                // predecessor. Keep the existing gap when they race or retry.
+                .on_conflict((timeline_gaps::room_id, timeline_gaps::event_sn))
+                .do_nothing()
                 .execute(&mut connect().await?)
                 .await?;
         }
@@ -1306,6 +1319,10 @@ pub fn allowed_room_ids(join_rule: JoinRule) -> Vec<OwnedRoomId> {
     }
     room_ids
 }
+
+#[cfg(test)]
+#[path = "state/gap_tests.rs"]
+mod gap_tests;
 
 #[cfg(test)]
 mod invite_state_tests {

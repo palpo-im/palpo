@@ -94,7 +94,7 @@ async fn send_message(
 
     let txn_start_time = Instant::now();
     let resolved_map = process_pdus(&body.pdus, &body.origin, &txn_start_time).await?;
-    process_edus(parse_edus(body.edus), &body.origin).await;
+    process_edus(parse_edus(body.edus), &body.origin).await?;
 
     json_ok(SendMessageResBody {
         pdus: resolved_map
@@ -153,13 +153,15 @@ async fn process_pdus(
     Ok(resolved_map)
 }
 
-async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) {
+async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) -> AppResult<()> {
     for edu in edus {
         match edu {
             Edu::Presence(presence) => process_edu_presence(origin, presence).await,
             Edu::Receipt(receipt) => process_edu_receipt(origin, receipt).await,
             Edu::Typing(typing) => process_edu_typing(origin, typing).await,
-            Edu::DeviceListUpdate(content) => process_edu_device_list_update(origin, content).await,
+            Edu::DeviceListUpdate(content) => {
+                process_edu_device_list_update(origin, content).await?
+            }
             Edu::DirectToDevice(content) => process_edu_direct_to_device(origin, content).await,
             Edu::SigningKeyUpdate(content) => process_edu_signing_key_update(origin, content).await,
             Edu::_Custom(ref _custom) => {
@@ -167,6 +169,7 @@ async fn process_edus(edus: impl Iterator<Item = Edu>, origin: &ServerName) {
             }
         }
     }
+    Ok(())
 }
 
 async fn process_edu_presence(origin: &ServerName, presence: PresenceContent) {
@@ -374,9 +377,12 @@ async fn process_edu_typing(origin: &ServerName, typing: TypingContent) {
     }
 }
 
-async fn process_edu_device_list_update(origin: &ServerName, content: DeviceListUpdateContent) {
+async fn process_edu_device_list_update(
+    origin: &ServerName,
+    content: DeviceListUpdateContent,
+) -> AppResult<()> {
     let DeviceListUpdateContent {
-        user_id, device_id, ..
+        user_id, stream_id, ..
     } = content;
 
     if user_id.server_name() != origin {
@@ -384,10 +390,15 @@ async fn process_edu_device_list_update(origin: &ServerName, content: DeviceList
             %user_id, %origin,
             "received device list update edu for user not belonging to origin"
         );
-        return;
+        return Ok(());
     }
-
-    let _ = crate::user::mark_device_key_update(&user_id, &device_id).await;
+    crate::data::user::key::apply_remote_device_list_version(
+        &user_id,
+        stream_id,
+        crate::config::server_name(),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn process_edu_direct_to_device(origin: &ServerName, content: DirectDeviceContent) {
@@ -549,5 +560,776 @@ mod tests {
             body.validate(&ServerName::parse("another.example").unwrap())
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod device_version_tests {
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
+    use crate::core::serde::CanonicalJsonObject;
+    use crate::core::signatures::{Ed25519KeyPair, sign_json};
+    use crate::data::schema::{e2e_key_changes, remote_device_list_versions, room_users, rooms};
+
+    const LOCAL: &str = "device-versions.example";
+    const REMOTE: &str = "remote-devices.example";
+    const TOKEN: &str = "device-version-alice";
+
+    async fn send_update(
+        service: &Service,
+        key: &Ed25519KeyPair,
+        txn: &str,
+        stream: u64,
+        device: &str,
+    ) -> (StatusCode, Value) {
+        let path = format!("/_matrix/federation/v1/send/{txn}");
+        let body = json!({"origin":REMOTE,"origin_server_ts":1,"pdus":[],"edus":[{
+            "edu_type":"m.device_list_update","content":{
+                "user_id":format!("@bob:{REMOTE}"),"device_id":device,
+                "stream_id":stream,"prev_id":[]
+            }
+        }]});
+        let mut signed: CanonicalJsonObject = serde_json::from_value(json!({
+            "method":"PUT","uri":path,"origin":REMOTE,"destination":LOCAL,"content":body
+        }))
+        .unwrap();
+        sign_json(REMOTE, key, &mut signed).unwrap();
+        let signed = serde_json::to_value(signed).unwrap();
+        let signature = signed["signatures"][REMOTE]["ed25519:versions"]
+            .as_str()
+            .unwrap();
+        let mut response = TestClient::put(format!("http://localhost{path}"))
+            .json(&body)
+            .add_header("authorization", format!(
+                "X-Matrix origin=\"{REMOTE}\",destination=\"{LOCAL}\",key=\"ed25519:versions\",sig=\"{signature}\""
+            ), true)
+            .send(service).await;
+        (
+            response.status_code.unwrap(),
+            response.take_json().await.unwrap(),
+        )
+    }
+
+    async fn sync(service: &Service, since: Option<&str>) -> Value {
+        let since = since
+            .map(|since| format!("&since={since}"))
+            .unwrap_or_default();
+        let request = TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/sync?timeout=0{since}"
+        ))
+        .add_header("authorization", format!("Bearer {TOKEN}"), true);
+        let mut response = request.send(service).await;
+        let result: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{result}");
+        result
+    }
+
+    async fn join_current_membership(room: &RoomId, user: &UserId) {
+        diesel::insert_into(room_users::table)
+            .values(crate::data::room::NewDbRoomUser {
+                event_id: format!("$device-{}", user.localpart()).try_into().unwrap(),
+                event_sn: 1,
+                room_id: room.to_owned(),
+                room_server_id: Some(LOCAL.try_into().unwrap()),
+                user_id: user.to_owned(),
+                user_server_id: user.server_name().to_owned(),
+                sender_id: user.to_owned(),
+                membership: "join".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: None,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn setup() -> (
+        Service,
+        Ed25519KeyPair,
+        OwnedUserId,
+        OwnedUserId,
+        OwnedRoomId,
+    ) {
+        setup_with_local_peer(false).await
+    }
+
+    async fn setup_with_local_peer(
+        allow_local_peer: bool,
+    ) -> (
+        Service,
+        Ed25519KeyPair,
+        OwnedUserId,
+        OwnedUserId,
+        OwnedRoomId,
+    ) {
+        crate::test_database::init();
+        let mut config: crate::config::ServerConfig = serde_json::from_value(json!({
+            "server_name":LOCAL,"db":{"url":"unused-test-config"},
+            "presence":{"allow_local":false,"allow_incoming":false,"allow_outgoing":false}
+        }))
+        .unwrap();
+        if allow_local_peer {
+            config.ip_range_denylist.clear();
+        }
+        crate::config::CONFIG
+            .set(config)
+            .expect("run this HTTP regression alone");
+        let alice = UserId::parse(format!("@alice:{LOCAL}")).unwrap();
+        let bob = UserId::parse(format!("@bob:{REMOTE}")).unwrap();
+        crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: alice.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: alice.localpart().into(),
+            server_name: alice.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        crate::data::user::device::create_device(&alice, "ALICE".into(), TOKEN, None, None)
+            .await
+            .unwrap();
+        let room: OwnedRoomId = format!("!device-versions:{LOCAL}").try_into().unwrap();
+        let mut conn = crate::data::connect().await.unwrap();
+        diesel::insert_into(rooms::table)
+            .values(crate::data::room::NewDbRoom {
+                id: room.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        // Device tracking is scoped by the current joined membership rows. No
+        // room event is involved in accepting or replaying a device-list EDU.
+        drop(conn);
+        join_current_membership(&room, &alice).await;
+        let key = Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "versions".into())
+            .unwrap();
+        let mut keys = ServerSigningKeys::new(
+            REMOTE.try_into().unwrap(),
+            UnixMillis(UnixMillis::now().0 + 86_400_000),
+        );
+        keys.verify_keys.insert(
+            "ed25519:versions".try_into().unwrap(),
+            VerifyKey::from_bytes(key.public_key().to_vec()),
+        );
+        crate::server_key::add_signing_keys(keys).await.unwrap();
+        let service = Service::new(crate::routing::matrix());
+        (service, key, alice, bob, room)
+    }
+
+    async fn run() {
+        let (service, key, alice, bob, room) = setup().await;
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "not-yet-shared", 0, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "untracked user consumed a version"
+        );
+        join_current_membership(&room, &bob).await;
+        let initial = sync(&service, None).await;
+        let response = send_update(&service, &key, "first", 0, "BOB").await;
+        assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        let acknowledged = sync(&service, initial["next_batch"].as_str()).await;
+        assert_eq!(acknowledged["device_lists"]["changed"], json!([bob]));
+
+        // A placeholder and the explicit device can describe the same opaque
+        // version in separate transactions. Replaying it after acknowledgement
+        // must not pollute Alice's own new-device change with Bob again.
+        let before = crate::data::curr_sn().await.unwrap();
+        let response = send_update(&service, &key, "duplicate", 0, "placeholder").await;
+        assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "duplicate EDU allocated a new stream position"
+        );
+        crate::data::user::device::create_device(
+            &alice,
+            "SECOND".into(),
+            "device-version-second",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut response = TestClient::post("http://localhost/_matrix/client/v3/keys/upload")
+            .add_header("authorization", "Bearer device-version-second", true)
+            .json(&json!({"device_keys":{"user_id":alice,"device_id":"SECOND",
+                "algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{},"signatures":{}}}))
+            .send(&service)
+            .await;
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        let own_change = sync(&service, acknowledged["next_batch"].as_str()).await;
+        assert_eq!(own_change["device_lists"]["changed"], json!([alice]));
+
+        let before = crate::data::curr_sn().await.unwrap();
+        let transaction_ids = (0..8)
+            .map(|i| format!("concurrent-{i}"))
+            .collect::<Vec<_>>();
+        let sends = transaction_ids
+            .iter()
+            .map(|txn| send_update(&service, &key, txn, 37, "BOB"));
+        for response in futures_util::future::join_all(sends).await {
+            assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        }
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before + 1,
+            "concurrent duplicate deliveries invalidated more than once"
+        );
+
+        // IDs are opaque, not ordered: a new lower value is a new version too.
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "lower-version", 12, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        let mut conn = crate::data::connect().await.unwrap();
+        conn.batch_execute("CREATE FUNCTION fail_device_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.user_id = '@bob:remote-devices.example' THEN RAISE EXCEPTION 'injected device marker failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_device_version BEFORE INSERT ON e2e_key_changes FOR EACH ROW EXECUTE FUNCTION fail_device_version();").await.unwrap();
+        drop(conn);
+        let response = send_update(&service, &key, "failure", 55, "BOB").await;
+        assert_eq!(
+            response.0,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{:?}",
+            response.1
+        );
+        let mut conn = crate::data::connect().await.unwrap();
+        conn.batch_execute("DROP TRIGGER fail_device_version ON e2e_key_changes; DROP FUNCTION fail_device_version();").await.unwrap();
+        drop(conn);
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "retry-after-failure", 55, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before + 1,
+            "failed invalidation incorrectly remembered the version"
+        );
+
+        // The decoded content type permits all u64 values, while the transport's
+        // canonical-JSON signature range is narrower. Exercise the handler's
+        // persistence boundary directly for the maximum value, without a cast.
+        let large: DeviceListUpdateContent = serde_json::from_value(json!({
+            "user_id":bob,"device_id":"BOB","stream_id":u64::MAX,"prev_id":[]
+        }))
+        .unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        let remote = ServerName::parse(REMOTE).unwrap();
+        process_edu_device_list_update(&remote, large.clone())
+            .await
+            .unwrap();
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        process_edu_device_list_update(&remote, large)
+            .await
+            .unwrap();
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        for stream in 1_000..1_260 {
+            let response =
+                send_update(&service, &key, &format!("window-{stream}"), stream, "BOB").await;
+            assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        }
+        let count: i64 = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .count()
+            .get_result(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 256,
+            "remote version history grew beyond its durable window"
+        );
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "window-recent", 1_259, "placeholder")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before);
+        // An evicted low ID is conservatively invalidated and retained as the
+        // newest receipt, proving eviction does not sort opaque remote IDs.
+        assert_eq!(
+            send_update(&service, &key, "window-evicted", 1_000, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        let retained: bool = diesel::select(diesel::dsl::exists(
+            remote_device_list_versions::table
+                .filter(remote_device_list_versions::user_id.eq(&bob))
+                .filter(remote_device_list_versions::stream_id.eq("1000")),
+        ))
+        .get_result(&mut crate::data::connect().await.unwrap())
+        .await
+        .unwrap();
+        assert!(retained);
+        diesel::delete(room_users::table.filter(room_users::user_id.eq(&alice)))
+            .execute(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "no-local-member", 1_259, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before);
+        let count: i64 = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .count()
+            .get_result(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "unshared user's retained window was not cleared");
+        join_current_membership(&room, &alice).await;
+        assert_eq!(
+            send_update(&service, &key, "shared-again", 1_259, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        // Each atomic membership transition has exactly one joined side. A
+        // single statement must never invent shared membership by combining
+        // remote and local rows from different READ COMMITTED snapshots.
+        let mut conn = crate::data::connect().await.unwrap();
+        diesel::sql_query("UPDATE room_users SET membership = CASE WHEN user_id = $1 THEN 'leave' ELSE 'join' END WHERE user_id IN ($1, $2) AND room_id = $3")
+            .bind::<diesel::sql_types::Text,_>(alice.as_str())
+            .bind::<diesel::sql_types::Text,_>(bob.as_str())
+            .bind::<diesel::sql_types::Text,_>(room.as_str())
+            .execute(&mut conn).await.unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        let writers = async {
+            for phase in 0..128 {
+                diesel::sql_query("UPDATE room_users SET membership = CASE WHEN user_id = $1 THEN CASE WHEN $3 THEN 'join' ELSE 'leave' END ELSE CASE WHEN $3 THEN 'leave' ELSE 'join' END END WHERE user_id IN ($1, $2) AND room_id = $4")
+                    .bind::<diesel::sql_types::Text,_>(alice.as_str())
+                    .bind::<diesel::sql_types::Text,_>(bob.as_str())
+                    .bind::<diesel::sql_types::Bool,_>(phase%2==0)
+                    .bind::<diesel::sql_types::Text,_>(room.as_str())
+                    .execute(&mut conn).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        };
+        let readers = async {
+            for version in 2_000..2_064 {
+                let response = send_update(
+                    &service,
+                    &key,
+                    &format!("snapshot-{version}"),
+                    version,
+                    "BOB",
+                )
+                .await;
+                assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+            }
+        };
+        let ((), ()) = tokio::join!(writers, readers);
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "membership snapshots invented a shared room"
+        );
+        let cached: i64 = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            cached, 0,
+            "a never-shared membership pair consumed remote versions"
+        );
+    }
+
+    fn snapshot_peer(
+        body: String,
+        status: &str,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<String>,
+        std::sync::mpsc::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let status = status.to_owned();
+        let thread = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 16_384);
+            }
+            seen_tx.send(String::from_utf8(request).unwrap()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        (origin, seen_rx, release_tx, thread)
+    }
+
+    fn verify_snapshot_request(request: &str, bob: &UserId) {
+        use crate::core::federation::authentication::XMatrix;
+        use crate::core::serde::Base64;
+        use crate::core::signatures::{PublicKeyMap, verify_json};
+        let mut url =
+            reqwest::Url::parse("http://snapshot.test/_matrix/federation/v1/user/devices").unwrap();
+        url.path_segments_mut().unwrap().push(bob.as_str());
+        let request_path = url.path();
+        assert_eq!(
+            request.lines().next().unwrap(),
+            format!("GET {request_path} HTTP/1.1")
+        );
+        let authorization = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim())
+            })
+            .unwrap();
+        let auth = XMatrix::parse(authorization).unwrap();
+        assert_eq!(auth.origin.as_str(), LOCAL);
+        assert_eq!(auth.destination.as_deref(), Some(bob.server_name()));
+        let mut object = json!({
+            "method":"GET", "uri":request_path,"origin":LOCAL,"destination":REMOTE,
+            "signatures":{}
+        });
+        object["signatures"][LOCAL] = json!({});
+        object["signatures"][LOCAL][auth.key.as_str()] = serde_json::to_value(auth.sig).unwrap();
+        let object: CanonicalJsonObject = serde_json::from_value(object).unwrap();
+        let keys: PublicKeyMap = [(
+            LOCAL.to_owned(),
+            [(
+                auth.key.to_string(),
+                Base64::new(crate::config::keypair().public_key().to_vec()),
+            )]
+            .into(),
+        )]
+        .into();
+        verify_json(&keys, &object).unwrap();
+    }
+
+    async fn bootstrap_races() {
+        let (service, key, _alice, bob, room) = setup_with_local_peer(true).await;
+        let slash_user = UserId::parse(format!("@bob/with=slash:{REMOTE}")).unwrap();
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":slash_user,"stream_id":42,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = slash_user.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &slash_user);
+        release.send(()).unwrap();
+        assert_eq!(fetching.await.unwrap().unwrap(), 42);
+        peer.join().unwrap();
+        // The fake peer only overrides the resolved URL for this real signed
+        // transport call; production resolution always supplies its HTTPS URL.
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":bob,"stream_id":0,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = bob.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &bob);
+        release.send(()).unwrap();
+        let version = fetching.await.unwrap().unwrap();
+        peer.join().unwrap();
+        let before = crate::data::curr_sn().await.unwrap();
+        assert!(
+            crate::data::user::key::initialize_remote_device_list_snapshot(
+                &bob,
+                version,
+                LOCAL.try_into().unwrap()
+            )
+            .await
+            .unwrap()
+        );
+        // Both the same version and a genuine other version can reach the
+        // receiver before publication. Neither unsolicited EDU is consumed,
+        // and neither erases the proven initial snapshot.
+        for (txn, version) in [
+            ("bootstrap-untracked-same", 0),
+            ("bootstrap-untracked-new", 37),
+        ] {
+            assert_eq!(
+                send_update(&service, &key, txn, version, "BOB").await.0,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before);
+        let versions: Vec<String> = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .select(remote_device_list_versions::stream_id)
+            .load(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(versions, ["0"]);
+        join_current_membership(&room, &bob).await;
+        assert_eq!(
+            send_update(&service, &key, "bootstrap-late-initial", 0, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before,
+            "the proven pre-membership snapshot became a second invalidation"
+        );
+        assert_eq!(
+            send_update(&service, &key, "bootstrap-real-after-visible", 37, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            crate::data::curr_sn().await.unwrap(),
+            before + 1,
+            "a genuine post-publication change was swallowed"
+        );
+        assert!(
+            !crate::data::user::key::initialize_remote_device_list_snapshot(
+                &bob,
+                99,
+                LOCAL.try_into().unwrap()
+            )
+            .await
+            .unwrap(),
+            "a snapshot replaced an already tracked device stream"
+        );
+        let initialized: Vec<String> = remote_device_list_versions::table
+            .filter(remote_device_list_versions::user_id.eq(&bob))
+            .filter(remote_device_list_versions::is_initial_snapshot.eq(true))
+            .select(remote_device_list_versions::stream_id)
+            .load(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        assert!(initialized.is_empty());
+
+        // A response delayed across publication is not eligible to initialize
+        // the stream. Barriers establish this order without timing or sleeps.
+        diesel::delete(room_users::table.filter(room_users::user_id.eq(&bob)))
+            .execute(&mut crate::data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let (origin, seen, release, peer) = snapshot_peer(
+            json!({"user_id":bob,"stream_id":100,"devices":[]}).to_string(),
+            "200 OK",
+        );
+        let fetching_user = bob.clone();
+        let fetching = tokio::spawn(async move {
+            crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                .await
+        });
+        verify_snapshot_request(&seen.await.unwrap(), &bob);
+        join_current_membership(&room, &bob).await;
+        release.send(()).unwrap();
+        let snapshot = fetching.await.unwrap().unwrap();
+        peer.join().unwrap();
+        assert!(
+            !crate::data::user::key::initialize_remote_device_list_snapshot(
+                &bob,
+                snapshot,
+                LOCAL.try_into().unwrap()
+            )
+            .await
+            .unwrap()
+        );
+        let before = crate::data::curr_sn().await.unwrap();
+        assert_eq!(
+            send_update(&service, &key, "snapshot-after-visible", 100, "BOB")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+
+        // Unsupported, malformed and wrong-user snapshots cannot authorize
+        // suppressing any version, even when the peer returns HTTP success.
+        for (index, (body, status)) in [
+            ("{}".to_owned(), "404 Not Found"),
+            ("not-json".to_owned(), "200 OK"),
+            (
+                json!({"user_id":format!("@other:{REMOTE}"),"stream_id":200,"devices":[]})
+                    .to_string(),
+                "200 OK",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (origin, seen, release, peer) = snapshot_peer(body, status);
+            let fetching_user = bob.clone();
+            let fetching = tokio::spawn(async move {
+                crate::federation::membership::fetch_remote_device_snapshot(&fetching_user, &origin)
+                    .await
+            });
+            verify_snapshot_request(&seen.await.unwrap(), &bob);
+            release.send(()).unwrap();
+            assert!(fetching.await.unwrap().is_err());
+            peer.join().unwrap();
+            let before = crate::data::curr_sn().await.unwrap();
+            assert_eq!(
+                send_update(
+                    &service,
+                    &key,
+                    &format!("snapshot-failure-{index}"),
+                    200 + index as u64,
+                    "BOB"
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+            assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        }
+    }
+
+    #[test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_join_snapshot_preserves_device_version_races() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(bootstrap_races())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn many_rooms() {
+        let (service, key, _alice, bob, _room) = setup().await;
+        let mut conn = crate::data::connect().await.unwrap();
+        diesel::sql_query("INSERT INTO rooms (id, version, is_public, min_depth, has_auth_chain_index, created_at) SELECT '!device-many-' || number || ':' || $1, '11', false, 0, false, 0 FROM generate_series(1, 16500) AS seed(number)")
+            .bind::<diesel::sql_types::Text,_>(LOCAL)
+            .execute(&mut conn).await.unwrap();
+        diesel::sql_query("INSERT INTO room_users (event_id, event_sn, room_id, room_server_id, user_id, user_server_id, sender_id, membership, forgotten, created_at) SELECT '$many-' || number || '-' || member.localpart, 1, '!device-many-' || number || ':' || $1, $1, member.user_id, member.server_id, member.user_id, 'join', false, 0 FROM generate_series(1, 16500) AS seed(number) CROSS JOIN (VALUES ($2, $1, 'alice'), ($3, $4, 'bob')) AS member(user_id, server_id, localpart)")
+            .bind::<diesel::sql_types::Text,_>(LOCAL)
+            .bind::<diesel::sql_types::Text,_>(format!("@alice:{LOCAL}"))
+            .bind::<diesel::sql_types::Text,_>(bob.as_str())
+            .bind::<diesel::sql_types::Text,_>(REMOTE)
+            .execute(&mut conn).await.unwrap();
+        drop(conn);
+        let before = crate::data::curr_sn().await.unwrap();
+        let response = send_update(&service, &key, "many-shared-rooms", 1, "BOB").await;
+        assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
+        assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
+        let mut conn = crate::data::connect().await.unwrap();
+        let count: i64 = e2e_key_changes::table
+            .filter(e2e_key_changes::user_id.eq(&bob))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 16_501,
+            "a shared room or the global marker was dropped"
+        );
+        let positions: Vec<i64> = e2e_key_changes::table
+            .filter(e2e_key_changes::user_id.eq(&bob))
+            .select(e2e_key_changes::occur_sn)
+            .distinct()
+            .load(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(positions, vec![before + 1]);
+        let global: i64 = e2e_key_changes::table
+            .filter(e2e_key_changes::user_id.eq(&bob))
+            .filter(e2e_key_changes::room_id.is_null())
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(global, 1);
+    }
+
+    #[test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_remote_device_versions_are_durable_and_idempotent() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_remote_device_versions_cover_many_shared_rooms() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(many_rooms())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
