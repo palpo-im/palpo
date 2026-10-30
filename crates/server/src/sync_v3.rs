@@ -1523,6 +1523,10 @@ async fn presence_visible_to(sender_id: &UserId, viewer_id: &UserId) -> AppResul
 }
 
 #[cfg(test)]
+#[path = "sync_v3/member_presence_tests.rs"]
+mod member_presence_tests;
+
+#[cfg(test)]
 mod pagination_database_tests {
     use super::*;
     use crate::core::serde::to_canonical_object;
