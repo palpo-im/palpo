@@ -538,6 +538,8 @@ mod transaction_tests {
 
     async fn run() {
         crate::test_database::init();
+        let (sender, _federation_receiver) = tokio::sync::mpsc::channel(256);
+        let _ = crate::sending::MPSC_SENDER.set(sender);
         crate::config::CONFIG.get_or_init(|| {
             serde_json::from_value(json!({
                 "server_name":"redact.example", "db":{"url":"unused-test-config"}
@@ -586,6 +588,15 @@ mod transaction_tests {
         .await;
         assert_eq!(status, Some(StatusCode::OK), "{created}");
         let room = created["room_id"].as_str().unwrap();
+        diesel::insert_into(room_joined_servers::table)
+            .values((
+                room_joined_servers::room_id.eq(room),
+                room_joined_servers::server_id.eq("remote-redaction.example"),
+                room_joined_servers::occur_sn.eq(crate::data::next_sn().await.unwrap()),
+            ))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
         let (status, message) = request(
             &service,
             TestClient::put(format!(
@@ -616,6 +627,48 @@ mod transaction_tests {
         )
         .await;
         assert_eq!(retry["event_id"], first.1["event_id"]);
+
+        // A durable receipt can survive a crash before its federation queue
+        // write. Retrying must repair that obligation without a second event.
+        let redaction = first.1["event_id"].as_str().unwrap();
+        diesel::delete(outgoing_requests::table.filter(outgoing_requests::pdu_id.eq(redaction)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_enqueue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind = 'normal' THEN RAISE EXCEPTION 'injected federation enqueue failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_enqueue BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q15_fail_enqueue();").await.unwrap();
+        let failed_retry = request(&service, TestClient::put(&url).json(&json!({}))).await;
+        assert_eq!(
+            failed_retry.0,
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "receipt replay must propagate federation enqueue failure: {:?}",
+            failed_retry.1
+        );
+        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_enqueue ON outgoing_requests; DROP FUNCTION q15_fail_enqueue();").await.unwrap();
+        let (status, repaired) = request(&service, TestClient::put(&url).json(&json!({}))).await;
+        assert_eq!(status, Some(StatusCode::OK), "{repaired}");
+        assert_eq!(repaired["event_id"], redaction);
+        let queued: i64 = outgoing_requests::table
+            .filter(outgoing_requests::pdu_id.eq(redaction))
+            .filter(outgoing_requests::server_id.eq("remote-redaction.example"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            queued, 1,
+            "receipt replay must restore the missing queue row"
+        );
+        let redactions: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            redactions, 1,
+            "enqueue recovery must not publish another redaction"
+        );
 
         // Simulate a failed receipt write after the event was published. Recovery
         // must use the persisted event's trusted metadata rather than append again.
