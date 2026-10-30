@@ -64,28 +64,24 @@ async fn register(
     }
 
     let conf = crate::config::get();
-    if !conf.allow_registration && !aa.from_appservice && conf.registration_token.is_none() {
-        return Err(MatrixError::forbidden("registration has been disabled", None).into());
-    }
-
-    if conf.enabled_delegated_auth().is_some()
-        && body.login_type != Some(LoginType::ApplicationService)
-    {
-        return Err(MatrixError::forbidden(
-            "Local registration is disabled while delegated authentication is enabled. Use SSO/OIDC registration.",
-            None,
+    // Import file registrations, then use the enabled database registrations just as
+    // normal appservice authentication does. Client query flags confer no privileges.
+    let appservice = if body.login_type == Some(LoginType::ApplicationService) {
+        let token = aa.require_access_token()?;
+        crate::appservices().await;
+        Some(
+            crate::appservice::find_from_token(token)
+                .await?
+                .ok_or_else(|| {
+                    MatrixError::unknown_token("Unknown application service token", false)
+                })?,
         )
-        .into());
-    }
-
+    } else {
+        None
+    };
     let is_guest = body.kind == RegistrationKind::Guest;
-    let email_required =
-        conf.registration_email.is_some() && body.login_type != Some(LoginType::ApplicationService);
-    if email_required && is_guest {
-        return Err(
-            MatrixError::forbidden("This server requires a verified email account.", None).into(),
-        );
-    }
+    ensure_registration_admission(conf, appservice.is_some(), is_guest)?;
+    let email_required = conf.registration_email.is_some() && appservice.is_none();
     let user_id = match (&body.username, is_guest) {
         (Some(username), false) => {
             let proposed_user_id =
@@ -113,30 +109,10 @@ async fn register(
         },
     };
 
-    let mut appservice = None;
-    if body.login_type == Some(LoginType::ApplicationService) {
-        let token = aa.require_access_token()?;
-        // Constant-time comparison so we don't leak `as_token` bytes via
-        // response timing. The same pattern is used in `hoops/auth.rs`.
-        let matched = crate::appservices()
-            .await
-            .iter()
-            .find(|appservice| {
-                appservice
-                    .as_token
-                    .as_bytes()
-                    .ct_eq(token.as_bytes())
-                    .into()
-            })
-            .cloned();
-        let Some(matched) = matched else {
-            return Err(MatrixError::missing_token("missing appservice token").into());
-        };
-        let appservice_info: crate::appservice::RegistrationInfo = matched.clone().try_into()?;
-        if !appservice_info.is_user_match(&user_id) {
+    if let Some(appservice) = &appservice {
+        if !appservice.is_user_match(&user_id) {
             return Err(MatrixError::exclusive("user is not in appservice namespace").into());
         }
-        appservice = Some(matched);
     } else if crate::appservice::is_exclusive_user_id(&user_id).await? {
         return Err(MatrixError::exclusive("user id reserved by appservice").into());
     }
@@ -295,11 +271,10 @@ async fn register(
             appservice_id: None,
             created_at: UnixMillis::now(),
         };
-        let hash = body
-            .password
-            .as_deref()
-            .map(crate::utils::hash_password)
-            .transpose()?;
+        let hash = match body.password.as_deref() {
+            Some(password) => Some(crate::utils::hash_password_async(password).await?),
+            None => None,
+        };
         data::user::registration_email::create_registered_user(
             &new_user,
             hash.as_deref(),
@@ -500,6 +475,32 @@ async fn validate_registration_session(
         return Err(
             MatrixError::unauthorized("Registration session does not match this request.").into(),
         );
+    }
+    Ok(())
+}
+
+/// Admission is based only on authenticated appservice identity and server policy.
+fn ensure_registration_admission(
+    conf: &crate::ServerConfig,
+    authenticated_appservice: bool,
+    is_guest: bool,
+) -> crate::AppResult<()> {
+    if !conf.allow_registration && !authenticated_appservice && conf.registration_token.is_none() {
+        return Err(MatrixError::forbidden("registration has been disabled", None).into());
+    }
+    if conf.enabled_delegated_auth().is_some() && !authenticated_appservice {
+        return Err(MatrixError::forbidden(
+            "Local registration is disabled while delegated authentication is enabled. Use SSO/OIDC registration.",
+            None,
+        ).into());
+    }
+    // Guests skip UIAA, so they cannot satisfy a required token or email stage.
+    if is_guest
+        && (!conf.allow_guest_registration
+            || (!authenticated_appservice
+                && (conf.registration_token.is_some() || conf.registration_email.is_some())))
+    {
+        return Err(MatrixError::forbidden("Guest registration is not allowed.", None).into());
     }
     Ok(())
 }
@@ -953,5 +954,42 @@ mod dummy_registration_tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
         assert_no_account("blocked").await;
+    }
+}
+
+#[cfg(test)]
+mod registration_admission_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn configuration() -> crate::ServerConfig {
+        serde_json::from_value(json!({
+            "server_name": "registration.example", "db": {"url": "unused"},
+            "allow_registration": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn untrusted_appservice_flag_does_not_open_closed_registration() {
+        let conf = configuration();
+        let args: AuthArgs = serde_json::from_value(json!({"from_appservice": true})).unwrap();
+        assert!(args.from_appservice);
+        assert!(ensure_registration_admission(&conf, false, false).is_err());
+        assert!(ensure_registration_admission(&conf, true, false).is_ok());
+    }
+
+    #[test]
+    fn guest_switch_and_required_token_are_both_enforced() {
+        let mut conf = configuration();
+        conf.allow_registration = true;
+        assert!(ensure_registration_admission(&conf, false, true).is_err());
+        conf.allow_guest_registration = true;
+        assert!(ensure_registration_admission(&conf, false, true).is_ok());
+        conf.registration_token = Some("registration-secret".into());
+        assert!(ensure_registration_admission(&conf, false, true).is_err());
+        // Normal accounts may continue into UIAA to prove the required token.
+        assert!(ensure_registration_admission(&conf, false, false).is_ok());
     }
 }
