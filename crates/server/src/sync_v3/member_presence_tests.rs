@@ -399,8 +399,8 @@ async fn member_presence() {
                     "future name beyond captured window"
                 );
                 assert_ne!(
-                    event["content"]["displayname"],
-                    "future Alice beyond captured window"
+                    event["content"]["displayname"], "future Alice beyond captured window",
+                    "since={since:?}, section={section}, event={event}"
                 );
                 assert!(!(event["type"] == "m.room.member" && event["state_key"] == eve.as_str()));
                 assert!(

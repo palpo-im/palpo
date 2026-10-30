@@ -1416,8 +1416,15 @@ pub(crate) async fn load_timeline(
             .await?
         }
     } else {
-        timeline::stream::load_pdus_backward(Some(user_id), room_id, None, None, filter, limit + 1)
-            .await?
+        timeline::stream::load_pdus_backward(
+            Some(user_id),
+            room_id,
+            until_tk,
+            None,
+            filter,
+            limit + 1,
+        )
+        .await?
     };
 
     let mut limited = false;
