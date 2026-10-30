@@ -21,7 +21,7 @@ use crate::exts::*;
 use crate::room::state::ensure_field_id;
 use crate::room::timeline;
 use crate::sending::send_federation_request;
-use crate::{AppError, AppResult, PduEvent, SnPduEvent, room};
+use crate::{AppError, AppResult, OptionalExtension, PduEvent, SnPduEvent, room};
 
 pub struct FetchedState {
     pub state_events: IndexMap<i64, OwnedEventId>,
@@ -39,6 +39,11 @@ async fn recovered_predecessors(
     required: &[OwnedEventId],
 ) -> AppResult<HashSet<OwnedEventId>> {
     Ok(events::table
+        .inner_join(
+            event_datas::table.on(event_datas::event_id
+                .eq(events::id)
+                .and(event_datas::room_id.eq(events::room_id))),
+        )
         .filter(events::room_id.eq(room_id))
         .filter(events::id.eq_any(required))
         .filter(events::is_outlier.eq(false))
