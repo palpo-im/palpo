@@ -1057,7 +1057,7 @@ async fn late_published_timeline(
         drop(guard);
         pending.push((cached, json));
     }
-    request(
+    let anchor = request(
         TestClient::put(format!(
             "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/earlier-anchor"
         ))
@@ -1066,6 +1066,7 @@ async fn late_published_timeline(
         service,
     )
     .await;
+    let anchor_id = anchor["event_id"].as_str().unwrap();
     let old = sync(service, None, None).await;
     let lower = old["next_batch"].as_str().unwrap();
     let lower_sn = lower.parse::<BatchToken>().unwrap().event_sn();
@@ -1137,6 +1138,15 @@ async fn late_published_timeline(
         "publication selection must preserve original timeline chronology"
     );
     let next = full["next_batch"].as_str().unwrap();
+    request(
+        TestClient::put(format!("http://localhost/_matrix/client/v3/user/{alice}/account_data/com.example.publication_probe"))
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"after":"captured batch"})), service,
+    ).await;
+    assert!(
+        data::curr_sn().await.unwrap() >= next.parse::<BatchToken>().unwrap().event_sn(),
+        "repeated sync must pass the idle guard and execute captured SQL"
+    );
     let repeated = sync(service, Some(next), None).await;
     assert!(
         timeline_ids(&repeated, &room).is_empty(),
@@ -1156,54 +1166,63 @@ async fn late_published_timeline(
     let room_data = &limited["rooms"]["join"][room.as_str()];
     assert_eq!(timeline_ids(&limited, &room), vec![newer_id]);
     assert_eq!(room_data["timeline"]["limited"], true);
-    let mut from = room_data["timeline"]["prev_batch"]
+    let start = room_data["timeline"]["prev_batch"]
         .as_str()
         .unwrap()
         .to_owned();
-    let mut seen = std::collections::HashSet::new();
-    for _ in 0..20 {
-        let mut url = url::Url::parse(&format!(
-            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
-        ))
-        .unwrap();
-        url.query_pairs_mut()
-            .append_pair("dir", "b")
-            .append_pair("limit", "1")
-            .append_pair("from", &from);
-        let page = request(
-            TestClient::get(url.as_str()).add_header(
-                "Authorization",
-                "Bearer alice-presence",
-                true,
-            ),
-            service,
-        )
-        .await;
-        let events = page["chunk"].as_array().unwrap();
-        if events.is_empty() {
-            break;
+    for to in [Some(lower), None] {
+        let mut from = start.clone();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let mut url = url::Url::parse(&format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+            ))
+            .unwrap();
+            url.query_pairs_mut()
+                .append_pair("dir", "b")
+                .append_pair("limit", "1")
+                .append_pair("from", &from);
+            if let Some(to) = to {
+                url.query_pairs_mut().append_pair("to", to);
+            }
+            let page = request(
+                TestClient::get(url.as_str()).add_header(
+                    "Authorization",
+                    "Bearer alice-presence",
+                    true,
+                ),
+                service,
+            )
+            .await;
+            let events = page["chunk"].as_array().unwrap();
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                let id = event["event_id"].as_str().unwrap().to_owned();
+                if to.is_some() {
+                    assert_ne!(id, anchor_id, "bounded gap leaked the already seen anchor");
+                }
+                assert_ne!(id, newer_id, "history repeated the limited sync event");
+                assert!(seen.insert(id), "history continuation repeated an event");
+            }
+            if pending
+                .iter()
+                .all(|(pdu, _)| seen.contains(pdu.event_id.as_str()))
+            {
+                break;
+            }
+            let end = page["end"].as_str().unwrap().to_owned();
+            assert_ne!(from, end, "history cursor did not advance");
+            from = end;
         }
-        for event in events {
-            let id = event["event_id"].as_str().unwrap().to_owned();
-            assert_ne!(id, newer_id, "history repeated the limited sync event");
-            assert!(seen.insert(id), "history continuation repeated an event");
-        }
-        if pending
-            .iter()
-            .all(|(pdu, _)| seen.contains(pdu.event_id.as_str()))
-        {
-            break;
-        }
-        let end = page["end"].as_str().unwrap().to_owned();
-        assert_ne!(from, end, "history cursor did not advance");
-        from = end;
+        assert!(
+            pending
+                .iter()
+                .all(|(pdu, _)| seen.contains(pdu.event_id.as_str())),
+            "limited history continuation lost a late publication"
+        );
     }
-    assert!(
-        pending
-            .iter()
-            .all(|(pdu, _)| seen.contains(pdu.event_id.as_str())),
-        "limited history continuation lost a late publication"
-    );
     let unbounded = room::timeline::stream::load_pdus_backward_captured(
         Some(alice),
         &room,
