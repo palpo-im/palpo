@@ -18,9 +18,9 @@ use crate::event::handler::process_to_timeline_pdu;
 use crate::event::{BatchToken, handler, parse_fetched_pdu};
 use crate::{AppError, AppResult, GetUrlOrigin, SnPduEvent, room};
 
-/// A rejected predecessor stays outside the timeline, but is still part of the
-/// known DAG. Follow it to distinguish a real history gap from a rejected event
-/// which cannot be made visible by fetching it again.
+/// Rejected events and validated imported state stay outside the timeline, but
+/// are still part of the known DAG. Walk their predecessors to find actual gaps
+/// instead of fetching events whose data is already available locally.
 pub(crate) async fn history_has_missing_predecessors(
     room_id: &RoomId,
     prev_events: &[OwnedEventId],
@@ -68,7 +68,21 @@ pub(crate) async fn history_has_missing_predecessors(
             complete.insert(event_id);
             continue;
         }
-        if !pdu.rejected() || pdu.prev_events.len() > remaining {
+        if !pdu.rejected() {
+            // A cached JSON row alone proves nothing about authorization. The
+            // join importer records state-before only after signature/auth checks;
+            // require that record and the persisted successful verdict before
+            // following a state outlier. Never publish it as a timeline event.
+            if pdu.soft_failed || pdu.state_key.is_none() {
+                return Ok(true);
+            }
+            match room::state::get_pdu_before_frame_id(&event_id).await {
+                Ok(_) => {}
+                Err(error) if error.is_not_found() => return Ok(true),
+                Err(error) => return Err(error),
+            }
+        }
+        if pdu.prev_events.len() > remaining {
             return Ok(true);
         }
         active.insert(event_id.clone());
@@ -459,6 +473,52 @@ mod history_database_tests {
         SnPduEvent::new(pdu, sn, outlier, rejected, false)
     }
 
+    async fn save_imported_state(
+        room_id: &RoomId,
+        event_id: &str,
+        prev_events: &[&str],
+        state_key: &str,
+        validated: bool,
+    ) -> SnPduEvent {
+        let mut pdu = save_event(room_id, event_id, prev_events, true, false).await;
+        pdu.pdu.event_ty = "my.room.breaker".into();
+        pdu.pdu.state_key = Some(state_key.to_owned());
+        let json = crate::core::serde::to_canonical_object(&pdu.pdu).unwrap();
+        let mut conn = connect().await.unwrap();
+        diesel::update(events::table.find(&pdu.event_id))
+            .set((
+                events::ty.eq(pdu.event_ty.to_string()),
+                events::state_key.eq(&pdu.state_key),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        DbEventData {
+            event_id: pdu.event_id.clone(),
+            event_sn: pdu.event_sn,
+            room_id: room_id.to_owned(),
+            internal_metadata: None,
+            json_data: serde_json::to_value(json).unwrap(),
+            format_version: None,
+        }
+        .save_with_conn(&mut conn)
+        .await
+        .unwrap();
+        drop(conn);
+        if validated {
+            // Reproduce the historical validation marker written by the join
+            // importer; no current room state or membership is published.
+            room::state::set_event_state_before(
+                &pdu.event_id,
+                room_id,
+                std::sync::Arc::new(room::state::CompressedState::new()),
+            )
+            .await
+            .unwrap();
+        }
+        pdu
+    }
+
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_rejected_history_is_known_but_unknown_ancestors_remain_gaps() {
@@ -563,6 +623,222 @@ mod history_database_tests {
         );
         assert!(
             history_has_missing_predecessors(&room, std::slice::from_ref(&incomplete.event_id))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_validated_state_history_avoids_backfill_without_hiding_real_gaps() {
+        crate::test_database::init();
+        let room: OwnedRoomId = "!known-state-history:example.org".try_into().unwrap();
+        save_event(&room, "$known-state-root", &[], false, false).await;
+        let long_key = "💥".repeat(70);
+        assert_eq!(long_key.len(), 280);
+        assert_eq!(long_key.chars().count(), 70);
+        let state = save_imported_state(
+            &room,
+            "$known-state-import",
+            &["$known-state-root"],
+            &long_key,
+            true,
+        )
+        .await;
+        let join = save_event(
+            &room,
+            "$known-state-join",
+            &["$known-state-import"],
+            false,
+            false,
+        )
+        .await;
+        let old_known = events::table
+            .filter(events::id.eq_any(&join.prev_events))
+            .filter(events::is_outlier.eq(false))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            old_known, 0,
+            "the old timeline-only query invents a gap at the join"
+        );
+        assert!(
+            !history_has_missing_predecessors(&room, &join.prev_events)
+                .await
+                .unwrap()
+        );
+        room::state::update_backward_extremities(&state)
+            .await
+            .unwrap();
+        room::state::update_backward_extremities(&join)
+            .await
+            .unwrap();
+        let mut page = IndexMap::new();
+        page.insert(join.event_sn, join.clone());
+        assert!(
+            backfill_if_required(&room, &join.historic_token(), &page, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            super::super::get_pdu(&state.event_id)
+                .await
+                .unwrap()
+                .is_outlier
+        );
+        assert!(room::state::get_room_frame_id(&room, None).await.is_err());
+        assert_eq!(
+            timeline_gaps::table
+                .filter(timeline_gaps::event_id.eq(&join.event_id))
+                .count()
+                .get_result::<i64>(&mut connect().await.unwrap())
+                .await
+                .unwrap(),
+            0
+        );
+
+        let unvalidated =
+            save_imported_state(&room, "$known-state-raw", &["$known-state-root"], "", false).await;
+        assert!(
+            history_has_missing_predecessors(&room, std::slice::from_ref(&unvalidated.event_id))
+                .await
+                .unwrap()
+        );
+        diesel::update(events::table.find(&state.event_id))
+            .set(events::soft_failed.eq(true))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert!(
+            history_has_missing_predecessors(&room, &join.prev_events)
+                .await
+                .unwrap()
+        );
+        diesel::update(events::table.find(&state.event_id))
+            .set(events::soft_failed.eq(false))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+
+        let missing = save_imported_state(
+            &room,
+            "$known-state-incomplete",
+            &["$known-state-unknown"],
+            "",
+            true,
+        )
+        .await;
+        let later = save_event(
+            &room,
+            "$known-state-later",
+            &["$known-state-incomplete"],
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            history_has_missing_predecessors(&room, &later.prev_events)
+                .await
+                .unwrap()
+        );
+        room::state::update_backward_extremities(&later)
+            .await
+            .unwrap();
+        assert_eq!(
+            timeline_gaps::table
+                .filter(timeline_gaps::event_id.eq(&later.event_id))
+                .count()
+                .get_result::<i64>(&mut connect().await.unwrap())
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            history_has_missing_predecessors(&room, std::slice::from_ref(&missing.event_id))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_known_state_history_is_cycle_safe_room_scoped_and_bounded() {
+        crate::test_database::init();
+        let room: OwnedRoomId = "!known-state-boundaries:example.org".try_into().unwrap();
+        let foreign_room: OwnedRoomId = "!known-state-foreign:example.org".try_into().unwrap();
+        let root = save_event(&room, "$history-bound-root", &[], false, false).await;
+        let foreign = save_event(&foreign_room, "$history-bound-foreign", &[], false, false).await;
+        assert!(
+            history_has_missing_predecessors(&room, std::slice::from_ref(&foreign.event_id))
+                .await
+                .unwrap()
+        );
+        let a =
+            save_imported_state(&room, "$history-cycle-a", &["$history-cycle-b"], "", true).await;
+        save_imported_state(&room, "$history-cycle-b", &["$history-cycle-a"], "", true).await;
+        assert!(
+            history_has_missing_predecessors(&room, std::slice::from_ref(&a.event_id))
+                .await
+                .unwrap()
+        );
+        let left = save_imported_state(
+            &room,
+            "$history-diamond-left",
+            &["$history-bound-root"],
+            "",
+            true,
+        )
+        .await;
+        let right = save_imported_state(
+            &room,
+            "$history-diamond-right",
+            &["$history-bound-root"],
+            "",
+            true,
+        )
+        .await;
+        assert!(
+            !history_has_missing_predecessors(
+                &room,
+                &[left.event_id.clone(), right.event_id.clone()]
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !history_has_missing_predecessors(&room, &vec![root.event_id.clone(); 256])
+                .await
+                .unwrap()
+        );
+        assert!(
+            history_has_missing_predecessors(&room, &vec![root.event_id.clone(); 257])
+                .await
+                .unwrap()
+        );
+        let mut previous = root.event_id.clone();
+        let mut heads = Vec::new();
+        for index in 0..256 {
+            let event = save_imported_state(
+                &room,
+                &format!("$history-budget-{index}"),
+                &[previous.as_str()],
+                "",
+                true,
+            )
+            .await;
+            previous = event.event_id.clone();
+            heads.push(previous.clone());
+        }
+        assert!(
+            !history_has_missing_predecessors(&room, std::slice::from_ref(&heads[254]))
+                .await
+                .unwrap()
+        );
+        assert!(
+            history_has_missing_predecessors(&room, std::slice::from_ref(&heads[255]))
                 .await
                 .unwrap()
         );
