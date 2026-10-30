@@ -702,6 +702,9 @@ async fn delayed_member_publication() {
     assert!(old_until >= message_sn);
     assert!(!presence_users(&previous).contains(&bob.as_str()));
     let before_promotion = super::captured_sync_frame(&room, old_until).await.unwrap();
+    let watch_before = crate::watcher::live_position_for_test(&alice, "D".into())
+        .await
+        .unwrap();
 
     // Pause after allocation of the publication cursor but before commit.
     // With the original cached identity guard gone, the sync watermark lock
@@ -751,6 +754,13 @@ async fn delayed_member_publication() {
     .await
     .expect("writer and sync must meet the deterministic publication barriers");
     assert_eq!(
+        crate::watcher::live_position_for_test(&alice, "D".into())
+            .await
+            .unwrap(),
+        watch_before,
+        "an uncommitted publication must not become a watcher baseline"
+    );
+    assert_eq!(
         super::captured_sync_frame(&room, old_until).await.unwrap(),
         before_promotion
     );
@@ -771,6 +781,13 @@ async fn delayed_member_publication() {
         .unwrap();
     drop(blocker);
     promotion.await.unwrap().unwrap();
+    assert!(
+        crate::watcher::live_position_for_test(&alice, "D".into())
+            .await
+            .unwrap()
+            > watch_before,
+        "promotion of an older cached identity must wake the batched watcher"
+    );
     let committed_reader = waiting_sync.await.unwrap();
     assert!(
         presence_users(&committed_reader).contains(&bob.as_str()),
