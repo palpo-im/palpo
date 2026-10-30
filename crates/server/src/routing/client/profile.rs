@@ -326,9 +326,9 @@ async fn set_avatar_url(
         avatar_url,
         blurhash,
     } = body.into_inner();
-    if !avatar_url.is_valid() {
-        return Err(MatrixError::invalid_param("Avatar URL must be an MXC URI.").into());
-    }
+    // Profile values are stored and propagated without fetching them. The
+    // profile API permits servers to preserve invalid values for compatibility;
+    // media endpoints still validate identifiers before accessing any content.
     update_avatar_url(&user_id, Some(avatar_url), blurhash).await
 }
 
@@ -680,6 +680,176 @@ mod tests {
         assert_eq!(
             count, 1,
             "rejected mutations must publish no change-stream entries"
+        );
+    }
+}
+
+#[cfg(test)]
+mod avatar_http_tests {
+    use salvo::prelude::*;
+    use salvo::test::{RequestBuilder, ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use crate::core::{OwnedDeviceId, UnixMillis, UserId};
+    use crate::{config, data};
+
+    async fn send(request: RequestBuilder, service: &Service) -> Response {
+        let router = service.router();
+        tokio::spawn(async move { request.send(router).await })
+            .await
+            .unwrap()
+    }
+
+    async fn ok(mut response: Response) -> Value {
+        let body = response.take_json::<Value>().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        body
+    }
+
+    #[test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+    fn profile_http_avatar_updates_preserve_opaque_values_and_ownership() {
+        std::thread::Builder::new()
+            .name("profile-avatar-http".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(avatar_updates());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn avatar_updates() {
+        crate::test_database::init();
+        config::CONFIG
+            .set(
+                serde_json::from_value(json!({
+                    "server_name": "profile.example", "db": {"url": "unused-test-config"},
+                    "ip_range_denylist": []
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        for name in ["alice", "bob"] {
+            let user_id = UserId::parse(format!("@{name}:profile.example")).unwrap();
+            data::user::create_user(&data::user::NewDbUser {
+                id: user_id.clone(),
+                ty: None,
+                is_admin: false,
+                is_guest: false,
+                is_local: true,
+                localpart: name.into(),
+                server_name: user_id.server_name().to_owned(),
+                appservice_id: None,
+                created_at: UnixMillis::now(),
+            })
+            .await
+            .unwrap();
+            data::user::device::create_device(
+                &user_id,
+                &OwnedDeviceId::from("D"),
+                &format!("{name}-profile-token"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let service = Service::new(crate::routing::root());
+        let created = ok(send(
+            TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+                .add_header("Authorization", "Bearer alice-profile-token", true)
+                .json(&json!({"room_version": "11", "preset": "public_chat"})),
+            &service,
+        )
+        .await)
+        .await;
+        let room_id = created["room_id"].as_str().unwrap();
+        let initial = ok(send(
+            TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0").add_header(
+                "Authorization",
+                "Bearer alice-profile-token",
+                true,
+            ),
+            &service,
+        )
+        .await)
+        .await;
+        let since = initial["next_batch"].as_str().unwrap();
+        let avatar_url =
+            "http://localhost/_matrix/client/v3/profile/@alice:profile.example/avatar_url";
+
+        for token in [None, Some("bob-profile-token")] {
+            let mut request = TestClient::put(avatar_url).json(&json!({"avatar_url": "intruder"}));
+            if let Some(token) = token {
+                request = request.add_header("Authorization", format!("Bearer {token}"), true);
+            }
+            let response = send(request, &service).await;
+            assert_eq!(
+                response.status_code,
+                Some(if token.is_some() {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::UNAUTHORIZED
+                })
+            );
+        }
+
+        // This is the unchanged Complement TestAvatarUrlUpdate payload.
+        ok(send(
+            TestClient::put(avatar_url)
+                .add_header("Authorization", "Bearer alice-profile-token", true)
+                .json(&json!({"avatar_url": "LemurLover"})),
+            &service,
+        )
+        .await)
+        .await;
+        assert_eq!(
+            ok(send(TestClient::get(avatar_url), &service).await).await["avatar_url"],
+            "LemurLover"
+        );
+        let membership = ok(send(TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room_id}/state/m.room.member/@alice:profile.example"
+        )).add_header("Authorization", "Bearer alice-profile-token", true), &service).await).await;
+        assert_eq!(membership["membership"], "join");
+        assert_eq!(membership["avatar_url"], "LemurLover");
+        let sync = ok(send(
+            TestClient::get(format!(
+                "http://localhost/_matrix/client/v3/sync?timeout=0&since={since}"
+            ))
+            .add_header("Authorization", "Bearer alice-profile-token", true),
+            &service,
+        )
+        .await)
+        .await;
+        assert!(
+            sync["rooms"]["join"][room_id]["timeline"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| {
+                    event["type"] == "m.room.member"
+                        && event["state_key"] == "@alice:profile.example"
+                        && event["content"]["avatar_url"] == "LemurLover"
+                }),
+            "profile update must reach the incremental sync timeline: {sync}"
+        );
+        let response = send(
+            TestClient::put(avatar_url)
+                .add_header("Authorization", "Bearer bob-profile-token", true)
+                .json(&json!({"avatar_url": "overwrite"})),
+            &service,
+        )
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::FORBIDDEN));
+        assert_eq!(
+            ok(send(TestClient::get(avatar_url), &service).await).await["avatar_url"],
+            "LemurLover"
         );
     }
 }
