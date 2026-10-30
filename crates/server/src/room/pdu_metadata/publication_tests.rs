@@ -10,6 +10,20 @@ use crate::event::PduBuilder;
 
 const SERVER: &str = "relation-publication.example";
 
+fn token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        format!(
+            "q617-relations-{}",
+            ulid::Ulid::new().to_string().to_lowercase()
+        )
+    })
+}
+
+fn authorization() -> String {
+    format!("Bearer {}", token())
+}
+
 async fn request(request: RequestBuilder, service: &Service) -> Value {
     let router = service.router();
     let mut response = tokio::spawn(async move { request.send(router).await })
@@ -25,7 +39,7 @@ async fn send(service: &Service, room: &RoomId, transaction: &str, content: Valu
         TestClient::put(format!(
             "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/{transaction}"
         ))
-        .add_header("Authorization", "Bearer relations-token", true)
+        .add_header("Authorization", authorization(), true)
         .json(&content),
         service,
     )
@@ -42,7 +56,7 @@ async fn sync(service: &Service) -> String {
     let body = request(
         TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0").add_header(
             "Authorization",
-            "Bearer relations-token",
+            authorization(),
             true,
         ),
         service,
@@ -78,7 +92,7 @@ async fn page(
         url.query_pairs_mut().append_pair("to", to);
     }
     request(
-        TestClient::get(url.as_str()).add_header("Authorization", "Bearer relations-token", true),
+        TestClient::get(url.as_str()).add_header("Authorization", authorization(), true),
         service,
     )
     .await
@@ -110,7 +124,7 @@ async fn promote(
 ) {
     wire.remove("event_id");
     crate::event::handler::process_incoming_pdu(
-        SERVER.try_into().unwrap(),
+        crate::config::server_name(),
         &pdu.event_id,
         room,
         &RoomVersionId::V11,
@@ -148,43 +162,35 @@ fn database_relations_preserve_publication_windows_and_legacy_identity_pages() {
 
 async fn run() {
     crate::test_database::init();
-    crate::config::CONFIG
-        .set(
-            serde_json::from_value(json!({
-                "server_name":SERVER, "db":{"url":"unused-test-config"},
-                "ip_range_denylist":[], "auto_join_rooms":[]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    let user = UserId::parse(format!("@alice:{SERVER}")).unwrap();
+    crate::config::CONFIG.get_or_init(|| {
+        serde_json::from_value(json!({
+            "server_name":SERVER, "db":{"url":"unused-test-config"},
+            "ip_range_denylist":[], "auto_join_rooms":[]
+        }))
+        .unwrap()
+    });
+    let user = UserId::parse(format!("@{}:{}", token(), crate::config::server_name())).unwrap();
     data::user::create_user(&data::user::NewDbUser {
         id: user.clone(),
         ty: None,
         is_admin: false,
         is_guest: false,
         is_local: true,
-        localpart: "alice".into(),
+        localpart: user.localpart().into(),
         server_name: user.server_name().to_owned(),
         appservice_id: None,
         created_at: UnixMillis::now(),
     })
     .await
     .unwrap();
-    data::user::device::create_device(
-        &user,
-        &OwnedDeviceId::from("D"),
-        "relations-token",
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    data::user::device::create_device(&user, &OwnedDeviceId::from("D"), token(), None, None)
+        .await
+        .unwrap();
     crate::user::get_push_rules(&user).await.unwrap();
     let service = Service::new(crate::routing::root());
     let created = request(
         TestClient::post("http://localhost/_matrix/client/v3/createRoom")
-            .add_header("Authorization", "Bearer relations-token", true)
+            .add_header("Authorization", authorization(), true)
             .json(&json!({"room_version":"11", "preset":"public_chat"})),
         &service,
     )
@@ -272,11 +278,7 @@ async fn run() {
         .append_pair("dir", "b")
         .append_pair("limit", "1");
     let message_page = request(
-        TestClient::get(messages.as_str()).add_header(
-            "Authorization",
-            "Bearer relations-token",
-            true,
-        ),
+        TestClient::get(messages.as_str()).add_header("Authorization", authorization(), true),
         &service,
     )
     .await;
