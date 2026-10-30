@@ -4,7 +4,7 @@ use salvo::prelude::*;
 
 use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo};
 use crate::exts::*;
-use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok, hoops};
+use crate::{AuthArgs, EmptyResult, MatrixError, empty_ok};
 
 pub fn authed_router() -> Router {
     Router::with_path("password").post(change_password)
@@ -58,7 +58,6 @@ async fn change_password(
         .await?;
         return Err(uiaa_info.into());
     };
-    hoops::check_password_attempt(authed.user_id().as_str())?;
     let (authenticated, uiaa) = match crate::uiaa::try_auth(
         authed.user_id(),
         authed.require_device_id()?,
@@ -68,8 +67,16 @@ async fn change_password(
     .await
     {
         Ok(result) => result,
-        Err(_) => {
-            hoops::record_password_failure(authed.user_id().as_str())?;
+        Err(error) => {
+            if matches!(
+                &error,
+                crate::AppError::Matrix(MatrixError {
+                    kind: crate::core::error::ErrorKind::LimitExceeded { .. },
+                    ..
+                })
+            ) {
+                return Err(error);
+            }
             crate::uiaa::create_challenge_session(
                 authed.user_id(),
                 authed.require_device_id()?,
@@ -80,7 +87,6 @@ async fn change_password(
         }
     };
     if !authenticated {
-        hoops::record_password_failure(authed.user_id().as_str())?;
         return Err(uiaa.into());
     }
 
