@@ -21,7 +21,7 @@ use crate::exts::*;
 use crate::room::state::ensure_field_id;
 use crate::room::timeline;
 use crate::sending::send_federation_request;
-use crate::{AppError, AppResult, OptionalExtension, PduEvent, SnPduEvent, room};
+use crate::{AppError, AppResult, OptionalExtension as _, PduEvent, SnPduEvent, room};
 
 pub struct FetchedState {
     pub state_events: IndexMap<i64, OwnedEventId>,
