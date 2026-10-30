@@ -1437,7 +1437,7 @@ mod tests {
         let idle_sn = data::curr_sn().await.unwrap();
         assert_eq!(
             hidden.next_batch,
-            crate::event::BatchToken::new_live(idle_sn + 1).to_string()
+            crate::event::BatchToken::new_publication(idle_sn + 1).to_string()
         );
         // Another device completes its earlier response behind this device's cursor.
         // Admission does not allocate a new event position to wake the early-return path.

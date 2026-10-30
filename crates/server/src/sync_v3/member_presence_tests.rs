@@ -1129,7 +1129,154 @@ async fn delayed_member_publication() {
         &service,
     )
     .await;
+    legacy_context_publication_window(&service, &alice).await;
     late_published_timeline(&service, &alice, &history.event_id).await;
+}
+
+// Preserve the actual legacy /context cursor contract even when the other
+// endpoint comes from a new publication-aware /sync response.
+async fn legacy_context_publication_window(service: &Service, alice: &UserId) {
+    let created = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"room_version":"11","preset":"public_chat"})),
+        service,
+    )
+    .await;
+    let room: OwnedRoomId = created["room_id"].as_str().unwrap().try_into().unwrap();
+    let (base, base_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(
+            &json!({"msgtype":"m.text","body":"context base"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    for (txn, body) in [
+        ("context-depth-one", "first real successor"),
+        ("context-depth-two", "second real successor"),
+    ] {
+        request(
+            TestClient::put(format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/{txn}"
+            ))
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"msgtype":"m.text","body":body})),
+            service,
+        )
+        .await;
+    }
+    let (late, late_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        content: serde_json::value::to_raw_value(
+            &json!({"msgtype":"m.text","body":"older identity, later topology and publication"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    let (late, late_json, guard) =
+        crate::event::PduBuilder::save_as_outlier(late, late_json, alice)
+            .await
+            .unwrap();
+    drop(guard);
+    let (base, base_json, guard) =
+        crate::event::PduBuilder::save_as_outlier(base, base_json, alice)
+            .await
+            .unwrap();
+    drop(guard);
+    assert!(late.event_sn < base.event_sn && late.depth > base.depth);
+    promote_context_pdu(&room, &base, base_json).await;
+    let context = request(
+        TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/context/{}?limit=0",
+            base.event_id
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true),
+        service,
+    )
+    .await;
+    let from = context["end"].as_str().unwrap();
+    assert_eq!(
+        from,
+        base.live_token().to_string(),
+        "actual context output must remain in the legacy identity domain"
+    );
+    promote_context_pdu(&room, &late, late_json).await;
+    let later = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/context-later"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"msgtype":"m.text","body":"after context"})),
+        service,
+    )
+    .await;
+    let later = later["event_id"].as_str().unwrap();
+    let upper = sync(service, None, None).await;
+    let upper = upper["next_batch"].as_str().unwrap();
+    let query = |to: &str| {
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/messages"
+        ))
+        .unwrap();
+        url.query_pairs_mut()
+            .append_pair("dir", "f")
+            .append_pair("from", from)
+            .append_pair("to", to)
+            .append_pair("limit", "100");
+        TestClient::get(url.as_str()).add_header("Authorization", "Bearer alice-presence", true)
+    };
+    let legacy = request(query(&BatchToken::LIVE_MAX.to_string()), service).await;
+    let ids = |body: &Value| {
+        body["chunk"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&legacy),
+        vec![base.event_id.to_string(), later.to_owned()]
+    );
+    eprintln!(
+        "legacy context witness old_identity={} old_depth={} base_identity={} base_depth={} actual_context_end={} publication_upper={}",
+        late.event_sn, late.depth, base.event_sn, base.depth, from, upper
+    );
+    let mixed = request(query(upper), service).await;
+    assert_eq!(
+        ids(&mixed),
+        ids(&legacy),
+        "adding a publication upper bound reinterpreted the actual context identity cursor: {mixed}"
+    );
+}
+
+async fn promote_context_pdu(
+    room: &crate::core::RoomId,
+    pdu: &crate::SnPduEvent,
+    mut wire: crate::core::serde::CanonicalJsonObject,
+) {
+    wire.remove("event_id");
+    crate::event::handler::process_incoming_pdu(
+        SERVER.try_into().unwrap(),
+        &pdu.event_id,
+        room,
+        &crate::core::RoomVersionId::V11,
+        wire,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    let accepted = room::timeline::get_pdu(&pdu.event_id).await.unwrap();
+    assert!(!accepted.is_outlier && !accepted.soft_failed);
+    assert_eq!(accepted.event_sn, pdu.event_sn);
 }
 
 async fn late_published_timeline(
