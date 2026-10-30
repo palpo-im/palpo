@@ -756,7 +756,8 @@ pub async fn apply_remote_device_list_version(
             if inserted == 0 {
                 diesel::update(remote_device_list_versions::table
                     .filter(remote_device_list_versions::user_id.eq(user_id))
-                    .filter(remote_device_list_versions::stream_id.eq(&stream_id)))
+                    .filter(remote_device_list_versions::stream_id.eq(&stream_id))
+                    .filter(remote_device_list_versions::is_initial_snapshot.eq(true)))
                     .set(remote_device_list_versions::is_initial_snapshot.eq(false))
                     .execute(conn)
                     .await?;
