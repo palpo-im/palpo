@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
+#[cfg(test)]
 use diesel::prelude::*;
+#[cfg(test)]
 use diesel_async::RunQueryDsl;
 use mime::Mime;
 use reqwest::Url;
@@ -12,8 +14,10 @@ use uuid::Uuid;
 use crate::core::UnixMillis;
 use crate::core::client::media::*;
 use crate::core::identifiers::*;
+#[cfg(test)]
 use crate::data::connect;
 use crate::data::media::{DbMetadata, DbThumbnail, NewDbMetadata, NewDbThumbnail};
+#[cfg(test)]
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::media::*;
@@ -349,13 +353,8 @@ pub async fn get_thumbnail(
         return Ok(());
     }
 
-    match crate::data::media::get_thumbnail_by_dimension(
-        &args.server_name,
-        &args.media_id,
-        args.width,
-        args.height,
-    )
-    .await
+    match crate::media::cached_thumbnail(&args.server_name, &args.media_id, args.width, args.height)
+        .await
     {
         Ok(Some(DbThumbnail {
             id, content_type, ..
@@ -387,13 +386,7 @@ pub async fn get_thumbnail(
 
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) = crate::data::media::get_thumbnail_by_dimension(
-        &args.server_name,
-        &args.media_id,
-        width,
-        height,
-    )
-    .await?
+    }) = crate::media::cached_thumbnail(&args.server_name, &args.media_id, width, height).await?
     {
         let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
         // Try presigned URL redirect for S3 storage
@@ -424,17 +417,21 @@ pub async fn get_thumbnail(
             crate::media::thumbnail::render_stored(&image_key, width, height, crop).await?;
         if let Some(thumbnail_bytes) = thumbnail_bytes {
             // Save thumbnail in database so we don't have to generate it again next time
-            let (thumbnail_id, created) =
-                reserve_thumbnail_cache_row(&args, thumbnail_bytes.len()).await?;
-            if created {
-                crate::media::save_thumbnail_file(
-                    &args.server_name,
-                    &args.media_id,
-                    thumbnail_id,
-                    &thumbnail_bytes,
-                )
-                .await?;
-            }
+            let thumbnail_id = crate::media::publish_thumbnail(
+                NewDbThumbnail {
+                    media_id: args.media_id.clone(),
+                    origin_server: args.server_name.clone(),
+                    content_type: Some("image/png".to_owned()),
+                    disposition_type: None,
+                    file_size: thumbnail_bytes.len() as i64,
+                    width: width as i32,
+                    height: height as i32,
+                    resize_method: args.method.clone().unwrap_or_default().to_string(),
+                    created_at: UnixMillis::now(),
+                },
+                &thumbnail_bytes,
+            )
+            .await?;
 
             // Return the newly generated thumbnail
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, thumbnail_id);
@@ -453,8 +450,10 @@ pub async fn get_thumbnail(
     }
 }
 
-/// Reserve or reuse the exact key the route caches. Normalization belongs here
-/// so callers cannot accidentally query a conflict using the original dimensions.
+#[cfg(test)]
+/// Retain the independent Q19 reservation regression while this route uses
+/// the durable publication flow. Reserve or reuse the exact key the route caches. Normalization
+/// belongs here so callers cannot accidentally query a conflict using the original dimensions.
 async fn reserve_thumbnail_cache_row(
     args: &ThumbnailReqArgs,
     file_size: usize,
