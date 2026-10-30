@@ -32,7 +32,7 @@ use crate::data::connect;
 pub use crate::data::room::DbRoomStateDelta;
 use crate::data::room::{NewDbEventMissing, NewDbTimelineGap};
 use crate::data::schema::*;
-use crate::event::{PduEvent, update_before_frame_id, update_frame_id, update_frame_id_by_sn};
+use crate::event::{PduEvent, ensure_frame_id_by_sn, update_before_frame_id, update_frame_id};
 use crate::room::timeline;
 use crate::{
     AppError, AppResult, MatrixError, RoomMutexGuard, SnPduEvent, membership, room, sending, utils,
@@ -325,9 +325,12 @@ pub async fn append_to_state(new_pdu: &SnPduEvent) -> AppResult<i64> {
             .unwrap_or_default();
 
         if Some(&new_compressed_event) == replaces {
-            return prev_frame_id.ok_or_else(|| {
-                MatrixError::invalid_param("Room previous point must exists.").into()
-            });
+            let frame_id = prev_frame_id
+                .ok_or_else(|| MatrixError::invalid_param("Room previous point must exists."))?;
+            // Federation may have already resolved this event into current
+            // state. Its own publication still needs the accurate after-frame.
+            update_frame_id(&new_pdu.event_id, frame_id).await?;
+            return Ok(frame_id);
         }
 
         // TODO: state_hash with deterministic inputs
@@ -1201,7 +1204,9 @@ pub async fn save_state(
         });
     }
     for new_compressed_event in new_compressed_events.iter() {
-        update_frame_id_by_sn(new_compressed_event.event_sn(), new_frame_id).await?;
+        // Retained events keep the frame published at their original position.
+        // Rebinding them here would make a pre-join sync cursor see the join.
+        ensure_frame_id_by_sn(new_compressed_event.event_sn(), new_frame_id).await?;
     }
 
     let states_parents = if let Some(prev_frame_id) = prev_frame_id {
