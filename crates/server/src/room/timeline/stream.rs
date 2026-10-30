@@ -145,12 +145,12 @@ async fn load_pdus_with_publication_bound(
             .into_boxed();
         if let Some(before) = published_before {
             query = query.filter(
-                events::id.eq_any(
+                events::stream_ordering.lt(0).or(events::id.eq_any(
                     event_points::table
                         .filter(event_points::room_id.eq(room_id))
                         .filter(event_points::live_published_sn.lt(before))
                         .select(event_points::event_id),
-                ),
+                )),
             );
         }
         if dir == Direction::Forward {

@@ -946,6 +946,24 @@ async fn delayed_member_publication() {
     filter.room.timeline.limit = Some(100);
     let new_next = BatchToken::new_live(data::curr_sn().await.unwrap() + 1);
     for (upper, expect_join) in [(old_next, false), (new_next, true)] {
+        let normal = super::load_timeline(
+            &alice,
+            &room,
+            None,
+            Some(upper),
+            Some(&filter.room.timeline),
+        )
+        .await
+        .unwrap();
+        assert!(
+            normal.events.contains_key(&history.event_sn),
+            "normal captured timeline must retain already fetched negative history"
+        );
+        assert_eq!(
+            normal.events.contains_key(&cached.event_sn),
+            expect_join,
+            "normal captured timeline crossed its publication window"
+        );
         let (mut changed, mut joined, mut left) = Default::default();
         let (recovered, _) = super::load_joined_room(
             &alice,
