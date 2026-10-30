@@ -880,6 +880,8 @@ mod device_list_producer_tests {
     }
 
     async fn upload(service: &Service, user: &UserId, device: &str, token: &str) {
+        let queued_before = queued_updates().await.len();
+        let version_before = data::user::key::device_list_stream_id(user).await.unwrap();
         let mut response = TestClient::post("http://localhost/_matrix/client/v3/keys/upload")
             .add_header("authorization", format!("Bearer {token}"), true)
             .json(&json!({"device_keys":{"user_id":user,"device_id":device,
@@ -888,6 +890,16 @@ mod device_list_producer_tests {
             .await;
         let body: Value = response.take_json().await.unwrap();
         assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        let version = data::user::key::device_list_stream_id(user).await.unwrap();
+        assert!(version > version_before);
+        // Inspect immediately, before any join helper could enqueue a similar
+        // notification and conceal a missing real key-upload notification.
+        let queued = queued_updates().await;
+        assert_eq!(queued.len(), queued_before + 1);
+        let update = queued.last().unwrap();
+        assert_eq!(update["content"]["user_id"], user.as_str());
+        assert_eq!(update["content"]["device_id"], device);
+        assert_eq!(update["content"]["stream_id"], version);
     }
 
     async fn run() {
