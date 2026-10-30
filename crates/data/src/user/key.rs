@@ -656,8 +656,9 @@ pub async fn is_remote_device_list_tracked(
     user_id: &UserId,
     local_server: &ServerName,
 ) -> DataResult<bool> {
+    let mut conn = connect().await?;
     Ok(
-        !remote_device_shared_rooms(&mut connect().await?, user_id, local_server)
+        !remote_device_shared_rooms(&mut conn, user_id, local_server)
             .await?
             .is_empty(),
     )
