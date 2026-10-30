@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use serde::Deserialize;
+
 use crate::core::events::StateEventType;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::federation::membership::{RoomStateV1, RoomStateV2};
@@ -5,7 +9,60 @@ use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonValue, RawJsonValue, to_raw_json_value};
 use crate::event::{gen_event_id_canonical_json, handler};
 use crate::room::{state, timeline};
-use crate::{AppResult, IsRemoteOrLocal, MatrixError, room, sending};
+use crate::{AppResult, GetUrlOrigin, IsRemoteOrLocal, MatrixError, config, data, room, sending};
+
+#[derive(Deserialize)]
+struct RemoteDeviceSnapshot {
+    user_id: OwnedUserId,
+    stream_id: u64,
+    devices: Vec<crate::core::federation::device::Device>,
+}
+
+pub(crate) async fn fetch_remote_device_snapshot(user: &UserId, origin: &str) -> AppResult<u64> {
+    let url = reqwest::Url::parse(&format!(
+        "{origin}/_matrix/federation/v1/user/devices/{user}"
+    ))?;
+    let request = crate::core::sending::get(url).into_inner();
+    let snapshot = sending::send_federation_request(user.server_name(), request, Some(2))
+        .await?
+        .json::<RemoteDeviceSnapshot>()
+        .await?;
+    if snapshot.user_id != user
+        || snapshot
+            .devices
+            .iter()
+            .any(|device| device.keys.user_id != user || device.keys.device_id != device.device_id)
+    {
+        return Err(MatrixError::bad_json("invalid identity in remote device snapshot").into());
+    }
+    Ok(snapshot.stream_id)
+}
+
+async fn initialize_remote_join_device_snapshot(user: &UserId, frame_id: i64) -> AppResult<()> {
+    // Proactive E2EE tracking is relevant to encrypted rooms. Ordinary joins
+    // keep their existing behavior, including peers without a device endpoint.
+    if state::get_state(frame_id, &StateEventType::RoomEncryption, "")
+        .await
+        .is_err()
+        || data::user::key::is_remote_device_list_tracked(user, config::server_name()).await?
+    {
+        return Ok(());
+    }
+    // Bound resolution, connection retries and response decoding together.
+    // No pool connection or membership lock is held across this request.
+    let version = tokio::time::timeout(Duration::from_secs(2), async {
+        fetch_remote_device_snapshot(user, &user.server_name().origin().await).await
+    })
+    .await;
+    let Ok(Ok(version)) = version else {
+        // Without a proven snapshot, retain conservative invalidations for
+        // every unknown EDU. Endpoint failure cannot make a join fail.
+        return Ok(());
+    };
+    data::user::key::initialize_remote_device_list_snapshot(user, version, config::server_name())
+        .await?;
+    Ok(())
+}
 
 pub async fn send_join_v1(
     origin: &ServerName,
@@ -172,6 +229,8 @@ pub async fn send_join_v1(
         .expect("CanonicalJson is valid json value"),
     )
     .map_err(|_| MatrixError::invalid_param("origin field is invalid"))?;
+
+    initialize_remote_join_device_snapshot(&sender, frame_id).await?;
 
     handler::process_incoming_pdu(
         &origin,

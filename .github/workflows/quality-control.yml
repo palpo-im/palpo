@@ -128,6 +128,14 @@ jobs:
             membership::join::device_list_producer_tests::http_join_device_list_version_matches_other_producers \
             -- --exact --ignored
 
+      - name: Initial remote device snapshot race regression test
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_remote_device_snapshot
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_remote_device_snapshot \
+            cargo test -p palpo --lib --all-features \
+            routing::federation::transaction::device_version_tests::http_join_snapshot_preserves_device_version_races \
+            -- --exact --ignored
+
       - name: Message retention regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_retention_on
