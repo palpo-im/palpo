@@ -224,10 +224,26 @@ pub fn connection_url(config: &DbConfig, url: &str) -> Result<String, url::Parse
         } else {
             "require"
         };
-        url.query_pairs_mut()
-            .clear()
-            .extend_pairs(pairs.iter().filter(|(key, _)| key != "sslmode"))
-            .append_pair("sslmode", mode);
+        // libpq uses percent decoding, not form decoding: a literal '+' is
+        // part of a password/path, while '%20' is a space. Retain unrelated
+        // raw parameters so enforcing TLS never rewrites either spelling.
+        let retained: Vec<_> = url
+            .query()
+            .into_iter()
+            .flat_map(|query| query.split('&'))
+            .filter(|pair| {
+                !url::form_urlencoded::parse(pair.as_bytes())
+                    .next()
+                    .is_some_and(|(key, _)| key == "sslmode")
+            })
+            .collect();
+        let mut query = retained.join("&");
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str("sslmode=");
+        query.push_str(mode);
+        url.set_query(Some(&query));
     }
 
     // Configure the time it takes for diesel to return an error when there is full packet loss
@@ -350,6 +366,67 @@ mod migration_tests {
         let output =
             super::connection_url(&config, "postgres://test@localhost/db?sslmode=disable").unwrap();
         assert!(output.contains("sslmode=disable"));
+    }
+
+    #[test]
+    fn postgres_tls_rewrite_preserves_libpq_parameter_values() {
+        use std::ffi::{CStr, CString};
+
+        fn parsed_option(input: &str, key: &str) -> String {
+            let input = CString::new(input).unwrap();
+            let mut error = std::ptr::null_mut();
+            // Use the actual parser used by synchronous Diesel migrations,
+            // rather than round-tripping through form-url-encoded query APIs.
+            let options = unsafe { pq_sys::PQconninfoParse(input.as_ptr(), &mut error) };
+            if options.is_null() {
+                let message = if error.is_null() {
+                    "no parser error supplied".to_owned()
+                } else {
+                    let message = unsafe { CStr::from_ptr(error) }
+                        .to_string_lossy()
+                        .into_owned();
+                    unsafe { pq_sys::PQfreemem(error.cast()) };
+                    message
+                };
+                panic!("synthetic test connection string rejected: {message}");
+            }
+            let mut result = None;
+            let mut cursor = options;
+            unsafe {
+                while !(*cursor).keyword.is_null() {
+                    if CStr::from_ptr((*cursor).keyword).to_bytes() == key.as_bytes()
+                        && !(*cursor).val.is_null()
+                    {
+                        result = Some(CStr::from_ptr((*cursor).val).to_string_lossy().into_owned());
+                    }
+                    cursor = cursor.add(1);
+                }
+                pq_sys::PQconninfoFree(options);
+            }
+            result.expect("requested test option must be present")
+        }
+
+        let input = "postgres://localhost/db?user=space%20user&password=some%20secret%2Bplus+literal&application_name=quality%20test&sslrootcert=D%3A%2Fcert%20folder%2Fca.pem&options=-c%20application_name%3Dfoo%20bar&sslmode=disable&%73slmode=verify%2Dfull";
+        let mut config = db_config(10, None);
+        for enforce in [false, true] {
+            config.enforce_tls = enforce;
+            let output = super::connection_url(&config, input).unwrap();
+            for key in [
+                "user",
+                "password",
+                "application_name",
+                "sslrootcert",
+                "options",
+            ] {
+                assert_eq!(
+                    parsed_option(&output, key),
+                    parsed_option(input, key),
+                    "{key}"
+                );
+            }
+            assert_eq!(parsed_option(&output, "sslmode"), "verify-full");
+            assert_eq!(parsed_option(&output, "tcp_user_timeout"), "0");
+        }
     }
 
     #[test]

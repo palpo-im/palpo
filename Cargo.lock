@@ -3946,6 +3946,7 @@ dependencies = [
  "mime-infer",
  "palpo-core",
  "path-slash",
+ "pq-sys",
  "rand 0.10.3",
  "regex",
  "reqwest",
