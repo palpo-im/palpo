@@ -137,6 +137,9 @@ docker-compose up -d
 
 See [installation](https://palpo.im/guide/installation/) for detailed deployment instructions.
 
+For an existing database, follow the [upgrade instructions](docs/UPGRADING.md)
+before starting an upgraded server.
+
 ### Enable URL Preview Cards
 
 Matrix clients request webpage metadata from Palpo to display inline link
