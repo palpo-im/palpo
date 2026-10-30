@@ -15,17 +15,49 @@ use crate::core::identifiers::*;
 use crate::core::state::Event;
 use crate::data::diesel_exists;
 use crate::data::schema::*;
-use crate::event::handler::{process_pulled_pdu, process_to_outlier_pdu};
+use crate::event::handler::{process_pulled_pdu_with_pending_state, process_to_outlier_pdu};
 use crate::event::{connect, parse_fetched_pdu, seen_event_ids};
 use crate::exts::*;
 use crate::room::state::ensure_field_id;
 use crate::room::timeline;
 use crate::sending::send_federation_request;
-use crate::{AppResult, PduEvent, SnPduEvent, room};
+use crate::{AppError, AppResult, OptionalExtension as _, PduEvent, SnPduEvent, room};
 
 pub struct FetchedState {
     pub state_events: IndexMap<i64, OwnedEventId>,
     pub auth_events: IndexMap<i64, OwnedEventId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingEventsRecovery {
+    Complete,
+    /// Every missing immediate predecessor was supplied and signature-checked
+    /// in this response, but its earlier state/auth still needs recovery. This
+    /// permits the existing state recovery path, never timeline acceptance.
+    PendingState,
+    Incomplete,
+}
+
+async fn recovered_predecessors(
+    room_id: &RoomId,
+    required: &[OwnedEventId],
+) -> AppResult<HashSet<OwnedEventId>> {
+    Ok(events::table
+        .inner_join(
+            event_datas::table.on(event_datas::event_id
+                .eq(events::id)
+                .and(event_datas::room_id.eq(events::room_id))),
+        )
+        .filter(events::room_id.eq(room_id))
+        .filter(events::id.eq_any(required))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .select(events::id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .collect())
 }
 
 pub async fn fetch_and_process_missing_events(
@@ -34,41 +66,45 @@ pub async fn fetch_and_process_missing_events(
     room_version: &RoomVersionId,
     incoming_pdu: &PduEvent,
     is_backfill: bool,
-) -> AppResult<()> {
+) -> AppResult<MissingEventsRecovery> {
+    let required = &incoming_pdu.prev_events;
+    let recovered = recovered_predecessors(room_id, required).await?;
+    if required.iter().all(|id| recovered.contains(id)) {
+        return Ok(MissingEventsRecovery::Complete);
+    }
+    // Imported state and rejected predecessors can have a usable historical
+    // state without being timeline anchors. Let the live-event guard authorize
+    // that reconnect locally, instead of fetching the already-known history.
+    let cached = events::table
+        .filter(events::room_id.eq(room_id))
+        .filter(events::id.eq_any(required))
+        .select(events::id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?;
+    if required.iter().all(|id| cached.contains(id))
+        && crate::event::resolver::resolve_state_at_incoming(
+            incoming_pdu,
+            &crate::room::get_version_rules(room_version)?,
+        )
+        .await?
+        .is_some()
+    {
+        return Ok(MissingEventsRecovery::Incomplete);
+    }
     let min_depth = timeline::first_pdu_in_room(room_id)
-        .await
-        .ok()
-        .and_then(|pdu| pdu.map(|p| p.depth))
+        .await?
+        .map(|p| p.depth)
         .unwrap_or(0);
-    let mut fetched_events = IndexMap::with_capacity(10);
 
     let mut earliest_events = Vec::new();
     for event_id in room::state::get_forward_extremities(room_id).await? {
-        let Ok(pdu) = timeline::get_pdu(&event_id).await else {
+        let Some(pdu) = timeline::get_pdu(&event_id).await.optional()? else {
             continue;
         };
         if !pdu.is_outlier && !pdu.soft_failed && !pdu.rejected() {
             earliest_events.push(event_id);
         }
     }
-    let mut known_events = HashSet::new();
-    let mut missing_events = Vec::with_capacity(incoming_pdu.prev_events.len());
-    for prev_id in &incoming_pdu.prev_events {
-        let pdu = timeline::get_pdu(prev_id).await;
-        if let Ok(pdu) = &pdu {
-            if pdu.rejected() {
-                missing_events.push(prev_id.to_owned());
-            } else {
-                known_events.insert(prev_id.to_owned());
-            }
-        } else if !earliest_events.contains(prev_id) {
-            missing_events.push(prev_id.to_owned());
-        }
-    }
-    if missing_events.is_empty() {
-        return Ok(());
-    }
-
     let request = missing_events_request(
         &remote_server.origin().await,
         room_id,
@@ -84,20 +120,47 @@ pub async fn fetch_and_process_missing_events(
     let response = send_federation_request(remote_server, request, None).await?;
     let res_body = response.json::<MissingEventsResBody>().await?;
 
+    process_missing_events_response(
+        remote_server,
+        room_id,
+        room_version,
+        is_backfill,
+        res_body,
+        required,
+    )
+    .await
+}
+
+pub(super) async fn process_missing_events_response(
+    remote_server: &ServerName,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    is_backfill: bool,
+    res_body: MissingEventsResBody,
+    required: &[OwnedEventId],
+) -> AppResult<MissingEventsRecovery> {
+    let mut fetched_events = IndexMap::with_capacity(res_body.events.len());
+
     for event in res_body.events {
         let (event_id, event_val) = parse_fetched_pdu(room_id, room_version, &event)?;
-
-        if known_events.contains(&event_id) {
+        if fetched_events.contains_key(&event_id) {
             continue;
         }
-
-        if fetched_events.contains_key(&event_id) || timeline::get_pdu(&event_id).await.is_ok() {
-            known_events.insert(event_id.clone());
+        let cached = events::table
+            .filter(events::room_id.eq(room_id))
+            .filter(events::id.eq(&event_id))
+            .select((events::is_outlier, events::is_rejected, events::soft_failed))
+            .first::<(bool, bool, bool)>(&mut connect().await?)
+            .await
+            .optional()?;
+        // Rejected events are immutable. A cached, unvalidated outlier must
+        // still go through pulled-event processing before it can be an anchor.
+        if cached
+            .is_some_and(|(outlier, rejected, soft_failed)| rejected || (!outlier && !soft_failed))
+        {
             continue;
         }
-
         fetched_events.insert(event_id.clone(), event_val);
-        known_events.insert(event_id.clone());
     }
 
     fetched_events.sort_by(|_x1, v1, _k2, v2| {
@@ -105,18 +168,9 @@ pub async fn fetch_and_process_missing_events(
         let depth2 = v2.get("depth").and_then(|v| v.as_integer()).unwrap_or(0);
         depth1.cmp(&depth2)
     });
+    let mut pending_state = HashSet::new();
     for (event_id, event_val) in fetched_events {
-        let is_exists = diesel_exists!(
-            events::table
-                .filter(events::id.eq(&event_id))
-                .filter(events::room_id.eq(&room_id)),
-            &mut connect().await?
-        )?;
-        if is_exists {
-            continue;
-        }
-
-        if let Err(e) = process_pulled_pdu(
+        match process_pulled_pdu_with_pending_state(
             remote_server,
             &event_id,
             room_id,
@@ -126,13 +180,59 @@ pub async fn fetch_and_process_missing_events(
         )
         .await
         {
-            error!(
-                "failed to process fetched missing prev event {}: {}",
-                event_id, e
-            );
+            Ok(true) => {
+                pending_state.insert(event_id);
+            }
+            Ok(false) => {}
+            Err(e) => {
+                if matches!(
+                    e,
+                    AppError::Data(_) | AppError::Diesel(_) | AppError::Pool(_)
+                ) {
+                    return Err(e);
+                }
+                error!(
+                    "failed to process fetched missing prev event {}: {}",
+                    event_id, e
+                );
+            }
         }
     }
-    Ok(())
+    // HTTP success (including an empty or partial body) is not DAG recovery.
+    // Recheck every required predecessor, also observing concurrent recovery.
+    let recovered = recovered_predecessors(room_id, required).await?;
+    if required.iter().all(|id| recovered.contains(id)) {
+        return Ok(MissingEventsRecovery::Complete);
+    }
+    // A cached outlier alone proves nothing. Only this response's successfully
+    // processed pending events can permit snapshot recovery, and their payload
+    // and non-rejected pending metadata must still exist in this room.
+    let pending_state: HashSet<OwnedEventId> = events::table
+        .inner_join(
+            event_datas::table.on(event_datas::event_id
+                .eq(events::id)
+                .and(event_datas::room_id.eq(events::room_id))),
+        )
+        .filter(events::room_id.eq(room_id))
+        .filter(events::id.eq_any(pending_state))
+        .filter(events::is_outlier.eq(true))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(true))
+        .select(events::id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .collect();
+    Ok(
+        if required
+            .iter()
+            .all(|id| recovered.contains(id) || pending_state.contains(id))
+        {
+            MissingEventsRecovery::PendingState
+        } else {
+            MissingEventsRecovery::Incomplete
+        },
+    )
 }
 
 pub async fn fetch_and_process_auth_chain(

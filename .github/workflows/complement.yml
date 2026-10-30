@@ -14,6 +14,7 @@ on:
       - '**.rs'
       - '**.sh'
       - 'tests/mixed_federation*.py'
+      - 'tests/complement_regressions*.py'
       - '**/Cargo.toml'
       - 'tests/complement/**'
       - '.github/workflows/complement.yml'
@@ -24,10 +25,16 @@ on:
       - '**.rs'
       - '**.sh'
       - 'tests/mixed_federation*.py'
+      - 'tests/complement_regressions*.py'
       - '**/Cargo.toml'
       - 'tests/complement/**'
       - '.github/workflows/complement.yml'
   workflow_dispatch:
+    inputs:
+      require_clean_suite:
+        description: Require zero Complement failures and successful Go exit
+        type: boolean
+        default: false
 
 defaults:
   run:
@@ -47,6 +54,9 @@ jobs:
         with:
           go-version: stable
           cache: false
+
+      - name: Test required regression results gate
+        run: python3 -m unittest discover -s tests -p 'complement_regressions_test.py'
 
       - name: Clone Complement
         run: |
@@ -73,6 +83,7 @@ jobs:
         run: |
           cd /tmp/complement
           # Use clean deployments so stopped-server backoff cannot affect later tests.
+          set +e
           COMPLEMENT_BASE_IMAGE=complement-palpo \
             go test -p=1 -parallel=1 -tags="palpo_blacklist" -json -count=1 -timeout 120m \
             ./tests/csapi \
@@ -80,6 +91,9 @@ jobs:
             ./tests/msc3930 \
             ./tests/msc3967 \
             | tee results.jsonl
+          status=${PIPESTATUS[0]}
+          echo "$status" > exit-code
+          exit "$status"
         continue-on-error: true
 
       - name: Generate sorted test results
@@ -111,8 +125,21 @@ jobs:
             /tmp/complement/__test_all.result.jsonl
             /tmp/complement/results.jsonl
             /tmp/complement/results.log
+            /tmp/complement/exit-code
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Verify required regression cases
+        if: always()
+        env:
+          REQUIRE_CLEAN_SUITE: ${{ inputs.require_clean_suite }}
+        run: |
+          args=()
+          if [ "$REQUIRE_CLEAN_SUITE" = "true" ]; then
+            args+=(--require-clean)
+          fi
+          python3 tests/complement_regressions.py /tmp/complement/results.jsonl \
+            tests/complement/required_pass --exit-code-file /tmp/complement/exit-code "${args[@]}"
 
       - name: Evaluate test results
         if: always()
