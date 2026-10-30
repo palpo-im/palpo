@@ -1373,11 +1373,10 @@ async fn load_timeline_with_backfilled_history(
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
     let limit = filter.and_then(|f| f.limit).unwrap_or(10);
-    let mut timeline_pdus = timeline::topolo::load_pdus_backward(
+    let mut timeline_pdus = timeline::topolo::load_pdus_backward_captured(
         Some(user_id),
         room_id,
-        Some(until),
-        None,
+        until,
         filter,
         limit + 1,
     )
@@ -1613,6 +1612,8 @@ mod member_presence_tests;
 
 #[cfg(test)]
 mod pagination_database_tests {
+    use diesel_async::RunQueryDsl;
+
     use super::*;
     use crate::core::serde::to_canonical_object;
     use crate::data::room::{DbEventData, NewDbEvent};
@@ -1648,6 +1649,25 @@ mod pagination_database_tests {
         .save_with_conn(&mut conn)
         .await
         .unwrap();
+        // This fixture models accepted, published live events rather than
+        // unsourced event rows. Their identity and publication happen together.
+        diesel::insert_into(data::schema::event_points::table)
+            .values((
+                data::schema::event_points::event_id.eq(&pdu.event_id),
+                data::schema::event_points::event_sn.eq(sn),
+                data::schema::event_points::room_id.eq(&pdu.room_id),
+                data::schema::event_points::live_published_sn.eq(Some(sn)),
+                data::schema::event_points::live_published_frame_id.eq(Some(1)),
+            ))
+            .on_conflict(data::schema::event_points::event_id)
+            .do_update()
+            .set((
+                data::schema::event_points::live_published_sn.eq(Some(sn)),
+                data::schema::event_points::live_published_frame_id.eq(Some(1)),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
         SnPduEvent::new(pdu, sn, false, false, false)
     }
 

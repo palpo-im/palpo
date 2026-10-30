@@ -696,6 +696,20 @@ async fn delayed_member_publication() {
     let message_id = crate::core::EventId::parse(message["event_id"].as_str().unwrap()).unwrap();
     let message_sn = room::timeline::get_pdu(&message_id).await.unwrap().event_sn;
     assert!(message_sn > cached.event_sn);
+    // Sign a valid historical message against this pre-promotion state, but
+    // defer its receipt until the join-history recovery check below.
+    let (history_pdu, history_json) = crate::event::PduBuilder {
+        event_type: "m.room.message".into(),
+        timestamp: Some(UnixMillis(1)),
+        content: serde_json::value::to_raw_value(
+            &json!({"body":"recovered history","msgtype":"m.text"}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&alice, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
     let previous = sync(&service, None, None).await;
     let since = previous["next_batch"].as_str().unwrap();
     let old_until = since.parse::<BatchToken>().unwrap().event_sn() - 1;
@@ -874,6 +888,105 @@ async fn delayed_member_publication() {
                 .any(|event| event["type"] == "m.room.member" && event["state_key"] == bob.as_str())
         );
     }
+
+    // Materialize a genuinely negative-history event through the normal
+    // backfill append path. Only the remote fetch result is substituted below;
+    // missing-frontier detection and the real joined-room reload SQL execute.
+    let (mut history, history_json, history_guard) =
+        crate::event::PduBuilder::save_as_outlier(history_pdu, history_json, &alice)
+            .await
+            .unwrap();
+    history.is_backfill = true;
+    crate::event::update_before_frame_id(&history.event_id, before_promotion)
+        .await
+        .unwrap();
+    room::timeline::append_pdu(&history, history_json, &room::lock_state(&room).await)
+        .await
+        .unwrap();
+    drop(history_guard);
+    let history = room::timeline::get_pdu(&history.event_id).await.unwrap();
+    assert!(history.is_backfill && !history.is_outlier);
+    let history_publication = data::schema::event_points::table
+        .find(&*history.event_id)
+        .select((
+            data::schema::event_points::live_published_sn,
+            data::schema::event_points::live_published_frame_id,
+        ))
+        .first::<(Option<i64>, Option<i64>)>(&mut data::connect().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(history_publication, (None, None));
+    let old_next = BatchToken::new_live(old_until + 1);
+    // Positive control: ordinary historical pagination still follows original
+    // topology and identity; only a captured sync adds the publication bound.
+    let generic = room::timeline::topolo::load_pdus_backward(
+        Some(&alice),
+        &room,
+        Some(old_next),
+        None,
+        None,
+        100,
+    )
+    .await
+    .unwrap();
+    assert!(generic.contains_key(&cached.event_sn));
+    assert!(generic.contains_key(&history.event_sn));
+    diesel::sql_query("INSERT INTO event_backward_extremities(room_id,event_id) VALUES ($1,'$missing-history-frontier')")
+        .bind::<diesel::sql_types::Text, _>(room.as_str())
+        .execute(&mut data::connect().await.unwrap()).await.unwrap();
+    *room::timeline::BACKFILL_RESULT_FOR_TEST.lock().unwrap() =
+        Some(room::timeline::BackfillResultForTest {
+            room_id: room.clone(),
+            event_id: history.event_id.clone(),
+            calls: 0,
+        });
+    let mut filter = crate::core::client::filter::FilterDefinition::default();
+    filter.room.timeline.limit = Some(100);
+    let new_next = BatchToken::new_live(data::curr_sn().await.unwrap() + 1);
+    for (upper, expect_join) in [(old_next, false), (new_next, true)] {
+        let (mut changed, mut joined, mut left) = Default::default();
+        let (recovered, _) = super::load_joined_room(
+            &alice,
+            "D".into(),
+            &room,
+            false,
+            None,
+            None,
+            upper,
+            false,
+            &filter,
+            false,
+            &mut changed,
+            &mut joined,
+            &mut left,
+        )
+        .await
+        .unwrap();
+        let value = serde_json::to_value(recovered).unwrap();
+        let events = value["timeline"]["events"].as_array().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event["event_id"] == history.event_id.as_str()),
+            "true negative history was dropped: {value}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| event["event_id"] == cached.event_id.as_str()),
+            expect_join,
+            "join-history recovery crossed its publication window: {value}"
+        );
+    }
+    let injected = room::timeline::BACKFILL_RESULT_FOR_TEST
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap();
+    assert_eq!(
+        injected.calls, 2,
+        "both sync windows must take the nonempty backfill branch"
+    );
 }
 
 async fn wait_for_publication_lock(class_id: i64, key: i64, sub_id: i16, mode: &str) {
