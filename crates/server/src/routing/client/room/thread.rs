@@ -43,6 +43,8 @@ pub(super) async fn list_threads(
 
 #[cfg(test)]
 mod private_cursor_tests {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
     use salvo::test::{RequestBuilder, ResponseExt, TestClient};
     use serde_json::{Value, json};
 
@@ -177,18 +179,16 @@ mod private_cursor_tests {
         let token = first["next_batch"]
             .as_str()
             .expect("another visible root remains");
-        let decoded = base64::Engine::decode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            token.strip_prefix("t1.").unwrap(),
+        let cursor = crate::room::thread::parse_cursor(
+            token,
+            &room,
+            &users[1],
+            &crate::core::client::room::IncludeThreads::All,
         )
+        .await
         .unwrap();
-        let cursor: Value = serde_json::from_slice(&decoded).unwrap();
-        assert_eq!(cursor["event_id"], roots[3].as_str());
-        assert!(
-            !roots[..2]
-                .iter()
-                .any(|id| cursor["event_id"] == id.as_str())
-        );
+        assert_eq!(cursor.event_id, roots[3]);
+        assert!(!roots[..2].iter().any(|id| cursor.event_id == *id));
         let second = request(
             &service,
             "reader",
@@ -198,6 +198,198 @@ mod private_cursor_tests {
         )
         .await;
         assert_eq!(second["chunk"][0]["event_id"], roots[2].as_str());
+        assert!(second.get("next_batch").is_none_or(Value::is_null));
+
+        // A legacy visible anchor describes historical activity. New replies
+        // must not invalidate it merely because threads.last_sn has advanced.
+        let legacy_for = |activity_sn| {
+            format!(
+                "t1.{}",
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    serde_json::to_vec(
+                        &json!({"room_id":room, "last_sn":activity_sn, "event_id":roots[3]})
+                    )
+                    .unwrap()
+                )
+            )
+        };
+        let mut legacy = None;
+        for number in 1..=2 {
+            let sent = request(
+                &service,
+                "owner",
+                TestClient::put(format!(
+                    "http://localhost/rooms/{room}/send/m.room.message/new-reply-{number}"
+                ))
+                .json(
+                    &json!({"msgtype":"m.text", "body":"new activity", "m.relates_to":{
+                        "rel_type":"m.thread", "event_id":roots[3], "is_falling_back":true,
+                        "m.in_reply_to":{"event_id":roots[3]}
+                    }}),
+                ),
+            )
+            .await;
+            if number == 1 {
+                let id = EventId::parse(sent["event_id"].as_str().unwrap()).unwrap();
+                let reply = crate::room::timeline::get_pdu(&id).await.unwrap();
+                legacy = Some(legacy_for(reply.event_sn));
+                // Historical installations need not have backfilled this field.
+                use crate::data::schema::event_points;
+                diesel::update(event_points::table.find(&id))
+                    .set(event_points::thread_id.eq(None::<String>))
+                    .execute(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
+        let legacy = legacy.unwrap();
+        let resumed = request(
+            &service,
+            "reader",
+            TestClient::get(format!(
+                "http://localhost/rooms/{room}/threads?limit=1&from={legacy}"
+            )),
+        )
+        .await;
+        assert_eq!(resumed["chunk"][0]["event_id"], roots[2].as_str());
+        let unrelated = crate::room::timeline::get_pdu(&roots[2]).await.unwrap();
+        let invalid_legacy = legacy_for(unrelated.event_sn);
+        let mut rejected = TestClient::get(format!(
+            "http://localhost/rooms/{room}/threads?limit=1&from={invalid_legacy}"
+        ))
+        .add_header("authorization", "Bearer reader", true)
+        .send(&service)
+        .await;
+        let rejected_body: Value = rejected.take_json().await.unwrap();
+        assert_eq!(
+            rejected.status_code,
+            Some(StatusCode::BAD_REQUEST),
+            "{rejected_body}"
+        );
+
+        // A nonmember may read a historical world-readable root. More than a
+        // request budget of newer private roots must require resumable, private
+        // scanning instead of either an unbounded scan or losing that root.
+        let created = request(&service, "owner", TestClient::post("http://localhost/createRoom")
+            .json(&json!({"room_version":"11", "preset":"private_chat", "initial_state":[{
+                "type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"world_readable"}
+            }]}))).await;
+        let scan_room = RoomId::parse(created["room_id"].as_str().unwrap()).unwrap();
+        let visible = request(
+            &service,
+            "owner",
+            TestClient::put(format!(
+                "http://localhost/rooms/{scan_room}/send/m.room.message/historical-visible"
+            ))
+            .json(&json!({"msgtype":"m.text", "body":"historically world readable"})),
+        )
+        .await;
+        let visible = EventId::parse(visible["event_id"].as_str().unwrap()).unwrap();
+        let pdu = crate::room::timeline::get_pdu(&visible).await.unwrap();
+        data::room::upsert_thread(data::room::DbThread {
+            event_id: visible.clone(),
+            event_sn: pdu.event_sn,
+            room_id: scan_room.clone(),
+            last_id: visible.clone(),
+            last_sn: pdu.event_sn,
+        })
+        .await
+        .unwrap();
+        request(
+            &service,
+            "owner",
+            TestClient::put(format!(
+                "http://localhost/rooms/{scan_room}/state/m.room.history_visibility"
+            ))
+            .json(&json!({"history_visibility":"joined"})),
+        )
+        .await;
+        let mut hidden = Vec::new();
+        for number in 0..513 {
+            let sent = request(
+                &service,
+                "owner",
+                TestClient::put(format!(
+                    "http://localhost/rooms/{scan_room}/send/m.room.message/hidden-{number}"
+                ))
+                .json(&json!({"msgtype":"m.text", "body":"private root"})),
+            )
+            .await;
+            let id = EventId::parse(sent["event_id"].as_str().unwrap()).unwrap();
+            let pdu = crate::room::timeline::get_pdu(&id).await.unwrap();
+            data::room::upsert_thread(data::room::DbThread {
+                event_id: id.clone(),
+                event_sn: pdu.event_sn,
+                room_id: scan_room.clone(),
+                last_id: id.clone(),
+                last_sn: pdu.event_sn,
+            })
+            .await
+            .unwrap();
+            hidden.push(id);
+        }
+        let first = request(
+            &service,
+            "outsider",
+            TestClient::get(format!(
+                "http://localhost/rooms/{scan_room}/threads?limit=1"
+            )),
+        )
+        .await;
+        assert!(
+            first["chunk"].as_array().unwrap().is_empty(),
+            "scan work must stop at its request budget: {first}"
+        );
+        let continuation = first["next_batch"]
+            .as_str()
+            .expect("hidden-only page must remain resumable");
+        let decoded = base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            continuation.strip_prefix("t2.").unwrap(),
+        )
+        .unwrap();
+        assert!(!hidden.iter().any(|id| {
+            decoded
+                .windows(id.as_str().len())
+                .any(|bytes| bytes == id.as_bytes())
+        }));
+        let cursor = crate::room::thread::parse_cursor(
+            continuation,
+            &scan_room,
+            &users[2],
+            &crate::core::client::room::IncludeThreads::All,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cursor.event_id, hidden[1],
+            "exactly 512 candidate roots were inspected"
+        );
+        for (token, target_room, include) in [
+            ("owner", &scan_room, "all"),
+            ("outsider", &room, "all"),
+            ("outsider", &scan_room, "participated"),
+        ] {
+            let mut response = TestClient::get(format!(
+                "http://localhost/rooms/{target_room}/threads?limit=1&include={include}&from={continuation}"
+            )).add_header("authorization",format!("Bearer {token}"),true).send(&service).await;
+            let body: Value = response.take_json().await.unwrap();
+            assert_eq!(
+                response.status_code,
+                Some(StatusCode::BAD_REQUEST),
+                "context replay must fail: {body}"
+            );
+        }
+        let second = request(
+            &service,
+            "outsider",
+            TestClient::get(format!(
+                "http://localhost/rooms/{scan_room}/threads?limit=1&from={continuation}"
+            )),
+        )
+        .await;
+        assert_eq!(second["chunk"][0]["event_id"], visible.as_str());
         assert!(second.get("next_batch").is_none_or(Value::is_null));
     }
 }

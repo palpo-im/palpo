@@ -11,11 +11,16 @@ use crate::data::room::DbThread;
 use crate::room::timeline;
 use crate::{AppResult, MatrixError, SnPduEvent, data};
 
+mod pagination;
+
+const THREAD_SCAN_BUDGET: usize = 512;
+const THREAD_SCAN_BATCH: usize = 128;
+
 #[derive(Serialize, Deserialize)]
-struct ThreadCursor {
+pub(crate) struct ThreadCursor {
     room_id: OwnedRoomId,
     last_sn: i64,
-    event_id: OwnedEventId,
+    pub(crate) event_id: OwnedEventId,
 }
 
 impl ThreadCursor {
@@ -34,6 +39,7 @@ impl ThreadCursor {
         Ok(cursor)
     }
 
+    #[cfg(test)]
     fn encode(&self) -> String {
         format!(
             "t1.{}",
@@ -42,32 +48,80 @@ impl ThreadCursor {
     }
 }
 
+pub(crate) async fn parse_cursor(
+    token: &str,
+    room: &RoomId,
+    user: &UserId,
+    include: &IncludeThreads,
+) -> AppResult<ThreadCursor> {
+    if token.starts_with("t2.") {
+        return pagination::decode(token, room, user, include);
+    }
+    let cursor = ThreadCursor::parse(token, room)?;
+    let root = match timeline::get_pdu(&cursor.event_id).await {
+        Ok(pdu) => pdu,
+        Err(error) if error.is_not_found() => return Err(pagination::invalid()),
+        Err(error) => return Err(error),
+    };
+    if root.room_id != room || !root.user_can_see(user).await? {
+        return Err(pagination::invalid());
+    }
+    // Legacy tokens contain a visible anchor and its activity at issuance. A
+    // later reply may have moved threads.last_sn, so validate the historical
+    // activity by its indexed sequence rather than comparing mutable state.
+    let activity_id = match crate::event::get_event_id_by_sn(cursor.last_sn).await {
+        Ok(id) => id,
+        Err(error) if error.is_not_found() => return Err(pagination::invalid()),
+        Err(error) => return Err(error),
+    };
+    let activity = match timeline::get_pdu(&activity_id).await {
+        Ok(pdu) => pdu,
+        Err(error) if error.is_not_found() => return Err(pagination::invalid()),
+        Err(error) => return Err(error),
+    };
+    let content: serde_json::Value = serde_json::from_str(activity.content.get())?;
+    if activity.room_id != room
+        || (activity.event_id != root.event_id
+            && !(content["m.relates_to"]["rel_type"] == "m.thread"
+                && content["m.relates_to"]["event_id"] == root.event_id.as_str()))
+    {
+        return Err(pagination::invalid());
+    }
+    Ok(cursor)
+}
+
 pub async fn get_threads(
     room_id: &RoomId,
     user_id: &UserId,
-    _include: &IncludeThreads,
+    include: &IncludeThreads,
     limit: i64,
     from_token: Option<&str>,
 ) -> AppResult<(Vec<(OwnedEventId, SnPduEvent)>, Option<String>)> {
     if !(1..=100).contains(&limit) {
         return Err(MatrixError::invalid_param("Thread limit must be between 1 and 100.").into());
     }
-    let cursor = from_token
-        .map(|token| ThreadCursor::parse(token, room_id))
-        .transpose()?;
+    let cursor = if let Some(token) = from_token {
+        Some(parse_cursor(token, room_id, user_id, include).await?)
+    } else {
+        None
+    };
     let mut scan_cursor = cursor;
     let mut visible = Vec::with_capacity((limit + 1) as usize);
-    // Keep internal scan positions private. Only an event the user may actually
-    // read can become a public pagination cursor, including the lookahead page.
-    'scan: loop {
+    let mut examined = 0;
+    let mut exhausted = false;
+    // A private room may have arbitrarily many invisible roots. Bound the total
+    // visibility work, not just each query, and encrypt internal continuation.
+    'scan: while examined < THREAD_SCAN_BUDGET {
+        let batch_limit = THREAD_SCAN_BATCH.min(THREAD_SCAN_BUDGET - examined);
         let items = data::room::list_threads(
             room_id,
             scan_cursor.as_ref().map(|c| (c.last_sn, &*c.event_id)),
-            128,
+            batch_limit as i64,
         )
         .await?;
-        let exhausted = items.len() < 128;
+        let last_batch = items.len() < batch_limit;
         for (event_id, last_sn) in items {
+            examined += 1;
             scan_cursor = Some(ThreadCursor {
                 room_id: room_id.to_owned(),
                 last_sn,
@@ -82,23 +136,29 @@ pub async fn get_threads(
                 break 'scan;
             }
         }
-        if exhausted {
+        if last_batch {
+            exhausted = true;
             break;
         }
     }
     let has_more = visible.len() as i64 > limit;
     visible.truncate(limit as usize);
-    let next_token = visible
-        .last()
-        .filter(|_| has_more)
-        .map(|(event_id, last_sn, _)| {
-            ThreadCursor {
-                room_id: room_id.to_owned(),
-                last_sn: *last_sn,
-                event_id: event_id.clone(),
-            }
-            .encode()
-        });
+    let next_cursor = if has_more {
+        // Restart after the last RETURNED visible root, not after lookahead.
+        // Otherwise the next page would lose that unreturned visible event.
+        visible.last().map(|(event_id, last_sn, _)| ThreadCursor {
+            room_id: room_id.to_owned(),
+            last_sn: *last_sn,
+            event_id: event_id.clone(),
+        })
+    } else if !exhausted {
+        scan_cursor
+    } else {
+        None
+    };
+    let next_token = next_cursor
+        .map(|cursor| pagination::encode(cursor, room_id, user_id, include))
+        .transpose()?;
     let events = visible
         .into_iter()
         .map(|(event_id, _, pdu)| (event_id, pdu))
