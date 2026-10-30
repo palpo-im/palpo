@@ -37,7 +37,7 @@ async fn create_room(service: &Service) -> OwnedRoomId {
 }
 
 async fn append(room_id: &RoomId, timestamp: UnixMillis, body: &str) -> SnPduEvent {
-    timeline::build_and_append_pdu(
+    let appended = timeline::build_and_append_pdu(
         PduBuilder {
             event_type: "m.room.message".into(),
             content: serde_json::value::to_raw_value(&json!({"msgtype":"m.text", "body":body}))
@@ -51,7 +51,12 @@ async fn append(room_id: &RoomId, timestamp: UnixMillis, body: &str) -> SnPduEve
         &room::lock_state(room_id).await,
     )
     .await
-    .unwrap()
+    .unwrap();
+    // The builder returns its pre-publication outlier object. Reload the
+    // persisted timeline state before simulating a gap in its predecessor.
+    let persisted = timeline::get_pdu(&appended.event_id).await.unwrap();
+    assert!(!persisted.is_outlier);
+    persisted
 }
 
 async fn gap_count(event: &SnPduEvent) -> i64 {
