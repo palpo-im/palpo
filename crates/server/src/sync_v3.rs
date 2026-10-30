@@ -816,14 +816,14 @@ async fn load_joined_room(
                     if lazy_loaded.contains(&event.sender) {
                         continue;
                     }
-                    if (!room::lazy_loading::lazy_load_was_sent_before(
+                    if !room::lazy_loading::lazy_load_was_sent_before(
                         sender_id,
                         device_id,
                         room_id,
                         &event.sender,
                     )
                     .await?
-                        || lazy_load_send_redundant)
+                        || lazy_load_send_redundant
                     {
                         let member_event = match room::get_state(
                             room_id,
