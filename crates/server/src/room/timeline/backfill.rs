@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -11,11 +11,72 @@ use crate::core::events::TimelineEventType;
 use crate::core::federation::backfill::{BackfillReqArgs, BackfillResBody, backfill_request};
 use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonObject, JsonValue, RawJsonValue};
+use crate::core::state::Event;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::handler::process_to_timeline_pdu;
 use crate::event::{BatchToken, handler, parse_fetched_pdu};
 use crate::{AppError, AppResult, GetUrlOrigin, SnPduEvent, room};
+
+/// A rejected predecessor stays outside the timeline, but is still part of the
+/// known DAG. Follow it to distinguish a real history gap from a rejected event
+/// which cannot be made visible by fetching it again.
+pub(crate) async fn history_has_missing_predecessors(
+    room_id: &RoomId,
+    prev_events: &[OwnedEventId],
+) -> AppResult<bool> {
+    const MAX_PREDECESSORS: usize = 256;
+    if prev_events.len() > MAX_PREDECESSORS {
+        return Ok(true);
+    }
+    // The common case stays one batched metadata query. Only outlier ancestry
+    // needs JSON or a graph walk.
+    let mut complete = events::table
+        .filter(events::room_id.eq(room_id))
+        .filter(events::id.eq_any(prev_events))
+        .filter(events::is_outlier.eq(false))
+        .select(events::id)
+        .load::<OwnedEventId>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut pending: Vec<_> = prev_events.iter().cloned().map(|id| (id, false)).collect();
+    let mut active = HashSet::new();
+    let mut remaining = MAX_PREDECESSORS;
+    while let Some((event_id, leaving)) = pending.pop() {
+        if leaving {
+            active.remove(&event_id);
+            complete.insert(event_id);
+            continue;
+        }
+        if complete.contains(&event_id) {
+            continue;
+        }
+        if remaining == 0 || active.contains(&event_id) {
+            return Ok(true);
+        }
+        remaining -= 1;
+        let pdu = match super::get_pdu(&event_id).await {
+            Ok(pdu) => pdu,
+            Err(error) if error.is_not_found() => return Ok(true),
+            Err(error) => return Err(error),
+        };
+        if pdu.room_id != room_id {
+            return Ok(true);
+        }
+        if !pdu.is_outlier {
+            complete.insert(event_id);
+            continue;
+        }
+        if !pdu.rejected() || pdu.prev_events.len() > remaining {
+            return Ok(true);
+        }
+        active.insert(event_id.clone());
+        pending.push((event_id, true));
+        pending.extend(pdu.prev_events.iter().cloned().map(|id| (id, false)));
+    }
+    Ok(false)
+}
 
 /// Decide whether `/messages` needs to backfill more history from federation
 /// before responding, and if so, do it.
@@ -47,13 +108,7 @@ pub async fn backfill_if_required(
         if pdu.prev_events.is_empty() {
             continue;
         }
-        let existing: Vec<OwnedEventId> = events::table
-            .filter(events::id.eq_any(&pdu.prev_events))
-            .filter(events::is_outlier.eq(false))
-            .select(events::id)
-            .load(&mut connect().await?)
-            .await?;
-        if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
+        if history_has_missing_predecessors(room_id, &pdu.prev_events).await? {
             return backfill_from_extremities(room_id, std::slice::from_ref(&pdu.event_id), limit)
                 .await;
         }
@@ -91,13 +146,7 @@ pub async fn backfill_if_required(
             if pdu.prev_events.is_empty() {
                 continue;
             }
-            let existing: Vec<OwnedEventId> = events::table
-                .filter(events::id.eq_any(&pdu.prev_events))
-                .filter(events::is_outlier.eq(false))
-                .select(events::id)
-                .load(&mut connect().await?)
-                .await?;
-            if pdu.prev_events.iter().any(|id| !existing.contains(id)) {
+            if history_has_missing_predecessors(room_id, &pdu.prev_events).await? {
                 fill_from.push(ext_id);
             }
         }
@@ -120,17 +169,8 @@ pub async fn trim_pdus_until_backfill_gap(
 ) -> AppResult<IndexMap<Seqnum, SnPduEvent>> {
     let mut trimmed = IndexMap::with_capacity(pdus.len());
     for (event_sn, pdu) in pdus {
-        let has_missing_prev = if pdu.prev_events.is_empty() {
-            false
-        } else {
-            let existing: Vec<OwnedEventId> = events::table
-                .filter(events::id.eq_any(&pdu.prev_events))
-                .filter(events::is_outlier.eq(false))
-                .select(events::id)
-                .load(&mut connect().await?)
-                .await?;
-            pdu.prev_events.iter().any(|id| !existing.contains(id))
-        };
+        let has_missing_prev =
+            history_has_missing_predecessors(&pdu.room_id, &pdu.prev_events).await?;
 
         trimmed.insert(event_sn, pdu);
         if has_missing_prev {
@@ -367,4 +407,164 @@ pub(crate) async fn append_backfilled_pdu(
         room::state::update_backward_extremities(&promoted).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod history_database_tests {
+    use super::*;
+    use crate::data::room::{DbEventData, NewDbEvent};
+    use crate::event::PduEvent;
+
+    async fn save_event(
+        room_id: &RoomId,
+        event_id: &str,
+        prev_events: &[&str],
+        outlier: bool,
+        rejected: bool,
+    ) -> SnPduEvent {
+        let mut pdu: PduEvent = serde_json::from_value(serde_json::json!({
+            "event_id": event_id, "room_id": room_id, "sender": "@alice:example.org",
+            "type": "m.room.message", "content": {"body": "history", "msgtype": "m.text"},
+            "origin_server_ts": 1, "depth": 3, "hashes": {"sha256": ""},
+            "prev_events": prev_events
+        }))
+        .unwrap();
+        if rejected {
+            pdu.rejection_reason = Some("rejected auth event".to_owned());
+        }
+        let json = crate::core::serde::to_canonical_object(&pdu).unwrap();
+        let (sn, _guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id)
+            .await
+            .unwrap();
+        let mut event =
+            NewDbEvent::from_canonical_json_with_room_id(&pdu.event_id, sn, &json, false, room_id)
+                .unwrap();
+        event.is_outlier = outlier;
+        event.is_rejected = rejected;
+        event.soft_failed = rejected;
+        event.rejection_reason = pdu.rejection_reason.clone();
+        let mut conn = connect().await.unwrap();
+        event.save_with_conn(&mut conn).await.unwrap();
+        DbEventData {
+            event_id: pdu.event_id.clone(),
+            event_sn: sn,
+            room_id: room_id.to_owned(),
+            internal_metadata: None,
+            json_data: serde_json::to_value(json).unwrap(),
+            format_version: None,
+        }
+        .save_with_conn(&mut conn)
+        .await
+        .unwrap();
+        SnPduEvent::new(pdu, sn, outlier, rejected, false)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_rejected_history_is_known_but_unknown_ancestors_remain_gaps() {
+        crate::test_database::init();
+        let room: OwnedRoomId = "!rejected-history:example.org".try_into().unwrap();
+        let root = save_event(&room, "$history-root", &[], false, false).await;
+        let rejected = save_event(&room, "$history-rejected", &["$history-root"], true, true).await;
+        let sentinel = save_event(
+            &room,
+            "$history-sentinel",
+            &["$history-rejected"],
+            false,
+            false,
+        )
+        .await;
+        room::state::update_backward_extremities(&rejected)
+            .await
+            .unwrap();
+        // The old query reports no known predecessor despite its stored verdict and JSON.
+        let old_known_count = events::table
+            .filter(events::id.eq_any(&sentinel.prev_events))
+            .filter(events::is_outlier.eq(false))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(old_known_count, 0);
+        assert!(
+            !history_has_missing_predecessors(&room, &sentinel.prev_events)
+                .await
+                .unwrap()
+        );
+        room::state::update_backward_extremities(&sentinel)
+            .await
+            .unwrap();
+        let gaps = timeline_gaps::table
+            .filter(timeline_gaps::event_id.eq(&sentinel.event_id))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            gaps, 0,
+            "a known rejected predecessor is not missing history"
+        );
+        let mut page = IndexMap::new();
+        page.insert(sentinel.event_sn, sentinel.clone());
+        assert!(
+            backfill_if_required(&room, &sentinel.historic_token(), &page, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        page.insert(root.event_sn, root);
+        assert_eq!(trim_pdus_until_backfill_gap(page).await.unwrap().len(), 2);
+        assert!(
+            super::super::get_pdu(&rejected.event_id)
+                .await
+                .unwrap()
+                .rejected()
+        );
+        assert!(
+            super::super::get_non_outlier_pdu(&rejected.event_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let incomplete = save_event(
+            &room,
+            "$history-incomplete",
+            &["$history-unknown"],
+            true,
+            true,
+        )
+        .await;
+        let later = save_event(
+            &room,
+            "$history-later",
+            &["$history-incomplete"],
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            history_has_missing_predecessors(&room, &later.prev_events)
+                .await
+                .unwrap()
+        );
+        room::state::update_backward_extremities(&later)
+            .await
+            .unwrap();
+        let gaps = timeline_gaps::table
+            .filter(timeline_gaps::event_id.eq(&later.event_id))
+            .count()
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            gaps, 1,
+            "unknown history behind a rejected event remains fetchable"
+        );
+        assert!(
+            history_has_missing_predecessors(&room, std::slice::from_ref(&incomplete.event_id))
+                .await
+                .unwrap()
+        );
+    }
 }
