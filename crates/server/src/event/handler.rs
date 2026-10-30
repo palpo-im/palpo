@@ -184,7 +184,7 @@ async fn process_incoming_pdu_inner(
     }
 
     let (incoming_pdu, val, event_guard) = outlier_pdu
-        .process_incoming(remote_server, is_backfill)
+        .process_incoming_with_context(remote_server, is_timeline_event, is_backfill)
         .await?;
 
     // An event the room's Policy Server refused (MSC4284) is persisted as rejected, so this

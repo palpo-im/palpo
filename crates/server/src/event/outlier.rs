@@ -257,9 +257,20 @@ impl OutlierPdu {
         Ok((pdu, json_data, event_guard))
     }
 
+    /// Process a timeline PDU; internal import callers supply their context separately.
     pub async fn process_incoming(
         self,
         remote_server: &ServerName,
+        is_backfill: bool,
+    ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
+        self.process_incoming_with_context(remote_server, true, is_backfill)
+            .await
+    }
+
+    pub(crate) async fn process_incoming_with_context(
+        self,
+        remote_server: &ServerName,
+        is_timeline_event: bool,
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         // A rejected event cannot become valid by fetching more predecessors:
@@ -280,13 +291,14 @@ impl OutlierPdu {
             is_backfill,
         )
         .await;
-        self.finish_missing_events_recovery(remote_server, is_backfill, recovery)
+        self.finish_missing_events_recovery(remote_server, is_timeline_event, is_backfill, recovery)
             .await
     }
 
     async fn finish_missing_events_recovery(
         mut self,
         remote_server: &ServerName,
+        is_timeline_event: bool,
         is_backfill: bool,
         recovery: AppResult<MissingEventsRecovery>,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
@@ -314,7 +326,8 @@ impl OutlierPdu {
                 MissingEventsRecovery::Incomplete
             }
         };
-        if !is_backfill
+        if is_timeline_event
+            && !is_backfill
             && recovery == MissingEventsRecovery::Incomplete
             && resolve_state_at_incoming(
                 &self.pdu,
