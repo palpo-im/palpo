@@ -157,7 +157,7 @@ pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoom
 }
 
 pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
-    let (mut event_id, mut event_sn) = room_users::table
+    let (event_id, event_sn) = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("join"))
@@ -165,6 +165,14 @@ pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
         .first::<(OwnedEventId, Seqnum)>(&mut connect().await?)
         .await?;
 
+    join_sn_for_event(user_id, event_id, event_sn).await
+}
+
+pub(crate) async fn join_sn_for_event(
+    user_id: &UserId,
+    mut event_id: OwnedEventId,
+    mut event_sn: Seqnum,
+) -> AppResult<Seqnum> {
     // room_users records the latest membership event, including join-to-join
     // name/avatar changes. Sync needs the beginning of the current joined
     // period instead. Follow the server's stored before-state, not unsigned
@@ -185,11 +193,32 @@ pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
         };
         let field_id =
             super::state::get_field_id(&StateEventType::RoomMember, user_id.as_str()).await?;
-        let before = super::state::get_full_state_ids(frame_id).await?;
-        let Some(previous_id) = before.get(&field_id) else {
+        // Only this member's before-state proves the joined period. Other
+        // imported state fields can legitimately have unavailable history.
+        let layers = super::state::load_frame_info(frame_id).await?;
+        let before = layers
+            .last()
+            .ok_or_else(|| AppError::internal("membership before-state has no layers"))?;
+        let Some(compressed) = before
+            .full_state
+            .iter()
+            .find(|entry| entry.field_id() == field_id)
+            .copied()
+        else {
             break;
         };
-        let previous = super::timeline::get_pdu(previous_id).await?;
+        let previous_id = match compressed.split().await {
+            Ok((_, event_id)) => event_id,
+            // The selected historical membership is not available yet. Do not
+            // cache this provisional start: a later fetch can extend the proof.
+            Err(error) if error.is_not_found() => return Ok(event_sn),
+            Err(error) => return Err(error),
+        };
+        let previous = match super::timeline::get_pdu(&previous_id).await {
+            Ok(previous) => previous,
+            Err(error) if error.is_not_found() => return Ok(event_sn),
+            Err(error) => return Err(error),
+        };
         if previous.get_content::<RoomMemberEventContent>()?.membership != MembershipState::Join {
             break;
         }
@@ -474,7 +503,17 @@ pub async fn left_rooms(
         ]))
         .into_boxed();
     let query = if let Some(since_tk) = since_tk {
-        query.filter(room_users::event_sn.ge(since_tk.event_sn()))
+        if matches!(since_tk, BatchToken::Publication { .. }) {
+            query.filter(
+                room_users::event_id.eq_any(
+                    event_points::table
+                        .filter(event_points::live_published_sn.ge(since_tk.stream_ordering()))
+                        .select(event_points::event_id),
+                ),
+            )
+        } else {
+            query.filter(room_users::event_sn.ge(since_tk.event_sn()))
+        }
     } else {
         query.filter(room_users::forgotten.eq(false))
     };

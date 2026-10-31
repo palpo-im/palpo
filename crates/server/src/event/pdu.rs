@@ -429,6 +429,10 @@ pub struct PduEvent {
     // Trusted local provenance, never accepted from or emitted into event JSON.
     #[serde(skip)]
     pub(crate) transaction_device: Option<OwnedDeviceId>,
+    #[serde(skip)]
+    pub(crate) transaction_endpoint: Option<String>,
+    #[serde(skip)]
+    pub(crate) thread_participants: std::collections::BTreeSet<OwnedUserId>,
 }
 
 impl PduEvent {
@@ -525,6 +529,20 @@ impl PduEvent {
             if is_sender && let Some(delay_id) = self.unsigned.get(DELAY_ID_UNSIGNED_KEY) {
                 unsigned.insert(DELAY_ID_UNSIGNED_KEY.into(), delay_id.clone());
             }
+            if let Some(raw) = unsigned.get_mut("m.relations")
+                && let Ok(mut relations) = serde_json::from_str::<JsonValue>(raw.get())
+                && let Some(thread) = relations
+                    .get_mut("m.thread")
+                    .and_then(JsonValue::as_object_mut)
+            {
+                thread.insert(
+                    "current_user_participated".into(),
+                    JsonValue::Bool(
+                        self.sender == recipient || self.thread_participants.contains(recipient),
+                    ),
+                );
+                *raw = to_raw_value(&relations).expect("relations serialize");
+            }
             Cow::Owned(unsigned)
         }
     }
@@ -547,16 +565,19 @@ impl PduEvent {
     }
 
     fn transaction_metadata(&self) -> Option<JsonValue> {
-        let device = self.transaction_device.as_ref()?;
+        if self.transaction_device.is_none() && self.transaction_endpoint.is_none() {
+            return None;
+        }
         let txn: OwnedTransactionId =
             serde_json::from_str(self.unsigned.get("transaction_id")?.get()).ok()?;
         Some(
-            json!({"transaction_device": device, "transaction_id": txn, "transaction_user": self.sender}),
+            json!({"transaction_device": self.transaction_device, "transaction_endpoint": self.transaction_endpoint,
+                "transaction_id": txn, "transaction_user": self.sender}),
         )
     }
 
-    /// Hydrate device provenance only from trusted local metadata or a legacy idempotency record.
-    pub(crate) async fn load_transaction_device(&mut self) -> AppResult<()> {
+    /// Hydrate device provenance and thread participation from trusted local state.
+    pub(crate) async fn load_client_metadata(&mut self) -> AppResult<()> {
         self.transaction_device = None;
         if let Some(txn_id) = self.unsigned.get("transaction_id")
             && let Ok(txn_id) = serde_json::from_str::<OwnedTransactionId>(txn_id.get())
@@ -568,6 +589,16 @@ impl PduEvent {
                 &self.event_id,
             )
             .await?;
+        }
+        self.thread_participants.clear();
+        if self
+            .unsigned
+            .get("m.relations")
+            .and_then(|raw| serde_json::from_str::<JsonValue>(raw.get()).ok())
+            .is_some_and(|relations| relations.get("m.thread").is_some())
+        {
+            self.thread_participants =
+                crate::data::room::thread_participants(&self.room_id, &self.event_id).await?;
         }
         Ok(())
     }
@@ -1070,6 +1101,8 @@ pub struct PduBuilder {
     /// Authenticated local provenance; never accept this field from JSON.
     #[serde(skip)]
     pub transaction_device: Option<OwnedDeviceId>,
+    #[serde(skip)]
+    pub transaction_endpoint: Option<String>,
     /// How long the event should stay sticky, per [MSC4354].
     ///
     /// This becomes the top-level `msc4354_sticky` object, which is part of the PDU and so
@@ -1191,6 +1224,7 @@ impl PduBuilder {
             redacts,
             timestamp,
             transaction_device,
+            transaction_endpoint,
             sticky_duration_ms,
             ..
         } = self;
@@ -1278,6 +1312,8 @@ impl PduBuilder {
             extra_data: Default::default(),
             rejection_reason: None,
             transaction_device,
+            transaction_endpoint,
+            thread_participants: Default::default(),
         };
 
         // MSC4354: the sticky object is top level, not inside `content`, so that it stays
@@ -1406,6 +1442,7 @@ impl Default for PduBuilder {
             redacts: None,
             timestamp: None,
             transaction_device: None,
+            transaction_endpoint: None,
             sticky_duration_ms: None,
         }
     }
@@ -1486,6 +1523,8 @@ mod sender_only_unsigned_tests {
             extra_data: Default::default(),
             rejection_reason: None,
             transaction_device: None,
+            transaction_endpoint: None,
+            thread_participants: Default::default(),
         }
     }
 
@@ -1718,7 +1757,7 @@ mod sender_only_unsigned_tests {
         )
         .await
         .unwrap();
-        event.load_transaction_device().await.unwrap();
+        event.load_client_metadata().await.unwrap();
         assert_eq!(event.transaction_device.as_deref(), Some(phone));
         for (device, expected) in [(phone, true), (laptop, false)] {
             let json: JsonValue = serde_json::from_str(
@@ -1730,10 +1769,10 @@ mod sender_only_unsigned_tests {
             assert_eq!(json.pointer("/unsigned/transaction_id").is_some(), expected);
         }
         event.event_id = other;
-        event.load_transaction_device().await.unwrap();
+        event.load_client_metadata().await.unwrap();
         assert_eq!(event.transaction_device.as_deref(), Some(laptop));
         event.room_id = "!other:example.org".try_into().unwrap();
-        event.load_transaction_device().await.unwrap();
+        event.load_client_metadata().await.unwrap();
         assert!(event.transaction_device.is_none());
 
         // A newly visible event already has device provenance even while its route
@@ -1762,13 +1801,13 @@ mod sender_only_unsigned_tests {
             .is_none()
         );
         event.transaction_device = None;
-        event.load_transaction_device().await.unwrap();
+        event.load_client_metadata().await.unwrap();
         assert_eq!(event.transaction_device.as_deref(), Some(phone));
         // Later JSON updates must not clear trusted metadata.
         let mut update = event_data;
         update.internal_metadata = None;
         update.save().await.unwrap();
-        event.load_transaction_device().await.unwrap();
+        event.load_client_metadata().await.unwrap();
         assert_eq!(event.transaction_device.as_deref(), Some(phone));
     }
 }
@@ -1800,6 +1839,8 @@ mod filter_tests {
             extra_data: Default::default(),
             rejection_reason: None,
             transaction_device: None,
+            transaction_endpoint: None,
+            thread_participants: Default::default(),
         }
     }
 

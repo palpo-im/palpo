@@ -25,6 +25,7 @@ use crate::{
 };
 
 mod backfill;
+pub(crate) mod publication;
 pub mod stream;
 pub mod topolo;
 pub use backfill::*;
@@ -127,7 +128,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
         pdu.is_outlier = event.is_outlier;
         pdu.soft_failed = event.soft_failed;
         pdu.rejection_reason = event.rejection_reason;
-        pdu.load_transaction_device().await?;
+        pdu.load_client_metadata().await?;
     }
     Ok(pdu)
 }
@@ -153,7 +154,7 @@ pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
-    pdu.load_transaction_device().await?;
+    pdu.load_client_metadata().await?;
     Ok(SnPduEvent {
         pdu,
         event_sn,
@@ -186,7 +187,7 @@ pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, Cano
     let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
         .map_err(|_e| AppError::internal("invalid pdu in db"))?;
     pdu.rejection_reason = event.rejection_reason;
-    pdu.load_transaction_device().await?;
+    pdu.load_client_metadata().await?;
     Ok((
         SnPduEvent {
             pdu,
@@ -285,6 +286,11 @@ pub async fn append_pdu(
 ) -> AppResult<()> {
     if pdu.is_backfill {
         return append_backfilled_pdu(pdu, pdu_json).await;
+    }
+    if pdu.soft_failed || pdu.rejected() {
+        return Err(AppError::internal(
+            "cannot append a soft-failed or rejected event to the live timeline",
+        ));
     }
     let conf = crate::config::get();
 
@@ -599,6 +605,9 @@ pub async fn append_pdu(
         _ => {}
     }
 
+    // Prepare the exact after-state while the PDU is still an outlier. Its
+    // publication cursor, immutable snapshot and live visibility commit below.
+    let frame_id = state::append_to_state(pdu).await?;
     let event_data = DbEventData {
         event_id: pdu.event_id.clone(),
         event_sn: pdu.event_sn,
@@ -614,7 +623,7 @@ pub async fn append_pdu(
         .await?
         .transaction::<_, AppError, _>(async |conn| {
             event_data.save_with_conn(conn).await?;
-            crate::event::sticky::promote_to_timeline_with_conn(conn, pdu).await?;
+            crate::event::sticky::publish_live_frame_with_conn(conn, pdu, frame_id).await?;
             Ok(())
         })
         .await?;
@@ -641,7 +650,6 @@ pub async fn append_pdu(
 
     crate::event::search::save_pdu(pdu, &pdu_json).await?;
 
-    let frame_id = state::append_to_state(pdu).await?;
     // We set the room state after inserting the pdu, so that we never have a moment in time
     // where events in the current room state do not exist
     state::set_room_state(&pdu.room_id, frame_id).await?;
@@ -875,6 +883,31 @@ pub async fn build_and_append_pdu(
     room_version: &RoomVersionId,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<SnPduEvent> {
+    build_and_append_pdu_with_transaction(
+        pdu_builder,
+        sender,
+        room_id,
+        room_version,
+        state_lock,
+        None,
+    )
+    .await
+}
+
+/// Build a local event while fencing both transaction lookup and event append
+/// across processes. A published event can be recovered if receipt recording fails.
+pub(crate) async fn build_and_append_pdu_with_transaction(
+    mut pdu_builder: PduBuilder,
+    sender: &UserId,
+    room_id: &RoomId,
+    room_version: &RoomVersionId,
+    state_lock: &RoomMutexGuard,
+    transaction: Option<(&str, &TransactionId, Option<&DeviceId>)>,
+) -> AppResult<SnPduEvent> {
+    if let Some((endpoint, _, device_id)) = transaction {
+        pdu_builder.transaction_endpoint = Some(endpoint.to_owned());
+        pdu_builder.transaction_device = device_id.map(ToOwned::to_owned);
+    }
     // The process-local state mutex held by the caller is not sufficient when several
     // Palpo processes serve the same database. Keep a transaction-scoped PostgreSQL lock
     // from the first current-state/prev-event read through timeline publication.
@@ -895,7 +928,43 @@ pub async fn build_and_append_pdu(
                         "failed to acquire the event append lock for room {room_id}: {e}"
                     ))
                 })?;
-            build_and_append_pdu_locked(
+            if let Some((endpoint, txn_id, device_id)) = transaction {
+                if let Some(event_id) = data::room::transaction_id::get_scoped_event_id(
+                    txn_id,
+                    sender,
+                    device_id,
+                    Some(room_id),
+                    endpoint,
+                )
+                .await?
+                {
+                    return Ok((get_pdu(&event_id).await?, false));
+                }
+                if let Some(event_id) =
+                    data::room::transaction_id::find_published_transaction_event(
+                        txn_id,
+                        sender,
+                        device_id,
+                        room_id,
+                        &pdu_builder.event_type.to_string(),
+                        pdu_builder.redacts.as_deref(),
+                        endpoint,
+                    )
+                    .await?
+                {
+                    data::room::transaction_id::add_scoped_txn_id(
+                        txn_id,
+                        sender,
+                        device_id,
+                        Some(room_id),
+                        Some(&event_id),
+                        endpoint,
+                    )
+                    .await?;
+                    return Ok((get_pdu(&event_id).await?, true));
+                }
+            }
+            let result = build_and_append_pdu_locked(
                 pdu_builder,
                 sender,
                 room_id,
@@ -903,14 +972,28 @@ pub async fn build_and_append_pdu(
                 state_lock,
                 false,
             )
-            .await
+            .await?;
+            if let Some((endpoint, txn_id, device_id)) = transaction {
+                data::room::transaction_id::add_scoped_txn_id(
+                    txn_id,
+                    sender,
+                    device_id,
+                    Some(room_id),
+                    Some(&result.0.event_id),
+                    endpoint,
+                )
+                .await?;
+            }
+            Ok(result)
         })
         .await?;
 
     // Deliver to participating servers only after releasing the append fence. Queueing
     // unrelated destinations must not prevent another process from building the room's
     // next event.
-    if appended {
+    // A completed client receipt can survive a failed federation enqueue.
+    // Retry delivery of the same PDU; federation deduplicates its event ID.
+    if appended || transaction.is_some() {
         let servers = super::participating_servers(room_id, false).await?;
         crate::sending::send_pdu_servers(servers.into_iter(), &pdu.event_id).await?;
     }

@@ -12,7 +12,7 @@ use crate::data::room::{DbEventData, NewDbEvent};
 use crate::data::schema::*;
 use crate::data::{connect, diesel_exists};
 use crate::event::fetching::{
-    fetch_and_process_auth_chain, fetch_and_process_missing_events,
+    MissingEventsRecovery, fetch_and_process_auth_chain, fetch_and_process_missing_events,
     fetch_and_process_missing_state, fetch_and_process_missing_state_by_ids,
 };
 use crate::event::handler::auth_check;
@@ -257,9 +257,20 @@ impl OutlierPdu {
         Ok((pdu, json_data, event_guard))
     }
 
+    /// Process a timeline PDU; internal import callers supply their context separately.
     pub async fn process_incoming(
-        mut self,
+        self,
         remote_server: &ServerName,
+        is_backfill: bool,
+    ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
+        self.process_incoming_with_context(remote_server, true, is_backfill)
+            .await
+    }
+
+    pub(crate) async fn process_incoming_with_context(
+        self,
+        remote_server: &ServerName,
+        is_timeline_event: bool,
         is_backfill: bool,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         // A rejected event cannot become valid by fetching more predecessors:
@@ -272,28 +283,69 @@ impl OutlierPdu {
 
         // Fetch any missing prev events doing all checks listed here starting at 1. These are
         // timeline events
-        if let Err(e) = fetch_and_process_missing_events(
+        let recovery = fetch_and_process_missing_events(
             &self.remote_server,
             &self.room_id,
             &self.room_version,
             &self,
             is_backfill,
         )
-        .await
-        {
-            if let AppError::Matrix(MatrixError { ref kind, .. }) = e {
-                if *kind == core::error::ErrorKind::BadJson {
+        .await;
+        self.finish_missing_events_recovery(remote_server, is_timeline_event, is_backfill, recovery)
+            .await
+    }
+
+    async fn finish_missing_events_recovery(
+        mut self,
+        remote_server: &ServerName,
+        is_timeline_event: bool,
+        is_backfill: bool,
+        recovery: AppResult<MissingEventsRecovery>,
+    ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
+        let recovery = match recovery {
+            Ok(recovery) => recovery,
+            Err(e) => {
+                if matches!(
+                    e,
+                    AppError::Data(_) | AppError::Diesel(_) | AppError::Pool(_)
+                ) {
+                    return Err(e);
+                }
+                if matches!(
+                    &e,
+                    AppError::Matrix(MatrixError {
+                        kind: core::error::ErrorKind::BadJson,
+                        ..
+                    })
+                ) {
                     self.rejection_reason = Some(format!("bad prev events: {}", e));
                     let _state_lock = crate::room::lock_state(&self.room_id).await;
                     return self.save_to_database(is_backfill).await;
-                } else {
-                    self.soft_failed = true;
                 }
-            } else {
                 self.soft_failed = true;
+                MissingEventsRecovery::Incomplete
             }
+        };
+        if is_timeline_event
+            && !is_backfill
+            && recovery == MissingEventsRecovery::Incomplete
+            && resolve_state_at_incoming(
+                &self.pdu,
+                &crate::room::get_version_rules(&self.room_version)?,
+            )
+            .await?
+            .is_none()
+        {
+            // Do not turn an empty/partial get_missing_events result into
+            // unsolicited /state requests or a published child. No verdict is
+            // persisted: a later complete recovery can retry this live PDU.
+            return Err(salvo::http::StatusError::service_unavailable()
+                .brief("Missing predecessors could not be recovered")
+                .into());
         }
 
+        // PendingState permits recovery, not authorization: leave soft_failed
+        // set so the existing pulled and timeline auth/state checks still run.
         self.process_pulled(remote_server, is_backfill).await
     }
 
@@ -424,6 +476,10 @@ impl OutlierPdu {
         self.save_to_database(is_backfill).await
     }
 }
+
+#[cfg(test)]
+#[path = "missing_events_tests.rs"]
+mod missing_events_tests;
 
 #[cfg(test)]
 mod tests {

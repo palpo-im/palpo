@@ -1,9 +1,9 @@
-use std::io::Cursor;
 use std::str::FromStr;
 
+#[cfg(test)]
 use diesel::prelude::*;
+#[cfg(test)]
 use diesel_async::RunQueryDsl;
-use image::imageops::FilterType;
 use mime::Mime;
 use reqwest::Url;
 use salvo::http::header::CONTENT_TYPE;
@@ -14,8 +14,10 @@ use uuid::Uuid;
 use crate::core::UnixMillis;
 use crate::core::client::media::*;
 use crate::core::identifiers::*;
+#[cfg(test)]
 use crate::data::connect;
 use crate::data::media::{DbMetadata, DbThumbnail, NewDbMetadata, NewDbThumbnail};
+#[cfg(test)]
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::media::*;
@@ -338,12 +340,24 @@ pub async fn get_thumbnail(
             utils::read_response_limited(response, config::get().media.max_remote_thumbnail_size)
                 .await?;
 
-        // Cache the remote thumbnail via storage backend
-        let cache_key = media_storage_key(
-            &args.server_name,
-            &format!("{}.{}x{}", args.media_id, args.width, args.height),
-        );
-        if let Err(e) = storage::write(&cache_key, &bytes).await {
+        // Register the cache object so media deletion can find and remove it.
+        let content_type = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        if let Err(e) = crate::media::save_thumbnail(
+            &crate::core::Mxc {
+                server_name: &args.server_name,
+                media_id: &args.media_id,
+            },
+            None,
+            content_type,
+            None,
+            &Dimension::new(args.width, args.height, args.method.clone()),
+            &bytes,
+        )
+        .await
+        {
             tracing::warn!("Failed to cache remote thumbnail: {e}");
         }
 
@@ -351,13 +365,8 @@ pub async fn get_thumbnail(
         return Ok(());
     }
 
-    match crate::data::media::get_thumbnail_by_dimension(
-        &args.server_name,
-        &args.media_id,
-        args.width,
-        args.height,
-    )
-    .await
+    match crate::media::cached_thumbnail(&args.server_name, &args.media_id, args.width, args.height)
+        .await
     {
         Ok(Some(DbThumbnail {
             id, content_type, ..
@@ -389,13 +398,7 @@ pub async fn get_thumbnail(
 
     if let Some(DbThumbnail {
         id, content_type, ..
-    }) = crate::data::media::get_thumbnail_by_dimension(
-        &args.server_name,
-        &args.media_id,
-        width,
-        height,
-    )
-    .await?
+    }) = crate::media::cached_thumbnail(&args.server_name, &args.media_id, width, height).await?
     {
         let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
         // Try presigned URL redirect for S3 storage
@@ -418,64 +421,16 @@ pub async fn get_thumbnail(
     {
         // Generate a thumbnail: read original image from storage
         let image_key = media_storage_key(&args.server_name, &args.media_id);
-        let image_data = storage::read(&image_key).await?;
         let ct = content_type
             .as_deref()
             .unwrap_or("application/octet-stream");
 
-        if let Ok(image) = image::load_from_memory(&image_data) {
-            let original_width = image.width();
-            let original_height = image.height();
-            if width > original_width || height > original_height {
-                res.add_header(CONTENT_TYPE, ct, true)?;
-                res.body = ResBody::Once(image_data.into());
-                return Ok(());
-            }
-
-            let thumbnail = if crop {
-                image.resize_to_fill(width, height, FilterType::CatmullRom)
-            } else {
-                let (exact_width, exact_height) = {
-                    let ratio = u64::from(original_width) * u64::from(height);
-                    let nratio = u64::from(width) * u64::from(original_height);
-
-                    let use_width = nratio <= ratio;
-                    let intermediate = if use_width {
-                        u64::from(original_height) * u64::from(width) / u64::from(original_width)
-                    } else {
-                        u64::from(original_width) * u64::from(height) / u64::from(original_height)
-                    };
-                    if use_width {
-                        if intermediate <= u64::from(u32::MAX) {
-                            (width, intermediate as u32)
-                        } else {
-                            (
-                                (u64::from(width) * u64::from(u32::MAX) / intermediate) as u32,
-                                u32::MAX,
-                            )
-                        }
-                    } else if intermediate <= u64::from(u32::MAX) {
-                        (intermediate as u32, height)
-                    } else {
-                        (
-                            u32::MAX,
-                            (u64::from(height) * u64::from(u32::MAX) / intermediate) as u32,
-                        )
-                    }
-                };
-
-                image.thumbnail_exact(exact_width, exact_height)
-            };
-
-            let mut thumbnail_bytes = Vec::new();
-            thumbnail.write_to(
-                &mut Cursor::new(&mut thumbnail_bytes),
-                image::ImageFormat::Png,
-            )?;
-
+        let (thumbnail_bytes, image_data) =
+            crate::media::thumbnail::render_stored(&image_key, width, height, crop).await?;
+        if let Some(thumbnail_bytes) = thumbnail_bytes {
             // Save thumbnail in database so we don't have to generate it again next time
-            let thumbnail_id = diesel::insert_into(media_thumbnails::table)
-                .values(&NewDbThumbnail {
+            let thumbnail_id = crate::media::publish_thumbnail(
+                NewDbThumbnail {
                     media_id: args.media_id.clone(),
                     origin_server: args.server_name.clone(),
                     content_type: Some("image/png".to_owned()),
@@ -485,37 +440,10 @@ pub async fn get_thumbnail(
                     height: height as i32,
                     resize_method: args.method.clone().unwrap_or_default().to_string(),
                     created_at: UnixMillis::now(),
-                })
-                .on_conflict_do_nothing()
-                .returning(media_thumbnails::id)
-                .get_result::<i64>(&mut connect().await?)
-                .await
-                .optional()?;
-            let thumbnail_id = if let Some(thumbnail_id) = thumbnail_id {
-                crate::media::save_thumbnail_file(
-                    &args.server_name,
-                    &args.media_id,
-                    thumbnail_id,
-                    &thumbnail_bytes,
-                )
-                .await?;
-                thumbnail_id
-            } else {
-                media_thumbnails::table
-                    .filter(media_thumbnails::media_id.eq(&args.media_id))
-                    .filter(media_thumbnails::width.eq(args.width as i32))
-                    .filter(media_thumbnails::height.eq(args.height as i32))
-                    .filter(
-                        media_thumbnails::resize_method.eq(&args
-                            .method
-                            .clone()
-                            .unwrap_or_default()
-                            .to_string()),
-                    )
-                    .select(media_thumbnails::id)
-                    .first::<i64>(&mut connect().await?)
-                    .await?
-            };
+                },
+                &thumbnail_bytes,
+            )
+            .await?;
 
             // Return the newly generated thumbnail
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, thumbnail_id);
@@ -531,5 +459,142 @@ pub async fn get_thumbnail(
         }
     } else {
         Err(MatrixError::not_found("file not found").into())
+    }
+}
+
+#[cfg(test)]
+/// Retain the independent Q19 reservation regression while this route uses
+/// the durable publication flow. Reserve or reuse the exact key the route caches. Normalization
+/// belongs here so callers cannot accidentally query a conflict using the original dimensions.
+async fn reserve_thumbnail_cache_row(
+    args: &ThumbnailReqArgs,
+    file_size: usize,
+) -> AppResult<(i64, bool)> {
+    let (width, height, _) = thumbnail_properties(args.width, args.height).unwrap_or((0, 0, false));
+    let method = args.method.clone().unwrap_or_default().to_string();
+    let inserted = diesel::insert_into(media_thumbnails::table)
+        .values(&NewDbThumbnail {
+            media_id: args.media_id.clone(),
+            origin_server: args.server_name.clone(),
+            content_type: Some("image/png".to_owned()),
+            disposition_type: None,
+            file_size: file_size as i64,
+            width: width as i32,
+            height: height as i32,
+            resize_method: method.clone(),
+            created_at: UnixMillis::now(),
+        })
+        .on_conflict_do_nothing()
+        .returning(media_thumbnails::id)
+        .get_result::<i64>(&mut connect().await?)
+        .await
+        .optional()?;
+    if let Some(id) = inserted {
+        return Ok((id, true));
+    }
+    let id = media_thumbnails::table
+        .filter(media_thumbnails::origin_server.eq(&args.server_name))
+        .filter(media_thumbnails::media_id.eq(&args.media_id))
+        .filter(media_thumbnails::width.eq(width as i32))
+        .filter(media_thumbnails::height.eq(height as i32))
+        .filter(media_thumbnails::resize_method.eq(&method))
+        .select(media_thumbnails::id)
+        .first::<i64>(&mut connect().await?)
+        .await?;
+    Ok((id, false))
+}
+
+#[cfg(test)]
+mod thumbnail_key_tests {
+    use super::*;
+
+    fn request(origin: &ServerName, media_id: &str, width: u32, method: &str) -> ThumbnailReqArgs {
+        serde_json::from_value(serde_json::json!({
+            "server_name": origin, "media_id": media_id, "width": width, "height": width,
+            "method": method,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn concurrent_normalized_thumbnails_reuse_the_same_origin_and_dimensions() {
+        crate::test_database::init();
+        let media_id = format!("q19-{}", Uuid::new_v4());
+        let origin = ServerName::parse("q19-origin.test").unwrap();
+        let other_origin = ServerName::parse("q19-other.test").unwrap();
+        // Decoys exercise both origin and method filters of the actual route helper.
+        let mut row = NewDbThumbnail {
+            media_id: media_id.clone(),
+            origin_server: other_origin.clone(),
+            content_type: Some("image/png".into()),
+            disposition_type: None,
+            file_size: 1,
+            width: 96,
+            height: 96,
+            resize_method: "scale".into(),
+            created_at: UnixMillis::now(),
+        };
+        let other_id = diesel::insert_into(media_thumbnails::table)
+            .values(&row)
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        row.origin_server = origin.clone();
+        row.resize_method = "crop".into();
+        let crop_id = diesel::insert_into(media_thumbnails::table)
+            .values(&row)
+            .returning(media_thumbnails::id)
+            .get_result::<i64>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let reserve = |barrier: std::sync::Arc<tokio::sync::Barrier>| {
+            let args = request(&origin, &media_id, 64, "scale");
+            async move {
+                barrier.wait().await;
+                reserve_thumbnail_cache_row(&args, 3).await.unwrap()
+            }
+        };
+        // No copy of insertion/conflict handling: both requests invoke production code.
+        let (first, second) = tokio::join!(reserve(barrier.clone()), reserve(barrier));
+        assert_eq!(first.0, second.0);
+        assert_ne!(
+            first.1, second.1,
+            "exactly one request creates the cache row"
+        );
+        assert_ne!(first.0, other_id);
+        assert_ne!(first.0, crop_id);
+        let stored = media_thumbnails::table
+            .find(first.0)
+            .first::<DbThumbnail>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!((stored.width, stored.height), (96, 96));
+        assert_eq!(stored.origin_server, origin);
+        assert_eq!(stored.resize_method, "scale");
+        assert_eq!(
+            reserve_thumbnail_cache_row(&request(&origin, &media_id, 96, "scale"), 3)
+                .await
+                .unwrap(),
+            (first.0, false)
+        );
+        assert_eq!(
+            reserve_thumbnail_cache_row(&request(&origin, &media_id, 64, "crop"), 3)
+                .await
+                .unwrap(),
+            (crop_id, false)
+        );
+        assert_eq!(
+            reserve_thumbnail_cache_row(&request(&other_origin, &media_id, 64, "scale"), 3)
+                .await
+                .unwrap(),
+            (other_id, false)
+        );
+        diesel::delete(media_thumbnails::table.filter(media_thumbnails::media_id.eq(media_id)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
     }
 }

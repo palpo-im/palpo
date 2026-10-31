@@ -13,6 +13,7 @@ use diesel::result::Error as DieselError;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::core::identifiers::*;
+use crate::core::state::Event;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
 use crate::data::schema::*;
@@ -20,6 +21,47 @@ use crate::event::{PduEvent, STICKY_TTL_KEY};
 use crate::{AppResult, SnPduEvent};
 
 const STICKY_STREAM_LOCK_ID: i64 = 1_346_456_654;
+
+/// Publish an accepted live event's after-state and visibility at one cursor.
+/// Cached outliers have no outstanding identity-sequence guard, so the same
+/// exclusive stream lock used by sync capture must cover allocation and commit.
+pub async fn publish_live_frame_with_conn(
+    conn: &mut AsyncPgConnection,
+    pdu: &SnPduEvent,
+    frame_id: i64,
+) -> AppResult<()> {
+    use crate::data::schema::event_points;
+
+    if pdu.is_backfill || pdu.soft_failed || pdu.rejected() {
+        return Err(crate::AppError::internal(
+            "cannot publish a backfilled, soft-failed or rejected live frame",
+        ));
+    }
+    lock_sticky_stream(conn).await?;
+    let stamped = diesel::update(
+        event_points::table
+            .find(&*pdu.event_id)
+            .filter(event_points::live_published_sn.is_null()),
+    )
+    .set((
+        event_points::live_published_sn.eq(diesel::dsl::sql::<
+            diesel::sql_types::Nullable<diesel::sql_types::BigInt>,
+        >("nextval('occur_sn_seq')")),
+        event_points::live_published_frame_id.eq(Some(frame_id)),
+    ))
+    .execute(conn)
+    .await?;
+    if stamped == 0 {
+        // An existing publication is immutable on retry; a missing identity
+        // row is an error rather than permission to publish without a cursor.
+        let _published = event_points::table
+            .find(&*pdu.event_id)
+            .select(event_points::live_published_sn)
+            .first::<Option<Seqnum>>(conn)
+            .await?;
+    }
+    promote_to_timeline_with_conn(conn, pdu).await
+}
 
 async fn lock_sticky_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
@@ -37,7 +79,8 @@ async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), D
     Ok(())
 }
 
-/// Read the global stream position after all earlier presence, sticky and device-inbox
+/// Read the global stream position after all earlier presence, live publication,
+/// sticky and device-inbox
 /// writes that can affect this `/sync` have committed.
 ///
 /// All three allocate from `occur_sn_seq`. Taking their advisory locks in one
@@ -560,6 +603,8 @@ mod tests {
             extra_data,
             rejection_reason: None,
             transaction_device: None,
+            transaction_endpoint: None,
+            thread_participants: Default::default(),
         }
     }
 
