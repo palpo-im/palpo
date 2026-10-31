@@ -457,10 +457,21 @@ pub async fn add_cross_signing_key(
     Ok(())
 }
 
-/// Insert a cross-signing signature row.
+/// Store a validated cross-signing signature idempotently across recovery retries.
 pub async fn add_cross_signing_sig(signature: NewDbCrossSignature) -> DataResult<()> {
     diesel::insert_into(e2e_cross_signing_sigs::table)
         .values(signature)
+        .on_conflict((
+            e2e_cross_signing_sigs::origin_user_id,
+            e2e_cross_signing_sigs::origin_key_id,
+            e2e_cross_signing_sigs::target_user_id,
+            e2e_cross_signing_sigs::target_device_id,
+        ))
+        .do_update()
+        .set(
+            e2e_cross_signing_sigs::signature
+                .eq(diesel::upsert::excluded(e2e_cross_signing_sigs::signature)),
+        )
         .execute(&mut connect().await?)
         .await?;
     Ok(())
@@ -660,31 +671,19 @@ pub async fn device_list_stream_id(user_id: &UserId) -> DataResult<Seqnum> {
         .unwrap_or_default())
 }
 
-/// Replace the key-change marker for a `(user, room)` (or global when
-/// `change.room_id` is `None`) with a fresh row.
+/// Atomically retain the newest marker for a `(user, room)` or global scope.
 pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
-    match &change.room_id {
-        Some(room_id) => {
-            diesel::delete(
-                e2e_key_changes::table
-                    .filter(e2e_key_changes::user_id.eq(&change.user_id))
-                    .filter(e2e_key_changes::room_id.eq(room_id)),
-            )
-            .execute(&mut connect().await?)
-            .await?;
-        }
-        None => {
-            diesel::delete(
-                e2e_key_changes::table
-                    .filter(e2e_key_changes::user_id.eq(&change.user_id))
-                    .filter(e2e_key_changes::room_id.is_null()),
-            )
-            .execute(&mut connect().await?)
-            .await?;
-        }
-    }
+    use diesel::query_dsl::methods::FilterDsl;
     diesel::insert_into(e2e_key_changes::table)
         .values(change)
+        .on_conflict((e2e_key_changes::user_id, e2e_key_changes::room_id))
+        .do_update()
+        .set((
+            e2e_key_changes::occur_sn.eq(diesel::upsert::excluded(e2e_key_changes::occur_sn)),
+            e2e_key_changes::changed_at.eq(diesel::upsert::excluded(e2e_key_changes::changed_at)),
+        ))
+        // A delayed older notification cannot move a client's stream boundary backwards.
+        .filter(e2e_key_changes::occur_sn.lt(diesel::upsert::excluded(e2e_key_changes::occur_sn)))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
@@ -883,4 +882,123 @@ pub async fn apply_remote_device_list_version(
         })
         .await?;
     Ok(applied)
+}
+
+#[cfg(test)]
+mod recovery_idempotency_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires a disposable PostgreSQL database; run explicitly in CI"]
+    async fn cross_signing_retries_and_key_change_markers_are_atomic() {
+        let url = std::env::var("PALPO_TEST_DATABASE_URL").expect("set PALPO_TEST_DATABASE_URL");
+        assert!(
+            url::Url::parse(&url)
+                .unwrap()
+                .path()
+                .starts_with("/palpo_crypto_test_"),
+            "use a disposable crypto regression database"
+        );
+        let config: crate::DbConfig =
+            serde_json::from_value(serde_json::json!({"url":url,"pool_size":10})).unwrap();
+        tokio::task::spawn_blocking(move || crate::init(&config))
+            .await
+            .unwrap()
+            .unwrap();
+        let user =
+            UserId::parse(format!("@crypto_{}:example.test", rand::random::<u64>())).unwrap();
+        let mut signature = NewDbCrossSignature {
+            origin_user_id: user.clone(),
+            origin_key_id: DeviceKeyId::parse("ed25519:SIGNER").unwrap(),
+            target_user_id: user.clone(),
+            target_device_id: "DEVICE".into(),
+            signature: "verified-one".into(),
+        };
+        add_cross_signing_sig(signature.clone()).await.unwrap();
+        add_cross_signing_sig(signature.clone())
+            .await
+            .expect("a repeated signature is a successful retry");
+        signature.signature = "verified-two".into();
+        add_cross_signing_sig(signature.clone()).await.unwrap();
+        let mut jobs = Vec::new();
+        for _ in 0..32 {
+            let signature = signature.clone();
+            jobs.push(tokio::spawn(async move {
+                add_cross_signing_sig(signature).await.unwrap();
+            }));
+        }
+        for job in jobs {
+            job.await.unwrap();
+        }
+        let signatures = e2e_cross_signing_sigs::table
+            .filter(e2e_cross_signing_sigs::origin_user_id.eq(&user))
+            .select(e2e_cross_signing_sigs::signature)
+            .load::<String>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(signatures, vec!["verified-two"]);
+
+        for room in [None, Some(RoomId::parse("!crypto:example.test").unwrap())] {
+            let mut jobs = Vec::new();
+            for sequence in 100..132 {
+                let change = NewDbKeyChange {
+                    user_id: user.clone(),
+                    room_id: room.clone(),
+                    occur_sn: sequence,
+                    changed_at: UnixMillis(sequence as u64),
+                };
+                jobs.push(tokio::spawn(async move {
+                    replace_key_change(&change).await.unwrap();
+                }));
+            }
+            for job in jobs {
+                job.await.unwrap();
+            }
+            // An old request completing last must not hide a newer change from
+            // a client's since-stream query.
+            replace_key_change(&NewDbKeyChange {
+                user_id: user.clone(),
+                room_id: room.clone(),
+                occur_sn: 99,
+                changed_at: UnixMillis(99),
+            })
+            .await
+            .unwrap();
+            replace_key_change(&NewDbKeyChange {
+                user_id: user.clone(),
+                room_id: room.clone(),
+                occur_sn: 131,
+                changed_at: UnixMillis(131),
+            })
+            .await
+            .unwrap();
+            let rows = e2e_key_changes::table
+                .filter(e2e_key_changes::user_id.eq(&user))
+                .select((
+                    e2e_key_changes::room_id,
+                    e2e_key_changes::occur_sn,
+                    e2e_key_changes::changed_at,
+                ))
+                .load::<(Option<OwnedRoomId>, i64, UnixMillis)>(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            let matches = rows
+                .iter()
+                .filter(|(candidate, ..)| candidate == &room)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].1, 131);
+            assert_eq!(matches[0].2, UnixMillis(131));
+        }
+        diesel::delete(e2e_key_changes::table.filter(e2e_key_changes::user_id.eq(&user)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::delete(
+            e2e_cross_signing_sigs::table.filter(e2e_cross_signing_sigs::origin_user_id.eq(&user)),
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+    }
 }
