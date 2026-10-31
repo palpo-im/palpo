@@ -219,3 +219,10 @@ jobs:
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_oauth_scopes_off cargo test -p palpo --lib oauth_admin_routes -- --ignored
           sudo -u postgres createdb -O palpo_test palpo_oauth_step_up
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_oauth_step_up cargo test -p palpo --lib --all-features oauth_step_up_routes -- --ignored
+
+      - name: Recovery signature retries and concurrent key-change markers
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_crypto_test_idempotency
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_crypto_test_idempotency \
+            cargo test --locked -p palpo-data --lib -- \
+            --ignored --exact user::key::recovery_idempotency_tests::cross_signing_retries_and_key_change_markers_are_atomic
