@@ -1,0 +1,1 @@
+ALTER TABLE remote_device_list_versions DROP COLUMN is_initial_snapshot;

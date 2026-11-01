@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -59,14 +59,29 @@ pub async fn get_metadata(
         .map_err(Into::into)
 }
 
+/// Remove metadata only, after the server storage service confirms object deletion.
+/// Keep both tables atomic so a retry retains the thumbnail cleanup identities.
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> DataResult<()> {
-    diesel::delete(
-        media_metadatas::table
-            .filter(media_metadatas::media_id.eq(media_id))
-            .filter(media_metadatas::origin_server.eq(server_name)),
-    )
-    .execute(&mut connect().await?)
-    .await?;
+    connect()
+        .await?
+        .transaction::<_, diesel::result::Error, _>(async |conn| {
+            diesel::delete(
+                media_thumbnails::table
+                    .filter(media_thumbnails::media_id.eq(media_id))
+                    .filter(media_thumbnails::origin_server.eq(server_name)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::delete(
+                media_metadatas::table
+                    .filter(media_metadatas::media_id.eq(media_id))
+                    .filter(media_metadatas::origin_server.eq(server_name)),
+            )
+            .execute(conn)
+            .await?;
+            Ok(())
+        })
+        .await?;
     Ok(())
 }
 

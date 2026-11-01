@@ -2,7 +2,7 @@
 """Verify profile updates do not create false sync gaps on disposable Palpo.
 
 Uses real Matrix HTTP and storage. Requires private manager/owner test accounts
-on the loopback rinx-adr0011.test homeserver; never targets a deployed server.
+on the selected loopback .test homeserver; never targets a deployed server.
 """
 import argparse
 import hashlib
@@ -21,7 +21,10 @@ def main():
     parser.add_argument("--accounts", required=True, type=Path)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--server-name", required=True, help="Disposable homeserver name ending in .test")
     args = parser.parse_args()
+    if not args.server_name.endswith(".test") or any(c.isspace() or c in "/:#?" for c in args.server_name):
+        parser.error("server-name must be a disposable .test hostname")
     origin = urllib.parse.urlsplit(args.origin)
     if (origin.scheme != "http" or origin.hostname != "127.0.0.1"
             or origin.path or origin.query or origin.fragment or origin.username):
@@ -31,8 +34,8 @@ def main():
         parser.error("accounts must be a private regular JSON file, at most 64 KiB")
     accounts = json.loads(args.accounts.read_text())
     for role in ("manager", "owner"):
-        if not accounts[role]["user_id"].endswith(":rinx-adr0011.test"):
-            parser.error("only isolated rinx-adr0011.test accounts are supported")
+        if not accounts[role]["user_id"].endswith(":" + args.server_name):
+            parser.error("accounts must belong to the selected disposable homeserver")
     digest = hashlib.sha256()
     with args.binary.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
@@ -89,7 +92,7 @@ def main():
     try:
         cursors = {role: sync(role)["next_batch"] for role in ("manager", "owner")}
         changes = [{"displayname": "Renamed once"}, {"displayname": "Renamed twice"},
-                   {"avatar_url": "mxc://rinx-adr0011.test/profile-regression"}]
+                   {"avatar_url": f"mxc://{args.server_name}/profile-regression"}]
         for index, change in enumerate(changes):
             content = request("manager", member_path)
             assert content["membership"] == "join"

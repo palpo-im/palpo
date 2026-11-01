@@ -21,11 +21,11 @@ pub(super) async fn delete_media(
 
     if let Some(mxc) = mxc {
         trace!("Got MXC URL: {mxc}");
-        data::media::delete_media(mxc.server_name()?, mxc.media_id()?).await?;
+        crate::media::delete_media(mxc.server_name()?, mxc.media_id()?).await?;
 
-        return Err(AppError::public(
-            "Deleted the MXC from our database and on our filesystem.",
-        ));
+        return ctx
+            .write_str("Deleted the MXC from our database and storage.")
+            .await;
     }
 
     if let Some(event_id) = event_id {
@@ -147,7 +147,7 @@ pub(super) async fn delete_media(
                 server_name,
                 media_id,
             } = mxc_url.as_str().try_into()?;
-            match data::media::delete_media(server_name, media_id).await {
+            match crate::media::delete_media(server_name, media_id).await {
                 Ok(()) => {
                     info!("Successfully deleted {mxc_url} from filesystem and database");
                     mxc_deletion_count = mxc_deletion_count.saturating_add(1);
@@ -204,7 +204,7 @@ pub(super) async fn delete_media_list(ctx: &Context<'_>) -> AppResult<()> {
 
     for mxc in &mxc_list {
         trace!(%failed_parsed_mxcs, %mxc_deletion_count, "Deleting MXC {mxc} in bulk");
-        match data::media::delete_media(mxc.server_name, mxc.media_id).await {
+        match crate::media::delete_media(mxc.server_name, mxc.media_id).await {
             Ok(()) => {
                 info!("Successfully deleted {mxc} from filesystem and database");
                 mxc_deletion_count = mxc_deletion_count.saturating_add(1);

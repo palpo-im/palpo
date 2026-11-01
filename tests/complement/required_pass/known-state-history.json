@@ -1,0 +1,10 @@
+[
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestOutboundFederationEventSizeGetMissingEvents"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestOutboundFederationSend"
+  }
+]
