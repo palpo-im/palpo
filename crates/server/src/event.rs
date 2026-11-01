@@ -257,6 +257,20 @@ pub async fn update_frame_id_by_sn(event_sn: Seqnum, frame_id: i64) -> AppResult
     Ok(())
 }
 
+/// Associate imported state without moving an event's established historical
+/// snapshot forward when that event is retained by later state resolution.
+pub async fn ensure_frame_id_by_sn(event_sn: Seqnum, frame_id: i64) -> AppResult<()> {
+    diesel::update(
+        event_points::table
+            .filter(event_points::event_sn.eq(event_sn))
+            .filter(event_points::frame_id.is_null()),
+    )
+    .set(event_points::frame_id.eq(frame_id))
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
 pub type PdusIterItem<'a> = (&'a Seqnum, &'a SnPduEvent);
 
 pub fn parse_fetched_pdu(

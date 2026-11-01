@@ -647,31 +647,24 @@ pub async fn delete_past_remote_media(
 
     let time = time.duration_since(UNIX_EPOCH)?.as_millis();
 
-    let mxcs = if after {
-        media_metadatas::table
-            .filter(media_metadatas::origin_server.ne(config::server_name()))
-            .filter(media_metadatas::created_at.lt(time as i64))
-            .select((media_metadatas::origin_server, media_metadatas::media_id))
-            .load::<(OwnedServerName, String)>(&mut connect().await?)
-            .await?
+    let mut query = media_metadatas::table.into_boxed();
+    if !yes_i_want_to_delete_local_media {
+        query = query.filter(media_metadatas::origin_server.ne(config::server_name()));
+    }
+    query = if before {
+        query.filter(media_metadatas::created_at.lt(time as i64))
     } else {
-        media_metadatas::table
-            .filter(media_metadatas::origin_server.eq(config::server_name()))
-            .filter(media_metadatas::created_at.gt(time as i64))
-            .select((media_metadatas::origin_server, media_metadatas::media_id))
-            .load::<(OwnedServerName, String)>(&mut connect().await?)
-            .await?
+        query.filter(media_metadatas::created_at.gt(time as i64))
     };
+    let mxcs = query
+        .select((media_metadatas::origin_server, media_metadatas::media_id))
+        .load::<(OwnedServerName, String)>(&mut connect().await?)
+        .await?;
+
     let mut count = 0;
     for (origin_server, media_id) in &mxcs {
-        let mxc = OwnedMxcUri::from(format!("mxc://{origin_server}/{media_id}"));
-        if let Err(e) =
-            delete_remote_media(origin_server, media_id, yes_i_want_to_delete_local_media).await
-        {
-            warn!("failed to delete remote media {mxc}: {e}");
-        } else {
-            count += 1;
-        }
+        delete_remote_media(origin_server, media_id, yes_i_want_to_delete_local_media).await?;
+        count += 1;
     }
     Ok(count)
 }
@@ -681,18 +674,12 @@ pub async fn delete_remote_media(
     media_id: &str,
     yes_i_want_to_delete_local_media: bool,
 ) -> AppResult<()> {
-    crate::data::media::delete_media(server_name, media_id).await?;
-
-    if !yes_i_want_to_delete_local_media {
-        return Ok(());
+    if server_name == config::server_name() && !yes_i_want_to_delete_local_media {
+        return Err(AppError::public(
+            "Deleting local media requires explicit confirmation.",
+        ));
     }
-
-    let key = crate::media::media_storage_key(server_name, media_id);
-    if let Err(e) = crate::storage::delete(&key).await {
-        warn!("failed to delete media file '{key}': {e}");
-    }
-
-    Ok(())
+    crate::media::delete_media(server_name, media_id).await
 }
 
 #[cfg(test)]

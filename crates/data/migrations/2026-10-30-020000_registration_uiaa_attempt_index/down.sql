@@ -1,0 +1,1 @@
+DROP INDEX user_uiaa_registration_attempt_idx;

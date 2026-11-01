@@ -1777,29 +1777,9 @@ async fn collect_e2ee(
         },
         device_one_time_keys_count: data::user::count_one_time_keys(sender_id, device_id).await?,
         device_unused_fallback_key_types: Some(
-            get_unused_fallback_key_types(sender_id, device_id).await,
+            data::user::key::unused_fallback_key_types(sender_id, device_id).await?,
         ),
     })
-}
-
-async fn get_unused_fallback_key_types(
-    user_id: &UserId,
-    device_id: &DeviceId,
-) -> Vec<DeviceKeyAlgorithm> {
-    let algos = match connect().await {
-        Ok(mut conn) => e2e_fallback_keys::table
-            .filter(e2e_fallback_keys::user_id.eq(user_id.as_str()))
-            .filter(e2e_fallback_keys::device_id.eq(device_id.as_str()))
-            .filter(e2e_fallback_keys::used_at.is_null())
-            .select(e2e_fallback_keys::algorithm)
-            .load::<String>(&mut conn)
-            .await
-            .ok(),
-        Err(_) => None,
-    };
-    algos
-        .map(|algos| algos.into_iter().map(|a| a.into()).collect())
-        .unwrap_or_default()
 }
 
 async fn collect_to_device(
