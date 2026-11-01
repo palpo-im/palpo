@@ -1,6 +1,6 @@
 [package]
 name = "palpo-operations"
-description = "Rust Palpo mini-app sessions and durable coordinator workflows"
+description = "Optional Matrix account signup approvals and scoped administration sessions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,20 +8,19 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-palpo-hagency-contract = { version = "0.4.0", path = "../hagency-contract" }
+palpo-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 chrono.workspace = true
-jiff = "=0.2.38"
 aes-gcm = "=0.11.1"
 sha2.workspace = true
 subtle = "2.6.1"
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["signal", "time", "net", "sync"] }
 salvo = { workspace = true, features = ["test", "affix-state", "size-limiter"] }
-# Preserve checked u64/usize conversions for timestamps and delivery ordinals.
+# Keep checked timestamp conversions and support existing database writer fences.
 rusqlite = { version = "=0.40.2", features = ["bundled", "functions", "fallible_uint"] }
 
 [dev-dependencies]

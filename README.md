@@ -92,12 +92,11 @@ Our test server is for **evaluation and testing purposes only**:
 
 ## 📦 Installation
 
-Palpo provides the Matrix homeserver and its management APIs. The Hagency project,
-fleet, Agent approval and Inbox application ownership is proposed to move to
-[hagency-server](https://github.com/chrislearn/hagency-server).
-The existing Rust Operations crates remain until their replacement is accepted.
-See the [migration and ownership guide](docs/HAGENCY_MIGRATION.md) before replacing
-an existing `web-admin` deployment.
+Palpo provides the Matrix homeserver and its management APIs. The optional
+[account approval service](crates/operations/README.md) handles ordinary account
+signup separately from the homeserver. Hagency fleet, project and Agent workflows
+are no longer included; see the [retirement guide](docs/HAGENCY_MIGRATION.md) for
+existing application deployments.
 
 ### Prerequisites
 - Rust 1.94 or higher

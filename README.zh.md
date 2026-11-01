@@ -98,10 +98,10 @@ Matrix 是一个用于去中心化实时通信的开放标准。它支持：
 
 ## 📦 安装
 
-Palpo 负责 Matrix homeserver 及其管理 API。Hagency 项目、fleet、Agent 审批和
-Inbox 应用计划迁至 [hagency-server](https://github.com/chrislearn/hagency-server)。
-替代实现验收前，现有 Rust Operations crate 继续保留。
-替换既有 `web-admin` 部署前，请阅读[迁移和归属说明](docs/HAGENCY_MIGRATION.zh-CN.md)。
+Palpo 负责 Matrix homeserver 及其管理 API。可选的
+[账号审批服务](crates/operations/README.md) 独立处理普通账号注册。
+本仓库不再包含 Hagency fleet、项目和 Agent 工作流；既有应用部署请阅读
+[退役说明](docs/HAGENCY_MIGRATION.zh-CN.md)。
 
 ### 前提条件
 
