@@ -170,8 +170,9 @@ impl<'de> Deserialize<'de> for Capabilities {
 
 #[cfg(test)]
 mod profile_alias_tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn stable_profile_fields_win_and_custom_capabilities_survive() {

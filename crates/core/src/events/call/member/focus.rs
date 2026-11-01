@@ -23,7 +23,7 @@ pub struct LivekitFocus {
     /// The alias where the LiveKit sessions can be reached.
     ///
     /// Newer Element Call versions omit this legacy field.
-    #[serde(rename = "livekit_alias")]
+    #[serde(rename = "livekit_alias", skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 
     /// The URL of the JWT service for the LiveKit instance.
@@ -88,9 +88,10 @@ pub enum FocusSelection {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::events::call::member::CallMemberEventContent;
-    use serde_json::json;
 
     #[test]
     fn rtc_membership_accepts_livekit_with_or_without_alias() {
@@ -112,9 +113,9 @@ mod tests {
             };
             let Focus::Livekit(focus) = &session.foci_preferred[0];
             assert_eq!(focus.alias.as_deref(), alias);
-            let decoded: Focus =
-                serde_json::from_value(serde_json::to_value(&session.foci_preferred[0]).unwrap())
-                    .unwrap();
+            let wire = serde_json::to_value(&session.foci_preferred[0]).unwrap();
+            assert_eq!(wire.get("livekit_alias").is_some(), alias.is_some());
+            let decoded: Focus = serde_json::from_value(wire).unwrap();
             assert_eq!(decoded, session.foci_preferred[0]);
         }
     }
