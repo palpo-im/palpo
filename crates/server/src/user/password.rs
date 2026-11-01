@@ -25,7 +25,11 @@ pub async fn verify_password(user: &DbUser, password: &str) -> AppResult<()> {
         return Err(MatrixError::user_deactivated("the user has been deactivated").into());
     }
 
-    let hash_matches = argon2::verify_encoded(&hash, password.as_bytes()).unwrap_or(false);
+    let password = password.to_owned();
+    let hash_matches = crate::utils::cpu::run(move || {
+        Ok(argon2::verify_encoded(&hash, password.as_bytes()).unwrap_or(false))
+    })
+    .await?;
 
     if !hash_matches {
         Err(MatrixError::unauthorized("wrong username or password.").into())
@@ -40,7 +44,7 @@ pub async fn get_password_hash(user_id: &UserId) -> AppResult<String> {
 
 /// Set/update password hash for a user
 pub async fn set_password(user_id: &UserId, password: &str) -> AppResult<()> {
-    let hash = crate::utils::hash_password(password)?;
+    let hash = crate::utils::hash_password_async(password).await?;
     data::user::set_password_hash(user_id, &hash).await?;
     Ok(())
 }

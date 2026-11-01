@@ -395,6 +395,7 @@ pub struct NewDbEventIdempotent {
     pub room_id: Option<OwnedRoomId>,
     pub event_id: Option<OwnedEventId>,
     pub created_at: UnixMillis,
+    pub endpoint: String,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
@@ -551,26 +552,68 @@ pub async fn remove_alias(alias_id: &RoomAliasId) -> DataResult<()> {
     Ok(())
 }
 
-/// List a room's thread roots as `(event_id, event_sn)`, newest activity first,
-/// optionally only those with `event_sn <= before_sn`.
+/// List thread roots as `(event_id, last_sn)`, newest activity first. The cursor
+/// uses the same compound ordering as the query, including the deterministic tie.
 pub async fn list_threads(
     room_id: &RoomId,
-    before_sn: Option<i64>,
+    before: Option<(i64, &EventId)>,
     limit: i64,
+    participant: Option<&UserId>,
 ) -> DataResult<Vec<(OwnedEventId, i64)>> {
     let mut query = threads::table
         .filter(threads::room_id.eq(room_id))
         .into_boxed();
-    if let Some(before_sn) = before_sn {
-        query = query.filter(threads::event_sn.le(before_sn));
+    if let Some((before_sn, before_id)) = before {
+        query = query.filter(
+            threads::last_sn.lt(before_sn).or(threads::last_sn
+                .eq(before_sn)
+                .and(threads::event_id.lt(before_id))),
+        );
+    }
+    if let Some(user_id) = participant {
+        query = query.filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "(EXISTS (SELECT 1 FROM events root WHERE root.id = threads.event_id \
+             AND root.room_id = threads.room_id AND root.sender_id = ",
+        ).bind::<diesel::sql_types::Text, _>(user_id.as_str())
+        .sql(") OR EXISTS (SELECT 1 FROM event_relations r JOIN events reply ON reply.id = r.child_id \
+              WHERE r.room_id = threads.room_id AND r.event_id = threads.event_id \
+              AND r.rel_type = 'm.thread' AND reply.room_id = threads.room_id \
+              AND NOT reply.is_outlier AND NOT reply.is_rejected AND NOT reply.soft_failed \
+              AND NOT reply.is_redacted AND reply.sender_id = ")
+        .bind::<diesel::sql_types::Text, _>(user_id.as_str()).sql("))"));
     }
     query
-        .select((threads::event_id, threads::event_sn))
-        .order_by(threads::last_sn.desc())
+        .select((threads::event_id, threads::last_sn))
+        .order_by((threads::last_sn.desc(), threads::event_id.desc()))
         .limit(limit)
         .load::<(OwnedEventId, i64)>(&mut connect().await?)
         .await
         .map_err(Into::into)
+}
+
+/// Senders of currently published, unredacted thread replies. Kept outside the
+/// event JSON so the recipient-dependent aggregation never becomes shared state.
+pub async fn thread_participants(
+    room_id: &RoomId,
+    root: &EventId,
+) -> DataResult<std::collections::BTreeSet<OwnedUserId>> {
+    Ok(event_relations::table
+        .inner_join(events::table.on(events::id.eq(event_relations::child_id)))
+        .filter(event_relations::room_id.eq(room_id))
+        .filter(event_relations::event_id.eq(root))
+        .filter(event_relations::rel_type.eq("m.thread"))
+        .filter(events::room_id.eq(room_id))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .filter(events::is_redacted.eq(false))
+        .select(events::sender_id)
+        .distinct()
+        .load::<Option<OwnedUserId>>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// Set the thread id an event belongs to.
@@ -673,6 +716,154 @@ pub async fn get_event_relations(
             query = query.filter(event_relations::child_sn.ge(to));
         }
         query = query.order_by(event_relations::child_sn.desc());
+    }
+    query
+        .limit(limit as i64)
+        .load::<DbEventRelation>(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
+/// A publication window with optional historical positions at each endpoint.
+/// Publication bounds are half-open; historical positions use the same
+/// `(depth, signed original stream position)` ordering as room messages.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RelationPublicationWindow {
+    pub lower: Option<Seqnum>,
+    pub upper: Option<Seqnum>,
+    pub identity_lower: Option<Seqnum>,
+    pub identity_upper: Option<Seqnum>,
+    pub child_lower: Option<Seqnum>,
+    pub child_upper: Option<Seqnum>,
+    pub from: Option<(i64, Seqnum)>,
+    pub to: Option<(i64, Seqnum)>,
+}
+
+/// Load relations inside a frozen publication window before applying LIMIT.
+/// This is separate from the legacy child-identity pagination above.
+pub async fn get_event_relations_publication(
+    room_id: &RoomId,
+    event_id: &EventId,
+    child_ty: Option<&str>,
+    rel_type: Option<&str>,
+    window: RelationPublicationWindow,
+    forward: bool,
+    limit: usize,
+) -> DataResult<Vec<DbEventRelation>> {
+    if window
+        .lower
+        .zip(window.upper)
+        .is_some_and(|(lower, upper)| lower >= upper)
+        || window
+            .identity_lower
+            .zip(window.identity_upper)
+            .is_some_and(|(lower, upper)| lower >= upper)
+        || window
+            .child_lower
+            .zip(window.child_upper)
+            .is_some_and(|(lower, upper)| lower >= upper)
+    {
+        return Ok(Vec::new());
+    }
+    let mut query = event_relations::table
+        .inner_join(
+            events::table.on(events::id
+                .eq(event_relations::child_id)
+                .and(events::room_id.eq(event_relations::room_id))),
+        )
+        .filter(event_relations::room_id.eq(room_id))
+        .filter(event_relations::event_id.eq(event_id))
+        .filter(events::is_outlier.eq(false))
+        .filter(events::is_rejected.eq(false))
+        .filter(events::soft_failed.eq(false))
+        .select(event_relations::all_columns)
+        .into_boxed();
+    if let Some(child_ty) = child_ty {
+        query = query.filter(event_relations::child_ty.eq(child_ty));
+    }
+    if let Some(rel_type) = rel_type {
+        query = query.filter(event_relations::rel_type.eq(rel_type));
+    }
+    let mut published = event_points::table
+        .filter(event_points::room_id.eq(room_id))
+        .filter(event_points::live_published_sn.is_not_null())
+        .select(event_points::event_id)
+        .into_boxed();
+    if let Some(lower) = window.lower {
+        published = published.filter(event_points::live_published_sn.ge(lower));
+    }
+    if let Some(upper) = window.upper {
+        published = published.filter(event_points::live_published_sn.lt(upper));
+    }
+    let live = events::stream_ordering
+        .ge(0)
+        .and(events::id.eq_any(published));
+    if window.lower.is_none() {
+        // As for /messages, unbounded history includes negative backfill.
+        query = query.filter(live.or(events::stream_ordering.lt(0)));
+    } else {
+        query = query.filter(live);
+    }
+    // These are independent axes: a backfill's positive child identity is
+    // not its negative historical stream position.
+    if let Some(lower) = window.identity_lower {
+        query = query.filter(events::stream_ordering.ge(lower));
+    }
+    if let Some(upper) = window.identity_upper {
+        query = query.filter(events::stream_ordering.lt(upper));
+    }
+    if let Some(lower) = window.child_lower {
+        query = query.filter(event_relations::child_sn.ge(lower));
+    }
+    if let Some(upper) = window.child_upper {
+        query = query.filter(event_relations::child_sn.lt(upper));
+    }
+    if forward {
+        if let Some((depth, stream)) = window.from {
+            query = query.filter(
+                events::topological_ordering
+                    .gt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.gt(stream))),
+            );
+        }
+        if let Some((depth, stream)) = window.to {
+            query = query.filter(
+                events::topological_ordering
+                    .lt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.le(stream))),
+            );
+        }
+        query = query.order_by((
+            events::topological_ordering.asc(),
+            events::stream_ordering.asc(),
+        ));
+    } else {
+        if let Some((depth, stream)) = window.from {
+            query = query.filter(
+                events::topological_ordering
+                    .lt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.le(stream))),
+            );
+        }
+        if let Some((depth, stream)) = window.to {
+            query = query.filter(
+                events::topological_ordering
+                    .gt(depth)
+                    .or(events::topological_ordering
+                        .eq(depth)
+                        .and(events::stream_ordering.gt(stream))),
+            );
+        }
+        query = query.order_by((
+            events::topological_ordering.desc(),
+            events::stream_ordering.desc(),
+        ));
     }
     query
         .limit(limit as i64)

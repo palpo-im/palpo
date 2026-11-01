@@ -328,8 +328,6 @@ pub(super) async fn get_context(
 
 /// #PUT /_matrix/client/r0/rooms/{room_id}/redact/{event_id}/{txn_id}
 /// Tries to send a redaction event into the room.
-///
-/// - TODO: Handle txn id
 #[endpoint]
 pub(super) async fn send_redact(
     _aa: AuthArgs,
@@ -340,7 +338,8 @@ pub(super) async fn send_redact(
     let authed = depot.authed_info()?;
 
     let state_lock = crate::room::lock_state(&args.room_id).await;
-    let event_id = timeline::build_and_append_pdu(
+    let endpoint = format!("room/redact/{}", args.event_id);
+    let event_id = timeline::build_and_append_pdu_with_transaction(
         PduBuilder {
             event_type: TimelineEventType::RoomRedaction,
             content: to_raw_value(&RoomRedactionEventContent {
@@ -349,12 +348,15 @@ pub(super) async fn send_redact(
             })
             .expect("event is valid, we just created it"),
             redacts: Some(args.event_id),
+            unsigned: [("transaction_id".to_owned(), to_raw_value(&args.txn_id)?)].into(),
+            transaction_device: authed.device_id().map(ToOwned::to_owned),
             ..Default::default()
         },
         authed.user_id(),
         &args.room_id,
         &crate::room::get_version(&args.room_id).await?,
         &state_lock,
+        Some((&endpoint, &args.txn_id, authed.device_id())),
     )
     .await?
     .pdu
@@ -485,5 +487,316 @@ pub(super) async fn timestamp_to_event(
         })
     } else {
         Err(StatusError::not_found().brief("no event found").into())
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use diesel::prelude::*;
+    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use salvo::test::{RequestBuilder, ResponseExt, TestClient};
+    use serde_json::Value;
+
+    use super::*;
+    use crate::core::UserId;
+    use crate::data::connect;
+    use crate::data::schema::*;
+
+    async fn request(service: &Service, request: RequestBuilder) -> (Option<StatusCode>, Value) {
+        request_as(service, "redact-transaction", request).await
+    }
+
+    async fn request_as(
+        service: &Service,
+        token: &str,
+        request: RequestBuilder,
+    ) -> (Option<StatusCode>, Value) {
+        let router = service.router();
+        let request = request.add_header("authorization", format!("Bearer {token}"), true);
+        let mut response = tokio::spawn(async move { request.send(router).await })
+            .await
+            .unwrap();
+        (response.status_code, response.take_json().await.unwrap())
+    }
+
+    #[test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+    fn database_redaction_retries_recover_publication_and_preserve_endpoint_scope() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn run() {
+        crate::test_database::init();
+        let (sender, _federation_receiver) = tokio::sync::mpsc::channel(256);
+        let _ = crate::sending::MPSC_SENDER.set(sender);
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"redact.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user = UserId::parse(format!(
+            "@redacttransaction:{}",
+            crate::config::server_name()
+        ))
+        .unwrap();
+        crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: user.clone(),
+            ty: None,
+            is_admin: true,
+            is_guest: false,
+            is_local: true,
+            localpart: user.localpart().into(),
+            server_name: user.server_name().to_owned(),
+            appservice_id: None,
+            created_at: crate::core::UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        crate::data::user::device::create_device(
+            &user,
+            "REDACT_TRANSACTION".into(),
+            "redact-transaction",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let service = Service::new(
+            Router::new()
+                .hoop(crate::hoops::auth_by_access_token)
+                .push(
+                    Router::with_path("createRoom").post(crate::routing::client::room::create_room),
+                )
+                .push(crate::routing::client::room::authed_router()),
+        );
+        let (status, created) = request(
+            &service,
+            TestClient::post("http://localhost/createRoom").json(&json!({"room_version":"11"})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{created}");
+        let room = created["room_id"].as_str().unwrap();
+        diesel::insert_into(room_joined_servers::table)
+            .values((
+                room_joined_servers::room_id.eq(room),
+                room_joined_servers::server_id.eq("remote-redaction.example"),
+                room_joined_servers::occur_sn.eq(crate::data::next_sn().await.unwrap()),
+            ))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let (status, message) = request(
+            &service,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/send/m.room.message/shared"
+            ))
+            .json(&json!({"msgtype":"m.text","body":"target"})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{message}");
+        let target = message["event_id"].as_str().unwrap();
+        let url = format!("http://localhost/rooms/{room}/redact/{target}/shared");
+        let (first, second) = tokio::join!(
+            request(
+                &service,
+                TestClient::put(&url).json(&json!({"reason":"same"}))
+            ),
+            request(
+                &service,
+                TestClient::put(&url).json(&json!({"reason":"same"}))
+            )
+        );
+        assert_eq!(first.0, Some(StatusCode::OK), "{:?}", first.1);
+        assert_eq!(second.0, Some(StatusCode::OK), "{:?}", second.1);
+        assert_eq!(first.1["event_id"], second.1["event_id"]);
+        let (_, retry) = request(
+            &service,
+            TestClient::put(&url).json(&json!({"reason":"changed retry body"})),
+        )
+        .await;
+        assert_eq!(retry["event_id"], first.1["event_id"]);
+
+        // A durable receipt can survive a crash before its federation queue
+        // write. Retrying must repair that obligation without a second event.
+        let redaction = first.1["event_id"].as_str().unwrap();
+        diesel::delete(outgoing_requests::table.filter(outgoing_requests::pdu_id.eq(redaction)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_enqueue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind = 'normal' THEN RAISE EXCEPTION 'injected federation enqueue failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_enqueue BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q15_fail_enqueue();").await.unwrap();
+        let failed_retry = request(&service, TestClient::put(&url).json(&json!({}))).await;
+        assert_eq!(
+            failed_retry.0,
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "receipt replay must propagate federation enqueue failure: {:?}",
+            failed_retry.1
+        );
+        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_enqueue ON outgoing_requests; DROP FUNCTION q15_fail_enqueue();").await.unwrap();
+        let (status, repaired) = request(&service, TestClient::put(&url).json(&json!({}))).await;
+        assert_eq!(status, Some(StatusCode::OK), "{repaired}");
+        assert_eq!(repaired["event_id"], redaction);
+        let queued: i64 = outgoing_requests::table
+            .filter(outgoing_requests::pdu_id.eq(redaction))
+            .filter(outgoing_requests::server_id.eq("remote-redaction.example"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            queued, 1,
+            "receipt replay must restore the missing queue row"
+        );
+        let redactions: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            redactions, 1,
+            "enqueue recovery must not publish another redaction"
+        );
+
+        // Simulate a failed receipt write after the event was published. Recovery
+        // must use the persisted event's trusted metadata rather than append again.
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'recover' THEN RAISE EXCEPTION 'injected receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_receipt();").await.unwrap();
+        let recovery_url = format!("http://localhost/rooms/{room}/redact/{target}/recover");
+        let failed = request(&service, TestClient::put(&recovery_url).json(&json!({}))).await;
+        assert_eq!(
+            failed.0,
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "{:?}",
+            failed.1
+        );
+        let before: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(before, 2);
+        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_receipt ON event_idempotents; DROP FUNCTION q15_fail_receipt();").await.unwrap();
+        let (status, recovered) =
+            request(&service, TestClient::put(&recovery_url).json(&json!({}))).await;
+        assert_eq!(status, Some(StatusCode::OK), "{recovered}");
+        let after: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "retry appended a second event after failed receipt write"
+        );
+        let (_, replayed) =
+            request(&service, TestClient::put(&recovery_url).json(&json!({}))).await;
+        assert_eq!(replayed["event_id"], recovered["event_id"]);
+
+        // A normal /send of the same event type, target and transaction string
+        // belongs to a different endpoint and must never satisfy /redact recovery.
+        let (status, normal_redaction) = request(
+            &service,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/send/m.room.redaction/cross-endpoint"
+            ))
+            .json(&json!({"redacts":target})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{normal_redaction}");
+        let (status, dedicated_redaction) = request(
+            &service,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/redact/{target}/cross-endpoint"
+            ))
+            .json(&json!({})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{dedicated_redaction}");
+        assert_ne!(
+            normal_redaction["event_id"],
+            dedicated_redaction["event_id"]
+        );
+
+        // Appservice sender authentication has no device assertion. Trusted
+        // provenance must still be stored with an explicit NULL device.
+        let (sender, _receiver) = tokio::sync::mpsc::channel(64);
+        let _ = crate::sending::MPSC_SENDER.set(sender);
+        crate::appservice::register_appservice(
+            serde_json::from_value(json!({
+                "id":"redact-device-less", "url":null, "as_token":"redact-device-less",
+                "hs_token":"fixture-hs", "sender_localpart":"redacttransaction",
+                "namespaces":{"users":[],"aliases":[],"rooms":[]}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_as_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'as-recover' THEN RAISE EXCEPTION 'injected AS receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_as_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_as_receipt();").await.unwrap();
+        let as_url = format!("http://localhost/rooms/{room}/redact/{target}/as-recover");
+        let (status, failed_as) = request_as(
+            &service,
+            "redact-device-less",
+            TestClient::put(&as_url).json(&json!({})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "{failed_as}"
+        );
+        let before: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_as_receipt ON event_idempotents; DROP FUNCTION q15_fail_as_receipt();").await.unwrap();
+        let (status, recovered_as) = request_as(
+            &service,
+            "redact-device-less",
+            TestClient::put(&as_url).json(&json!({})),
+        )
+        .await;
+        assert_eq!(status, Some(StatusCode::OK), "{recovered_as}");
+        let after: i64 = events::table
+            .filter(events::room_id.eq(room))
+            .filter(events::ty.eq("m.room.redaction"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "device-less recovery appended another redaction"
+        );
+        let metadata: Option<Value> = event_datas::table
+            .filter(event_datas::event_id.eq(recovered_as["event_id"].as_str().unwrap()))
+            .select(event_datas::internal_metadata)
+            .first(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        let metadata = metadata.unwrap();
+        assert!(metadata["transaction_device"].is_null());
+        assert_eq!(
+            metadata["transaction_endpoint"],
+            format!("room/redact/{target}")
+        );
     }
 }

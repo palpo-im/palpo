@@ -1,0 +1,22 @@
+[
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestACLs"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestACLsForEDUs"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests/csapi",
+    "test": "TestGetRoomMembersAtPoint"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestRestrictedRoomsRemoteJoinLocalUser"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests",
+    "test": "TestRestrictedRoomsRemoteJoinLocalUserInMSC3787Room"
+  }
+]

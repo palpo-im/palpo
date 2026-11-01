@@ -245,6 +245,10 @@ pub fn init(config_path: impl AsRef<Path>) {
         );
     }
 
+    // The CLI publishes configuration before resource preparation. Validate
+    // egress policy here too, so rejected proxy settings publish no globals.
+    validate_restricted_outbound_proxy(conf.proxy.as_ref())
+        .expect("outbound proxy policy is not supported");
     CONFIG.set(conf).expect("config should be set once");
 }
 

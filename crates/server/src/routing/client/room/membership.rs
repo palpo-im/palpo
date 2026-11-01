@@ -76,20 +76,65 @@ pub(super) async fn get_members(
 
     let frame_id = if let Some(at_tk) = &args.at {
         if let Ok(at_tk) = at_tk.parse::<BatchToken>() {
-            if let Some(usn) = until_sn {
-                until_sn = Some(usn.min(at_tk.event_sn()));
-            } else {
-                until_sn = Some(at_tk.event_sn());
+            match at_tk {
+                BatchToken::Publication { stream_ordering } => {
+                    // A sync publication token is the first unseen position.
+                    // Its number must never be used as an event identity bound.
+                    let mut published_until = stream_ordering
+                        .checked_sub(1)
+                        .ok_or_else(|| MatrixError::bad_state("invalid at publication position"))?;
+                    if let Some(leave_identity) = until_sn {
+                        // Preserve the existing leave visibility cap, translating
+                        // that event's identity into the publication coordinate.
+                        let leave_publication = event_points::table
+                            .inner_join(
+                                events::table.on(events::id
+                                    .eq(event_points::event_id)
+                                    .and(events::room_id.eq(event_points::room_id))),
+                            )
+                            .filter(event_points::room_id.eq(&args.room_id))
+                            .filter(event_points::event_sn.eq(leave_identity))
+                            .filter(events::is_outlier.eq(false))
+                            .filter(events::soft_failed.eq(false))
+                            .filter(events::is_rejected.eq(false))
+                            .filter(events::stream_ordering.ge(0))
+                            .select(event_points::live_published_sn)
+                            .first::<Option<Seqnum>>(&mut connect().await?)
+                            .await?
+                            .ok_or_else(|| {
+                                MatrixError::not_found("leave publication is not found")
+                            })?;
+                        published_until = published_until.min(leave_publication);
+                    }
+                    let frame =
+                        crate::sync_v3::captured_sync_frame(&args.room_id, published_until).await?;
+                    // The immutable frame certifies the bound. An identity cutoff
+                    // would incorrectly drop a late-promoted member again.
+                    until_sn = None;
+                    frame
+                }
+                BatchToken::PublicationPage { .. } => {
+                    // Qualified page cursors are only emitted by /messages;
+                    // sync history prev_batch remains a legacy topological token.
+                    return Err(MatrixError::bad_state("invalid at pagination token").into());
+                }
+                BatchToken::Live { .. } | BatchToken::Historic { .. } => {
+                    if let Some(usn) = until_sn {
+                        until_sn = Some(usn.min(at_tk.event_sn()));
+                    } else {
+                        until_sn = Some(at_tk.event_sn());
+                    }
+                    event_points::table
+                        .filter(event_points::room_id.eq(&args.room_id))
+                        .filter(event_points::event_sn.le(at_tk.event_sn()))
+                        .filter(event_points::frame_id.is_not_null())
+                        .order(event_points::frame_id.desc())
+                        .select(event_points::frame_id)
+                        .first::<Option<i64>>(&mut connect().await?)
+                        .await?
+                        .unwrap_or_default()
+                }
             }
-            event_points::table
-                .filter(event_points::room_id.eq(&args.room_id))
-                .filter(event_points::event_sn.le(at_tk.event_sn()))
-                .filter(event_points::frame_id.is_not_null())
-                .order(event_points::frame_id.desc())
-                .select(event_points::frame_id)
-                .first::<Option<i64>>(&mut connect().await?)
-                .await?
-                .unwrap_or_default()
         } else {
             return Err(MatrixError::bad_state("invalid at parameter").into());
         }
@@ -855,3 +900,7 @@ pub(crate) async fn knock_room(
 
     empty_ok()
 }
+
+#[cfg(test)]
+#[path = "membership/publication_tests.rs"]
+mod publication_tests;
