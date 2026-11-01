@@ -600,7 +600,7 @@ pub(crate) async fn send_events(
                                 }
                                 let info =
                                     crate::appservice::RegistrationInfo::try_from(registration)
-                                        .map_err(|e| (kind.clone(), e.into()))?;
+                                        .map_err(|e| (kind.clone(), e))?;
                                 if info.registration.receive_ephemeral
                                     && appservice_may_receive_presence(&info, &event.sender)
                                         .await
