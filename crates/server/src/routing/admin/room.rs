@@ -252,6 +252,8 @@ pub async fn list_rooms(
     order_by: QueryParam<String, false>,
     dir: QueryParam<String, false>,
     search_term: QueryParam<String, false>,
+    public: QueryParam<bool, false>,
+    encrypted: QueryParam<bool, false>,
 ) -> JsonResult<RoomsListResponse> {
     let offset = from.into_inner().unwrap_or(0).max(0);
     let limit = limit.into_inner().unwrap_or(100).clamp(1, 1000);
@@ -266,8 +268,45 @@ pub async fn list_rooms(
         rooms.push(get_detailed_room_info(room_id).await);
     }
 
+    json_ok(filter_room_page(
+        rooms,
+        offset,
+        limit,
+        &order_by_field,
+        &dir,
+        search_term.as_deref(),
+        RoomFilters {
+            public: public.into_inner(),
+            encrypted: encrypted.into_inner(),
+        },
+    ))
+}
+
+// Filtering must precede both the total and the page slice. A client-side
+// filter of one page can hide matching rooms on later pages and reports an unfiltered total.
+#[derive(Default)]
+struct RoomFilters {
+    public: Option<bool>,
+    encrypted: Option<bool>,
+}
+
+fn filter_room_page(
+    mut rooms: Vec<RoomInfoResponse>,
+    offset: i64,
+    limit: i64,
+    order_by_field: &str,
+    dir: &str,
+    search_term: Option<&str>,
+    filters: RoomFilters,
+) -> RoomsListResponse {
+    rooms.retain(|room| {
+        filters.public.is_none_or(|value| room.public == value)
+            && filters
+                .encrypted
+                .is_none_or(|value| room.encryption.is_some() == value)
+    });
     // Filter by search term
-    if let Some(ref term) = search_term {
+    if let Some(term) = search_term {
         let term_lower = term.to_lowercase();
         rooms.retain(|r| {
             r.room_id.to_lowercase().contains(&term_lower)
@@ -281,7 +320,7 @@ pub async fn list_rooms(
     }
 
     // Sort rooms
-    match order_by_field.as_str() {
+    match order_by_field {
         "joined_members" => rooms.sort_by_key(|r| r.joined_members),
         "joined_local_members" => rooms.sort_by_key(|r| r.joined_local_members),
         "version" => rooms.sort_by(|a, b| a.version.cmp(&b.version)),
@@ -316,13 +355,13 @@ pub async fn list_rooms(
         None
     };
 
-    json_ok(RoomsListResponse {
+    RoomsListResponse {
         rooms,
         offset,
         total_rooms,
         next_batch,
         prev_batch,
-    })
+    }
 }
 
 /// Get room details
@@ -603,4 +642,148 @@ pub async fn get_forward_extremities(
         count: results.len() as u64,
         results,
     })
+}
+
+#[cfg(test)]
+mod room_filter_tests {
+    use super::*;
+
+    fn fixture() -> Vec<RoomInfoResponse> {
+        (0..7)
+            .map(|n| RoomInfoResponse {
+                room_id: format!("!filter-{n}:example.test"),
+                name: Some(format!("Room {n}")),
+                canonical_alias: None,
+                joined_members: n,
+                joined_local_members: n,
+                version: "10".into(),
+                creator: None,
+                encryption: (n % 2 == 1).then(|| "m.megolm.v1.aes-sha2".into()),
+                federatable: true,
+                public: n % 2 == 0,
+                join_rules: None,
+                guest_access: None,
+                history_visibility: None,
+                state_events: 0,
+                room_type: None,
+                topic: None,
+                avatar: None,
+                forgotten: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn room_filters_apply_before_count_sort_and_pagination() {
+        let first = filter_room_page(
+            fixture(),
+            0,
+            2,
+            "name",
+            "f",
+            None,
+            RoomFilters {
+                encrypted: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(first.total_rooms, 3);
+        assert_eq!(
+            first
+                .rooms
+                .iter()
+                .map(|r| r.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["Room 1", "Room 3"]
+        );
+        assert_eq!(first.next_batch.as_deref(), Some("2"));
+        assert_eq!(first.prev_batch, None);
+        let second = filter_room_page(
+            fixture(),
+            2,
+            2,
+            "name",
+            "f",
+            None,
+            RoomFilters {
+                encrypted: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(second.total_rooms, 3);
+        assert_eq!(second.rooms.len(), 1);
+        assert_eq!(second.rooms[0].name.as_deref(), Some("Room 5"));
+        assert_eq!(second.next_batch, None);
+        assert_eq!(second.prev_batch.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn room_filters_combine_with_search_visibility_and_sort() {
+        let all = filter_room_page(fixture(), 0, 25, "name", "f", None, RoomFilters::default());
+        assert_eq!(all.total_rooms, 7);
+        for (public, count) in [(true, 4), (false, 3)] {
+            let result = filter_room_page(
+                fixture(),
+                0,
+                25,
+                "joined_members",
+                "b",
+                None,
+                RoomFilters {
+                    public: Some(public),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(result.total_rooms, count);
+            assert!(result.rooms.iter().all(|r| r.public == public));
+            assert!(
+                result
+                    .rooms
+                    .windows(2)
+                    .all(|w| w[0].joined_members > w[1].joined_members)
+            );
+        }
+        let found = filter_room_page(
+            fixture(),
+            0,
+            25,
+            "name",
+            "f",
+            Some("ROOM 5"),
+            RoomFilters {
+                public: Some(false),
+                encrypted: Some(true),
+            },
+        );
+        assert_eq!(found.total_rooms, 1);
+        assert_eq!(found.rooms.len(), 1);
+        let empty = filter_room_page(
+            fixture(),
+            0,
+            25,
+            "name",
+            "f",
+            None,
+            RoomFilters {
+                public: Some(true),
+                encrypted: Some(true),
+            },
+        );
+        assert_eq!(empty.total_rooms, 0);
+        assert!(empty.rooms.is_empty());
+        assert_eq!(empty.next_batch, None);
+        let plaintext = filter_room_page(
+            fixture(),
+            0,
+            25,
+            "name",
+            "f",
+            None,
+            RoomFilters {
+                encrypted: Some(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(plaintext.total_rooms, 4);
+    }
 }

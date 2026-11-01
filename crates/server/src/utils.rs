@@ -8,6 +8,7 @@ use crate::core::OwnedUserId;
 use crate::core::signatures::Ed25519KeyPair;
 use crate::{AppError, AppResult};
 
+pub mod cpu;
 pub mod fs;
 pub mod hash;
 pub use hash::*;

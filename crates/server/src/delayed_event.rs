@@ -272,6 +272,7 @@ fn delayed_pdu_builder(event: &DbDelayedEvent) -> AppResult<PduBuilder> {
         // of receipt and origin_server_ts, including for massaged delayed events.
         timestamp: event.origin_server_ts.map(|ts| UnixMillis(ts as u64)),
         transaction_device: None,
+        transaction_endpoint: None,
         sticky_duration_ms: event.sticky_duration_ms.map(|duration| {
             crate::core::events::sticky::StickyDurationMs::new_clamped(duration as u32)
         }),

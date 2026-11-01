@@ -647,11 +647,9 @@ pub async fn delete_all_media(user_id: &UserId) -> AppResult<i64> {
     let medias = data::media::list_media_created_by(user_id).await?;
 
     for (origin_server, media_id) in &medias {
-        if let Err(e) = crate::media::delete_media(origin_server, media_id).await {
-            tracing::error!("failed to delete media file: {e}");
-        }
+        crate::media::delete_media(origin_server, media_id).await?;
     }
-    Ok(0)
+    Ok(medias.len() as i64)
 }
 
 pub async fn deactivate_account(user_id: &UserId) -> AppResult<()> {

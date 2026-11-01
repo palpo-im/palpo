@@ -1,39 +1,87 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
-use diesel::prelude::*;
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
+use diesel_async::RunQueryDsl;
 
 use crate::AppResult;
 use crate::core::Seqnum;
 use crate::core::identifiers::*;
-use crate::data::schema::*;
-use crate::data::{self, connect};
+use crate::data::connect;
 
-async fn latest_shared_profile_change_sn(
-    conn: &mut AsyncPgConnection,
+#[derive(Debug, diesel::QueryableByName)]
+struct WatchSnapshot {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    typing_sn: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    inbox_id: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    key_change_id: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    membership_id: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    event_sn: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    account_data_sn: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    profile_sn: i64,
+}
+
+impl WatchSnapshot {
+    fn has_updates_since(&self, previous: &Self) -> bool {
+        self.typing_sn > previous.typing_sn
+            || self.inbox_id > previous.inbox_id
+            || self.key_change_id > previous.key_change_id
+            || self.membership_id > previous.membership_id
+            || self.event_sn > previous.event_sn
+            || self.account_data_sn > previous.account_data_sn
+            || self.profile_sn > previous.profile_sn
+    }
+}
+
+async fn load_watch_snapshot(
     user_id: &UserId,
-    room_ids: &[OwnedRoomId],
-) -> Seqnum {
-    let shared_users = room_users::table
-        .filter(room_users::room_id.eq_any(room_ids))
-        .filter(room_users::membership.eq("join"))
-        .select(room_users::user_id);
-
-    user_profile_changes::table
-        .filter(
-            user_profile_changes::user_id
-                .eq(user_id)
-                .or(user_profile_changes::user_id.eq_any(shared_users)),
+    device_id: &DeviceId,
+    profiles: bool,
+) -> AppResult<WatchSnapshot> {
+    // One statement gives all streams a consistent snapshot instead of issuing
+    // seven sequential round trips for each idle device on every poll.
+    diesel::sql_query(
+        "WITH joined_rooms AS (
+            SELECT room_id FROM (
+                SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
+                WHERE user_id = $1 ORDER BY room_id, id DESC
+            ) AS memberships WHERE membership = 'join'
         )
-        .select(diesel::dsl::max(user_profile_changes::occur_sn))
-        .first::<Option<Seqnum>>(conn)
-        .await
-        .unwrap_or(None)
-        .unwrap_or_default()
+        SELECT
+          COALESCE((SELECT MAX(occur_sn) FROM room_typings WHERE room_id IN (SELECT room_id FROM joined_rooms)), 0) AS typing_sn,
+          COALESCE((SELECT MAX(id) FROM device_inboxes WHERE user_id = $1 AND device_id = $2), 0) AS inbox_id,
+          COALESCE((SELECT MAX(id) FROM e2e_key_changes WHERE user_id = $1), 0) AS key_change_id,
+          COALESCE((SELECT MAX(id) FROM room_users WHERE user_id = $1), 0) AS membership_id,
+          COALESCE((SELECT MAX(live_published_sn) FROM event_points WHERE live_published_sn IS NOT NULL AND room_id IN (SELECT room_id FROM joined_rooms)), 0) AS event_sn,
+          COALESCE((SELECT MAX(occur_sn) FROM user_datas WHERE user_id = $1), 0) AS account_data_sn,
+          CASE WHEN $3 THEN COALESCE((
+            SELECT MAX(occur_sn) FROM user_profile_changes WHERE user_id = $1 OR user_id IN (
+                SELECT user_id FROM (
+                    SELECT DISTINCT ON (user_id, room_id) user_id, room_id, membership
+                    FROM room_users WHERE room_id IN (SELECT room_id FROM joined_rooms)
+                    ORDER BY user_id, room_id, id DESC
+                ) AS shared_members WHERE membership = 'join'
+            )
+          ), 0) ELSE 0 END AS profile_sn",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+    .bind::<diesel::sql_types::Bool, _>(profiles)
+    .get_result(&mut connect().await?).await.map_err(Into::into)
+}
+
+#[cfg(test)]
+pub(crate) async fn live_position_for_test(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> AppResult<i64> {
+    Ok(load_watch_snapshot(user_id, device_id, false)
+        .await?
+        .event_sn)
 }
 
 fn profile_change_is_ready(
@@ -50,188 +98,22 @@ pub async fn watch(
     profile_updates: bool,
     profile_after_sn: Option<Seqnum>,
 ) -> AppResult<()> {
-    // Resolve joined rooms *before* checking out a pooled connection. This call
-    // acquires its own connection internally; doing it while `conn` below is
-    // held would pin two connections per in-flight long-poll and can exhaust
-    // the (small) pool under concurrent syncs.
-    let room_ids = data::user::joined_rooms(user_id).await?;
-
-    let mut conn = connect().await?;
-
-    let inbox_id = device_inboxes::table
-        .filter(device_inboxes::user_id.eq(user_id))
-        .filter(device_inboxes::device_id.eq(device_id))
-        .order_by(device_inboxes::id.desc())
-        .select(device_inboxes::id)
-        .first::<i64>(&mut conn)
-        .await
-        .unwrap_or_default();
-    let key_change_id = e2e_key_changes::table
-        .filter(e2e_key_changes::user_id.eq(user_id))
-        .order_by(e2e_key_changes::id.desc())
-        .select(e2e_key_changes::id)
-        .first::<i64>(&mut conn)
-        .await
-        .unwrap_or_default();
-    let room_user_id = room_users::table
-        .filter(room_users::user_id.eq(user_id))
-        .order_by(room_users::id.desc())
-        .select(room_users::id)
-        .first::<i64>(&mut conn)
-        .await
-        .unwrap_or_default();
-
-    let last_event_sn = event_points::table
-        .filter(event_points::room_id.eq_any(&room_ids))
-        .filter(event_points::frame_id.is_not_null())
-        .order_by(event_points::event_sn.desc())
-        .select(event_points::event_sn)
-        .first::<Seqnum>(&mut conn)
-        .await
-        .unwrap_or_default();
-
-    let push_rule_sn = user_datas::table
-        .filter(user_datas::user_id.eq(user_id))
-        .order_by(user_datas::occur_sn.desc())
-        .select(user_datas::occur_sn)
-        .first::<i64>(&mut conn)
-        .await
-        .unwrap_or_default();
-
-    let profile_change_sn = if profile_updates {
-        latest_shared_profile_change_sn(&mut conn, user_id, &room_ids).await
-    } else {
-        0
-    };
-
-    // The first sync response was built before this watcher registered. If a profile
-    // write committed in that window, its position is at or beyond the response's next
-    // token and must wake the request immediately instead of becoming the watch baseline.
-    if profile_change_is_ready(profile_updates, profile_after_sn, profile_change_sn) {
+    let baseline = load_watch_snapshot(user_id, device_id, profile_updates).await?;
+    if profile_change_is_ready(profile_updates, profile_after_sn, baseline.profile_sn) {
         return Ok(());
     }
-
-    // Get the current max typing occur_sn for this user's rooms
-    let last_typing_sn = room_typings::table
-        .filter(room_typings::room_id.eq_any(&room_ids))
-        .select(diesel::dsl::max(room_typings::occur_sn))
-        .first::<Option<i64>>(&mut conn)
-        .await
-        .unwrap_or(None)
-        .unwrap_or_default();
-
-    drop(conn);
-
-    let mut futures: FuturesUnordered<Pin<Box<dyn Future<Output = AppResult<()>> + Send>>> =
-        FuturesUnordered::new();
-
-    // Listen for ROTATE (shutdown/long-poll release) signals (same-instance only)
-    futures.push(Box::into_pin(Box::new(async move {
-        crate::ROTATE.watch().await;
-        Ok(())
-    })));
-
-    // DB-polling loop that detects changes from ALL instances
-    futures.push(Box::into_pin(Box::new(async move {
-        const POLL_INTERVAL: Duration = Duration::from_secs(3);
-        const MAX_POLLS: usize = 10;
-
-        for _ in 0..MAX_POLLS {
-            tokio::time::sleep(POLL_INTERVAL).await;
-
-            // Re-fetch room_ids to handle joins/leaves during the wait
-            let current_room_ids = match data::user::joined_rooms(user_id).await {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::warn!("watcher: failed to fetch joined rooms: {e}");
-                    room_ids.clone()
-                }
-            };
-
-            let mut conn = connect().await?;
-
-            // Check typing changes (DB-backed, works across instances)
-            let new_typing_sn = room_typings::table
-                .filter(room_typings::room_id.eq_any(&current_room_ids))
-                .select(diesel::dsl::max(room_typings::occur_sn))
-                .first::<Option<i64>>(&mut conn)
-                .await
-                .unwrap_or(None)
-                .unwrap_or_default();
-            if last_typing_sn < new_typing_sn {
-                return Ok(());
-            }
-
-            let new_inbox_id = device_inboxes::table
-                .filter(device_inboxes::user_id.eq(user_id))
-                .filter(device_inboxes::device_id.eq(device_id))
-                .order_by(device_inboxes::id.desc())
-                .select(device_inboxes::id)
-                .first::<i64>(&mut conn)
-                .await
-                .unwrap_or_default();
-            if inbox_id < new_inbox_id {
-                return Ok(());
-            }
-
-            let new_key_change_id = e2e_key_changes::table
-                .filter(e2e_key_changes::user_id.eq(user_id))
-                .order_by(e2e_key_changes::id.desc())
-                .select(e2e_key_changes::id)
-                .first::<i64>(&mut conn)
-                .await
-                .unwrap_or_default();
-            if key_change_id < new_key_change_id {
-                return Ok(());
-            }
-
-            let new_room_user_id = room_users::table
-                .filter(room_users::user_id.eq(user_id))
-                .order_by(room_users::id.desc())
-                .select(room_users::id)
-                .first::<i64>(&mut conn)
-                .await
-                .unwrap_or_default();
-            if room_user_id < new_room_user_id {
-                return Ok(());
-            }
-
-            let new_event_sn = event_points::table
-                .filter(event_points::room_id.eq_any(&current_room_ids))
-                .filter(event_points::frame_id.is_not_null())
-                .order_by(event_points::event_sn.desc())
-                .select(event_points::event_sn)
-                .first::<Seqnum>(&mut conn)
-                .await
-                .unwrap_or_default();
-            if last_event_sn < new_event_sn {
-                return Ok(());
-            }
-
-            let new_push_rule_sn = user_datas::table
-                .filter(user_datas::user_id.eq(user_id))
-                .order_by(user_datas::occur_sn.desc())
-                .select(user_datas::occur_sn)
-                .first::<i64>(&mut conn)
-                .await
-                .unwrap_or_default();
-            if push_rule_sn < new_push_rule_sn {
-                return Ok(());
-            }
-
-            if profile_updates {
-                let new_profile_change_sn =
-                    latest_shared_profile_change_sn(&mut conn, user_id, &current_room_ids).await;
-                if profile_change_sn < new_profile_change_sn {
+    tokio::select! {
+        _ = crate::ROTATE.watch() => Ok(()),
+        result = async {
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if load_watch_snapshot(user_id, device_id, profile_updates).await?.has_updates_since(&baseline) {
                     return Ok(());
                 }
             }
-        }
-        Ok(())
-    })));
-    // Wait until one of them finds something
-    futures.next().await;
-    Ok(())
+            Ok(())
+        } => result,
+    }
 }
 
 #[cfg(test)]
@@ -245,5 +127,71 @@ mod tests {
         assert!(!profile_change_is_ready(true, Some(10), 9));
         assert!(!profile_change_is_ready(false, Some(10), 11));
         assert!(!profile_change_is_ready(true, None, 11));
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_watch_snapshot_covers_streams_without_unrelated_wakeups() {
+        crate::test_database::init();
+        let user: OwnedUserId = "@watch:example.org".try_into().unwrap();
+        let device: &DeviceId = "WATCH".into();
+        diesel::sql_query("INSERT INTO room_users (event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) VALUES ('$watch-member',1,'!watch:example.org','@watch:example.org','example.org','@watch:example.org','join',0),('$watch-peer',2,'!watch:example.org','@peer:example.org','example.org','@peer:example.org','join',0)")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        let mut previous = load_watch_snapshot(&user, device, true).await.unwrap();
+        assert!(!previous.has_updates_since(&previous));
+        // A different device's inbox and an unrelated profile are irrelevant.
+        diesel::sql_query("INSERT INTO device_inboxes(user_id,device_id,json_data,created_at) VALUES ('@watch:example.org','OTHER','{}',0)")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        diesel::sql_query("INSERT INTO user_profile_changes(occur_sn,user_id,field,value,removed) VALUES (900,'@stranger:example.org','displayname','\"unrelated\"',false)")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        assert!(
+            !load_watch_snapshot(&user, device, true)
+                .await
+                .unwrap()
+                .has_updates_since(&previous)
+        );
+        for sql in [
+            "INSERT INTO device_inboxes(user_id,device_id,json_data,created_at) VALUES ('@watch:example.org','WATCH','{}',0)",
+            "INSERT INTO room_typings(room_id,user_id,timeout_at,occur_sn) VALUES ('!watch:example.org','@peer:example.org',999999,20)",
+            "INSERT INTO e2e_key_changes(user_id,occur_sn,changed_at) VALUES ('@watch:example.org',30,0)",
+            "INSERT INTO event_points(event_id,event_sn,room_id,frame_id,live_published_sn,live_published_frame_id) VALUES ('$watch-event',40,'!watch:example.org',1,40,1)",
+            "INSERT INTO user_datas(user_id,data_type,json_data,is_deleted,occur_sn,created_at) VALUES ('@watch:example.org','m.push_rules','{}',false,50,0)",
+            "INSERT INTO user_profile_changes(occur_sn,user_id,field,value,removed) VALUES (60,'@watch:example.org','displayname','\"self\"',false)",
+            "INSERT INTO user_profile_changes(occur_sn,user_id,field,value,removed) VALUES (70,'@peer:example.org','displayname','\"shared\"',false)",
+            "INSERT INTO room_users(event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) VALUES ('$watch-new',80,'!new:example.org','@watch:example.org','example.org','@watch:example.org','join',0)",
+        ] {
+            diesel::sql_query(sql)
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            let current = load_watch_snapshot(&user, device, true).await.unwrap();
+            assert!(
+                current.has_updates_since(&previous),
+                "did not observe {sql}"
+            );
+            previous = current;
+        }
+        assert_eq!(previous.profile_sn, 70);
+        assert_eq!(
+            load_watch_snapshot(&user, device, false)
+                .await
+                .unwrap()
+                .profile_sn,
+            0
+        );
+        // Events in other rooms and events not yet promoted to the timeline do not wake.
+        diesel::sql_query("INSERT INTO event_points(event_id,event_sn,room_id,frame_id,live_published_sn,live_published_frame_id) VALUES ('$watch-outside',1000,'!outside:example.org',1,1000,1),('$watch-outlier',1001,'!watch:example.org',NULL,NULL,NULL),('$watch-cached',1002,'!watch:example.org',1,NULL,NULL)")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        assert!(
+            !load_watch_snapshot(&user, device, true)
+                .await
+                .unwrap()
+                .has_updates_since(&previous)
+        );
     }
 }

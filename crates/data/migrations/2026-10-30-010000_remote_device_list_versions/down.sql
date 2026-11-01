@@ -1,0 +1,1 @@
+DROP TABLE remote_device_list_versions;
