@@ -37,7 +37,9 @@ uses the revised states and retains the deprecated compatibility fields.
 
 Exclusive application-service users do not have inactivity timeouts. Failed outbound
 delivery starts a five-minute debounce; a successful delivery restores their saved
-client states. Remote-server failures use the same debounce, publish an offline view
+client states. An application-service queue item discarded before sending does not
+count as a successful delivery or restore availability; recovery requires an HTTP
+acknowledgment. Remote-server failures use the same debounce, publish an offline view
 without discarding remote state, and republish the saved state after recovery.
 Application-service presence transactions require `receive_ephemeral` and an
 authorized recipient in the service's exclusive namespace. Authorization is checked

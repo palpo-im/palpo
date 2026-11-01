@@ -127,7 +127,7 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                 match response {
                     Ok(outgoing_kind) => {
                         #[cfg(feature = "unstable-msc4532")]
-                        if let Err(error) = crate::user::presence::revised::delivery(&outgoing_kind, true).await {
+                        if let Err(error) = crate::user::presence::revised::queue_completed(&outgoing_kind).await {
                             warn!(?error, "presence delivery recovery failed");
                         }
                         if let Some((edu_sn, has_presence)) = pending_edu_cursors.remove(&outgoing_kind)

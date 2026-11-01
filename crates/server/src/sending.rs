@@ -678,6 +678,12 @@ pub(crate) async fn send_events(
                 });
 
             drop(permit);
+            #[cfg(feature = "unstable-msc4532")]
+            if response.is_ok()
+                && let Err(error) = crate::user::presence::revised::delivery(&kind, true).await
+            {
+                warn!(?error, "appservice presence delivery recovery failed");
+            }
             response
         }
         OutgoingKind::Push(user_id, pushkey) => {

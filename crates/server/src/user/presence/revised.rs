@@ -265,6 +265,17 @@ async fn expire() -> AppResult<()> {
 }
 
 /// Observe outbound delivery only; brief failures do not flap remote presence.
+/// Application-service queue items can complete without making an HTTP request
+/// (for example after recipient authorization is revoked). Their actual HTTP
+/// acknowledgment is observed in `sending::send_events` instead.
+pub async fn queue_completed(kind: &crate::sending::OutgoingKind) -> AppResult<()> {
+    if matches!(kind, crate::sending::OutgoingKind::Normal(_)) {
+        delivery(kind, true).await?;
+    }
+    Ok(())
+}
+
+/// Observe an actual delivery outcome, retaining state across brief failures.
 pub async fn delivery(kind: &crate::sending::OutgoingKind, success: bool) -> AppResult<()> {
     use crate::sending::OutgoingKind;
     let destination = match kind {
@@ -491,6 +502,32 @@ mod tests {
         wire["presence"] = json!(State::Active.as_str());
         project(&user, &mut wire, true).await.unwrap();
         assert_eq!(wire["presence"], State::Active.as_str());
+
+        let bridge = UserId::parse("@bridge:example.org").unwrap();
+        sql_query("INSERT INTO revised_presence_clients (user_id,client_id,state,expires_at) VALUES ($1,'as:bridge',$2,NULL)")
+            .bind::<Text, _>(bridge.as_str()).bind::<Text, _>(State::Active.as_str())
+            .execute(&mut conn).await.unwrap();
+        sql_query("INSERT INTO revised_presence_outages (destination,failed_at,notified) VALUES ('as:bridge',0,TRUE)")
+            .execute(&mut conn).await.unwrap();
+        recompute(&mut conn, &bridge).await.unwrap();
+        let kind = crate::sending::OutgoingKind::Appservice("bridge".into());
+        queue_completed(&kind).await.unwrap();
+        let state = sql_query("SELECT state FROM user_presences WHERE user_id=$1")
+            .bind::<Text, _>(bridge.as_str())
+            .get_result::<Client>(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            state.state, "offline",
+            "a discarded queue item is not a transport acknowledgment"
+        );
+        delivery(&kind, true).await.unwrap();
+        let state = sql_query("SELECT state FROM user_presences WHERE user_id=$1")
+            .bind::<Text, _>(bridge.as_str())
+            .get_result::<Client>(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(state.state, State::Active.as_str());
 
         // Both HTTP status updates and sync use opaque, unprefixed device IDs.
         // Going offline on one device must not erase a second device's state.
