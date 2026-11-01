@@ -73,6 +73,9 @@ pub async fn touch(user: &UserId, client: ClientId<'_>, state: &str) -> AppResul
 }
 
 pub async fn refresh(user: &UserId) -> AppResult<()> {
+    if !crate::config::get().presence.allow_local {
+        return Ok(());
+    }
     let mut conn = data::connect().await?;
     let changed = conn
         .transaction::<_, crate::AppError, _>(async |conn| {
@@ -358,6 +361,44 @@ mod tests {
             );
         }
         assert_eq!(ClientId::Device("one").expires_at(1), Some(300_001));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+    async fn disabled_revised_presence_does_not_publish_saved_clients() {
+        crate::test_database::init();
+        crate::config::CONFIG
+            .set(serde_json::from_value(json!({
+                "server_name": "example.org", "db": {"url": "unused-test-config"},
+                "presence": {"allow_local": false, "allow_incoming": false, "allow_outgoing": false}
+            })).unwrap())
+            .unwrap();
+        let user = UserId::parse("@disabled:example.org").unwrap();
+        let mut conn = data::connect().await.unwrap();
+        sql_query("INSERT INTO revised_presence_clients (user_id,client_id,state,expires_at) VALUES ($1,'as:bridge',$2,NULL)")
+            .bind::<Text, _>(user.as_str()).bind::<Text, _>(State::Active.as_str())
+            .execute(&mut conn).await.unwrap();
+        touch(&user, ClientId::Device("one"), State::Active.as_str())
+            .await
+            .unwrap();
+        refresh(&user).await.unwrap();
+        recover().await.unwrap();
+        assert!(
+            data::user::maybe_last_presence(&user)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let clients = sql_query("SELECT state FROM revised_presence_clients WHERE user_id=$1")
+            .bind::<Text, _>(user.as_str())
+            .load::<Client>(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            clients.len(),
+            1,
+            "disabled updates must not add device activity"
+        );
     }
 
     #[tokio::test]

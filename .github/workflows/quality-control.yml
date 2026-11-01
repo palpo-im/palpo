@@ -113,6 +113,8 @@ jobs:
         run: |
           sudo -u postgres createdb -O palpo_test palpo_revised_presence
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_revised_presence cargo test -p palpo --lib --all-features durable_multidevice_overrides_status_and_remote_recovery -- --ignored
+          sudo -u postgres createdb -O palpo_test palpo_revised_presence_disabled
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_revised_presence_disabled cargo test -p palpo --lib --all-features disabled_revised_presence_does_not_publish_saved_clients -- --ignored
       - name: Incremental member presence regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_member_presence_default
