@@ -13,6 +13,9 @@ Connected devices resolve in this order: persistent override, busy, active, idle
 If no devices remain connected, the result is always offline. Device activity expires
 five minutes after the most recent sync/status request, with a 30-second sweep.
 There is no automatic idle transition.
+Device IDs remain opaque, including IDs beginning with `device:` or `as:`;
+each device and application service has a distinct activity record. Expiry also
+removes offline activity records rather than retaining them indefinitely.
 
 User-controlled overrides and extensible status are stored in global account data
 `org.continuwuity.presence_v2.msc4532.presence.persistent`. Writing `{}` or deleting

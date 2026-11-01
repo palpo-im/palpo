@@ -57,9 +57,8 @@ pub(super) async fn sync_events_v3(
     #[cfg(feature = "unstable-msc4532")]
     crate::user::presence::revised::touch(
         sender_id,
-        device_id.as_str(),
+        crate::user::presence::revised::ClientId::Device(device_id.as_str()),
         args.set_presence.as_str(),
-        false,
     )
     .await?;
     let mut body = crate::sync_v3::sync_events(sender_id, device_id, &args).await?;
@@ -86,9 +85,8 @@ pub(super) async fn sync_events_v3(
     {
         crate::user::presence::revised::touch(
             sender_id,
-            device_id.as_str(),
+            crate::user::presence::revised::ClientId::Device(device_id.as_str()),
             args.set_presence.as_str(),
-            false,
         )
         .await?;
         let revised = req

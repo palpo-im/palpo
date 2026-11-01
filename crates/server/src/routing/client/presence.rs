@@ -113,20 +113,16 @@ async fn set_status(
         if let Some(message) = status_msg {
             crate::user::presence::revised::legacy_message(&user_id, message).await?;
         }
+        use crate::user::presence::revised::ClientId;
         let client = if let Some(service) = authed.appservice() {
-            format!("as:{}", service.registration.id)
+            ClientId::Appservice {
+                id: &service.registration.id,
+                exclusive: service.is_exclusive_user_match(&user_id),
+            }
         } else {
-            format!("device:{}", authed.require_device_id()?)
+            ClientId::Device(authed.require_device_id()?.as_str())
         };
-        crate::user::presence::revised::touch(
-            &user_id,
-            &client,
-            presence.as_str(),
-            authed
-                .appservice()
-                .is_some_and(|service| service.is_exclusive_user_match(&user_id)),
-        )
-        .await?;
+        crate::user::presence::revised::touch(&user_id, client, presence.as_str()).await?;
     }
     #[cfg(not(feature = "unstable-msc4532"))]
     crate::user::set_presence(authed.user_id(), Some(presence), status_msg.clone(), true).await?;

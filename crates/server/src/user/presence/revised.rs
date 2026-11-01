@@ -13,6 +13,31 @@ struct Client {
     #[diesel(sql_type = Text)]
     state: String,
 }
+
+/// Keep device IDs and application-service IDs in distinct namespaces. Device IDs
+/// are opaque and may themselves start with either of our storage prefixes.
+pub enum ClientId<'a> {
+    Device(&'a str),
+    Appservice { id: &'a str, exclusive: bool },
+}
+
+impl ClientId<'_> {
+    fn key(&self) -> String {
+        match self {
+            Self::Device(id) => format!("device:{id}"),
+            Self::Appservice { id, .. } => format!("as:{id}"),
+        }
+    }
+
+    fn expires_at(&self, now: i64) -> Option<i64> {
+        match self {
+            Self::Appservice {
+                exclusive: true, ..
+            } => None,
+            _ => Some(now + 300_000),
+        }
+    }
+}
 #[derive(QueryableByName)]
 struct JsonRow {
     #[diesel(sql_type = Jsonb)]
@@ -24,18 +49,14 @@ struct UserRow {
     user_id: String,
 }
 
-pub async fn touch(user: &UserId, client: &str, state: &str, appservice: bool) -> AppResult<()> {
+pub async fn touch(user: &UserId, client: ClientId<'_>, state: &str) -> AppResult<()> {
     if !crate::config::get().presence.allow_local {
         return Ok(());
     }
     let state = State::parse(state, true)
         .ok_or_else(|| MatrixError::invalid_param("Unknown presence state"))?;
-    let client = if appservice || client.starts_with("device:") {
-        client.to_owned()
-    } else {
-        format!("device:{client}")
-    };
-    let expires = (!appservice).then_some(UnixMillis::now().0 as i64 + 300_000);
+    let expires = client.expires_at(UnixMillis::now().0 as i64);
+    let client = client.key();
     let mut conn = data::connect().await?;
     let changed = conn.transaction::<_, crate::AppError, _>(async |conn| {
         data::user::lock_presence_stream(conn).await?;
@@ -223,8 +244,11 @@ async fn recover() -> AppResult<()> {
 }
 
 async fn expire() -> AppResult<()> {
-    let users = sql_query("SELECT DISTINCT user_id FROM revised_presence_clients WHERE expires_at <= $1 AND state <> 'offline'")
-        .bind::<BigInt,_>(UnixMillis::now().0 as i64).load::<UserRow>(&mut data::connect().await?).await?;
+    let users =
+        sql_query("SELECT DISTINCT user_id FROM revised_presence_clients WHERE expires_at <= $1")
+            .bind::<BigInt, _>(UnixMillis::now().0 as i64)
+            .load::<UserRow>(&mut data::connect().await?)
+            .await?;
     for row in users {
         let user = UserId::parse(&row.user_id)?;
         refresh(&user).await?;
@@ -315,10 +339,39 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn opaque_device_ids_cannot_alias_other_clients() {
+        assert_ne!(
+            ClientId::Device("one").key(),
+            ClientId::Device("device:one").key()
+        );
+        for exclusive in [false, true] {
+            let service = ClientId::Appservice {
+                id: "bridge",
+                exclusive,
+            };
+            assert_ne!(ClientId::Device("as:bridge").key(), service.key());
+            assert_eq!(service.key(), "as:bridge");
+            assert_eq!(
+                service.expires_at(1),
+                if exclusive { None } else { Some(300_001) }
+            );
+        }
+        assert_eq!(ClientId::Device("one").expires_at(1), Some(300_001));
+    }
+
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn durable_multidevice_overrides_status_and_remote_recovery() {
         crate::test_database::init();
+        crate::config::CONFIG
+            .set(
+                serde_json::from_value(json!({
+                    "server_name": "example.org", "db": {"url": "unused-test-config"}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         let user = UserId::parse("@presence:example.org").unwrap();
         let mut conn = data::connect().await.unwrap();
         sql_query("INSERT INTO revised_presence_clients (user_id,client_id,state,expires_at) VALUES ($1,'one',$2,NULL),($1,'two',$3,NULL)")
@@ -397,5 +450,43 @@ mod tests {
         wire["presence"] = json!(State::Active.as_str());
         project(&user, &mut wire, true).await.unwrap();
         assert_eq!(wire["presence"], State::Active.as_str());
+
+        // Both HTTP status updates and sync use opaque, unprefixed device IDs.
+        // Going offline on one device must not erase a second device's state.
+        let devices = UserId::parse("@opaque-devices:example.org").unwrap();
+        touch(&devices, ClientId::Device("one"), State::Active.as_str())
+            .await
+            .unwrap();
+        touch(
+            &devices,
+            ClientId::Device("device:one"),
+            State::Busy.as_str(),
+        )
+        .await
+        .unwrap();
+        touch(&devices, ClientId::Device("one"), "offline")
+            .await
+            .unwrap();
+        let state = sql_query("SELECT state FROM user_presences WHERE user_id=$1")
+            .bind::<Text, _>(devices.as_str())
+            .get_result::<Client>(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(state.state, State::Busy.as_str());
+        sql_query("UPDATE revised_presence_clients SET expires_at=0 WHERE user_id=$1")
+            .bind::<Text, _>(devices.as_str())
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        expire().await.unwrap();
+        let remaining = sql_query("SELECT state FROM revised_presence_clients WHERE user_id=$1")
+            .bind::<Text, _>(devices.as_str())
+            .load::<Client>(&mut conn)
+            .await
+            .unwrap();
+        assert!(
+            remaining.is_empty(),
+            "expired offline clients must be removed too"
+        );
     }
 }
