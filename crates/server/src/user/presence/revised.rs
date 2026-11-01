@@ -152,7 +152,10 @@ async fn publish(
     let now = UnixMillis::now().0 as i64;
     let status = serde_json::to_value(status)?;
     // A status-only update must advance the stream too. Keep observer time across unchanged states.
-    let changed = sql_query("INSERT INTO user_presences (user_id,state,status_msg,currently_active,last_active_at,updated_at,revised_status) VALUES ($1,$2,$3,$4,$5,$5,$7) ON CONFLICT (user_id) DO UPDATE SET state=EXCLUDED.state,status_msg=EXCLUDED.status_msg,currently_active=EXCLUDED.currently_active,last_active_at=CASE WHEN user_presences.state=$6 AND EXCLUDED.state<>$6 THEN $5 ELSE user_presences.last_active_at END,updated_at=$5,revised_status=EXCLUDED.revised_status,occur_sn=nextval('occur_sn_seq') WHERE user_presences.state IS DISTINCT FROM EXCLUDED.state OR user_presences.status_msg IS DISTINCT FROM EXCLUDED.status_msg OR user_presences.revised_status IS DISTINCT FROM EXCLUDED.revised_status")
+    // Filter unchanged rows before INSERT evaluates its sequence defaults. Even
+    // an ON CONFLICT update that does nothing would otherwise consume a position
+    // after /sync captures its response cursor.
+    let changed = sql_query("INSERT INTO user_presences (user_id,state,status_msg,currently_active,last_active_at,updated_at,revised_status) SELECT $1,$2,$3,$4,$5,$5,$7 WHERE NOT EXISTS (SELECT 1 FROM user_presences WHERE user_id=$1 AND state IS NOT DISTINCT FROM $2 AND status_msg IS NOT DISTINCT FROM $3 AND revised_status IS NOT DISTINCT FROM $7) ON CONFLICT (user_id) DO UPDATE SET state=EXCLUDED.state,status_msg=EXCLUDED.status_msg,currently_active=EXCLUDED.currently_active,last_active_at=CASE WHEN user_presences.state=$6 AND EXCLUDED.state<>$6 THEN $5 ELSE user_presences.last_active_at END,updated_at=$5,revised_status=EXCLUDED.revised_status,occur_sn=nextval('occur_sn_seq') WHERE user_presences.state IS DISTINCT FROM EXCLUDED.state OR user_presences.status_msg IS DISTINCT FROM EXCLUDED.status_msg OR user_presences.revised_status IS DISTINCT FROM EXCLUDED.revised_status")
         .bind::<Text,_>(user.as_str()).bind::<Text,_>(state.as_str())
         .bind::<Nullable<Text>,_>(status.get("msg").and_then(Value::as_str))
         .bind::<diesel::sql_types::Bool,_>(state == State::Active).bind::<BigInt,_>(now)
@@ -551,6 +554,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.state, State::Busy.as_str());
+        let position = data::curr_sn().await.unwrap();
+        touch(&devices, ClientId::Device("one"), "offline")
+            .await
+            .unwrap();
+        assert_eq!(
+            data::curr_sn().await.unwrap(),
+            position,
+            "unchanged activity must not consume a stream position"
+        );
         sql_query("UPDATE revised_presence_clients SET expires_at=0 WHERE user_id=$1")
             .bind::<Text, _>(devices.as_str())
             .execute(&mut conn)
