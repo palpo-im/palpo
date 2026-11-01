@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use palpo_hagency_contract::{MatrixUserId, ServerName};
+use palpo_core::{OwnedServerName as ServerName, OwnedUserId as MatrixUserId};
 use reqwest::{Client, Method, Url};
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,6 +18,17 @@ pub struct Matrix {
 pub struct Identity {
     pub user: MatrixUserId,
     pub admin: bool,
+}
+
+/// The protocol parser accepts historical IDs. Bind application accounts only
+/// to nonempty IDs without whitespace/control characters, as before.
+pub(crate) fn valid_account_id(user: &palpo_core::UserId) -> bool {
+    user.as_str().len() <= 255
+        && !user.localpart().is_empty()
+        && !user
+            .as_str()
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
 }
 
 impl Matrix {
@@ -98,27 +109,6 @@ impl Matrix {
             url.query_pairs_mut().append_pair("user_id", user);
         }
         self.send(method, url, token, body).await
-    }
-
-    pub(crate) async fn messages(
-        &self,
-        room: &str,
-        token: &str,
-        from: Option<&str>,
-        limit: u16,
-    ) -> Result<Value> {
-        let mut url = self.origin.clone();
-        url.path_segments_mut()
-            .map_err(|_| fail(400, "invalid_matrix_path"))?
-            .clear()
-            .extend(["_matrix", "client", "v3", "rooms", room, "messages"]);
-        url.query_pairs_mut()
-            .append_pair("dir", "b")
-            .append_pair("limit", &limit.to_string());
-        if let Some(from) = from {
-            url.query_pairs_mut().append_pair("from", from);
-        }
-        self.send(Method::GET, url, token, None).await
     }
 
     async fn send(
@@ -224,7 +214,10 @@ impl Matrix {
             .await?;
         let who: Who =
             serde_json::from_value(raw).map_err(|_| fail(502, "matrix_identity_invalid"))?;
-        if who.is_guest || !who.user_id.belongs_to(&self.server) {
+        if !valid_account_id(&who.user_id) {
+            return Err(fail(502, "matrix_identity_invalid"));
+        }
+        if who.is_guest || who.user_id.server_name() != self.server {
             return Err(fail(403, "local_account_required"));
         }
         let admin = match self

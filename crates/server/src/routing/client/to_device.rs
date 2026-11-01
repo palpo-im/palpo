@@ -33,80 +33,77 @@ async fn send_to_device(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
-    // Check if this is a new transaction id
-    if crate::transaction_id::txn_id_exists(&args.txn_id, authed.user_id(), authed.device_id())
-        .await?
-    {
-        return empty_ok();
-    }
-
+    let mut inboxes = Vec::new();
+    let mut outgoing = Vec::new();
+    let mut destinations = std::collections::BTreeSet::new();
     for (target_user_id, map) in &body.messages {
         for (target_device_id_maybe, event) in map {
+            let content: serde_json::Value = event
+                .deserialize_as()
+                .map_err(|_| MatrixError::invalid_param("Event is invalid"))?;
             if target_user_id.server_name().is_remote() {
+                let server = target_user_id.server_name();
+                if !crate::config::get().federation.is_server_allowed(server) {
+                    continue;
+                }
                 let mut map = BTreeMap::new();
                 map.insert(target_device_id_maybe.clone(), event.clone());
                 let mut messages = BTreeMap::new();
                 messages.insert(target_user_id.clone(), map);
 
                 let message_id = Ulid::generate();
-                crate::sending::send_reliable_edu(
-                    target_user_id.server_name(),
-                    &Edu::DirectToDevice(DirectDeviceContent {
-                        sender: authed.user_id().to_owned(),
-                        ev_type: args.event_type.clone(),
-                        message_id: message_id.to_string().into(),
-                        messages,
-                    }),
-                    &message_id.to_string(),
-                )
-                .await?;
+                let edu = Edu::DirectToDevice(DirectDeviceContent {
+                    sender: authed.user_id().to_owned(),
+                    ev_type: args.event_type.clone(),
+                    message_id: message_id.to_string().into(),
+                    messages,
+                });
+                outgoing.push(data::sending::NewDbOutgoingRequest {
+                    kind: "normal".to_owned(),
+                    appservice_id: None,
+                    user_id: None,
+                    pushkey: None,
+                    server_id: Some(server.to_owned()),
+                    pdu_id: None,
+                    edu_json: Some(serde_json::to_vec(&edu)?),
+                });
+                destinations.insert(server.to_owned());
 
                 continue;
             }
 
-            match target_device_id_maybe {
-                DeviceIdOrAllDevices::DeviceId(target_device_id) => {
-                    data::user::device::add_to_device_event(
-                        authed.user_id(),
-                        target_user_id,
-                        target_device_id,
-                        &args.event_type.to_string(),
-                        event
-                            .deserialize_as()
-                            .map_err(|_| MatrixError::invalid_param("Event is invalid"))?,
-                    )
-                    .await?
-                }
-
+            let targets = match target_device_id_maybe {
+                DeviceIdOrAllDevices::DeviceId(device) => vec![device.clone()],
                 DeviceIdOrAllDevices::AllDevices => {
-                    for target_device_id in
-                        data::user::all_to_device_target_ids(target_user_id).await?
-                    {
-                        data::user::device::add_to_device_event(
-                            authed.user_id(),
-                            target_user_id,
-                            &target_device_id,
-                            &args.event_type.to_string(),
-                            event
-                                .deserialize_as()
-                                .map_err(|_| MatrixError::invalid_param("Event is invalid"))?,
-                        )
-                        .await?;
-                    }
+                    data::user::all_to_device_target_ids(target_user_id).await?
                 }
+            };
+            for device in targets {
+                inboxes.push(data::user::device::NewDbDeviceInbox {
+                    user_id: target_user_id.clone(), device_id: device,
+                    json_data: serde_json::json!({"type":args.event_type,"sender":authed.user_id(),"content":content}),
+                    created_at: crate::core::UnixMillis::now().get() as i64,
+                });
             }
         }
     }
 
-    // Save transaction id with empty data
-    crate::transaction_id::add_txn_id(
-        &args.txn_id,
-        authed.user_id(),
-        authed.device_id(),
-        None,
-        None,
-    )
-    .await?;
+    let receipt = data::room::NewDbEventIdempotent {
+        txn_id: args.txn_id.clone(),
+        user_id: authed.user_id().to_owned(),
+        device_id: authed.device_id().map(ToOwned::to_owned),
+        room_id: None,
+        event_id: None,
+        created_at: crate::core::UnixMillis::now(),
+        endpoint: format!("sendToDevice/{}", args.event_type),
+    };
+    if data::room::transaction_id::commit_to_device_transaction(&receipt, &inboxes, &outgoing)
+        .await?
+    {
+        for server in destinations {
+            crate::sending::notify(crate::sending::OutgoingKind::Normal(server))?;
+        }
+    }
 
     empty_ok()
 }
@@ -256,6 +253,127 @@ fn resolve_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(DEFAULT_EVENT_LIMIT)
         .clamp(1, MAX_EVENT_LIMIT)
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use diesel::prelude::*;
+    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use futures_util::stream::{FuturesUnordered, StreamExt};
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::data::connect;
+    use crate::data::schema::*;
+
+    async fn send(
+        service: &Service,
+        event_type: &str,
+        txn: &str,
+        body: &Value,
+    ) -> (Option<StatusCode>, Value) {
+        let mut response =
+            TestClient::put(format!("http://localhost/sendToDevice/{event_type}/{txn}"))
+                .add_header("authorization", "Bearer scoped-sender", true)
+                .json(body)
+                .send(service)
+                .await;
+        (response.status_code, response.take_json().await.unwrap())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_client_transactions_are_scoped_atomic_and_concurrent() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"transactions.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user =
+            UserId::parse(format!("@scopedsender:{}", crate::config::server_name())).unwrap();
+        data::user::create_user(&data::user::NewDbUser {
+            id: user.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user.localpart().into(),
+            server_name: user.server_name().to_owned(),
+            appservice_id: None,
+            created_at: crate::core::UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let device: OwnedDeviceId = "SCOPED_SENDER".into();
+        data::user::device::create_device(&user, &device, "scoped-sender", None, None)
+            .await
+            .unwrap();
+        let room = crate::core::room_id!("!scoped:example.test");
+        data::room::transaction_id::add_scoped_txn_id(
+            "same".into(),
+            &user,
+            Some(&device),
+            Some(room),
+            Some(crate::core::event_id!("$scoped")),
+            "room/send/m.room.message",
+        )
+        .await
+        .unwrap();
+        let service = Service::new(
+            Router::new()
+                .hoop(crate::hoops::auth_by_access_token)
+                .push(authed_router()),
+        );
+        let body = json!({"messages":{user.as_str():{device.as_str():{"fixture":"content"}}}});
+        let mut sends = FuturesUnordered::new();
+        for _ in 0..12 {
+            sends.push(send(&service, "m.first", "same", &body));
+        }
+        while let Some((status, body)) = sends.next().await {
+            assert_eq!(status, Some(StatusCode::OK), "{body}");
+        }
+        let events = data::user::device::get_to_device_events(&user, &device, None, None)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1, "retries duplicate a to-device delivery");
+        let (status, body_response) = send(&service, "m.second", "same", &body).await;
+        assert_eq!(status, Some(StatusCode::OK), "{body_response}");
+        assert_eq!(
+            data::user::device::get_to_device_events(&user, &device, None, None)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        // A failure after receipt reservation must roll the receipt and deliveries
+        // back, so the same transaction remains retryable.
+        connect().await.unwrap().batch_execute("CREATE FUNCTION q14_fail_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.json_data->>'type' = 'm.fail' THEN RAISE EXCEPTION 'injected inbox failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q14_fail_delivery BEFORE INSERT ON device_inboxes FOR EACH ROW EXECUTE FUNCTION q14_fail_delivery();").await.unwrap();
+        assert_eq!(
+            send(&service, "m.fail", "retry", &body).await.0,
+            Some(StatusCode::INTERNAL_SERVER_ERROR)
+        );
+        let receipts: i64 = event_idempotents::table
+            .filter(event_idempotents::user_id.eq(&user))
+            .filter(event_idempotents::endpoint.eq("sendToDevice/m.fail"))
+            .count()
+            .get_result(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(receipts, 0);
+        connect().await.unwrap().batch_execute("DROP TRIGGER q14_fail_delivery ON device_inboxes; DROP FUNCTION q14_fail_delivery();").await.unwrap();
+        let (status, body_response) = send(&service, "m.fail", "retry", &body).await;
+        assert_eq!(status, Some(StatusCode::OK), "{body_response}");
+        assert_eq!(
+            data::user::device::get_to_device_events(&user, &device, None, None)
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+    }
 }
 
 #[cfg(test)]

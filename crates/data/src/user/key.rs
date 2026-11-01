@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::core::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
 use crate::core::identifiers::*;
@@ -233,13 +233,20 @@ pub async fn get_device_keys_and_sigs(
 
 pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     let mut conn = connect().await?;
+    delete_device_key_material_on_connection(&mut conn, user_id, device_id).await
+}
 
+pub(super) async fn delete_device_key_material_on_connection(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<()> {
     diesel::delete(
         e2e_device_keys::table
             .filter(e2e_device_keys::user_id.eq(user_id))
             .filter(e2e_device_keys::device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     diesel::delete(
@@ -247,7 +254,7 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
             .filter(e2e_one_time_keys::user_id.eq(user_id))
             .filter(e2e_one_time_keys::device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     diesel::delete(
@@ -255,7 +262,7 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
             .filter(e2e_fallback_keys::user_id.eq(user_id))
             .filter(e2e_fallback_keys::device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     // Drop cross-signing signatures targeting this device so a later reuse of the
@@ -265,7 +272,7 @@ pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) 
             .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
             .filter(e2e_cross_signing_sigs::target_device_id.eq(device_id)),
     )
-    .execute(&mut conn)
+    .execute(conn)
     .await?;
 
     Ok(())
@@ -450,10 +457,21 @@ pub async fn add_cross_signing_key(
     Ok(())
 }
 
-/// Insert a cross-signing signature row.
+/// Store a validated cross-signing signature idempotently across recovery retries.
 pub async fn add_cross_signing_sig(signature: NewDbCrossSignature) -> DataResult<()> {
     diesel::insert_into(e2e_cross_signing_sigs::table)
         .values(signature)
+        .on_conflict((
+            e2e_cross_signing_sigs::origin_user_id,
+            e2e_cross_signing_sigs::origin_key_id,
+            e2e_cross_signing_sigs::target_user_id,
+            e2e_cross_signing_sigs::target_device_id,
+        ))
+        .do_update()
+        .set(
+            e2e_cross_signing_sigs::signature
+                .eq(diesel::upsert::excluded(e2e_cross_signing_sigs::signature)),
+        )
         .execute(&mut connect().await?)
         .await?;
     Ok(())
@@ -495,28 +513,78 @@ pub async fn add_fallback_key(
     key_id: &DeviceKeyId,
     fallback_key: &OneTimeKey,
 ) -> DataResult<()> {
-    diesel::delete(
-        e2e_fallback_keys::table
-            .filter(e2e_fallback_keys::user_id.eq(user_id))
-            .filter(e2e_fallback_keys::device_id.eq(device_id))
-            .filter(e2e_fallback_keys::algorithm.eq(key_id.algorithm().to_string())),
-    )
-    .execute(&mut connect().await?)
-    .await?;
-
-    diesel::insert_into(e2e_fallback_keys::table)
-        .values(&NewDbFallbackKey {
-            user_id: user_id.to_owned(),
-            device_id: device_id.to_owned(),
-            algorithm: key_id.algorithm().to_string(),
-            key_id: key_id.to_owned(),
-            key_data: serde_json::to_value(fallback_key)?,
-            used_at: None,
-            created_at: UnixMillis::now(),
+    let new_key = NewDbFallbackKey {
+        user_id: user_id.to_owned(),
+        device_id: device_id.to_owned(),
+        algorithm: key_id.algorithm().to_string(),
+        key_id: key_id.to_owned(),
+        key_data: serde_json::to_value(fallback_key)?,
+        used_at: None,
+        created_at: UnixMillis::now(),
+    };
+    connect()
+        .await?
+        .transaction::<_, crate::DataError, _>(async |conn| {
+            let identity =
+                serde_json::to_string(&(user_id.as_str(), device_id.as_str(), &new_key.algorithm))?;
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, 7141313))")
+                .bind::<diesel::sql_types::Text, _>(identity)
+                .execute(conn)
+                .await?;
+            let previous = e2e_fallback_keys::table
+                .filter(e2e_fallback_keys::user_id.eq(user_id))
+                .filter(e2e_fallback_keys::device_id.eq(device_id))
+                .filter(e2e_fallback_keys::algorithm.eq(&new_key.algorithm))
+                .first::<DbFallbackKey>(conn)
+                .await
+                .optional()?;
+            if let Some(previous) = previous
+                && previous.key_id == key_id
+            {
+                if previous.key_data != new_key.key_data {
+                    return Err(crate::core::MatrixError::invalid_param(
+                        "A fallback key ID cannot be reused for different key material.",
+                    )
+                    .into());
+                }
+                // Identical retries after a claim preserve the already-used state.
+                return Ok(());
+            }
+            diesel::insert_into(e2e_fallback_keys::table)
+                .values(&new_key)
+                .on_conflict((
+                    e2e_fallback_keys::user_id,
+                    e2e_fallback_keys::device_id,
+                    e2e_fallback_keys::algorithm,
+                ))
+                .do_update()
+                .set((
+                    e2e_fallback_keys::key_id.eq(key_id.as_str()),
+                    e2e_fallback_keys::key_data.eq(&new_key.key_data),
+                    e2e_fallback_keys::used_at.eq(None::<i64>),
+                    e2e_fallback_keys::created_at.eq(UnixMillis::now()),
+                ))
+                .execute(conn)
+                .await?;
+            Ok(())
         })
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
+        .await
+}
+
+pub async fn unused_fallback_key_types(
+    user_id: &UserId,
+    device_id: &DeviceId,
+) -> DataResult<Vec<DeviceKeyAlgorithm>> {
+    Ok(e2e_fallback_keys::table
+        .filter(e2e_fallback_keys::user_id.eq(user_id))
+        .filter(e2e_fallback_keys::device_id.eq(device_id))
+        .filter(e2e_fallback_keys::used_at.is_null())
+        .select(e2e_fallback_keys::algorithm)
+        .load::<String>(&mut connect().await?)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 /// Claim (read and remove) the oldest one-time key for a device and algorithm.
@@ -525,24 +593,36 @@ pub async fn claim_one_time_key(
     device_id: &DeviceId,
     key_algorithm: &DeviceKeyAlgorithm,
 ) -> DataResult<Option<(OwnedDeviceKeyId, OneTimeKey)>> {
-    let one_time_key = e2e_one_time_keys::table
-        .filter(e2e_one_time_keys::user_id.eq(user_id))
-        .filter(e2e_one_time_keys::device_id.eq(device_id))
-        .filter(e2e_one_time_keys::algorithm.eq(key_algorithm.as_ref()))
-        .order(e2e_one_time_keys::id.asc())
-        .first::<DbOneTimeKey>(&mut connect().await?)
-        .await
-        .optional()?;
-    if let Some(DbOneTimeKey {
-        id,
-        key_id,
-        key_data,
-        ..
-    }) = one_time_key
-    {
-        diesel::delete(e2e_one_time_keys::table.find(id))
-            .execute(&mut connect().await?)
-            .await?;
+    #[derive(QueryableByName)]
+    struct ClaimedKey {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        key_id: OwnedDeviceKeyId,
+        #[diesel(sql_type = diesel::sql_types::Json)]
+        key_data: JsonValue,
+    }
+
+    // Keep a single checkout through fallback selection and its used-state
+    // update. A connection temporary in the if-let condition otherwise lives
+    // through the body and can exhaust the pool when every claimant updates it.
+    let mut conn = connect().await?;
+
+    // Select and delete on the same connection in one statement. Returning only a
+    // successfully deleted row prevents concurrent callers from receiving the
+    // same key. Locked candidates belong to another claim and may be skipped.
+    let one_time_key = diesel::sql_query(
+        "DELETE FROM e2e_one_time_keys WHERE id = (\
+             SELECT id FROM e2e_one_time_keys \
+             WHERE user_id = $1 AND device_id = $2 AND algorithm = $3 \
+             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED\
+         ) RETURNING key_id, key_data",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(key_algorithm.as_ref())
+    .get_result::<ClaimedKey>(&mut conn)
+    .await
+    .optional()?;
+    if let Some(ClaimedKey { key_id, key_data }) = one_time_key {
         Ok(Some((
             key_id,
             serde_json::from_value::<OneTimeKey>(key_data)?,
@@ -558,15 +638,19 @@ pub async fn claim_one_time_key(
         .filter(e2e_fallback_keys::device_id.eq(device_id))
         .filter(e2e_fallback_keys::algorithm.eq(key_algorithm.as_ref()))
         .order(e2e_fallback_keys::id.desc())
-        .first::<DbFallbackKey>(&mut connect().await?)
+        .first::<DbFallbackKey>(&mut conn)
         .await
         .optional()?
     {
         if used_at.is_none() {
-            diesel::update(e2e_fallback_keys::table.find(id))
-                .set(e2e_fallback_keys::used_at.eq(UnixMillis::now().get() as i64))
-                .execute(&mut connect().await?)
-                .await?;
+            diesel::update(
+                e2e_fallback_keys::table
+                    .find(id)
+                    .filter(e2e_fallback_keys::key_id.eq(&key_id)),
+            )
+            .set(e2e_fallback_keys::used_at.eq(UnixMillis::now().get() as i64))
+            .execute(&mut conn)
+            .await?;
         }
         Ok(Some((
             key_id,
@@ -587,32 +671,334 @@ pub async fn device_list_stream_id(user_id: &UserId) -> DataResult<Seqnum> {
         .unwrap_or_default())
 }
 
-/// Replace the key-change marker for a `(user, room)` (or global when
-/// `change.room_id` is `None`) with a fresh row.
+/// Atomically retain the newest marker for a `(user, room)` or global scope.
 pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
-    match &change.room_id {
-        Some(room_id) => {
-            diesel::delete(
-                e2e_key_changes::table
-                    .filter(e2e_key_changes::user_id.eq(&change.user_id))
-                    .filter(e2e_key_changes::room_id.eq(room_id)),
-            )
-            .execute(&mut connect().await?)
-            .await?;
-        }
-        None => {
-            diesel::delete(
-                e2e_key_changes::table
-                    .filter(e2e_key_changes::user_id.eq(&change.user_id))
-                    .filter(e2e_key_changes::room_id.is_null()),
-            )
-            .execute(&mut connect().await?)
-            .await?;
-        }
-    }
+    use diesel::query_dsl::methods::FilterDsl;
     diesel::insert_into(e2e_key_changes::table)
         .values(change)
+        .on_conflict((e2e_key_changes::user_id, e2e_key_changes::room_id))
+        .do_update()
+        .set((
+            e2e_key_changes::occur_sn.eq(diesel::upsert::excluded(e2e_key_changes::occur_sn)),
+            e2e_key_changes::changed_at.eq(diesel::upsert::excluded(e2e_key_changes::changed_at)),
+        ))
+        // A delayed older notification cannot move a client's stream boundary backwards.
+        .filter(e2e_key_changes::occur_sn.lt(diesel::upsert::excluded(e2e_key_changes::occur_sn)))
         .execute(&mut connect().await?)
         .await?;
     Ok(())
+}
+
+async fn remote_device_shared_rooms(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: &UserId,
+    local_server: &ServerName,
+) -> diesel::QueryResult<Vec<OwnedRoomId>> {
+    #[derive(diesel::QueryableByName)]
+    struct SharedRoom {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        room_id: OwnedRoomId,
+    }
+    // One statement keeps remote and local membership in one MVCC snapshot.
+    // INTERSECT also avoids a quadratic join for users in many shared rooms.
+    Ok(diesel::sql_query(
+        "WITH remote_memberships AS MATERIALIZED (
+            SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
+            WHERE user_id = $1 ORDER BY room_id, id DESC
+         ), local_memberships AS MATERIALIZED (
+            SELECT DISTINCT ON (room_id, user_id) room_id, membership FROM room_users
+            WHERE user_server_id = $2 AND room_id IN
+                (SELECT room_id FROM remote_memberships WHERE membership = 'join')
+            ORDER BY room_id, user_id, id DESC
+         )
+         SELECT room_id FROM remote_memberships WHERE membership = 'join'
+         INTERSECT
+         SELECT room_id FROM local_memberships WHERE membership = 'join'",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(local_server.as_str())
+    .load::<SharedRoom>(conn)
+    .await?
+    .into_iter()
+    .map(|room| room.room_id)
+    .collect())
+}
+
+pub async fn is_remote_device_list_tracked(
+    user_id: &UserId,
+    local_server: &ServerName,
+) -> DataResult<bool> {
+    let mut conn = connect().await?;
+    Ok(
+        !remote_device_shared_rooms(&mut conn, user_id, local_server)
+            .await?
+            .is_empty(),
+    )
+}
+
+/// Remember only a successfully fetched snapshot that predates local tracking.
+/// The caller must finish fetching before calling this function, then publish
+/// the first membership afterwards. A concurrent already-published membership
+/// makes initialization ineligible; it must never replace an active stream.
+pub async fn initialize_remote_device_list_snapshot(
+    user_id: &UserId,
+    stream_id: u64,
+    local_server: &ServerName,
+) -> DataResult<bool> {
+    let initialized = connect()
+        .await?
+        .transaction::<_, diesel::result::Error, _>(async |conn| {
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+                .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+                .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
+                .execute(conn)
+                .await?;
+            let shared = remote_device_shared_rooms(conn, user_id, local_server).await?;
+            if !shared.is_empty() {
+                return Ok(false);
+            }
+            // Start a new tracking epoch from a proven current snapshot.
+            // Neither old opaque versions nor arbitrary unsolicited EDUs may
+            // be mistaken for a snapshot of the newly established relation.
+            diesel::delete(
+                remote_device_list_versions::table
+                    .filter(remote_device_list_versions::user_id.eq(user_id)),
+            )
+            .execute(conn)
+            .await?;
+            diesel::insert_into(remote_device_list_versions::table)
+                .values((
+                    remote_device_list_versions::user_id.eq(user_id),
+                    remote_device_list_versions::stream_id.eq(stream_id.to_string()),
+                    remote_device_list_versions::is_initial_snapshot.eq(true),
+                ))
+                .execute(conn)
+                .await?;
+            Ok(true)
+        })
+        .await?;
+    Ok(initialized)
+}
+
+/// Accept a tracked remote user's opaque version and publish its invalidation
+/// atomically. The latest 256 accepted versions survive process restarts, ordered
+/// by local receipt rather than the remote ID. Older evicted versions conservatively
+/// invalidate again; the cache cannot grow with a user's entire device history.
+pub async fn apply_remote_device_list_version(
+    user_id: &UserId,
+    stream_id: u64,
+    local_server: &ServerName,
+) -> DataResult<bool> {
+    let stream_id = stream_id.to_string();
+    let changed_at = UnixMillis::now();
+    let applied = connect()
+        .await?
+        .transaction::<_, diesel::result::Error, _>(async |conn| {
+            // Different versions for one user also replace the same marker rows.
+            // Serialize that replacement without holding a second pool connection.
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+                .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+                .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
+                .execute(conn)
+                .await?;
+            // One statement gives both sides the same READ COMMITTED snapshot.
+            // Two SELECTs could otherwise combine a departed remote member with
+            // a newly joined local member who never shared the room with them.
+            let joined_rooms = remote_device_shared_rooms(conn, user_id, local_server).await?;
+            if joined_rooms.is_empty() {
+                // A verified snapshot was fetched before the first shared
+                // membership is published. Unsolicited EDUs must not erase
+                // that proven baseline in this publication gap, nor insert
+                // any version of their own while the user remains untracked.
+                diesel::delete(remote_device_list_versions::table
+                    .filter(remote_device_list_versions::user_id.eq(user_id))
+                    .filter(remote_device_list_versions::is_initial_snapshot.eq(false)))
+                .execute(conn)
+                .await?;
+                return Ok(false);
+            }
+            let inserted = diesel::insert_into(remote_device_list_versions::table)
+                .values((
+                    remote_device_list_versions::user_id.eq(user_id),
+                    remote_device_list_versions::stream_id.eq(&stream_id),
+                ))
+                .on_conflict_do_nothing()
+                .execute(conn)
+                .await?;
+            if inserted == 0 {
+                diesel::update(remote_device_list_versions::table
+                    .filter(remote_device_list_versions::user_id.eq(user_id))
+                    .filter(remote_device_list_versions::stream_id.eq(&stream_id))
+                    .filter(remote_device_list_versions::is_initial_snapshot.eq(true)))
+                    .set(remote_device_list_versions::is_initial_snapshot.eq(false))
+                    .execute(conn)
+                    .await?;
+                return Ok(false);
+            }
+            let occur_sn =
+                diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                    .get_result::<Seqnum>(conn)
+                    .await?;
+            diesel::delete(
+                e2e_key_changes::table
+                    .filter(e2e_key_changes::user_id.eq(user_id))
+                    .filter(
+                        e2e_key_changes::room_id
+                            .eq_any(&joined_rooms)
+                            .or(e2e_key_changes::room_id.is_null()),
+                    ),
+            )
+            .execute(conn)
+            .await?;
+            let changes = joined_rooms
+                .iter()
+                .cloned()
+                .map(Some)
+                .chain(std::iter::once(None))
+                .map(|room_id| NewDbKeyChange {
+                    user_id: user_id.to_owned(),
+                    room_id,
+                    occur_sn,
+                    changed_at,
+                })
+                .collect::<Vec<_>>();
+            // Keep every marker and its sequence in the same transaction while
+            // staying below PostgreSQL's bind-parameter limit for large accounts.
+            for chunk in changes.chunks(1_000) {
+                diesel::insert_into(e2e_key_changes::table)
+                    .values(chunk)
+                    .execute(conn)
+                    .await?;
+            }
+            diesel::sql_query(
+                "DELETE FROM remote_device_list_versions WHERE user_id = $1 AND received_order NOT IN \
+                 (SELECT received_order FROM remote_device_list_versions WHERE user_id = $1 \
+                  ORDER BY received_order DESC LIMIT 256)",
+            )
+            .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+            .execute(conn)
+            .await?;
+            Ok(true)
+        })
+        .await?;
+    Ok(applied)
+}
+
+#[cfg(test)]
+mod recovery_idempotency_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires a disposable PostgreSQL database; run explicitly in CI"]
+    async fn cross_signing_retries_and_key_change_markers_are_atomic() {
+        let url = std::env::var("PALPO_TEST_DATABASE_URL").expect("set PALPO_TEST_DATABASE_URL");
+        assert!(
+            url::Url::parse(&url)
+                .unwrap()
+                .path()
+                .starts_with("/palpo_crypto_test_"),
+            "use a disposable crypto regression database"
+        );
+        let config: crate::DbConfig =
+            serde_json::from_value(serde_json::json!({"url":url,"pool_size":10})).unwrap();
+        tokio::task::spawn_blocking(move || crate::init(&config))
+            .await
+            .unwrap()
+            .unwrap();
+        let user =
+            UserId::parse(format!("@crypto_{}:example.test", rand::random::<u64>())).unwrap();
+        let mut signature = NewDbCrossSignature {
+            origin_user_id: user.clone(),
+            origin_key_id: DeviceKeyId::parse("ed25519:SIGNER").unwrap(),
+            target_user_id: user.clone(),
+            target_device_id: "DEVICE".into(),
+            signature: "verified-one".into(),
+        };
+        add_cross_signing_sig(signature.clone()).await.unwrap();
+        add_cross_signing_sig(signature.clone())
+            .await
+            .expect("a repeated signature is a successful retry");
+        signature.signature = "verified-two".into();
+        add_cross_signing_sig(signature.clone()).await.unwrap();
+        let mut jobs = Vec::new();
+        for _ in 0..32 {
+            let signature = signature.clone();
+            jobs.push(tokio::spawn(async move {
+                add_cross_signing_sig(signature).await.unwrap();
+            }));
+        }
+        for job in jobs {
+            job.await.unwrap();
+        }
+        let signatures = e2e_cross_signing_sigs::table
+            .filter(e2e_cross_signing_sigs::origin_user_id.eq(&user))
+            .select(e2e_cross_signing_sigs::signature)
+            .load::<String>(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(signatures, vec!["verified-two"]);
+
+        for room in [None, Some(RoomId::parse("!crypto:example.test").unwrap())] {
+            let mut jobs = Vec::new();
+            for sequence in 100..132 {
+                let change = NewDbKeyChange {
+                    user_id: user.clone(),
+                    room_id: room.clone(),
+                    occur_sn: sequence,
+                    changed_at: UnixMillis(sequence as u64),
+                };
+                jobs.push(tokio::spawn(async move {
+                    replace_key_change(&change).await.unwrap();
+                }));
+            }
+            for job in jobs {
+                job.await.unwrap();
+            }
+            // An old request completing last must not hide a newer change from
+            // a client's since-stream query.
+            replace_key_change(&NewDbKeyChange {
+                user_id: user.clone(),
+                room_id: room.clone(),
+                occur_sn: 99,
+                changed_at: UnixMillis(99),
+            })
+            .await
+            .unwrap();
+            replace_key_change(&NewDbKeyChange {
+                user_id: user.clone(),
+                room_id: room.clone(),
+                occur_sn: 131,
+                changed_at: UnixMillis(131),
+            })
+            .await
+            .unwrap();
+            let rows = e2e_key_changes::table
+                .filter(e2e_key_changes::user_id.eq(&user))
+                .select((
+                    e2e_key_changes::room_id,
+                    e2e_key_changes::occur_sn,
+                    e2e_key_changes::changed_at,
+                ))
+                .load::<(Option<OwnedRoomId>, i64, UnixMillis)>(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+            let matches = rows
+                .iter()
+                .filter(|(candidate, ..)| candidate == &room)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].1, 131);
+            assert_eq!(matches[0].2, UnixMillis(131));
+        }
+        diesel::delete(e2e_key_changes::table.filter(e2e_key_changes::user_id.eq(&user)))
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::delete(
+            e2e_cross_signing_sigs::table.filter(e2e_cross_signing_sigs::origin_user_id.eq(&user)),
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+    }
 }

@@ -513,6 +513,16 @@ pub async fn join_room(
     state::set_room_state(room_id, frame_id_after_join).await?;
     drop(state_lock);
 
+    notify_remote_join_device_list(sender_id, device_id, room_id).await?;
+
+    Ok(JoinRoomResBody::new(room_id.to_owned()))
+}
+
+async fn notify_remote_join_device_list(
+    sender_id: &UserId,
+    device_id: Option<&DeviceId>,
+    room_id: &RoomId,
+) -> AppResult<()> {
     if let Some(device_id) = device_id
         && let Ok(room_server_id) = room_id.server_name()
     {
@@ -521,17 +531,21 @@ pub async fn join_room(
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::room_server_id.eq(room_server_id));
         if !diesel_exists!(query, &mut connect().await?)? {
+            // Joining changes who receives the list, not the list itself.
+            // Use the persisted revision also served by snapshots and queued
+            // placeholders; allocating an unrelated event position invents a
+            // second version for the same list (including the initial zero).
             let content = DeviceListUpdateContent::new(
                 sender_id.to_owned(),
                 device_id.to_owned(),
-                data::next_sn().await? as u64,
+                data::user::key::device_list_stream_id(sender_id).await? as u64,
             );
             let edu = Edu::DeviceListUpdate(content);
             send_edu_server(room_server_id, &edu).await?;
         }
     }
 
-    Ok(JoinRoomResBody::new(room_id.to_owned()))
+    Ok(())
 }
 
 pub async fn get_first_user_can_issue_invite(
@@ -762,5 +776,301 @@ mod tests {
             to_canonical_value(content).is_err(),
             "canonical JSON must reject floats; join_room's map_err relies on this"
         );
+    }
+}
+
+#[cfg(test)]
+mod device_list_producer_tests {
+    use diesel_async::SimpleAsyncConnection;
+    use salvo::Service;
+    use salvo::http::StatusCode;
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
+    use crate::core::signatures::{Ed25519KeyPair, sign_json};
+
+    const LOCAL: &str = "join-device-versions.example";
+    const REMOTE: &str = "remote-join-devices.example";
+
+    async fn snapshot(service: &Service, key: &Ed25519KeyPair, user: &UserId) -> Value {
+        let path = format!("/_matrix/federation/v1/user/devices/{user}");
+        let mut signed: CanonicalJsonObject = serde_json::from_value(json!({
+            "method":"GET","uri":path,"origin":REMOTE,"destination":LOCAL
+        }))
+        .unwrap();
+        sign_json(REMOTE, key, &mut signed).unwrap();
+        let signed = serde_json::to_value(signed).unwrap();
+        let signature = signed["signatures"][REMOTE]["ed25519:join_versions"]
+            .as_str()
+            .unwrap();
+        let mut response = TestClient::get(format!("http://localhost{path}"))
+            .add_header("authorization", format!(
+                "X-Matrix origin=\"{REMOTE}\",destination=\"{LOCAL}\",key=\"ed25519:join_versions\",sig=\"{signature}\""
+            ), true)
+            .send(service).await;
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        body
+    }
+
+    async fn queued_updates() -> Vec<Value> {
+        outgoing_requests::table
+            .filter(outgoing_requests::server_id.eq(REMOTE))
+            .filter(outgoing_requests::edu_json.is_not_null())
+            .order(outgoing_requests::id.asc())
+            .select(outgoing_requests::edu_json)
+            .load::<Option<Vec<u8>>>(&mut connect().await.unwrap())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|bytes| serde_json::from_slice(&bytes.unwrap()).unwrap())
+            .collect()
+    }
+
+    async fn assert_producers_agree(
+        service: &Service,
+        key: &Ed25519KeyPair,
+        user: &UserId,
+        room: &RoomId,
+        device: &DeviceId,
+        expected_devices: usize,
+    ) -> u64 {
+        // Exercise the same eligibility, durable queue write and wakeup used
+        // by join_room, rather than constructing an expected EDU in the test.
+        let queued_before = queued_updates().await.len();
+        let before = data::curr_sn().await.unwrap();
+        notify_remote_join_device_list(user, Some(device), room)
+            .await
+            .unwrap();
+        let queued = queued_updates().await;
+        assert_eq!(queued.len(), queued_before + 1);
+        let join_update = queued.last().unwrap();
+        assert_eq!(join_update["edu_type"], "m.device_list_update");
+        assert_eq!(join_update["content"]["device_id"], device.as_str());
+
+        // Read the real signed federation snapshot and the real pending EDU
+        // selection, including its placeholder producer and persisted cursor.
+        let snapshot = snapshot(service, key, user).await;
+        assert_eq!(
+            snapshot["devices"].as_array().unwrap().len(),
+            expected_devices
+        );
+        let (edus, ..) = sending::guard::select_edus(REMOTE.try_into().unwrap())
+            .await
+            .unwrap();
+        let placeholder = edus
+            .iter()
+            .map(|bytes| serde_json::from_slice::<Value>(bytes).unwrap())
+            .find(|edu| edu["edu_type"] == "m.device_list_update")
+            .expect("the pending local key marker must produce a placeholder");
+        assert_eq!(placeholder["content"]["device_id"], "placeholder");
+        assert_eq!(placeholder["content"]["stream_id"], snapshot["stream_id"]);
+        assert_eq!(
+            join_update["content"]["stream_id"], snapshot["stream_id"],
+            "joining a room invented a device version absent from the snapshot and placeholder"
+        );
+        assert_eq!(
+            data::curr_sn().await.unwrap(),
+            before,
+            "changing recipients must not invent a device-list revision"
+        );
+        snapshot["stream_id"].as_u64().unwrap()
+    }
+
+    async fn upload(service: &Service, user: &UserId, device: &str, token: &str) {
+        let queued_before = queued_updates().await.len();
+        let version_before = data::user::key::device_list_stream_id(user).await.unwrap();
+        let mut response = TestClient::post("http://localhost/_matrix/client/v3/keys/upload")
+            .add_header("authorization", format!("Bearer {token}"), true)
+            .json(&json!({"device_keys":{"user_id":user,"device_id":device,
+                "algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{},"signatures":{}}}))
+            .send(service)
+            .await;
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        let version = data::user::key::device_list_stream_id(user).await.unwrap();
+        assert!(version > version_before);
+        // Inspect immediately, before any join helper could enqueue a similar
+        // notification and conceal a missing real key-upload notification.
+        let queued = queued_updates().await;
+        assert_eq!(queued.len(), queued_before + 1);
+        let update = queued.last().unwrap();
+        assert_eq!(update["content"]["user_id"], user.as_str());
+        assert_eq!(update["content"]["device_id"], device);
+        assert_eq!(update["content"]["stream_id"], version);
+    }
+
+    async fn run() {
+        crate::test_database::init();
+        crate::config::CONFIG
+            .set(
+                serde_json::from_value(json!({
+                    "server_name":LOCAL,"db":{"url":"unused-test-config"},
+                    "presence":{"allow_local":false,"allow_incoming":false,"allow_outgoing":false},
+                    "read_receipt":{"allow_outgoing":false}
+                }))
+                .unwrap(),
+            )
+            .expect("run this HTTP regression alone");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(128);
+        sending::MPSC_SENDER.set(sender).unwrap();
+        let user = UserId::parse(format!("@alice:{LOCAL}")).unwrap();
+        let room = RoomId::parse(format!("!join-device-versions:{REMOTE}")).unwrap();
+        data::user::create_user(&data::user::NewDbUser {
+            id: user.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: user.localpart().into(),
+            server_name: user.server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        data::user::device::create_device(&user, "FIRST".into(), "join-device-first", None, None)
+            .await
+            .unwrap();
+        let mut conn = connect().await.unwrap();
+        diesel::insert_into(rooms::table)
+            .values(data::room::NewDbRoom {
+                id: room.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 0,
+                has_auth_chain_index: false,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        diesel::insert_into(room_users::table)
+            .values(data::room::NewDbRoomUser {
+                event_id: "$join-device-alice".try_into().unwrap(),
+                event_sn: 1,
+                room_id: room.clone(),
+                room_server_id: Some(REMOTE.try_into().unwrap()),
+                user_id: user.clone(),
+                user_server_id: LOCAL.try_into().unwrap(),
+                sender_id: user.clone(),
+                membership: "join".into(),
+                forgotten: false,
+                display_name: None,
+                avatar_url: None,
+                state_data: None,
+                created_at: UnixMillis::now(),
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        diesel::insert_into(room_joined_servers::table)
+            .values((
+                room_joined_servers::room_id.eq(&room),
+                room_joined_servers::server_id.eq(REMOTE),
+                room_joined_servers::occur_sn.eq(1_i64),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+        data::sending::initialize_edu_cursor(REMOTE.try_into().unwrap(), 0)
+            .await
+            .unwrap();
+        crate::user::mark_device_key_update(&user, "FIRST".into())
+            .await
+            .unwrap();
+        let key =
+            Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "join_versions".into())
+                .unwrap();
+        let mut keys = ServerSigningKeys::new(
+            REMOTE.try_into().unwrap(),
+            UnixMillis(UnixMillis::now().0 + 86_400_000),
+        );
+        keys.verify_keys.insert(
+            "ed25519:join_versions".try_into().unwrap(),
+            VerifyKey::from_bytes(key.public_key().to_vec()),
+        );
+        crate::server_key::add_signing_keys(keys).await.unwrap();
+        let service = Service::new(crate::routing::matrix());
+        assert_eq!(
+            assert_producers_agree(&service, &key, &user, &room, "FIRST".into(), 0).await,
+            0
+        );
+
+        upload(&service, &user, "FIRST", "join-device-first").await;
+        let first = assert_producers_agree(&service, &key, &user, &room, "FIRST".into(), 1).await;
+        assert!(first > 0);
+        data::user::device::create_device(&user, "SECOND".into(), "join-device-second", None, None)
+            .await
+            .unwrap();
+        upload(&service, &user, "SECOND", "join-device-second").await;
+        let second = assert_producers_agree(&service, &key, &user, &room, "SECOND".into(), 2).await;
+        assert!(
+            second > first,
+            "a real second device must advance the persisted version"
+        );
+        for (device, stream) in [("FIRST", first), ("SECOND", second)] {
+            assert!(
+                queued_updates()
+                    .await
+                    .iter()
+                    .any(|edu| edu["content"]["device_id"] == device
+                        && edu["content"]["stream_id"] == stream),
+                "upload lost the explicit notification for {device}"
+            );
+        }
+        crate::user::remove_device(&user, "SECOND".into())
+            .await
+            .unwrap();
+        let deleted = assert_producers_agree(&service, &key, &user, &room, "FIRST".into(), 1).await;
+        assert!(
+            deleted > second,
+            "deleting a device must advance the persisted version"
+        );
+        assert!(
+            queued_updates()
+                .await
+                .iter()
+                .any(|edu| edu["content"]["device_id"] == "SECOND"
+                    && edu["content"]["stream_id"] == deleted)
+        );
+        // Unrelated global events and repeat joins cannot change the version.
+        data::next_sn().await.unwrap();
+        assert_eq!(
+            assert_producers_agree(&service, &key, &user, &room, "FIRST".into(), 1).await,
+            deleted
+        );
+
+        let before = data::curr_sn().await.unwrap();
+        let mut conn = connect().await.unwrap();
+        conn.batch_execute("CREATE FUNCTION fail_join_device_queue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected join queue failure'; END $$; CREATE TRIGGER fail_join_device_queue BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION fail_join_device_queue();").await.unwrap();
+        drop(conn);
+        assert!(
+            notify_remote_join_device_list(&user, Some("FIRST".into()), &room)
+                .await
+                .is_err(),
+            "the actual join producer swallowed a durable queue failure"
+        );
+        assert_eq!(data::curr_sn().await.unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    fn http_join_device_list_version_matches_other_producers() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
