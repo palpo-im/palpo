@@ -78,36 +78,6 @@ index d2f1421..8204b53 100644
  // next returns the next request to make, along with its instruction. Return nil if there are no more instructions.
  func (r *Runner) next(instrs []instruction, hsURL string, i int) (*http.Request, *instruction, int) {
  	if i >= len(instrs) {
-diff --git a/tests/csapi/room_profile_test.go b/tests/csapi/room_profile_test.go
-index d98c437..b707e5a 100644
---- a/tests/csapi/room_profile_test.go
-+++ b/tests/csapi/room_profile_test.go
-@@ -23,7 +23,10 @@ func testProfileFieldUpdate(t *testing.T, field string) {
- 	deployment := complement.Deploy(t, 1)
- 	defer deployment.Destroy(t)
- 
--	const bogusData = "LemurLover"
-+	data := "LemurLover"
-+	if field == "avatar_url" {
-+		data = "mxc://example.com/LemurLover"
-+	}
- 
- 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
- 
-@@ -38,11 +41,11 @@ func testProfileFieldUpdate(t *testing.T, field string) {
- 		"PUT",
- 		[]string{"_matrix", "client", "v3", "profile", alice.UserID, field},
- 		client.WithJSONBody(t, map[string]interface{}{
--			field: bogusData,
-+			field: data,
- 		}),
- 	)
- 
- 	alice.MustSyncUntil(t, client.SyncReq{Since: sinceToken}, client.SyncJoinedTo(alice.UserID, roomID, func(result gjson.Result) bool {
--		return result.Get("content."+field).Str == bogusData
-+		return result.Get("content."+field).Str == data
- 	}))
- }
 diff --git a/internal/instruction/registration_uiaa_test.go b/internal/instruction/registration_uiaa_test.go
 new file mode 100644
 index 0000000..8ba24fe
