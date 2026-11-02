@@ -111,6 +111,13 @@ jobs:
           git -C /tmp/complement fetch --depth 1 origin "$COMPLEMENT_REVISION"
           git -C /tmp/complement checkout --detach FETCH_HEAD
 
+      - name: Apply audited Complement registration handshake
+        run: |
+          git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
+          git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
+          cd /tmp/complement
+          go test ./internal/instruction -count=1
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -251,6 +258,13 @@ jobs:
 
       - name: Clone Synapse
         run: git clone --depth 1 https://github.com/element-hq/synapse.git /tmp/synapse
+
+      - name: Apply audited Complement registration handshake
+        run: |
+          git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
+          git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
+          cd /tmp/complement
+          go test ./internal/instruction -count=1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
