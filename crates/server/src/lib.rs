@@ -762,6 +762,8 @@ impl MatrixServer {
         }
 
         sending_guard.start();
+        #[cfg(feature = "unstable-msc4532")]
+        crate::user::presence::revised::start();
 
         tokio::spawn(async move {
             if let Err(error) = admin.run(console).await {

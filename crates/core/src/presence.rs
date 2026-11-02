@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::serde::StringEnum;
 use crate::{OwnedUserId, PrivOwnedStr};
 
+#[cfg(feature = "unstable-msc4532")]
+pub mod revised;
+
 /// A description of a user's connectivity and availability for chat.
 #[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/doc/string_enum.md"))]
 #[derive(ToSchema, Clone, Default, StringEnum)]
@@ -54,6 +57,14 @@ impl PresenceContent {
 
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 pub struct PresenceUpdate {
+    /// Extensible status, when supplied by a revised-presence peer.
+    #[cfg(feature = "unstable-msc4532")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4532.status",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status: Option<serde_json::Value>,
     /// The user ID this presence EDU is for.
     pub user_id: OwnedUserId,
 
@@ -66,6 +77,7 @@ pub struct PresenceUpdate {
 
     /// The number of milliseconds that have elapsed since the user last did
     /// something.
+    #[cfg_attr(feature = "unstable-msc4532", serde(default))]
     pub last_active_ago: u64,
 
     /// Whether or not the user is currently active.
@@ -113,6 +125,8 @@ impl PresenceUpdate {
     /// `last_activity`.
     pub fn new(user_id: OwnedUserId, presence: PresenceState, last_activity: u64) -> Self {
         Self {
+            #[cfg(feature = "unstable-msc4532")]
+            status: None,
             user_id,
             presence,
             last_active_ago: last_activity,
@@ -162,6 +176,8 @@ mod msc4495_tests {
     #[test]
     fn presence_recipient_delta_round_trips() {
         let update = PresenceUpdate {
+            #[cfg(feature = "unstable-msc4532")]
+            status: None,
             user_id: owned_user_id!("@alice:example.org"),
             presence: PresenceState::Online,
             status_msg: None,
@@ -240,6 +256,8 @@ mod msc4495_tests {
     #[test]
     fn an_explicit_empty_recipient_delta_is_not_omitted() {
         let update = PresenceUpdate {
+            #[cfg(feature = "unstable-msc4532")]
+            status: None,
             user_id: owned_user_id!("@alice:example.org"),
             presence: PresenceState::Online,
             status_msg: None,

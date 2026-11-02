@@ -4,7 +4,9 @@ use crate::core::presence::PresenceState;
 #[cfg(not(feature = "unstable-msc4495"))]
 use crate::core::presence::{PresenceContent, PresenceUpdate};
 use crate::core::{UnixMillis, UserId};
-use crate::data::user::{NewDbPresence, last_presence};
+use crate::data::user::NewDbPresence;
+#[cfg(not(feature = "unstable-msc4532"))]
+use crate::data::user::last_presence;
 #[cfg(not(feature = "unstable-msc4495"))]
 use crate::sending;
 use crate::{AppResult, config, data};
@@ -14,7 +16,16 @@ pub mod recipients;
 #[cfg(feature = "unstable-msc4495")]
 pub mod sharing;
 
+#[cfg(feature = "unstable-msc4532")]
+pub mod revised;
+
 /// Resets the presence timeout, so the user will stay in their current presence state.
+#[cfg(feature = "unstable-msc4532")]
+pub async fn ping_presence(_user_id: &UserId, _new_state: &PresenceState) -> AppResult<()> {
+    Ok(())
+}
+
+#[cfg(not(feature = "unstable-msc4532"))]
 pub async fn ping_presence(user_id: &UserId, new_state: &PresenceState) -> AppResult<()> {
     if !config::get().presence.allow_local {
         return Ok(());

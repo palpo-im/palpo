@@ -52,6 +52,13 @@ pub(super) async fn sync_events_v5(
     let since_sn = since.event_sn;
 
     let mut req_body = req_body.into_inner();
+    #[cfg(feature = "unstable-msc4532")]
+    crate::user::presence::revised::touch(
+        sender_id,
+        crate::user::presence::revised::ClientId::Device(device_id.as_str()),
+        req_body.set_presence.as_str(),
+    )
+    .await?;
 
     let _conn_id = req_body.conn_id.clone();
 
@@ -124,6 +131,13 @@ pub(super) async fn sync_events_v5(
         receipts=?res_body.extensions.receipts.rooms.len(),
         "responding to request with"
     );
+    #[cfg(feature = "unstable-msc4532")]
+    crate::user::presence::revised::touch(
+        sender_id,
+        crate::user::presence::revised::ClientId::Device(device_id.as_str()),
+        req_body.set_presence.as_str(),
+    )
+    .await?;
     json_ok(res_body)
 }
 

@@ -57,6 +57,12 @@ pub(super) async fn set_global_data(
     let event_type = args.event_type.to_string();
     let body = body.into_inner();
 
+    #[cfg(feature = "unstable-msc4532")]
+    if event_type == crate::core::presence::revised::PERSISTENT {
+        serde_json::from_value::<crate::core::presence::revised::Persistent>(body.clone())
+            .map_err(|_| MatrixError::invalid_param("Invalid persistent presence"))?;
+    }
+
     if event_type == "m.ignored_user_list" {
         let ignored_ids: Vec<OwnedUserId> = body
             .get("ignored_users")
@@ -74,6 +80,10 @@ pub(super) async fn set_global_data(
     // back through sync, which a delete never produces. Deletion is the
     // separate MSC3391 DELETE endpoint.
     data::user::set_data(authed.user_id(), None, &event_type, body).await?;
+    #[cfg(feature = "unstable-msc4532")]
+    if event_type == crate::core::presence::revised::PERSISTENT {
+        crate::user::presence::revised::refresh(authed.user_id()).await?;
+    }
 
     // MSC4495: the recipient set is derived from this event, and deltas are only computed
     // when the user's presence row moves. Without this, removing a recipient would not

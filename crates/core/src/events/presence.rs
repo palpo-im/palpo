@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::presence::PresenceState;
 use crate::{OwnedMxcUri, OwnedUserId};
 
+#[cfg(feature = "unstable-msc4532")]
+pub mod persistent;
 #[cfg(feature = "unstable-msc4495")]
 pub mod prompted;
 #[cfg(feature = "unstable-msc4495")]
@@ -29,6 +31,14 @@ pub struct PresenceEvent {
 /// This is the only type a `PresenceEvent` can contain as its `content` field.
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 pub struct PresenceEventContent {
+    /// Extensible revised-presence status.
+    #[cfg(feature = "unstable-msc4532")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4532.status",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status: Option<serde_json::Value>,
     /// The current avatar URL for this user.
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -61,6 +71,8 @@ impl PresenceEventContent {
     /// Creates a new `PresenceEventContent` with the given state.
     pub fn new(presence: PresenceState) -> Self {
         Self {
+            #[cfg(feature = "unstable-msc4532")]
+            status: None,
             avatar_url: None,
             currently_active: None,
             display_name: None,

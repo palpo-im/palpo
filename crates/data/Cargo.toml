@@ -10,7 +10,8 @@ repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# [features]
+[features]
+unstable-msc4532 = ["palpo-core/unstable-msc4532"]
 # manage = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
