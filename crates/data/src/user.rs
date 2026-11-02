@@ -758,6 +758,15 @@ pub async fn user_exists(user_id: &UserId) -> DataResult<bool> {
     diesel_exists!(query, &mut connect().await?).map_err(Into::into)
 }
 
+/// A missing optional profile must not make an active local account disappear.
+pub async fn active_local_user_exists(user_id: &UserId) -> DataResult<bool> {
+    let query = users::table
+        .filter(users::id.eq(user_id))
+        .filter(users::is_local.eq(true))
+        .filter(users::deactivated_at.is_null());
+    Ok(diesel_exists!(query, &mut connect().await?)?)
+}
+
 pub async fn get_user(user_id: &UserId) -> DataResult<DbUser> {
     users::table
         .find(user_id)

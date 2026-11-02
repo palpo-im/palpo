@@ -42,9 +42,12 @@ async fn get_profile(_aa: AuthArgs, args: ProfileReqArgs) -> JsonResult<ProfileR
 
     let mut response = ProfileResBody::new();
 
-    let profile = data::user::get_profile(&args.user_id, None)
-        .await?
-        .ok_or(MatrixError::not_found("Profile not found."))?;
+    let Some(profile) = data::user::get_profile(&args.user_id, None).await? else {
+        if data::user::active_local_user_exists(&args.user_id).await? {
+            return json_ok(response);
+        }
+        return Err(MatrixError::not_found("Profile not found.").into());
+    };
     let custom_fields = profile.fields.as_object().cloned().unwrap_or_default();
 
     match args.field.as_ref().map(|field| field.as_str()) {
@@ -104,6 +107,134 @@ async fn get_directory(
 #[endpoint]
 async fn query_by_type(_aa: AuthArgs) -> EmptyResult {
     Err(MatrixError::unrecognized("Unsupported federation query type.").into())
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use salvo::test::{ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+    async fn profile_lookup_routes_preserve_accounts_without_profile_rows() {
+        crate::test_database::init();
+        config::CONFIG
+            .set(
+                serde_json::from_value(json!({
+                    "server_name":"profile.example", "db":{"url":"unused-test-config"},
+                    "ip_range_denylist":[], "federation":{"allow_inbound_profile_lookup":true}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        for name in ["empty", "named", "deactivated"] {
+            let id = UserId::parse(format!("@{name}:profile.example")).unwrap();
+            data::user::create_user(&data::user::NewDbUser {
+                id: id.clone(),
+                ty: None,
+                is_admin: false,
+                is_guest: false,
+                is_local: true,
+                localpart: name.to_owned(),
+                server_name: id.server_name().to_owned(),
+                appservice_id: None,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .await
+            .unwrap();
+        }
+        let named = UserId::parse("@named:profile.example").unwrap();
+        data::user::ensure_profile_exists(&named).await.unwrap();
+        data::user::set_display_name(&named, "A named user")
+            .await
+            .unwrap();
+        data::user::set_profile_field(&named, "org.example.note", json!("preserved"))
+            .await
+            .unwrap();
+        let deactivated = UserId::parse("@deactivated:profile.example").unwrap();
+        data::user::mark_deactivated(&deactivated).await.unwrap();
+
+        let client = Service::new(crate::routing::root());
+        // Exercise the federation query handler directly; authentication is covered
+        // by the federation hoop tests and is not bypassed in production routing.
+        let federation = Service::new(router());
+        for name in ["empty", "missing", "deactivated", "named"] {
+            let id = format!("@{name}:profile.example");
+            let expected_status = if matches!(name, "empty" | "named") {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            };
+            for path in [
+                format!("/_matrix/client/v3/profile/{id}"),
+                format!("/_matrix/client/r0/profile/{id}"),
+            ] {
+                let mut response = TestClient::get(format!("http://localhost{path}"))
+                    .send(&client)
+                    .await;
+                assert_eq!(response.status_code, Some(expected_status), "{path}");
+                let body = response.take_json::<Value>().await.unwrap();
+                if name == "empty" {
+                    assert_eq!(body, json!({}));
+                }
+                if name == "named" {
+                    assert_eq!(body["displayname"], "A named user");
+                    assert_eq!(body["org.example.note"], "preserved");
+                }
+                if expected_status == StatusCode::NOT_FOUND {
+                    assert_eq!(body["errcode"], "M_NOT_FOUND");
+                }
+            }
+            for field in [None, Some("displayname"), Some("avatar_url")] {
+                let suffix = field
+                    .map(|field| format!("&field={field}"))
+                    .unwrap_or_default();
+                let mut response = TestClient::get(format!(
+                    "http://localhost/query/profile?user_id={id}{suffix}"
+                ))
+                .send(&federation)
+                .await;
+                assert_eq!(
+                    response.status_code,
+                    Some(expected_status),
+                    "{name} {field:?}"
+                );
+                let body = response.take_json::<Value>().await.unwrap();
+                if name == "empty" {
+                    assert_eq!(body, json!({}));
+                }
+                if name == "named" && field != Some("avatar_url") {
+                    assert_eq!(body["displayname"], "A named user");
+                }
+            }
+        }
+        assert_eq!(
+            TestClient::get("http://localhost/query/profile?user_id=@remote:elsewhere.example")
+                .send(&federation)
+                .await
+                .status_code,
+            Some(StatusCode::BAD_REQUEST)
+        );
+        let empty = UserId::parse("@empty:profile.example").unwrap();
+        assert!(
+            data::user::get_profile(&empty, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            data::schema::user_profiles::table
+                .count()
+                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .await
+                .unwrap(),
+            1
+        );
+    }
 }
 
 /// #GET /_matrix/federation/unstable/org.continuwuity.presence_v2.msc4495/query/presence_recipients
