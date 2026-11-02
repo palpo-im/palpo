@@ -24,6 +24,10 @@ WORKDIR /work
 ENV CARGO_NET_RETRY=10
 ENV CARGO_HTTP_MULTIPLEXING=false
 
+# Keep build artifacts within the disk budget of GitHub-hosted runners.
+ENV CARGO_PROFILE_DEV_DEBUG=0
+ENV CARGO_INCREMENTAL=0
+
 # Copy dependency manifests first for better layer caching.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/core-macros/Cargo.toml crates/core-macros/Cargo.toml

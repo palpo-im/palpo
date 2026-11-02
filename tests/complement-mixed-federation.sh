@@ -128,6 +128,7 @@ run_direction() {
 
     set +o pipefail
     env -C "$COMPLEMENT_SRC" \
+        PALPO_IMAGE="$PALPO_IMAGE" \
         COMPLEMENT_BASE_IMAGE="$default_image" \
         COMPLEMENT_BASE_IMAGE_hs1="$hs1_image" \
         COMPLEMENT_BASE_IMAGE_hs2="$hs2_image" \
