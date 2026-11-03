@@ -1,6 +1,5 @@
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use palpo_core::UnixMillis;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
@@ -17,9 +16,9 @@ use crate::core::error::ErrorKind;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::DbUserDevice;
+use crate::data::user::device::update_device_metadata_if_present;
 use crate::{
-    AppError, AuthArgs, DEVICE_ID_LENGTH, DepotExt, EmptyResult, JsonResult, MatrixError, data,
-    empty_ok, json_ok, utils,
+    AppError, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, data, empty_ok, json_ok,
 };
 
 pub fn authed_router() -> Router {
@@ -78,7 +77,7 @@ async fn list_devices(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<DevicesRes
 }
 
 /// #PUT /_matrix/client/r0/devices/{device_id}
-/// Updates the metadata on a given device of the sender user.
+/// Updates device metadata, or creates the requested device for an authorized Appservice.
 #[endpoint]
 async fn update_device(
     _aa: AuthArgs,
@@ -86,19 +85,21 @@ async fn update_device(
     body: JsonBody<UpdatedDeviceReqBody>,
     req: &mut Request,
     depot: &mut Depot,
+    res: &mut Response,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let device_id = device_id.into_inner();
-    let device = update_owned_device_metadata(
+    let remote_ip = req.remote_addr().to_string();
+    let device = update_device_metadata_if_present(
         authed.user_id(),
         &device_id,
         body.display_name.as_deref(),
-        &req.remote_addr().to_string(),
+        &remote_ip,
     )
     .await?;
 
-    if let Some(device) = device {
-        crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
+    let (device, created) = if let Some(device) = device {
+        (device, false)
     } else {
         let Some(appservice) = authed.appservice() else {
             return Err(MatrixError::not_found("Device is not found.").into());
@@ -112,42 +113,37 @@ async fn update_device(
             appservice.registration.id
         );
 
-        let device_id = OwnedDeviceId::from(utils::random_string(DEVICE_ID_LENGTH));
-
-        let device = data::user::device::create_device(
+        // Appservice requests keep using the scoped service token. Never
+        // publish it as an ordinary user token while provisioning a device.
+        match data::user::device::insert_device_metadata_if_missing(
             authed.user_id(),
             &device_id,
-            &appservice.registration.as_token,
-            None,
-            Some(req.remote_addr().to_string()),
+            body.display_name.clone(),
+            Some(remote_ip.clone()),
         )
-        .await?;
-        crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
+        .await?
+        {
+            Some(device) => (device, true),
+            None => {
+                // A concurrent PUT created this exact scoped device first.
+                let device = update_device_metadata_if_present(
+                    authed.user_id(),
+                    &device_id,
+                    body.display_name.as_deref(),
+                    &remote_ip,
+                )
+                .await?
+                .ok_or_else(|| MatrixError::not_found("Device is not found."))?;
+                (device, false)
+            }
+        }
+    };
+    crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
+    if created {
+        res.status_code(StatusCode::CREATED);
     }
 
     empty_ok()
-}
-
-/// Scope the mutation itself to the owner, including when device IDs collide.
-async fn update_owned_device_metadata(
-    user_id: &crate::core::UserId,
-    device_id: &crate::core::DeviceId,
-    display_name: Option<&str>,
-    remote_ip: &str,
-) -> crate::AppResult<Option<DbUserDevice>> {
-    Ok(diesel::update(
-        user_devices::table
-            .filter(user_devices::user_id.eq(user_id))
-            .filter(user_devices::device_id.eq(device_id)),
-    )
-    .set((
-        user_devices::display_name.eq(display_name),
-        user_devices::last_seen_ip.eq(remote_ip),
-        user_devices::last_seen_at.eq(UnixMillis::now()),
-    ))
-    .get_result::<DbUserDevice>(&mut connect().await?)
-    .await
-    .optional()?)
 }
 
 /// #DELETE /_matrix/client/r0/devices/{deviceId}
@@ -380,7 +376,232 @@ pub(super) async fn upsert_dehydrated(
 #[cfg(test)]
 mod device_update_ownership_tests {
     use super::*;
-    use crate::core::UserId;
+    use crate::core::{UnixMillis, UserId};
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn http_appservice_device_put_preserves_requested_identity() {
+        use salvo::test::{ResponseExt, TestClient};
+        use serde_json::json;
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"device.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let registration = serde_json::from_value(json!({
+            "id":"device-identity-test", "url":null,
+            "as_token":"device-identity-fixture-token", "hs_token":"fixture-hs-token",
+            "sender_localpart":"crypto_sender", "io.element.msc4190":true,
+            "namespaces":{"users":[{"exclusive":true,"regex":"^@crypto_.*:device\\.example$"}],"aliases":[],"rooms":[]}
+        })).unwrap();
+        crate::appservice::register_appservice(registration)
+            .await
+            .unwrap();
+        let service = Service::new(crate::routing::root());
+        let user = UserId::parse("@crypto_child:device.example").unwrap();
+        let requested = "HAGENCY_EXACT_DEVICE";
+        let url = format!("http://localhost/_matrix/client/v3/devices/{requested}?user_id={user}");
+        let mut response = TestClient::put(&url)
+            .add_header(
+                "Authorization",
+                "Bearer device-identity-fixture-token",
+                true,
+            )
+            .json(&json!({"display_name":"original name"}))
+            .send(&service)
+            .await;
+        let status = response.status_code;
+        let body = response.take_json::<serde_json::Value>().await.unwrap();
+        assert_eq!(status, Some(StatusCode::CREATED), "{body}");
+        let devices = data::user::device::get_devices(&user).await.unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device_id.as_str(), requested);
+        assert_eq!(devices[0].display_name.as_deref(), Some("original name"));
+        assert!(
+            data::user::authenticate_token(
+                "device-identity-fixture-token",
+                std::time::Duration::ZERO
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        let mut response = TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/account/whoami?user_id={user}&device_id={requested}"
+        ))
+        .add_header(
+            "Authorization",
+            "Bearer device-identity-fixture-token",
+            true,
+        )
+        .send(&service)
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        let who = response.take_json::<serde_json::Value>().await.unwrap();
+        assert_eq!(who["user_id"], user.as_str());
+        assert_eq!(who["device_id"], requested);
+
+        let response = TestClient::put(&url)
+            .add_header(
+                "Authorization",
+                "Bearer device-identity-fixture-token",
+                true,
+            )
+            .json(&json!({"display_name":"updated name"}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        let devices = data::user::device::get_devices(&user).await.unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device_id.as_str(), requested);
+        assert_eq!(devices[0].display_name.as_deref(), Some("updated name"));
+
+        let response = TestClient::put(&url)
+            .add_header(
+                "Authorization",
+                "Bearer device-identity-fixture-token",
+                true,
+            )
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+
+        let second = UserId::parse("@crypto_second:device.example").unwrap();
+        let response = TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/devices/{requested}?user_id={second}"
+        ))
+        .add_header(
+            "Authorization",
+            "Bearer device-identity-fixture-token",
+            true,
+        )
+        .json(&json!({"display_name":"second owner"}))
+        .send(&service)
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::CREATED));
+        let second_devices = data::user::device::get_devices(&second).await.unwrap();
+        assert_eq!(second_devices.len(), 1);
+        assert_eq!(second_devices[0].device_id.as_str(), requested);
+        assert_eq!(
+            second_devices[0].display_name.as_deref(),
+            Some("second owner")
+        );
+        assert_eq!(
+            data::user::device::get_devices(&user).await.unwrap()[0]
+                .display_name
+                .as_deref(),
+            Some("updated name")
+        );
+
+        let foreign = UserId::parse("@human:device.example").unwrap();
+        let response = TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/devices/{requested}?user_id={foreign}"
+        ))
+        .add_header(
+            "Authorization",
+            "Bearer device-identity-fixture-token",
+            true,
+        )
+        .json(&json!({"display_name":"forbidden"}))
+        .send(&service)
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::FORBIDDEN));
+        assert!(!data::user::user_exists(&foreign).await.unwrap());
+
+        let registration = serde_json::from_value(json!({
+            "id":"device-no-capability-test", "url":null,
+            "as_token":"device-no-capability-fixture-token", "hs_token":"fixture-hs-token-2",
+            "sender_localpart":"plain_sender", "io.element.msc4190":false,
+            "namespaces":{"users":[{"exclusive":true,"regex":"^@plain_.*:device\\.example$"}],"aliases":[],"rooms":[]}
+        })).unwrap();
+        crate::appservice::register_appservice(registration)
+            .await
+            .unwrap();
+        let plain = UserId::parse("@plain_child:device.example").unwrap();
+        let response = TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/devices/{requested}?user_id={plain}"
+        ))
+        .add_header(
+            "Authorization",
+            "Bearer device-no-capability-fixture-token",
+            true,
+        )
+        .json(&json!({"display_name":"forbidden"}))
+        .send(&service)
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND));
+        assert!(
+            data::user::device::get_devices(&plain)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let concurrent_url =
+            format!("http://localhost/_matrix/client/v3/devices/HAGENCY_CONCURRENT?user_id={user}");
+        let send = || {
+            TestClient::put(&concurrent_url)
+                .add_header(
+                    "Authorization",
+                    "Bearer device-identity-fixture-token",
+                    true,
+                )
+                .json(&json!({"display_name":"concurrent"}))
+                .send(&service)
+        };
+        let (one, two) = tokio::join!(send(), send());
+        assert!(matches!(
+            (one.status_code, two.status_code),
+            (Some(StatusCode::CREATED), Some(StatusCode::OK))
+                | (Some(StatusCode::OK), Some(StatusCode::CREATED))
+        ));
+        let devices = data::user::device::get_devices(&user).await.unwrap();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(
+            devices
+                .iter()
+                .filter(|device| device.device_id == "HAGENCY_CONCURRENT")
+                .count(),
+            1
+        );
+        assert!(
+            data::user::authenticate_token(
+                "device-identity-fixture-token",
+                std::time::Duration::ZERO
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        crate::appservice::set_appservice_disabled("device-identity-test", true)
+            .await
+            .unwrap();
+        let response = TestClient::put(&url)
+            .add_header(
+                "Authorization",
+                "Bearer device-identity-fixture-token",
+                true,
+            )
+            .json(&json!({"display_name":"disabled"}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+        assert_eq!(
+            data::user::device::get_devices(&user)
+                .await
+                .unwrap()
+                .iter()
+                .find(|device| device.device_id == requested)
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("updated name")
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
@@ -417,13 +638,14 @@ mod device_update_ownership_tests {
             .await
             .unwrap();
         }
-        let changed = update_owned_device_metadata(&alice, &shared, Some("alice-new"), "alice-ip")
-            .await
-            .unwrap()
-            .unwrap();
+        let changed =
+            update_device_metadata_if_present(&alice, &shared, Some("alice-new"), "alice-ip")
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(changed.user_id, alice);
         assert!(
-            update_owned_device_metadata(&alice, &bob_only, Some("unauthorized"), "wrong-ip")
+            update_device_metadata_if_present(&alice, &bob_only, Some("unauthorized"), "wrong-ip")
                 .await
                 .unwrap()
                 .is_none()
