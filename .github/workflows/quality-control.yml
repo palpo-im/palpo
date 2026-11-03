@@ -131,6 +131,13 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_member_presence_all
           PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_member_presence_all cargo test -p palpo --lib --all-features http_incremental_member_presence_survives_other_sync_and_member_filters -- --ignored --exact sync_v3::member_presence_tests::http_incremental_member_presence_survives_other_sync_and_member_filters
 
+      - name: V3 sync response filter regression tests
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_sync_filter_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_sync_filter_default cargo test -p palpo --lib -- --ignored --exact sync_v3::member_presence_tests::http_sync_filters_room_presence_and_global_account_data
+          sudo -u postgres createdb -O palpo_test palpo_sync_filter_all
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_sync_filter_all cargo test -p palpo --lib --all-features -- --ignored --exact sync_v3::member_presence_tests::http_sync_filters_room_presence_and_global_account_data
+
       - name: Delayed membership publication regression tests
         run: |
           sudo -u postgres createdb -O palpo_test palpo_member_publication_default

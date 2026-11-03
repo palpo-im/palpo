@@ -134,7 +134,7 @@ fn index_key(key: &SearchKeys) -> Option<&'static str> {
 
 /// Matches an event type against a filter pattern, in which `*` matches any sequence of
 /// characters.
-fn event_type_matches(pattern: &str, event_type: &str) -> bool {
+pub(crate) fn event_type_matches(pattern: &str, event_type: &str) -> bool {
     let mut segments = pattern.split('*');
     let prefix = segments.next().unwrap_or_default();
     let Some(mut rest) = event_type.strip_prefix(prefix) else {

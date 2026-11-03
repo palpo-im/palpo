@@ -1900,3 +1900,136 @@ async fn wait_for_publication_lock(class_id: i64, key: i64, sub_id: i16, mode: &
         tokio::task::yield_now().await;
     }
 }
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
+fn http_sync_filters_room_presence_and_global_account_data() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(sync_response_filters());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn sync_response_filters() {
+    crate::test_database::init();
+    config::CONFIG
+        .set(
+            serde_json::from_value(json!({
+                "server_name": SERVER, "db": {"url": "unused-test-config"},
+                "ip_range_denylist": [], "auto_join_rooms": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    for name in ["alice", "bob"] {
+        provision(name).await;
+    }
+    let service = Service::new(crate::routing::root());
+    let alice = UserId::parse(format!("@alice:{SERVER}")).unwrap();
+    let bob = UserId::parse(format!("@bob:{SERVER}")).unwrap();
+    let joined = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", "Bearer alice-presence", true)
+            .json(&json!({"room_version":"11","preset":"private_chat"})),
+        &service,
+    )
+    .await;
+    let joined_id = joined["room_id"].as_str().unwrap();
+    request(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{joined_id}/invite"
+        ))
+        .add_header("Authorization", "Bearer alice-presence", true)
+        .json(&json!({"user_id":bob})),
+        &service,
+    )
+    .await;
+    request(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/join/{joined_id}"
+        ))
+        .add_header("Authorization", "Bearer bob-presence", true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    let invite = request(
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .add_header("Authorization", "Bearer bob-presence", true)
+            .json(&json!({"room_version":"11","preset":"private_chat","invite":[alice]})),
+        &service,
+    )
+    .await;
+    let invited_id = invite["room_id"].as_str().unwrap();
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/presence/{bob}/status"
+        ))
+        .add_header("Authorization", "Bearer bob-presence", true)
+        .json(&json!({"presence":"online"})),
+        &service,
+    )
+    .await;
+    data::user::device::add_to_device_event(
+        &bob,
+        &alice,
+        &OwnedDeviceId::from("D"),
+        "m.test.crypto",
+        json!({"witness": true}),
+    )
+    .await
+    .unwrap();
+
+    // The first filter excludes every room and both global streams.
+    let filtered = sync(
+        &service,
+        None,
+        Some(json!({"room":{"rooms":[]},"presence":{"types":[]},"account_data":{"types":[]}})),
+    )
+    .await;
+    assert!(filtered.get("rooms").is_none(), "unexpected room data");
+    assert!(
+        filtered.get("presence").is_none(),
+        "unexpected presence data"
+    );
+    assert!(
+        filtered.get("account_data").is_none(),
+        "unexpected account data"
+    );
+    assert_eq!(filtered["to_device"]["events"][0]["type"], "m.test.crypto");
+
+    // This proves the suppressed sections had real data and checks include
+    // and exclude precedence without advancing the first response's cursor.
+    let selected = sync(
+        &service,
+        None,
+        Some(json!({
+            "room":{"rooms":[joined_id, invited_id],"not_rooms":[joined_id]},
+            "presence":{"types":["m.pre*"],"senders":[bob]},
+            "account_data":{"types":["m.*"],"not_types":["m.presence*"]}
+        })),
+    )
+    .await;
+    assert!(selected["rooms"]["join"].get(joined_id).is_none());
+    assert!(selected["rooms"]["invite"].get(invited_id).is_some());
+    assert!(presence_users(&selected).contains(&bob.as_str()));
+    assert!(
+        selected["account_data"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "m.push_rules")
+    );
+
+    let unfiltered = sync(&service, None, None).await;
+    assert!(unfiltered["rooms"]["join"].get(joined_id).is_some());
+    assert!(unfiltered["rooms"]["invite"].get(invited_id).is_some());
+}
