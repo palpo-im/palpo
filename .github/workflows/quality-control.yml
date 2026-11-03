@@ -43,6 +43,8 @@ jobs:
         with:
           command: check
           arguments: ""
+          # Report RustSec findings as warnings while enforcing other dependency policies.
+          command-arguments: --warn vulnerability --warn notice --warn unmaintained --warn unsound
 
   lint:
     name: Rustfmt and Clippy
