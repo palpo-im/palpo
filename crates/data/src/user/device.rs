@@ -158,6 +158,47 @@ pub async fn curr_sn_after_inbox_writes(
     Ok(curr_sn)
 }
 
+fn new_device_metadata(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    initial_device_display_name: Option<String>,
+    last_seen_ip: Option<String>,
+) -> NewDbUserDevice {
+    let now = UnixMillis::now();
+    NewDbUserDevice {
+        user_id: user_id.to_owned(),
+        device_id: device_id.to_owned(),
+        display_name: initial_device_display_name,
+        user_agent: None,
+        is_hidden: false,
+        last_seen_ip,
+        last_seen_at: Some(now),
+        created_at: now,
+    }
+}
+
+/// Inserts only device metadata after the caller authorizes Appservice creation.
+/// No ordinary user credential is issued. `None` means the scoped row exists.
+pub async fn insert_device_metadata_if_missing(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    initial_device_display_name: Option<String>,
+    last_seen_ip: Option<String>,
+) -> DataResult<Option<DbUserDevice>> {
+    Ok(diesel::insert_into(user_devices::table)
+        .values(new_device_metadata(
+            user_id,
+            device_id,
+            initial_device_display_name,
+            last_seen_ip,
+        ))
+        .on_conflict((user_devices::user_id, user_devices::device_id))
+        .do_nothing()
+        .get_result(&mut connect().await?)
+        .await
+        .optional()?)
+}
+
 pub async fn create_device(
     user_id: &UserId,
     device_id: &DeviceId,
@@ -166,16 +207,12 @@ pub async fn create_device(
     last_seen_ip: Option<String>,
 ) -> DataResult<DbUserDevice> {
     let device = diesel::insert_into(user_devices::table)
-        .values(NewDbUserDevice {
-            user_id: user_id.to_owned(),
-            device_id: device_id.to_owned(),
-            display_name: initial_device_display_name,
-            user_agent: None,
-            is_hidden: false,
+        .values(new_device_metadata(
+            user_id,
+            device_id,
+            initial_device_display_name,
             last_seen_ip,
-            last_seen_at: Some(UnixMillis::now()),
-            created_at: UnixMillis::now(),
-        })
+        ))
         .get_result(&mut connect().await?)
         .await?;
 
@@ -242,6 +279,26 @@ pub async fn update_device(
     .get_result::<DbUserDevice>(&mut connect().await?)
     .await
     .map_err(Into::into)
+}
+
+/// Updates the exact owner's device, preserving the name when omitted.
+pub async fn update_device_metadata_if_present(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    display_name: Option<&str>,
+    remote_ip: &str,
+) -> DataResult<Option<DbUserDevice>> {
+    let changes = DeviceUpdate {
+        display_name: display_name.map(|name| Some(name.to_owned())),
+        last_seen_ip: Some(Some(remote_ip.to_owned())),
+        last_seen_at: Some(Some(UnixMillis::now())),
+        user_agent: None,
+    };
+    match update_device(user_id, device_id, changes).await {
+        Ok(device) => Ok(Some(device)),
+        Err(error) if error.is_not_found() => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub async fn get_devices(user_id: &UserId) -> DataResult<Vec<DbUserDevice>> {

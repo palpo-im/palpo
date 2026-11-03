@@ -1,6 +1,5 @@
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use palpo_core::UnixMillis;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
@@ -17,6 +16,7 @@ use crate::core::error::ErrorKind;
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::DbUserDevice;
+use crate::data::user::device::update_device_metadata_if_present;
 use crate::{
     AppError, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, data, empty_ok, json_ok,
 };
@@ -77,7 +77,7 @@ async fn list_devices(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<DevicesRes
 }
 
 /// #PUT /_matrix/client/r0/devices/{device_id}
-/// Updates the metadata on a given device of the sender user.
+/// Updates device metadata, or creates the requested device for an authorized Appservice.
 #[endpoint]
 async fn update_device(
     _aa: AuthArgs,
@@ -85,19 +85,21 @@ async fn update_device(
     body: JsonBody<UpdatedDeviceReqBody>,
     req: &mut Request,
     depot: &mut Depot,
+    res: &mut Response,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
     let device_id = device_id.into_inner();
-    let device = update_owned_device_metadata(
+    let remote_ip = req.remote_addr().to_string();
+    let device = update_device_metadata_if_present(
         authed.user_id(),
         &device_id,
         body.display_name.as_deref(),
-        &req.remote_addr().to_string(),
+        &remote_ip,
     )
     .await?;
 
-    if let Some(device) = device {
-        crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
+    let (device, created) = if let Some(device) = device {
+        (device, false)
     } else {
         let Some(appservice) = authed.appservice() else {
             return Err(MatrixError::not_found("Device is not found.").into());
@@ -113,53 +115,35 @@ async fn update_device(
 
         // Appservice requests keep using the scoped service token. Never
         // publish it as an ordinary user token while provisioning a device.
-        let remote_ip = req.remote_addr().to_string();
-        let device = diesel::insert_into(user_devices::table)
-            .values(data::user::NewDbUserDevice {
-                user_id: authed.user_id().to_owned(),
-                device_id: device_id.clone(),
-                display_name: body.display_name.clone(),
-                user_agent: None,
-                is_hidden: false,
-                last_seen_ip: Some(remote_ip.clone()),
-                last_seen_at: Some(UnixMillis::now()),
-                created_at: UnixMillis::now(),
-            })
-            .on_conflict((user_devices::user_id, user_devices::device_id))
-            .do_update()
-            .set((
-                user_devices::display_name.eq(&body.display_name),
-                user_devices::last_seen_ip.eq(remote_ip),
-                user_devices::last_seen_at.eq(UnixMillis::now()),
-            ))
-            .get_result::<DbUserDevice>(&mut connect().await?)
-            .await?;
-        crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
+        match data::user::device::insert_device_metadata_if_missing(
+            authed.user_id(),
+            &device_id,
+            body.display_name.clone(),
+            Some(remote_ip.clone()),
+        )
+        .await?
+        {
+            Some(device) => (device, true),
+            None => {
+                // A concurrent PUT created this exact scoped device first.
+                let device = update_device_metadata_if_present(
+                    authed.user_id(),
+                    &device_id,
+                    body.display_name.as_deref(),
+                    &remote_ip,
+                )
+                .await?
+                .ok_or_else(|| MatrixError::not_found("Device is not found."))?;
+                (device, false)
+            }
+        }
+    };
+    crate::user::key::send_device_key_update(&device.user_id, &device_id).await?;
+    if created {
+        res.status_code(StatusCode::CREATED);
     }
 
     empty_ok()
-}
-
-/// Scope the mutation itself to the owner, including when device IDs collide.
-async fn update_owned_device_metadata(
-    user_id: &crate::core::UserId,
-    device_id: &crate::core::DeviceId,
-    display_name: Option<&str>,
-    remote_ip: &str,
-) -> crate::AppResult<Option<DbUserDevice>> {
-    Ok(diesel::update(
-        user_devices::table
-            .filter(user_devices::user_id.eq(user_id))
-            .filter(user_devices::device_id.eq(device_id)),
-    )
-    .set((
-        user_devices::display_name.eq(display_name),
-        user_devices::last_seen_ip.eq(remote_ip),
-        user_devices::last_seen_at.eq(UnixMillis::now()),
-    ))
-    .get_result::<DbUserDevice>(&mut connect().await?)
-    .await
-    .optional()?)
 }
 
 /// #DELETE /_matrix/client/r0/devices/{deviceId}
@@ -392,7 +376,7 @@ pub(super) async fn upsert_dehydrated(
 #[cfg(test)]
 mod device_update_ownership_tests {
     use super::*;
-    use crate::core::UserId;
+    use crate::core::{UnixMillis, UserId};
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
@@ -430,7 +414,7 @@ mod device_update_ownership_tests {
             .await;
         let status = response.status_code;
         let body = response.take_json::<serde_json::Value>().await.unwrap();
-        assert_eq!(status, Some(StatusCode::OK), "{body}");
+        assert_eq!(status, Some(StatusCode::CREATED), "{body}");
         let devices = data::user::device::get_devices(&user).await.unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].device_id.as_str(), requested);
@@ -475,6 +459,17 @@ mod device_update_ownership_tests {
         assert_eq!(devices[0].device_id.as_str(), requested);
         assert_eq!(devices[0].display_name.as_deref(), Some("updated name"));
 
+        let response = TestClient::put(&url)
+            .add_header(
+                "Authorization",
+                "Bearer device-identity-fixture-token",
+                true,
+            )
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+
         let second = UserId::parse("@crypto_second:device.example").unwrap();
         let response = TestClient::put(format!(
             "http://localhost/_matrix/client/v3/devices/{requested}?user_id={second}"
@@ -487,7 +482,7 @@ mod device_update_ownership_tests {
         .json(&json!({"display_name":"second owner"}))
         .send(&service)
         .await;
-        assert_eq!(response.status_code, Some(StatusCode::OK));
+        assert_eq!(response.status_code, Some(StatusCode::CREATED));
         let second_devices = data::user::device::get_devices(&second).await.unwrap();
         assert_eq!(second_devices.len(), 1);
         assert_eq!(second_devices[0].device_id.as_str(), requested);
@@ -559,8 +554,11 @@ mod device_update_ownership_tests {
                 .send(&service)
         };
         let (one, two) = tokio::join!(send(), send());
-        assert_eq!(one.status_code, Some(StatusCode::OK));
-        assert_eq!(two.status_code, Some(StatusCode::OK));
+        assert!(matches!(
+            (one.status_code, two.status_code),
+            (Some(StatusCode::CREATED), Some(StatusCode::OK))
+                | (Some(StatusCode::OK), Some(StatusCode::CREATED))
+        ));
         let devices = data::user::device::get_devices(&user).await.unwrap();
         assert_eq!(devices.len(), 2);
         assert_eq!(
@@ -640,13 +638,14 @@ mod device_update_ownership_tests {
             .await
             .unwrap();
         }
-        let changed = update_owned_device_metadata(&alice, &shared, Some("alice-new"), "alice-ip")
-            .await
-            .unwrap()
-            .unwrap();
+        let changed =
+            update_device_metadata_if_present(&alice, &shared, Some("alice-new"), "alice-ip")
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(changed.user_id, alice);
         assert!(
-            update_owned_device_metadata(&alice, &bob_only, Some("unauthorized"), "wrong-ip")
+            update_device_metadata_if_present(&alice, &bob_only, Some("unauthorized"), "wrong-ip")
                 .await
                 .unwrap()
                 .is_none()
