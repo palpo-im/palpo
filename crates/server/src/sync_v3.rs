@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use indexmap::IndexMap;
 use state::DbRoomStateField;
 
-use crate::core::client::filter::{FilterDefinition, LazyLoadOptions, RoomEventFilter};
+use crate::core::client::filter::{
+    FilterDefinition, LazyLoadOptions, NonRoomDataFilter, RoomDataFilter, RoomEventFilter,
+};
 use crate::core::client::sync_events::UnreadNotificationsCount;
 use crate::core::client::sync_events::v3::{
     Ephemeral, Filter, GlobalAccountData, InviteState, InvitedRoom, JoinedRoom, KnockState,
@@ -21,6 +23,7 @@ use crate::core::identifiers::*;
 use crate::core::serde::RawJson;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::connect;
+use crate::event::search::event_type_matches;
 use crate::event::{BatchToken, EventHash, PduEvent, SnPduEvent};
 use crate::room::{state, timeline};
 use crate::{AppError, AppResult, MatrixError, config, data, extract_variant, room};
@@ -33,6 +36,33 @@ pub const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] = &[
     TimelineEventType::RoomMessage,
     TimelineEventType::Sticker,
 ];
+
+fn includes_room(filter: &RoomDataFilter, room_id: &RoomId) -> bool {
+    !filter.not_rooms.iter().any(|room| room == room_id)
+        && filter
+            .rooms
+            .as_ref()
+            .is_none_or(|rooms| rooms.iter().any(|room| room == room_id))
+}
+
+fn includes_global_event(
+    filter: &NonRoomDataFilter,
+    event_type: &str,
+    sender: Option<&UserId>,
+) -> bool {
+    let matches_type = |pattern: &String| event_type_matches(pattern, event_type);
+    let matches_sender = |user: &OwnedUserId| sender.is_some_and(|sender| user == sender);
+    !filter.not_types.iter().any(matches_type)
+        && filter
+            .types
+            .as_ref()
+            .is_none_or(|types| types.iter().any(matches_type))
+        && !filter.not_senders.iter().any(matches_sender)
+        && filter
+            .senders
+            .as_ref()
+            .is_none_or(|senders| senders.iter().any(matches_sender))
+}
 
 #[tracing::instrument(skip_all)]
 pub async fn sync_events(
@@ -146,7 +176,7 @@ pub async fn sync_events(
         )
         // Do not acknowledge a window that a joined room failed to load.
         .await?;
-        if since_tk.is_none() || !joined_room.is_empty() {
+        if includes_room(&filter.room, room_id) && (since_tk.is_none() || !joined_room.is_empty()) {
             joined_rooms.insert(room_id.to_owned(), joined_room);
         }
     }
@@ -175,6 +205,9 @@ pub async fn sync_events(
         // private state to a non-member.
         if !room::is_world_readable(&room_id).await {
             let _ = data::room::peek::remove_user_peek(sender_id, device_id, &room_id).await;
+            continue;
+        }
+        if !includes_room(&filter.room, &room_id) {
             continue;
         }
         let loaded = load_joined_room(
@@ -259,6 +292,7 @@ pub async fn sync_events(
 
     let invited_rooms: BTreeMap<_, _> = std::mem::take(&mut invite_snapshot.rooms)
         .into_iter()
+        .filter(|(room_id, _)| includes_room(&filter.room, room_id))
         .map(|(room_id, invite_state_events)| {
             (
                 room_id,
@@ -312,6 +346,9 @@ pub async fn sync_events(
 
     let mut knocked_rooms: BTreeMap<_, _> = BTreeMap::default();
     for (room_id, knock_state) in data::user::knocked_rooms(sender_id, 0).await?.into_iter() {
+        if !includes_room(&filter.room, &room_id) {
+            continue;
+        }
         let knock_sn = room::user::knock_sn(sender_id, &room_id).await.ok();
 
         // Knocked before last sync
@@ -392,9 +429,20 @@ pub async fn sync_events(
         .await?
         .into_iter()
         .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Global))
+        .filter(|event| {
+            // Global account data events have no sender.
+            filter.account_data.is_empty()
+                || event
+                    .get_field::<String>("type")
+                    .ok()
+                    .flatten()
+                    .is_some_and(|ty| includes_global_event(&filter.account_data, &ty, None))
+        })
         .collect(),
     };
 
+    // Room membership still drives device lists when the room body is filtered.
+    left_rooms.retain(|room_id, _| includes_room(&filter.room, room_id));
     let rooms = Rooms {
         leave: left_rooms,
         join: joined_rooms,
@@ -405,6 +453,9 @@ pub async fn sync_events(
     let presence = Presence {
         events: presence_updates
             .into_values()
+            .filter(|event| {
+                includes_global_event(&filter.presence, "m.presence", Some(&event.sender))
+            })
             .map(|v| RawJson::new(&v).expect("PresenceEvent always serializes successfully"))
             .collect(),
     };
@@ -483,6 +534,7 @@ async fn load_joined_room(
     if since_tk.map(|s| s.event_sn()) > Some(data::curr_sn().await?) {
         return Ok((JoinedRoom::default(), None));
     }
+    let deliver_room = includes_room(&filter.room, room_id);
     let lazy_load_enabled = filter.room.state.lazy_load_options.is_enabled()
         || filter.room.timeline.lazy_load_options.is_enabled();
 
@@ -697,18 +749,18 @@ async fn load_joined_room(
                     }
                 }
 
-                // Reset lazy loading because this is an initial sync
-                room::lazy_loading::lazy_load_reset(sender_id, device_id, room_id).await?;
-                // The state_events above should contain all timeline_users, let's mark them as lazy
-                // loaded.
-                room::lazy_loading::lazy_load_mark_sent(
-                    sender_id,
-                    device_id,
-                    room_id,
-                    lazy_loaded,
-                    next_batch.event_sn(),
-                )
-                .await;
+                if deliver_room {
+                    // The response contains the room's initial member state.
+                    room::lazy_loading::lazy_load_reset(sender_id, device_id, room_id).await?;
+                    room::lazy_loading::lazy_load_mark_sent(
+                        sender_id,
+                        device_id,
+                        room_id,
+                        lazy_loaded,
+                        next_batch.event_sn(),
+                    )
+                    .await;
+                }
 
                 // && encrypted_room || new_encrypted_room {
                 // If the user is in a new encrypted room, give them all joined users
@@ -827,14 +879,16 @@ async fn load_joined_room(
                         }
                     }
                 }
-                room::lazy_loading::lazy_load_mark_sent(
-                    sender_id,
-                    device_id,
-                    room_id,
-                    lazy_loaded,
-                    next_batch.event_sn(),
-                )
-                .await;
+                if deliver_room {
+                    room::lazy_loading::lazy_load_mark_sent(
+                        sender_id,
+                        device_id,
+                        room_id,
+                        lazy_loaded,
+                        next_batch.event_sn(),
+                    )
+                    .await;
+                }
 
                 let encrypted_room =
                     state::get_state(current_frame_id, &StateEventType::RoomEncryption, "")
