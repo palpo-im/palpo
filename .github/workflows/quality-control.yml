@@ -74,6 +74,21 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  release:
+    name: Cargo check release - x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install dependencies
+        run: "sudo apt update && sudo apt install -y --no-install-recommends libclang-dev libpq-dev cmake"
+
+      - name: Check release build
+        run: cargo check --all --bins --examples --tests --release
+
   test:
     strategy:
         fail-fast: false
@@ -82,6 +97,11 @@ jobs:
             - stable
     name: Cargo check ${{ matrix.version }} - x86_64-unknown-linux-gnu
     runs-on: ubuntu-latest
+    env:
+      # Test binaries do not need DWARF in CI. Keeping it out of both profiles prevents the
+      # workspace suite and the differently unified database suite from exhausting runner disk.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -94,9 +114,6 @@ jobs:
 
       - name: Check build
         run: cargo check --all --bins --examples --tests
-
-      - name: Check release build
-        run: cargo check --all --bins --examples --tests --release
 
       - name: Cargo test
         timeout-minutes: 40
