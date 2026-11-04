@@ -64,10 +64,19 @@ pub(super) async fn collect(
 
     // Honour selective-presence policy as well as MSC4559's room visibility. Revalidate on
     // every response so a queued update cannot escape after authorization changes.
+    let viewer_rooms = data::user::joined_rooms(sender_id)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     let mut authorized = BTreeSet::new();
     for user_id in visible {
         if user_id == sender_id
-            || crate::user::presence::sharing::may_see(&user_id, sender_id).await?
+            || crate::user::presence::sharing::may_see_with_viewer_rooms(
+                &user_id,
+                sender_id,
+                &viewer_rooms,
+            )
+            .await?
         {
             authorized.insert(user_id);
         }

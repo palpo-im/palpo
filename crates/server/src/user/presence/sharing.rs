@@ -184,6 +184,128 @@ pub async fn recipients_of(user_id: &UserId) -> AppResult<BTreeSet<OwnedUserId>>
     ))
 }
 
+/// Whether one viewer is included by a local user's sharing policy.
+///
+/// `shares_room` and `allowed_suggested_room` are calculated separately so callers checking a
+/// single viewer do not need to construct the sender's complete recipient set.
+fn policy_allows_viewer(
+    policy: &PresenceSharingEventContent,
+    viewer_id: &UserId,
+    shares_room: bool,
+    allowed_suggested_room: bool,
+    local_server: &ServerName,
+) -> bool {
+    if !shares_room
+        || matches!(
+            policy.users.get(viewer_id),
+            Some(UserPresenceSharingState::Deny)
+        )
+    {
+        return false;
+    }
+
+    // These rules are applied after server denies and therefore override them.
+    if (policy.share_locally && viewer_id.server_name() == local_server)
+        || matches!(
+            policy.users.get(viewer_id),
+            Some(UserPresenceSharingState::Allow)
+        )
+    {
+        return true;
+    }
+
+    !matches!(
+        policy.servers.get(viewer_id.server_name()),
+        Some(ServerPresenceSharingState::Deny)
+    ) && allowed_suggested_room
+}
+
+/// Variant of [`may_see`] that reuses the viewer's joined-room set.
+///
+/// This is useful when authorizing many senders for one sync response. It performs a
+/// viewer-specific policy check and never materializes the members of every room the sender has
+/// joined.
+pub async fn may_see_with_viewer_rooms(
+    sender_id: &UserId,
+    viewer_id: &UserId,
+    viewer_rooms: &BTreeSet<OwnedRoomId>,
+) -> AppResult<bool> {
+    if sender_id == viewer_id {
+        return Ok(true);
+    }
+    if sender_id.server_name() != config::server_name() {
+        return match super::recipients::remote_set(sender_id).await? {
+            Some((_, recipients)) => Ok(recipients.contains(viewer_id)),
+            None => crate::room::state::user_can_see_user(viewer_id, sender_id).await,
+        };
+    }
+
+    let Some(policy) = sharing_policy(sender_id).await? else {
+        return Ok(false);
+    };
+    if matches!(
+        policy.users.get(viewer_id),
+        Some(UserPresenceSharingState::Deny)
+    ) {
+        return Ok(false);
+    }
+
+    let shared_rooms = data::user::joined_rooms(sender_id)
+        .await?
+        .into_iter()
+        .filter(|room_id| viewer_rooms.contains(room_id))
+        .collect::<Vec<_>>();
+    if shared_rooms.is_empty() {
+        return Ok(false);
+    }
+
+    // Local sharing and explicit user allows override server denies, and neither needs room
+    // hints once a shared room is known.
+    let direct_allow = (policy.share_locally && viewer_id.server_name() == config::server_name())
+        || matches!(
+            policy.users.get(viewer_id),
+            Some(UserPresenceSharingState::Allow)
+        );
+    let server_denied = matches!(
+        policy.servers.get(viewer_id.server_name()),
+        Some(ServerPresenceSharingState::Deny)
+    );
+    if direct_allow || server_denied {
+        return Ok(direct_allow);
+    }
+
+    let mut allowed_suggested_room = false;
+    for room_id in &shared_rooms {
+        if !matches!(
+            policy.rooms.get(room_id),
+            Some(RoomPresenceSharingState::Allow)
+        ) {
+            continue;
+        }
+        let hint = crate::room::get_state_content::<RoomPresenceSharingEventContent>(
+            room_id,
+            &StateEventType::from(RoomPresenceSharingEventContent::TYPE),
+            "",
+            None,
+        )
+        .await
+        .map(|content| content.presence_sharing)
+        .unwrap_or(PresenceSharingHint::Forbid);
+        if hint == PresenceSharingHint::Suggest {
+            allowed_suggested_room = true;
+            break;
+        }
+    }
+
+    Ok(policy_allows_viewer(
+        &policy,
+        viewer_id,
+        true,
+        allowed_suggested_room,
+        config::server_name(),
+    ))
+}
+
 /// Whether `viewer_id`, a local user, may be shown `sender_id`'s presence.
 ///
 /// For a local sender this is their recipient set. For a remote sender it is the set their
@@ -197,7 +319,11 @@ pub async fn may_see(sender_id: &UserId, viewer_id: &UserId) -> AppResult<bool> 
         return Ok(true);
     }
     if sender_id.server_name() == config::server_name() {
-        return Ok(recipients_of(sender_id).await?.contains(viewer_id));
+        let viewer_rooms = data::user::joined_rooms(viewer_id)
+            .await?
+            .into_iter()
+            .collect();
+        return may_see_with_viewer_rooms(sender_id, viewer_id, &viewer_rooms).await;
     }
 
     match super::recipients::remote_set(sender_id).await? {
@@ -208,7 +334,7 @@ pub async fn may_see(sender_id: &UserId, viewer_id: &UserId) -> AppResult<bool> 
 
 #[cfg(test)]
 mod tests {
-    use super::{SharedRoom, by_server, effective_recipients};
+    use super::{SharedRoom, by_server, effective_recipients, policy_allows_viewer};
     use crate::core::events::presence::sharing::{
         PresenceSharingEventContent, RoomPresenceSharingState, ServerPresenceSharingState,
         UserPresenceSharingState,
@@ -428,6 +554,63 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn viewer_check_preserves_policy_precedence() {
+        let viewer = user_id!("@bob:example.org");
+        let local_server = server_name!("example.org");
+        let mut policy = policy();
+        policy.servers.insert(
+            owned_server_name!("example.org"),
+            ServerPresenceSharingState::Deny,
+        );
+
+        assert!(!policy_allows_viewer(
+            &policy,
+            viewer,
+            true,
+            true,
+            local_server,
+        ));
+
+        policy.share_locally = true;
+        assert!(policy_allows_viewer(
+            &policy,
+            viewer,
+            true,
+            false,
+            local_server,
+        ));
+
+        policy
+            .users
+            .insert(viewer.to_owned(), UserPresenceSharingState::Deny);
+        assert!(!policy_allows_viewer(
+            &policy,
+            viewer,
+            true,
+            true,
+            local_server,
+        ));
+    }
+
+    #[test]
+    fn viewer_check_requires_a_current_shared_room() {
+        let mut policy = policy();
+        policy.share_locally = true;
+        policy.users.insert(
+            owned_user_id!("@bob:example.org"),
+            UserPresenceSharingState::Allow,
+        );
+
+        assert!(!policy_allows_viewer(
+            &policy,
+            user_id!("@bob:example.org"),
+            false,
+            true,
+            server_name!("example.org"),
+        ));
     }
 
     #[test]
