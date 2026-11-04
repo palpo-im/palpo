@@ -108,7 +108,7 @@ pub async fn sync_events(
         .as_deref()
         .map(crate::event::split_sync_token)
         .transpose()?
-        .and_then(|(_, batch)| batch);
+        .and_then(|(_, batch, _)| batch);
     crate::membership::acknowledge_invite_delivery(sender_id, device_id, invite_batch).await?;
     // Capture invitations before constructing any stream-bounded response data.
     // Current invitation eligibility must not advance the original stream window.

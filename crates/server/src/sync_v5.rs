@@ -162,7 +162,7 @@ struct SlidingSyncCache {
     /// Initial states sent in responses that have not been acknowledged yet.
     #[cfg(feature = "unstable-msc4559")]
     #[serde(default)]
-    pending_presence_users: BTreeMap<Seqnum, PendingPresenceUsers>,
+    pending_presence_users: BTreeMap<String, PendingPresenceUsers>,
     /// Latest unsent presence stream position for each currently visible user.
     #[cfg(feature = "unstable-msc4559")]
     #[serde(default)]
@@ -218,33 +218,27 @@ fn apply_sticky_presence_config(
 }
 
 #[cfg(feature = "unstable-msc4559")]
-fn acknowledge_presence_updates(cached: &mut SlidingSyncCache, since_sn: Seqnum) -> bool {
-    let stale: Vec<Seqnum> = cached
-        .pending_presence_users
-        .range(..since_sn)
-        .map(|(sn, _)| *sn)
-        .collect();
-    let accepted = cached.pending_presence_users.remove(&since_sn);
-    let changed = accepted.is_some() || !stale.is_empty();
-    for sn in stale {
-        cached.pending_presence_users.remove(&sn);
+fn acknowledge_presence_updates(cached: &mut SlidingSyncCache, delivery: &str) -> bool {
+    let Some(users) = cached.pending_presence_users.remove(delivery) else {
+        return false;
+    };
+    // A returned token identifies the response the client actually received. Older or
+    // concurrently prepared offers must never be accepted later as if they were returned.
+    cached.pending_presence_users.clear();
+    for user_id in users.removed {
+        cached.presence_users.remove(&user_id);
     }
-    if let Some(users) = accepted {
-        for user_id in users.removed {
-            cached.presence_users.remove(&user_id);
-        }
-        cached.presence_users.extend(users.initial);
-        for (user_id, sent_sn) in users.sent {
-            if cached
-                .presence_queue
-                .get(&user_id)
-                .is_some_and(|queued_sn| *queued_sn <= sent_sn)
-            {
-                cached.presence_queue.remove(&user_id);
-            }
+    cached.presence_users.extend(users.initial);
+    for (user_id, sent_sn) in users.sent {
+        if cached
+            .presence_queue
+            .get(&user_id)
+            .is_some_and(|queued_sn| *queued_sn <= sent_sn)
+        {
+            cached.presence_queue.remove(&user_id);
         }
     }
-    changed
+    true
 }
 
 #[cfg(feature = "unstable-msc4262")]
@@ -714,7 +708,13 @@ async fn sync_events_at_position(
     #[cfg(feature = "unstable-msc4262")]
     acknowledge_profile_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
     #[cfg(feature = "unstable-msc4559")]
-    acknowledge_presence_delivery(sender_id, device_id, &req_body.conn_id, since_sn).await;
+    acknowledge_presence_delivery(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        since.presence_batch.as_deref(),
+    )
+    .await;
 
     if req_body.extensions.account_data.enabled.unwrap_or(false) {
         crate::user::get_push_rules(sender_id).await?;
@@ -1014,7 +1014,7 @@ async fn sync_events_at_position(
         sender_id,
         device_id,
         &req_body.conn_id,
-        next_batch,
+        &mut res_body,
         sent_presence_users,
         initial_presence_users,
         visible_presence_users,
@@ -2333,31 +2333,40 @@ pub async fn record_presence_updates_sent(
     user_id: &UserId,
     device_id: &DeviceId,
     conn_id: &Option<String>,
-    response_sn: Seqnum,
+    response: &mut SyncEventsResBody,
     sent: BTreeMap<OwnedUserId, Seqnum>,
     initial: BTreeSet<OwnedUserId>,
     visible: BTreeSet<OwnedUserId>,
 ) {
-    update_connection(user_id, device_id, conn_id, |cached| {
+    let delivery = crate::utils::random_string(24);
+    let recorded = update_connection(user_id, device_id, conn_id, |cached| {
         let removed = cached
             .presence_users
             .difference(&visible)
             .cloned()
             .collect::<BTreeSet<_>>();
         if sent.is_empty() && removed.is_empty() {
-            cached.pending_presence_users.remove(&response_sn);
+            false
         } else {
+            // Eviction only causes an initial-state refresh; it never acknowledges a batch.
+            if cached.pending_presence_users.len() >= 16 {
+                cached.pending_presence_users.clear();
+            }
             cached.pending_presence_users.insert(
-                response_sn,
+                delivery.clone(),
                 PendingPresenceUsers {
                     sent: sent.clone(),
                     initial: initial.clone(),
                     removed,
                 },
             );
+            true
         }
     })
     .await;
+    if recorded {
+        response.pos.push_str(&format!("_p{delivery}"));
+    }
 }
 
 /// Merge visible changes into the per-connection retry queue.
@@ -2391,22 +2400,23 @@ pub async fn acknowledge_presence_delivery(
     user_id: &UserId,
     device_id: &DeviceId,
     conn_id: &Option<String>,
-    since_sn: Seqnum,
+    delivery: Option<&str>,
 ) {
+    let Some(delivery) = delivery else {
+        return;
+    };
     let entry =
         load_or_create_connection(&user_id.to_owned(), &device_id.to_owned(), conn_id).await;
-    if entry
+    if !entry
         .lock()
         .unwrap()
         .pending_presence_users
-        .range(..=since_sn)
-        .next()
-        .is_none()
+        .contains_key(delivery)
     {
         return;
     }
     update_connection(user_id, device_id, conn_id, |cached| {
-        acknowledge_presence_updates(cached, since_sn);
+        acknowledge_presence_updates(cached, delivery);
     })
     .await;
 }
@@ -3611,7 +3621,7 @@ mod tests {
         let mut cached = SlidingSyncCache::default();
         cached.presence_queue = BTreeMap::from([(alice.clone(), 10), (bob.clone(), 30)]);
         cached.pending_presence_users.insert(
-            20,
+            "batch-a".to_owned(),
             PendingPresenceUsers {
                 sent: BTreeMap::from([(alice.clone(), 10), (bob.clone(), 20)]),
                 initial: BTreeSet::from([alice.clone(), bob.clone()]),
@@ -3619,10 +3629,10 @@ mod tests {
             },
         );
 
-        assert!(!acknowledge_presence_updates(&mut cached, 19));
+        assert!(!acknowledge_presence_updates(&mut cached, "other-batch"));
         assert!(cached.presence_users.is_empty());
 
-        assert!(acknowledge_presence_updates(&mut cached, 20));
+        assert!(acknowledge_presence_updates(&mut cached, "batch-a"));
         assert_eq!(
             cached.presence_users,
             BTreeSet::from([alice.clone(), bob.clone()])
@@ -3640,26 +3650,54 @@ mod tests {
             ..Default::default()
         };
         cached.pending_presence_users.insert(
-            10,
+            "departure".to_owned(),
             PendingPresenceUsers {
                 removed: BTreeSet::from([alice.clone()]),
                 ..Default::default()
             },
         );
 
-        assert!(acknowledge_presence_updates(&mut cached, 10));
+        assert!(acknowledge_presence_updates(&mut cached, "departure"));
         assert!(cached.presence_users.is_empty());
 
         cached.pending_presence_users.insert(
-            20,
+            "return".to_owned(),
             PendingPresenceUsers {
                 sent: BTreeMap::from([(alice.clone(), 0)]),
                 initial: BTreeSet::from([alice.clone()]),
                 removed: BTreeSet::new(),
             },
         );
-        assert!(acknowledge_presence_updates(&mut cached, 20));
+        assert!(acknowledge_presence_updates(&mut cached, "return"));
         assert_eq!(cached.presence_users, BTreeSet::from([alice]));
+    }
+
+    #[cfg(feature = "unstable-msc4559")]
+    #[test]
+    fn an_input_token_cannot_acknowledge_a_new_batch_at_the_same_event_position() {
+        let alice = UserId::parse("@alice:example.org").unwrap().to_owned();
+        let bob = UserId::parse("@bob:example.org").unwrap().to_owned();
+        let mut cached = SlidingSyncCache {
+            presence_users: BTreeSet::from([alice]),
+            ..Default::default()
+        };
+        cached.pending_presence_users.insert(
+            "new-response".to_owned(),
+            PendingPresenceUsers {
+                sent: BTreeMap::from([(bob.clone(), 0)]),
+                initial: BTreeSet::from([bob.clone()]),
+                removed: BTreeSet::new(),
+            },
+        );
+
+        // A second sync calculation in the same long-poll request still carries the
+        // client's old token; it cannot acknowledge the response that is being prepared.
+        assert!(!acknowledge_presence_updates(&mut cached, "input-response"));
+        assert!(!cached.presence_users.contains(&bob));
+        assert!(cached.pending_presence_users.contains_key("new-response"));
+
+        assert!(acknowledge_presence_updates(&mut cached, "new-response"));
+        assert!(cached.presence_users.contains(&bob));
     }
 
     #[cfg(feature = "unstable-msc4262")]
