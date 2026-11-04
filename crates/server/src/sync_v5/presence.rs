@@ -79,12 +79,12 @@ pub(super) async fn collect(
 
     // Changed users take priority over the initial backlog. Both paths load the latest complete
     // state at response time, so a user is present at most once and never receives a stale state.
-    let changed: BTreeMap<OwnedUserId, Seqnum> = data::user::presences_between(since_sn, until_sn)
-        .await?
-        .into_iter()
-        .filter(|(user_id, _)| authorized.contains(user_id))
-        .map(|(user_id, (sn, _))| (user_id, sn))
-        .collect();
+    let authorized_users = authorized.iter().cloned().collect::<Vec<_>>();
+    let changed: BTreeMap<OwnedUserId, Seqnum> =
+        data::user::presence_sns_between(&authorized_users, since_sn, until_sn)
+            .await?
+            .into_iter()
+            .collect();
     let queued = crate::sync_v5::queue_presence_updates(
         sender_id,
         device_id,

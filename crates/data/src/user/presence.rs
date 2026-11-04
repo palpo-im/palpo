@@ -322,6 +322,33 @@ pub async fn presences_between(
     Ok(result)
 }
 
+/// Presence stream positions for the selected users inside one inclusive sync window.
+///
+/// This intentionally reads only IDs and sequence numbers. Sliding sync filters visibility
+/// before calling it and materializes complete presence events only for the bounded response
+/// batch, avoiding profile lookups for unrelated or deferred users.
+pub async fn presence_sns_between(
+    user_ids: &[OwnedUserId],
+    since_sn: i64,
+    through_sn: i64,
+) -> DataResult<Vec<(OwnedUserId, i64)>> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    user_presences::table
+        .filter(user_presences::user_id.eq_any(user_ids))
+        .filter(user_presences::occur_sn.ge(since_sn))
+        .filter(user_presences::occur_sn.le(through_sn))
+        .order((
+            user_presences::occur_sn.asc(),
+            user_presences::user_id.asc(),
+        ))
+        .select((user_presences::user_id, user_presences::occur_sn))
+        .load(&mut connect().await?)
+        .await
+        .map_err(Into::into)
+}
+
 // Unset online/unavailable presence to offline on startup
 pub async fn unset_all_presences() -> DataResult<()> {
     diesel::delete(user_presences::table)
