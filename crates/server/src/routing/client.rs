@@ -304,6 +304,8 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
     unstable_features.insert("org.continuwuity.presence_v2.msc4495".to_owned(), true); /* Selective presence (https://github.com/matrix-org/matrix-spec-proposals/pull/4495) */
     #[cfg(feature = "unstable-msc4532")]
     unstable_features.insert("org.continuwuity.presence_v2.msc4532".to_owned(), true);
+    #[cfg(feature = "unstable-msc4559")]
+    unstable_features.insert("org.continuwuity.presence_v2.msc4559".to_owned(), true);
 
     // Only advertised when the extension is actually compiled in, so a build without it
     // does not promise a sliding sync extension it will silently ignore.

@@ -512,6 +512,15 @@ pub struct ExtensionsConfig {
     )]
     pub profiles: ProfilesConfig,
 
+    /// Configure revised presence updates.
+    #[cfg(feature = "unstable-msc4559")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4559.presence",
+        skip_serializing_if = "PresenceConfig::is_empty"
+    )]
+    pub presence: PresenceConfig,
+
     /// Extensions may add further fields to the list.
     #[serde(flatten)]
     #[salvo(schema(value_type = Object, additional_properties = true))]
@@ -530,6 +539,9 @@ impl ExtensionsConfig {
 
         #[cfg(feature = "unstable-msc4262")]
         let empty = empty && self.profiles.is_empty();
+
+        #[cfg(feature = "unstable-msc4559")]
+        let empty = empty && self.presence.is_empty();
 
         empty
     }
@@ -568,6 +580,15 @@ pub struct Extensions {
         skip_serializing_if = "Profiles::is_empty"
     )]
     pub profiles: Profiles,
+
+    /// Revised presence updates.
+    #[cfg(feature = "unstable-msc4559")]
+    #[serde(
+        default,
+        rename = "org.continuwuity.presence_v2.msc4559.presence",
+        skip_serializing_if = "Presence::is_empty"
+    )]
+    pub presence: Presence,
 }
 
 impl Extensions {
@@ -586,6 +607,9 @@ impl Extensions {
 
         #[cfg(feature = "unstable-msc4262")]
         let empty = empty && self.profiles.is_empty();
+
+        #[cfg(feature = "unstable-msc4559")]
+        let empty = empty && self.presence.is_empty();
 
         empty
     }
@@ -609,7 +633,7 @@ impl Extensions {
 }
 
 /// A room selector used by room-scoped extension configuration.
-#[cfg(feature = "unstable-msc4262")]
+#[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
 #[derive(ToSchema, Clone, Debug, PartialEq)]
 pub enum ExtensionRoomConfig {
     /// Apply the extension to all global room subscriptions.
@@ -619,7 +643,7 @@ pub enum ExtensionRoomConfig {
     Room(OwnedRoomId),
 }
 
-#[cfg(feature = "unstable-msc4262")]
+#[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
 impl Serialize for ExtensionRoomConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -632,7 +656,7 @@ impl Serialize for ExtensionRoomConfig {
     }
 }
 
-#[cfg(feature = "unstable-msc4262")]
+#[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
 impl<'de> Deserialize<'de> for ExtensionRoomConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -644,6 +668,60 @@ impl<'de> Deserialize<'de> for ExtensionRoomConfig {
                 RoomId::parse(room_id).map_err(D::Error::custom)?.to_owned(),
             )),
         }
+    }
+}
+
+/// Revised presence extension configuration from MSC4559.
+#[cfg(feature = "unstable-msc4559")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PresenceConfig {
+    /// Activate or deactivate the extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Lists whose rooms contribute users to the visible user set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lists: Option<Vec<String>>,
+
+    /// Explicit rooms and the global subscription wildcard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Vec<ExtensionRoomConfig>>,
+}
+
+#[cfg(feature = "unstable-msc4559")]
+impl PresenceConfig {
+    /// Whether the extension configuration carries no sticky fields.
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.lists.is_none() && self.rooms.is_none()
+    }
+}
+
+/// A complete revised presence state sent by MSC4559.
+#[cfg(feature = "unstable-msc4559")]
+#[derive(ToSchema, Clone, Debug, Serialize, Deserialize)]
+pub struct PresenceUpdate {
+    /// The user's current presence state.
+    pub presence: crate::presence::PresenceState,
+
+    /// The user's current extensible status.
+    pub status: crate::presence::revised::Status,
+}
+
+/// Revised presence extension response data from MSC4559.
+#[cfg(feature = "unstable-msc4559")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Presence {
+    /// Complete presence states keyed by user ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub user_ids: BTreeMap<OwnedUserId, PresenceUpdate>,
+}
+
+#[cfg(feature = "unstable-msc4559")]
+impl Presence {
+    /// Whether the extension carries no presence updates.
+    pub fn is_empty(&self) -> bool {
+        self.user_ids.is_empty()
     }
 }
 
@@ -1044,15 +1122,89 @@ impl Typing {
 mod tests {
     use std::collections::BTreeMap;
 
+    #[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
+    use super::ExtensionRoomConfig;
     use super::{E2ee, Extensions, ExtensionsConfig, SyncEventsResBody, Typing, TypingConfig};
+    #[cfg(feature = "unstable-msc4559")]
+    use super::{Presence, PresenceConfig, PresenceUpdate};
     #[cfg(feature = "unstable-msc4262")]
-    use super::{ExtensionRoomConfig, Profiles, ProfilesConfig};
+    use super::{Profiles, ProfilesConfig};
     use crate::events::typing::{SyncTypingEvent, TypingEventContent};
     #[cfg(feature = "unstable-msc4262")]
     use crate::profile::{ProfileFieldName, UserProfileUpdate};
     use crate::{DeviceKeyAlgorithm, RoomId};
-    #[cfg(feature = "unstable-msc4262")]
+    #[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
     use crate::{owned_room_id, owned_user_id};
+
+    #[cfg(feature = "unstable-msc4559")]
+    #[test]
+    fn presence_extension_uses_msc4559_shape_and_is_long_poll_inert() {
+        let request = ExtensionsConfig {
+            presence: PresenceConfig {
+                enabled: Some(true),
+                lists: Some(vec!["all".to_owned()]),
+                rooms: Some(vec![
+                    ExtensionRoomConfig::AllSubscribed,
+                    ExtensionRoomConfig::Room(owned_room_id!("!room:example.org")),
+                ]),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "org.continuwuity.presence_v2.msc4559.presence": {
+                    "enabled": true,
+                    "lists": ["all"],
+                    "rooms": ["*", "!room:example.org"]
+                }
+            })
+        );
+
+        let response = Extensions {
+            presence: Presence {
+                user_ids: BTreeMap::from([
+                    (
+                        owned_user_id!("@alice:example.org"),
+                        PresenceUpdate {
+                            presence: "org.continuwuity.presence_v2.msc4532.busy".into(),
+                            status: crate::presence::revised::Status {
+                                msg: Some("Heads down".to_owned()),
+                                ..Default::default()
+                            },
+                        },
+                    ),
+                    (
+                        owned_user_id!("@offline:example.org"),
+                        PresenceUpdate {
+                            presence: crate::presence::PresenceState::Offline,
+                            status: Default::default(),
+                        },
+                    ),
+                ]),
+            },
+            ..Default::default()
+        };
+        assert!(!response.is_empty());
+        assert!(response.is_empty_for_long_poll());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({
+                "org.continuwuity.presence_v2.msc4559.presence": {
+                    "user_ids": {
+                        "@alice:example.org": {
+                            "presence": "org.continuwuity.presence_v2.msc4532.busy",
+                            "status": { "msg": "Heads down" }
+                        },
+                        "@offline:example.org": {
+                            "presence": "offline",
+                            "status": {}
+                        }
+                    }
+                }
+            })
+        );
+    }
 
     #[test]
     fn long_poll_ignores_list_counts_and_static_extension_metadata() {

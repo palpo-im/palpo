@@ -4,10 +4,13 @@ use crate::MatrixError;
 use crate::core::Seqnum;
 
 /// Sync-only response identities never change the event stream component.
-pub(crate) fn split_sync_token(input: &str) -> Result<(&str, Option<i64>), MatrixError> {
+pub(crate) fn split_sync_token(
+    input: &str,
+) -> Result<(&str, Option<i64>, Option<&str>), MatrixError> {
     let mut parts = input.split('_');
     let base = parts.next().unwrap_or_default();
     let mut invite = None;
+    let mut presence = None;
     let mut window_seen = false;
     for part in parts {
         if let Some(id) = part.strip_prefix('i') {
@@ -18,6 +21,16 @@ pub(crate) fn split_sync_token(input: &str) -> Result<(&str, Option<i64>), Matri
             if invite.replace(id).is_some() {
                 return Err(MatrixError::invalid_param(
                     "duplicate invitation delivery token",
+                ));
+            }
+        } else if let Some(id) = part.strip_prefix('p')
+            && !id.is_empty()
+            && id.len() <= 64
+            && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            if presence.replace(id).is_some() {
+                return Err(MatrixError::invalid_param(
+                    "duplicate presence delivery token",
                 ));
             }
         } else if let Some(id) = part.strip_prefix('w')
@@ -31,13 +44,14 @@ pub(crate) fn split_sync_token(input: &str) -> Result<(&str, Option<i64>), Matri
             return Err(MatrixError::invalid_param("invalid sync response token"));
         }
     }
-    Ok((base, invite))
+    Ok((base, invite, presence))
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SyncPosition {
     pub(crate) event_sn: Seqnum,
     pub(crate) invite_batch: Option<i64>,
+    pub(crate) presence_batch: Option<String>,
     pub(crate) original: Option<String>,
 }
 
@@ -53,13 +67,14 @@ impl From<Seqnum> for SyncPosition {
 impl FromStr for SyncPosition {
     type Err = MatrixError;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let (base, invite_batch) = split_sync_token(input)?;
+        let (base, invite_batch, presence_batch) = split_sync_token(input)?;
         let event_sn = base
             .parse()
             .map_err(|_| MatrixError::invalid_param("invalid sync position"))?;
         Ok(Self {
             event_sn,
             invite_batch,
+            presence_batch: presence_batch.map(str::to_owned),
             original: Some(input.to_owned()),
         })
     }
@@ -239,7 +254,7 @@ impl BatchToken {
 impl FromStr for BatchToken {
     type Err = MatrixError;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let (input, _) = split_sync_token(input)?;
+        let (input, ..) = split_sync_token(input)?;
         if let Some(stripped) = input.strip_prefix('p') {
             let stream_ordering: Seqnum = stripped.parse().map_err(|_| {
                 MatrixError::invalid_param("invalid batch token: cannot parse publication ordering")
@@ -460,14 +475,20 @@ mod tests {
     fn response_markers_preserve_the_event_cursor() {
         let live: BatchToken = "s42_i19".parse().unwrap();
         assert_eq!(live, BatchToken::new_live(42));
-        let sliding: SyncPosition = "42_i19_wWindow123".parse().unwrap();
+        let sliding: SyncPosition = "42_i19_pPresence123_wWindow123".parse().unwrap();
         assert_eq!(sliding.event_sn, 42);
         assert_eq!(sliding.invite_batch, Some(19));
-        assert_eq!(sliding.original.as_deref(), Some("42_i19_wWindow123"));
+        assert_eq!(sliding.presence_batch.as_deref(), Some("Presence123"));
+        assert_eq!(
+            sliding.original.as_deref(),
+            Some("42_i19_pPresence123_wWindow123")
+        );
         for invalid in [
             "42_i0",
             "42_i-1",
             "42_i19_i20",
+            "42_p",
+            "42_pA_pB",
             "42_w",
             "42_wA_wB",
             "42_x1",
@@ -495,9 +516,10 @@ mod tests {
     #[test]
     fn publication_response_suffixes_preserve_typed_cursor_and_invite_batch() {
         for input in ["p42_i19_wWindow123", "p42_wWindow123_i19"] {
-            let (base, invite_batch) = split_sync_token(input).unwrap();
+            let (base, invite_batch, presence_batch) = split_sync_token(input).unwrap();
             assert_eq!(base, "p42");
             assert_eq!(invite_batch, Some(19));
+            assert_eq!(presence_batch, None);
             assert_eq!(
                 input.parse::<BatchToken>().unwrap(),
                 BatchToken::new_publication(42)
@@ -632,9 +654,10 @@ mod tests {
     #[test]
     fn publication_page_suffixes_preserve_window_and_seek() {
         for input in ["q0.19.42.-7_i19_wWindow123", "q0.19.42.-7_wWindow123_i19"] {
-            let (base, invite) = split_sync_token(input).unwrap();
+            let (base, invite, presence) = split_sync_token(input).unwrap();
             assert_eq!(base, "q0.19.42.-7");
             assert_eq!(invite, Some(19));
+            assert_eq!(presence, None);
             assert_eq!(
                 input.parse::<BatchToken>().unwrap(),
                 BatchToken::new_publication_page(Some(0), Some(19), 42, -7)
@@ -740,9 +763,10 @@ mod tests {
     #[test]
     fn publication_identity_windows_preserve_response_suffixes() {
         let input = "q10.20.42.-7.-9.9_i19_wWindow123";
-        let (base, invite_batch) = split_sync_token(input).unwrap();
+        let (base, invite_batch, presence_batch) = split_sync_token(input).unwrap();
         assert_eq!(base, "q10.20.42.-7.-9.9");
         assert_eq!(invite_batch, Some(19));
+        assert_eq!(presence_batch, None);
         assert_eq!(
             input.parse::<BatchToken>().unwrap(),
             BatchToken::new_publication_page_with_identity(
@@ -858,8 +882,9 @@ mod tests {
             "q10.20.42.-7.-8.-2"
         );
         let input = "q10.20.42.-7.-8.-2.100.200_i19_wWindow123";
-        let (base, invite_batch) = split_sync_token(input).unwrap();
+        let (base, invite_batch, presence_batch) = split_sync_token(input).unwrap();
         assert_eq!(invite_batch, Some(19));
+        assert_eq!(presence_batch, None);
         let token = input.parse::<BatchToken>().unwrap();
         assert_eq!(token.to_string(), base);
         assert_eq!(

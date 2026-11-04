@@ -186,6 +186,15 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "org.continuwuity.presence_v2.msc4532")]
     Msc4532,
 
+    /// `org.continuwuity.presence_v2.msc4559` ([MSC])
+    ///
+    /// Revised presence in simplified sliding sync.
+    ///
+    /// [MSC]: https://github.com/matrix-org/matrix-spec-proposals/pull/4559
+    #[cfg(feature = "unstable-msc4559")]
+    #[palpo_enum(rename = "org.continuwuity.presence_v2.msc4559")]
+    Msc4559,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
 }

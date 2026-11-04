@@ -273,30 +273,46 @@ pub(super) fn config_rooms(
     }
 
     let mut rooms = BTreeSet::new();
-    for list_id in config.lists.iter().flatten() {
-        if let Some(list_rooms) = listed_rooms.get(list_id) {
-            rooms.extend(list_rooms.iter().cloned());
-        }
-    }
-    for room in config.rooms.iter().flatten() {
-        match room {
-            // `*` is defined as the global room subscriptions, not the whole room subset
-            // of the response: a list the client did not select for this extension must
-            // not be pulled in by the wildcard.
-            ExtensionRoomConfig::AllSubscribed => rooms.extend(subscriptions.keys().cloned()),
-            ExtensionRoomConfig::Room(room_id) => {
-                rooms.insert(room_id.clone());
+    match &config.lists {
+        Some(list_ids) => {
+            for list_id in list_ids {
+                if let Some(list_rooms) = listed_rooms.get(list_id) {
+                    rooms.extend(list_rooms.iter().cloned());
+                }
             }
         }
+        None => rooms.extend(listed_rooms.values().flatten().cloned()),
+    }
+    match &config.rooms {
+        Some(room_selectors) => {
+            for room in room_selectors {
+                match room {
+                    // `*` is defined as the global room subscriptions, not the whole room subset
+                    // of the response: a list the client did not select for this extension must
+                    // not be pulled in by the wildcard.
+                    ExtensionRoomConfig::AllSubscribed => {
+                        rooms.extend(subscriptions.keys().cloned())
+                    }
+                    ExtensionRoomConfig::Room(room_id) => {
+                        rooms.insert(room_id.clone());
+                    }
+                }
+            }
+        }
+        None => rooms.extend(subscriptions.keys().cloned()),
     }
     rooms
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use serde_json::json;
 
-    use super::{FieldFilter, apply, snapshot, wanted};
+    use super::{FieldFilter, apply, config_rooms, snapshot, wanted};
+    use crate::core::client::sync_events::v5::{ProfilesConfig, RoomSubscription};
+    use crate::core::owned_room_id;
     use crate::core::profile::UserProfileUpdate;
     use crate::data::user::DbProfile;
 
@@ -391,6 +407,31 @@ mod tests {
         );
 
         assert!(snapshot(stored_profile(), &filter(&["xyz.amorgan.blurhash"])).is_none());
+    }
+
+    #[test]
+    fn omitted_room_selector_still_covers_all_subscriptions() {
+        let listed_room = owned_room_id!("!listed:example.org");
+        let subscribed_room = owned_room_id!("!subscribed:example.org");
+        let listed =
+            BTreeMap::from([("selected".to_owned(), BTreeSet::from([listed_room.clone()]))]);
+        let subscriptions =
+            BTreeMap::from([(subscribed_room.clone(), RoomSubscription::default())]);
+
+        assert_eq!(
+            config_rooms(
+                &ProfilesConfig {
+                    enabled: Some(true),
+                    lists: Some(vec!["selected".to_owned()]),
+                    rooms: None,
+                    fields: None,
+                },
+                &BTreeSet::from([listed_room.clone(), subscribed_room.clone()]),
+                &listed,
+                &subscriptions,
+            ),
+            BTreeSet::from([listed_room, subscribed_room])
+        );
     }
 
     #[tokio::test]
