@@ -178,9 +178,9 @@ impl RtcFocusInfo {
         })
     }
 
-    /// Creates a new `RtcFocusInfo::LiveKit`.
-    pub fn livekit(service_url: String) -> Self {
-        Self::LiveKit(LiveKitRtcFocusInfo { service_url })
+    /// Creates a new `RtcFocusInfo::LiveKit` with an SFU WebSocket URL.
+    pub fn livekit(url: String) -> Self {
+        Self::LiveKit(LiveKitRtcFocusInfo::new(url))
     }
 
     /// Returns a reference to the focus type of this RTC focus.
@@ -217,9 +217,39 @@ impl RtcFocusInfo {
 #[cfg(feature = "unstable-msc4143")]
 #[derive(ToSchema, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct LiveKitRtcFocusInfo {
-    /// The URL for the LiveKit service.
-    #[serde(rename = "livekit_service_url")]
-    pub service_url: String,
+    /// The WebSocket URL of the LiveKit SFU.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// The URL of the legacy LiveKit JWT service.
+    #[serde(
+        rename = "livekit_service_url",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[deprecated = "Use `url` unless compatibility with older MSC4195 deployments is required."]
+    pub service_url: Option<String>,
+}
+
+#[cfg(feature = "unstable-msc4143")]
+impl LiveKitRtcFocusInfo {
+    /// Creates LiveKit focus information with an SFU WebSocket URL.
+    #[allow(deprecated)]
+    pub fn new(url: String) -> Self {
+        Self {
+            url: Some(url),
+            service_url: None,
+        }
+    }
+
+    /// Creates LiveKit focus information with a legacy JWT service URL.
+    #[deprecated = "Use `LiveKitRtcFocusInfo::new()` unless compatibility with older MSC4195 deployments is required."]
+    #[allow(deprecated)]
+    pub fn with_service_url(service_url: String) -> Self {
+        Self {
+            url: None,
+            service_url: Some(service_url),
+        }
+    }
 }
 
 /// Information about a custom RTC focus type.
@@ -248,6 +278,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "unstable-msc4143")]
+    #[allow(deprecated)]
     fn test_livekit_rtc_focus_deserialization() {
         // Given the JSON for a LiveKit RTC focus.
         let json = json!({
@@ -260,14 +291,18 @@ mod tests {
 
         // Then it should be recognized as a LiveKit focus with the correct service URL.
         assert_let!(RtcFocusInfo::LiveKit(info) = focus);
-        assert_eq!(info.service_url, "https://livekit.example.com");
+        assert_eq!(info.url, None);
+        assert_eq!(
+            info.service_url.as_deref(),
+            Some("https://livekit.example.com")
+        );
     }
 
     #[test]
     #[cfg(feature = "unstable-msc4143")]
     fn test_livekit_rtc_focus_serialization() {
         // Given a LiveKit RTC focus info.
-        let focus = RtcFocusInfo::livekit("https://livekit.example.com".to_owned());
+        let focus = RtcFocusInfo::livekit("wss://livekit.example.com".to_owned());
 
         // When serializing it to JSON.
         let json = to_json_value(&focus).unwrap();
@@ -277,7 +312,7 @@ mod tests {
             json,
             json!({
                 "type": "livekit",
-                "livekit_service_url": "https://livekit.example.com"
+                "url": "wss://livekit.example.com"
             })
         );
     }

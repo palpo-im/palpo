@@ -3,8 +3,8 @@
 use salvo::oapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::PrivOwnedStr;
 use crate::macros::StringEnum;
+use crate::{OwnedServerName, PrivOwnedStr};
 
 /// Description of the SFU/Focus a membership can be connected to.
 ///
@@ -26,20 +26,51 @@ pub struct LivekitFocus {
     #[serde(rename = "livekit_alias", skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 
-    /// The URL of the JWT service for the LiveKit instance.
-    #[serde(rename = "livekit_service_url")]
-    pub service_url: String,
+    /// The WebSocket URL of the LiveKit SFU.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// The server that grants access to the LiveKit SFU.
+    ///
+    /// This is required when the SFU belongs to a different homeserver than the sender's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<OwnedServerName>,
+
+    /// The URL of the legacy JWT service for the LiveKit instance.
+    #[serde(
+        rename = "livekit_service_url",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[deprecated = "Use `url` unless compatibility with older MSC4195 deployments is required."]
+    pub service_url: Option<String>,
 }
 
 impl LivekitFocus {
-    /// Initialize a [`LivekitFocus`].
+    /// Initialize a [`LivekitFocus`] with an SFU WebSocket URL.
     ///
     /// # Arguments
     ///
-    /// * `alias` - The alias with which the LiveKit sessions can be reached.
-    /// * `service_url` - The url of the JWT server for the LiveKit instance.
-    pub fn new(alias: Option<String>, service_url: String) -> Self {
-        Self { alias, service_url }
+    /// * `url` - The WebSocket URL of the LiveKit SFU.
+    #[allow(deprecated)]
+    pub fn new(url: String) -> Self {
+        Self {
+            alias: None,
+            url: Some(url),
+            server_name: None,
+            service_url: None,
+        }
+    }
+
+    /// Initialize a [`LivekitFocus`] with a legacy JWT service URL.
+    #[deprecated = "Use `LivekitFocus::new()` unless compatibility with older MSC4195 deployments is required."]
+    #[allow(deprecated)]
+    pub fn with_service_url(service_url: String) -> Self {
+        Self {
+            alias: None,
+            url: None,
+            server_name: None,
+            service_url: Some(service_url),
+        }
     }
 }
 
@@ -94,6 +125,7 @@ mod tests {
     use crate::events::call::member::CallMemberEventContent;
 
     #[test]
+    #[allow(deprecated)]
     fn rtc_membership_accepts_livekit_with_or_without_alias() {
         for alias in [None, Some("room")] {
             let mut focus =
@@ -113,10 +145,42 @@ mod tests {
             };
             let Focus::Livekit(focus) = &session.foci_preferred[0];
             assert_eq!(focus.alias.as_deref(), alias);
+            assert_eq!(focus.url, None);
+            assert_eq!(focus.server_name, None);
+            assert_eq!(
+                focus.service_url.as_deref(),
+                Some("https://livekit.example.org")
+            );
             let wire = serde_json::to_value(&session.foci_preferred[0]).unwrap();
             assert_eq!(wire.get("livekit_alias").is_some(), alias.is_some());
             let decoded: Focus = serde_json::from_value(wire).unwrap();
             assert_eq!(decoded, session.foci_preferred[0]);
         }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn rtc_membership_roundtrips_current_and_legacy_livekit_fields() {
+        let wire = json!({
+            "type": "livekit",
+            "url": "wss://livekit.example.org",
+            "server_name": "other.example.org",
+            "livekit_service_url": "https://livekit-jwt.example.org",
+            "livekit_alias": "legacy-room"
+        });
+        let focus: Focus = serde_json::from_value(wire.clone()).unwrap();
+        let Focus::Livekit(livekit) = &focus;
+
+        assert_eq!(livekit.alias.as_deref(), Some("legacy-room"));
+        assert_eq!(livekit.url.as_deref(), Some("wss://livekit.example.org"));
+        assert_eq!(
+            livekit.server_name.as_deref(),
+            Some(crate::server_name!("other.example.org"))
+        );
+        assert_eq!(
+            livekit.service_url.as_deref(),
+            Some("https://livekit-jwt.example.org")
+        );
+        assert_eq!(serde_json::to_value(focus).unwrap(), wire);
     }
 }
