@@ -183,7 +183,7 @@ async fn state_snapshots() {
     let prefix = format!("state-{}", uuid::Uuid::new_v4().simple());
     let (owner, owner_token) = provision(&format!("{prefix}-owner")).await;
     let (departing, departing_token) = provision(&format!("{prefix}-departing")).await;
-    let (_, outsider_token) = provision(&format!("{prefix}-outsider")).await;
+    let (outsider, outsider_token) = provision(&format!("{prefix}-outsider")).await;
     let service = Service::new(crate::routing::root());
     for departure in ["leave", "kick", "ban"] {
         let created = ok(
@@ -197,6 +197,7 @@ async fn state_snapshots() {
         action(&service, &room, &departing_token, "join", json!({})).await;
         update_snapshot(&service, &room, &owner_token, &owner, "before").await;
         assert_snapshot(&service, &room, &departing_token, &owner, "before").await;
+
         let (actor, body) = if departure == "leave" {
             (&departing_token, json!({}))
         } else {
@@ -207,6 +208,44 @@ async fn state_snapshots() {
         assert_snapshot(&service, &room, &owner_token, &owner, "after").await;
         assert_snapshot(&service, &room, &departing_token, &owner, "before").await;
 
+        // A later ban cannot advance an existing leave/kick boundary.
+        if departure != "ban" {
+            action(
+                &service,
+                &room,
+                &owner_token,
+                "ban",
+                json!({"user_id":departing}),
+            )
+            .await;
+            assert_snapshot(&service, &room, &departing_token, &owner, "before").await;
+        }
+
+        // Banning an outsider, unbanning them, or declining an invite never
+        // creates a joined period. All GET shapes must remain forbidden.
+        for step in ["ban", "unban", "invite", "leave"] {
+            let (actor, body) = if step == "leave" {
+                (&outsider_token, json!({}))
+            } else {
+                (&owner_token, json!({"user_id":outsider}))
+            };
+            action(&service, &room, actor, step, body).await;
+            if step != "invite" {
+                for suffix in ["", "/m.room.topic", "/org.palpo.snapshot/key"] {
+                    let response = send(
+                        authed_get(
+                            format!(
+                                "http://localhost/_matrix/client/v3/rooms/{room}/state{suffix}"
+                            ),
+                            &outsider_token,
+                        ),
+                        &service,
+                    )
+                    .await;
+                    assert_eq!(response.status_code, Some(StatusCode::FORBIDDEN), "{step}");
+                }
+            }
+        }
         // Unrelated non-members cannot read shared history. Check all GET shapes.
         for suffix in ["", "/m.room.topic", "/org.palpo.snapshot/key"] {
             let response = send(
@@ -231,7 +270,7 @@ async fn state_snapshots() {
         // Changing current visibility must not move a former member's snapshot.
         assert_snapshot(&service, &room, &departing_token, &owner, "before").await;
         assert_snapshot(&service, &room, &outsider_token, &owner, "after").await;
-        if departure == "ban" {
+        {
             action(
                 &service,
                 &room,
