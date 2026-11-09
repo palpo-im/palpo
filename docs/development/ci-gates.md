@@ -97,3 +97,8 @@ databases under both default and all features. The ignored embedding startup
 case also runs in both modes with its distinct
 `PALPO_EMBEDDING_TEST_DATABASE_URL`; running an ordinary all-features suite does
 not count an ignored integration test as executed.
+
+Cargo's shared `database_` filter matches anywhere in a qualified test name.
+CI checks the discovered selection for isolated `::review_` cases before running
+that batch, and requires isolated case names to avoid `database_` altogether.
+These cases own process-wide configuration and pools as well as their database.
