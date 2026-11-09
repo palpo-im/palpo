@@ -41,7 +41,9 @@ async fn wait_ready(service: &Service) {
 
 #[test]
 #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
-fn review_readiness_http_tracks_database_and_sender_recovery_without_breaking_liveness() {
+// The shared PostgreSQL batch selects the substring `database_`. This case
+// owns process globals and must only run in the isolated exact-name batch.
+fn review_readiness_http_tracks_pool_and_sender_recovery_without_breaking_liveness() {
     std::thread::Builder::new()
         .name("readiness-review-http".into())
         .stack_size(16 * 1024 * 1024)

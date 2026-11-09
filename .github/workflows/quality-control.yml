@@ -133,6 +133,13 @@ jobs:
         env:
           PALPO_TEST_DATABASE_URL: postgres://palpo_test:palpo_test@localhost/palpo_test
         run: |
+          # Cargo filters by substring across the full qualified name. Review
+          # cases own globals and must stay in the separate exact-name batch.
+          shared_tests="$(cargo test -p palpo --all-features database_ -- --list --ignored)"
+          if grep -F '::review_' <<< "$shared_tests"; then
+            echo "::error::An isolated review case matches the shared database batch"
+            exit 1
+          fi
           sudo systemctl start postgresql
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE palpo_test WITH LOGIN PASSWORD 'palpo_test';"
           sudo -u postgres createdb -O palpo_test palpo_test
@@ -157,11 +164,19 @@ jobs:
             sending::guard::tests::review_sender_survives_ack_failure_and_recovers_startup_failure
             sending::tests::review_queue_batch_is_atomic_and_preserves_payloads
             user::key::publication_tests::review_key_change_publication_fence_survives_commit_rollback_and_cancellation
-            sending::guard::readiness_tests::review_readiness_http_tracks_database_and_sender_recovery_without_breaking_liveness
+            sending::guard::readiness_tests::review_readiness_http_tracks_pool_and_sender_recovery_without_breaking_liveness
             routing::client::key::key_changes_tests::review_keys_changes_tracks_shared_encrypted_membership_windows
             directory::tests::review_public_rooms_filters_networks_and_bidirectional_pages
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )
+          # The shared PostgreSQL batch selects this substring, including in
+          # module names. Global-owning cases must never enter that process.
+          for test in "${cases[@]}"; do
+            if [[ "$test" == *database_* ]]; then
+              echo "::error::Isolated case also matches the shared database filter: $test"
+              exit 1
+            fi
+          done
           for mode in default all; do
             features=()
             if [ "$mode" = all ]; then features+=(--all-features); fi
