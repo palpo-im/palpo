@@ -79,11 +79,19 @@ pub async fn notary_request(
     notary: &ServerName,
     target: &ServerName,
 ) -> AppResult<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send> {
+    notary_request_at(notary, target, minimum_valid_ts()).await
+}
+
+pub(super) async fn notary_request_at(
+    notary: &ServerName,
+    target: &ServerName,
+    minimum_valid_until_ts: crate::core::UnixMillis,
+) -> AppResult<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send> {
     let request = remote_server_keys_request(
         &notary.origin().await,
         RemoteServerKeysReqArgs {
             server_name: target.into(),
-            minimum_valid_until_ts: minimum_valid_ts(),
+            minimum_valid_until_ts,
         },
     )?
     .into_inner();

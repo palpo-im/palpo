@@ -2,9 +2,11 @@
 use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::pending;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
@@ -26,6 +28,26 @@ use crate::{AppResult, data, room};
 /// was dropped (full wakeup queue) or that were left over by a previous
 /// process.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+const WORKER_RESTART_DELAY: Duration = Duration::from_secs(5);
+static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
+static WORKER_RESTARTS: AtomicU64 = AtomicU64::new(0);
+
+struct RunningWorker;
+
+impl Drop for RunningWorker {
+    fn drop(&mut self) {
+        WORKER_RUNNING.store(false, Ordering::Release);
+    }
+}
+
+/// Whether the sender is processing work rather than recovering from failure.
+pub fn is_running() -> bool {
+    WORKER_RUNNING.load(Ordering::Acquire)
+}
+
+pub fn restart_count() -> u64 {
+    WORKER_RESTARTS.load(Ordering::Relaxed)
+}
 
 /// A configured sending guard whose worker has not been started yet.
 ///
@@ -48,15 +70,37 @@ pub fn init() -> Guard {
 
 impl Guard {
     pub fn start(self) {
-        tokio::spawn(async move {
-            if let Err(error) = process(self.receiver).await {
-                error!(?error, "sending guard stopped");
-            }
-        });
+        tokio::spawn(supervise(self.receiver, WORKER_RESTART_DELAY));
     }
 }
 
-async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResult<()> {
+async fn supervise(mut receiver: mpsc::Receiver<super::WakeupMessage>, delay: Duration) {
+    loop {
+        WORKER_RUNNING.store(true, Ordering::Release);
+        let running = RunningWorker;
+        let result = AssertUnwindSafe(process(&mut receiver))
+            .catch_unwind()
+            .await;
+        drop(running);
+        match result {
+            Ok(Err(error)) => error!(
+                ?error,
+                "sending guard failed; recovering from durable queue"
+            ),
+            Err(_) => error!("sending guard panicked; recovering from durable queue"),
+            Ok(Ok(())) => {
+                error!("sending guard exited unexpectedly; recovering from durable queue")
+            }
+        }
+        WORKER_RESTARTS.fetch_add(1, Ordering::Relaxed);
+        // Keep the receiver open throughout recovery. Outstanding send futures
+        // have been dropped; their unacknowledged rows remain pending and are
+        // loaded again at startup. Never clear or acknowledge them on failure.
+        tokio::time::sleep(delay).await;
+    }
+}
+
+async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResult<()> {
     let mut futures = FuturesUnordered::new();
     let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
     // EDU selection windows of in-flight transactions; persisted as the
@@ -66,21 +110,10 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
     // Retry requests we could not finish yet
     let mut initial_transactions = HashMap::<OutgoingKind, Vec<SendingEventType>>::new();
 
-    for (id, outgoing_kind, event) in super::active_requests().await? {
+    for (_id, outgoing_kind, event) in super::active_requests().await? {
         let entry = initial_transactions
             .entry(outgoing_kind.clone())
             .or_default();
-
-        if entry.len() > 512 {
-            error!(
-                "Too many pending events ({}) for {:?}, dropping oldest event {:?}",
-                entry.len(),
-                outgoing_kind,
-                id
-            );
-            super::delete_request(id).await?;
-            continue;
-        }
 
         entry.push(event);
     }
@@ -163,10 +196,24 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                         // Delete only after the cursor and recipient confirmations commit.
                         // A crash before this point leaves the active row as a durable retry
                         // anchor; a crash after it is safe because the delivery is recorded.
-                        super::delete_all_active_requests_for(&outgoing_kind).await?;
+                        if let Err(error) = super::delete_all_active_requests_for(&outgoing_kind).await {
+                            error!(?outgoing_kind, ?error, "failed to acknowledge delivered requests; retaining durable retry");
+                            current_transaction_status.insert(
+                                outgoing_kind,
+                                TransactionStatus::Failed(1, Instant::now()),
+                            );
+                            continue;
+                        }
 
                         // Find events that have been added since starting the last request
-                        let new_events = super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await.unwrap_or_default();
+                        let new_events = match super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await {
+                            Ok(events) => events,
+                            Err(error) => {
+                                error!(?outgoing_kind, ?error, "failed to load follow-up requests; sweep will recover them");
+                                current_transaction_status.remove(&outgoing_kind);
+                                continue;
+                            }
+                        };
 
                         let mut events = if new_events.is_empty() {
                             Vec::new()
@@ -174,7 +221,14 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
                             // Claim only rows that are still queued. Another
                             // process may have claimed or completed them since
                             // the select above.
-                            super::claim_queued_requests(&new_events).await?
+                            match super::claim_queued_requests(&new_events).await {
+                                Ok(events) => events,
+                                Err(error) => {
+                                    error!(?outgoing_kind, ?error, "failed to claim follow-up requests; sweep will recover them");
+                                    current_transaction_status.remove(&outgoing_kind);
+                                    continue;
+                                }
+                            }
                         };
 
                         if !events.is_empty() {
@@ -433,11 +487,12 @@ async fn process(mut receiver: mpsc::Receiver<super::WakeupMessage>) -> AppResul
 }
 
 fn retry_backoff(tries: u32) -> Duration {
-    let mut duration = Duration::from_secs(30) * tries * tries;
-    if duration > Duration::from_secs(60 * 60 * 24) {
-        duration = Duration::from_secs(60 * 60 * 24);
-    }
-    duration
+    Duration::from_secs(
+        30_u64
+            .saturating_mul(u64::from(tries))
+            .saturating_mul(u64::from(tries))
+            .min(60 * 60 * 24),
+    )
 }
 
 fn next_retry_delay(
@@ -967,6 +1022,7 @@ mod tests {
         assert_eq!(retry_backoff(1), Duration::from_secs(30));
         assert_eq!(retry_backoff(2), Duration::from_secs(120));
         assert_eq!(retry_backoff(100), Duration::from_secs(60 * 60 * 24));
+        assert_eq!(retry_backoff(u32::MAX), Duration::from_secs(60 * 60 * 24));
     }
 
     #[test]
@@ -989,5 +1045,185 @@ mod tests {
         );
 
         assert_eq!(next_retry_delay(&statuses), None);
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn review_sender_survives_ack_failure_and_recovers_startup_failure() {
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+
+        use crate::data::schema::outgoing_requests;
+        crate::test_database::init();
+        crate::config::CONFIG
+            .set(
+                serde_json::from_value(serde_json::json!({
+                    "server_name":"sender-recovery.example", "db":{"url":"unused"},
+                    "presence":{"allow_local":false,"allow_incoming":false,"allow_outgoing":false}
+                }))
+                .unwrap(),
+            )
+            .expect("run alone");
+
+        let failed = OutgoingKind::Appservice("ack-fault".into());
+        let healthy = OutgoingKind::Appservice("healthy".into());
+        let claim_failed = OutgoingKind::Appservice("claim-fault".into());
+        for kind in [&failed, &healthy, &claim_failed] {
+            let id = super::super::queue_request(kind, &SendingEventType::Flush)
+                .await
+                .unwrap();
+            super::super::claim_queued_requests(&[(id, SendingEventType::Flush)])
+                .await
+                .unwrap();
+        }
+        super::super::queue_request(&claim_failed, &SendingEventType::Flush)
+            .await
+            .unwrap();
+        // nextval is deliberately non-transactional: it proves the failing
+        // DELETE ran even though its transaction rolls back.
+        let mut conn = data::connect().await.unwrap();
+        for sql in [
+            "CREATE SEQUENCE review_ack_attempts",
+            "CREATE FUNCTION review_fail_ack() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.appservice_id = 'ack-fault' THEN PERFORM nextval('review_ack_attempts'); RAISE EXCEPTION 'injected transient acknowledgement failure'; END IF; RETURN OLD; END $$",
+            "CREATE TRIGGER review_ack_failure BEFORE DELETE ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION review_fail_ack()",
+            "CREATE SEQUENCE review_claim_attempts",
+            "CREATE FUNCTION review_fail_claim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.appservice_id = 'claim-fault' AND NEW.state = 'pending' THEN PERFORM nextval('review_claim_attempts'); RAISE EXCEPTION 'injected transient claim failure'; END IF; RETURN NEW; END $$",
+            "CREATE TRIGGER review_claim_failure BEFORE UPDATE ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION review_fail_claim()",
+        ] {
+            diesel::sql_query(sql).execute(&mut conn).await.unwrap();
+        }
+        drop(conn);
+        let (sender, receiver) = mpsc::channel(8);
+        let restarts = restart_count();
+        let worker = tokio::spawn(supervise(receiver, Duration::from_millis(20)));
+        #[derive(QueryableByName)]
+        struct Attempted {
+            #[diesel(sql_type = diesel::sql_types::Bool)]
+            is_called: bool,
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let attempted = diesel::sql_query("SELECT is_called FROM review_ack_attempts")
+                    .get_result::<Attempted>(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap()
+                    .is_called;
+                let claim_attempted =
+                    diesel::sql_query("SELECT is_called FROM review_claim_attempts")
+                        .get_result::<Attempted>(&mut data::connect().await.unwrap())
+                        .await
+                        .unwrap()
+                        .is_called;
+                if attempted
+                    && claim_attempted
+                    && super::super::active_requests_for(&healthy)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("another destination must proceed despite acknowledgement failure");
+        assert_eq!(
+            restart_count(),
+            restarts,
+            "transient ack failure must stay inside the loop"
+        );
+        assert!(is_running());
+        assert_eq!(
+            super::super::queued_requests(&claim_failed, 30)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            super::super::active_requests_for(&failed)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        diesel::sql_query("DROP TRIGGER review_ack_failure ON outgoing_requests")
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        diesel::sql_query("DROP TRIGGER review_claim_failure ON outgoing_requests")
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(36), async {
+            loop {
+                let count: i64 = outgoing_requests::table
+                    .count()
+                    .get_result(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap();
+                if count == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("ack failure must recover without process restart");
+        assert!(
+            !sender.is_closed(),
+            "the receiver must remain open after recovery"
+        );
+        worker.abort();
+        let _ = worker.await;
+        assert!(
+            !is_running(),
+            "cancelling the supervisor must clear its status"
+        );
+
+        // Fail the startup SELECT itself, keep the receiver open, then restore
+        // the database object. Pending work must be recovered automatically.
+        let id = super::super::queue_request(&healthy, &SendingEventType::Flush)
+            .await
+            .unwrap();
+        super::super::claim_queued_requests(&[(id, SendingEventType::Flush)])
+            .await
+            .unwrap();
+        diesel::sql_query("ALTER TABLE outgoing_requests RENAME TO review_unavailable_requests")
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        let (_sender, receiver) = mpsc::channel(8);
+        let worker = tokio::spawn(supervise(receiver, Duration::from_millis(20)));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while restart_count() == restarts {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        diesel::sql_query("ALTER TABLE review_unavailable_requests RENAME TO outgoing_requests")
+            .execute(&mut data::connect().await.unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count: i64 = outgoing_requests::table
+                    .count()
+                    .get_result(&mut data::connect().await.unwrap())
+                    .await
+                    .unwrap();
+                if count == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("supervisor must resume durable work after database recovery");
+        worker.abort();
+        let _ = worker.await;
+        assert!(!is_running());
     }
 }

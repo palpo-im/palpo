@@ -26,6 +26,16 @@ pub async fn signing_keys_data(server: &ServerName) -> DataResult<Option<JsonVal
         .map_err(Into::into)
 }
 
+/// Include the fetch time so callers can bound the lifetime of cached keys.
+pub async fn signing_keys_record(server: &ServerName) -> DataResult<Option<DbServerSigningKeys>> {
+    server_signing_keys::table
+        .filter(server_signing_keys::server_id.eq(server))
+        .first::<DbServerSigningKeys>(&mut connect().await?)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
 /// Insert or update the signing-key JSON blob for a server.
 ///
 /// Callers are responsible for any merge logic; this performs a plain upsert of

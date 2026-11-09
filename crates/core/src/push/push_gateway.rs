@@ -35,7 +35,7 @@ impl SendEventNotificationReqBody {
 }
 
 /// Response type for the `send_event_notification` endpoint.
-#[derive(ToSchema, Serialize, Debug)]
+#[derive(ToSchema, Deserialize, Serialize, Debug)]
 pub struct SendEventNotificationResBody {
     /// A list of all pushkeys given in the notification request that are not
     /// valid.

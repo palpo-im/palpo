@@ -10,6 +10,7 @@ on:
       - '**.rs'                 # only execute on changes to go files
       - '**/Cargo.toml'         # or dependency updates
       - 'Cargo.lock'            # or lockfile updates
+      - 'crates/data/migrations/**'
       - 'deny.toml'             # or supply-chain policy changes
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
@@ -20,6 +21,7 @@ on:
       - '**.rs'                 # only execute on changes to go files
       - '**/Cargo.toml'         # or dependency updates
       - 'Cargo.lock'            # or lockfile updates
+      - 'crates/data/migrations/**'
       - 'deny.toml'             # or supply-chain policy changes
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
@@ -127,6 +129,40 @@ jobs:
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE palpo_test WITH LOGIN PASSWORD 'palpo_test';"
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
+
+      - name: Security and delivery review regressions (R01-R07)
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          # Configuration and pools are process-global. Give each exact case
+          # its own process and empty database in both supported feature modes.
+          cases=(
+            routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
+            routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
+            media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures
+            server_key::validity::tests::review_event_verification_enforces_cached_key_expiry
+            server_key::validity::tests::review_local_retired_key_obeys_event_expiry_without_refresh
+            server_key::validity::tests::review_event_cache_refreshes_from_programmable_notary
+            sending::tests::federation_send_with_one_permit_makes_progress_and_returns_permits
+            user::pusher::tests::review_rejected_gateway_keys_only_remove_matching_pusher
+            sending::delivery_tests::http_push_retries_failed_gateway_without_acknowledging_queue
+            sending::guard::tests::review_sender_survives_ack_failure_and_recovers_startup_failure
+          )
+          for mode in default all; do
+            features=()
+            if [ "$mode" = all ]; then features+=(--all-features); fi
+            cargo test --locked -p palpo --lib "${features[@]}" --no-run
+            index=0
+            for test in "${cases[@]}"; do
+              database="palpo_review_${mode}_${index}"
+              sudo -u postgres createdb -O palpo_test "$database"
+              # --exact can succeed with zero matches; assert registration too.
+              cargo test --locked -p palpo --lib "${features[@]}" "$test" -- --list --ignored --exact | grep -F "$test: test"
+              PALPO_TEST_DATABASE_URL="postgres://palpo_test:palpo_test@localhost/$database" \
+                cargo test --locked -p palpo --lib "${features[@]}" "$test" -- --ignored --exact --test-threads=1
+              index=$((index + 1))
+            done
+          done
 
       - name: Appservice fixed-device HTTP regression tests
         run: |
