@@ -11,7 +11,9 @@ use crate::core::client::state::{
     StateEventsResBody,
 };
 use crate::core::client::typing::{CreateTypingEventReqBody, Typing};
+use crate::core::events::StateEventType;
 use crate::core::events::room::history_visibility::HistoryVisibility;
+use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::identifiers::*;
 use crate::core::room::{RoomEventReqArgs, RoomTypingReqArgs};
@@ -34,21 +36,35 @@ async fn visible_state_until_sn(
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::user_id.eq(user_id))
         .order_by(room_users::id.desc())
-        .select((room_users::membership, room_users::event_sn))
-        .first::<(String, Seqnum)>(&mut connect().await?)
+        .select((
+            room_users::membership,
+            room_users::event_id,
+            room_users::event_sn,
+        ))
+        .first::<(String, OwnedEventId, Seqnum)>(&mut connect().await?)
         .await
         .optional()?;
     match membership
         .as_ref()
-        .map(|(membership, sn)| (membership.as_str(), *sn))
+        .map(|(membership, event_id, sn)| (membership.as_str(), event_id, *sn))
     {
-        Some(("join", _)) => Ok(None),
-        Some(("leave" | "ban", sn)) => Ok(Some(sn)),
+        Some(("join", ..)) => Ok(None),
+        Some(("leave" | "ban", event_id, sn)) => {
+            if let Some(departure) =
+                joined_departure_snapshot(user_id, event_id.clone(), sn).await?
+            {
+                return Ok(Some(departure));
+            }
+            if room::get_history_visibility(room_id).await? == HistoryVisibility::WorldReadable {
+                return Ok(None);
+            }
+            Err(MatrixError::forbidden("you don't have permission to view this room", None).into())
+        }
         other => {
             let visibility = room::get_history_visibility(room_id).await?;
             if visibility == HistoryVisibility::WorldReadable
                 || (visibility == HistoryVisibility::Invited
-                    && matches!(other, Some(("invite", _))))
+                    && matches!(other, Some(("invite", _, _))))
             {
                 Ok(None)
             } else {
@@ -58,6 +74,38 @@ async fn visible_state_until_sn(
                 )
             }
         }
+    }
+}
+
+/// Only immutable before-state can prove a joined period. A preemptive ban,
+/// unban or declined invite is not proof, and a later ban must not move the
+/// snapshot past the departure that actually ended membership.
+async fn joined_departure_snapshot(
+    user_id: &UserId,
+    mut event_id: OwnedEventId,
+    mut departure_sn: Seqnum,
+) -> crate::AppResult<Option<Seqnum>> {
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(event_id.clone()) {
+            return Err(crate::AppError::internal(
+                "cycle in membership before-state",
+            ));
+        }
+        let Some(frame) = crate::data::room::get_pdu_before_frame_id(&event_id).await? else {
+            return Ok(None);
+        };
+        let previous =
+            match state::get_state(frame, &StateEventType::RoomMember, user_id.as_str()).await {
+                Ok(previous) => previous,
+                Err(error) if error.is_not_found() => return Ok(None),
+                Err(error) => return Err(error),
+            };
+        if previous.get_content::<RoomMemberEventContent>()?.membership == MembershipState::Join {
+            return Ok(Some(departure_sn));
+        }
+        departure_sn = previous.event_sn;
+        event_id = previous.event_id.clone();
     }
 }
 

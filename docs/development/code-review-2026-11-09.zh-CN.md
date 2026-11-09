@@ -10,7 +10,7 @@
 
 | 项目 | 已实现修复 | 回归覆盖 |
 |---|---|---|
-| R01 | 三种 state GET 共享成员快照边界，传播 DB/frame 错误 | 真实 HTTP：leave/kick/ban、topic/member/custom state、world-readable、rejoin、缺失 frame |
+| R01 | 三种 state GET 共享成员快照边界，传播 DB/frame 错误；用成员 before-state 证明加入经历，后续 ban/unban 不推进离房边界 | 真实 HTTP：leave/kick/ban、topic/member/custom state、world-readable、rejoin、缺失 frame；预先封禁、解封及拒绝邀请的非成员拒绝访问 |
 | R02 | 持久 reservation、owner/server/expiry 校验，跨实例 fence+行锁下发布；metadata/uploaded 原子提交 | HTTP 跨用户/未预留/异 server/过期拒绝，并发唯一成功；真实 FS/PG 故障与恢复 |
 | R03 | 统一下载 disposition/nosniff，覆盖无 filename、缩略图回退；客户端 S3 改代理 | HTTP HTML/显式 filename/回退 attachment、PNG inline；未连接真实 S3 |
 | R04 | v5+ 按事件时间筛钥，fetch-time 七天上限，过期缓存刷新；旧钥不继承新钥有效期，本地退役钥同样校验 | 实际签名 verifier：v4/v5、有效期边界、多签名、退役/本地钥；HTTPS notary 刷新、参数、缓存命中、503拒绝 |
@@ -33,6 +33,12 @@ all-features 构建同样通过，普通 server lib 测试 **359 passed / 0 fail
 本机证据保存在正常 target 目录：`target/review-results/{default,all,finaldefault,finalall}/`、`target/review-{default,all}-unit-tests.log`、`target/review-clippy.log`，未纳入版本控制。独占用例的完整名称和可复现 Cargo 命令见 `.github/workflows/quality-control.yml` 的 `Security and delivery review regressions (R01-R07)` 步骤。普通批次可用 `cargo test --locked -p palpo --lib` 和追加 `--all-features` 运行；独占用例必须各用一个空库、独立进程及 `--ignored --exact --test-threads=1`。
 
 验证范围：真实 PostgreSQL、真实本地文件存储、真实 loopback HTTP/HTTPS peer；数据库故障通过事务 trigger/表暂不可用注入。未运行完整 Complement/Sytest、真实 S3、跨主机网络分区、进程强杀/崩溃恢复或压测，不将这些未覆盖场景计为通过。R08–R10、O01–O02 保持未修复。
+
+### PR 评审补充
+
+[PR #636](https://github.com/palpo-im/palpo/pull/636) 的首轮 Codex 评审指出，预先封禁一个从未加入过房间的用户会创建 ban 行，因此不能将 ban/leave 行本身作为曾加入的证明。补充修复沿服务器保存的成员 before-state 查找真实加入经历，并固定到结束该次加入的首次离房事件；后续封禁、解封、邀请与拒绝不推进旧边界。缺少加入证明的非成员不能读取非 world-readable 房间状态。
+
+同一个双模式 HTTP 回归已扩展，覆盖预先封禁、解封、邀请后拒绝，以及离房/被踢后追加封禁；所有三种 state GET 均核对。上文测试计数与二进制摘要保留初次完整本地验证证据；PR 中新增断言的最新 Linux CI 与再次评审结果见该 PR 的检查和评审记录，合并以最新提交的检查通过及评审无未解决问题为条件。
 
 ## 原始评审结论与阅读方式（修复前）
 
