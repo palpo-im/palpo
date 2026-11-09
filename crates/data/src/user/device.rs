@@ -397,6 +397,7 @@ pub async fn remove_other_devices(
     let result = connect()
         .await?
         .transaction::<_, DataError, _>(async |conn| {
+            super::key::lock_key_change_user(conn, user_id).await?;
             let device_ids = user_devices::table
                 .filter(user_devices::user_id.eq(user_id))
                 .filter(user_devices::device_id.ne(keep_device))
@@ -411,6 +412,7 @@ pub async fn remove_other_devices(
             if device_ids.is_empty() {
                 return Ok(device_ids);
             }
+            super::key::lock_key_change_stream(conn).await?;
             let changed_at = UnixMillis::now();
             let occur_sn =
                 diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")

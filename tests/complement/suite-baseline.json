@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "complement_revision": "78516f9174a7c50c9a35a158fe88d16c5d9b88f5",
+  "evidence": {
+    "palpo_head": "ae4b32b97776ee8da3f47f73b595139b22a21493",
+    "run": "https://github.com/palpo-im/palpo/actions/runs/42698383528",
+    "raw_pass": 692,
+    "raw_fail": 0,
+    "raw_skip": 14
+  },
+  "exceptions": [
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestCanRegisterAdmin",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Synapse-specific shared-secret admin registration endpoint is not implemented or advertised by Palpo.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestServerNotices",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Synapse-specific shared-secret admin registration endpoint is not implemented or advertised by Palpo.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestRegistration/parallel/POST_/_synapse/admin/v1/register_admin_with_shared_secret",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Synapse-specific shared-secret admin registration endpoint is not implemented or advertised by Palpo.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Synapse-specific shared-secret admin registration endpoint is not implemented or advertised by Palpo.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret_disallows_symbols",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Synapse-specific shared-secret admin registration endpoint is not implemented or advertised by Palpo.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret_downcases_capitals",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Synapse-specific shared-secret admin registration endpoint is not implemented or advertised by Palpo.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests/csapi",
+      "test": "TestArchivedRoomsHistory/timeline_is_empty/incremental_sync",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream unconditionally skips this incremental archived-room variant because Synapse omits the room.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestSendJoinPartialStateResponse",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Partial-state send_join is not advertised by Palpo; upstream explicitly detects the unsupported capability.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestMediaFilenames/Parallel/Unicode/Will_serve_safe_media_types_as_inline",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream case is restricted to Synapse/conduwuit media behavior; Palpo HTTP header regressions run separately.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestMediaFilenames/Parallel/Unicode/Will_serve_safe_media_types_as_inline_via__matrix/client/v1/media/download",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream case is restricted to Synapse/conduwuit media behavior; Palpo HTTP header regressions run separately.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestMediaFilenames/Parallel/Unicode/Will_serve_safe_media_types_with_parameters_as_inline",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream case is restricted to Synapse/conduwuit media behavior; Palpo HTTP header regressions run separately.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestMediaFilenames/Parallel/Unicode/Will_serve_safe_media_types_with_parameters_as_inline_via__matrix/client/v1/media/download",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream case is restricted to Synapse/conduwuit media behavior; Palpo HTTP header regressions run separately.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestMediaFilenames/Parallel/Unicode/Will_serve_unsafe_media_types_as_attachments",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream case is restricted to Synapse/conduwuit media behavior; Palpo HTTP header regressions run separately.",
+      "expires": "2026-12-10"
+    },
+    {
+      "package": "github.com/matrix-org/complement/tests",
+      "test": "TestMediaFilenames/Parallel/Unicode/Will_serve_unsafe_media_types_as_attachments_via__matrix/client/v1/media/download",
+      "action": "skip",
+      "count": 1,
+      "owner": "@chrislearn",
+      "reason": "Pinned upstream case is restricted to Synapse/conduwuit media behavior; Palpo HTTP header regressions run separately.",
+      "expires": "2026-12-10"
+    }
+  ]
+}

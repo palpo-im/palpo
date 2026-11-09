@@ -6,6 +6,8 @@ Have a look at [its repository](https://github.com/matrix-org/complement).
 
 For the Palpo/Synapse mixed coverage inventory, remaining gaps and focused runs,
 see [Mixed federation coverage](complement/MIXED_FEDERATION.md).
+Dependency exceptions, the full-suite failure/skip baseline and source/binary
+evidence requirements are documented in [CI gates](../docs/development/ci-gates.md).
 
 ## How do I use it with Palpo?
 

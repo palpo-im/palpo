@@ -160,7 +160,6 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 subslice = { workspace = true, optional = true }
 tempfile = { workspace = true }
-textnonce = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "parking_lot", "process"] }
 tokio-stream = { workspace = true, features = ["sync"] }

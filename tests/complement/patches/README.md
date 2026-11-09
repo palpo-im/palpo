@@ -14,7 +14,9 @@ updating Complement: review the upstream behavior first.
 - Unit tests cover session propagation, retry failure, missing sessions,
   non-dummy flows, malformed responses and unrelated endpoints.
 
-The full suite's existing threshold is unchanged. The required-case manifests in
+The full suite uses an exact, expiring failure/skip baseline instead of a global
+percentage threshold; see [CI gates](../../../docs/development/ci-gates.md).
+The required-case manifests in
 `tests/complement/required_pass` already require avatar propagation, bridge joins
 and jump-to-date to run and pass. Reuse that gate rather than running those cases
 a second time.
@@ -51,4 +53,4 @@ All ten terminal failures on PR #571 head
 Those seven historical failures were addressed separately on main. This patch
 does not skip tests, relax exact device-list assertions, or disable mock
 unexpected-request checking; the current required-case manifests still enforce
-those regressions independently of the suite's percentage allowance.
+those regressions independently of any suite baseline exception.

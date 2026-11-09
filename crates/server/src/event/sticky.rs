@@ -80,10 +80,9 @@ async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), D
 }
 
 /// Read the global stream position after all earlier presence, live publication,
-/// sticky and device-inbox
-/// writes that can affect this `/sync` have committed.
+/// sticky, device-inbox and device/signing-key writes have committed or rolled back.
 ///
-/// All three allocate from `occur_sn_seq`. Taking their advisory locks in one
+/// These streams allocate from `occur_sn_seq`. Taking their advisory locks in one
 /// transaction is essential: two separate snapshots could let the second one observe a
 /// sequence number allocated by an uncommitted writer that started after the first lock
 /// was released, causing the returned sync token to skip that event permanently.
@@ -95,12 +94,13 @@ pub async fn curr_sn_after_sync_writes(
         connect()
             .await?
             .transaction::<_, crate::AppError, _>(async |conn| {
-                // Same order as `curr_sn_after_presence_writes`: presence, then inbox. Sync
-                // readers may snapshot concurrently; they only need to exclude the exclusive
-                // writers that allocate a stream position.
+                // Lock order: presence, live/sticky, this inbox, then keys.
+                // Key publishers use a shared stream lock; the short exclusive
+                // key snapshot waits for every in-flight key allocation.
                 crate::data::user::lock_presence_stream_shared(conn).await?;
                 lock_sticky_stream_shared(conn).await?;
                 crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
+                crate::data::user::key::lock_key_change_snapshot(conn).await?;
                 Ok(diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",
                 )

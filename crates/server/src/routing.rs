@@ -76,6 +76,7 @@ pub fn root() -> Router {
         .push(matrix())
         .push(Router::with_path("health").get(health))
         .push(Router::with_path("healthz").get(health))
+        .push(Router::with_path("ready").get(ready))
         .push(Router::with_path("{*path}").get(StaticDir::new("./static")))
 }
 
@@ -142,6 +143,19 @@ async fn health(res: &mut Response) {
         HeaderValue::from_static(HEALTH_CHECK_CONTENT_TYPE),
     );
     let _ = res.write_body(HEALTH_CHECK_BODY);
+}
+
+#[handler]
+async fn ready(res: &mut Response) {
+    let readiness = crate::readiness::check().await;
+    res.status_code(if readiness.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    });
+    res.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res.render(Json(readiness));
 }
 
 async fn fetch_remote_home_page(url: &str) -> Option<(Bytes, String)> {

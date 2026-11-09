@@ -6,6 +6,7 @@ permissions:
 env:
   # Audit the selected tests and local overlay against a reproducible API.
   COMPLEMENT_REVISION: 78516f9174a7c50c9a35a158fe88d16c5d9b88f5
+  SYNAPSE_REVISION: 217e4c0f48e01db000127ed9bfb5251eefc51a2c
 
 on:
   pull_request:
@@ -15,7 +16,10 @@ on:
       - '**.sh'
       - 'tests/mixed_federation*.py'
       - 'tests/complement_regressions*.py'
+      - 'tests/complement_baseline*.py'
       - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/data/migrations/**'
       - 'tests/complement/**'
       - '.github/workflows/complement.yml'
   push:
@@ -26,7 +30,10 @@ on:
       - '**.sh'
       - 'tests/mixed_federation*.py'
       - 'tests/complement_regressions*.py'
+      - 'tests/complement_baseline*.py'
       - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/data/migrations/**'
       - 'tests/complement/**'
       - '.github/workflows/complement.yml'
   workflow_dispatch:
@@ -72,6 +79,9 @@ jobs:
           load: true
           cache-from: type=gha,scope=revised-presence
           cache-to: type=gha,mode=max,scope=revised-presence
+      - name: Record revised presence provenance
+        run: bash tests/complement-provenance.sh /tmp/complement complement-palpo-revised-presence /tmp/revised-presence-provenance.txt unstable-msc4532
+
       - name: Require all revised presence federation tests to pass
         run: |
           cd /tmp/complement
@@ -83,7 +93,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: revised-presence-results
-          path: /tmp/revised-presence-results.jsonl
+          path: |
+            /tmp/revised-presence-results.jsonl
+            /tmp/revised-presence-provenance.txt
           if-no-files-found: warn
           retention-days: 14
 
@@ -102,7 +114,7 @@ jobs:
           cache: false
 
       - name: Test required regression results gate
-        run: python3 -m unittest discover -s tests -p 'complement_regressions_test.py'
+        run: python3 -m unittest discover -s tests -p 'complement_*test.py'
 
       - name: Clone Complement
         run: |
@@ -131,6 +143,9 @@ jobs:
           cache-from: type=gha,scope=complement
           cache-to: type=gha,mode=max,scope=complement
 
+      - name: Record executable and source provenance
+        run: bash tests/complement-provenance.sh /tmp/complement complement-palpo /tmp/complement/provenance.txt default
+
       - name: Run Complement tests
         id: complement-tests
         run: |
@@ -142,9 +157,11 @@ jobs:
             ./tests/csapi \
             ./tests \
             ./tests/msc3930 \
-            ./tests/msc3967 \
+            ./tests/msc3967 2>&1 \
             | tee results.jsonl
-          status=${PIPESTATUS[0]}
+          statuses=("${PIPESTATUS[@]}")
+          status=${statuses[0]}
+          if [ "${statuses[1]}" -ne 0 ]; then status=${statuses[1]}; fi
           echo "$status" > exit-code
           exit "$status"
         continue-on-error: true
@@ -179,6 +196,7 @@ jobs:
             /tmp/complement/results.jsonl
             /tmp/complement/results.log
             /tmp/complement/exit-code
+            /tmp/complement/provenance.txt
           if-no-files-found: warn
           retention-days: 14
 
@@ -194,43 +212,12 @@ jobs:
           python3 tests/complement_regressions.py /tmp/complement/results.jsonl \
             tests/complement/required_pass --exit-code-file /tmp/complement/exit-code "${args[@]}"
 
-      - name: Evaluate test results
+      - name: Require zero failures and the exact skip baseline
         if: always()
         run: |
-          RESULTS="/tmp/complement/__test_all.result.jsonl"
-          if [ ! -f "$RESULTS" ]; then
-            echo "::error::Test results file not found"
-            exit 1
-          fi
-          # Go reports both a failing subtest and every failing parent. Count
-          # terminal tests, plus a parent that fails without a failing child
-          # (for example, in its own setup or cleanup).
-          read -r PASS_COUNT FAIL_COUNT < <(jq -sr '
-            map(select(.Action == "pass" or .Action == "fail")) as $results
-            | [$results[] | select(.Test as $test |
-                if .Action == "fail" then
-                  all($results[]; .Action != "fail" or
-                    ((.Test | startswith($test + "/")) | not))
-                else
-                  all($results[]; (.Test | startswith($test + "/")) | not)
-                end)] as $cases
-            | [($cases | map(select(.Action == "pass")) | length),
-               ($cases | map(select(.Action == "fail")) | length)]
-            | @tsv
-          ' "$RESULTS")
-          TOTAL=$((FAIL_COUNT + PASS_COUNT))
-          echo "Individual tests: Pass: $PASS_COUNT, Fail: $FAIL_COUNT, Total: $TOTAL"
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "::error::No test results found"
-            exit 1
-          fi
-          PASS_RATE=$((PASS_COUNT * 100 / TOTAL))
-          echo "Pass rate: ${PASS_RATE}%"
-          if [ "$PASS_RATE" -lt 98 ]; then
-            echo "::error::Pass rate ${PASS_RATE}% is below 98% threshold"
-            exit 1
-          fi
-          echo "✅ Pass rate ${PASS_RATE}% meets the 98% threshold"
+          python3 tests/complement_baseline.py /tmp/complement/results.jsonl \
+            tests/complement/suite-baseline.json --revision "$COMPLEMENT_REVISION" \
+            --exit-code-file /tmp/complement/exit-code
 
   mixed-federation:
     name: Mixed federation
@@ -256,8 +243,13 @@ jobs:
           git -C /tmp/complement fetch --depth 1 origin "$COMPLEMENT_REVISION"
           git -C /tmp/complement checkout --detach FETCH_HEAD
 
-      - name: Clone Synapse
-        run: git clone --depth 1 https://github.com/element-hq/synapse.git /tmp/synapse
+      - name: Clone pinned Synapse
+        run: |
+          git init /tmp/synapse
+          git -C /tmp/synapse remote add origin https://github.com/element-hq/synapse.git
+          git -C /tmp/synapse fetch --depth 1 origin "$SYNAPSE_REVISION"
+          git -C /tmp/synapse checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/synapse rev-parse HEAD)" = "$SYNAPSE_REVISION"
 
       - name: Apply audited Complement registration handshake
         run: |
@@ -285,6 +277,9 @@ jobs:
           docker build -t matrixdotorg/synapse-workers:latest -f /tmp/synapse/docker/Dockerfile-workers /tmp/synapse
           docker build -t complement-synapse-base -f /tmp/synapse/docker/complement/Dockerfile /tmp/synapse/docker/complement
           docker build -t complement-synapse -f tests/complement/Dockerfile.synapse tests/complement
+
+      - name: Record pinned peer and executable provenance
+        run: bash tests/complement-provenance.sh /tmp/complement complement-palpo /tmp/mixed-federation-results/provenance.txt default /tmp/synapse
 
       - name: Run mixed federation tests
         id: mixed-federation-tests

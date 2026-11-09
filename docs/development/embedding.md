@@ -34,6 +34,12 @@ health routes, and `./static` wildcard. The host can serve its own homepage and
 assets without competing with a catch-all. `routing::root()` retains these
 routes for standalone Palpo.
 
+Use `matrix.readiness().await` to inspect startup, bounded PostgreSQL
+connectivity, outbound worker lifecycle and pool status from a host readiness
+route. The returned `ready` flag can determine HTTP 200 versus 503 without
+changing the host's liveness policy. See [operational checks](../operations-readiness.md)
+for deadlines, recovery behavior and monitoring limits.
+
 `MatrixServer::service(router)` applies the same error catcher, JSON handling,
 CORS, logger, and compression as the standalone binary. The host owns Tokio,
 tracing, listeners, TLS termination, and graceful HTTP shutdown. Attach
