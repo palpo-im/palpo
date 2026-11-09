@@ -37,6 +37,7 @@ async fn provision(localpart: &str) -> (OwnedUserId, String) {
     })
     .await
     .unwrap();
+    data::user::ensure_profile_exists(&user).await.unwrap();
     let token = format!("{localpart}-token");
     data::user::device::create_device(&user, &OwnedDeviceId::from("D"), &token, None, None)
         .await
