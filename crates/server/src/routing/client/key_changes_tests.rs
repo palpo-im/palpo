@@ -160,6 +160,140 @@ fn review_keys_changes_tracks_shared_encrypted_membership_windows() {
         .unwrap();
 }
 
+async fn out_of_order_key_history(
+    service: &Service,
+    token: &str,
+    peer: &OwnedUserId,
+    room: &OwnedRoomId,
+) {
+    use diesel::prelude::*;
+    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+
+    use crate::data::schema::e2e_key_changes;
+
+    let older = data::next_sn().await.unwrap();
+    let newer = data::next_sn().await.unwrap();
+    assert!(older < newer);
+    for (occur_sn, changed_at) in [(newer, 200), (older, 100), (older, 100)] {
+        data::user::key::replace_key_change(&data::user::NewDbKeyChange {
+            user_id: peer.clone(),
+            room_id: Some(room.clone()),
+            occur_sn,
+            changed_at: UnixMillis(changed_at),
+        })
+        .await
+        .unwrap();
+    }
+    let mut conn = data::connect().await.unwrap();
+    let latest = e2e_key_changes::table
+        .filter(e2e_key_changes::user_id.eq(peer))
+        .filter(e2e_key_changes::room_id.eq(room))
+        .select((e2e_key_changes::occur_sn, e2e_key_changes::changed_at))
+        .first::<(i64, UnixMillis)>(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        latest,
+        (newer, UnixMillis(200)),
+        "delayed update moved latest marker backwards"
+    );
+
+    #[derive(QueryableByName)]
+    struct JournalCount {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        count: i64,
+    }
+    let count = diesel::sql_query(
+        "SELECT count(*) FROM e2e_key_change_history WHERE user_id = $1 AND occur_sn IN ($2, $3)",
+    )
+    .bind::<diesel::sql_types::Text, _>(peer.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(older)
+    .bind::<diesel::sql_types::BigInt, _>(newer)
+    .get_result::<JournalCount>(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        count.count, 2,
+        "upsert trigger or replay duplicated a journal position"
+    );
+    drop(conn);
+    for position in [older, newer] {
+        assert!(
+            listed(
+                &changes(
+                    service,
+                    token,
+                    &format!("p{position}"),
+                    &format!("p{}", position + 1)
+                )
+                .await,
+                "changed",
+                peer,
+            ),
+            "out-of-order committed key change disappeared from its historical interval"
+        );
+    }
+
+    let rolled_back = data::next_sn().await.unwrap();
+    let mut conn = data::connect().await.unwrap();
+    conn.batch_execute("BEGIN").await.unwrap();
+    diesel::insert_into(e2e_key_changes::table)
+        .values(data::user::NewDbKeyChange {
+            user_id: peer.clone(),
+            room_id: Some(room.clone()),
+            occur_sn: rolled_back,
+            changed_at: UnixMillis(300),
+        })
+        .on_conflict((e2e_key_changes::user_id, e2e_key_changes::room_id))
+        .do_update()
+        .set((
+            e2e_key_changes::occur_sn.eq(rolled_back),
+            e2e_key_changes::changed_at.eq(UnixMillis(300)),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let count = diesel::sql_query(
+        "SELECT count(*) FROM e2e_key_change_history WHERE user_id = $1 AND occur_sn = $2",
+    )
+    .bind::<diesel::sql_types::Text, _>(peer.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(rolled_back)
+    .get_result::<JournalCount>(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        count.count, 1,
+        "INSERT and UPDATE trigger paths must deduplicate in the transaction"
+    );
+    conn.batch_execute("ROLLBACK").await.unwrap();
+    let latest = e2e_key_changes::table
+        .filter(e2e_key_changes::user_id.eq(peer))
+        .filter(e2e_key_changes::room_id.eq(room))
+        .select(e2e_key_changes::occur_sn)
+        .first::<i64>(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        latest, newer,
+        "rollback retained an uncommitted latest marker"
+    );
+    drop(conn);
+    assert!(
+        !listed(
+            &changes(
+                service,
+                token,
+                &format!("p{rolled_back}"),
+                &format!("p{}", rolled_back + 1)
+            )
+            .await,
+            "changed",
+            peer,
+        ),
+        "rollback retained an uncommitted journal record"
+    );
+}
+
 async fn run() {
     crate::test_database::init();
     config::CONFIG.set(serde_json::from_value(json!({"server_name":"key-changes.example","db":{"url":"unused-test-config"},"ip_range_denylist":[],"auto_join_rooms":[]})).unwrap()).unwrap();
@@ -256,6 +390,7 @@ async fn run() {
         "changed",
         &carol
     ));
+    out_of_order_key_history(&service, &at, &carol, &plain).await;
     let empty = changes(&service, &at, &p1_token, &p1_token).await;
     assert_eq!(empty, json!({"changed":[],"left":[]}));
     let suffix_from = format!("{p0}_i1_pabc_wxyz");
@@ -357,4 +492,12 @@ async fn run() {
         let body = response.take_json::<Value>().await.unwrap();
         assert_eq!(status, Some(StatusCode::BAD_REQUEST), "{body}");
     }
+    let resource_room = create(&service, &at, true).await;
+    action(&service, &resource_room, &bt, "join", json!({})).await;
+    crate::user::device_lists::assert_large_custom_state_is_not_resolved(
+        &resource_room,
+        &alice,
+        &bob,
+    )
+    .await;
 }

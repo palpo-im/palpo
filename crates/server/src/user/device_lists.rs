@@ -12,6 +12,11 @@ use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppResult, MatrixError, room};
 
+#[cfg(test)]
+mod regression;
+#[cfg(test)]
+pub(crate) use regression::assert_large_custom_state_is_not_resolved;
+
 #[derive(Default)]
 struct Sharing {
     all: BTreeSet<OwnedUserId>,
@@ -44,7 +49,18 @@ async fn sharing_before(
         let Some(frame) = frame else { continue };
         let frame = frame.ok_or_else(|| MatrixError::unknown("published state frame missing"))?;
         if let std::collections::hash_map::Entry::Vacant(entry) = frames.entry(frame) {
-            let state = room::state::get_full_state_ids(frame).await?;
+            // Decode field/event sequence numbers without resolving event IDs.
+            // get_full_state_ids calls CompressedEvent::split for every entry,
+            // which adds one event_points lookup per unrelated custom event.
+            let layers = room::state::load_frame_info(frame).await?;
+            let layer = layers
+                .last()
+                .ok_or_else(|| MatrixError::unknown("published state frame missing"))?;
+            let state: HashMap<_, _> = layer
+                .full_state
+                .iter()
+                .map(|event| (event.field_id(), event.event_sn()))
+                .collect();
             let field_ids: Vec<_> = state.keys().copied().collect();
             let mut joined = BTreeSet::new();
             let mut encrypted = false;
@@ -66,23 +82,36 @@ async fn sharing_before(
                             encrypted |= field.state_key.is_empty();
                             None
                         } else {
-                            Some((state[&field.id].clone(), field.state_key))
+                            Some((state[&field.id], field.state_key))
                         }
                     })
                     .collect();
-                let bodies = event_datas::table
-                    .filter(event_datas::event_id.eq_any(members.keys()))
-                    .select((event_datas::event_id, event_datas::json_data))
-                    .load::<(crate::core::OwnedEventId, serde_json::Value)>(&mut connect().await?)
+                if members.is_empty() {
+                    continue;
+                }
+                // event_points has a (room_id, event_sn) index; event_datas
+                // has an event_id primary key, but no event_sn-only index.
+                // Resolve only selected memberships in one indexed batch join.
+                let bodies = event_points::table
+                    .inner_join(
+                        event_datas::table.on(event_datas::event_id
+                            .eq(event_points::event_id)
+                            .and(event_datas::event_sn.eq(event_points::event_sn))),
+                    )
+                    .filter(event_points::room_id.eq(&room_id))
+                    .filter(event_points::event_sn.eq_any(members.keys()))
+                    .filter(event_datas::room_id.eq(&room_id))
+                    .select((event_points::event_sn, event_datas::json_data))
+                    .load::<(Seqnum, serde_json::Value)>(&mut connect().await?)
                     .await?;
                 if bodies.len() != members.len() {
                     return Err(MatrixError::unknown("published member event missing").into());
                 }
-                for (event_id, body) in bodies {
+                for (event_sn, body) in bodies {
                     let content: RoomMemberEventContent =
                         serde_json::from_value(body["content"].clone())?;
                     if content.membership == MembershipState::Join {
-                        joined.insert(UserId::parse(&members[&event_id])?);
+                        joined.insert(UserId::parse(&members[&event_sn])?);
                     }
                 }
             }

@@ -46,7 +46,7 @@ all-features 构建同样通过，普通 server lib 测试 **359 passed / 0 fail
 
 | 项目 | 已实现修复 | 回归覆盖 |
 |---|---|---|
-| R08 | `/keys/changes`、v3/v5 sync 共用不可变 publication 快照；`left` 比较共享加密用户集合，保留普通房间新增共享及密钥更新通知；事务 journal 保存历史变更窗口 | 真实 HTTP keys/v3，与 v5 service 响应对照；自己/对方 leave、ban、最后/多个共同房间、明文共享、多设备、rejoin、历史 to、相邻窗口、token 后缀/非法 token、真实签名 outlier 延迟发布 |
+| R08 | `/keys/changes`、v3/v5 sync 共用不可变 publication 快照；`left` 比较共享加密用户集合，保留普通房间新增共享及密钥更新通知；冲突判定前事务 journal 保存历史，压缩状态先筛字段再批取成员正文 | 真实 HTTP keys/v3，与 v5 service 响应对照；自己/对方 leave、ban、最后/多个共同房间、明文共享、多设备、rejoin、历史 to、相邻窗口、token 后缀/非法 token、真实签名 outlier 延迟发布；逆序变更/去重/回滚、2,500 无关状态不解析及缺失成员明确失败 |
 | R09 | 类型含 null/custom 过滤，远端保留网络参数；本地命名第三方网络空集，All 包含现有 Matrix；联邦 GET/POST 参数与认证一致；过滤后计数、稳定平局排序及双向分页 | 真实 HTTP client/签名 federation GET/POST、网络冲突、计数及正反分页/改变 limit；HTTPS peer 验证远端透传；混合 Palpo↔Synapse 增加类型过滤和正向分页 |
 | R10 | 16 个预览 cache-miss 请求预算（含同 URL 等待者），显式 lease 计数及 RAII 回收；每个限速器最多 65,536 桶，只回收完全恢复的桶，满额拒绝新键 | 5 项普通资源回归：并发最后释放、同键互斥、取消、10,000 唯一键、容量/债务/索引/时钟；独占真实 PG/HTTP：128 失败 URL、12 并发同 URL 仅一个 producer、网络中途取消 |
 
@@ -55,6 +55,8 @@ R08 新增 `2026-11-10-000000_device_key_change_history`。trigger 覆盖旧 wri
 CI 的十三项独占回归在默认/all-features 各自空库与独立进程中执行，并验证精确测试名已注册；五项普通资源回归也在两种模式显式执行。混合联邦新增子用例位于既有必过 `TestMixedPublicRooms` 下，不依赖全套比例放行。
 
 本批最终源码、运行证据和复评记录见 [PR #637](https://github.com/palpo-im/palpo/pull/637)。该 PR 的说明记录本地实际验证结果，Checks 保存最终提交的 Rust、独占数据库回归、Complement 和混合联邦结果；合并门禁为最终提交复评无未解决问题且全部 CI 通过。本机日志位于正常 `target/review-r08-r10-*` 路径，未纳入版本控制。
+
+PR 复评补强了两处 R08 边界：`BEFORE INSERT OR UPDATE` 在 upsert 因序号较旧而跳过更新时仍保留变更；设备列表计算直接读取压缩字段/事件序号，先筛选成员及加密字段，再通过已有索引批取成员正文，不再逐条解析无关状态的事件 ID。回归注入 2,500 个确实缺少身份和正文的无关状态指针，计算仍成功；选中成员缺失则明确失败。这证明访问边界，不构成吞吐/延迟压测结论。既有同步快照回归也迁移至同一共享计算，保留历史成员及未来状态排除断言。
 
 边界：v5 通过 service 函数响应比较，未新增 v5 HTTP 路由端到端用例；目录 offset 分页保证静态目录，未承诺并发目录变更的快照；第三方网络发布仍未实现；预览预算从首次缓存 DB miss 后生效，失败请求无负缓存；限速桶惰性回收但容量始终有界。未进行 RSS/QPS 压测、进程强杀或跨主机网络分区演练。O01/O02 及报告中的其余专项工作不计入本批已修复。
 

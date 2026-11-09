@@ -143,7 +143,6 @@ pub async fn sync_events(
     let mut joined_users = HashSet::new();
     // Users that have left any encrypted rooms the sender was in
     let mut left_users = HashSet::new();
-    let mut device_list_updates = HashSet::new();
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     for room_id in &all_joined_rooms {
@@ -158,7 +157,6 @@ pub async fn sync_events(
             full_state,
             &filter,
             args.use_state_after,
-            &mut device_list_updates,
             &mut joined_users,
             &mut left_users,
         )
@@ -173,13 +171,10 @@ pub async fn sync_events(
     // shape as joined rooms. Skip any the user is actually joined to to avoid
     // duplicate delivery.
     //
-    // Crucially, the device-list / presence accumulators are kept SEPARATE and
-    // discarded: a non-member peeking a world-readable room must not receive
-    // member device-key changes or presence for users they don't share a joined
-    // room with. `load_joined_room` mutates those sets as a side effect, so we
-    // give it throwaway ones here.
+    // Presence accumulators are separate and discarded: peeking a world-readable
+    // room must not disclose activity for users without joined sharing. Device
+    // lists are computed independently from proven joined publication frames.
     let mut peeked_rooms = BTreeMap::new();
-    let mut peek_device_updates = HashSet::new();
     let mut peek_joined_users = HashSet::new();
     let mut peek_left_users = HashSet::new();
     for room_id in data::room::peek::user_peeked_rooms(sender_id, device_id).await? {
@@ -209,7 +204,6 @@ pub async fn sync_events(
             full_state,
             &filter,
             args.use_state_after,
-            &mut peek_device_updates,
             &mut peek_joined_users,
             &mut peek_left_users,
         )
@@ -231,9 +225,8 @@ pub async fn sync_events(
             peeked_rooms.insert(room_id, peeked_room);
         }
     }
-    // peek_device_updates / peek_joined_users / peek_left_users go out of scope
-    // here unused — peeked rooms must not contribute device/presence info to the
-    // real sync sets.
+    // Peek presence accumulators go out of scope unused; peeking does not
+    // contribute activity to the real sync sets.
 
     let mut left_rooms = BTreeMap::new();
     let all_left_rooms = room::user::left_rooms(sender_id, since_tk).await?;
@@ -263,7 +256,6 @@ pub async fn sync_events(
             next_batch,
             full_state,
             &filter,
-            &mut device_list_updates,
             &mut joined_users,
             &mut left_users,
         )
@@ -465,7 +457,6 @@ async fn load_joined_room(
     full_state: bool,
     filter: &FilterDefinition,
     _use_state_after: bool, // TODO
-    _device_list_updates: &mut HashSet<OwnedUserId>,
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
@@ -1067,7 +1058,6 @@ async fn load_left_room(
     next_batch: BatchToken,
     _full_state: bool,
     filter: &FilterDefinition,
-    _device_list_updates: &mut HashSet<OwnedUserId>,
     _joined_users: &mut HashSet<OwnedUserId>,
     _left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<LeftRoom> {
@@ -1838,7 +1828,6 @@ mod joined_room_failure_tests {
             false,
             &FilterDefinition::default(),
             false,
-            &mut HashSet::new(),
             &mut HashSet::new(),
             &mut HashSet::new(),
         )
