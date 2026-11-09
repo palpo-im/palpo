@@ -36,6 +36,21 @@ pub fn public_rooms_request(origin: &str, body: PublicRoomsReqBody) -> SendResul
     crate::sending::post(url).stuff(body)
 }
 
+/// Query parameters for the federation GET directory endpoint. Unlike the
+/// client GET endpoint, federation supports selecting an appservice network.
+#[derive(ToParameters, Deserialize, Debug)]
+pub struct PublicRoomsReqArgs {
+    #[salvo(parameter(parameter_in = Query))]
+    pub limit: Option<usize>,
+    #[salvo(parameter(parameter_in = Query))]
+    pub since: Option<String>,
+    #[serde(default)]
+    #[salvo(parameter(parameter_in = Query))]
+    pub include_all_networks: bool,
+    #[salvo(parameter(parameter_in = Query))]
+    pub third_party_instance_id: Option<String>,
+}
+
 /// Request type for the `get_filtered_public_rooms` endpoint.
 
 #[derive(ToSchema, Deserialize, Serialize, Debug)]

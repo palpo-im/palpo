@@ -12,7 +12,7 @@ use crate::core::client::key::{
 };
 use crate::event::BatchToken;
 use crate::user::key;
-use crate::{AuthArgs, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok, room};
+use crate::{AuthArgs, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok};
 
 pub fn authed_router() -> Router {
     Router::with_path("keys")
@@ -115,10 +115,8 @@ async fn upload_keys(
     })
 }
 
-/// #POST /_matrix/client/r0/keys/changes
+/// #GET /_matrix/client/v3/keys/changes
 /// Gets a list of users who have updated their device identity keys since the previous sync token.
-///
-/// - TODO: left users
 #[endpoint]
 async fn get_key_changes(
     _aa: AuthArgs,
@@ -130,26 +128,27 @@ async fn get_key_changes(
 
     let from_tk: BatchToken = args.from.parse()?;
     let to_tk: BatchToken = args.to.parse()?;
-    if from_tk.is_publication_page() || to_tk.is_publication_page() {
+    if matches!(
+        from_tk,
+        BatchToken::PublicationPage { .. } | BatchToken::Historic { .. }
+    ) || matches!(
+        to_tk,
+        BatchToken::PublicationPage { .. } | BatchToken::Historic { .. }
+    ) {
         return Err(crate::MatrixError::invalid_param(
             "message page cursor is not a sync position",
         )
         .into());
     }
-    let mut device_list_updates = HashSet::new();
-    device_list_updates.extend(
-        data::user::keys_changed_users(sender_id, from_tk.event_sn(), Some(to_tk.event_sn()))
-            .await?,
-    );
-
-    for room_id in data::user::joined_rooms(sender_id).await? {
-        device_list_updates.extend(
-            room::keys_changed_users(&room_id, from_tk.event_sn(), Some(to_tk.event_sn())).await?,
-        );
-    }
+    let lists = crate::user::device_lists::changes(
+        sender_id,
+        from_tk.stream_ordering(),
+        to_tk.stream_ordering(),
+    )
+    .await?;
     json_ok(KeyChangesResBody {
-        changed: device_list_updates.into_iter().collect(),
-        left: Vec::new(), // TODO
+        changed: lists.changed,
+        left: lists.left,
     })
 }
 
@@ -300,3 +299,7 @@ mod fallback_tests {
         assert_eq!(status, Some(StatusCode::BAD_REQUEST));
     }
 }
+
+#[cfg(test)]
+#[path = "key_changes_tests.rs"]
+mod key_changes_tests;

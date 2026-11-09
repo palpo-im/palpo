@@ -22,7 +22,7 @@ still built from its current default branch so compatibility changes are visible
 | Area | Previous mixed coverage | Coverage in the manifest |
 | --- | --- | --- |
 | Federation authentication | Indirectly exercised by joins/messages | Explicit rejection of unsigned POST publicRooms; authenticated client queries must succeed against that same peer |
-| Public room discovery | None; upstream TestPublicRooms deploys one server | Remote GET/POST, metadata, private-room exclusion, limit, complete pagination without duplicates, name/topic/no-match filters, unpublishing, invalid remote pagination errors |
+| Public room discovery | None; upstream TestPublicRooms deploys one server | Remote GET/POST, metadata, private-room exclusion, limit, complete forward pagination without duplicates, name/topic/no-match filters, room-type/null/custom filters and their forward pages, unpublishing, invalid remote pagination errors |
 | Remote profile lookup | None; upstream profile federation tests use a simulated peer | Full profile, displayname and avatar lookup before sharing a room, Unicode values |
 | Alias resolution | Unicode lookup | Unicode resolution and actual join by alias, missing/deleted alias returning M_NOT_FOUND |
 | Membership | Invite, join by ID, candidate failover, invite rejection, ban/unban | Also remote leave/reinvite/rejoin, kick, knock and knock-restricted transitions; restricted joins, local-user remote authorization and three-peer restricted/knock-restricted candidate failover |
@@ -58,15 +58,25 @@ POST requests use the standard `server` query parameter. The audit found that
 Palpo previously read it only from the JSON body; the handler now extracts the
 query parameter and gives it precedence, retaining the legacy body fallback.
 
+The independent Rust HTTP regression
+`directory::tests::review_public_rooms_filters_networks_and_bidirectional_pages`
+also covers local client and signed federation GET/POST, filtered counts,
+backward pages, a changed backward limit, deterministic ties and zero limits.
+It checks network selection and captures signed requests to a loopback HTTPS
+peer to verify exact filter/network/cursor forwarding. Appservice network
+publication remains explicitly unsupported: Matrix and all-networks return the
+Matrix directory; a named third-party network has no entries. This is not
+evidence of appservice network publication or real bridge interoperability.
+
 ## Remaining gaps
 
 These areas need additional fixtures or known implementation work; they are not
 silently classified as covered by an unrelated join/message test:
 
-- Room-type-only directory filtering (`filter.room_types`), room network
-  selection and backward pagination. The current local directory implementation
-  does not apply `room_types`, and forwarding always selects the Matrix network.
-  Add the matching regression cases alongside those fixes.
+- Real bridge network publication and network selection/backward pagination
+  against Synapse. The local and loopback HTTP contracts above cover selection
+  and backward tokens; the mixed test covers room-type filtering and forward
+  pages between the two implementations.
 - Discovery through well-known delegation, SRV records, explicit ports, and
   DNS/TLS failures. Complement's fixed hs1/hs2 Docker routing does not model them.
 - ACL wildcard/IP-literal edge cases and larger topology permutations. The
