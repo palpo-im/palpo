@@ -189,6 +189,76 @@ func TestMixedPublicRooms(t *testing.T) {
 			}
 		})
 	}
+	t.Run("POST room type filtering and pagination", func(t *testing.T) {
+		typeMarker := marker + "-typed"
+		byType := make(map[string][]string)
+		for _, roomType := range []string{"", "", "m.space", "org.palpo.test.custom"} {
+			create := map[string]interface{}{
+				"preset": "public_chat", "visibility": "public", "room_version": "10", "name": typeMarker,
+			}
+			if roomType != "" {
+				create["creation_content"] = map[string]interface{}{"type": roomType}
+			}
+			id := owner.MustCreateRoom(t, create)
+			byType[roomType] = append(byType[roomType], id)
+			t.Cleanup(func() {
+				owner.MustDo(t, "PUT", []string{"_matrix", "client", "v3", "directory", "list", "room", id},
+					client.WithJSONBody(t, map[string]interface{}{"visibility": "private"})).Body.Close()
+			})
+		}
+		for _, tc := range []struct {
+			name  string
+			types []interface{}
+			want  []string
+		}{
+			{"untyped", []interface{}{nil}, byType[""]},
+			{"spaces", []interface{}{"m.space"}, byType["m.space"]},
+			{"custom", []interface{}{"org.palpo.test.custom"}, byType["org.palpo.test.custom"]},
+			{"combined", []interface{}{nil, "m.space"}, append(append([]string{}, byType[""]...), byType["m.space"]...)},
+			{"unknown", []interface{}{"org.palpo.test.absent"}, nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				want := make(map[string]bool)
+				for _, id := range tc.want {
+					want[id] = true
+				}
+				seen, tokens := make(map[string]bool), make(map[string]bool)
+				since := ""
+				for page := 0; page < 20; page++ {
+					body := map[string]interface{}{
+						"limit": 1, "filter": map[string]interface{}{"generic_search_term": typeMarker, "room_types": tc.types},
+					}
+					if since != "" {
+						body["since"] = since
+					}
+					result := jsonResponse(t, query.Do(t, "POST", directoryPath,
+						client.WithQueries(url.Values{"server": {server}}), client.WithJSONBody(t, body)), 200)
+					ids := roomIDs(t, result)
+					if len(ids) > 1 {
+						t.Fatal("filtered directory limit was not honored")
+					}
+					for id := range ids {
+						if !want[id] || seen[id] {
+							t.Fatalf("unexpected or repeated filtered room: %s", id)
+						}
+						seen[id] = true
+					}
+					since = result.Get("next_batch").Str
+					if since == "" {
+						if len(seen) != len(want) {
+							t.Fatalf("filtered pagination returned %d rooms, want %d", len(seen), len(want))
+						}
+						return
+					}
+					if tokens[since] {
+						t.Fatal("filtered pagination token repeated")
+					}
+					tokens[since] = true
+				}
+				t.Fatal("filtered directory pagination did not terminate")
+			})
+		}
+	})
 	t.Run("remote visibility change", func(t *testing.T) {
 		var id string
 		for id = range public {
