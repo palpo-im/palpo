@@ -1,5 +1,5 @@
 //! Device tracking at immutable sync publication boundaries.
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -7,7 +7,7 @@ use diesel_async::RunQueryDsl;
 use crate::core::device::DeviceLists;
 use crate::core::events::StateEventType;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
-use crate::core::{OwnedUserId, Seqnum, UserId};
+use crate::core::{OwnedEventId, OwnedRoomId, OwnedUserId, Seqnum, UserId};
 use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppResult, MatrixError, room};
@@ -21,12 +21,21 @@ pub(crate) use regression::assert_large_custom_state_is_not_resolved;
 struct Sharing {
     all: BTreeSet<OwnedUserId>,
     encrypted: BTreeSet<OwnedUserId>,
+    joined_rooms: BTreeMap<OwnedRoomId, Seqnum>,
+    encrypted_rooms: BTreeSet<OwnedRoomId>,
+}
+
+struct FrameSharing {
+    joined: BTreeSet<OwnedUserId>,
+    encrypted: bool,
+    caller_join_period: Option<Seqnum>,
 }
 
 async fn sharing_before(
     user: &UserId,
     boundary: Seqnum,
-    frames: &mut HashMap<i64, (BTreeSet<OwnedUserId>, bool)>,
+    frames: &mut HashMap<i64, FrameSharing>,
+    caller_periods: &mut HashMap<OwnedEventId, Seqnum>,
 ) -> AppResult<Sharing> {
     let mut sharing = Sharing::default();
     // Membership rows are retained on leave and forget. They locate candidate
@@ -64,6 +73,7 @@ async fn sharing_before(
             let field_ids: Vec<_> = state.keys().copied().collect();
             let mut joined = BTreeSet::new();
             let mut encrypted = false;
+            let mut caller_join_period = None;
             // Restrict field metadata before loading event bodies: unrelated
             // custom state never adds PDU reads. Batch bodies and reuse a
             // frame shared by both endpoints within this request.
@@ -101,26 +111,60 @@ async fn sharing_before(
                     .filter(event_points::room_id.eq(&room_id))
                     .filter(event_points::event_sn.eq_any(members.keys()))
                     .filter(event_datas::room_id.eq(&room_id))
-                    .select((event_points::event_sn, event_datas::json_data))
-                    .load::<(Seqnum, serde_json::Value)>(&mut connect().await?)
+                    .select((
+                        event_points::event_sn,
+                        event_points::event_id,
+                        event_datas::json_data,
+                    ))
+                    .load::<(Seqnum, crate::core::OwnedEventId, serde_json::Value)>(
+                        &mut connect().await?,
+                    )
                     .await?;
                 if bodies.len() != members.len() {
                     return Err(MatrixError::unknown("published member event missing").into());
                 }
-                for (event_sn, body) in bodies {
+                for (event_sn, event_id, body) in bodies {
                     let content: RoomMemberEventContent =
                         serde_json::from_value(body["content"].clone())?;
                     if content.membership == MembershipState::Join {
-                        joined.insert(UserId::parse(&members[&event_sn])?);
+                        let member = UserId::parse(&members[&event_sn])?;
+                        if member == user {
+                            // A profile-only member update retains the same
+                            // joined period; leave+rejoin starts a new one even
+                            // if both endpoints contain this same room.
+                            let period = if let Some(period) = caller_periods.get(&event_id) {
+                                *period
+                            } else {
+                                let period =
+                                    room::user::join_sn_for_event(user, event_id.clone(), event_sn)
+                                        .await?;
+                                caller_periods.insert(event_id, period);
+                                period
+                            };
+                            caller_join_period = Some(period);
+                        }
+                        joined.insert(member);
                     }
                 }
             }
-            entry.insert((joined, encrypted));
+            entry.insert(FrameSharing {
+                joined,
+                encrypted,
+                caller_join_period,
+            });
         }
-        let (joined, encrypted) = &frames[&frame];
+        let FrameSharing {
+            joined,
+            encrypted,
+            caller_join_period,
+        } = &frames[&frame];
         if joined.contains(user) {
+            let period = caller_join_period
+                .ok_or_else(|| MatrixError::unknown("caller joined period missing"))?;
+            sharing.joined_rooms.insert(room_id.clone(), period);
             sharing.all.extend(joined.iter().cloned());
             if *encrypted {
+                sharing.encrypted_rooms.insert(room_id);
                 sharing.encrypted.extend(joined.iter().cloned());
             }
         }
@@ -140,13 +184,26 @@ pub(crate) async fn changes(user: &UserId, from: Seqnum, to: Seqnum) -> AppResul
         return Ok(DeviceLists::default());
     }
     let mut frames = HashMap::new();
-    let before = sharing_before(user, from, &mut frames).await?;
-    let after = sharing_before(user, to, &mut frames).await?;
+    let mut caller_periods = HashMap::new();
+    let before = sharing_before(user, from, &mut frames, &mut caller_periods).await?;
+    let after = sharing_before(user, to, &mut frames, &mut caller_periods).await?;
     // Preserve the existing sync notification for newly shared plaintext
     // peers too. Enabling encryption in an existing room starts E2EE tracking
     // even when the users already shared that plaintext room.
     let mut changed: BTreeSet<_> = after.all.difference(&before.all).cloned().collect();
     changed.extend(after.encrypted.difference(&before.encrypted).cloned());
+    // An imported/federated join can publish membership without uploading a
+    // device key or writing an own-user key marker. Other devices must still
+    // learn about this user's newly joined room. Keep that notification apart
+    // from peer tracking so the caller is never reported in `left`.
+    if after
+        .joined_rooms
+        .iter()
+        .any(|(room, period)| before.joined_rooms.get(room) != Some(period))
+        || !after.encrypted_rooms.is_subset(&before.encrypted_rooms)
+    {
+        changed.insert(user.to_owned());
+    }
     let candidates: Vec<_> = after
         .all
         .iter()

@@ -72,6 +72,25 @@ async fn action(service: &Service, room: &OwnedRoomId, token: &str, action: &str
     .await;
 }
 
+async fn put_state(
+    service: &Service,
+    room: &OwnedRoomId,
+    token: &str,
+    ty: &str,
+    key: &str,
+    content: Value,
+) {
+    ok(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/state/{ty}/{key}"
+        ))
+        .add_header("Authorization", format!("Bearer {token}"), true)
+        .json(&content),
+        service,
+    )
+    .await;
+}
+
 async fn sync(service: &Service, token: &str, since: Option<&str>) -> Value {
     let query = since.map_or(String::new(), |since| format!("&since={since}"));
     ok(
@@ -99,6 +118,15 @@ fn listed(body: &Value, list: &str, user: &OwnedUserId) -> bool {
     body[list]
         .as_array()
         .is_some_and(|users| users.iter().any(|u| u.as_str() == Some(user.as_str())))
+}
+
+fn sync_lists(body: &Value) -> crate::core::device::DeviceLists {
+    serde_json::from_value(
+        body.get("device_lists")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    )
+    .expect("sync device lists must satisfy their response schema")
 }
 
 async fn assert_window(
@@ -416,6 +444,43 @@ async fn run() {
         "changed",
         &alice
     ));
+    // Enabling encryption starts tracking for both participants, including
+    // their own devices, even though they already shared this plaintext room.
+    let alice_plain = sync(&service, &at, None).await;
+    let carol_plain = sync(&service, &ct, None).await;
+    put_state(
+        &service,
+        &plain,
+        &at,
+        "m.room.encryption",
+        "",
+        json!({"algorithm":"m.megolm.v1.aes-sha2"}),
+    )
+    .await;
+    let alice_encrypted = sync(&service, &at, alice_plain["next_batch"].as_str()).await;
+    let carol_encrypted = sync(&service, &ct, carol_plain["next_batch"].as_str()).await;
+    assert_eq!(
+        alice_encrypted["device_lists"]["changed"],
+        json!([alice, carol])
+    );
+    assert_eq!(
+        carol_encrypted["device_lists"]["changed"],
+        json!([alice, carol])
+    );
+    put_state(
+        &service,
+        &plain,
+        &ct,
+        "m.room.member",
+        carol.as_str(),
+        json!({"membership":"join","displayname":"profile-only update"}),
+    )
+    .await;
+    let profile = sync(&service, &ct, carol_encrypted["next_batch"].as_str()).await;
+    assert!(
+        sync_lists(&profile).is_empty(),
+        "profile updates must retain the same joined period"
+    );
     // A cached signed outlier has an old event identity, but only starts
     // sharing when its live-publication frame is committed later.
     let delayed = create(&service, &at, true).await;
@@ -455,6 +520,83 @@ async fn run() {
     .await
     .unwrap();
     let published = assert_window(&service, &alice, &at, &old, &bob, false).await;
+    assert_eq!(
+        changes(&service, &at, &old, &published).await["changed"],
+        json!([bob])
+    );
+    let imported_join = sync(&service, &bt, Some(&old)).await;
+    let imported_until: crate::event::BatchToken = imported_join["next_batch"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        data::user::key::keys_changed_in_window(
+            std::slice::from_ref(&bob),
+            old.parse::<crate::event::BatchToken>().unwrap().event_sn(),
+            imported_until.event_sn(),
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "imported join fixture must not rely on an own-device marker"
+    );
+    assert_eq!(
+        imported_join["device_lists"]["changed"],
+        json!([alice, bob]),
+        "joining user's sync must include peers and self even without a key upload"
+    );
+    assert!(sync_lists(&imported_join).left.is_empty());
+    let acknowledged = sync(&service, &bt, imported_join["next_batch"].as_str()).await;
+    assert!(
+        sync_lists(&acknowledged).is_empty(),
+        "own join notification must not repeat after acknowledgement"
+    );
+    // Rejoining inside one sync window has the same room at both endpoints
+    // but a new joined period. Use the federation importer again, without the
+    // local /join device-marker side effect.
+    let rejoin_from = acknowledged["next_batch"].as_str().unwrap();
+    action(&service, &delayed, &bt, "leave", json!({})).await;
+    let (_, mut joining) = crate::event::PduBuilder {
+        event_type: "m.room.member".into(),
+        state_key: Some(bob.to_string()),
+        content: serde_json::value::to_raw_value(&json!({"membership":"join"})).unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(&bob, &delayed, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    joining.remove("event_id");
+    crate::federation::membership::send_join_v2(
+        config::server_name(),
+        &delayed,
+        &serde_json::value::to_raw_value(&joining).unwrap(),
+    )
+    .await
+    .unwrap();
+    let own_rejoin = sync(&service, &bt, Some(rejoin_from)).await;
+    let own_lists = sync_lists(&own_rejoin);
+    assert!(
+        own_lists.changed.contains(&bob),
+        "same-window rejoin must refresh the caller's devices"
+    );
+    assert!(!own_lists.left.contains(&bob));
+    let rejoin_until: crate::event::BatchToken =
+        own_rejoin["next_batch"].as_str().unwrap().parse().unwrap();
+    assert!(
+        data::user::key::keys_changed_in_window(
+            std::slice::from_ref(&bob),
+            rejoin_from
+                .parse::<crate::event::BatchToken>()
+                .unwrap()
+                .event_sn(),
+            rejoin_until.event_sn()
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "same-window imported rejoin must not rely on an own-device marker"
+    );
     assert!(listed(
         &changes(&service, &at, &old, &published).await,
         "changed",
