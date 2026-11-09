@@ -672,6 +672,89 @@ mod device_version_tests {
             .unwrap();
     }
 
+    /// The EDU admission/race fixtures intentionally manipulate current rows.
+    /// The test that also consumes /sync needs a separate accepted, published
+    /// membership snapshot; current rows alone cannot certify an old token.
+    async fn publish_sync_membership_fixture(room: &RoomId, users: &[&UserId]) {
+        use crate::data::room::{DbEventData, NewDbEvent};
+        use crate::data::schema::event_points;
+        use crate::room::state::{CompressedEvent, CompressedState};
+
+        let mut state = CompressedState::new();
+        let mut saved = Vec::new();
+        for user in users {
+            let sn = crate::data::next_sn().await.unwrap();
+            let pdu: crate::event::PduEvent = serde_json::from_value(json!({
+                "event_id":format!("$device-{}",user.localpart()),"room_id":room,
+                "sender":user,"type":"m.room.member","state_key":user,
+                "content":{"membership":"join"},"origin_server_ts":1,
+                "depth":sn,"hashes":{"sha256":""}
+            }))
+            .unwrap();
+            let json = crate::core::serde::to_canonical_object(&pdu).unwrap();
+            let mut event =
+                NewDbEvent::from_canonical_json_with_room_id(&pdu.event_id, sn, &json, false, room)
+                    .unwrap();
+            event.is_outlier = false;
+            let mut conn = crate::data::connect().await.unwrap();
+            event.save_with_conn(&mut conn).await.unwrap();
+            DbEventData {
+                event_id: pdu.event_id.clone(),
+                event_sn: sn,
+                room_id: room.to_owned(),
+                json_data: serde_json::to_value(&json).unwrap(),
+                internal_metadata: None,
+                format_version: None,
+            }
+            .save_with_conn(&mut conn)
+            .await
+            .unwrap();
+            diesel::insert_into(event_points::table)
+                .values((
+                    event_points::event_id.eq(&pdu.event_id),
+                    event_points::event_sn.eq(sn),
+                    event_points::room_id.eq(room),
+                ))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            diesel::update(
+                room_users::table
+                    .filter(room_users::room_id.eq(room))
+                    .filter(room_users::user_id.eq(*user)),
+            )
+            .set(room_users::event_sn.eq(sn))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+            drop(conn);
+            let field = crate::room::state::ensure_field_id(&"m.room.member".into(), user.as_str())
+                .await
+                .unwrap();
+            state.insert(CompressedEvent::new(field, sn));
+            saved.push((pdu.event_id, sn));
+        }
+        let frame = crate::room::state::save_state(room, std::sync::Arc::new(state))
+            .await
+            .unwrap()
+            .frame_id;
+        crate::room::state::set_room_state(room, frame)
+            .await
+            .unwrap();
+        let mut conn = crate::data::connect().await.unwrap();
+        for (id, sn) in saved {
+            diesel::update(event_points::table.find(id))
+                .set((
+                    event_points::frame_id.eq(Some(frame)),
+                    event_points::live_published_sn.eq(Some(sn)),
+                    event_points::live_published_frame_id.eq(Some(frame)),
+                ))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+    }
+
     async fn setup() -> (
         Service,
         Ed25519KeyPair,
@@ -769,6 +852,7 @@ mod device_version_tests {
             "untracked user consumed a version"
         );
         join_current_membership(&room, &bob).await;
+        publish_sync_membership_fixture(&room, &[&alice, &bob]).await;
         let initial = sync(&service, None).await;
         let response = send_update(&service, &key, "first", 0, "BOB").await;
         assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);

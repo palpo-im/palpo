@@ -341,6 +341,30 @@ pub async fn keys_changed_users(
     }
 }
 
+/// Immutable user-level changes in the half-open sync position interval.
+pub async fn keys_changed_in_window(
+    users: &[OwnedUserId],
+    from: Seqnum,
+    to: Seqnum,
+) -> DataResult<Vec<OwnedUserId>> {
+    #[derive(QueryableByName)]
+    struct ChangedUser {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        user_id: OwnedUserId,
+    }
+    Ok(diesel::sql_query(
+        "SELECT DISTINCT user_id FROM e2e_key_change_history WHERE occur_sn >= $1 AND occur_sn < $2 AND user_id = ANY($3)",
+    )
+    .bind::<diesel::sql_types::BigInt, _>(from)
+    .bind::<diesel::sql_types::BigInt, _>(to)
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(users)
+    .load::<ChangedUser>(&mut connect().await?)
+    .await?
+    .into_iter()
+    .map(|row| row.user_id)
+    .collect())
+}
+
 /// Check if user has a master cross-signing key
 pub async fn has_master_cross_signing_key(user_id: &UserId) -> DataResult<bool> {
     let count = e2e_cross_signing_keys::table
