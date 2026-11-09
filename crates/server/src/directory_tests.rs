@@ -297,7 +297,7 @@ async fn run() {
             body["since"] = json!(token);
         }
         let page = ok(client_post(&body), &service).await;
-        assert_eq!(ids(&page), [room.clone()]);
+        assert_eq!(ids(&page).as_slice(), std::slice::from_ref(room));
         assert_eq!(page["total_room_count_estimate"], expected.len());
         let federated = ok(
             federation(&key, "/_matrix/federation/v1/publicRooms", Some(&body)),
@@ -396,15 +396,14 @@ async fn run() {
         .0,
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(
-        send(
-            TestClient::post("http://localhost/_matrix/federation/v1/publicRooms").json(&json!({})),
-            &service
-        )
-        .await
-        .0,
-        StatusCode::FORBIDDEN
-    );
+    let (status, unsigned) = send(
+        TestClient::post("http://localhost/_matrix/federation/v1/publicRooms").json(&json!({})),
+        &service,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{unsigned}");
+    assert_eq!(unsigned["errcode"], "M_MISSING_TOKEN");
+    assert!(unsigned.get("chunk").is_none());
     let body_server =
         json!({"server":"must-not-forward.example","filter":{"room_types":["m.space"]}});
     assert_rooms(
