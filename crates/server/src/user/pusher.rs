@@ -7,11 +7,12 @@ use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
 use crate::core::push::push_gateway::{
     Device, Notification, NotificationCounts, NotificationPriority, SendEventNotificationReqBody,
+    SendEventNotificationResBody,
 };
 use crate::core::push::{
     Action, HighlightTweakValue, PushFormat, Pusher, PusherKind, Ruleset, Tweak,
 };
-use crate::data::user::pusher::NewDbPusher;
+use crate::data::user::pusher::{DbPusher, NewDbPusher};
 use crate::event::PduEvent;
 use crate::utils::url_guard;
 use crate::{AppError, AppResult, AuthedInfo, data, room, sending};
@@ -123,7 +124,7 @@ pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<
 pub async fn send_push_notice(
     user: &UserId,
     unread: u64,
-    pusher: &Pusher,
+    pusher: &DbPusher,
     ruleset: Ruleset,
     pdu: &PduEvent,
 ) -> AppResult<()> {
@@ -169,10 +170,11 @@ pub async fn send_push_notice(
 #[tracing::instrument(skip_all)]
 async fn send_notice(
     unread: u64,
-    pusher: &Pusher,
+    registration: &DbPusher,
     tweaks: Vec<Tweak>,
     event: &PduEvent,
 ) -> AppResult<()> {
+    let pusher: Pusher = registration.clone().try_into()?;
     // TODO: email
     match &pusher.kind {
         PusherKind::Http(http) => {
@@ -218,12 +220,7 @@ async fn send_notice(
             url_guard::ensure_safe_outbound_url(&url)?;
             let push_client = sending::push_gateway_client();
 
-            if event_id_only {
-                crate::sending::post(url)
-                    .stuff(SendEventNotificationReqBody::new(notification))?
-                    .send_by_client::<()>(push_client)
-                    .await?;
-            } else {
+            if !event_id_only {
                 notification.sender = Some(event.sender.clone());
                 notification.event_type = Some(event.event_ty.clone());
                 notification.content = serde_json::value::to_raw_value(&event.content).ok();
@@ -234,12 +231,10 @@ async fn send_notice(
                 notification.sender_display_name =
                     data::user::display_name(&event.sender).await.ok().flatten();
                 notification.room_name = room::get_name(&event.room_id).await.ok();
-
-                crate::sending::post(url)
-                    .stuff(SendEventNotificationReqBody::new(notification))?
-                    .send_by_client::<()>(push_client)
-                    .await?;
             }
+
+            let response = send_gateway_notification(push_client, url, notification).await?;
+            remove_rejected_pusher(registration, &response).await?;
 
             Ok(())
         }
@@ -247,6 +242,38 @@ async fn send_notice(
         PusherKind::Email(_) => Ok(()),
         _ => Ok(()),
     }
+}
+
+async fn send_gateway_notification(
+    client: reqwest::Client,
+    url: Url,
+    notification: Notification,
+) -> AppResult<SendEventNotificationResBody> {
+    let request = sending::post(url)
+        .stuff(SendEventNotificationReqBody::new(notification))?
+        .into_inner();
+    // Receiving HTTP is not an acknowledgement. In particular, a gateway may
+    // return a well-formed JSON error with 503; preserve the durable request.
+    let response = client.execute(request).await?;
+    if !response.status().is_success() {
+        return Err(AppError::public(format!(
+            "Push gateway refused notification with HTTP {}",
+            response.status()
+        )));
+    }
+    Ok(response.json().await?)
+}
+
+async fn remove_rejected_pusher(
+    pusher: &DbPusher,
+    response: &SendEventNotificationResBody,
+) -> AppResult<()> {
+    // Only this device was sent to this gateway. Never let a gateway response
+    // remove another application's keys or another user's registration.
+    if response.rejected.iter().any(|key| key == &pusher.pushkey) {
+        data::user::pusher::delete_rejected_pusher(pusher).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -258,6 +285,156 @@ mod tests {
     use crate::data::connect;
     use crate::data::room::NewDbRoomUser;
     use crate::data::schema::*;
+
+    fn gateway(body: &'static str, status: &'static str) -> (Url, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/notify", listener.local_addr().unwrap())).unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    if bytes.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        (url, peer)
+    }
+
+    #[tokio::test]
+    async fn gateway_requires_success_status_and_standard_response() {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        for (body, status, success) in [
+            (r#"{"rejected":[]}"#, "200 OK", true),
+            (r#"{"rejected":["expired"]}"#, "200 OK", true),
+            (r#"{"rejected":[]}"#, "503 Service Unavailable", false),
+            (r#"{"rejected":[]}"#, "302 Found", false),
+            ("invalid-json", "200 OK", false),
+        ] {
+            let (url, peer) = gateway(body, status);
+            let result =
+                send_gateway_notification(client.clone(), url, Notification::new(vec![])).await;
+            assert_eq!(result.is_ok(), success, "{status} {body}");
+            if body.contains("expired") {
+                assert_eq!(result.unwrap().rejected, ["expired"]);
+            }
+            peer.join().unwrap();
+        }
+        // Transport failure must also propagate so the durable caller retries.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/notify", listener.local_addr().unwrap())).unwrap();
+        drop(listener);
+        assert!(
+            send_gateway_notification(client, url, Notification::new(vec![]))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn review_rejected_gateway_keys_only_remove_matching_pusher() {
+        crate::test_database::init();
+        let alice = UserId::parse("@alice:example.com").unwrap();
+        for row in [
+            http_pusher(alice.as_str(), "app", "expired"),
+            http_pusher(alice.as_str(), "other-app", "expired"),
+            http_pusher("@bob:example.com", "app", "expired"),
+            http_pusher(alice.as_str(), "app", "other-key"),
+        ] {
+            data::user::pusher::set_pusher(&row, true).await.unwrap();
+        }
+        let pusher = data::user::pusher::get_pushers(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.app_id == "app" && row.pushkey == "expired")
+            .unwrap();
+        remove_rejected_pusher(
+            &pusher,
+            &SendEventNotificationResBody::new(vec!["other-key".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pusher_owners("app", "expired").await.len(), 2);
+        // A response from the previous gateway must not delete the replacement,
+        // even though its user/app/key tuple is unchanged.
+        let mut replacement = http_pusher(alice.as_str(), "app", "expired");
+        replacement.data = serde_json::json!({"url":"https://new-gateway.example/notify"});
+        data::user::pusher::set_pusher(&replacement, true)
+            .await
+            .unwrap();
+        remove_rejected_pusher(
+            &pusher,
+            &SendEventNotificationResBody::new(vec!["expired".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pusher_owners("app", "expired").await.len(), 2);
+        let pusher = data::user::pusher::get_pushers(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.app_id == "app" && row.pushkey == "expired")
+            .unwrap();
+        // Also fence updates that preserve the database row id.
+        diesel::update(user_pushers::table.find(pusher.id))
+            .set(
+                user_pushers::data
+                    .eq(serde_json::json!({"url":"https://updated-in-place.example/notify"})),
+            )
+            .execute(&mut connect().await.unwrap())
+            .await
+            .unwrap();
+        remove_rejected_pusher(
+            &pusher,
+            &SendEventNotificationResBody::new(vec!["expired".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pusher_owners("app", "expired").await.len(), 2);
+        let current = data::user::pusher::get_pushers(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == pusher.id)
+            .unwrap();
+        remove_rejected_pusher(
+            &current,
+            &SendEventNotificationResBody::new(vec!["expired".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pusher_owners("app", "expired").await, ["@bob:example.com"]);
+        assert_eq!(
+            pusher_owners("other-app", "expired").await,
+            [alice.as_str()]
+        );
+        assert_eq!(pusher_owners("app", "other-key").await, [alice.as_str()]);
+    }
 
     fn http_pusher(user_id: &str, app_id: &str, pushkey: &str) -> NewDbPusher {
         NewDbPusher {
