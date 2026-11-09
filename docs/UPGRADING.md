@@ -3,8 +3,11 @@
 ## Device-list history migration (2026-11-10)
 
 `2026-11-10-000000_device_key_change_history` adds a transactional journal of
-device-key change positions. Its PostgreSQL trigger records inserts and updates
-to the existing latest-per-room markers, including writes from old binaries.
+device-key change positions. Its PostgreSQL trigger records insert attempts and
+updates to the existing latest-per-room markers, including writes from old
+binaries. Recording happens before conflict handling, so a delayed older
+notification remains in its historical window while the latest marker stays
+newer. Journal records are deduplicated and roll back with the writer transaction.
 This migration is additive: deployments already upgraded through the coordinated
 2026-10-30 and media-reservation migrations may apply it before rolling out the
 new application. Keep the trigger and journal while any upgraded reader runs.

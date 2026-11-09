@@ -24,5 +24,9 @@ END;
 $$;
 
 CREATE TRIGGER record_device_key_change_history
-AFTER INSERT OR UPDATE ON e2e_key_changes
+-- BEFORE INSERT also observes an older attempted notification whose
+-- ON CONFLICT DO UPDATE WHERE clause deliberately retains a newer marker.
+-- An upsert can invoke INSERT and UPDATE triggers for the same position; the
+-- journal primary key deduplicates them within the writer's transaction.
+BEFORE INSERT OR UPDATE ON e2e_key_changes
 FOR EACH ROW EXECUTE FUNCTION record_device_key_change_history();
