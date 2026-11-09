@@ -1,8 +1,9 @@
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::json;
 
-use crate::core::UnixMillis;
 use crate::core::client::room::ReportContentReqBody;
 use crate::core::client::state::{
     SendStateEventReqArgs, SendStateEventReqBody, SendStateEventResBody, StateEventFormat,
@@ -10,17 +11,60 @@ use crate::core::client::state::{
     StateEventsResBody,
 };
 use crate::core::client::typing::{CreateTypingEventReqBody, Typing};
+use crate::core::events::room::history_visibility::HistoryVisibility;
 use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::identifiers::*;
 use crate::core::room::{RoomEventReqArgs, RoomTypingReqArgs};
+use crate::core::{Seqnum, UnixMillis};
+use crate::data::connect;
+use crate::data::schema::room_users;
 use crate::room::{state, timeline};
 use crate::utils::HtmlEscape;
 use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, json_ok, room};
 
+/// Choose the same state snapshot for all state GET variants. Membership is
+/// read once with errors preserved: a failed lookup must not become permission
+/// to read current state. A departure remains a cap even in a world-readable
+/// room, until the user actually rejoins.
+async fn visible_state_until_sn(
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> crate::AppResult<Option<Seqnum>> {
+    let membership = room_users::table
+        .filter(room_users::room_id.eq(room_id))
+        .filter(room_users::user_id.eq(user_id))
+        .order_by(room_users::id.desc())
+        .select((room_users::membership, room_users::event_sn))
+        .first::<(String, Seqnum)>(&mut connect().await?)
+        .await
+        .optional()?;
+    match membership
+        .as_ref()
+        .map(|(membership, sn)| (membership.as_str(), *sn))
+    {
+        Some(("join", _)) => Ok(None),
+        Some(("leave" | "ban", sn)) => Ok(Some(sn)),
+        other => {
+            let visibility = room::get_history_visibility(room_id).await?;
+            if visibility == HistoryVisibility::WorldReadable
+                || (visibility == HistoryVisibility::Invited
+                    && matches!(other, Some(("invite", _))))
+            {
+                Ok(None)
+            } else {
+                Err(
+                    MatrixError::forbidden("you don't have permission to view this room", None)
+                        .into(),
+                )
+            }
+        }
+    }
+}
+
 /// #GET /_matrix/client/r0/rooms/{room_id}/state
 /// Get all state events for a room.
 ///
-/// - If not joined: Only works if current room history visibility is world readable
+/// Former members see their departure snapshot; other non-members need visibility.
 #[endpoint]
 pub(super) async fn get_state(
     _aa: AuthArgs,
@@ -31,25 +75,11 @@ pub(super) async fn get_state(
     let sender_id = authed.user_id();
     let room_id = room_id.into_inner();
 
-    let _until_sn = if !state::user_can_see_events(sender_id, &room_id).await? {
-        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &room_id).await {
-            Some(leave_sn)
-        } else {
-            return Err(MatrixError::forbidden(
-                "you don't have permission to view this room",
-                None,
-            )
-            .into());
-        }
-    } else {
-        None
-    };
-
-    let frame_id = room::get_frame_id(&room_id, None).await.unwrap_or_default();
+    let until_sn = visible_state_until_sn(sender_id, &room_id).await?;
+    let frame_id = room::get_frame_id(&room_id, until_sn).await?;
 
     let room_state = state::get_full_state(frame_id)
-        .await
-        .unwrap_or_default()
+        .await?
         .values()
         .map(|pdu| pdu.to_state_event_for(sender_id, authed.device_id()))
         .collect();
@@ -135,7 +165,7 @@ pub async fn report(
 /// #GET /_matrix/client/r0/rooms/{room_id}/state/{event_type}/{state_key}
 /// Get single state event of a room.
 ///
-/// - If not joined: Only works if current room history visibility is world readable
+/// Former members see their departure snapshot; other non-members need visibility.
 #[endpoint]
 pub(super) async fn state_for_key(
     _aa: AuthArgs,
@@ -145,19 +175,7 @@ pub(super) async fn state_for_key(
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
 
-    let until_sn = if !state::user_can_see_events(sender_id, &args.room_id).await? {
-        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &args.room_id).await {
-            Some(leave_sn)
-        } else {
-            return Err(MatrixError::forbidden(
-                "you don't have permission to view this room",
-                None,
-            )
-            .into());
-        }
-    } else {
-        None
-    };
+    let until_sn = visible_state_until_sn(sender_id, &args.room_id).await?;
 
     let event = room::get_state(&args.room_id, &args.event_type, &args.state_key, until_sn).await?;
     let event_format = args
@@ -177,7 +195,7 @@ pub(super) async fn state_for_key(
 /// #GET /_matrix/client/r0/rooms/{room_id}/state/{event_type}
 /// Get single state event of a room.
 ///
-/// - If not joined: Only works if current room history visibility is world readable
+/// Former members see their departure snapshot; other non-members need visibility.
 #[endpoint]
 pub(super) async fn state_for_empty_key(
     _aa: AuthArgs,
@@ -186,19 +204,7 @@ pub(super) async fn state_for_empty_key(
 ) -> JsonResult<StateEventsForKeyResBody> {
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
-    let until_sn = if !state::user_can_see_events(sender_id, &args.room_id).await? {
-        if let Ok(leave_sn) = room::user::leave_sn(sender_id, &args.room_id).await {
-            Some(leave_sn)
-        } else {
-            return Err(MatrixError::forbidden(
-                "you don't have permission to view this room",
-                None,
-            )
-            .into());
-        }
-    } else {
-        None
-    };
+    let until_sn = visible_state_until_sn(sender_id, &args.room_id).await?;
 
     let event = room::get_state(&args.room_id, &args.event_type, "", until_sn).await?;
     let event_format = args
@@ -337,3 +343,7 @@ pub(super) async fn timestamp(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
     let _authed = depot.authed_info()?;
     empty_ok()
 }
+
+#[cfg(test)]
+#[path = "state_snapshot_tests.rs"]
+mod state_snapshot_tests;
