@@ -17,7 +17,9 @@ outbound calls in `directory`, `routing/client/profile`, `room/alias`,
 `room/space`, `membership`, `user/key`, `media/remote`, and event fetching.
 The Complement API and upstream cases were reviewed at
 `78516f9174a7c50c9a35a158fe88d16c5d9b88f5`, pinned in the workflow. Synapse is
-still built from its current default branch so compatibility changes are visible.
+also pinned to `217e4c0f48e01db000127ed9bfb5251eefc51a2c`. Source revisions,
+Palpo executable/image identity and fixture configuration hashes are retained
+with each run; see [CI gates](../../docs/development/ci-gates.md).
 
 | Area | Previous mixed coverage | Coverage in the manifest |
 | --- | --- | --- |

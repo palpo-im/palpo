@@ -38,6 +38,9 @@ pub struct DbOutgoingRequest {
 }
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = outgoing_requests)]
+// Nullable destination/payload columns have no non-NULL database defaults.
+// Bind NULL explicitly so mixed-destination batches share one insert shape.
+#[diesel(treat_none_as_default_value = false)]
 pub struct NewDbOutgoingRequest {
     pub kind: String,
     pub appservice_id: Option<String>,

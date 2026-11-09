@@ -67,13 +67,13 @@ async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), 
 }
 
 /// Read the global stream position after every earlier presence publication, profile
-/// mutation and write to this device inbox commits.
+/// mutation, write to this device inbox and key-change publication commits.
 ///
-/// All three streams allocate from `occur_sn_seq`. Holding their advisory locks in one
+/// These streams allocate from `occur_sn_seq`. Holding their advisory locks in one
 /// transaction prevents the sequence read from observing a position allocated by an
 /// uncommitted writer from another stream. This extends
 /// [`curr_sn_after_presence_writes`](super::curr_sn_after_presence_writes) with the profile
-/// stream, taking the locks in the same order.
+/// stream, taking the locks in order: presence -> profile -> inbox -> keys.
 pub async fn curr_sn_after_presence_profile_and_inbox_writes(
     user_id: &UserId,
     device_id: &DeviceId,
@@ -86,6 +86,7 @@ pub async fn curr_sn_after_presence_profile_and_inbox_writes(
             // position until its profile row and change row have both committed.
             lock_profile_stream_shared(conn).await?;
             super::device::lock_inbox_stream(conn, user_id, device_id).await?;
+            super::key::lock_key_change_snapshot(conn).await?;
             Ok(
                 diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",

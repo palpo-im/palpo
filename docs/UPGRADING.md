@@ -1,5 +1,33 @@
 # Upgrading Palpo
 
+## Commit-safe device-list sync positions
+
+Upgrade all homeserver nodes that publish key changes or issue sync cursors
+together before relying on the new device-list publication fence. Stop old
+writers, deploy the upgraded nodes, and resume traffic through upgraded readers.
+An older node does not participate in the fence, even if the device-list journal
+migration has already been applied. An old reader can still issue a cursor past
+an upgraded writer's uncommitted position; both sides must be upgraded for the
+guarantee to hold. This change adds no database migration.
+
+Local device and signing-key notifications now allocate their position and write
+all marker scopes in one transaction. Remote device versions and bulk device
+revocation participate in the same fence. Classic/sliding sync, invitation cursor
+recapture and the shared EDU cursor cannot advance past those uncommitted key
+positions. A failed transaction may leave a harmless sequence gap; its journal,
+markers and transactional side effects roll back together.
+
+Different users can publish concurrently. Publishers for one user serialize
+before taking the shared key-stream lock; cursor captures take its exclusive
+form after the other stream locks. Do not add a publisher that allocates its
+sequence before this fence, or make a publisher take presence/profile/live/inbox
+snapshot locks while holding the key-stream lock.
+
+The fence does not reconstruct notifications skipped before this upgrade.
+Clients whose device-list tracking spanned the old publication race should
+refresh tracked device lists. Rolling application code back restores the old
+race even when the journal table remains present.
+
 ## Device-list history migration (2026-11-10)
 
 `2026-11-10-000000_device_key_change_history` adds a transactional journal of

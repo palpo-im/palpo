@@ -12,6 +12,8 @@ on:
       - 'Cargo.lock'            # or lockfile updates
       - 'crates/data/migrations/**'
       - 'deny.toml'             # or supply-chain policy changes
+      - 'tests/security/**'
+      - 'tests/dependency_policy*.py'
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
   push:
@@ -23,6 +25,8 @@ on:
       - 'Cargo.lock'            # or lockfile updates
       - 'crates/data/migrations/**'
       - 'deny.toml'             # or supply-chain policy changes
+      - 'tests/security/**'
+      - 'tests/dependency_policy*.py'
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
 
@@ -40,13 +44,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Validate advisory exception policy
+        run: |
+          python3 -m unittest discover -s tests -p 'dependency_policy_test.py'
+          python3 tests/dependency_policy.py
       # Feature unification is configured in deny.toml ([graph] all-features).
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
           arguments: ""
-          # Report RustSec findings as warnings while enforcing other dependency policies.
-          command-arguments: --warn vulnerability --warn notice --warn unmaintained --warn unsound
+          # Keep vulnerabilities and unsoundness blocking; informational debt is visible.
+          command-arguments: --warn notice --warn unmaintained
 
   lint:
     name: Rustfmt and Clippy
@@ -130,7 +138,7 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
-      - name: Security, protocol and resource review regressions (R01-R10)
+      - name: Security, protocol and resource review regressions
         timeout-minutes: 30
         shell: bash
         run: |
@@ -147,6 +155,9 @@ jobs:
             user::pusher::tests::review_rejected_gateway_keys_only_remove_matching_pusher
             sending::delivery_tests::http_push_retries_failed_gateway_without_acknowledging_queue
             sending::guard::tests::review_sender_survives_ack_failure_and_recovers_startup_failure
+            sending::tests::review_queue_batch_is_atomic_and_preserves_payloads
+            user::key::publication_tests::review_key_change_publication_fence_survives_commit_rollback_and_cancellation
+            sending::guard::readiness_tests::review_readiness_http_tracks_database_and_sender_recovery_without_breaking_liveness
             routing::client::key::key_changes_tests::review_keys_changes_tracks_shared_encrypted_membership_windows
             directory::tests::review_public_rooms_filters_networks_and_bidirectional_pages
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
@@ -157,7 +168,7 @@ jobs:
             cargo test --locked -p palpo --lib "${features[@]}" --no-run
             # These resource lifecycle cases need no database and must also run
             # with default features (the workspace suite uses all features).
-            for module in media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_; do
+            for module in media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_ readiness::tests::review_readiness_; do
               cargo test --locked -p palpo --lib "${features[@]}" "$module"
             done
             index=0
@@ -170,6 +181,22 @@ jobs:
                 cargo test --locked -p palpo --lib "${features[@]}" "$test" -- --ignored --exact --test-threads=1
               index=$((index + 1))
             done
+          done
+
+      - name: Embedding startup PostgreSQL regression
+        timeout-minutes: 10
+        run: |
+          # The embedding suite owns its pools/startup globals and has a distinct
+          # database variable. Its child process also requires an empty database.
+          for mode in default all; do
+            features=()
+            if [ "$mode" = all ]; then features+=(--all-features); fi
+            database="palpo_embedding_${mode}"
+            test=tests::embedding_startup_retries_postgres
+            sudo -u postgres createdb -O palpo_test "$database"
+            cargo test --locked -p palpo --lib "${features[@]}" "$test" -- --list --ignored --exact | grep -F "$test: test"
+            PALPO_EMBEDDING_TEST_DATABASE_URL="postgres://palpo_test:palpo_test@localhost/$database" \
+              cargo test --locked -p palpo --lib "${features[@]}" "$test" -- --ignored --exact --test-threads=1
           done
 
       - name: Appservice fixed-device HTTP regression tests
