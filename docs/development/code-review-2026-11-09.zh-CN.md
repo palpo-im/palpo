@@ -2,7 +2,7 @@
 
 评审日期：2026-11-09（Asia/Shanghai）
 代码基线：`23535fc449b9919f9a34a54608889bced930c156`，workspace 版本 `0.5.0`。评审开始时工作区干净。
-执行方式：主评审 + 三个专项 agent（安全、Matrix 协议、并发/性能/可靠性），主评审交叉检查关键调用链并补充测试工程、供应链与运维维度。首次评审仅新增报告；后续按用户要求并行修复 R01–R07。
+执行方式：主评审 + 三个专项 agent（安全、Matrix 协议、并发/性能/可靠性），主评审交叉检查关键调用链并补充测试工程、供应链与运维维度。首次评审仅新增报告；后续按用户要求分批并行修复 R01–R07、R08–R10。
 
 ## 修复状态（2026-11-09，R01–R07 已修复并验证）
 
@@ -30,15 +30,33 @@ all-features 构建同样通过，普通 server lib 测试 **359 passed / 0 fail
 
 最后的 Clippy 整理仅将 R04 的三处等价嵌套 if 合并为 let-chain；最终源码重新构建，并在两种模式下额外复验 R04 的 **7 项普通测试与 3 项独占 PostgreSQL/HTTPS-notary 回归**。所有结果通过。
 
-本机证据保存在正常 target 目录：`target/review-results/{default,all,finaldefault,finalall}/`、`target/review-{default,all}-unit-tests.log`、`target/review-clippy.log`，未纳入版本控制。独占用例的完整名称和可复现 Cargo 命令见 `.github/workflows/quality-control.yml` 的 `Security and delivery review regressions (R01-R07)` 步骤。普通批次可用 `cargo test --locked -p palpo --lib` 和追加 `--all-features` 运行；独占用例必须各用一个空库、独立进程及 `--ignored --exact --test-threads=1`。
+本机证据保存在正常 target 目录：`target/review-results/{default,all,finaldefault,finalall}/`、`target/review-{default,all}-unit-tests.log`、`target/review-clippy.log`，未纳入版本控制。独占用例的完整名称和可复现 Cargo 命令见 `.github/workflows/quality-control.yml` 的 `Security, protocol and resource review regressions (R01-R10)` 步骤（后续扩展为十三项）。普通批次可用 `cargo test --locked -p palpo --lib` 和追加 `--all-features` 运行；独占用例必须各用一个空库、独立进程及 `--ignored --exact --test-threads=1`。
 
-验证范围：真实 PostgreSQL、真实本地文件存储、真实 loopback HTTP/HTTPS peer；数据库故障通过事务 trigger/表暂不可用注入。未运行完整 Complement/Sytest、真实 S3、跨主机网络分区、进程强杀/崩溃恢复或压测，不将这些未覆盖场景计为通过。R08–R10、O01–O02 保持未修复。
+验证范围：真实 PostgreSQL、真实本地文件存储、真实 loopback HTTP/HTTPS peer；数据库故障通过事务 trigger/表暂不可用注入。初次本地验证未运行完整 Complement/Sytest、真实 S3、跨主机网络分区、进程强杀/崩溃恢复或压测，不将这些未覆盖场景计为通过。R08–R10 的后续状态见下节；O01–O02 保持未修复。
 
 ### PR 评审补充
 
 [PR #636](https://github.com/palpo-im/palpo/pull/636) 的首轮 Codex 评审指出，预先封禁一个从未加入过房间的用户会创建 ban 行，因此不能将 ban/leave 行本身作为曾加入的证明。补充修复沿服务器保存的成员 before-state 查找真实加入经历，并固定到结束该次加入的首次离房事件；后续封禁、解封、邀请与拒绝不推进旧边界。缺少加入证明的非成员不能读取非 world-readable 房间状态。
 
 同一个双模式 HTTP 回归已扩展，覆盖预先封禁、解封、邀请后拒绝，以及离房/被踢后追加封禁；所有三种 state GET 均核对。上文测试计数与二进制摘要保留初次完整本地验证证据；PR 中新增断言的最新 Linux CI 与再次评审结果见该 PR 的检查和评审记录，合并以最新提交的检查通过及评审无未解决问题为条件。
+
+## R08–R10 修复状态（2026-11-10）
+
+本批基于已合并 R01–R07 的 `9143e58cd91f5b089eec87cdfb049298e65dcb03`。三个 agent 分别修复 R08、R09、R10，主 agent 交叉检查、补真实混合联邦回归并统一验证；R09/R10 另作互相只读评审。以下描述实现与验收范围，不替代后面的运行证据。
+
+| 项目 | 已实现修复 | 回归覆盖 |
+|---|---|---|
+| R08 | `/keys/changes`、v3/v5 sync 共用不可变 publication 快照；`left` 比较共享加密用户集合，保留普通房间新增共享及密钥更新通知；事务 journal 保存历史变更窗口 | 真实 HTTP keys/v3，与 v5 service 响应对照；自己/对方 leave、ban、最后/多个共同房间、明文共享、多设备、rejoin、历史 to、相邻窗口、token 后缀/非法 token、真实签名 outlier 延迟发布 |
+| R09 | 类型含 null/custom 过滤，远端保留网络参数；本地命名第三方网络空集，All 包含现有 Matrix；联邦 GET/POST 参数与认证一致；过滤后计数、稳定平局排序及双向分页 | 真实 HTTP client/签名 federation GET/POST、网络冲突、计数及正反分页/改变 limit；HTTPS peer 验证远端透传；混合 Palpo↔Synapse 增加类型过滤和正向分页 |
+| R10 | 16 个预览 cache-miss 请求预算（含同 URL 等待者），显式 lease 计数及 RAII 回收；每个限速器最多 65,536 桶，只回收完全恢复的桶，满额拒绝新键 | 5 项普通资源回归：并发最后释放、同键互斥、取消、10,000 唯一键、容量/债务/索引/时钟；独占真实 PG/HTTP：128 失败 URL、12 并发同 URL 仅一个 producer、网络中途取消 |
+
+R08 新增 `2026-11-10-000000_device_key_change_history`。trigger 覆盖旧 writer，回填仅保存迁移时尚存 marker；迁移前已被覆盖的密钥历史无法重建，客户端应刷新跟踪设备列表。读取端全部升级前响应语义可能不同；回滚数据库前须停止新读取端。详见 [UPGRADING](../UPGRADING.md)。
+
+CI 的十三项独占回归在默认/all-features 各自空库与独立进程中执行，并验证精确测试名已注册；五项普通资源回归也在两种模式显式执行。混合联邦新增子用例位于既有必过 `TestMixedPublicRooms` 下，不依赖全套比例放行。
+
+本批运行证据正在统一验证，合并仍以最终提交复评无未解决问题、全部 CI 通过为条件。
+
+边界：v5 通过 service 函数响应比较，未新增 v5 HTTP 路由端到端用例；目录 offset 分页保证静态目录，未承诺并发目录变更的快照；第三方网络发布仍未实现；预览预算从首次缓存 DB miss 后生效，失败请求无负缓存；限速桶惰性回收但容量始终有界。未进行 RSS/QPS 压测、进程强杀或跨主机网络分区演练。O01/O02 及报告中的其余专项工作不计入本批已修复。
 
 ## 原始评审结论与阅读方式（修复前）
 
