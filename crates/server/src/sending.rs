@@ -30,6 +30,8 @@ use crate::{AppError, AppResult, GetUrlOrigin, ServerConfig, TlsNameMap, config,
 
 mod dest;
 pub use dest::*;
+#[cfg(test)]
+mod delivery_tests;
 pub mod guard;
 pub mod resolver;
 
@@ -711,7 +713,7 @@ pub(crate) async fn send_events(
                 if pdu.unsigned.contains_key("redacted_because") {
                     continue;
                 }
-                let pusher = match data::user::pusher::get_pusher(user_id, pushkey)
+                let pusher = match data::user::pusher::get_pusher_registration(user_id, pushkey)
                     .await
                     .map_err(|e| {
                         (
@@ -735,7 +737,7 @@ pub(crate) async fn send_events(
                 let max_request = crate::sending::max_request();
                 let permit = max_request.acquire().await;
 
-                let _response = crate::user::pusher::send_push_notice(
+                crate::user::pusher::send_push_notice(
                     user_id,
                     notify_summary.all_unread_count(),
                     &pusher,
@@ -743,8 +745,7 @@ pub(crate) async fn send_events(
                     &pdu,
                 )
                 .await
-                .map(|_response| kind.clone())
-                .map_err(|e| (kind.clone(), e));
+                .map_err(|e| (kind.clone(), e))?;
 
                 drop(permit);
             }
@@ -783,9 +784,6 @@ pub(crate) async fn send_events(
                 }
             }
 
-            let max_request = crate::sending::max_request();
-            let permit = max_request.acquire().await;
-
             let txn_id = &*general_purpose::URL_SAFE_NO_PAD.encode(utils::hash_keys(
                 events.iter().filter_map(|e| match e {
                     SendingEventType::Edu(b) => Some(&**b),
@@ -806,7 +804,7 @@ pub(crate) async fn send_events(
             )
             .map_err(|e| (kind.clone(), e.into()))?
             .into_inner();
-            let response = crate::sending::send_federation_request(server, request, None)
+            crate::sending::send_federation_request(server, request, None)
                 .await
                 .map_err(|e| (kind.clone(), e))?
                 .json::<SendMessageResBody>()
@@ -819,11 +817,7 @@ pub(crate) async fn send_events(
                     }
                     kind.clone()
                 })
-                .map_err(|e| (kind, e.into()));
-
-            drop(permit);
-
-            response
+                .map_err(|e| (kind, e.into()))
         }
     }
 }
@@ -920,13 +914,6 @@ async fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType
             Some((item.id, kind, event))
         })
         .collect())
-}
-
-async fn delete_request(id: i64) -> AppResult<()> {
-    diesel::delete(outgoing_requests::table.find(id))
-        .execute(&mut connect().await?)
-        .await?;
-    Ok(())
 }
 
 async fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
@@ -1296,6 +1283,37 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
 mod tests {
     use super::*;
     use crate::config::FederationConfig;
+
+    #[tokio::test]
+    #[ignore = "run alone: installs process-global configuration"]
+    async fn federation_send_with_one_permit_makes_progress_and_returns_permits() {
+        let conf = serde_json::from_value(serde_json::json!({
+            "server_name":"permit-test.example", "db":{"url":"unused"},
+            "max_concurrent_requests":1, "federation":{"enable":true},
+            "ip_range_denylist":["127.0.0.0/8"]
+        }))
+        .unwrap();
+        config::CONFIG.set(conf).expect("run alone");
+        // An explicit IP/port avoids discovery I/O. Federation policy permits
+        // this destination, then the URL guard rejects loopback *after* the
+        // transport acquires its permit. With the old outer permit, even the
+        // first request deadlocks instead of reaching that error.
+        let remote: OwnedServerName = "127.0.0.1:25499".try_into().unwrap();
+        let sends = (0..8).map(|_| {
+            send_events(
+                OutgoingKind::Normal(remote.clone()),
+                vec![SendingEventType::Flush],
+            )
+        });
+        let results = tokio::time::timeout(
+            Duration::from_secs(2),
+            futures_util::future::join_all(sends),
+        )
+        .await
+        .expect("a single permit must not deadlock");
+        assert!(results.iter().all(Result::is_err));
+        assert_eq!(max_request().available_permits(), 1);
+    }
 
     #[tokio::test]
     async fn full_wakeup_queue_drops_wakeups_but_closed_queue_fails() {

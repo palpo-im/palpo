@@ -1,13 +1,16 @@
 use std::str::FromStr;
 
 #[cfg(test)]
+mod upload_tests;
+
+#[cfg(test)]
 use diesel::prelude::*;
 #[cfg(test)]
 use diesel_async::RunQueryDsl;
 use mime::Mime;
 use reqwest::Url;
+use salvo::http::ResBody;
 use salvo::http::header::CONTENT_TYPE;
-use salvo::http::{HeaderValue, ResBody};
 use salvo::prelude::*;
 use uuid::Uuid;
 
@@ -21,6 +24,7 @@ use crate::data::media::{DbMetadata, DbThumbnail, NewDbMetadata, NewDbThumbnail}
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::media::*;
+use crate::utils::content_disposition::apply_download_headers;
 use crate::{
     AppResult, AuthArgs, EmptyResult, JsonResult, MatrixError, config, empty_ok, hoops, json_ok,
     storage, utils,
@@ -71,22 +75,9 @@ pub async fn get_content(
 
         let key = media_storage_key(&args.server_name, &args.media_id);
         if storage::exists(&key).await? {
-            // Try presigned URL redirect for S3 storage
-            if let Some(url) = storage::presign_read(&key).await? {
-                res.render(Redirect::found(url));
-                return Ok(());
-            }
+            // Proxy S3 reads too: redirect headers cannot constrain the object's response.
             let data = storage::read(&key).await?;
-            res.add_header(CONTENT_TYPE, content_type.to_string(), true)?;
-            if let Some(file_name) = &metadata.file_name {
-                let content_disposition =
-                    crate::utils::content_disposition::make_content_disposition(
-                        None,
-                        Some(content_type.as_ref()),
-                        Some(file_name),
-                    );
-                res.add_header("Content-Disposition", content_disposition.to_string(), true)?;
-            }
+            apply_download_headers(res, content_type.as_ref(), metadata.file_name.as_deref())?;
             res.body = ResBody::Once(data.into());
             Ok(())
         } else {
@@ -122,24 +113,11 @@ pub async fn get_content_with_filename(
                 .unwrap_or(mime::APPLICATION_OCTET_STREAM)
                 .to_string()
         };
-        if let Ok(content_type) = content_type.parse::<HeaderValue>() {
-            res.headers_mut().insert(CONTENT_TYPE, content_type);
-        }
-
         let key = media_storage_key(&args.server_name, &args.media_id);
         if storage::exists(&key).await? {
-            // Try presigned URL redirect for S3 storage
-            if let Some(url) = storage::presign_read(&key).await? {
-                res.render(Redirect::found(url));
-                return Ok(());
-            }
+            // Proxy S3 reads too: redirect headers cannot constrain the object's response.
             let data = storage::read(&key).await?;
-            let content_disposition = crate::utils::content_disposition::make_content_disposition(
-                None,
-                Some(&content_type),
-                Some(&args.filename),
-            );
-            res.add_header("Content-Disposition", content_disposition.to_string(), true)?;
+            apply_download_headers(res, &content_type, Some(&args.filename))?;
             res.body = ResBody::Once(data.into());
             return Ok(());
         }
@@ -152,12 +130,16 @@ pub async fn get_content_with_filename(
     }
 }
 #[endpoint]
-pub fn create_mxc_uri(_aa: AuthArgs) -> JsonResult<CreateMxcUriResBody> {
+pub async fn create_mxc_uri(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<CreateMxcUriResBody> {
+    let owner = depot.authed_info()?.user_id();
     let media_id = utils::random_string(crate::MXC_LENGTH);
+    let expires_at = UnixMillis(UnixMillis::now().0.saturating_add(24 * 60 * 60 * 1000));
+    crate::data::media::reserve_upload(&config::get().server_name, &media_id, owner, expires_at)
+        .await?;
     let mxc = format!("mxc://{}/{}", config::get().server_name, media_id);
     Ok(Json(CreateMxcUriResBody {
         content_uri: OwnedMxcUri::from(mxc),
-        unused_expires_at: None,
+        unused_expires_at: Some(expires_at),
     }))
 }
 
@@ -171,7 +153,7 @@ pub async fn create_content(
     _aa: AuthArgs,
     args: CreateContentReqArgs,
     req: &mut Request,
-    _depot: &mut Depot,
+    depot: &mut Depot,
 ) -> JsonResult<CreateContentResBody> {
     let file_name = args.filename.clone();
     let file_extension = file_name.as_deref().map(utils::fs::get_file_ext);
@@ -188,12 +170,17 @@ pub async fn create_content(
     };
 
     let conf = crate::config::get();
-    let key = media_storage_key(&conf.server_name, &media_id);
-
-    if !storage::exists(&key).await? {
-        storage::write(&key, payload).await?;
-
-        let metadata = NewDbMetadata {
+    let owner = depot.authed_info()?.user_id().to_owned();
+    let started_at = UnixMillis::now();
+    crate::data::media::reserve_upload(
+        &conf.server_name,
+        &media_id,
+        &owner,
+        UnixMillis(started_at.0.saturating_add(24 * 60 * 60 * 1000)),
+    )
+    .await?;
+    crate::media::publish_reserved_upload(
+        NewDbMetadata {
             media_id: media_id.clone(),
             origin_server: conf.server_name.clone(),
             disposition_type: Some("inline".into()),
@@ -202,14 +189,13 @@ pub async fn create_content(
             file_extension,
             file_size: payload.len() as i64,
             file_hash: None,
-            created_by: None,
-            created_at: UnixMillis::now(),
-        };
-
-        crate::data::media::insert_metadata(&metadata).await?;
-    } else {
-        return Err(MatrixError::cannot_overwrite_media("Media ID already has content").into());
-    }
+            created_by: Some(owner),
+            created_at: started_at,
+        },
+        payload.to_vec(),
+        started_at,
+    )
+    .await?;
 
     json_ok(CreateContentResBody {
         content_uri: mxc.to_string().into(),
@@ -224,43 +210,41 @@ pub async fn upload_content(
     _aa: AuthArgs,
     args: UploadContentReqArgs,
     req: &mut Request,
-    _depot: &mut Depot,
+    depot: &mut Depot,
 ) -> EmptyResult {
-    let file_name = args.filename.clone();
-    let file_extension = file_name.as_deref().map(utils::fs::get_file_ext);
-
     let conf = crate::config::get();
+    let owner = depot.authed_info()?.user_id().to_owned();
+    let started_at = UnixMillis::now();
+    if args.server_name != conf.server_name {
+        return Err(MatrixError::not_found("Media reservation not found").into());
+    }
+    // Authorize before buffering the request body; publication rechecks under a DB lock.
+    crate::media::check_upload_reservation(&args.server_name, &args.media_id, &owner, started_at)
+        .await?;
     let payload = req
         .payload_with_max_size(conf.max_upload_size as usize)
         .await
         .map_err(|e| MatrixError::too_large(format!("Failed to read upload payload: {e}")))?;
-
-    let key = media_storage_key(&conf.server_name, &args.media_id);
-
-    if !storage::exists(&key).await? {
-        storage::write(&key, payload).await?;
-
-        let metadata = NewDbMetadata {
+    let file_name = args.filename.clone();
+    let file_extension = file_name.as_deref().map(utils::fs::get_file_ext);
+    crate::media::publish_reserved_upload(
+        NewDbMetadata {
             media_id: args.media_id.clone(),
             origin_server: conf.server_name.clone(),
-            // Only the disposition type belongs here; the filename is stored in
-            // `file_name` and sanitised when the response header is built.
             disposition_type: Some("inline".into()),
             content_type: args.content_type.clone(),
             file_name,
             file_extension,
             file_size: payload.len() as i64,
             file_hash: None,
-            created_by: None,
-            created_at: UnixMillis::now(),
-        };
-
-        crate::data::media::insert_metadata(&metadata).await?;
-
-        empty_ok()
-    } else {
-        Err(MatrixError::cannot_overwrite_media("Media ID already has content").into())
-    }
+            created_by: Some(owner),
+            created_at: started_at,
+        },
+        payload.to_vec(),
+        started_at,
+    )
+    .await?;
+    empty_ok()
 }
 
 /// #GET /_matrix/media/r0/config
@@ -361,6 +345,13 @@ pub async fn get_thumbnail(
             tracing::warn!("Failed to cache remote thumbnail: {e}");
         }
 
+        let ct = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        apply_download_headers(res, &ct, None)?;
         res.body = ResBody::Once(bytes);
         return Ok(());
     }
@@ -372,17 +363,13 @@ pub async fn get_thumbnail(
             id, content_type, ..
         })) => {
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
-            // Try presigned URL redirect for S3 storage
-            if let Some(url) = storage::presign_read(&key).await? {
-                res.render(Redirect::found(url));
-                return Ok(());
-            }
+            // Proxy S3 reads too: redirect headers cannot constrain the object's response.
             let data = storage::read(&key).await?;
             let ct = content_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
             res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
-            res.add_header(CONTENT_TYPE, ct, true)?;
+            apply_download_headers(res, ct, None)?;
             res.body = ResBody::Once(data.into());
             return Ok(());
         }
@@ -401,16 +388,11 @@ pub async fn get_thumbnail(
     }) = crate::media::cached_thumbnail(&args.server_name, &args.media_id, width, height).await?
     {
         let key = thumbnail_storage_key(&args.server_name, &args.media_id, id);
-        // Try presigned URL redirect for S3 storage
-        if let Some(url) = storage::presign_read(&key).await? {
-            res.render(Redirect::found(url));
-            return Ok(());
-        }
         let data = storage::read(&key).await?;
         let ct = content_type
             .as_deref()
             .unwrap_or("application/octet-stream");
-        res.add_header(CONTENT_TYPE, ct, true)?;
+        apply_download_headers(res, ct, None)?;
         res.body = ResBody::Once(data.into());
         Ok(())
     } else if let Ok(Some(DbMetadata {
@@ -448,12 +430,12 @@ pub async fn get_thumbnail(
             // Return the newly generated thumbnail
             let key = thumbnail_storage_key(&args.server_name, &args.media_id, thumbnail_id);
             let data = storage::read(&key).await?;
-            res.add_header(CONTENT_TYPE, "image/png", true)?;
+            apply_download_headers(res, "image/png", None)?;
             res.body = ResBody::Once(data.into());
             Ok(())
         } else {
             // Couldn't parse file to generate thumbnail, send original
-            res.add_header(CONTENT_TYPE, ct, true)?;
+            apply_download_headers(res, ct, None)?;
             res.body = ResBody::Once(image_data.into());
             Ok(())
         }

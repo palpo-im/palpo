@@ -36,6 +36,72 @@ pub struct NewDbMetadata {
     pub created_at: UnixMillis,
 }
 
+#[derive(diesel::QueryableByName, Debug)]
+pub struct UploadReservation {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub owner_id: OwnedUserId,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub expires_at: i64,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    pub uploaded: bool,
+}
+
+pub async fn reserve_upload(
+    server: &ServerName,
+    media_id: &str,
+    owner: &UserId,
+    expires_at: UnixMillis,
+) -> DataResult<()> {
+    diesel::sql_query("INSERT INTO media_upload_reservations (origin_server, media_id, owner_id, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind::<diesel::sql_types::Text, _>(server.as_str())
+        .bind::<diesel::sql_types::Text, _>(media_id)
+        .bind::<diesel::sql_types::Text, _>(owner.as_str())
+        .bind::<diesel::sql_types::BigInt, _>(expires_at.0 as i64)
+        .execute(&mut connect().await?)
+        .await?;
+    Ok(())
+}
+
+/// Lock the reservation through metadata publication, serializing all writers
+/// sharing a database. Call inside a transaction when `lock` is true.
+pub async fn upload_reservation(
+    conn: &mut diesel_async::AsyncPgConnection,
+    server: &ServerName,
+    media_id: &str,
+    lock: bool,
+) -> DataResult<Option<UploadReservation>> {
+    let sql = if lock {
+        "SELECT owner_id, expires_at, uploaded FROM media_upload_reservations WHERE origin_server=$1 AND media_id=$2 FOR UPDATE"
+    } else {
+        "SELECT owner_id, expires_at, uploaded FROM media_upload_reservations WHERE origin_server=$1 AND media_id=$2"
+    };
+    diesel::sql_query(sql)
+        .bind::<diesel::sql_types::Text, _>(server.as_str())
+        .bind::<diesel::sql_types::Text, _>(media_id)
+        .get_result(conn)
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+pub async fn complete_upload(
+    conn: &mut diesel_async::AsyncPgConnection,
+    metadata: &NewDbMetadata,
+) -> DataResult<()> {
+    diesel::insert_into(media_metadatas::table)
+        .values(metadata)
+        .execute(conn)
+        .await?;
+    diesel::sql_query(
+        "UPDATE media_upload_reservations SET uploaded=TRUE WHERE origin_server=$1 AND media_id=$2",
+    )
+    .bind::<diesel::sql_types::Text, _>(metadata.origin_server.as_str())
+    .bind::<diesel::sql_types::Text, _>(&metadata.media_id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// List `(origin_server, media_id)` for every media item created by a user.
 pub async fn list_media_created_by(user_id: &UserId) -> DataResult<Vec<(OwnedServerName, String)>> {
     media_metadatas::table

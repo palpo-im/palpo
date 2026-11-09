@@ -1,5 +1,6 @@
 mod acquire;
 mod request;
+mod validity;
 mod verify;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
@@ -30,15 +31,31 @@ fn merge_signing_keys_for_storage(
     new_keys: ServerSigningKeys,
 ) -> ServerSigningKeys {
     let server = new_keys.server_name.clone();
-    let mut keys =
+    let mut keys = new_keys.clone();
+    let existing =
         existing.unwrap_or_else(|| ServerSigningKeys::new(server, new_keys.valid_until_ts));
-
-    keys.verify_keys.extend(new_keys.verify_keys);
-    keys.old_verify_keys.extend(new_keys.old_verify_keys);
-    for (server, new_sigs) in new_keys.signatures {
+    // A refreshed document must not extend the lifetime of a key it no longer
+    // advertises. Preserve missing keys only as historical keys with their
+    // previous expiry, and let an explicit retirement override the current key.
+    for (id, key) in existing.verify_keys {
+        if !keys.verify_keys.contains_key(&id) && !keys.old_verify_keys.contains_key(&id) {
+            keys.old_verify_keys.insert(
+                id,
+                crate::core::federation::discovery::OldVerifyKey::new(
+                    existing.valid_until_ts,
+                    key.key,
+                ),
+            );
+        }
+    }
+    for (id, key) in existing.old_verify_keys {
+        if !keys.verify_keys.contains_key(&id) {
+            keys.old_verify_keys.entry(id).or_insert(key);
+        }
+    }
+    for (server, new_sigs) in existing.signatures {
         keys.signatures.entry(server).or_default().extend(new_sigs);
     }
-    keys.valid_until_ts = keys.valid_until_ts.max(new_keys.valid_until_ts);
 
     keys
 }
@@ -47,9 +64,13 @@ pub(crate) async fn add_signing_keys(new_keys: ServerSigningKeys) -> AppResult<(
     let server = new_keys.server_name.clone();
 
     // (timo) Not atomic, but this is not critical
-    let existing = data::misc::signing_keys_data(&server)
+    let existing = data::misc::signing_keys_record(&server)
         .await?
-        .map(serde_json::from_value::<ServerSigningKeys>)
+        .map(|record| {
+            let mut keys: ServerSigningKeys = serde_json::from_value(record.key_data)?;
+            validity::bound_cached_keys(&mut keys, record.updated_at);
+            Ok::<_, serde_json::Error>(keys)
+        })
         .transpose()?;
     let keys = merge_signing_keys_for_storage(existing, new_keys);
 
@@ -155,11 +176,26 @@ pub async fn get_event_keys(
         }
     };
 
-    let batch = required
-        .iter()
-        .map(|(s, ids)| (s.borrow(), ids.iter().map(Borrow::borrow)));
-
-    Ok(get_pubkeys(batch).await)
+    let timestamp = validity::event_timestamp(object)?;
+    let mut result = PubKeyMap::new();
+    for (server, ids) in required {
+        let server: &ServerName = server.borrow();
+        let mut keys = PubKeys::new();
+        for id in ids {
+            let id: &ServerSigningKeyId = id.borrow();
+            // A server may attach multiple signatures during key rotation. One
+            // valid signature is sufficient; an unavailable/expired additional
+            // key must not invalidate the other candidates.
+            if let Ok(key) =
+                validity::event_verify_key(server, id, timestamp, version.enforce_key_validity)
+                    .await
+            {
+                keys.insert(id.to_string(), key.key);
+            }
+        }
+        result.insert(server.to_string(), keys);
+    }
+    Ok(result)
 }
 
 pub async fn get_pubkeys<'a, S, K>(batch: S) -> PubKeyMap
@@ -320,7 +356,11 @@ mod tests {
         let merged = merge_signing_keys_for_storage(Some(existing), new_keys);
 
         assert_eq!(merged.valid_until_ts, UnixMillis(200));
-        assert!(merged.verify_keys.contains_key(&old_key_id));
+        assert!(!merged.verify_keys.contains_key(&old_key_id));
+        assert_eq!(
+            merged.old_verify_keys[&old_key_id].expired_ts,
+            UnixMillis(100)
+        );
         assert!(merged.old_verify_keys.contains_key(&retired_key_id));
         assert!(merged.signatures.contains_key(&old_notary));
         assert!(merged.signatures.contains_key(&new_notary));

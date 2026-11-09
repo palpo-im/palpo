@@ -1,4 +1,6 @@
 mod coordination;
+mod upload;
+pub(crate) use upload::{check_upload_reservation, publish_reserved_upload};
 mod preview;
 mod remote;
 pub(crate) mod thumbnail;

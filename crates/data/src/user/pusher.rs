@@ -80,6 +80,18 @@ impl TryInto<Pusher> for DbPusher {
 }
 
 pub async fn get_pusher(user_id: &UserId, pushkey: &str) -> DataResult<Option<Pusher>> {
+    get_pusher_registration(user_id, pushkey)
+        .await?
+        .map(TryInto::try_into)
+        .transpose()
+}
+
+/// Keep the row identity and raw gateway data alongside a delivery attempt so
+/// a delayed rejection cannot remove a registration replaced while in flight.
+pub async fn get_pusher_registration(
+    user_id: &UserId,
+    pushkey: &str,
+) -> DataResult<Option<DbPusher>> {
     let pusher = user_pushers::table
         .filter(user_pushers::user_id.eq(user_id))
         .filter(user_pushers::pushkey.eq(pushkey))
@@ -87,11 +99,7 @@ pub async fn get_pusher(user_id: &UserId, pushkey: &str) -> DataResult<Option<Pu
         .first::<DbPusher>(&mut connect().await?)
         .await
         .optional()?;
-    if let Some(pusher) = pusher {
-        pusher.try_into().map(Option::Some)
-    } else {
-        Ok(None)
-    }
+    Ok(pusher)
 }
 
 pub async fn get_pushers(user_id: &UserId) -> DataResult<Vec<DbPusher>> {
@@ -175,6 +183,27 @@ pub async fn delete_pusher(user_id: &UserId, app_id: &str, pushkey: &str) -> Dat
             .filter(user_pushers::user_id.eq(user_id))
             .filter(user_pushers::pushkey.eq(pushkey))
             .filter(user_pushers::app_id.eq(app_id)),
+    )
+    .execute(&mut connect().await?)
+    .await?;
+    Ok(())
+}
+
+/// Acknowledge only the exact registration that was sent to the gateway.
+/// `set_pusher` replaces rows, so the id fences even an ABA URL change; raw
+/// JSON comparison also protects against an in-place gateway-data update.
+pub async fn delete_rejected_pusher(registration: &DbPusher) -> DataResult<()> {
+    diesel::delete(
+        user_pushers::table
+            .filter(user_pushers::id.eq(registration.id))
+            .filter(user_pushers::user_id.eq(&registration.user_id))
+            .filter(user_pushers::app_id.eq(&registration.app_id))
+            .filter(user_pushers::pushkey.eq(&registration.pushkey))
+            .filter(user_pushers::kind.eq(&registration.kind))
+            .filter(
+                diesel::dsl::sql::<diesel::sql_types::Bool>("data::jsonb = ")
+                    .bind::<diesel::sql_types::Jsonb, _>(&registration.data),
+            ),
     )
     .execute(&mut connect().await?)
     .await?;
