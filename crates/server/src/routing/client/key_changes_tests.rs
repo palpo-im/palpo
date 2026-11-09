@@ -91,6 +91,26 @@ async fn put_state(
     .await;
 }
 
+async fn import_membership_join(room: &OwnedRoomId, user: &OwnedUserId) {
+    let (_, mut joining) = crate::event::PduBuilder {
+        event_type: "m.room.member".into(),
+        state_key: Some(user.to_string()),
+        content: serde_json::value::to_raw_value(&json!({"membership":"join"})).unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(user, room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    joining.remove("event_id");
+    crate::federation::membership::send_join_v2(
+        config::server_name(),
+        room,
+        &serde_json::value::to_raw_value(&joining).unwrap(),
+    )
+    .await
+    .unwrap();
+}
+
 async fn sync(service: &Service, token: &str, since: Option<&str>) -> Value {
     let query = since.map_or(String::new(), |since| format!("&since={since}"));
     ok(
@@ -556,24 +576,23 @@ async fn run() {
     // but a new joined period. Use the federation importer again, without the
     // local /join device-marker side effect.
     let rejoin_from = acknowledged["next_batch"].as_str().unwrap();
+    action(&service, &plain_bob, &bt, "leave", json!({})).await;
+    let peer_rejoin_before = sync(&service, &at, None).await;
     action(&service, &delayed, &bt, "leave", json!({})).await;
-    let (_, mut joining) = crate::event::PduBuilder {
-        event_type: "m.room.member".into(),
-        state_key: Some(bob.to_string()),
-        content: serde_json::value::to_raw_value(&json!({"membership":"join"})).unwrap(),
-        ..Default::default()
-    }
-    .hash_sign(&bob, &delayed, &crate::core::RoomVersionId::V11)
-    .await
-    .unwrap();
-    joining.remove("event_id");
-    crate::federation::membership::send_join_v2(
-        config::server_name(),
-        &delayed,
-        &serde_json::value::to_raw_value(&joining).unwrap(),
-    )
-    .await
-    .unwrap();
+    // Exercise the actual remote-version admission query while there is no
+    // joined relationship. The outer signed transport is covered separately.
+    let before_dropped = data::curr_sn().await.unwrap();
+    assert!(
+        !data::user::key::apply_remote_device_list_version(&bob, 991, config::server_name())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        data::curr_sn().await.unwrap(),
+        before_dropped,
+        "an untracked update must be discarded"
+    );
+    import_membership_join(&delayed, &bob).await;
     let own_rejoin = sync(&service, &bt, Some(rejoin_from)).await;
     let own_lists = sync_lists(&own_rejoin);
     assert!(
@@ -597,6 +616,49 @@ async fn run() {
         .is_empty(),
         "same-window imported rejoin must not rely on an own-device marker"
     );
+    let peer_rejoin = sync(&service, &at, peer_rejoin_before["next_batch"].as_str()).await;
+    assert_eq!(
+        peer_rejoin["device_lists"]["changed"],
+        json!([bob]),
+        "the remaining member must refresh a peer after an untracked interval"
+    );
+    assert_eq!(
+        changes(
+            &service,
+            &at,
+            peer_rejoin_before["next_batch"].as_str().unwrap(),
+            peer_rejoin["next_batch"].as_str().unwrap()
+        )
+        .await["changed"],
+        json!([bob])
+    );
+    put_state(
+        &service,
+        &delayed,
+        &bt,
+        "m.room.member",
+        bob.as_str(),
+        json!({"membership":"join","displayname":"peer profile update"}),
+    )
+    .await;
+    let peer_profile = sync(&service, &at, peer_rejoin["next_batch"].as_str()).await;
+    assert!(
+        sync_lists(&peer_profile).is_empty(),
+        "a peer profile update must retain the joined relationship"
+    );
+    // Another uninterrupted shared room keeps the device list tracked while
+    // the peer rejoins this one. This must not produce a redundant refresh.
+    let continuous_room = create(&service, &at, true).await;
+    action(&service, &continuous_room, &bt, "join", json!({})).await;
+    let continuous_before = sync(&service, &at, None).await;
+    action(&service, &delayed, &bt, "leave", json!({})).await;
+    import_membership_join(&delayed, &bob).await;
+    let continuous_after = sync(&service, &at, continuous_before["next_batch"].as_str()).await;
+    assert!(
+        sync_lists(&continuous_after).is_empty(),
+        "a continuously shared alternative room must preserve tracking"
+    );
+    action(&service, &continuous_room, &bt, "leave", json!({})).await;
     assert!(listed(
         &changes(&service, &at, &old, &published).await,
         "changed",
@@ -634,6 +696,49 @@ async fn run() {
         let body = response.take_json::<Value>().await.unwrap();
         assert_eq!(status, Some(StatusCode::BAD_REQUEST), "{body}");
     }
+    let plain_one = create(&service, &at, false).await;
+    let plain_two = create(&service, &at, false).await;
+    action(&service, &plain_one, &bt, "join", json!({})).await;
+    action(&service, &plain_two, &bt, "join", json!({})).await;
+    let two_plain = sync(&service, &at, None).await;
+    action(&service, &plain_one, &bt, "leave", json!({})).await;
+    let one_plain = sync(&service, &at, two_plain["next_batch"].as_str()).await;
+    assert!(
+        !listed(&one_plain["device_lists"], "left", &bob),
+        "another shared plaintext room retains tracking"
+    );
+    import_membership_join(&plain_one, &bob).await;
+    let continuous_plain = sync(&service, &at, one_plain["next_batch"].as_str()).await;
+    assert!(
+        sync_lists(&continuous_plain).is_empty(),
+        "an uninterrupted plaintext room also preserves tracking across peer rejoin"
+    );
+    action(&service, &plain_one, &bt, "leave", json!({})).await;
+    action(&service, &plain_two, &bt, "leave", json!({})).await;
+    let no_plain = sync(&service, &at, continuous_plain["next_batch"].as_str()).await;
+    assert!(
+        listed(&no_plain["device_lists"], "left", &bob),
+        "last plaintext room departure must preserve the existing left contract"
+    );
+    assert!(listed(
+        &changes(
+            &service,
+            &at,
+            continuous_plain["next_batch"].as_str().unwrap(),
+            no_plain["next_batch"].as_str().unwrap()
+        )
+        .await,
+        "left",
+        &bob
+    ));
+    // Plaintext tracking also needs refresh after a same-window imported rejoin.
+    import_membership_join(&plain_one, &bob).await;
+    let plain_rejoined = sync(&service, &at, no_plain["next_batch"].as_str()).await;
+    assert!(listed(&plain_rejoined["device_lists"], "changed", &bob));
+    action(&service, &plain_one, &bt, "leave", json!({})).await;
+    import_membership_join(&plain_one, &bob).await;
+    let plain_gap = sync(&service, &at, plain_rejoined["next_batch"].as_str()).await;
+    assert_eq!(plain_gap["device_lists"]["changed"], json!([bob]));
     let resource_room = create(&service, &at, true).await;
     action(&service, &resource_room, &bt, "join", json!({})).await;
     crate::user::device_lists::assert_large_custom_state_is_not_resolved(
