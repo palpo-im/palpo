@@ -58,8 +58,9 @@ pub enum StorageConfig {
         #[serde(default)]
         path_style: bool,
 
-        /// Redirect media downloads to S3 presigned URLs instead of proxying
-        /// through the server. Saves bandwidth and reduces server load.
+        /// Permit federation media locations to use S3 presigned URLs.
+        /// Client downloads are proxied so Content-Disposition and nosniff
+        /// remain enforced independently of bucket response configuration.
         /// Defaults to true.
         #[serde(default = "default_redirect")]
         redirect: bool,

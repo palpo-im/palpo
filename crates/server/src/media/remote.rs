@@ -25,6 +25,7 @@ pub async fn fetch_remote_content(
     requested_filename: Option<&str>,
     res: &mut Response,
 ) -> AppResult<()> {
+    res.add_header("X-Content-Type-Options", "nosniff", true)?;
     check_fetch_authorized(&Mxc {
         server_name,
         media_id,

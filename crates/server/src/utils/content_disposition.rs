@@ -96,6 +96,24 @@ pub fn make_content_disposition(
     ContentDisposition::new(disposition_type).with_filename(filename.map(sanitise_filename))
 }
 
+/// Apply the same browser policy to original files and thumbnail fallbacks.
+/// A filename is optional; the security decision never is.
+pub(crate) fn apply_download_headers(
+    res: &mut salvo::Response,
+    content_type: &str,
+    filename: Option<&str>,
+) -> crate::AppResult<()> {
+    let content_type = content_type
+        .parse::<mime::Mime>()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "application/octet-stream".to_owned());
+    let disposition = make_content_disposition(None, Some(&content_type), filename);
+    res.add_header("Content-Type", &content_type, true)?;
+    res.add_header("Content-Disposition", disposition.to_string(), true)?;
+    res.add_header("X-Content-Type-Options", "nosniff", true)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::make_content_disposition;
