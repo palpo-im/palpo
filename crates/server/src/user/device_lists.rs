@@ -1,5 +1,6 @@
 //! Device tracking at immutable sync publication boundaries.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -23,19 +24,39 @@ struct Sharing {
     encrypted: BTreeSet<OwnedUserId>,
     joined_rooms: BTreeMap<OwnedRoomId, Seqnum>,
     encrypted_rooms: BTreeSet<OwnedRoomId>,
+    room_members: BTreeMap<OwnedRoomId, Arc<BTreeMap<OwnedUserId, MemberPoint>>>,
+}
+
+struct MemberPoint {
+    event_id: OwnedEventId,
+    event_sn: Seqnum,
 }
 
 struct FrameSharing {
-    joined: BTreeSet<OwnedUserId>,
+    joined: Arc<BTreeMap<OwnedUserId, MemberPoint>>,
     encrypted: bool,
     caller_join_period: Option<Seqnum>,
+}
+
+async fn joined_period(
+    user: &UserId,
+    point: &MemberPoint,
+    periods: &mut HashMap<OwnedEventId, Seqnum>,
+) -> AppResult<Seqnum> {
+    if let Some(period) = periods.get(&point.event_id) {
+        return Ok(*period);
+    }
+    let period =
+        room::user::join_sn_for_event(user, point.event_id.clone(), point.event_sn).await?;
+    periods.insert(point.event_id.clone(), period);
+    Ok(period)
 }
 
 async fn sharing_before(
     user: &UserId,
     boundary: Seqnum,
     frames: &mut HashMap<i64, FrameSharing>,
-    caller_periods: &mut HashMap<OwnedEventId, Seqnum>,
+    join_periods: &mut HashMap<OwnedEventId, Seqnum>,
 ) -> AppResult<Sharing> {
     let mut sharing = Sharing::default();
     // Membership rows are retained on leave and forget. They locate candidate
@@ -71,7 +92,7 @@ async fn sharing_before(
                 .map(|event| (event.field_id(), event.event_sn()))
                 .collect();
             let field_ids: Vec<_> = state.keys().copied().collect();
-            let mut joined = BTreeSet::new();
+            let mut joined = BTreeMap::new();
             let mut encrypted = false;
             let mut caller_join_period = None;
             // Restrict field metadata before loading event bodies: unrelated
@@ -128,27 +149,20 @@ async fn sharing_before(
                         serde_json::from_value(body["content"].clone())?;
                     if content.membership == MembershipState::Join {
                         let member = UserId::parse(&members[&event_sn])?;
+                        let point = MemberPoint { event_id, event_sn };
                         if member == user {
                             // A profile-only member update retains the same
                             // joined period; leave+rejoin starts a new one even
                             // if both endpoints contain this same room.
-                            let period = if let Some(period) = caller_periods.get(&event_id) {
-                                *period
-                            } else {
-                                let period =
-                                    room::user::join_sn_for_event(user, event_id.clone(), event_sn)
-                                        .await?;
-                                caller_periods.insert(event_id, period);
-                                period
-                            };
+                            let period = joined_period(user, &point, join_periods).await?;
                             caller_join_period = Some(period);
                         }
-                        joined.insert(member);
+                        joined.insert(member, point);
                     }
                 }
             }
             entry.insert(FrameSharing {
-                joined,
+                joined: Arc::new(joined),
                 encrypted,
                 caller_join_period,
             });
@@ -158,14 +172,17 @@ async fn sharing_before(
             encrypted,
             caller_join_period,
         } = &frames[&frame];
-        if joined.contains(user) {
+        if joined.contains_key(user) {
             let period = caller_join_period
                 .ok_or_else(|| MatrixError::unknown("caller joined period missing"))?;
             sharing.joined_rooms.insert(room_id.clone(), period);
-            sharing.all.extend(joined.iter().cloned());
+            sharing
+                .room_members
+                .insert(room_id.clone(), Arc::clone(joined));
+            sharing.all.extend(joined.keys().cloned());
             if *encrypted {
                 sharing.encrypted_rooms.insert(room_id);
-                sharing.encrypted.extend(joined.iter().cloned());
+                sharing.encrypted.extend(joined.keys().cloned());
             }
         }
     }
@@ -184,14 +201,58 @@ pub(crate) async fn changes(user: &UserId, from: Seqnum, to: Seqnum) -> AppResul
         return Ok(DeviceLists::default());
     }
     let mut frames = HashMap::new();
-    let mut caller_periods = HashMap::new();
-    let before = sharing_before(user, from, &mut frames, &mut caller_periods).await?;
-    let after = sharing_before(user, to, &mut frames, &mut caller_periods).await?;
+    let mut join_periods = HashMap::new();
+    let before = sharing_before(user, from, &mut frames, &mut join_periods).await?;
+    let after = sharing_before(user, to, &mut frames, &mut join_periods).await?;
     // Preserve the existing sync notification for newly shared plaintext
     // peers too. Enabling encryption in an existing room starts E2EE tracking
     // even when the users already shared that plaintext room.
     let mut changed: BTreeSet<_> = after.all.difference(&before.all).cloned().collect();
     changed.extend(after.encrypted.difference(&before.encrypted).cloned());
+    // Endpoint user sets alone cannot detect leave+rejoin between two syncs.
+    // First prove continuity from unchanged member identities in any shared
+    // room. Only then walk changed peer identities that have no other proof;
+    // ordinary polls and unrelated state never walk every peer's join history.
+    let mut continuous = BTreeSet::new();
+    let mut changed_members = Vec::new();
+    for (room_id, before_members) in &before.room_members {
+        if before.joined_rooms.get(room_id) != after.joined_rooms.get(room_id) {
+            continue;
+        }
+        let Some(after_members) = after.room_members.get(room_id) else {
+            continue;
+        };
+        for (peer, old) in before_members.iter() {
+            if peer == user {
+                continue;
+            }
+            let Some(new) = after_members.get(peer) else {
+                continue;
+            };
+            if old.event_id == new.event_id {
+                continuous.insert(peer.clone());
+            } else {
+                changed_members.push((peer, old, new));
+            }
+        }
+    }
+    for (peer, old, new) in changed_members {
+        if continuous.contains(peer) {
+            continue;
+        }
+        if joined_period(peer, old, &mut join_periods).await?
+            == joined_period(peer, new, &mut join_periods).await?
+        {
+            continuous.insert(peer.clone());
+        }
+    }
+    changed.extend(
+        before
+            .all
+            .intersection(&after.all)
+            .filter(|peer| !continuous.contains(*peer))
+            .cloned(),
+    );
     // An imported/federated join can publish membership without uploading a
     // device key or writing an own-user key marker. Other devices must still
     // learn about this user's newly joined room. Keep that notification apart
@@ -219,12 +280,14 @@ pub(crate) async fn changes(user: &UserId, from: Seqnum, to: Seqnum) -> AppResul
             changed.insert(changed_user);
         }
     }
+    let mut left: BTreeSet<_> = before
+        .encrypted
+        .difference(&after.encrypted)
+        .cloned()
+        .collect();
+    left.extend(before.all.difference(&after.all).cloned());
     Ok(DeviceLists {
         changed: changed.into_iter().collect(),
-        left: before
-            .encrypted
-            .difference(&after.encrypted)
-            .cloned()
-            .collect(),
+        left: left.into_iter().collect(),
     })
 }
