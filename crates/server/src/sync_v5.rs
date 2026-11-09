@@ -11,20 +11,16 @@ use serde::{Deserialize, Serialize};
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
-use crate::core::device::DeviceLists;
 use crate::core::events::direct::DirectEventContent;
 use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_contents};
-use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
-use crate::core::events::{
-    AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType,
-};
+use crate::core::events::{AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType};
 use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::schema::*;
 use crate::data::{DataResult, connect};
 use crate::event::{BatchToken, ignored_filter_with_ignored_users};
-use crate::room::{self, filter_rooms, state, timeline};
-use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData, share_encrypted_room};
+use crate::room::{self, filter_rooms, state};
+use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData};
 use crate::{AppResult, data, extract_variant};
 
 #[cfg(feature = "unstable-msc4559")]
@@ -1745,130 +1741,16 @@ async fn collect_e2ee(
         since_sn,
         req_body,
     }: SyncInfo<'_>,
-    all_joined_rooms: &Vec<&RoomId>,
+    _all_joined_rooms: &Vec<&RoomId>,
     until_sn: Seqnum,
 ) -> AppResult<sync_events::v5::E2ee> {
     if !req_body.extensions.e2ee.enabled.unwrap_or(false) {
         return Ok(sync_events::v5::E2ee::default());
     }
-    let mut left_encrypted_users = HashSet::new(); // Users that have left any encrypted rooms the sender was in
-    let mut device_list_changes = HashSet::new();
-    let mut device_list_left = HashSet::new();
-    // Look for device list updates of this account
-    device_list_changes
-        .extend(data::user::keys_changed_users(sender_id, since_sn, Some(until_sn)).await?);
-
-    for room_id in all_joined_rooms {
-        let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None).await else {
-            error!("Room {room_id} has no state");
-            continue;
-        };
-        let since_frame_id = crate::event::get_last_frame_id(room_id, Some(since_sn))
-            .await
-            .ok();
-
-        let encrypted_room =
-            state::get_state(current_frame_id, &StateEventType::RoomEncryption, "")
-                .await
-                .is_ok();
-
-        if let Some(since_frame_id) = since_frame_id {
-            // // Skip if there are only timeline changes
-            // if since_frame_id == current_frame_id {
-            //     continue;
-            // }
-
-            let since_encryption =
-                state::get_state(since_frame_id, &StateEventType::RoomEncryption, "")
-                    .await
-                    .ok();
-
-            let joined_since_last_sync = room::user::join_sn(sender_id, room_id).await? >= since_sn;
-
-            let new_encrypted_room = encrypted_room && since_encryption.is_none();
-
-            if encrypted_room {
-                let current_state_ids = state::get_full_state_ids(current_frame_id).await?;
-
-                let since_state_ids = state::get_full_state_ids(since_frame_id).await?;
-
-                for (key, id) in current_state_ids {
-                    if since_state_ids.get(&key) != Some(&id) {
-                        let Ok(pdu) = timeline::get_pdu(&id).await else {
-                            error!("pdu in state not found: {id}");
-                            continue;
-                        };
-                        if pdu.event_ty == TimelineEventType::RoomMember
-                            && let Some(Ok(user_id)) = pdu.state_key.as_deref().map(UserId::parse)
-                        {
-                            if user_id == sender_id {
-                                continue;
-                            }
-
-                            let content: RoomMemberEventContent = pdu.get_content()?;
-                            match content.membership {
-                                MembershipState::Join => {
-                                    // A new user joined an encrypted room
-                                    if !share_encrypted_room(sender_id, &user_id, Some(room_id))
-                                        .await?
-                                    {
-                                        device_list_changes.insert(user_id.to_owned());
-                                    }
-                                }
-                                MembershipState::Leave => {
-                                    // Write down users that have left encrypted rooms we
-                                    // are in
-                                    left_encrypted_users.insert(user_id.to_owned());
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                if joined_since_last_sync || new_encrypted_room {
-                    // If the user is in a new encrypted room, give them all joined users
-                    let mut new_changes: Vec<OwnedUserId> = Vec::new();
-                    for user_id in room::get_members(room_id)
-                        .await?
-                        .into_iter()
-                        // Don't send key updates from the sender to the sender
-                        .filter(|user_id| sender_id != *user_id)
-                    {
-                        // Only send keys if the sender doesn't share an encrypted room with the
-                        // target already
-                        if !share_encrypted_room(sender_id, &user_id, Some(room_id))
-                            .await
-                            .unwrap_or(false)
-                        {
-                            new_changes.push(user_id.to_owned());
-                        }
-                    }
-                    device_list_changes.extend(new_changes);
-                }
-            }
-        }
-        // Look for device list updates in this room
-        device_list_changes
-            .extend(crate::room::keys_changed_users(room_id, since_sn, Some(until_sn)).await?);
-    }
-
-    for user_id in left_encrypted_users {
-        let Ok(share_encrypted_room) = share_encrypted_room(sender_id, &user_id, None).await else {
-            continue;
-        };
-
-        // If the user doesn't share an encrypted room with the target anymore, we need
-        // to tell them
-        if !share_encrypted_room {
-            device_list_left.insert(user_id);
-        }
-    }
-
+    let device_lists =
+        crate::user::device_lists::changes(sender_id, since_sn, until_sn + 1).await?;
     Ok(E2ee {
-        device_lists: DeviceLists {
-            changed: device_list_changes.into_iter().collect(),
-            left: device_list_left.into_iter().collect(),
-        },
+        device_lists,
         device_one_time_keys_count: data::user::count_one_time_keys(sender_id, device_id).await?,
         device_unused_fallback_key_types: Some(
             data::user::key::unused_fallback_key_types(sender_id, device_id).await?,

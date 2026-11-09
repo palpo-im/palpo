@@ -329,8 +329,7 @@ async fn member_presence() {
     let filter: crate::core::client::filter::FilterDefinition =
         serde_json::from_value(member_filter).unwrap();
     let now = data::curr_sn().await.unwrap();
-    let (mut keys, mut joined, mut left) = (
-        std::collections::HashSet::new(),
+    let (mut joined, mut left) = (
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
     );
@@ -345,7 +344,6 @@ async fn member_presence() {
         false,
         &filter,
         false,
-        &mut keys,
         &mut joined,
         &mut left,
     )
@@ -459,8 +457,7 @@ async fn member_presence() {
     assert!(room::user::join_sn(&eve, &room).await.unwrap() > captured_until);
     assert!(room::user::left_sn(&room, &bob).await.unwrap() > captured_until);
     for since in [Some(token), None] {
-        let (mut keys, mut joined, mut left) = (
-            std::collections::HashSet::new(),
+        let (mut joined, mut left) = (
             std::collections::HashSet::new(),
             std::collections::HashSet::new(),
         );
@@ -475,21 +472,28 @@ async fn member_presence() {
             false,
             &crate::core::client::filter::FilterDefinition::default(),
             false,
-            &mut keys,
             &mut joined,
             &mut left,
         )
         .await
         .unwrap();
         assert!(!joined.contains(&eve));
-        assert!(!keys.contains(&eve));
+        let device_lists = crate::user::device_lists::changes(
+            &alice,
+            since.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
+            captured_until + 1,
+        )
+        .await
+        .unwrap();
+        assert!(!device_lists.changed.contains(&eve));
+        assert!(!device_lists.left.contains(&bob));
         assert!(!left.contains(&bob));
         if since.is_none() {
             assert!(
                 joined.contains(&bob),
                 "historical join was overwritten by a later leave"
             );
-            assert!(keys.contains(&bob));
+            assert!(device_lists.changed.contains(&bob));
         }
         let bounded = serde_json::to_value(bounded_room).unwrap();
         for section in ["state", "timeline"] {
@@ -523,8 +527,7 @@ async fn member_presence() {
         "state": {"lazy_load_members":true}, "timeline":{"limit":1}
     }}))
     .unwrap();
-    let (mut keys, mut joined, mut left) = (
-        std::collections::HashSet::new(),
+    let (mut joined, mut left) = (
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
     );
@@ -539,7 +542,6 @@ async fn member_presence() {
         false,
         &lazy_filter,
         false,
-        &mut keys,
         &mut joined,
         &mut left,
     )
@@ -861,7 +863,7 @@ async fn delayed_member_publication() {
     }
     // Old captured state remains free of the newly promoted member, even
     // though their original identity N falls below this old upper bound.
-    let (mut changed, mut joined, mut left) = Default::default();
+    let (mut joined, mut left) = Default::default();
     let (bounded, _) = super::load_joined_room(
         &alice,
         "D".into(),
@@ -873,13 +875,15 @@ async fn delayed_member_publication() {
         false,
         &Default::default(),
         false,
-        &mut changed,
         &mut joined,
         &mut left,
     )
     .await
     .unwrap();
-    assert!(!changed.contains(&bob) && !joined.contains(&bob));
+    let device_lists = crate::user::device_lists::changes(&alice, 0, old_until + 1)
+        .await
+        .unwrap();
+    assert!(!device_lists.changed.contains(&bob) && !joined.contains(&bob));
     let state = serde_json::to_value(bounded).unwrap();
     for section in ["state", "timeline"] {
         assert!(
@@ -1006,7 +1010,7 @@ async fn delayed_member_publication() {
             expect_join,
             "normal captured timeline crossed its publication window"
         );
-        let (mut changed, mut joined, mut left) = Default::default();
+        let (mut joined, mut left) = Default::default();
         let (recovered, _) = super::load_joined_room(
             &alice,
             "D".into(),
@@ -1018,7 +1022,6 @@ async fn delayed_member_publication() {
             false,
             &filter,
             false,
-            &mut changed,
             &mut joined,
             &mut left,
         )

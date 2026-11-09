@@ -13,7 +13,6 @@ use crate::core::client::sync_events::v3::{
     KnockedRoom, LeftRoom, Presence, RoomAccountData, RoomSummary, Rooms, State, Sticky,
     SyncEventsReqArgs, SyncEventsResBody, Timeline, ToDevice,
 };
-use crate::core::device::DeviceLists;
 use crate::core::events::receipt::SyncReceiptEvent;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{
@@ -144,18 +143,6 @@ pub async fn sync_events(
     let mut joined_users = HashSet::new();
     // Users that have left any encrypted rooms the sender was in
     let mut left_users = HashSet::new();
-    let mut device_list_updates = HashSet::new();
-    let mut device_list_left = HashSet::new();
-
-    // Look for device list updates of this account
-    device_list_updates.extend(
-        data::user::keys_changed_users(
-            sender_id,
-            since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
-            Some(curr_sn),
-        )
-        .await?,
-    );
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     for room_id in &all_joined_rooms {
@@ -170,7 +157,6 @@ pub async fn sync_events(
             full_state,
             &filter,
             args.use_state_after,
-            &mut device_list_updates,
             &mut joined_users,
             &mut left_users,
         )
@@ -185,13 +171,10 @@ pub async fn sync_events(
     // shape as joined rooms. Skip any the user is actually joined to to avoid
     // duplicate delivery.
     //
-    // Crucially, the device-list / presence accumulators are kept SEPARATE and
-    // discarded: a non-member peeking a world-readable room must not receive
-    // member device-key changes or presence for users they don't share a joined
-    // room with. `load_joined_room` mutates those sets as a side effect, so we
-    // give it throwaway ones here.
+    // Presence accumulators are separate and discarded: peeking a world-readable
+    // room must not disclose activity for users without joined sharing. Device
+    // lists are computed independently from proven joined publication frames.
     let mut peeked_rooms = BTreeMap::new();
-    let mut peek_device_updates = HashSet::new();
     let mut peek_joined_users = HashSet::new();
     let mut peek_left_users = HashSet::new();
     for room_id in data::room::peek::user_peeked_rooms(sender_id, device_id).await? {
@@ -221,7 +204,6 @@ pub async fn sync_events(
             full_state,
             &filter,
             args.use_state_after,
-            &mut peek_device_updates,
             &mut peek_joined_users,
             &mut peek_left_users,
         )
@@ -243,9 +225,8 @@ pub async fn sync_events(
             peeked_rooms.insert(room_id, peeked_room);
         }
     }
-    // peek_device_updates / peek_joined_users / peek_left_users go out of scope
-    // here unused — peeked rooms must not contribute device/presence info to the
-    // real sync sets.
+    // Peek presence accumulators go out of scope unused; peeking does not
+    // contribute activity to the real sync sets.
 
     let mut left_rooms = BTreeMap::new();
     let all_left_rooms = room::user::left_rooms(sender_id, since_tk).await?;
@@ -275,7 +256,6 @@ pub async fn sync_events(
             next_batch,
             full_state,
             &filter,
-            &mut device_list_updates,
             &mut joined_users,
             &mut left_users,
         )
@@ -300,49 +280,6 @@ pub async fn sync_events(
             )
         })
         .collect();
-
-    for left_room in left_rooms.keys() {
-        for user_id in room::joined_users(left_room, None).await? {
-            let mut dont_share_encrypted_room = true;
-            for other_room_id in
-                room::user::shared_rooms(vec![sender_id.to_owned(), user_id.clone()]).await?
-            {
-                let encrypted =
-                    room::get_state(&other_room_id, &StateEventType::RoomEncryption, "", None)
-                        .await
-                        .is_ok();
-                if encrypted {
-                    dont_share_encrypted_room = false;
-                    break;
-                }
-            }
-            // If the user doesn't share an encrypted room with the target anymore, we need to tell
-            // them.
-            if dont_share_encrypted_room {
-                device_list_left.insert(user_id);
-            }
-        }
-    }
-    for user_id in left_users {
-        let mut dont_share_encrypted_room = true;
-        for other_room_id in
-            room::user::shared_rooms(vec![sender_id.to_owned(), user_id.clone()]).await?
-        {
-            let encrypted =
-                room::get_state(&other_room_id, &StateEventType::RoomEncryption, "", None)
-                    .await
-                    .is_ok();
-            if encrypted {
-                dont_share_encrypted_room = false;
-                break;
-            }
-        }
-        // If the user doesn't share an encrypted room with the target anymore, we need to tell
-        // them.
-        if dont_share_encrypted_room {
-            device_list_left.insert(user_id);
-        }
-    }
 
     let mut knocked_rooms: BTreeMap<_, _> = BTreeMap::default();
     for (room_id, knock_state) in data::user::knocked_rooms(sender_id, 0).await?.into_iter() {
@@ -459,10 +396,12 @@ pub async fn sync_events(
             .map(|v| RawJson::new(&v).expect("PresenceEvent always serializes successfully"))
             .collect(),
     };
-    let device_lists = DeviceLists {
-        changed: device_list_updates.into_iter().collect(),
-        left: device_list_left.into_iter().collect(),
-    };
+    let device_lists = crate::user::device_lists::changes(
+        sender_id,
+        since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
+        next_batch.event_sn(),
+    )
+    .await?;
 
     let to_device = ToDevice {
         events: data::user::device::get_to_device_events(
@@ -518,7 +457,6 @@ async fn load_joined_room(
     full_state: bool,
     filter: &FilterDefinition,
     _use_state_after: bool, // TODO
-    device_list_updates: &mut HashSet<OwnedUserId>,
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
@@ -771,15 +709,6 @@ async fn load_joined_room(
                 //     sender_id != user_id
                 // })
                 // .collect();
-                device_list_updates.extend(
-                    joined_users.clone().into_iter(), /* .filter(|user_id| {
-                                                       * Only send keys if the sender doesn't
-                                                       * share an encrypted room with the target
-                                                       * already
-                                                       * !share_encrypted_room(sender_id,
-                                                       * user_id, &room_id).unwrap_or(false)
-                                                       * }), */
-                );
                 (
                     heroes,
                     joined_member_count,
@@ -813,7 +742,6 @@ async fn load_joined_room(
                                 collect_membership_change(
                                     &pdu,
                                     sender_id,
-                                    device_list_updates,
                                     joined_users,
                                     left_users,
                                 )
@@ -890,38 +818,9 @@ async fn load_joined_room(
                     .await;
                 }
 
-                let encrypted_room =
-                    state::get_state(current_frame_id, &StateEventType::RoomEncryption, "")
-                        .await
-                        .is_ok();
-                let since_encryption =
-                    state::get_state(since_frame_id, &StateEventType::RoomEncryption, "")
-                        .await
-                        .ok();
-                // Calculations:
-                let _new_encrypted_room = encrypted_room && since_encryption.is_none();
                 let send_member_count = state_events
                     .iter()
                     .any(|event| event.event_ty == TimelineEventType::RoomMember);
-
-                if joined_since_last_sync {
-                    // && encrypted_room || new_encrypted_room {
-                    // If the user is in a new encrypted room, give them all joined users
-                    device_list_updates.extend(
-                        joined_users_at_frame(current_frame_id)
-                            .await?
-                            .into_iter()
-                            .filter(|user_id| {
-                                // Don't send key updates from the sender to the sender
-                                sender_id != user_id
-                            }), /* .filter(|user_id| {
-                                 * Only send keys if the sender doesn't share an encrypted room
-                                 * with the target already
-                                 * !share_encrypted_room(sender_id, user_id,
-                                 * &room_id).unwrap_or(false)
-                                 * }), */
-                    );
-                }
 
                 let (joined_member_count, invited_member_count, heroes) = if send_member_count {
                     calculate_counts().await?
@@ -940,12 +839,6 @@ async fn load_joined_room(
                 (Vec::new(), None, None, false, Vec::new())
             }
         };
-
-    // Look for device list updates in this room
-    device_list_updates.extend(
-        room::keys_changed_users(room_id, since_tk.event_sn(), until_tk.map(|t| t.event_sn()))
-            .await?,
-    );
 
     let mut limited = timeline.limited || joined_since_last_sync;
     if let Some((_, first_event)) = timeline.events.first()
@@ -1124,7 +1017,6 @@ async fn joined_period_at(frame_id: i64, user_id: &UserId) -> AppResult<Option<S
 async fn collect_membership_change(
     event: &SnPduEvent,
     sender_id: &UserId,
-    device_list_updates: &mut HashSet<OwnedUserId>,
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<()> {
@@ -1145,13 +1037,7 @@ async fn collect_membership_change(
         .membership;
     match membership {
         MembershipState::Join => {
-            if !room::user::shared_rooms(vec![sender_id.to_owned(), user_id.to_owned()])
-                .await?
-                .is_empty()
-            {
-                device_list_updates.insert(user_id.clone());
-                joined_users.insert(user_id);
-            }
+            joined_users.insert(user_id);
         }
         MembershipState::Leave => {
             left_users.insert(user_id);
@@ -1172,7 +1058,6 @@ async fn load_left_room(
     next_batch: BatchToken,
     _full_state: bool,
     filter: &FilterDefinition,
-    _device_list_updates: &mut HashSet<OwnedUserId>,
     _joined_users: &mut HashSet<OwnedUserId>,
     _left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<LeftRoom> {
@@ -1588,30 +1473,6 @@ pub(crate) async fn load_timeline(
     })
 }
 
-#[tracing::instrument]
-pub(crate) async fn share_encrypted_room(
-    sender_id: &UserId,
-    user_id: &UserId,
-    ignore_room: Option<&RoomId>,
-) -> AppResult<bool> {
-    let mut shared_rooms = false;
-    for other_room_id in room::user::shared_rooms(vec![sender_id.to_owned(), user_id.to_owned()])
-        .await?
-        .into_iter()
-        .filter(|room_id| Some(&**room_id) != ignore_room)
-    {
-        if room::get_state(&other_room_id, &StateEventType::RoomEncryption, "", None)
-            .await
-            .is_ok()
-        {
-            shared_rooms = true;
-            break;
-        }
-    }
-
-    Ok(shared_rooms)
-}
-
 /// Whether `viewer_id` may be shown `sender_id`'s presence.
 ///
 /// Without selective presence this is the historical rule: anyone you share a room with.
@@ -1967,7 +1828,6 @@ mod joined_room_failure_tests {
             false,
             &FilterDefinition::default(),
             false,
-            &mut HashSet::new(),
             &mut HashSet::new(),
             &mut HashSet::new(),
         )

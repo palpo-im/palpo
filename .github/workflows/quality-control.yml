@@ -130,7 +130,7 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
-      - name: Security and delivery review regressions (R01-R07)
+      - name: Security, protocol and resource review regressions (R01-R10)
         timeout-minutes: 30
         shell: bash
         run: |
@@ -147,11 +147,19 @@ jobs:
             user::pusher::tests::review_rejected_gateway_keys_only_remove_matching_pusher
             sending::delivery_tests::http_push_retries_failed_gateway_without_acknowledging_queue
             sending::guard::tests::review_sender_survives_ack_failure_and_recovers_startup_failure
+            routing::client::key::key_changes_tests::review_keys_changes_tracks_shared_encrypted_membership_windows
+            directory::tests::review_public_rooms_filters_networks_and_bidirectional_pages
+            media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )
           for mode in default all; do
             features=()
             if [ "$mode" = all ]; then features+=(--all-features); fi
             cargo test --locked -p palpo --lib "${features[@]}" --no-run
+            # These resource lifecycle cases need no database and must also run
+            # with default features (the workspace suite uses all features).
+            for module in media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_; do
+              cargo test --locked -p palpo --lib "${features[@]}" "$module"
+            done
             index=0
             for test in "${cases[@]}"; do
               database="palpo_review_${mode}_${index}"

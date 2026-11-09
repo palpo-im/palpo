@@ -9,6 +9,10 @@ use crate::core::room::JoinRule;
 use crate::exts::*;
 use crate::{AppError, AppResult, MatrixError, config, room};
 
+#[cfg(test)]
+#[path = "directory_tests.rs"]
+mod tests;
+
 pub async fn get_public_rooms(
     server: Option<&ServerName>,
     limit: Option<usize>,
@@ -28,7 +32,7 @@ pub async fn get_public_rooms(
                     generic_search_term: filter.generic_search_term.clone(),
                     room_types: filter.room_types.clone(),
                 },
-                room_network: RoomNetwork::Matrix,
+                room_network: network.clone(),
             },
         )?
         .into_inner();
@@ -48,10 +52,26 @@ async fn get_local_public_rooms(
     limit: Option<usize>,
     since: Option<&str>,
     filter: &PublicRoomFilter,
-    _network: &RoomNetwork,
+    network: &RoomNetwork,
 ) -> AppResult<PublicRoomsResBody> {
-    let limit = limit.unwrap_or(10);
-    let mut num_since = 0_u64;
+    // Appservice network publication is explicitly unsupported by its write
+    // endpoint. There are therefore no third-party entries to include yet;
+    // selecting a specific network must not leak the Matrix directory into it.
+    if matches!(network, RoomNetwork::ThirdParty(_)) {
+        return Ok(PublicRoomsResBody {
+            total_room_count_estimate: Some(0),
+            ..Default::default()
+        });
+    }
+    // Federation defines zero as unlimited. Also avoid producing an n0 token
+    // which can never make progress.
+    let limit = match limit {
+        Some(0) => usize::MAX,
+        Some(limit) => limit,
+        None => 10,
+    };
+    let mut num_since = 0_usize;
+    let mut page_end = None;
 
     if let Some(s) = &since {
         let mut characters = s.chars();
@@ -67,7 +87,8 @@ async fn get_local_public_rooms(
             .map_err(|_| MatrixError::invalid_param("Invalid `since` token."))?;
 
         if backwards {
-            num_since = num_since.saturating_sub(limit as u64);
+            page_end = Some(num_since);
+            num_since = num_since.saturating_sub(limit);
         }
     }
 
@@ -106,7 +127,7 @@ async fn get_local_public_rooms(
                     _ => None,
                 })?
                 .ok_or_else(|| AppError::public("Missing room join rule event for room."))?,
-                room_type: room::get_room_type(&room_id).await.ok().flatten(),
+                room_type: room::get_room_type(&room_id).await?,
                 room_id,
             };
             Ok::<_, AppError>(chunk)
@@ -142,20 +163,36 @@ async fn get_local_public_rooms(
             true
         };
 
-        if matches {
+        let matches_type = filter.room_types.is_empty()
+            || filter
+                .room_types
+                .iter()
+                .any(|ty| ty.as_str() == chunk.room_type.as_ref().map(|ty| ty.as_str()));
+        if matches && matches_type {
             // We need to collect all, so we can sort by member count
             all_rooms.push(chunk);
         }
     }
 
-    all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
+    // Counts frequently tie. Include a deterministic tie-breaker so pages do
+    // not duplicate or omit rooms when the underlying query order changes.
+    all_rooms.sort_by(|a, b| {
+        b.num_joined_members
+            .cmp(&a.num_joined_members)
+            .then_with(|| a.room_id.cmp(&b.room_id))
+    });
 
-    let total_room_count_estimate = (all_rooms.len() as u32).into();
+    let total = all_rooms.len();
+    let total_room_count_estimate = total as u64;
+    let end = page_end
+        .unwrap_or_else(|| num_since.saturating_add(limit))
+        .min(total);
+    num_since = num_since.min(end);
 
     let chunk: Vec<_> = all_rooms
         .into_iter()
-        .skip(num_since as usize)
-        .take(limit)
+        .skip(num_since)
+        .take(end - num_since)
         .collect();
 
     let prev_batch = if num_since == 0 {
@@ -164,10 +201,10 @@ async fn get_local_public_rooms(
         Some(format!("p{num_since}"))
     };
 
-    let next_batch = if chunk.len() < limit {
+    let next_batch = if end >= total {
         None
     } else {
-        Some(format!("n{}", num_since + limit as u64))
+        Some(format!("n{end}"))
     };
 
     Ok(PublicRoomsResBody {

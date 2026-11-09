@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use ipaddress::IPAddress;
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
 use crate::core::identifiers::*;
@@ -14,14 +14,83 @@ use crate::sending::resolver;
 use crate::utils::url_guard;
 use crate::{AppResult, TlsNameMap, config, data, storage, utils};
 
-static URL_PREVIEW_MUTEX: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
-    LazyLock::new(Default::default);
-async fn get_url_preview_mutex(url: &str) -> Arc<Mutex<()>> {
-    let mut locks = URL_PREVIEW_MUTEX.lock().await;
-    locks
-        .entry(url.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+// Includes requests waiting for the same URL, so both the lock table and the
+// work admitted past a cache miss have a hard bound. Excess callers retry
+// instead of building an unbounded semaphore/keyed-lock wait queue.
+const MAX_PREVIEW_REQUESTS: usize = 16;
+static PREVIEW_REQUESTS: LazyLock<PreviewRequests> =
+    LazyLock::new(|| PreviewRequests::new(MAX_PREVIEW_REQUESTS));
+
+struct PreviewRequests {
+    slots: Arc<Semaphore>,
+    locks: StdMutex<HashMap<String, PreviewLock>>,
+}
+
+struct PreviewLock {
+    mutex: Arc<Mutex<()>>,
+    leases: usize,
+}
+
+impl PreviewRequests {
+    fn new(capacity: usize) -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(capacity)),
+            locks: StdMutex::new(HashMap::new()),
+        }
+    }
+
+    fn try_enter(&self, url: &str) -> AppResult<PreviewLease<'_>> {
+        let permit = self.slots.clone().try_acquire_owned().map_err(|_| {
+            MatrixError::limit_exceeded(
+                "Too many URL previews. Please try again later.",
+                Some(crate::core::error::RetryAfter::Delay(Duration::from_secs(
+                    1,
+                ))),
+            )
+        })?;
+        let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = locks.entry(url.to_owned()).or_insert_with(|| PreviewLock {
+            mutex: Arc::new(Mutex::new(())),
+            leases: 0,
+        });
+        entry.leases += 1;
+        let mutex = entry.mutex.clone();
+        Ok(PreviewLease {
+            requests: self,
+            url: url.to_owned(),
+            mutex,
+            _permit: permit,
+        })
+    }
+}
+
+struct PreviewLease<'a> {
+    requests: &'a PreviewRequests,
+    url: String,
+    mutex: Arc<Mutex<()>>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl Drop for PreviewLease<'_> {
+    fn drop(&mut self) {
+        // The URL lock is borrowed from this lease, so it is released before
+        // the lease can be dropped. Registration and last-reference removal
+        // use the same synchronous table lock, including on task cancellation.
+        // Count registrations explicitly: Arc fields are dropped after the
+        // Drop body, so their strong_count is not a safe concurrent lease count.
+        let mut locks = self
+            .requests
+            .locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = locks
+            .get_mut(&self.url)
+            .expect("preview lease is registered");
+        entry.leases -= 1;
+        if entry.leases == 0 {
+            locks.remove(&self.url);
+        }
+    }
 }
 
 fn client() -> &'static reqwest::Client {
@@ -266,8 +335,8 @@ pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
     }
 
     // ensure that only one request is made per URL
-    let mutex = get_url_preview_mutex(url.as_str()).await;
-    let _request_lock = mutex.lock().await;
+    let lease = PREVIEW_REQUESTS.try_enter(url.as_str())?;
+    let _request_lock = lease.mutex.lock().await;
 
     match data::media::get_url_preview(url.as_str()).await {
         Ok(preview) => Ok(preview.into()),
@@ -419,6 +488,9 @@ async fn download_html(url: &Url) -> AppResult<UrlPreviewData> {
 
     Ok(data)
 }
+
+#[cfg(test)]
+mod resource_tests;
 
 #[cfg(test)]
 mod tests {

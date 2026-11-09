@@ -1,5 +1,33 @@
 # Upgrading Palpo
 
+## Device-list history migration (2026-11-10)
+
+`2026-11-10-000000_device_key_change_history` adds a transactional journal of
+device-key change positions. Its PostgreSQL trigger records insert attempts and
+updates to the existing latest-per-room markers, including writes from old
+binaries. Recording happens before conflict handling, so a delayed older
+notification remains in its historical window while the latest marker stays
+newer. Journal records are deduplicated and roll back with the writer transaction.
+This migration is additive: deployments already upgraded through the coordinated
+2026-10-30 and media-reservation migrations may apply it before rolling out the
+new application. Keep the trigger and journal while any upgraded reader runs.
+Mixed application versions still give different `/keys/changes` and sync answers
+until all readers are upgraded, so route these requests to upgraded nodes if the
+new semantics are required during rollout.
+
+The initial backfill preserves markers still present at migration time. Older
+updates already overwritten before migration cannot be reconstructed. Clients
+resuming pre-upgrade device-list tracking should refresh tracked device lists;
+do not treat a bounded historical `changed` result as complete for that period.
+Historical `left` is reconstructed from retained immutable live-publication
+state frames. Device-list journal positions occupy the half-open interval
+`[from, to)` of next-sync tokens, shared by classic and sliding sync.
+
+An application rollback may retain the additive journal and trigger, but restores
+the old incomplete `left` behavior. Before explicitly rolling back this database
+migration, stop every upgraded reader; it requires the journal table. Existing
+requirements to coordinate earlier migrations remain in effect.
+
 ## Media reservation migration (2026-11-09)
 
 Stop every old writer before applying

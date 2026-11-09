@@ -1,6 +1,7 @@
 mod password;
 use palpo_data::user::set_display_name;
 pub use password::*;
+pub(crate) mod device_lists;
 pub mod key;
 pub mod pusher;
 pub use key::*;

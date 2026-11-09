@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -55,15 +55,39 @@ pub async fn limit_size(
     limiter.handle(req, depot, res, ctrl).await;
 }
 
-/// Token-bucket rate limiter: maps a client key to its available tokens.
+/// Do not evict depleted buckets: that would give their clients a new burst.
+/// At capacity, reject unknown clients until an existing bucket fully refills.
+const MAX_RATE_LIMIT_BUCKETS: usize = 65_536;
+
+struct RateBucket {
+    tokens: f64,
+    updated_at: Instant,
+    expires_at: Option<Instant>,
+}
+
+#[derive(Default)]
+struct RateBuckets {
+    buckets: HashMap<String, RateBucket>,
+    // One deadline per bucket, not one record per request. Forgetting a fully
+    // refilled bucket is equivalent to retaining it with its entire burst.
+    expiry: BTreeSet<(Instant, String)>,
+}
+
+/// A bounded token-bucket limiter with lazy, exact full-refill reclamation.
 struct RateLimiter {
-    buckets: Mutex<HashMap<String, (f64, Instant)>>,
+    buckets: Mutex<RateBuckets>,
+    capacity: usize,
 }
 
 impl RateLimiter {
     fn new() -> Self {
+        Self::with_capacity(MAX_RATE_LIMIT_BUCKETS)
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
         Self {
-            buckets: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(RateBuckets::default()),
+            capacity,
         }
     }
 
@@ -81,36 +105,99 @@ impl RateLimiter {
         cfg: &crate::config::RateLimitConfig,
         consume: bool,
     ) -> AppResult<()> {
+        self.check_at(key, cfg, consume, Instant::now())
+    }
+
+    fn check_at(
+        &self,
+        key: &str,
+        cfg: &crate::config::RateLimitConfig,
+        consume: bool,
+        now: Instant,
+    ) -> AppResult<()> {
         if cfg.per_second <= 0.0 || cfg.burst == 0 {
             return Ok(());
         }
+        if !cfg.per_second.is_finite() {
+            return Err(Self::limited(None));
+        }
 
-        let mut map = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
+        let mut state = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        while state.expiry.first().is_some_and(|(at, _)| *at <= now) {
+            let (_, expired_key) = state.expiry.pop_first().expect("expiry was checked");
+            state.buckets.remove(&expired_key);
+        }
+
         let burst = cfg.burst as f64;
-        let entry = map.entry(key.to_owned()).or_insert((burst, now));
-
-        // Refill tokens based on elapsed time
-        let elapsed = now.duration_since(entry.1).as_secs_f64();
-        entry.1 = now;
-        entry.0 = (entry.0 + elapsed * cfg.per_second).min(burst);
-
-        // Try to consume 1 token
-        if entry.0 >= 1.0 {
+        let Some(mut bucket) = state.buckets.remove(key) else {
+            if state.buckets.len() >= self.capacity {
+                return Err(Self::limited(Some(Duration::from_secs(1))));
+            }
+            // A successful probe costs nothing, so it needs no stored bucket.
+            if !consume {
+                return Ok(());
+            }
+            let tokens = burst - 1.0;
+            Self::store_bucket(&mut state, key, tokens, now, cfg);
+            return Ok(());
+        };
+        if let Some(at) = bucket.expires_at {
+            state.expiry.remove(&(at, key.to_owned()));
+        }
+        // A thread may sample its clock before waiting for the state mutex.
+        // Never move the refill clock backwards.
+        let now = now.max(bucket.updated_at);
+        let elapsed = now.duration_since(bucket.updated_at).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * cfg.per_second).min(burst);
+        let result = if bucket.tokens >= 1.0 {
             if consume {
-                entry.0 -= 1.0;
+                bucket.tokens -= 1.0;
             }
             Ok(())
         } else {
-            let wait_seconds = (1.0 - entry.0) / cfg.per_second;
-            let retry_after = (wait_seconds.is_finite() && wait_seconds < u64::MAX as f64 / 2.0)
-                .then(|| RetryAfter::Delay(Duration::from_secs_f64(wait_seconds.max(0.0))));
-            Err(MatrixError::limit_exceeded(
-                "Too many requests. Please try again later.",
-                retry_after,
-            )
-            .into())
+            let delay = Duration::try_from_secs_f64((1.0 - bucket.tokens) / cfg.per_second).ok();
+            Err(Self::limited(delay))
+        };
+        Self::store_bucket(&mut state, key, bucket.tokens, now, cfg);
+        result
+    }
+
+    fn store_bucket(
+        state: &mut RateBuckets,
+        key: &str,
+        tokens: f64,
+        now: Instant,
+        cfg: &crate::config::RateLimitConfig,
+    ) {
+        let deficit = cfg.burst as f64 - tokens;
+        if deficit <= 0.0 {
+            return;
         }
+        // Round conservatively, so sub-nanosecond truncation cannot reset a
+        // bucket before all its tokens would actually have regenerated.
+        let expires_at = Duration::try_from_secs_f64(deficit / cfg.per_second)
+            .ok()
+            .and_then(|delay| delay.checked_add(Duration::from_nanos(1)))
+            .and_then(|delay| now.checked_add(delay));
+        if let Some(at) = expires_at {
+            state.expiry.insert((at, key.to_owned()));
+        }
+        state.buckets.insert(
+            key.to_owned(),
+            RateBucket {
+                tokens,
+                updated_at: now,
+                expires_at,
+            },
+        );
+    }
+
+    fn limited(delay: Option<Duration>) -> crate::AppError {
+        MatrixError::limit_exceeded(
+            "Too many requests. Please try again later.",
+            delay.map(RetryAfter::Delay),
+        )
+        .into()
     }
 }
 
@@ -267,6 +354,77 @@ mod rate_limit_tests {
         assert!(limiter.check("alice", &config).is_ok());
         assert!(limiter.probe("alice", &config).is_err());
         assert!(limiter.probe("bob", &config).is_ok());
+    }
+
+    #[test]
+    fn review_rate_limit_reclaims_only_fully_refilled_buckets_and_bounds_keys() {
+        use std::time::{Duration, Instant};
+
+        let limiter = RateLimiter::with_capacity(2);
+        let config = RateLimitConfig {
+            per_second: 1.0,
+            burst: 2,
+        };
+        let start = Instant::now();
+        assert!(limiter.check_at("alice", &config, true, start).is_ok());
+        assert!(limiter.check_at("alice", &config, true, start).is_ok());
+        assert!(limiter.check_at("bob", &config, true, start).is_ok());
+        for index in 0..10_000 {
+            assert!(
+                limiter
+                    .check_at(&format!("new-{index}"), &config, true, start)
+                    .is_err()
+            );
+        }
+        {
+            let state = limiter.buckets.lock().unwrap();
+            assert_eq!(state.buckets.len(), 2);
+            assert_eq!(state.expiry.len(), 2);
+        }
+        // Capacity pressure must not evict an exhausted client or reset debt.
+        assert!(limiter.check_at("alice", &config, true, start).is_err());
+        assert!(
+            limiter
+                .check_at("new-probe", &config, false, start)
+                .is_err()
+        );
+        let half = start + Duration::from_millis(500);
+        assert!(limiter.check_at("charlie", &config, true, half).is_err());
+        assert!(limiter.check_at("alice", &config, true, half).is_err());
+        assert!(limiter.check_at("bob", &config, false, half).is_ok());
+        // Bob can be safely forgotten once his entire burst refills, while
+        // Alice remains charged. Only Bob's slot becomes reusable.
+        let later = start + Duration::from_millis(1100);
+        assert!(limiter.check_at("charlie", &config, true, later).is_ok());
+        assert!(limiter.check_at("alice", &config, true, later).is_ok());
+        assert!(limiter.check_at("alice", &config, true, later).is_err());
+        let full = later + Duration::from_secs(3);
+        assert!(limiter.check_at("probe-only", &config, false, full).is_ok());
+        let state = limiter.buckets.lock().unwrap();
+        assert!(state.buckets.is_empty());
+        assert!(state.expiry.is_empty());
+    }
+
+    #[test]
+    fn review_rate_limit_expiry_index_stays_bounded_and_clock_never_regresses() {
+        use std::time::{Duration, Instant};
+
+        let limiter = RateLimiter::with_capacity(1);
+        let config = RateLimitConfig {
+            per_second: 1.0,
+            burst: 2,
+        };
+        let start = Instant::now();
+        assert!(limiter.check_at("alice", &config, true, start).is_ok());
+        let later = start + Duration::from_millis(500);
+        assert!(limiter.check_at("alice", &config, true, later).is_ok());
+        for _ in 0..10_000 {
+            assert!(limiter.check_at("alice", &config, true, start).is_err());
+        }
+        assert!(limiter.check_at("alice", &config, true, later).is_err());
+        let state = limiter.buckets.lock().unwrap();
+        assert_eq!(state.buckets.len(), 1);
+        assert_eq!(state.expiry.len(), 1);
     }
 }
 
