@@ -2,13 +2,13 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::value::to_raw_value;
 
-use crate::core::client::directory::{PublicRoomsFilteredReqBody, PublicRoomsReqArgs};
 use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
 use crate::core::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::events::{StateEventType, TimelineEventType};
+use crate::core::federation::directory::{PublicRoomsReqArgs, PublicRoomsReqBody};
 use crate::core::federation::event::{
     RoomStateAtEventReqArgs, RoomStateIdsResBody, RoomStateReqArgs, RoomStateResBody,
 };
@@ -356,12 +356,23 @@ async fn get_public_rooms(
     _aa: AuthArgs,
     args: PublicRoomsReqArgs,
 ) -> JsonResult<PublicRoomsResBody> {
+    let network = match (args.include_all_networks, args.third_party_instance_id) {
+        (true, Some(_)) => {
+            return Err(MatrixError::invalid_param(
+                "`include_all_networks` and `third_party_instance_id` are mutually exclusive.",
+            )
+            .into());
+        }
+        (true, None) => RoomNetwork::All,
+        (false, Some(network)) => RoomNetwork::ThirdParty(network),
+        (false, None) => RoomNetwork::Matrix,
+    };
     let body = crate::directory::get_public_rooms(
         None,
-        args.limit,
+        Some(args.limit.unwrap_or(0)),
         args.since.as_deref(),
         &PublicRoomFilter::default(),
-        &RoomNetwork::Matrix,
+        &network,
     )
     .await?;
     json_ok(body)
@@ -372,10 +383,10 @@ async fn get_public_rooms(
 #[endpoint]
 async fn get_filtered_public_rooms(
     _aa: AuthArgs,
-    args: JsonBody<PublicRoomsFilteredReqBody>,
+    args: JsonBody<PublicRoomsReqBody>,
 ) -> JsonResult<PublicRoomsResBody> {
     let body = crate::directory::get_public_rooms(
-        args.server.as_deref(),
+        None,
         args.limit,
         args.since.as_deref(),
         &args.filter,
