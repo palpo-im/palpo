@@ -173,6 +173,9 @@ jobs:
             sending::guard::selection_tests::review_outbound_scheduler_is_fair_under_slow_claim_and_ack
             observability::tests::review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows
             observability::tests::review_outbound_process_restart_preserves_requests_and_reports_recovery
+            routing::capability_contract_tests::review_threepid_capabilities_and_rejections_match_routes
+            routing::capability_contract_tests::review_thirdparty_queries_track_live_appservice_disable
+            routing::federation::tests::review_onbind_respects_disabled_federation
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )
           # The shared PostgreSQL batch selects this substring, including in
