@@ -990,13 +990,43 @@ async fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> 
 }
 
 async fn queue_requests(requests: &[(&OutgoingKind, SendingEventType)]) -> AppResult<Vec<i64>> {
-    let mut ids = Vec::new();
-    for (outgoing_kind, event) in requests {
-        ids.push(queue_request(outgoing_kind, event).await?);
+    if requests.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(ids)
+    // One call is one durable fanout: no destination becomes visible until all
+    // chunks commit. Bound each statement well below PostgreSQL's bind limit.
+    connect()
+        .await?
+        .transaction::<_, AppError, _>(async |conn| {
+            let mut ids: Vec<i64> = Vec::with_capacity(requests.len());
+            for chunk in requests.chunks(512) {
+                let rows = chunk
+                    .iter()
+                    .map(|(kind, event)| outgoing_request(kind, event))
+                    .collect::<Vec<_>>();
+                ids.extend(
+                    diesel::insert_into(outgoing_requests::table)
+                        .values(&rows)
+                        .returning(outgoing_requests::id)
+                        .get_results::<i64>(conn)
+                        .await?,
+                );
+            }
+            Ok(ids)
+        })
+        .await
 }
 async fn queue_request(outgoing_kind: &OutgoingKind, event: &SendingEventType) -> AppResult<i64> {
+    queue_requests(&[(outgoing_kind, event.clone())])
+        .await?
+        .pop()
+        .ok_or_else(|| AppError::internal("outgoing request insert returned no id"))
+}
+
+fn outgoing_request(
+    outgoing_kind: &OutgoingKind,
+    event: &SendingEventType,
+) -> NewDbOutgoingRequest {
     let appservice_id = if let OutgoingKind::Appservice(service_id) = outgoing_kind {
         Some(service_id.clone())
     } else {
@@ -1017,20 +1047,15 @@ async fn queue_request(outgoing_kind: &OutgoingKind, event: &SendingEventType) -
         SendingEventType::Edu(edu_json) => (None, Some(edu_json.clone())),
         SendingEventType::Flush => (None, None),
     };
-    let id = diesel::insert_into(outgoing_requests::table)
-        .values(&NewDbOutgoingRequest {
-            kind: outgoing_kind.name().to_owned(),
-            appservice_id,
-            user_id,
-            pushkey,
-            server_id,
-            pdu_id,
-            edu_json,
-        })
-        .returning(outgoing_requests::id)
-        .get_result::<i64>(&mut connect().await?)
-        .await?;
-    Ok(id)
+    NewDbOutgoingRequest {
+        kind: outgoing_kind.name().to_owned(),
+        appservice_id,
+        user_id,
+        pushkey,
+        server_id,
+        pdu_id,
+        edu_json,
+    }
 }
 
 async fn active_requests_for(
@@ -1283,6 +1308,145 @@ fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBui
 mod tests {
     use super::*;
     use crate::config::FederationConfig;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PostgreSQL database"]
+    async fn review_queue_batch_is_atomic_and_preserves_payloads() {
+        crate::test_database::init();
+        assert!(queue_requests(&[]).await.unwrap().is_empty());
+        let user = UserId::parse("@push:batch.example").unwrap();
+        let requests = (0..600)
+            .map(|index| match index % 3 {
+                0 => (
+                    OutgoingKind::Normal(format!("peer{index}.example").try_into().unwrap()),
+                    SendingEventType::Pdu(format!("$event{index}").try_into().unwrap()),
+                ),
+                1 => (
+                    OutgoingKind::Appservice(format!("app{index}")),
+                    SendingEventType::Edu(format!("{{\"index\":{index}}}").into_bytes()),
+                ),
+                _ => (
+                    OutgoingKind::Push(user.clone(), format!("key{index}")),
+                    SendingEventType::Flush,
+                ),
+            })
+            .collect::<Vec<_>>();
+        let mut references = requests
+            .iter()
+            .map(|(kind, event)| (kind, event.clone()))
+            .collect::<Vec<_>>();
+        // This row is in the second INSERT. The first chunk must roll back
+        // too, and a retry must not create duplicate fanout destinations.
+        let failure = OutgoingKind::Normal("fail.example".try_into().unwrap());
+        references.push((&failure, SendingEventType::Flush));
+        let mut connection = connect().await.unwrap();
+        diesel::sql_query(
+            "CREATE FUNCTION reject_review_fanout() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN IF NEW.server_id = 'fail.example' THEN RAISE EXCEPTION 'injected fanout failure'; END IF;
+             RETURN NEW; END $$",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        diesel::sql_query("CREATE TRIGGER reject_review_fanout BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION reject_review_fanout()")
+            .execute(&mut connection).await.unwrap();
+        assert!(queue_requests(&references).await.is_err());
+        assert_eq!(
+            outgoing_requests::table
+                .count()
+                .get_result::<i64>(&mut connection)
+                .await
+                .unwrap(),
+            0,
+        );
+        references.pop();
+        let ids = queue_requests(&references).await.unwrap();
+        assert_eq!(ids.len(), requests.len());
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            ids.len()
+        );
+        let rows = outgoing_requests::table
+            .filter(outgoing_requests::id.eq_any(&ids))
+            .load::<DbOutgoingRequest>(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), requests.len());
+        for index in 0..600 {
+            // Expectations come from the fixture, independently of the row
+            // builder used by production inserts.
+            let (kind, appservice, user_id, pushkey, server, pdu, edu) = match index % 3 {
+                0 => (
+                    "normal",
+                    None,
+                    None,
+                    None,
+                    Some(format!("peer{index}.example")),
+                    Some(format!("$event{index}")),
+                    None,
+                ),
+                1 => (
+                    "appservice",
+                    Some(format!("app{index}")),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(format!("{{\"index\":{index}}}").into_bytes()),
+                ),
+                _ => (
+                    "push",
+                    None,
+                    Some(user.to_string()),
+                    Some(format!("key{index}")),
+                    None,
+                    None,
+                    None,
+                ),
+            };
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| {
+                        row.kind == kind
+                            && row.appservice_id == appservice
+                            && row.user_id.as_ref().map(ToString::to_string) == user_id
+                            && row.pushkey == pushkey
+                            && row.server_id.as_ref().map(ToString::to_string) == server
+                            && row.pdu_id.as_ref().map(ToString::to_string) == pdu
+                            && row.edu_json == edu
+                            && row.state == "created"
+                    })
+                    .count(),
+                1
+            );
+        }
+        let single = queue_request(&failure, &SendingEventType::Flush).await;
+        assert!(single.is_err());
+        assert_eq!(
+            outgoing_requests::table
+                .count()
+                .get_result::<i64>(&mut connection)
+                .await
+                .unwrap(),
+            600
+        );
+        diesel::sql_query("DROP TRIGGER reject_review_fanout ON outgoing_requests")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        let single = queue_request(&failure, &SendingEventType::Flush)
+            .await
+            .unwrap();
+        assert!(!ids.contains(&single));
+        assert_eq!(
+            outgoing_requests::table
+                .count()
+                .get_result::<i64>(&mut connection)
+                .await
+                .unwrap(),
+            601
+        );
+    }
 
     #[tokio::test]
     #[ignore = "run alone: installs process-global configuration"]

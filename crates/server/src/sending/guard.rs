@@ -30,12 +30,18 @@ use crate::{AppResult, data, room};
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 const WORKER_RESTART_DELAY: Duration = Duration::from_secs(5);
 static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
+static WORKER_READY: AtomicBool = AtomicBool::new(false);
 static WORKER_RESTARTS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+#[path = "readiness_tests.rs"]
+mod readiness_tests;
 
 struct RunningWorker;
 
 impl Drop for RunningWorker {
     fn drop(&mut self) {
+        WORKER_READY.store(false, Ordering::Release);
         WORKER_RUNNING.store(false, Ordering::Release);
     }
 }
@@ -43,6 +49,13 @@ impl Drop for RunningWorker {
 /// Whether the sender is processing work rather than recovering from failure.
 pub fn is_running() -> bool {
     WORKER_RUNNING.load(Ordering::Acquire)
+}
+
+/// Whether durable startup recovery completed and the scheduler's latest
+/// queue sweep succeeded. Destination-specific delivery failures do not make
+/// the whole server unready: they retain durable retries instead.
+pub fn is_ready() -> bool {
+    is_running() && WORKER_READY.load(Ordering::Acquire)
 }
 
 pub fn restart_count() -> u64 {
@@ -76,6 +89,7 @@ impl Guard {
 
 async fn supervise(mut receiver: mpsc::Receiver<super::WakeupMessage>, delay: Duration) {
     loop {
+        WORKER_READY.store(false, Ordering::Release);
         WORKER_RUNNING.store(true, Ordering::Release);
         let running = RunningWorker;
         let result = AssertUnwindSafe(process(&mut receiver))
@@ -151,6 +165,7 @@ async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResu
 
     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
     sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    WORKER_READY.store(true, Ordering::Release);
 
     loop {
         let retry_delay = next_retry_delay(&current_transaction_status);
@@ -373,10 +388,12 @@ async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResu
                 let kinds = match super::queued_kinds().await {
                     Ok(kinds) => kinds,
                     Err(e) => {
+                        WORKER_READY.store(false, Ordering::Release);
                         error!(error = ?e, "failed to load queued destinations for sweep");
                         continue;
                     }
                 };
+                WORKER_READY.store(true, Ordering::Release);
                 for outgoing_kind in kinds {
                     if current_transaction_status.contains_key(&outgoing_kind) {
                         // Running, retrying, or backing off: the existing flow

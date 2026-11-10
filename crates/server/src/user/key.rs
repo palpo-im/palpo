@@ -16,11 +16,15 @@ use crate::core::federation::transaction::{Edu, SigningKeyUpdateContent};
 use crate::core::identifiers::*;
 use crate::core::serde::{Base64, CanonicalJsonObject, JsonValue};
 use crate::core::signatures::{self, PublicKeyMap, PublicKeySet};
-use crate::core::{DeviceKeyAlgorithm, UnixMillis, client, federation};
-use crate::data::user::{NewDbCrossSignature, NewDbKeyChange};
+use crate::core::{DeviceKeyAlgorithm, client, federation};
+use crate::data::user::NewDbCrossSignature;
 use crate::exts::*;
 use crate::user::clean_signatures;
 use crate::{AppError, AppResult, BAD_QUERY_RATE_LIMITER, MatrixError, config, data, sending};
+
+#[cfg(test)]
+#[path = "key_publication_tests.rs"]
+mod publication_tests;
 
 pub async fn query_keys<F: Fn(&UserId) -> bool + Send + Sync>(
     sender_id: Option<&UserId>,
@@ -683,33 +687,8 @@ pub async fn sign_key(
 }
 
 pub async fn mark_signing_key_update(user_id: &UserId) -> AppResult<()> {
-    let changed_at = UnixMillis::now();
-
     let joined_rooms = data::user::joined_rooms(user_id).await?;
-    for room_id in &joined_rooms {
-        // // Don't send key updates to unencrypted rooms
-        // if state::get_state(&room_id, &StateEventType::RoomEncryption, "")?.is_none() {
-        //     continue;
-        // }
-
-        let change = NewDbKeyChange {
-            user_id: user_id.to_owned(),
-            room_id: Some(room_id.to_owned()),
-            changed_at,
-            occur_sn: data::next_sn().await?,
-        };
-
-        data::user::key::replace_key_change(&change).await?;
-    }
-
-    let change = NewDbKeyChange {
-        user_id: user_id.to_owned(),
-        room_id: None,
-        changed_at,
-        occur_sn: data::next_sn().await?,
-    };
-
-    data::user::key::replace_key_change(&change).await?;
+    data::user::key::publish_key_change(user_id, &joined_rooms, true).await?;
 
     if user_id.is_local() {
         let remote_servers = data::room::joined_servers_for_rooms(&joined_rooms).await?;
@@ -724,34 +703,8 @@ pub async fn mark_signing_key_update(user_id: &UserId) -> AppResult<()> {
 }
 
 pub async fn mark_device_key_update(user_id: &UserId, _device_id: &DeviceId) -> AppResult<()> {
-    let changed_at = UnixMillis::now();
     let joined_rooms = data::user::joined_rooms(user_id).await?;
-    let occur_sn = data::next_sn().await?;
-    for room_id in &joined_rooms {
-        // comment for testing
-        // // Don't send key updates to unencrypted rooms
-        // if state::get_state(&room_id, &StateEventType::RoomEncryption, "")?.is_none() {
-        //     continue;
-        // }
-
-        let change = NewDbKeyChange {
-            user_id: user_id.to_owned(),
-            room_id: Some(room_id.to_owned()),
-            changed_at,
-            occur_sn,
-        };
-
-        data::user::key::replace_key_change(&change).await?;
-    }
-
-    let change = NewDbKeyChange {
-        user_id: user_id.to_owned(),
-        room_id: None,
-        changed_at,
-        occur_sn,
-    };
-
-    data::user::key::replace_key_change(&change).await?;
+    data::user::key::publish_key_change(user_id, &joined_rooms, true).await?;
 
     Ok(())
 }
@@ -761,18 +714,7 @@ pub async fn mark_device_key_update_with_joined_rooms(
     _device_id: &DeviceId,
     joined_rooms: &[OwnedRoomId],
 ) -> AppResult<()> {
-    let changed_at = UnixMillis::now();
-    let occur_sn = data::next_sn().await?;
-    for room_id in joined_rooms {
-        let change = NewDbKeyChange {
-            user_id: user_id.to_owned(),
-            room_id: Some(room_id.to_owned()),
-            changed_at,
-            occur_sn,
-        };
-
-        data::user::key::replace_key_change(&change).await?;
-    }
+    data::user::key::publish_key_change(user_id, joined_rooms, false).await?;
     Ok(())
 }
 

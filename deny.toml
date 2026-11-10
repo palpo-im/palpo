@@ -6,11 +6,13 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = [
-    # `paste` is unmaintained; pulled in by rav1e (via ravif <- image).
-    # No fixed release exists. Drop this once rav1e replaces paste.
-    { id = "RUSTSEC-2024-0436", reason = "rav1e depends on the unmaintained paste crate; no upgrade path yet" },
-]
+unsound = "all"
+# Vulnerability and unsoundness diagnostics retain cargo-deny's default errors.
+# CI only lowers informational notice/unmaintained diagnostics to warnings.
+# Any future exact-ID exception needs matching, unexpired ownership metadata in
+# tests/security/advisory-exceptions.json, checked before cargo-deny runs.
+ignore = []
+unused-ignored-advisory = "deny"
 
 [licenses]
 version = 2

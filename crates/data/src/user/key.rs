@@ -695,7 +695,109 @@ pub async fn device_list_stream_id(user_id: &UserId) -> DataResult<Seqnum> {
         .unwrap_or_default())
 }
 
-/// Atomically retain the newest marker for a `(user, room)` or global scope.
+// Publishers may run concurrently. A cursor capture takes the exclusive form
+// briefly, waiting for every earlier allocation to commit or roll back before
+// reading occur_sn_seq. Acquire this lock before allocating a key-change SN.
+const KEY_CHANGE_STREAM_LOCK: i64 = 0x50414c4b455953;
+
+/// Serialize all marker mutations for one user before their stream allocation.
+/// This also prevents opposite multi-scope row-lock ordering between key
+/// replacement, remote-version deletion and bulk device revocation.
+pub async fn lock_key_change_user(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user: &UserId,
+) -> diesel::QueryResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(user.as_str())
+        .bind::<diesel::sql_types::BigInt, _>(1_757_253_914_i64)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn lock_key_change_stream(
+    conn: &mut diesel_async::AsyncPgConnection,
+) -> diesel::QueryResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
+        .bind::<diesel::sql_types::BigInt, _>(KEY_CHANGE_STREAM_LOCK)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Snapshot lock, taken after presence/profile/live/inbox locks. Key publishers
+/// never acquire those locks while holding this stream lock.
+pub async fn lock_key_change_snapshot(
+    conn: &mut diesel_async::AsyncPgConnection,
+) -> diesel::QueryResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
+        .bind::<diesel::sql_types::BigInt, _>(KEY_CHANGE_STREAM_LOCK)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Publish one live device/signing change and all scopes at a commit-safe SN.
+pub async fn publish_key_change(
+    user: &UserId,
+    rooms: &[OwnedRoomId],
+    global: bool,
+) -> DataResult<()> {
+    if rooms.is_empty() && !global {
+        return Ok(());
+    }
+    connect()
+        .await?
+        .transaction::<_, crate::DataError, _>(async |conn| {
+            lock_key_change_user(conn, user).await?;
+            lock_key_change_stream(conn).await?;
+            let occur_sn =
+                diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                    .get_result::<Seqnum>(conn)
+                    .await?;
+            let changed_at = UnixMillis::now();
+            let scopes: std::collections::BTreeSet<_> = rooms
+                .iter()
+                .cloned()
+                .map(Some)
+                .chain(global.then_some(None))
+                .collect();
+            let changes: Vec<_> = scopes
+                .into_iter()
+                .map(|room_id| NewDbKeyChange {
+                    user_id: user.to_owned(),
+                    room_id,
+                    occur_sn,
+                    changed_at,
+                })
+                .collect();
+            use diesel::query_dsl::methods::FilterDsl;
+            for chunk in changes.chunks(1_000) {
+                diesel::insert_into(e2e_key_changes::table)
+                    .values(chunk)
+                    .on_conflict((e2e_key_changes::user_id, e2e_key_changes::room_id))
+                    .do_update()
+                    .set((
+                        e2e_key_changes::occur_sn
+                            .eq(diesel::upsert::excluded(e2e_key_changes::occur_sn)),
+                        e2e_key_changes::changed_at
+                            .eq(diesel::upsert::excluded(e2e_key_changes::changed_at)),
+                    ))
+                    .filter(
+                        e2e_key_changes::occur_sn
+                            .lt(diesel::upsert::excluded(e2e_key_changes::occur_sn)),
+                    )
+                    .execute(conn)
+                    .await?;
+            }
+            Ok(())
+        })
+        .await
+}
+
+/// Import an already-published historical position, retaining the latest marker.
+/// Live producers must use [`publish_key_change`] rather than reserve an SN
+/// before starting their marker transaction.
 pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
     use diesel::query_dsl::methods::FilterDsl;
     diesel::insert_into(e2e_key_changes::table)
@@ -825,6 +927,7 @@ pub async fn apply_remote_device_list_version(
                 .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
                 .execute(conn)
                 .await?;
+            lock_key_change_user(conn,user_id).await?;
             // One statement gives both sides the same READ COMMITTED snapshot.
             // Two SELECTs could otherwise combine a departed remote member with
             // a newly joined local member who never shared the room with them.
@@ -859,6 +962,7 @@ pub async fn apply_remote_device_list_version(
                     .await?;
                 return Ok(false);
             }
+            lock_key_change_stream(conn).await?;
             let occur_sn =
                 diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
                     .get_result::<Seqnum>(conn)

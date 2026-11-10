@@ -32,6 +32,7 @@ pub mod exts;
 pub mod federation;
 pub mod media;
 pub mod membership;
+pub mod readiness;
 pub mod registration_email;
 #[cfg(feature = "unstable-msc1763")]
 pub mod retention;
@@ -814,6 +815,7 @@ impl MatrixServer {
             }
         });
 
+        crate::readiness::mark_startup_complete();
         Ok(Some(Self { _private: () }))
     }
 
@@ -821,6 +823,13 @@ impl MatrixServer {
     /// endpoint, or static fallback that could shadow the embedding application.
     pub fn router(&self) -> Router {
         routing::matrix()
+    }
+
+    /// Check startup, the outbound scheduler and bounded database connectivity.
+    /// Embedded applications can map this status onto their own readiness route;
+    /// `router()` deliberately does not install Palpo's operational endpoints.
+    pub async fn readiness(&self) -> readiness::Readiness {
+        readiness::check().await
     }
 
     /// Apply Palpo's error handling, CORS, logging, and optional compression to
