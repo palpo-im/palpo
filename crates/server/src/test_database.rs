@@ -1,6 +1,8 @@
 //! Opt-in integration tests only: use an EMPTY, DEDICATED test database.
 //! Run with PALPO_TEST_DATABASE_URL set and `cargo test -p palpo --all-features -- --ignored`.
 
+pub(crate) mod sql_spy;
+
 pub fn init() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

@@ -1,12 +1,16 @@
 #[cfg(feature = "unstable-msc4495")]
 use std::collections::BTreeSet;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use diesel_async::AsyncConnection;
+#[cfg(not(feature = "unstable-msc4495"))]
+use diesel_async::RunQueryDsl;
 use futures_util::FutureExt;
+use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
@@ -15,14 +19,14 @@ use super::{
     SELECT_RECEIPT_LIMIT, SendingEventType, TransactionStatus,
 };
 use crate::core::device::DeviceListUpdateContent;
-use crate::core::events::receipt::{ReceiptContent, ReceiptData, ReceiptMap, ReceiptType};
+use crate::core::events::receipt::{ReceiptContent, ReceiptData, ReceiptMap};
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
 use crate::core::presence::{PresenceContent, PresenceUpdate};
 use crate::core::{Seqnum, device_id};
 use crate::exts::*;
 use crate::room::state;
-use crate::{AppResult, data, room};
+use crate::{AppResult, data};
 
 /// How often the guard scans the database for queued requests whose wakeup
 /// was dropped (full wakeup queue) or that were left over by a previous
@@ -37,10 +41,15 @@ static WORKER_RESTARTS: AtomicU64 = AtomicU64::new(0);
 #[path = "readiness_tests.rs"]
 mod readiness_tests;
 
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod selection_tests;
+
 struct RunningWorker;
 
 impl Drop for RunningWorker {
     fn drop(&mut self) {
+        crate::observability::worker_stopped();
         WORKER_READY.store(false, Ordering::Release);
         WORKER_RUNNING.store(false, Ordering::Release);
     }
@@ -48,18 +57,18 @@ impl Drop for RunningWorker {
 
 /// Whether the sender is processing work rather than recovering from failure.
 pub fn is_running() -> bool {
-    WORKER_RUNNING.load(Ordering::Acquire)
+    AtomicBool::load(&WORKER_RUNNING, Ordering::Acquire)
 }
 
 /// Whether durable startup recovery completed and the scheduler's latest
 /// queue sweep succeeded. Destination-specific delivery failures do not make
 /// the whole server unready: they retain durable retries instead.
 pub fn is_ready() -> bool {
-    is_running() && WORKER_READY.load(Ordering::Acquire)
+    is_running() && AtomicBool::load(&WORKER_READY, Ordering::Acquire)
 }
 
 pub fn restart_count() -> u64 {
-    WORKER_RESTARTS.load(Ordering::Relaxed)
+    AtomicU64::load(&WORKER_RESTARTS, Ordering::Relaxed)
 }
 
 /// A configured sending guard whose worker has not been started yet.
@@ -89,6 +98,7 @@ impl Guard {
 
 async fn supervise(mut receiver: mpsc::Receiver<super::WakeupMessage>, delay: Duration) {
     loop {
+        crate::observability::worker_started();
         WORKER_READY.store(false, Ordering::Release);
         WORKER_RUNNING.store(true, Ordering::Release);
         let running = RunningWorker;
@@ -114,393 +124,230 @@ async fn supervise(mut receiver: mpsc::Receiver<super::WakeupMessage>, delay: Du
     }
 }
 
+/// Bound the complete destination lifecycle, including SQL preparation and ACK.
+/// A zero sender_workers retains the configured outbound concurrency ceiling.
+fn destination_budget() -> usize {
+    let conf = crate::config::get();
+    let ceiling = usize::from(conf.max_concurrent_requests).max(1);
+    if conf.sender_workers == 0 {
+        ceiling
+    } else {
+        conf.sender_workers.clamp(1, ceiling)
+    }
+}
+
+fn enqueue_destination(
+    kind: OutgoingKind,
+    queue: &mut VecDeque<OutgoingKind>,
+    queued: &mut HashSet<OutgoingKind>,
+    statuses: &HashMap<OutgoingKind, TransactionStatus>,
+) {
+    if !statuses.contains_key(&kind) && queued.insert(kind.clone()) {
+        queue.push_back(kind);
+    }
+}
+
 async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResult<()> {
-    let mut futures = FuturesUnordered::new();
-    let mut current_transaction_status = HashMap::<OutgoingKind, TransactionStatus>::new();
-    // EDU selection windows of in-flight transactions; persisted as the
-    // destination's cursor once the transaction succeeds.
-    let mut pending_edu_cursors = HashMap::<OutgoingKind, (Seqnum, bool)>::new();
-
-    // Retry requests we could not finish yet
-    let mut initial_transactions = HashMap::<OutgoingKind, Vec<SendingEventType>>::new();
-
-    for (_id, outgoing_kind, event) in super::active_requests().await? {
-        let entry = initial_transactions
-            .entry(outgoing_kind.clone())
-            .or_default();
-
-        entry.push(event);
+    let budget = destination_budget();
+    let mut futures =
+        FuturesUnordered::<BoxFuture<'static, (OutgoingKind, u32, AppResult<bool>)>>::new();
+    let mut statuses = HashMap::<OutgoingKind, TransactionStatus>::new();
+    let mut queue = VecDeque::new();
+    let mut queued = HashSet::new();
+    // Only destination identities are recovered at startup; payload/EDU SQL
+    // belongs to bounded destination futures, never the heartbeat loop.
+    for kind in super::queued_kinds().await? {
+        enqueue_destination(kind, &mut queue, &mut queued, &statuses);
     }
-
-    for (outgoing_kind, mut events) in initial_transactions {
-        // Active rows survived a process restart, but their dynamic EDUs did not. Rebuild
-        // the same unadvanced window before retrying so a pending recipient removal cannot
-        // be confirmed by an unrelated PDU-only transaction.
-        if let OutgoingKind::Normal(server_name) = &outgoing_kind {
-            match select_edus(server_name).await {
-                Ok((select_edus, last_sn, has_presence)) => {
-                    if !select_edus.is_empty() {
-                        events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-                        pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
-                    }
-                }
-                Err(e) => {
-                    error!(?server_name, error = ?e, "failed to rebuild startup EDU window");
-                    current_transaction_status
-                        .insert(outgoing_kind, TransactionStatus::Failed(1, Instant::now()));
-                    continue;
-                }
-            }
-        }
-        current_transaction_status.insert(outgoing_kind.clone(), TransactionStatus::Running);
-        futures.push(super::send_events(outgoing_kind.clone(), events));
-    }
-
-    // Recipient recalculation tasks are intentionally background work during normal room
-    // processing. Re-scheduling every local presence row at startup closes the crash window
-    // between committing an account-data/room change and that task creating its durable
-    // Flush row.
     #[cfg(feature = "unstable-msc4495")]
     crate::user::presence::recipients::reconcile_on_startup();
 
     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
     sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut scans = FuturesUnordered::new();
     WORKER_READY.store(true, Ordering::Release);
-
+    crate::observability::worker_ready();
     loop {
-        let retry_delay = next_retry_delay(&current_transaction_status);
-
-        tokio::select! {
-            Some(response) = futures.next() => {
-                match response {
-                    Ok(outgoing_kind) => {
-                        #[cfg(feature = "unstable-msc4532")]
-                        if let Err(error) = crate::user::presence::revised::queue_completed(&outgoing_kind).await {
-                            warn!(?error, "presence delivery recovery failed");
-                        }
-                        if let Some((edu_sn, has_presence)) = pending_edu_cursors.remove(&outgoing_kind)
-                            && let OutgoingKind::Normal(server_name) = &outgoing_kind
-                        {
-                            #[cfg(feature = "unstable-msc4495")]
-                            let recorded: AppResult<()> = crate::user::presence::recipients::confirm_sent(
-                                server_name,
-                                edu_sn,
-                                has_presence.then_some(edu_sn),
-                            )
-                            .await;
-                            #[cfg(not(feature = "unstable-msc4495"))]
-                            let recorded: AppResult<()> = {
-                                let _ = has_presence;
-                                data::sending::advance_edu_cursor(server_name, edu_sn)
-                                    .await
-                                    .map_err(Into::into)
-                            };
-                            if let Err(e) = recorded {
-                                // The peer received the transaction, but local durable state
-                                // did not. Keep the active rows and retry the same idempotent
-                                // window rather than acknowledging deltas we cannot recover.
-                                error!(?server_name, error = ?e, "failed to record delivered EDU window");
-                                current_transaction_status.insert(
-                                    outgoing_kind,
-                                    TransactionStatus::Failed(1, Instant::now()),
-                                );
-                                continue;
-                            }
-                        }
-
-                        // Delete only after the cursor and recipient confirmations commit.
-                        // A crash before this point leaves the active row as a durable retry
-                        // anchor; a crash after it is safe because the delivery is recorded.
-                        if let Err(error) = super::delete_all_active_requests_for(&outgoing_kind).await {
-                            error!(?outgoing_kind, ?error, "failed to acknowledge delivered requests; retaining durable retry");
-                            current_transaction_status.insert(
-                                outgoing_kind,
-                                TransactionStatus::Failed(1, Instant::now()),
-                            );
-                            continue;
-                        }
-
-                        // Find events that have been added since starting the last request
-                        let new_events = match super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await {
-                            Ok(events) => events,
-                            Err(error) => {
-                                error!(?outgoing_kind, ?error, "failed to load follow-up requests; sweep will recover them");
-                                current_transaction_status.remove(&outgoing_kind);
-                                continue;
-                            }
-                        };
-
-                        let mut events = if new_events.is_empty() {
-                            Vec::new()
-                        } else {
-                            // Claim only rows that are still queued. Another
-                            // process may have claimed or completed them since
-                            // the select above.
-                            match super::claim_queued_requests(&new_events).await {
-                                Ok(events) => events,
-                                Err(error) => {
-                                    error!(?outgoing_kind, ?error, "failed to claim follow-up requests; sweep will recover them");
-                                    current_transaction_status.remove(&outgoing_kind);
-                                    continue;
-                                }
-                            }
-                        };
-
-                        if !events.is_empty() {
-                            // Piggyback EDUs that accumulated while the previous
-                            // transaction was in flight, so a busy destination
-                            // does not starve presence/receipt/device-list updates.
-                            if let OutgoingKind::Normal(server_name) = &outgoing_kind {
-                                match select_edus(server_name).await {
-                                    Ok((select_edus, last_sn, has_presence)) => {
-                                        if !select_edus.is_empty() {
-                                            events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-                                            pending_edu_cursors.insert(
-                                                outgoing_kind.clone(),
-                                                (last_sn, has_presence),
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!(?server_name, error = ?e, "failed to select follow-up EDU window");
-                                        current_transaction_status.insert(
-                                            outgoing_kind,
-                                            TransactionStatus::Failed(1, Instant::now()),
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            futures.push(super::send_events(outgoing_kind.clone(), events));
-                        } else if let OutgoingKind::Normal(server_name) = &outgoing_kind {
-                            match select_edus(server_name).await {
-                                Ok((select_edus, last_sn, has_presence)) if !select_edus.is_empty() => {
-                                    // No queued PDUs, but the EDU window is not empty
-                                    // (e.g. a previous send failed and dropped it):
-                                    // deliver the EDUs on their own instead of leaving
-                                    // them until unrelated traffic shows up.
-                                    let events = select_edus.into_iter().map(SendingEventType::Edu).collect::<Vec<_>>();
-                                    pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
-                                    futures.push(super::send_events(outgoing_kind.clone(), events));
-                                }
-                                Ok(_) => {
-                                    current_transaction_status.remove(&outgoing_kind);
-                                }
-                                Err(e) => {
-                                    // e.g. a concurrent recovery snapshot moved the recipient
-                                    // stream mid-selection. Nothing queued would bring this
-                                    // destination back, so let the retry timer re-select.
-                                    error!(?server_name, error = ?e, "failed to select EDU-only follow-up window");
-                                    current_transaction_status.insert(
-                                        outgoing_kind,
-                                        TransactionStatus::Failed(1, Instant::now()),
-                                    );
-                                }
-                            }
-                        } else {
-                            current_transaction_status.remove(&outgoing_kind);
-                        }
-                    }
-                    Err((outgoing_kind, event)) => {
-                        #[cfg(feature = "unstable-msc4532")]
-                        if let Err(error) = crate::user::presence::revised::delivery(&outgoing_kind, false).await {
-                            warn!(?error, "presence delivery failure recording failed");
-                        }
-                        error!("failed to send event: {event:?}  outgoing_kind:{outgoing_kind:?}");
-                        // Do not advance the cursor: the same EDU window is
-                        // re-selected once the destination is reachable again.
-                        pending_edu_cursors.remove(&outgoing_kind);
-                        current_transaction_status.entry(outgoing_kind.clone()).and_modify(|e| *e = match e {
-                            TransactionStatus::Running => {
-                                TransactionStatus::Failed(1, Instant::now())
-                            },
-                            TransactionStatus::Retrying(n) => {
-                                TransactionStatus::Failed(n.saturating_add(1), Instant::now())
-                            },
-                            TransactionStatus::Failed(_, _) => {
-                                error!("Request that was not even running failed?!");
-                                return
-                            },
-                        });
-                        // Persist retry state to DB for cross-instance coordination
-                        if let Some(TransactionStatus::Failed(tries, _)) = current_transaction_status.get(&outgoing_kind) {
-                            let _ = persist_retry_state(&outgoing_kind, *tries).await;
-                        }
-                    }
-                };
-            },
-            Some(outgoing_kind) = receiver.recv() => {
-                if current_transaction_status.contains_key(&outgoing_kind) {
-                    // A running or backing-off transaction will load queued
-                    // rows when it settles or retries.
-                    continue;
+        crate::observability::worker_heartbeat();
+        // Failed destinations become eligible only after their backoff. Move
+        // them to the tail, so an always-busy destination cannot monopolize a
+        // released slot while other destinations are waiting.
+        let due: Vec<_> = statuses
+            .iter()
+            .filter_map(|(kind, status)| match status {
+                TransactionStatus::Failed(tries, at) if at.elapsed() >= retry_backoff(*tries) => {
+                    Some((kind.clone(), *tries))
                 }
-                let new_events = match super::queued_requests(
-                    &outgoing_kind,
-                    super::QUEUED_REQUEST_LIMIT,
-                ).await {
-                    Ok(events) => events,
-                    Err(e) => {
-                        error!(?outgoing_kind, error = ?e, "failed to load queued requests for wakeup");
-                        continue;
-                    }
-                };
-                if new_events.is_empty() {
-                    // A wakeup can also mean "there are EDUs to send" with nothing queued
-                    // behind them. EDUs are built at selection time rather than stored as
-                    // rows, so if this returned here they would wait for unrelated traffic
-                    // -- which in a quiet room may never come.
-                    if let OutgoingKind::Normal(server_name) = &outgoing_kind
-                        && let Ok((select_edus, last_sn, has_presence)) = select_edus(server_name).await
-                        && !select_edus.is_empty()
-                    {
-                        current_transaction_status
-                            .insert(outgoing_kind.clone(), TransactionStatus::Running);
-                        pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
-                        let events = select_edus
-                            .into_iter()
-                            .map(SendingEventType::Edu)
-                            .collect::<Vec<_>>();
-                        futures.push(super::send_events(outgoing_kind, events));
-                    }
-                    continue;
-                }
-                match select_events(
-                    &outgoing_kind,
-                    new_events,
-                    &mut current_transaction_status,
-                    &mut pending_edu_cursors,
-                ).await {
-                    Ok(Some(events)) => {
-                        futures.push(super::send_events(outgoing_kind, events));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        error!(?outgoing_kind, error = ?e, "failed to select queued requests for wakeup");
-                    }
-                }
-            }
-            _ = sweep.tick() => {
-                // Recover destinations whose wakeup was dropped because the
-                // wakeup queue was full, and requests left queued by a
-                // previous process.
-                let kinds = match super::queued_kinds().await {
-                    Ok(kinds) => kinds,
-                    Err(e) => {
-                        WORKER_READY.store(false, Ordering::Release);
-                        error!(error = ?e, "failed to load queued destinations for sweep");
-                        continue;
-                    }
-                };
-                WORKER_READY.store(true, Ordering::Release);
-                for outgoing_kind in kinds {
-                    if current_transaction_status.contains_key(&outgoing_kind) {
-                        // Running, retrying, or backing off: the existing flow
-                        // picks queued requests up when the transaction settles.
-                        continue;
-                    }
-                    let new_events = match super::queued_requests(&outgoing_kind, super::QUEUED_REQUEST_LIMIT).await {
-                        Ok(events) => events,
-                        Err(e) => {
-                            error!(?outgoing_kind, error = ?e, "failed to load queued requests for sweep");
-                            continue;
-                        }
-                    };
-                    if new_events.is_empty() {
-                        continue;
-                    }
-                    match select_events(
-                        &outgoing_kind,
-                        new_events,
-                        &mut current_transaction_status,
-                        &mut pending_edu_cursors,
-                    ).await {
-                        Ok(Some(events)) => {
-                            futures.push(super::send_events(outgoing_kind, events));
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            error!(?outgoing_kind, error = ?e, "failed to select queued requests for sweep");
-                        }
-                    }
-                }
-            }
-            _ = async {
-                if let Some(delay) = retry_delay {
-                    tokio::time::sleep(delay).await;
-                } else {
-                    pending::<()>().await;
-                }
-            } => {
-                let retry_ready = current_transaction_status
-                    .iter()
-                    .filter_map(|(outgoing_kind, status)| match status {
-                        TransactionStatus::Failed(tries, time)
-                            if time.elapsed() >= retry_backoff(*tries) =>
-                        {
-                            Some((outgoing_kind.clone(), *tries))
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-
-                for (outgoing_kind, tries) in retry_ready {
-                    let active_events = match super::active_requests_for(&outgoing_kind).await {
-                        Ok(events) => events,
-                        Err(e) => {
-                            error!(
-                                ?outgoing_kind,
-                                error = ?e,
-                                "failed to load active requests for retry"
-                            );
-                            current_transaction_status.insert(
-                                outgoing_kind,
-                                TransactionStatus::Failed(tries, Instant::now()),
-                            );
-                            continue;
-                        }
-                    };
-
-                    let mut events = active_events.into_iter().map(|(_, event)| event).collect::<Vec<_>>();
-                    // Also retry the EDU window whose delivery failed: it was
-                    // dropped from pending_edu_cursors without advancing the
-                    // cursor, so it is re-selected here instead of waiting for
-                    // unrelated future traffic to this destination.
-                    if let OutgoingKind::Normal(server_name) = &outgoing_kind {
-                        match select_edus(server_name).await {
-                            Ok((select_edus, last_sn, has_presence)) => {
-                                if !select_edus.is_empty() {
-                                    events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-                                    pending_edu_cursors.insert(
-                                        outgoing_kind.clone(),
-                                        (last_sn, has_presence),
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!(?server_name, error = ?e, "failed to rebuild retry EDU window");
-                                current_transaction_status.insert(
-                                    outgoing_kind,
-                                    TransactionStatus::Failed(tries, Instant::now()),
-                                );
-                                continue;
-                            }
-                        }
-                    }
-
-                    if events.is_empty() {
-                        current_transaction_status.remove(&outgoing_kind);
-                        continue;
-                    }
-
-                    current_transaction_status
-                        .insert(outgoing_kind.clone(), TransactionStatus::Retrying(tries));
-                    futures.push(super::send_events(outgoing_kind, events));
-                }
+                _ => None,
+            })
+            .collect();
+        for (kind, tries) in due {
+            statuses.insert(kind.clone(), TransactionStatus::Retrying(tries));
+            if queued.insert(kind.clone()) {
+                queue.push_back(kind);
             }
         }
+        while futures.len() < budget {
+            let Some(kind) = queue.pop_front() else {
+                break;
+            };
+            queued.remove(&kind);
+            let tries = match statuses.get(&kind) {
+                Some(TransactionStatus::Retrying(tries)) => *tries,
+                Some(_) => continue,
+                None => 0,
+            };
+            statuses.insert(
+                kind.clone(),
+                if tries == 0 {
+                    TransactionStatus::Running
+                } else {
+                    TransactionStatus::Retrying(tries)
+                },
+            );
+            futures.push(
+                async move {
+                    let result = destination_transaction(&kind).await;
+                    if let Err(error) = &result {
+                        error!(
+                            ?kind,
+                            ?error,
+                            "outbound destination failed; retaining durable retry"
+                        );
+                        #[cfg(feature = "unstable-msc4532")]
+                        if let Err(error) =
+                            crate::user::presence::revised::delivery(&kind, false).await
+                        {
+                            warn!(?error, "presence delivery failure recording failed");
+                        }
+                        if let Err(error) =
+                            persist_retry_state(&kind, tries.saturating_add(1)).await
+                        {
+                            warn!(?kind, ?error, "failed to persist outbound retry state");
+                        }
+                    }
+                    (kind, tries, result)
+                }
+                .boxed(),
+            );
+        }
+        let retry_delay = next_retry_delay(&statuses);
+        tokio::select! {
+            Some((kind, tries, result)) = futures.next() => {
+                match result {
+                    Ok(had_work) => {
+                        statuses.remove(&kind);
+                        if had_work {
+                            enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+                        }
+                    }
+                    Err(_) => {
+                        statuses.insert(kind, TransactionStatus::Failed(tries.saturating_add(1), Instant::now()));
+                    }
+                }
+            }
+            Some(kind) = receiver.recv() => {
+                enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+            }
+            _ = sweep.tick(), if scans.is_empty() => {
+                // A slow sweep also runs outside the scheduling loop. There is
+                // at most one scan in flight, with no spawn per notification.
+                scans.push(super::queued_kinds());
+            }
+            Some(result) = scans.next() => {
+                match result {
+                    Ok(kinds) => {
+                        WORKER_READY.store(true, Ordering::Release);
+                        crate::observability::worker_ready();
+                        for kind in kinds {
+                            enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+                        }
+                    }
+                    Err(error) => {
+                        WORKER_READY.store(false, Ordering::Release);
+                        crate::observability::worker_unready();
+                        error!(?error, "outbound queue sweep failed; retrying durable recovery");
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {}
+            _ = async {
+                if let Some(delay) = retry_delay { tokio::time::sleep(delay).await; }
+                else { pending::<()>().await; }
+            } => {}
+        }
     }
+}
+
+/// One destination owns its preparation, network exchange and acknowledgement.
+/// Dropping this future leaves all claimed rows and cursors recoverable.
+async fn destination_transaction(kind: &OutgoingKind) -> AppResult<bool> {
+    let active = super::active_requests_for(kind).await?;
+    let mut events: Vec<_> = active.into_iter().map(|(_, event)| event).collect();
+    if events.is_empty() {
+        let queued = super::queued_requests(kind, super::QUEUED_REQUEST_LIMIT).await?;
+        events = super::claim_queued_requests(&queued).await?;
+    }
+    let mut window = None;
+    if let OutgoingKind::Normal(server) = kind {
+        let durable_edus = events
+            .iter()
+            .filter(|event| matches!(event, SendingEventType::Edu(_)))
+            .count();
+        let selected =
+            select_edu_window(server, super::EDU_LIMIT.saturating_sub(durable_edus)).await?;
+        if !selected.events.is_empty() {
+            if events.is_empty() {
+                // Dynamic-only wakeups need a durable retry anchor too.
+                let id = super::queue_request(kind, &SendingEventType::Flush).await?;
+                events = super::claim_queued_requests(&[(id, SendingEventType::Flush)]).await?;
+                if events.is_empty() {
+                    return Ok(false);
+                }
+            }
+            events.extend(selected.events.iter().cloned().map(SendingEventType::Edu));
+        }
+        if !events.is_empty() {
+            window = Some(selected);
+        }
+    }
+    if events.is_empty() {
+        return Ok(false);
+    }
+    super::send_events(kind.clone(), events)
+        .await
+        .map_err(|(_, error)| error)?;
+    acknowledge_destination(kind, window.as_ref()).await?;
+    #[cfg(feature = "unstable-msc4532")]
+    if let Err(error) = crate::user::presence::revised::queue_completed(kind).await {
+        warn!(?error, "presence delivery recovery failed");
+    }
+    Ok(true)
+}
+
+async fn acknowledge_destination(kind: &OutgoingKind, window: Option<&EduWindow>) -> AppResult<()> {
+    data::connect().await?.transaction::<_, crate::AppError, _>(async |conn| {
+        if let (OutgoingKind::Normal(server), Some(window)) = (kind, window) {
+            #[cfg(feature = "unstable-msc4495")]
+            crate::user::presence::recipients::confirm_sent_with_connection(
+                conn, server, window.confirmed_through, window.presence_sn,
+            ).await?;
+            #[cfg(not(feature = "unstable-msc4495"))]
+            diesel::sql_query(
+                "INSERT INTO outgoing_edu_cursors (server_id,edu_sn,updated_at) VALUES ($1,$2,$3) \
+                 ON CONFLICT (server_id) DO UPDATE SET edu_sn=GREATEST(outgoing_edu_cursors.edu_sn,excluded.edu_sn),updated_at=excluded.updated_at",
+            ).bind::<diesel::sql_types::Text,_>(server.as_str())
+             .bind::<diesel::sql_types::BigInt,_>(window.confirmed_through)
+             .bind::<diesel::sql_types::BigInt,_>(crate::core::UnixMillis::now().get() as i64)
+             .execute(conn).await?;
+            data::sending::confirm_selector_position(conn, server, "device", &window.device).await?;
+            data::sending::confirm_selector_position(conn, server, "receipt", &window.receipt).await?;
+        }
+        super::delete_active_requests_with_connection(conn, kind).await?;
+        Ok(())
+    }).await
 }
 
 fn retry_backoff(tries: u32) -> Duration {
@@ -526,95 +373,6 @@ fn next_retry_delay(
         .min()
 }
 
-#[tracing::instrument(skip_all)]
-async fn select_events(
-    outgoing_kind: &OutgoingKind,
-    new_events: Vec<(i64, SendingEventType)>, // Events we want to send: event and full key
-    current_transaction_status: &mut HashMap<OutgoingKind, TransactionStatus>,
-    pending_edu_cursors: &mut HashMap<OutgoingKind, (Seqnum, bool)>,
-) -> AppResult<Option<Vec<SendingEventType>>> {
-    let mut retry = false;
-    let mut allow = true;
-
-    let entry = current_transaction_status.entry(outgoing_kind.clone());
-
-    entry
-        .and_modify(|e| match e {
-            TransactionStatus::Running | TransactionStatus::Retrying(_) => {
-                allow = false; // already running
-            }
-            TransactionStatus::Failed(tries, time) => {
-                // Fail if a request has failed recently (exponential backoff)
-                let min_elapsed_duration = retry_backoff(*tries);
-
-                if time.elapsed() < min_elapsed_duration {
-                    allow = false;
-                } else {
-                    retry = true;
-                    *e = TransactionStatus::Retrying(*tries);
-                }
-            }
-        })
-        .or_insert(TransactionStatus::Running);
-
-    if !allow {
-        return Ok(None);
-    }
-
-    let mut events = Vec::new();
-
-    if retry {
-        // We retry the previous transaction
-        for (_, e) in super::active_requests_for(outgoing_kind).await? {
-            events.push(e);
-        }
-    } else {
-        events = match super::claim_queued_requests(&new_events).await {
-            Ok(events) => events,
-            Err(error) => {
-                current_transaction_status.remove(outgoing_kind);
-                return Err(error);
-            }
-        };
-        if events.is_empty() {
-            // The wakeup was stale: its row was already claimed or deleted by
-            // the periodic sweep (or another process). Undo the Running state
-            // inserted above and do not start an empty transaction.
-            current_transaction_status.remove(outgoing_kind);
-            return Ok(None);
-        }
-    }
-
-    // Piggyback pending EDUs on fresh and retry transactions alike. The
-    // cursor only advances once a transaction succeeds, so a retry simply
-    // re-selects the same window.
-    if let OutgoingKind::Normal(server_name) = outgoing_kind {
-        match select_edus(server_name).await {
-            Ok((select_edus, last_sn, has_presence)) => {
-                if !select_edus.is_empty() {
-                    events.extend(select_edus.into_iter().map(SendingEventType::Edu));
-                    pending_edu_cursors.insert(outgoing_kind.clone(), (last_sn, has_presence));
-                }
-            }
-            Err(e) => {
-                let tries = match current_transaction_status.get(outgoing_kind) {
-                    Some(
-                        TransactionStatus::Retrying(tries) | TransactionStatus::Failed(tries, _),
-                    ) => *tries,
-                    _ => 1,
-                };
-                current_transaction_status.insert(
-                    outgoing_kind.clone(),
-                    TransactionStatus::Failed(tries, Instant::now()),
-                );
-                return Err(e);
-            }
-        }
-    }
-
-    Ok(Some(events))
-}
-
 /// Persist retry state to the database so other instances can respect backoff.
 async fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppResult<()> {
     let dest = match outgoing_kind {
@@ -630,155 +388,105 @@ async fn persist_retry_state(outgoing_kind: &OutgoingKind, tries: u32) -> AppRes
     Ok(())
 }
 
-/// Look for device changes
-#[tracing::instrument(level = "trace", skip(server_name))]
+#[derive(Debug)]
+struct EduWindow {
+    events: EduVec,
+    confirmed_through: Seqnum,
+    // Presence pending rows are keyed by the actual presence selection bound,
+    // which may differ from the common minimum across independent selectors.
+    presence_sn: Option<Seqnum>,
+    device: data::sending::SelectorPosition,
+    receipt: data::sending::SelectorPosition,
+}
+
 async fn select_edus_device_changes(
-    server_name: &ServerName,
-    since_sn: Seqnum,
-    _max_edu_sn: &Seqnum,
-    events_len: &AtomicUsize,
-) -> AppResult<EduVec> {
+    server: &ServerName,
+    position: &data::sending::SelectorPosition,
+    max: Seqnum,
+    limit: usize,
+) -> AppResult<(EduVec, data::sending::SelectorPosition)> {
+    if limit == 0 {
+        return Ok((EduVec::new(), position.clone()));
+    }
+    let rows = data::sending::outgoing_device_changes(
+        server,
+        &crate::config::get().server_name,
+        position,
+        max,
+        limit + 1,
+    )
+    .await?;
+    let truncated = rows.len() > limit;
+    let mut next = data::sending::SelectorPosition::complete(max);
     let mut events = EduVec::new();
-    let server_rooms = state::server_joined_rooms(server_name).await?;
-
-    let mut device_list_changes = HashSet::<OwnedUserId>::new();
-    for room_id in server_rooms {
-        let keys_changed = room::keys_changed_users(&room_id, since_sn, None)
-            .await?
-            .into_iter()
-            .filter(|user_id| user_id.is_local());
-
-        for user_id in keys_changed {
-            // max_edu_sn.fetch_max(event_sn, Ordering::Relaxed);
-            if !device_list_changes.insert(user_id.clone()) {
-                continue;
-            }
-
-            // Empty prev id forces synapse to resync; because synapse resyncs,
-            // we can just insert placeholder data
-            let stream_id = data::user::key::device_list_stream_id(&user_id).await? as u64;
-            let edu = Edu::DeviceListUpdate(DeviceListUpdateContent {
-                user_id,
-                device_id: device_id!("placeholder").to_owned(),
-                device_display_name: Some("Placeholder".to_owned()),
-                stream_id,
-                prev_id: Vec::new(),
-                deleted: None,
-                keys: None,
-            });
-
-            let mut buf = EduBuf::new();
-            if let Err(e) = serde_json::to_writer(&mut buf, &edu) {
-                tracing::error!("failed to serialize device list update to JSON: {e}");
-                continue;
-            }
-
-            events.push(buf);
-            if events_len.fetch_add(1, Ordering::Relaxed) >= SELECT_EDU_LIMIT - 1 {
-                return Ok(events);
-            }
+    for row in rows.into_iter().take(limit) {
+        if truncated {
+            next = data::sending::SelectorPosition {
+                sn: row.sn,
+                token: Some(row.user_id.to_string()),
+            };
         }
+        // Empty prev_id retains the existing force-resync placeholder policy.
+        let edu = Edu::DeviceListUpdate(DeviceListUpdateContent {
+            user_id: row.user_id,
+            device_id: device_id!("placeholder").to_owned(),
+            device_display_name: Some("Placeholder".to_owned()),
+            stream_id: row.stream_id as u64,
+            prev_id: Vec::new(),
+            deleted: None,
+            keys: None,
+        });
+        events.push(serde_json::to_vec(&edu)?);
     }
-
-    Ok(events)
+    Ok((events, next))
 }
 
-/// Look for read receipts in this room
-#[tracing::instrument(level = "trace", skip(server_name, max_edu_sn))]
 async fn select_edus_receipts(
-    server_name: &ServerName,
-    since_sn: Seqnum,
-    max_edu_sn: &Seqnum,
-) -> AppResult<Option<EduBuf>> {
-    let mut num = 0;
-    let mut receipts: BTreeMap<OwnedRoomId, ReceiptMap> = BTreeMap::new();
-    for room_id in state::server_joined_rooms(server_name).await? {
-        let Ok(receipt_map) =
-            select_edus_receipts_room(&room_id, since_sn, max_edu_sn, &mut num).await
-        else {
-            continue;
-        };
-
-        if !receipt_map.read.is_empty() {
-            receipts.insert(room_id, receipt_map);
+    server: &ServerName,
+    position: &data::sending::SelectorPosition,
+    max: Seqnum,
+) -> AppResult<(Option<EduBuf>, data::sending::SelectorPosition)> {
+    let rows = data::sending::outgoing_receipts(
+        server,
+        &crate::config::get().server_name,
+        position.sn,
+        max,
+        SELECT_RECEIPT_LIMIT + 1,
+    )
+    .await?;
+    let mut receipts = BTreeMap::<OwnedRoomId, ReceiptMap>::new();
+    let mut next = data::sending::SelectorPosition::complete(max);
+    let mut last = position.sn;
+    for (count, row) in rows.into_iter().enumerate() {
+        let room = receipts.entry(row.room_id).or_insert_with(|| ReceiptMap {
+            read: BTreeMap::new(),
+        });
+        // The wire map supports one scope per (room,user). Stop before a
+        // second scope, leaving its unique SN for the next acknowledged page.
+        if count == SELECT_RECEIPT_LIMIT || room.read.contains_key(&row.user_id) {
+            next = data::sending::SelectorPosition::complete(last);
+            break;
         }
+        let receipt = serde_json::from_value(row.json_data)?;
+        room.read.insert(
+            row.user_id,
+            ReceiptData {
+                data: receipt,
+                event_ids: vec![row.event_id],
+            },
+        );
+        last = row.sn;
     }
-
+    receipts.retain(|_, room| !room.read.is_empty());
     if receipts.is_empty() {
-        return Ok(None);
+        return Ok((None, next));
     }
-
-    let receipt_content = Edu::Receipt(ReceiptContent::new(receipts));
-
-    let mut buf = EduBuf::new();
-    if let Err(e) = serde_json::to_writer(&mut buf, &receipt_content) {
-        tracing::error!("failed to serialize Receipt EDU to JSON: {e}");
-        return Ok(None);
-    }
-
-    Ok(Some(buf))
-}
-/// Look for read receipts in this room
-#[tracing::instrument(level = "trace", skip(since_sn))]
-async fn select_edus_receipts_room(
-    room_id: &RoomId,
-    since_sn: Seqnum,
-    _max_edu_sn: &Seqnum,
-    num: &mut usize,
-) -> AppResult<ReceiptMap> {
-    let receipts = data::room::receipt::read_receipts(room_id, since_sn).await?;
-
-    let mut read = BTreeMap::<OwnedUserId, ReceiptData>::new();
-    for (user_id, read_receipt) in receipts {
-        // if count > since_sn {
-        //     break;
-        // }
-
-        // max_edu_sn.fetch_max(occur_sn, Ordering::Relaxed);
-        if !user_id.is_local() {
-            continue;
-        }
-
-        // let Ok(event) = serde_json::from_str(read_receipt.inner().get()) else {
-        //     error!(
-        //         ?user_id,
-        //         ?read_receipt,
-        //         "Invalid edu event in read_receipts."
-        //     );
-        //     continue;
-        // };
-
-        // let AnySyncEphemeralRoomEvent::Receipt(r) = event else {
-        //     error!(?user_id, ?event, "Invalid event type in read_receipts");
-        //     continue;
-        // };
-
-        let (event_id, mut receipt) = read_receipt
-            .0
-            .into_iter()
-            .next()
-            .expect("we only use one event per read receipt");
-
-        let receipt = receipt
-            .remove(&ReceiptType::Read)
-            .expect("our read receipts always set this")
-            .remove(&user_id)
-            .expect("our read receipts always have the user here");
-
-        let receipt_data = ReceiptData {
-            data: receipt,
-            event_ids: vec![event_id.clone()],
-        };
-
-        if read.insert(user_id.to_owned(), receipt_data).is_none() {
-            *num = num.saturating_add(1);
-            if *num >= SELECT_RECEIPT_LIMIT {
-                break;
-            }
-        }
-    }
-
-    Ok(ReceiptMap { read })
+    Ok((
+        Some(serde_json::to_vec(&Edu::Receipt(ReceiptContent::new(
+            receipts,
+        )))?),
+        next,
+    ))
 }
 
 /// What `server_name` must be told about `user_id`'s recipient set, or `None` when the
@@ -988,36 +696,72 @@ fn edu_since_sn(cursor: Option<Seqnum>, max_edu_sn: Seqnum) -> Seqnum {
 
 #[tracing::instrument(skip(server_name))]
 pub async fn select_edus(server_name: &ServerName) -> AppResult<(EduVec, i64, bool)> {
-    let max_edu_sn = data::user::curr_sn_after_presence_writes(None).await?;
-    let conf = crate::config::get();
+    let window = select_edu_window(server_name, super::EDU_LIMIT).await?;
+    Ok((
+        window.events,
+        window.confirmed_through,
+        window.presence_sn.is_some(),
+    ))
+}
 
-    let cursor = data::sending::get_edu_cursor(server_name).await?;
-    let since_sn = edu_since_sn(cursor, max_edu_sn);
-
-    let events_len = AtomicUsize::default();
-    let device_changes =
-        select_edus_device_changes(server_name, since_sn, &max_edu_sn, &events_len).await?;
-
-    let mut events = device_changes;
-    if conf.read_receipt.allow_outgoing
-        && let Some(receipts) = select_edus_receipts(server_name, since_sn, &max_edu_sn).await?
-    {
-        events.push(receipts);
+async fn select_edu_window(server: &ServerName, slots: usize) -> AppResult<EduWindow> {
+    let max = data::user::curr_sn_after_presence_writes(None).await?;
+    let cursor = data::sending::get_edu_cursor(server).await?;
+    let since = edu_since_sn(cursor, max);
+    // An old scalar cursor means *all* ties at N have been consumed. A new
+    // destination preserves the old current-SN first-window behavior.
+    let (device, receipt) =
+        data::sending::selector_positions(server, since.saturating_sub(1)).await?;
+    if slots == 0 {
+        return Ok(EduWindow {
+            events: EduVec::new(),
+            confirmed_through: since.saturating_sub(1),
+            presence_sn: None,
+            device,
+            receipt,
+        });
     }
-
-    let mut confirmed_through = max_edu_sn;
-    let mut has_presence = false;
-    if conf.presence.allow_outgoing {
-        let (presence, presence_confirmed_through) =
-            select_edus_presence(server_name, since_sn, max_edu_sn).await?;
-        confirmed_through = confirmed_through.min(presence_confirmed_through);
-        has_presence = presence.is_some();
-        if let Some(presence) = presence {
+    let conf = crate::config::get();
+    let reserved =
+        usize::from(conf.read_receipt.allow_outgoing) + usize::from(conf.presence.allow_outgoing);
+    let (mut events, device) = select_edus_device_changes(
+        server,
+        &device,
+        max,
+        slots.saturating_sub(reserved).min(SELECT_EDU_LIMIT),
+    )
+    .await?;
+    let receipt = if conf.read_receipt.allow_outgoing && events.len() < slots {
+        let (selected, next) = select_edus_receipts(server, &receipt, max).await?;
+        if let Some(receipts) = selected {
+            events.push(receipts);
+        }
+        next
+    } else if conf.read_receipt.allow_outgoing {
+        receipt
+    } else {
+        data::sending::SelectorPosition::complete(max)
+    };
+    let mut confirmed_through = device.confirmed_through().min(receipt.confirmed_through());
+    let mut presence_sn = None;
+    if conf.presence.allow_outgoing && events.len() < slots {
+        let (selected, through) = select_edus_presence(server, since, max).await?;
+        confirmed_through = confirmed_through.min(through);
+        if let Some(presence) = selected {
+            presence_sn = Some(through);
             events.push(presence);
         }
     }
-
-    Ok((events, confirmed_through, has_presence))
+    if conf.presence.allow_outgoing && presence_sn.is_none() && events.len() >= slots {
+        confirmed_through = confirmed_through.min(since.saturating_sub(1));
+    }
+    Ok(EduWindow {
+        events,
+        confirmed_through,
+        presence_sn,
+        device,
+        receipt,
+    })
 }
 
 #[cfg(test)]

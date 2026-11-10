@@ -9,6 +9,9 @@ pub use crate::core::sending::*;
 use crate::schema::*;
 use crate::{DataResult, connect};
 
+mod selection;
+pub use selection::*;
+
 /// Selector identifying which active outgoing-request rows a retry-state update
 /// applies to. Mirrors the variants of the server-side `OutgoingKind`.
 pub enum OutgoingDestination<'a> {
@@ -35,6 +38,7 @@ pub struct DbOutgoingRequest {
     pub data: Option<Vec<u8>>,
     pub retry_count: i32,
     pub last_failed_at: Option<i64>,
+    pub enqueued_at: Option<i64>,
 }
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = outgoing_requests)]
@@ -148,7 +152,7 @@ pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> D
                 outgoing_requests::table
                     .filter(outgoing_requests::kind.eq("normal"))
                     .filter(outgoing_requests::server_id.eq(server_name))
-                    .filter(outgoing_requests::state.eq("active")),
+                    .filter(outgoing_requests::state.eq("pending")),
             )
             .set((
                 outgoing_requests::retry_count.eq(tries as i32),
@@ -162,7 +166,7 @@ pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> D
                 outgoing_requests::table
                     .filter(outgoing_requests::kind.eq("appservice"))
                     .filter(outgoing_requests::appservice_id.eq(id))
-                    .filter(outgoing_requests::state.eq("active")),
+                    .filter(outgoing_requests::state.eq("pending")),
             )
             .set((
                 outgoing_requests::retry_count.eq(tries as i32),
@@ -177,7 +181,7 @@ pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> D
                     .filter(outgoing_requests::kind.eq("push"))
                     .filter(outgoing_requests::user_id.eq(user_id))
                     .filter(outgoing_requests::pushkey.eq(pushkey))
-                    .filter(outgoing_requests::state.eq("active")),
+                    .filter(outgoing_requests::state.eq("pending")),
             )
             .set((
                 outgoing_requests::retry_count.eq(tries as i32),

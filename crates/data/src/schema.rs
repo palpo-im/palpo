@@ -617,6 +617,7 @@ diesel::table! {
         data -> Nullable<Bytea>,
         retry_count -> Int4,
         last_failed_at -> Nullable<Int8>,
+        enqueued_at -> Nullable<Int8>,
     }
 }
 

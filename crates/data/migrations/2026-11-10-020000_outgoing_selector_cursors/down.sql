@@ -1,0 +1,3 @@
+DROP INDEX event_receipts_outgoing_window;
+DROP INDEX e2e_key_changes_outgoing_window;
+DROP TABLE outgoing_selector_cursors;

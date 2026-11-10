@@ -248,60 +248,67 @@ pub async fn confirm_sent(
     connect()
         .await?
         .transaction::<_, AppError, _>(async |conn| {
-            if let Some(presence_edu_sn) = presence_edu_sn {
-                diesel::update(
-                    presence_recipient_sets::table
-                        .filter(presence_recipient_sets::server_id.eq(server_id))
-                        .filter(presence_recipient_sets::pending_edu_sn.eq(presence_edu_sn)),
-                )
-                .set((
-                    presence_recipient_sets::stream_id.eq(diesel::dsl::sql::<
-                        diesel::sql_types::BigInt,
-                    >(
-                        "COALESCE(pending_stream_id, stream_id)",
-                    )),
-                    presence_recipient_sets::recipients.eq(diesel::dsl::sql::<
-                        diesel::sql_types::Jsonb,
-                    >(
-                        "COALESCE(pending_recipients, recipients)",
-                    )),
-                    presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
-                    presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
-                    presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
-                ))
-                .execute(conn)
-                .await?;
-
-                diesel::delete(
-                    presence_recipient_sets::table
-                        .filter(presence_recipient_sets::server_id.eq(server_id))
-                        .filter(presence_recipient_sets::pending_stream_id.is_null())
-                        .filter(presence_recipient_sets::recipients.eq(serde_json::json!([]))),
-                )
-                .execute(conn)
-                .await?;
-            }
-
-            let now = UnixMillis::now().get() as i64;
-            diesel::insert_into(outgoing_edu_cursors::table)
-                .values((
-                    outgoing_edu_cursors::server_id.eq(server_id),
-                    outgoing_edu_cursors::edu_sn.eq(edu_sn),
-                    outgoing_edu_cursors::updated_at.eq(now),
-                ))
-                .on_conflict(outgoing_edu_cursors::server_id)
-                .do_update()
-                .set((
-                    outgoing_edu_cursors::edu_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
-                        "GREATEST(outgoing_edu_cursors.edu_sn, excluded.edu_sn)",
-                    )),
-                    outgoing_edu_cursors::updated_at.eq(now),
-                ))
-                .execute(conn)
-                .await?;
-            Ok(())
+            confirm_sent_with_connection(conn, server_id, edu_sn, presence_edu_sn).await
         })
         .await
+}
+
+/// Join the destination ACK transaction so a failed queue deletion cannot
+/// confirm either a presence delta or its common EDU watermark.
+pub(crate) async fn confirm_sent_with_connection(
+    conn: &mut diesel_async::AsyncPgConnection,
+    server_id: &ServerName,
+    edu_sn: Seqnum,
+    presence_edu_sn: Option<Seqnum>,
+) -> AppResult<()> {
+    if let Some(presence_edu_sn) = presence_edu_sn {
+        diesel::update(
+            presence_recipient_sets::table
+                .filter(presence_recipient_sets::server_id.eq(server_id))
+                .filter(presence_recipient_sets::pending_edu_sn.eq(presence_edu_sn)),
+        )
+        .set((
+            presence_recipient_sets::stream_id.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "COALESCE(pending_stream_id, stream_id)",
+            )),
+            presence_recipient_sets::recipients.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
+                "COALESCE(pending_recipients, recipients)",
+            )),
+            presence_recipient_sets::pending_stream_id.eq(None::<Seqnum>),
+            presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
+            presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
+        ))
+        .execute(conn)
+        .await?;
+
+        diesel::delete(
+            presence_recipient_sets::table
+                .filter(presence_recipient_sets::server_id.eq(server_id))
+                .filter(presence_recipient_sets::pending_stream_id.is_null())
+                .filter(presence_recipient_sets::recipients.eq(serde_json::json!([]))),
+        )
+        .execute(conn)
+        .await?;
+    }
+
+    let now = UnixMillis::now().get() as i64;
+    diesel::insert_into(outgoing_edu_cursors::table)
+        .values((
+            outgoing_edu_cursors::server_id.eq(server_id),
+            outgoing_edu_cursors::edu_sn.eq(edu_sn),
+            outgoing_edu_cursors::updated_at.eq(now),
+        ))
+        .on_conflict(outgoing_edu_cursors::server_id)
+        .do_update()
+        .set((
+            outgoing_edu_cursors::edu_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "GREATEST(outgoing_edu_cursors.edu_sn, excluded.edu_sn)",
+            )),
+            outgoing_edu_cursors::updated_at.eq(now),
+        ))
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// A remote user's recipient set as we currently understand it.

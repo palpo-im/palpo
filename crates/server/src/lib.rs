@@ -32,6 +32,7 @@ pub mod exts;
 pub mod federation;
 pub mod media;
 pub mod membership;
+pub mod observability;
 pub mod readiness;
 pub mod registration_email;
 #[cfg(feature = "unstable-msc1763")]
@@ -830,6 +831,11 @@ impl MatrixServer {
     /// `router()` deliberately does not install Palpo's operational endpoints.
     pub async fn readiness(&self) -> readiness::Readiness {
         readiness::check().await
+    }
+
+    /// Bounded operational metrics, including a cached durable queue snapshot.
+    pub async fn diagnostics(&self) -> observability::Diagnostics {
+        observability::check().await
     }
 
     /// Apply Palpo's error handling, CORS, logging, and optional compression to
