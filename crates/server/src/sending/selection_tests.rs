@@ -1,4 +1,6 @@
 //! Isolated real PostgreSQL coverage and fixed-data selector measurements.
+use std::sync::{Arc, Mutex};
+
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Json, Text};
 use diesel_async::RunQueryDsl;
@@ -9,6 +11,31 @@ use crate::test_database::sql_spy::SqlSpy;
 
 const LOCAL: &str = "selectors.example:8448";
 const REMOTE: &str = "recipient.example";
+
+pub(super) static INITIAL_SWEEP_FINISHED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+struct EmptyProbe {
+    kind: OutgoingKind,
+    reached: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+static EMPTY_PROBE: Mutex<Option<EmptyProbe>> = Mutex::new(None);
+
+pub(super) async fn pause_empty_probe(kind: &OutgoingKind) {
+    let probe = {
+        let mut probe = EMPTY_PROBE.lock().unwrap();
+        if probe.as_ref().is_some_and(|probe| &probe.kind == kind) {
+            probe.take()
+        } else {
+            None
+        }
+    };
+    if let Some(probe) = probe {
+        probe.reached.notify_one();
+        probe.resume.notified().await;
+    }
+}
 
 fn configure() {
     crate::test_database::init();
@@ -515,6 +542,52 @@ async fn wait_drained(kind: &OutgoingKind) {
     })
     .await
     .expect("a healthy destination must finish while the other destination remains SQL-blocked");
+}
+
+#[tokio::test]
+#[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
+async fn review_outbound_scheduler_preserves_wakeup_during_empty_probe() {
+    configure();
+    let kind = OutgoingKind::Appservice("empty-probe".into());
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    *EMPTY_PROBE.lock().unwrap() = Some(EmptyProbe {
+        kind: kind.clone(),
+        reached: reached.clone(),
+        resume: resume.clone(),
+    });
+    let (sender, receiver) = mpsc::channel(1);
+    let worker = tokio::spawn(supervise(receiver, Duration::from_millis(20)));
+    // Let the initial sweep finish before admitting the row below, so only
+    // the explicit wakeup can deliver it before the next 30-second sweep.
+    tokio::time::timeout(Duration::from_secs(3), INITIAL_SWEEP_FINISHED.notified())
+        .await
+        .unwrap();
+    sender.send(kind.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), reached.notified())
+        .await
+        .unwrap();
+    super::super::queue_request(&kind, &SendingEventType::Flush)
+        .await
+        .unwrap();
+    sender.send(kind).await.unwrap();
+    // The one-slot channel cannot grant this permit until the scheduler has
+    // consumed the notification while the empty probe is still in flight.
+    let consumed = tokio::time::timeout(Duration::from_secs(3), sender.reserve())
+        .await
+        .unwrap()
+        .unwrap();
+    resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while count("SELECT count(*)::bigint AS count FROM outgoing_requests WHERE appservice_id='empty-probe'").await != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a wakeup during an empty probe must not wait for the periodic sweep");
+    drop(consumed);
+    worker.abort();
+    let _ = worker.await;
 }
 
 #[tokio::test]

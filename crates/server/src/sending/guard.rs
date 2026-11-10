@@ -141,8 +141,18 @@ fn enqueue_destination(
     queue: &mut VecDeque<OutgoingKind>,
     queued: &mut HashSet<OutgoingKind>,
     statuses: &HashMap<OutgoingKind, TransactionStatus>,
+    pending_wakeups: &mut HashSet<OutgoingKind>,
 ) {
-    if !statuses.contains_key(&kind) && queued.insert(kind.clone()) {
+    if let Some(status) = statuses.get(&kind) {
+        // The in-flight query may already have observed an empty queue. Keep
+        // its notification until completion so that new rows get another probe.
+        if matches!(
+            status,
+            TransactionStatus::Running | TransactionStatus::Retrying(_)
+        ) {
+            pending_wakeups.insert(kind);
+        }
+    } else if queued.insert(kind.clone()) {
         queue.push_back(kind);
     }
 }
@@ -154,10 +164,17 @@ async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResu
     let mut statuses = HashMap::<OutgoingKind, TransactionStatus>::new();
     let mut queue = VecDeque::new();
     let mut queued = HashSet::new();
+    let mut pending_wakeups = HashSet::new();
     // Only destination identities are recovered at startup; payload/EDU SQL
     // belongs to bounded destination futures, never the heartbeat loop.
     for kind in super::queued_kinds().await? {
-        enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+        enqueue_destination(
+            kind,
+            &mut queue,
+            &mut queued,
+            &statuses,
+            &mut pending_wakeups,
+        );
     }
     #[cfg(feature = "unstable-msc4495")]
     crate::user::presence::recipients::reconcile_on_startup();
@@ -239,17 +256,19 @@ async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResu
                 match result {
                     Ok(had_work) => {
                         statuses.remove(&kind);
-                        if had_work {
-                            enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+                        let notified = pending_wakeups.remove(&kind);
+                        if had_work || notified {
+                            enqueue_destination(kind, &mut queue, &mut queued, &statuses, &mut pending_wakeups);
                         }
                     }
                     Err(_) => {
+                        pending_wakeups.remove(&kind);
                         statuses.insert(kind, TransactionStatus::Failed(tries.saturating_add(1), Instant::now()));
                     }
                 }
             }
             Some(kind) = receiver.recv() => {
-                enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+                enqueue_destination(kind, &mut queue, &mut queued, &statuses, &mut pending_wakeups);
             }
             _ = sweep.tick(), if scans.is_empty() => {
                 // A slow sweep also runs outside the scheduling loop. There is
@@ -257,12 +276,14 @@ async fn process(receiver: &mut mpsc::Receiver<super::WakeupMessage>) -> AppResu
                 scans.push(super::queued_kinds());
             }
             Some(result) = scans.next() => {
+                #[cfg(test)]
+                selection_tests::INITIAL_SWEEP_FINISHED.notify_one();
                 match result {
                     Ok(kinds) => {
                         WORKER_READY.store(true, Ordering::Release);
                         crate::observability::worker_ready();
                         for kind in kinds {
-                            enqueue_destination(kind, &mut queue, &mut queued, &statuses);
+                            enqueue_destination(kind, &mut queue, &mut queued, &statuses, &mut pending_wakeups);
                         }
                     }
                     Err(error) => {
@@ -314,6 +335,8 @@ async fn destination_transaction(kind: &OutgoingKind) -> AppResult<bool> {
         }
     }
     if events.is_empty() {
+        #[cfg(test)]
+        selection_tests::pause_empty_probe(kind).await;
         return Ok(false);
     }
     super::send_events(kind.clone(), events)
