@@ -4,8 +4,11 @@ use diesel_async::RunQueryDsl;
 use serde_json::json;
 
 use super::batch::{CHUNK_SIZE, PduBatch};
-use super::*;
-use crate::core::UnixMillis;
+use super::topolo;
+use crate::core::serde::JsonValue;
+use crate::core::{OwnedEventId, OwnedRoomId, UnixMillis};
+use crate::data::connect;
+use crate::data::schema::{event_datas, rooms};
 use crate::test_database::sql_spy::SqlSpy;
 
 #[tokio::test]
