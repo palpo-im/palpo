@@ -112,7 +112,8 @@ open after the real 30-second backoff. Child one records three retry-marked rows
 an active outbound attempt, an application error and a fresh scheduler heartbeat;
 the parent forcibly kills the child while that retry is in flight.
 Child two initializes fresh globals, verifies the same durable row IDs,
-starts the supervisor, resends the same payload, receives HTTP 200 and ACKs all
+starts the supervisor, resends the same event content and IDs (with increasing
+`unsigned.age`), receives HTTP 200 and ACKs all
 three rows. The parent gateway survives both children. Output includes original
 row IDs, fault and final queue counts, three observed transactions and recovery/heartbeat
 measurements. A task abort is not used as a substitute for process termination.

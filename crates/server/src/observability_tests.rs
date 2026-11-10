@@ -603,11 +603,32 @@ fn restart_parent() {
         "one refused, one unacknowledged retry and one recovered transaction"
     );
     assert_eq!(requests[0]["events"].as_array().unwrap().len(), 3);
-    assert_eq!(
-        requests[0], requests[1],
-        "retry must preserve every event payload"
-    );
-    assert_eq!(requests[1], requests[2]);
+    for attempts in requests.windows(2) {
+        let mut stable = Vec::new();
+        for request in attempts {
+            let mut body = request.clone();
+            for event in body["events"].as_array_mut().unwrap() {
+                event["unsigned"].as_object_mut().unwrap().remove("age");
+            }
+            stable.push(body);
+        }
+        assert_eq!(
+            stable[0], stable[1],
+            "retry must preserve stable event content and IDs"
+        );
+        for (before, after) in attempts[0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(attempts[1]["events"].as_array().unwrap())
+        {
+            assert!(
+                after["unsigned"]["age"].as_u64().unwrap()
+                    >= before["unsigned"]["age"].as_u64().unwrap(),
+                "event age must increase across retries and process restart"
+            );
+        }
+    }
     let before: Vec<i64> =
         serde_json::from_slice(&std::fs::read(directory.path().join("before.json")).unwrap())
             .unwrap();

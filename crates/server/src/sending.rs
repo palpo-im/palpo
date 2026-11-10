@@ -1154,8 +1154,9 @@ async fn queued_requests(
 async fn claim_queued_requests(
     events: &[(i64, SendingEventType)],
 ) -> AppResult<Vec<SendingEventType>> {
-    connect()
-        .await?
+    let mut connection = guard::TransactionConnection::new(connect().await?);
+    let result = connection
+        .connection()
         .transaction::<_, AppError, _>(async |conn| {
             let mut claimed = Vec::with_capacity(events.len());
             for (id, event) in events {
@@ -1182,7 +1183,9 @@ async fn claim_queued_requests(
 
             Ok(claimed)
         })
-        .await
+        .await;
+    connection.mark_finished();
+    result
 }
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.

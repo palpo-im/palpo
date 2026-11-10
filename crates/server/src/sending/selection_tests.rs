@@ -68,7 +68,13 @@ async fn review_outbound_windows_are_bounded_and_acknowledged_atomically() {
                 "a tied prefix must not repeat: {user}"
             );
             assert!(event["content"]["stream_id"].as_u64().unwrap() > 5000);
-            assert_eq!(event["content"]["prev_id"], json!([]));
+            let Edu::DeviceListUpdate(update) = serde_json::from_value(event).unwrap() else {
+                panic!("device selector emitted another EDU type");
+            };
+            assert!(
+                update.prev_id.is_empty(),
+                "empty prev_id may be omitted on the wire"
+            );
         }
         if page < 3 {
             assert_eq!(next.confirmed_through(), 99);
@@ -613,4 +619,34 @@ async fn review_outbound_scheduler_is_fair_under_slow_claim_and_ack() {
     restarted.abort();
     let _ = restarted.await;
     assert!(!is_running());
+
+    // Cancel before a BEGIN batch completes, so Diesel has not yet increased
+    // its recorded transaction depth. The batch holds a real table lock;
+    // cleanup must not depend on checking the cancelled object out again.
+    let mut begin_lock = data::connect().await.unwrap();
+    diesel::sql_query("SELECT pg_advisory_lock(7713)")
+        .execute(&mut begin_lock)
+        .await
+        .unwrap();
+    let beginning = tokio::spawn(async {
+        let mut connection = TransactionConnection::new(data::connect().await.unwrap());
+        diesel_async::AnsiTransactionManager::begin_transaction_sql(
+            connection.connection(),
+            "BEGIN; LOCK TABLE outgoing_requests IN ACCESS EXCLUSIVE MODE; SELECT pg_advisory_xact_lock(7713)",
+        ).await.unwrap();
+        panic!("the test must cancel the blocked BEGIN before it returns");
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while count("SELECT count(*)::bigint AS count FROM pg_locks WHERE locktype='advisory' AND NOT granted AND objid=7713").await != 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("BEGIN batch must be blocked before cancellation");
+    beginning.abort();
+    let _ = beginning.await;
+    diesel::sql_query("SELECT pg_advisory_unlock(7713)")
+        .execute(&mut begin_lock)
+        .await
+        .unwrap();
+    drop(begin_lock);
+    execute("CREATE INDEX review_begin_cleanup ON outgoing_requests (id)").await;
 }

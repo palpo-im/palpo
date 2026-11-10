@@ -327,8 +327,52 @@ async fn destination_transaction(kind: &OutgoingKind) -> AppResult<bool> {
     Ok(true)
 }
 
+/// The pool normally rejects an open transaction at its *next checkout*.
+/// A cancelled destination must not leave locks in an idle pooled object.
+/// Until transaction().await returns completely, its backend state is treated
+/// as uncertain independently of Diesel's transaction-depth bookkeeping.
+pub(super) struct TransactionConnection {
+    connection: Option<data::PgPooledConnection>,
+    finished: bool,
+}
+
+impl TransactionConnection {
+    pub(super) fn new(connection: data::PgPooledConnection) -> Self {
+        Self {
+            connection: Some(connection),
+            finished: false,
+        }
+    }
+
+    pub(super) fn connection(&mut self) -> &mut diesel_async::AsyncPgConnection {
+        self.connection
+            .as_mut()
+            .expect("transaction connection is present")
+    }
+
+    pub(super) fn mark_finished(&mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for TransactionConnection {
+    fn drop(&mut self) {
+        let Some(mut connection) = self.connection.take() else {
+            return;
+        };
+        if !self.finished
+            || diesel_async::pooled_connection::PoolableConnection::is_broken(&mut *connection)
+        {
+            // AsyncPgConnection::drop shuts down its driver; PostgreSQL rolls
+            // back instead of keeping the cancelled transaction in the pool.
+            drop(data::PgPooledConnection::take(connection));
+        }
+    }
+}
+
 async fn acknowledge_destination(kind: &OutgoingKind, window: Option<&EduWindow>) -> AppResult<()> {
-    data::connect().await?.transaction::<_, crate::AppError, _>(async |conn| {
+    let mut connection = TransactionConnection::new(data::connect().await?);
+    let result = connection.connection().transaction::<_, crate::AppError, _>(async |conn| {
         if let (OutgoingKind::Normal(server), Some(window)) = (kind, window) {
             #[cfg(feature = "unstable-msc4495")]
             crate::user::presence::recipients::confirm_sent_with_connection(
@@ -347,7 +391,9 @@ async fn acknowledge_destination(kind: &OutgoingKind, window: Option<&EduWindow>
         }
         super::delete_active_requests_with_connection(conn, kind).await?;
         Ok(())
-    }).await
+    }).await;
+    connection.mark_finished();
+    result
 }
 
 fn retry_backoff(tries: u32) -> Duration {
