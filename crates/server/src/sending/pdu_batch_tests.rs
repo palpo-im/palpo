@@ -185,7 +185,7 @@ async fn measure(server: &ServerName, ids: &[OwnedEventId], label: &str, spy: &S
         "P03_MEASUREMENT {}",
         json!({
             "case":label,"samples":SAMPLES,"batch_size":ids.len(),
-            "data_sha256":hex::encode(Sha256::digest(serde_json::to_vec(&expected).unwrap())),
+            "data_sha256":Sha256::digest(serde_json::to_vec(&expected).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
             "os":std::env::consts::OS,"arch":std::env::consts::ARCH,
             "query_pool_size":data::status().max_size,"retention_feature":cfg!(feature="unstable-msc1763"),
             "legacy":{"data_queries":old_queries[0],"all_start_query_events":old_total,"latency":percentiles(&mut old_times)},

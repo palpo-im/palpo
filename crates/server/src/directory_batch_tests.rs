@@ -494,7 +494,7 @@ async fn measure(size: usize, spy: &SqlSpy) {
                 "unrelated_state_fields_per_room":CUSTOM_FIELDS,"query_pool_size":data::status().max_size,
                 "os":std::env::consts::OS,"arch":std::env::consts::ARCH,
                 "retention_feature":cfg!(feature="unstable-msc1763"),
-                "data_sha256":hex::encode(Sha256::digest(serde_json::to_vec(&expected).unwrap())),
+                "data_sha256":Sha256::digest(serde_json::to_vec(&expected).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
                 "legacy":{"data_queries":old_queries,"all_start_query_events":old_total,"latency":percentiles(&mut old_times)},
                 "batched":{"data_queries":new_queries,"all_start_query_events":new_total,"latency":percentiles(&mut new_times)}
             })
