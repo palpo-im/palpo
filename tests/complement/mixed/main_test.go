@@ -3,6 +3,7 @@ package mixed_tests
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -35,11 +36,24 @@ func TestMixedHomeserverImages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if container.Container.Config.Image != want {
-			t.Fatalf("%s runs %s, want %s", name, container.Container.Config.Image, want)
+		base, err := cli.ImageInspect(ctx, want)
+		if err != nil {
+			t.Fatal(err)
 		}
-		t.Logf("%s runs %s", name, container.Container.Config.Image)
-		images[name] = container.Container.Image
+		deployed, err := cli.ImageInspect(ctx, container.Container.Image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Clean deployments commit a blueprint snapshot with a new image ID.
+		// Verify its filesystem descends from the intended base image instead
+		// of comparing the snapshot's untagged ID with the base's tag.
+		layers := base.RootFS.Layers
+		if len(layers) == 0 || len(deployed.RootFS.Layers) < len(layers) ||
+			!slices.Equal(deployed.RootFS.Layers[:len(layers)], layers) {
+			t.Fatalf("%s runs %s, which does not descend from %s (%s)", name, deployed.ID, want, base.ID)
+		}
+		t.Logf("%s runs %s derived from %s (%s)", name, deployed.ID, want, base.ID)
+		images[name] = base.ID
 	}
 	if images["hs1"] == images["hs2"] {
 		t.Fatal("mixed federation requires distinct hs1 and hs2 images")
