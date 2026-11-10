@@ -60,7 +60,8 @@ fn event_key_validity_boundaries_and_legacy_room_versions() {
 #[test]
 fn cached_key_horizon_is_anchored_to_fetch_time() {
     let pair = pair();
-    let mut keys = document(&pair, u64::MAX);
+    // Signed documents must stay within canonical JSON's integer range.
+    let mut keys = document(&pair, (1_u64 << 53) - 1);
     bound_cached_keys(&mut keys, UnixMillis(10));
     assert_eq!(keys.valid_until_ts, UnixMillis(10 + MAX_KEY_LIFETIME_MS));
     assert!(
