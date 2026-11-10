@@ -69,9 +69,6 @@ pub struct ServerSigningKeys {
     ///
     /// This field MUST be ignored in room versions 1, 2, 3, and 4.
     pub valid_until_ts: UnixMillis,
-    /// Preserve signed extension fields when caching or acting as a notary.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl ServerSigningKeys {
@@ -86,7 +83,6 @@ impl ServerSigningKeys {
             old_verify_keys: BTreeMap::new(),
             signatures: BTreeMap::new(),
             valid_until_ts,
-            extra: BTreeMap::new(),
         }
     }
 }
