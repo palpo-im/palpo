@@ -475,7 +475,7 @@ fn restart_parent() {
         let stop = stop.clone();
         let requests = requests.clone();
         std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
+            while !AtomicBool::load(&stop, Ordering::Acquire) {
                 let (mut socket, _) = match listener.accept() {
                     Ok(value) => value,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -521,7 +521,9 @@ fn restart_parent() {
                     socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
                     continue;
                 }
-                while !restored.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
+                while !AtomicBool::load(&restored, Ordering::Acquire)
+                    && !AtomicBool::load(&stop, Ordering::Acquire)
+                {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 let _ = socket.write_all(

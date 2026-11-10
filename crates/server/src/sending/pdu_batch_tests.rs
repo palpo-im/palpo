@@ -1,7 +1,6 @@
 //! Fixed-data PostgreSQL comparison of the old and batched federation loaders.
 use std::time::{Duration, Instant};
 
-use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -186,7 +185,7 @@ async fn measure(server: &ServerName, ids: &[OwnedEventId], label: &str, spy: &S
         "P03_MEASUREMENT {}",
         json!({
             "case":label,"samples":SAMPLES,"batch_size":ids.len(),
-            "data_sha256":format!("{:x}",Sha256::digest(serde_json::to_vec(&expected).unwrap())),
+            "data_sha256":hex::encode(Sha256::digest(serde_json::to_vec(&expected).unwrap())),
             "os":std::env::consts::OS,"arch":std::env::consts::ARCH,
             "query_pool_size":data::status().max_size,"retention_feature":cfg!(feature="unstable-msc1763"),
             "legacy":{"data_queries":old_queries[0],"all_start_query_events":old_total,"latency":percentiles(&mut old_times)},
