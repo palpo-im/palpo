@@ -145,7 +145,7 @@ async fn measure(server: &ServerName, ids: &[OwnedEventId], label: &str, spy: &S
     for sample in 0..SAMPLES {
         // Alternate execution order to avoid assigning all warm-cache effects
         // to one implementation. Both paths consume exactly the same rows.
-        for old in if sample % 2 == 0 {
+        for old in if sample.is_multiple_of(2) {
             [true, false]
         } else {
             [false, true]

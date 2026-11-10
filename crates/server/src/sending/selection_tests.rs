@@ -401,7 +401,7 @@ async fn measure_selectors() {
             let mut old = None;
             let mut new = None;
             // Alternate order to avoid always granting one selector the warm cache.
-            for is_legacy in if sample % 2 == 0 {
+            for is_legacy in if sample.is_multiple_of(2) {
                 [true, false]
             } else {
                 [false, true]

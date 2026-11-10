@@ -165,14 +165,14 @@ async fn seed(index: usize, fields: &[i64], custom: &[i64]) -> Fixture {
         if index % 7 == 3 {
             json!({"history_visibility":false})
         } else {
-            json!({"history_visibility":if index % 2 == 0 {"world_readable"} else {"shared"}})
+            json!({"history_visibility":if index.is_multiple_of(2) {"world_readable"} else {"shared"}})
         },
         if index % 7 == 2 {
             json!({"guest_access":false})
         } else {
             json!({"guest_access":"can_join"})
         },
-        if index % 7 == 0 {
+        if index.is_multiple_of(7) {
             json!({"url":42})
         } else {
             json!({"url":format!("mxc://{ORIGIN}/avatar-{index}")})
@@ -203,7 +203,7 @@ async fn seed(index: usize, fields: &[i64], custom: &[i64]) -> Fixture {
     }
     let base = frame(&room, "base", None, &full, &CompressedState::new()).await;
     let mut current = base;
-    if index % 4 == 0 {
+    if index.is_multiple_of(4) {
         let previous = *full
             .iter()
             .find(|entry| entry.field_id() == fields[2])
@@ -222,9 +222,9 @@ async fn seed(index: usize, fields: &[i64], custom: &[i64]) -> Fixture {
         full.extend(appended);
     }
     point_room(&room, Some(current)).await;
-    if index % 2 == 0 {
+    if index.is_multiple_of(2) {
         // Negative stale counters are clamped identically by both paths.
-        let count = if index % 14 == 0 {
+        let count = if index.is_multiple_of(14) {
             -2
         } else {
             (index % 5 + 2) as i64
@@ -455,7 +455,7 @@ async fn measure(size: usize, spy: &SqlSpy) {
             Vec::new(),
         );
         for sample in 0..SAMPLES {
-            for old in if sample % 2 == 0 {
+            for old in if sample.is_multiple_of(2) {
                 [true, false]
             } else {
                 [false, true]

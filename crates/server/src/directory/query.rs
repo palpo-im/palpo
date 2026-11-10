@@ -123,7 +123,9 @@ fn state(
     }
     let decode = |bytes: &[u8]| -> Vec<CompressedEvent> {
         bytes
-            .chunks_exact(16)
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|item| {
                 CompressedEvent::new(
                     i64::from_be_bytes(item[..8].try_into().unwrap()),
