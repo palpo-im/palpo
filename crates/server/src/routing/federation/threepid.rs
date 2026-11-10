@@ -1,12 +1,14 @@
 use salvo::prelude::*;
 
-use crate::{AuthArgs, EmptyResult, MatrixError};
+use crate::{EmptyResult, MatrixError};
 
 pub fn router() -> Router {
-    Router::with_path("3pid/onbind").put(on_bind)
+    // matrix-spec#2452 corrected the historical PUT typo to POST. Retain
+    // PUT as a compatibility alias; neither method implements binding.
+    Router::with_path("3pid/onbind").post(on_bind).put(on_bind)
 }
 
 #[endpoint]
-async fn on_bind(_aa: AuthArgs) -> EmptyResult {
+async fn on_bind() -> EmptyResult {
     Err(MatrixError::unrecognized("3PID bind notifications are not implemented.").into())
 }

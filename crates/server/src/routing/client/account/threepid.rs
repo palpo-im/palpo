@@ -63,8 +63,7 @@ async fn bind(_aa: AuthArgs) -> EmptyResult {
 
 /// #POST /_matrix/client/v3/account/3pid/unbind
 ///
-/// - `M_THREEPID_NOT_FOUND`: this server stores no third-party identifiers, so there is nothing to
-///   unbind.
+/// Contact changes remain disabled, including for contacts verified at registration.
 #[endpoint]
 async fn unbind(_aa: AuthArgs) -> EmptyResult {
     Err(MatrixError::threepid_denied(
@@ -75,8 +74,7 @@ async fn unbind(_aa: AuthArgs) -> EmptyResult {
 
 /// #POST /_matrix/client/v3/account/3pid/delete
 ///
-/// - `M_THREEPID_NOT_FOUND`: this server stores no third-party identifiers, so there is nothing to
-///   delete.
+/// Contact changes remain disabled, including for contacts verified at registration.
 #[endpoint]
 async fn delete(_aa: AuthArgs) -> EmptyResult {
     Err(MatrixError::threepid_denied(
