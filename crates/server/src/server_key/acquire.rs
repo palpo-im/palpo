@@ -219,6 +219,9 @@ where
 
 async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKeys) {
     let server = &server_keys.server_name;
+    if !missing.contains_key(server) {
+        return;
+    }
     if let Err(e) = add_signing_keys(server_keys.clone()).await {
         error!(?server, "failed to persist notary signing keys: {e}");
     }

@@ -179,7 +179,7 @@ async fn run() {
         "ed25519:directory".try_into().unwrap(),
         VerifyKey::from_bytes(key.public_key().to_vec()),
     );
-    crate::server_key::add_signing_keys(keys).await.unwrap();
+    crate::server_key::seed_verified_keys(keys, &key).await;
     let service = Service::new(crate::routing::root());
     let mut ordinary = Vec::new();
     let mut spaces = Vec::new();

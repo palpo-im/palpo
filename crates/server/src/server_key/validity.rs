@@ -41,6 +41,30 @@ fn select_key(
     None
 }
 
+async fn cached_event_key(
+    origin: &ServerName,
+    id: &ServerSigningKeyId,
+    timestamp: UnixMillis,
+    enforce: bool,
+) -> AppResult<Option<VerifyKey>> {
+    let mut documents = trust::cached(origin).await?;
+    for (keys, fetched) in &mut documents {
+        bound_cached_keys(keys, *fetched);
+    }
+    // An authenticated retirement applies to every historical copy, including
+    // a later replay of an earlier document which still called the key current.
+    let retired_at = documents
+        .iter()
+        .filter_map(|(keys, _)| keys.old_verify_keys.get(id).map(|key| key.expired_ts))
+        .min();
+    if enforce && retired_at.is_some_and(|expiry| timestamp >= expiry) {
+        return Ok(None);
+    }
+    Ok(documents
+        .iter()
+        .find_map(|(keys, _)| select_key(keys, id, timestamp, enforce)))
+}
+
 pub(super) async fn event_verify_key(
     origin: &ServerName,
     id: &ServerSigningKeyId,
@@ -61,12 +85,8 @@ pub(super) async fn event_verify_key(
             return Ok(VerifyKey::new(Base64::new(current.public_key().to_vec())));
         }
     }
-    if let Some(record) = data::misc::signing_keys_record(origin).await? {
-        let mut keys: ServerSigningKeys = serde_json::from_value(record.key_data)?;
-        bound_cached_keys(&mut keys, record.updated_at);
-        if let Some(key) = select_key(&keys, id, timestamp, enforce) {
-            return Ok(key);
-        }
+    if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
+        return Ok(key);
     }
 
     // Only the actively configured local key has an implicit current lifetime.
@@ -88,11 +108,10 @@ pub(super) async fn event_verify_key(
         return Ok(key);
     }
     if !conf.only_query_trusted_key_servers
-        && let Ok(mut keys) = server_request(origin).await
+        && let Ok(keys) = server_request(origin).await
     {
         add_signing_keys(keys.clone()).await?;
-        bound_cached_keys(&mut keys, UnixMillis::now());
-        if let Some(key) = select_key(&keys, id, timestamp, enforce) {
+        if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
             return Ok(key);
         }
     }
@@ -115,13 +134,12 @@ async fn refresh_notaries(
 ) -> AppResult<Option<VerifyKey>> {
     for notary in &config::get().trusted_servers {
         if let Ok(documents) = super::request::notary_request_at(notary, origin, minimum).await {
-            for mut keys in documents {
+            for keys in documents {
                 if keys.server_name != origin {
                     continue;
                 }
                 add_signing_keys(keys.clone()).await?;
-                bound_cached_keys(&mut keys, UnixMillis::now());
-                if let Some(key) = select_key(&keys, id, timestamp, enforce) {
+                if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
                     return Ok(Some(key));
                 }
             }

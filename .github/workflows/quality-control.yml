@@ -158,6 +158,7 @@ jobs:
             server_key::validity::tests::review_event_verification_enforces_cached_key_expiry
             server_key::validity::tests::review_local_retired_key_obeys_event_expiry_without_refresh
             server_key::validity::tests::review_event_cache_refreshes_from_programmable_notary
+            server_key::notary_tests::review_notary_routes_verify_attestations_and_separate_request_from_event_keys
             sending::tests::federation_send_with_one_permit_makes_progress_and_returns_permits
             user::pusher::tests::review_rejected_gateway_keys_only_remove_matching_pusher
             sending::delivery_tests::http_push_retries_failed_gateway_without_acknowledging_queue

@@ -993,7 +993,7 @@ mod device_list_producer_tests {
             "ed25519:join_versions".try_into().unwrap(),
             VerifyKey::from_bytes(key.public_key().to_vec()),
         );
-        crate::server_key::add_signing_keys(keys).await.unwrap();
+        crate::server_key::seed_verified_keys(keys, &key).await;
         let service = Service::new(crate::routing::matrix());
         assert_eq!(
             assert_producers_agree(&service, &key, &user, &room, "FIRST".into(), 0).await,

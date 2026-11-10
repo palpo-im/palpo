@@ -157,6 +157,7 @@ async fn server_signing_keys(_aa: AuthArgs) -> JsonResult<ServerKeysResBody> {
             SystemTime::now() + Duration::from_secs(86400 * 7),
         )
         .expect("time is valid"),
+        extra: BTreeMap::new(),
     };
     let buf: Vec<u8> = crate::core::serde::json_to_buf(&server_keys)?;
     let mut server_keys: CanonicalJsonObject = serde_json::from_slice(&buf)?;
@@ -217,5 +218,23 @@ mod tests {
         assert!(signed.signatures.contains_key(&origin));
         assert!(signed.signatures.contains_key(&notary));
         assert!(signed.signatures[&notary].contains_key(&notary_key_id));
+        let public_keys = BTreeMap::from([
+            (
+                origin.to_string(),
+                BTreeMap::from([(
+                    format!("ed25519:{}", origin_keypair.version()),
+                    Base64::new(origin_keypair.public_key().to_vec()),
+                )]),
+            ),
+            (
+                notary.to_string(),
+                BTreeMap::from([(
+                    notary_key_id.to_string(),
+                    Base64::new(notary_keypair.public_key().to_vec()),
+                )]),
+            ),
+        ]);
+        let canonical = serde_json::from_value(serde_json::to_value(signed).unwrap()).unwrap();
+        crate::core::signatures::verify_json(&public_keys, &canonical).unwrap();
     }
 }

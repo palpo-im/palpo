@@ -13,10 +13,13 @@ fn pair() -> Ed25519KeyPair {
 fn document(pair: &Ed25519KeyPair, until: u64) -> ServerSigningKeys {
     let mut keys = ServerSigningKeys::new("remote.example".try_into().unwrap(), UnixMillis(until));
     keys.verify_keys.insert(
-        "ed25519:test".try_into().unwrap(),
+        format!("ed25519:{}", pair.version()).try_into().unwrap(),
         VerifyKey::from_bytes(pair.public_key().to_vec()),
     );
-    keys
+    let mut raw: CanonicalJsonObject =
+        serde_json::from_value(serde_json::to_value(&keys).unwrap()).unwrap();
+    signatures::sign_json("remote.example", pair, &mut raw).unwrap();
+    serde_json::from_value(serde_json::to_value(raw).unwrap()).unwrap()
 }
 
 fn event(pair: &Ed25519KeyPair, timestamp: u64, rules: &RoomVersionRules) -> CanonicalJsonObject {
@@ -115,7 +118,7 @@ async fn review_event_verification_enforces_cached_key_expiry() {
     let now = UnixMillis::now().0;
     let remote: &ServerName = "remote.example".try_into().unwrap();
     let keys = document(&pair, now);
-    add_signing_keys(keys.clone()).await.unwrap();
+    trust::seed(keys.clone(), &pair).await;
     let historical = event(&pair, now - 1, &RoomVersionRules::V5);
     assert!(
         super::super::verify_event(&historical, &RoomVersionId::V5)
@@ -137,13 +140,23 @@ async fn review_event_verification_enforces_cached_key_expiry() {
             .is_ok()
     );
 
+    // Renewal of a still-current key can extend its event lifetime.
+    trust::seed(document(&pair, now + 60_000), &pair).await;
+    assert!(
+        super::super::verify_event(&expired, &RoomVersionId::V5)
+            .await
+            .is_ok()
+    );
+    let replacement =
+        Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "replacement".into())
+            .unwrap();
     let mut retired = keys.clone();
     let key = retired.verify_keys.remove("ed25519:test").unwrap();
     retired.old_verify_keys.insert(
         "ed25519:test".try_into().unwrap(),
         OldVerifyKey::new(UnixMillis(now - 1), key.key),
     );
-    add_signing_keys(retired).await.unwrap();
+    trust::seed(retired, &replacement).await;
     assert!(
         super::super::verify_event(&historical, &RoomVersionId::V5)
             .await
@@ -156,17 +169,16 @@ async fn review_event_verification_enforces_cached_key_expiry() {
             .is_ok()
     );
 
-    // A fresh response for the same key makes a formerly expired event valid.
-    let renewed = document(&pair, now + 60_000);
-    add_signing_keys(renewed).await.unwrap();
+    // Replaying a previously valid current document cannot undo retirement.
+    trust::seed(document(&pair, now + 60_000), &pair).await;
     assert!(
         super::super::verify_event(&expired, &RoomVersionId::V5)
             .await
-            .is_ok()
+            .is_err()
     );
     let stale =
         Ed25519KeyPair::from_der(&Ed25519KeyPair::generate().unwrap(), "stale".into()).unwrap();
-    let mut rotated = document(&pair, now + 60_000);
+    let mut rotated = document(&replacement, now + 60_000);
     rotated.old_verify_keys.insert(
         "ed25519:stale".try_into().unwrap(),
         OldVerifyKey::new(
@@ -174,8 +186,15 @@ async fn review_event_verification_enforces_cached_key_expiry() {
             Base64::new(stale.public_key().to_vec()),
         ),
     );
-    add_signing_keys(rotated).await.unwrap();
+    trust::seed(rotated, &replacement).await;
     let mut double_signed = expired.clone();
+    signatures::hash_and_sign_event(
+        "remote.example",
+        &replacement,
+        &mut double_signed,
+        &RoomVersionRules::V5.redaction,
+    )
+    .unwrap();
     signatures::hash_and_sign_event(
         "remote.example",
         &stale,
@@ -234,7 +253,7 @@ async fn review_local_retired_key_obeys_event_expiry_without_refresh() {
         "ed25519:test".try_into().unwrap(),
         OldVerifyKey::new(UnixMillis(now), Base64::new(pair.public_key().to_vec())),
     );
-    add_signing_keys(keys).await.unwrap();
+    trust::seed(keys, config::keypair()).await;
     let before = event_for("local-key.example", &pair, now - 1, &RoomVersionRules::V5);
     assert!(
         super::super::verify_event(&before, &RoomVersionId::V5)
@@ -272,6 +291,7 @@ mod notary_fixture {
 
 #[derive(Clone)]
 struct NotaryFixture {
+    bootstrap: serde_json::Value,
     response: std::sync::Arc<std::sync::Mutex<(salvo::http::StatusCode, serde_json::Value)>>,
     requests: std::sync::Arc<std::sync::Mutex<Vec<(String, Option<u64>)>>>,
 }
@@ -285,6 +305,10 @@ impl salvo::Handler for NotaryFixture {
         res: &mut salvo::Response,
         _ctrl: &mut salvo::FlowCtrl,
     ) {
+        if req.uri().path() == "/_matrix/key/v2/server" {
+            res.render(salvo::writing::Json(self.bootstrap.clone()));
+            return;
+        }
         self.requests.lock().unwrap().push((
             req.uri().path().to_string(),
             req.query::<u64>("minimum_valid_until_ts"),
@@ -320,13 +344,25 @@ async fn review_event_cache_refreshes_from_programmable_notary() {
         .clone()
         .into_std()
         .unwrap();
+    let notary = format!("localhost:{}", address.port());
+    let notary_pair = pair();
+    let mut bootstrap = document(&notary_pair, UnixMillis::now().0 + 60_000);
+    bootstrap.server_name = notary.as_str().try_into().unwrap();
+    bootstrap.signatures.clear();
+    let mut raw: CanonicalJsonObject =
+        serde_json::from_value(serde_json::to_value(&bootstrap).unwrap()).unwrap();
+    signatures::sign_json(&notary, &notary_pair, &mut raw).unwrap();
     let fixture = NotaryFixture {
+        bootstrap: serde_json::to_value(raw).unwrap(),
         response: Arc::new(Mutex::new((StatusCode::OK, json!({"server_keys":[]})))),
         requests: Arc::new(Mutex::new(Vec::new())),
     };
     let server = tokio::spawn(
-        Server::new(acceptor)
-            .serve(Router::with_path("_matrix/key/v2/query/{server_name}").get(fixture.clone())),
+        Server::new(acceptor).serve(
+            Router::new()
+                .push(Router::with_path("_matrix/key/v2/query/{server_name}").get(fixture.clone()))
+                .push(Router::with_path("_matrix/key/v2/server").get(fixture.clone())),
+        ),
     );
     config::CONFIG
         .set(
@@ -344,11 +380,12 @@ async fn review_event_cache_refreshes_from_programmable_notary() {
     let pair = pair();
     let now = UnixMillis::now().0;
     let event_time = now + 1_000;
-    add_signing_keys(document(&pair, now - 1)).await.unwrap();
-    *fixture.response.lock().unwrap() = (
-        StatusCode::OK,
-        json!({"server_keys":[document(&pair, now + 60_000)]}),
-    );
+    trust::seed(document(&pair, now - 1), &pair).await;
+    let mut refreshed: CanonicalJsonObject =
+        serde_json::from_value(serde_json::to_value(document(&pair, now + 60_000)).unwrap())
+            .unwrap();
+    signatures::sign_json(&notary, &notary_pair, &mut refreshed).unwrap();
+    *fixture.response.lock().unwrap() = (StatusCode::OK, json!({"server_keys":[refreshed]}));
     let event = event(&pair, event_time, &RoomVersionRules::V5);
     let checked = tokio::time::timeout(
         Duration::from_secs(10),
@@ -374,7 +411,9 @@ async fn review_event_cache_refreshes_from_programmable_notary() {
     assert_eq!(cached.valid_until_ts, UnixMillis(now + 60_000));
 
     // A failed refresh cannot revive the expired cached key.
-    add_signing_keys(document(&pair, now - 1)).await.unwrap();
+    // Use an event beyond every verified document, rather than making an
+    // authenticated newer lifetime disappear by overwriting a cache row.
+    let event = self::event(&pair, now + 120_000, &RoomVersionRules::V5);
     *fixture.response.lock().unwrap() = (
         StatusCode::SERVICE_UNAVAILABLE,
         json!({"errcode":"M_UNKNOWN", "error":"fixture unavailable"}),

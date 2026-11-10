@@ -1,5 +1,10 @@
 mod acquire;
+#[cfg(test)]
+mod notary_tests;
 mod request;
+mod trust;
+#[cfg(test)]
+pub(crate) use trust::seed as seed_verified_keys;
 mod validity;
 mod verify;
 use std::borrow::Borrow;
@@ -8,12 +13,11 @@ use std::time::Duration;
 
 pub use acquire::*;
 pub use request::*;
-use serde_json::value::RawValue as RawJsonValue;
 pub use verify::*;
 
 use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
 use crate::core::room_version_rules::RoomVersionRules;
-use crate::core::serde::{Base64, CanonicalJsonObject, RawJson};
+use crate::core::serde::{Base64, CanonicalJsonObject};
 use crate::core::signatures::{self, PublicKeyMap, PublicKeySet};
 use crate::core::{
     OwnedServerSigningKeyId, RoomVersionId, ServerName, ServerSigningKeyId, UnixMillis,
@@ -82,35 +86,22 @@ pub async fn verify_key_exists(
     server: &ServerName,
     key_id: &ServerSigningKeyId,
 ) -> AppResult<bool> {
-    type KeysMap<'a> = BTreeMap<&'a str, &'a RawJsonValue>;
-
-    let key_data = data::misc::signing_keys_data(server).await?;
-
-    let Some(keys) = key_data else {
-        return Ok(false);
-    };
-    let keys: RawJson<ServerSigningKeys> = RawJson::from_value(&keys)?;
-
-    if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys")
-        && verify_keys.contains_key(&key_id.as_str())
-    {
-        return Ok(true);
-    }
-
-    if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys")
-        && old_verify_keys.contains_key(&key_id.as_str())
-    {
-        return Ok(true);
-    }
-
-    Ok(false)
+    Ok(trust::cached(server)
+        .await?
+        .iter()
+        .any(|(keys, _)| key_exists(keys, key_id)))
 }
 
 pub async fn verify_keys_for(server: &ServerName) -> VerifyKeys {
-    let mut keys = signing_keys_for(server)
+    let mut keys = VerifyKeys::new();
+    for (document, _) in trust::cached(server)
         .await
-        .map(|keys| merge_old_keys(keys).verify_keys)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+    {
+        keys.extend(merge_old_keys(document).verify_keys);
+    }
 
     if !server.is_remote() {
         let keypair = config::keypair();
@@ -128,10 +119,12 @@ pub async fn verify_keys_for(server: &ServerName) -> VerifyKeys {
 }
 
 pub async fn signing_keys_for(server: &ServerName) -> AppResult<ServerSigningKeys> {
-    let key_data = data::misc::signing_keys_data(server)
+    trust::cached(server)
         .await?
-        .ok_or_else(|| AppError::public("no signing keys found for server"))?;
-    Ok(serde_json::from_value(key_data)?)
+        .into_iter()
+        .next()
+        .map(|(keys, _)| keys)
+        .ok_or_else(|| AppError::public("no verified signing keys found for server"))
 }
 
 fn minimum_valid_ts() -> UnixMillis {
@@ -152,11 +145,12 @@ fn merge_old_keys(mut keys: ServerSigningKeys) -> ServerSigningKeys {
 }
 
 fn extract_key(mut keys: ServerSigningKeys, key_id: &ServerSigningKeyId) -> Option<VerifyKey> {
-    keys.verify_keys.remove(key_id).or_else(|| {
-        keys.old_verify_keys
-            .remove(key_id)
-            .map(|old| VerifyKey::new(old.key))
-    })
+    // This selector is used for HTTP request authentication. Historical keys
+    // are exclusively for events, even when a malformed document lists both.
+    if keys.old_verify_keys.contains_key(key_id) {
+        return None;
+    }
+    keys.verify_keys.remove(key_id)
 }
 
 fn key_exists(keys: &ServerSigningKeys, key_id: &ServerSigningKeyId) -> bool {
@@ -233,7 +227,13 @@ pub async fn get_verify_key(
     let notary_first = crate::config::get().query_trusted_key_servers_first;
     let notary_only = crate::config::get().only_query_trusted_key_servers;
 
-    if let Some(result) = verify_keys_for(origin).await.remove(key_id) {
+    if !origin.is_remote() {
+        let current = config::keypair();
+        if key_id.as_str() == format!("ed25519:{}", current.version()) {
+            return Ok(VerifyKey::new(Base64::new(current.public_key().to_vec())));
+        }
+    }
+    if let Some(result) = trust::request_key(origin, key_id).await? {
         return Ok(result);
     }
 
@@ -259,12 +259,12 @@ async fn get_verify_key_from_notaries(
 ) -> AppResult<VerifyKey> {
     for notary in &crate::config::get().trusted_servers {
         if let Ok(server_keys) = notary_request(notary, origin).await {
-            for server_key in server_keys.clone() {
-                add_signing_keys(server_key).await?;
-            }
-
             for server_key in server_keys {
-                if let Some(result) = extract_key(server_key, key_id) {
+                if server_key.server_name != origin {
+                    continue;
+                }
+                add_signing_keys(server_key.clone()).await?;
+                if let Some(result) = trust::request_key(origin, key_id).await? {
                     return Ok(result);
                 }
             }
@@ -282,7 +282,7 @@ async fn get_verify_key_from_origin(
 ) -> AppResult<VerifyKey> {
     if let Ok(server_key) = server_request(origin).await {
         add_signing_keys(server_key.clone()).await?;
-        if let Some(result) = extract_key(server_key, key_id) {
+        if let Some(result) = trust::request_key(origin, key_id).await? {
             return Ok(result);
         }
     }
