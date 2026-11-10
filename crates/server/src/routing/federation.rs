@@ -26,8 +26,11 @@ pub fn router() -> Router {
     Router::with_path("federation")
         .hoop(check_federation_enabled)
         .oapi_tag("federation")
-        // Server discovery is public; authentication applies only to the other routes.
+        // Discovery and identity-server bind callbacks do not use server authentication.
         .push(Router::with_path("v1/version").get(version))
+        .push(Router::with_path("v1").push(threepid::router()))
+        // Historical non-standard v2 alias: the same explicit unsupported response.
+        .push(Router::with_path("v2").push(threepid::router()))
         .push(authenticated_router())
 }
 
@@ -43,7 +46,6 @@ fn authenticated_router() -> Router {
                 .push(query::router())
                 .push(room::router())
                 .push(space::router())
-                .push(threepid::router())
                 .push(transaction::router())
                 .push(user::router()),
         )
@@ -56,7 +58,6 @@ fn authenticated_router() -> Router {
                 .push(query::router())
                 .push(room::router())
                 .push(space::router())
-                .push(threepid::router())
                 .push(transaction::router())
                 .push(user::router())
                 .push(media::router()),
@@ -168,6 +169,36 @@ mod tests {
                 response.take_json::<Value>().await.unwrap()["errcode"],
                 "M_MISSING_TOKEN"
             );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "run alone; owns process-global configuration"]
+    async fn review_onbind_respects_disabled_federation() {
+        config::CONFIG
+            .set(
+                serde_json::from_value(json!({
+                    "server_name":"onbind-disabled.example","db":{"url":"unused"},
+                    "federation":{"enable":false}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let service = Service::new(Router::with_path("_matrix").push(router()));
+        for version in ["v1", "v2"] {
+            for method in [Method::POST, Method::PUT] {
+                let url = format!("http://localhost/_matrix/federation/{version}/3pid/onbind");
+                let request = if method == Method::POST {
+                    TestClient::post(url)
+                } else {
+                    TestClient::put(url)
+                };
+                let mut response = request.json(&json!({})).send(&service).await;
+                assert_ne!(response.status_code, Some(StatusCode::OK));
+                let body = response.take_json::<Value>().await.unwrap();
+                assert_eq!(body["error"], "Federation is disabled.");
+                assert_ne!(body["errcode"], "M_MISSING_TOKEN");
+            }
         }
     }
 }

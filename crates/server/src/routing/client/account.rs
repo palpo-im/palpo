@@ -16,31 +16,17 @@ use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, empty_ok, hoop
 
 pub fn public_router() -> Router {
     Router::with_path("account")
-        // .push(
-        //     Router::with_path("3pid")
-        //         .get(get_3pid)
-        //         .push(Router::with_path("add").post(add_3pid))
-        //         .push(Router::with_path("bind").post(bind_3pid))
-        //         .push(Router::with_path("unbind").post(unbind_3pid))
-        //         .push(Router::with_path("delete").post(delete_3pid))
-        //         .push(Router::with_path("msisdn/requestToken").post(msisdn_request_token))
-        //         .push(Router::with_path("email/requestTZoken").post(email_request_token)),
-        // )
+        .push(
+            Router::with_path("3pid")
+                .push(Router::with_path("email/requestToken").post(token_via_email))
+                .push(Router::with_path("msisdn/requestToken").post(token_via_msisdn)),
+        )
+        // Preserve earlier Palpo spellings as aliases for the same denial.
         .push(Router::with_path("email/requestToken").post(token_via_email))
         .push(Router::with_path("msisdn/requestToken").post(token_via_msisdn))
 }
 pub fn authed_router() -> Router {
     Router::with_path("account")
-        // .push(
-        //     Router::with_path("3pid")
-        //         .get(get_3pid)
-        //         .push(Router::with_path("add").post(add_3pid))
-        //         .push(Router::with_path("bind").post(bind_3pid))
-        //         .push(Router::with_path("unbind").post(unbind_3pid))
-        //         .push(Router::with_path("delete").post(delete_3pid))
-        //         .push(Router::with_path("msisdn/requestToken").post(msisdn_request_token))
-        //         .push(Router::with_path("email/requestTZoken").post(email_request_token)),
-        // )
         .push(
             Router::with_path("whoami")
                 .hoop(hoops::limit_rate)

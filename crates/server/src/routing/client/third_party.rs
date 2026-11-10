@@ -112,7 +112,9 @@ async fn get_protocol(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<
 /// Retrieve third party locations from a Matrix room alias.
 #[endpoint]
 async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResBody> {
-    let alias = req.query::<String>("alias");
+    let alias = req
+        .query::<String>("alias")
+        .ok_or_else(|| crate::MatrixError::missing_param("Missing alias"))?;
     let mut result = Vec::new();
 
     for appservice in crate::appservice::all().await?.values() {
@@ -123,10 +125,7 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
             continue;
         };
 
-        let path = match &alias {
-            Some(a) => format!("location?alias={}", encode_query_value(a)),
-            None => "location".to_owned(),
-        };
+        let path = format!("location?alias={}", encode_query_value(&alias));
         let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
@@ -146,6 +145,9 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
         }
     }
 
+    if result.is_empty() {
+        return Err(crate::MatrixError::not_found("Third-party location not found").into());
+    }
     json_ok(LocationsResBody::new(result))
 }
 
@@ -156,6 +158,7 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
 async fn protocol_locations(
     _aa: AuthArgs,
     protocol: PathParam<String>,
+    req: &mut Request,
 ) -> JsonResult<LocationsResBody> {
     let protocol_id = protocol.into_inner();
     let mut result = Vec::new();
@@ -172,9 +175,15 @@ async fn protocol_locations(
         };
 
         let path = format!("location/{protocol_id}");
-        let Ok(request) = appservice_get_request(base_url, &path) else {
+        let Ok(mut request) = appservice_get_request(base_url, &path) else {
             continue;
         };
+        if let Some(query) = req.uri().query() {
+            request.url_mut().query_pairs_mut().extend_pairs(
+                url::form_urlencoded::parse(query.as_bytes())
+                    .filter(|(key, _)| key.as_ref() != "access_token"),
+            );
+        }
         match sending::send_appservice_request::<Vec<Location>>(
             appservice.registration.clone(),
             request,
@@ -191,6 +200,9 @@ async fn protocol_locations(
         }
     }
 
+    if result.is_empty() {
+        return Err(crate::MatrixError::not_found("Third-party location not found").into());
+    }
     json_ok(LocationsResBody::new(result))
 }
 
@@ -199,7 +211,9 @@ async fn protocol_locations(
 /// Retrieve third party users from a Matrix User ID.
 #[endpoint]
 async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
-    let userid = req.query::<String>("userid");
+    let userid = req
+        .query::<String>("userid")
+        .ok_or_else(|| crate::MatrixError::missing_param("Missing userid"))?;
     let mut result = Vec::new();
 
     for appservice in crate::appservice::all().await?.values() {
@@ -210,10 +224,7 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
             continue;
         };
 
-        let path = match &userid {
-            Some(u) => format!("user?userid={}", encode_query_value(u)),
-            None => "user".to_owned(),
-        };
+        let path = format!("user?userid={}", encode_query_value(&userid));
         let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
@@ -233,6 +244,9 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
         }
     }
 
+    if result.is_empty() {
+        return Err(crate::MatrixError::not_found("Third-party user not found").into());
+    }
     json_ok(UsersResBody::new(result))
 }
 
@@ -240,7 +254,11 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
 ///
 /// Retrieve Matrix users bridged to the matched third party users.
 #[endpoint]
-async fn protocol_users(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<UsersResBody> {
+async fn protocol_users(
+    _aa: AuthArgs,
+    protocol: PathParam<String>,
+    req: &mut Request,
+) -> JsonResult<UsersResBody> {
     let protocol_id = protocol.into_inner();
     let mut result = Vec::new();
 
@@ -256,9 +274,15 @@ async fn protocol_users(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResul
         };
 
         let path = format!("user/{protocol_id}");
-        let Ok(request) = appservice_get_request(base_url, &path) else {
+        let Ok(mut request) = appservice_get_request(base_url, &path) else {
             continue;
         };
+        if let Some(query) = req.uri().query() {
+            request.url_mut().query_pairs_mut().extend_pairs(
+                url::form_urlencoded::parse(query.as_bytes())
+                    .filter(|(key, _)| key.as_ref() != "access_token"),
+            );
+        }
         match sending::send_appservice_request::<Vec<User>>(
             appservice.registration.clone(),
             request,
@@ -275,5 +299,8 @@ async fn protocol_users(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResul
         }
     }
 
+    if result.is_empty() {
+        return Err(crate::MatrixError::not_found("Third-party user not found").into());
+    }
     json_ok(UsersResBody::new(result))
 }

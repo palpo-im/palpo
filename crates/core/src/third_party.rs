@@ -103,6 +103,7 @@ impl Location {
 #[derive(ToSchema, Deserialize, Serialize, Clone, Debug)]
 pub struct User {
     /// A matrix user ID representing a third party user.
+    #[serde(rename = "userid", alias = "user_id")]
     pub user_id: OwnedUserId,
 
     /// The protocol ID that the third party user is a part of.

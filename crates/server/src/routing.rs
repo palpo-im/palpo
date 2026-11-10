@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod capability_contract_tests;
+
 mod admin;
 mod appservice;
 mod client;
