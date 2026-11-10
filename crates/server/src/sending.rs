@@ -33,6 +33,9 @@ pub use dest::*;
 #[cfg(test)]
 mod delivery_tests;
 pub mod guard;
+mod pdu_batch;
+#[cfg(test)]
+mod pdu_batch_tests;
 pub mod resolver;
 
 const SELECT_PRESENCE_LIMIT: usize = 256;
@@ -572,6 +575,16 @@ pub(crate) async fn send_events(
     kind: OutgoingKind,
     events: Vec<SendingEventType>,
 ) -> Result<OutgoingKind, (OutgoingKind, AppError)> {
+    let attempt = crate::observability::SendAttempt::start(&kind);
+    let result = send_events_inner(kind, events).await;
+    attempt.finish(result.as_ref().err().map(|(_, error)| error));
+    result
+}
+
+async fn send_events_inner(
+    kind: OutgoingKind,
+    events: Vec<SendingEventType>,
+) -> Result<OutgoingKind, (OutgoingKind, AppError)> {
     match &kind {
         OutgoingKind::Appservice(id) => {
             let mut pdu_jsons = Vec::new();
@@ -627,7 +640,7 @@ pub(crate) async fn send_events(
                 return Ok(kind);
             }
             let max_request = crate::sending::max_request();
-            let permit = max_request.acquire().await;
+            let permit = crate::observability::acquire_outbound_permit(&max_request).await;
 
             let registration = crate::appservice::get_registration(id)
                 .await
@@ -735,7 +748,7 @@ pub(crate) async fn send_events(
                     .map_err(|e| (kind.clone(), e))?;
 
                 let max_request = crate::sending::max_request();
-                let permit = max_request.acquire().await;
+                let permit = crate::observability::acquire_outbound_permit(&max_request).await;
 
                 crate::user::pusher::send_push_notice(
                     user_id,
@@ -753,28 +766,20 @@ pub(crate) async fn send_events(
         }
         OutgoingKind::Normal(server) => {
             let mut edu_jsons = Vec::new();
-            let mut pdu_jsons = Vec::new();
+            let pdu_ids = events
+                .iter()
+                .filter_map(|event| match event {
+                    SendingEventType::Pdu(id) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let pdu_jsons = pdu_batch::prepare(server, &pdu_ids)
+                .await
+                .map_err(|error| (kind.clone(), error))?;
 
             for event in &events {
                 match event {
-                    SendingEventType::Pdu(pdu_id) => {
-                        let raw = crate::sending::convert_to_outgoing_federation_event(
-                            timeline::get_pdu_json(pdu_id)
-                                .await
-                                .map_err(|e| (OutgoingKind::Normal(server.clone()), e))?
-                                .ok_or_else(|| {
-                                    error!("event not found: {server} {pdu_id:?}");
-                                    (
-                                        OutgoingKind::Normal(server.clone()),
-                                        AppError::internal(format!(
-                                            "event not found: {server} {pdu_id}"
-                                        )),
-                                    )
-                                })?,
-                        )
-                        .await;
-                        pdu_jsons.push(raw);
-                    }
+                    SendingEventType::Pdu(_) => {}
                     SendingEventType::Edu(edu) => {
                         if let Ok(raw) = serde_json::from_slice(edu) {
                             edu_jsons.push(raw);
@@ -838,7 +843,7 @@ pub async fn send_federation_request(
     }
     debug!("waiting for permit");
     let max_request = max_request();
-    let permit = max_request.acquire().await;
+    let permit = crate::observability::acquire_outbound_permit(&max_request).await;
     debug!("Got permit");
     let url = request.url().clone();
     let response = tokio::time::timeout(
@@ -847,6 +852,7 @@ pub async fn send_federation_request(
     )
     .await
     .map_err(|_| {
+        crate::observability::federation_deadline();
         warn!("timeout waiting for server response of {}", url);
         AppError::public("timeout waiting for server response")
     })?;
@@ -870,53 +876,10 @@ where
     Ok(response.json().await?)
 }
 
-async fn active_requests() -> AppResult<Vec<(i64, OutgoingKind, SendingEventType)>> {
-    let outgoing_requests = outgoing_requests::table
-        .filter(outgoing_requests::state.eq("pending"))
-        .load::<DbOutgoingRequest>(&mut connect().await?)
-        .await?;
-    Ok(outgoing_requests
-        .into_iter()
-        .filter_map(|item| {
-            let kind = match item.kind.as_str() {
-                "appservice" => {
-                    if let Some(appservice_id) = &item.appservice_id {
-                        OutgoingKind::Appservice(appservice_id.clone())
-                    } else {
-                        return None;
-                    }
-                }
-                "push" => {
-                    if let (Some(user_id), Some(pushkey)) =
-                        (item.user_id.clone(), item.pushkey.clone())
-                    {
-                        OutgoingKind::Push(user_id, pushkey)
-                    } else {
-                        return None;
-                    }
-                }
-                "normal" => {
-                    if let Some(server_id) = &item.server_id {
-                        OutgoingKind::Normal(server_id.to_owned())
-                    } else {
-                        return None;
-                    }
-                }
-                _ => return None,
-            };
-            let event = if let Some(value) = item.edu_json {
-                SendingEventType::Edu(value)
-            } else if let Some(pdu_id) = item.pdu_id {
-                SendingEventType::Pdu(pdu_id)
-            } else {
-                SendingEventType::Flush
-            };
-            Some((item.id, kind, event))
-        })
-        .collect())
-}
-
-async fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> {
+async fn delete_active_requests_with_connection(
+    conn: &mut diesel_async::AsyncPgConnection,
+    outgoing_kind: &OutgoingKind,
+) -> AppResult<()> {
     match outgoing_kind {
         OutgoingKind::Appservice(appservice_id) => {
             diesel::delete(
@@ -925,7 +888,7 @@ async fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResu
                     .filter(outgoing_requests::state.eq("pending"))
                     .filter(outgoing_requests::appservice_id.eq(appservice_id)),
             )
-            .execute(&mut connect().await?)
+            .execute(conn)
             .await?;
         }
         OutgoingKind::Normal(server_id) => {
@@ -935,7 +898,7 @@ async fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResu
                     .filter(outgoing_requests::state.eq("pending"))
                     .filter(outgoing_requests::server_id.eq(server_id.as_str())),
             )
-            .execute(&mut connect().await?)
+            .execute(conn)
             .await?;
         }
         OutgoingKind::Push(user_id, pushkey) => {
@@ -946,7 +909,7 @@ async fn delete_all_active_requests_for(outgoing_kind: &OutgoingKind) -> AppResu
                     .filter(outgoing_requests::user_id.eq(user_id.as_str()))
                     .filter(outgoing_requests::pushkey.eq(pushkey)),
             )
-            .execute(&mut connect().await?)
+            .execute(conn)
             .await?;
         }
     }
@@ -1099,7 +1062,7 @@ async fn active_requests_for(
     Ok(list)
 }
 
-/// Distinct destinations that still have queued (not yet active) requests.
+/// Distinct destinations with queued or unacknowledged requests.
 ///
 /// The periodic sweep in the sending guard uses this to recover requests
 /// whose wakeup was dropped because the wakeup queue was full, as well as
@@ -1113,7 +1076,6 @@ async fn queued_kinds() -> AppResult<Vec<OutgoingKind>> {
         Option<OwnedServerName>,
     );
     let rows = outgoing_requests::table
-        .filter(outgoing_requests::state.ne("pending"))
         .select((
             outgoing_requests::kind,
             outgoing_requests::appservice_id,
@@ -1192,8 +1154,9 @@ async fn queued_requests(
 async fn claim_queued_requests(
     events: &[(i64, SendingEventType)],
 ) -> AppResult<Vec<SendingEventType>> {
-    connect()
-        .await?
+    let mut connection = guard::TransactionConnection::new(connect().await?);
+    let result = connection
+        .connection()
         .transaction::<_, AppError, _>(async |conn| {
             let mut claimed = Vec::with_capacity(events.len());
             for (id, event) in events {
@@ -1220,7 +1183,9 @@ async fn claim_queued_requests(
 
             Ok(claimed)
         })
-        .await
+        .await;
+    connection.mark_finished();
+    result
 }
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
@@ -1231,10 +1196,8 @@ async fn claim_queued_requests(
 /// event hash.
 #[tracing::instrument]
 pub async fn convert_to_outgoing_federation_event(
-    mut pdu_json: CanonicalJsonObject,
+    pdu_json: CanonicalJsonObject,
 ) -> Box<RawJsonValue> {
-    crate::event::sanitize_federation_unsigned(&mut pdu_json);
-
     // Determine room version to decide whether to strip event_id.
     // V1/V2 require event_id in federation format; V3+ derive it from content hash.
     // For v12 events the JSON may not contain room_id (the create event in v12
@@ -1260,9 +1223,17 @@ pub async fn convert_to_outgoing_federation_event(
         .await;
     }
 
+    federation_event_with_version(pdu_json, room_version.as_ref())
+}
+
+fn federation_event_with_version(
+    mut pdu_json: CanonicalJsonObject,
+    room_version: Option<&crate::core::RoomVersionId>,
+) -> Box<RawJsonValue> {
+    crate::event::sanitize_federation_unsigned(&mut pdu_json);
     match room_version {
         Some(room_version) => {
-            crate::federation::maybe_strip_event_id(&mut pdu_json, &room_version);
+            crate::federation::maybe_strip_event_id(&mut pdu_json, room_version);
         }
         None => {
             warn!(

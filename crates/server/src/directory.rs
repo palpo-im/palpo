@@ -1,17 +1,28 @@
 use crate::core::ServerName;
-use crate::core::directory::{
-    PublicRoomFilter, PublicRoomJoinRule, PublicRoomsChunk, PublicRoomsResBody, RoomNetwork,
-};
+use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
+#[cfg(test)]
+use crate::core::directory::{PublicRoomJoinRule, PublicRoomsChunk};
+#[cfg(test)]
 use crate::core::events::StateEventType;
+#[cfg(test)]
 use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::federation::directory::{PublicRoomsReqBody, public_rooms_request};
+#[cfg(test)]
 use crate::core::room::JoinRule;
 use crate::exts::*;
-use crate::{AppError, AppResult, MatrixError, config, room};
+#[cfg(test)]
+use crate::{AppError, MatrixError, room};
+use crate::{AppResult, config};
+
+mod query;
 
 #[cfg(test)]
 #[path = "directory_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "directory_batch_tests.rs"]
+mod batch_tests;
 
 pub async fn get_public_rooms(
     server: Option<&ServerName>,
@@ -44,11 +55,13 @@ pub async fn get_public_rooms(
 
         Ok(body)
     } else {
-        get_local_public_rooms(limit, since, filter, network).await
+        query::get_local_public_rooms(limit, since, filter, network).await
     }
 }
 
-async fn get_local_public_rooms(
+// Retained only as an independent regression/measurement oracle.
+#[cfg(test)]
+async fn get_local_public_rooms_legacy(
     limit: Option<usize>,
     since: Option<&str>,
     filter: &PublicRoomFilter,

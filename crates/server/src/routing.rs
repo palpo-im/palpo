@@ -80,6 +80,7 @@ pub fn root() -> Router {
         .push(Router::with_path("health").get(health))
         .push(Router::with_path("healthz").get(health))
         .push(Router::with_path("ready").get(ready))
+        .push(Router::with_path("diagnostics").get(diagnostics))
         .push(Router::with_path("{*path}").get(StaticDir::new("./static")))
 }
 
@@ -159,6 +160,13 @@ async fn ready(res: &mut Response) {
     res.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res.render(Json(readiness));
+}
+
+#[handler]
+async fn diagnostics(res: &mut Response) {
+    res.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res.render(Json(crate::observability::check().await));
 }
 
 async fn fetch_remote_home_page(url: &str) -> Option<(Bytes, String)> {

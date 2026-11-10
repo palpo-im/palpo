@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -71,15 +71,65 @@ pub async fn get_pdu_json(event_id: &EventId) -> AppResult<Option<CanonicalJsonO
     let Some((room_id, json)) = result else {
         return Ok(None);
     };
+    prepare_stored_pdu_json(event_id, &room_id, json)
+        .await
+        .map(Some)
+}
+
+async fn prepare_stored_pdu_json(
+    event_id: &EventId,
+    room_id: &RoomId,
+    json: JsonValue,
+) -> AppResult<CanonicalJsonObject> {
     #[cfg(feature = "unstable-msc1763")]
     let mut json = json;
     #[cfg(feature = "unstable-msc1763")]
-    crate::retention::sanitize_json(event_id, &room_id, &mut json).await?;
+    crate::retention::sanitize_json(event_id, room_id, &mut json).await?;
     #[cfg(not(feature = "unstable-msc1763"))]
-    let _ = &room_id;
-    Ok(Some(
-        serde_json::from_value(json).map_err(|_e| AppError::internal("invalid pdu in db"))?,
-    ))
+    let _ = (event_id, room_id);
+    serde_json::from_value(json).map_err(|_e| AppError::internal("invalid pdu in db"))
+}
+
+/// An ordered consumer must call `get` in its input order: decoding and
+/// retention checks deliberately remain lazy so a later malformed/missing PDU
+/// cannot replace the first error produced by the single-event loader.
+pub(crate) struct PduJsonBatch {
+    stored: HashMap<OwnedEventId, (OwnedRoomId, JsonValue)>,
+}
+
+impl PduJsonBatch {
+    pub(crate) async fn get(&self, event_id: &EventId) -> AppResult<Option<CanonicalJsonObject>> {
+        let Some((room_id, json)) = self.stored.get(event_id) else {
+            return Ok(None);
+        };
+        prepare_stored_pdu_json(event_id, room_id, json.clone())
+            .await
+            .map(Some)
+    }
+}
+
+/// Read each requested event once, without bypassing the shared retention
+/// boundary. Bound parameters even for recovery batches larger than PDU_LIMIT.
+pub(crate) async fn load_pdu_json_batch(event_ids: &[OwnedEventId]) -> AppResult<PduJsonBatch> {
+    let ids: Vec<_> = event_ids
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut stored = HashMap::with_capacity(ids.len());
+    for ids in ids.chunks(1_000) {
+        let rows = event_datas::table
+            .filter(event_datas::event_id.eq_any(ids))
+            .select((
+                event_datas::event_id,
+                event_datas::room_id,
+                event_datas::json_data,
+            ))
+            .load::<(OwnedEventId, OwnedRoomId, JsonValue)>(&mut connect().await?)
+            .await?;
+        stored.extend(rows.into_iter().map(|(id, room, json)| (id, (room, json))));
+    }
+    Ok(PduJsonBatch { stored })
 }
 
 /// Returns the pdu.

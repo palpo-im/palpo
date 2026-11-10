@@ -24,6 +24,7 @@ pub mod misc;
 pub mod room;
 pub mod schema;
 pub mod sending;
+pub mod telemetry;
 pub mod user;
 
 mod error;
@@ -157,12 +158,14 @@ pub fn migrate(config: &DbConfig) -> DataResult<()> {
 }
 
 pub async fn connect() -> Result<PgPooledConnection, PoolError> {
-    match DIESEL_POOL
+    let wait = telemetry::QUERY_POOL_WAIT.start();
+    let result = DIESEL_POOL
         .get()
         .expect("diesel pool should set")
         .get()
-        .await
-    {
+        .await;
+    wait.finish(result.is_ok());
+    match result {
         Ok(conn) => Ok(conn),
         Err(e) => {
             tracing::error!("db connect error: {e}");
@@ -177,12 +180,14 @@ pub async fn connect() -> Result<PgPooledConnection, PoolError> {
 /// Both pools are carved out of `db.pool_size`; using this pool never increases the
 /// configured steady-state connection budget.
 pub async fn coordination_connect() -> Result<PgPooledConnection, PoolError> {
-    match COORDINATION_POOL
+    let wait = telemetry::COORDINATION_POOL_WAIT.start();
+    let result = COORDINATION_POOL
         .get()
         .expect("diesel coordination pool should set")
         .get()
-        .await
-    {
+        .await;
+    wait.finish(result.is_ok());
+    match result {
         Ok(conn) => Ok(conn),
         Err(e) => {
             tracing::error!("db coordination connect error: {e}");
