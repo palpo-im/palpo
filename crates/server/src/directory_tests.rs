@@ -11,10 +11,8 @@ use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
 use crate::core::serde::CanonicalJsonObject;
 use crate::core::signatures::{Ed25519KeyPair, sign_json};
 use crate::core::{OwnedDeviceId, UnixMillis, UserId};
+use crate::server_key::test_fixture as tls_fixture;
 use crate::{config, data};
-
-#[path = "server_key/validity/notary_fixture.rs"]
-mod tls_fixture;
 
 const LOCAL: &str = "directory-review.example";
 const REMOTE: &str = "directory-origin.example";

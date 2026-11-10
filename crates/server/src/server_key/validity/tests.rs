@@ -285,9 +285,7 @@ async fn review_local_retired_key_obeys_event_expiry_without_refresh() {
     );
 }
 
-mod notary_fixture {
-    include!("notary_fixture.rs");
-}
+use crate::server_key::test_fixture as notary_fixture;
 
 #[derive(Clone)]
 struct NotaryFixture {

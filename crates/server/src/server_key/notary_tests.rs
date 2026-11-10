@@ -9,9 +9,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::core::signatures::Ed25519KeyPair;
-
-#[path = "validity/notary_fixture.rs"]
-mod tls_fixture;
+use crate::server_key::test_fixture as tls_fixture;
 
 const LOCAL: &str = "trust-review.example";
 
@@ -193,7 +191,7 @@ async fn run() {
     origin_doc["org.example.signed_extension"] = json!({"preserved_for_verification":true});
     origin_doc["verify_keys"]["ed25519:active"]["org.example.foo"] = json!({"nested_current":true});
     origin_doc["old_verify_keys"]["ed25519:historical"] = json!({
-        "key":Base64::new(active.public_key().to_vec()),"expired_ts":now-1_000,
+        "key":VerifyKey::from_bytes(active.public_key().to_vec()).key,"expired_ts":now-1_000,
         "org.example.foo":{"nested_old":true}
     });
     origin_doc = signed(origin_doc, &origin_name, &active);
@@ -459,7 +457,7 @@ async fn run() {
         raw["org.example.sequence"] = json!(index);
         if index == 0 {
             raw["verify_keys"]["ed25519:ancient"] =
-                json!({"key":Base64::new(ancient.public_key().to_vec())});
+                json!({"key":VerifyKey::from_bytes(ancient.public_key().to_vec()).key});
         }
         raw = signed(raw, bounded.as_str(), &active);
         *notary.response.lock().unwrap() = json!({"server_keys":[attest(raw)]});

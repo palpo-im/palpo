@@ -2,6 +2,9 @@ mod acquire;
 #[cfg(test)]
 mod notary_tests;
 mod request;
+#[cfg(test)]
+#[path = "server_key/validity/notary_fixture.rs"]
+pub(crate) mod test_fixture;
 mod trust;
 #[cfg(test)]
 pub(crate) use trust::seed as seed_verified_keys;
