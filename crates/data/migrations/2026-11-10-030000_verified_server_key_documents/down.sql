@@ -1,1 +1,2 @@
+DROP TABLE verified_server_key_versions;
 DROP TABLE verified_server_key_documents;

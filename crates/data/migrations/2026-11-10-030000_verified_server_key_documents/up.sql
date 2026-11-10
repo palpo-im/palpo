@@ -12,3 +12,13 @@ CREATE TABLE verified_server_key_documents (
 );
 CREATE INDEX verified_server_key_documents_lookup
     ON verified_server_key_documents(server_id, validated_at DESC, id DESC);
+CREATE TABLE verified_server_key_versions (
+    document_id BIGINT NOT NULL REFERENCES verified_server_key_documents(id) ON DELETE CASCADE,
+    server_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    retired BOOLEAN NOT NULL,
+    valid_until BIGINT NOT NULL,
+    PRIMARY KEY(document_id,key_id,retired)
+);
+CREATE INDEX verified_server_key_versions_lookup
+    ON verified_server_key_versions(server_id,key_id,retired,valid_until,document_id);

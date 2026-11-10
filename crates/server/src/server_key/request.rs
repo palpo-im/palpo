@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use super::{GetUrlOrigin, minimum_valid_ts};
@@ -50,9 +50,18 @@ where
         let origin = notary.origin().await;
         let requested = server_keys.split_off(&batch);
         let requested_servers = requested
-            .keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
+            .iter()
+            .map(|(server, keys)| {
+                (
+                    server.clone(),
+                    if keys.is_empty() {
+                        None
+                    } else {
+                        Some(keys.keys().cloned().collect::<BTreeSet<_>>())
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let request = remote_server_keys_batch_request(
             &origin,
             RemoteServerKeysBatchReqBody {
@@ -91,6 +100,15 @@ pub(super) async fn notary_request_at(
     target: &ServerName,
     minimum_valid_until_ts: crate::core::UnixMillis,
 ) -> AppResult<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send> {
+    notary_request_for(notary, target, minimum_valid_until_ts, None).await
+}
+
+pub(super) async fn notary_request_for(
+    notary: &ServerName,
+    target: &ServerName,
+    minimum_valid_until_ts: crate::core::UnixMillis,
+    requested_keys: Option<&BTreeSet<OwnedServerSigningKeyId>>,
+) -> AppResult<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send> {
     let request = remote_server_keys_request(
         &notary.origin().await,
         RemoteServerKeysReqArgs {
@@ -105,13 +123,30 @@ pub(super) async fn notary_request_at(
         .json::<serde_json::Value>()
         .await?;
 
-    let requested = std::collections::BTreeSet::from([target.to_owned()]);
+    let requested = BTreeMap::from([(target.to_owned(), requested_keys.cloned())]);
     Ok(super::trust::notary_documents(notary, response, &requested)
         .await?
         .into_iter())
 }
 
 pub async fn server_request(target: &ServerName) -> AppResult<ServerSigningKeys> {
+    server_request_for(target, None).await
+}
+
+pub(super) async fn server_request_for(
+    target: &ServerName,
+    requested: Option<&BTreeSet<OwnedServerSigningKeyId>>,
+) -> AppResult<ServerSigningKeys> {
+    let (raw, keys) = fetch_server_document(target).await?;
+    if super::trust::relevant(&keys, requested) {
+        super::trust::persist(&raw, &keys, "direct", target).await?;
+    }
+    Ok(keys)
+}
+
+pub(super) async fn fetch_server_document(
+    target: &ServerName,
+) -> AppResult<(serde_json::Value, ServerSigningKeys)> {
     // Refuse to act as a notary for IP-literal server names. The Matrix
     // `server_name` grammar permits IP literals, but allowing them lets an
     // unauthenticated caller use the notary endpoints to probe arbitrary
@@ -133,6 +168,5 @@ pub async fn server_request(target: &ServerName) -> AppResult<ServerSigningKeys>
         .await?;
 
     let keys = super::trust::origin(&server_signing_key, target)?;
-    super::trust::persist(&server_signing_key, &keys, "direct", target).await?;
-    Ok(keys)
+    Ok((server_signing_key, keys))
 }

@@ -191,6 +191,11 @@ async fn run() {
     // not the queried origin, even in trusted-only mode.
     let mut origin_doc = document(&origin_name, &active, now + 60_000);
     origin_doc["org.example.signed_extension"] = json!({"preserved_for_verification":true});
+    origin_doc["verify_keys"]["ed25519:active"]["org.example.foo"] = json!({"nested_current":true});
+    origin_doc["old_verify_keys"]["ed25519:historical"] = json!({
+        "key":Base64::new(active.public_key().to_vec()),"expired_ts":now-1_000,
+        "org.example.foo":{"nested_old":true}
+    });
     origin_doc = signed(origin_doc, &origin_name, &active);
     *notary.response.lock().unwrap() = json!({"server_keys":[attest(origin_doc),attest(document("outsider.example",&outsider,now+60_000))]});
     *origin.response.lock().unwrap() =
@@ -211,7 +216,7 @@ async fn run() {
             .unwrap()
             .is_some()
     );
-    let preserved = serde_json::to_value(signing_keys_for(origin_id).await.unwrap()).unwrap();
+    let preserved = signing_key_document_for(origin_id).await.unwrap();
     assert_eq!(
         preserved["org.example.signed_extension"]["preserved_for_verification"],
         true
@@ -233,6 +238,14 @@ async fn run() {
     assert_eq!(response.status_code, Some(StatusCode::OK));
     let published: Value = response.take_json().await.unwrap();
     let returned = &published["server_keys"][0];
+    assert_eq!(
+        returned["verify_keys"]["ed25519:active"]["org.example.foo"]["nested_current"],
+        true
+    );
+    assert_eq!(
+        returned["old_verify_keys"]["ed25519:historical"]["org.example.foo"]["nested_old"],
+        true
+    );
     trust::origin(returned, origin_id).unwrap();
     trust::signature(
         returned,
@@ -435,6 +448,108 @@ async fn run() {
     )
     .unwrap();
     assert!(verify_event(&historical, &RoomVersionId::V5).await.is_ok());
+    // More history than the online document budget must not expand an HTTP
+    // read or require loading newer documents to find an old event key.
+    let bounded: &ServerName = "bounded-history.example".try_into().unwrap();
+    let ancient = pair("ancient");
+    let active_id = std::collections::BTreeSet::from([key_id.to_owned()]);
+    let count = data::misc::EVENT_KEY_DOCUMENT_BUDGET as usize * 3 + 1;
+    for index in 0..count {
+        let mut raw = document(bounded.as_str(), &active, now + 60_000);
+        raw["org.example.sequence"] = json!(index);
+        if index == 0 {
+            raw["verify_keys"]["ed25519:ancient"] =
+                json!({"key":Base64::new(ancient.public_key().to_vec())});
+        }
+        raw = signed(raw, bounded.as_str(), &active);
+        *notary.response.lock().unwrap() = json!({"server_keys":[attest(raw)]});
+        request::notary_request_for(notary_id, bounded, UnixMillis(now), Some(&active_id))
+            .await
+            .unwrap()
+            .count();
+    }
+    assert_eq!(
+        data::misc::verified_key_documents(bounded)
+            .await
+            .unwrap()
+            .len(),
+        count
+    );
+    let loaded = || {
+        std::sync::atomic::AtomicUsize::load(
+            &trust::RAW_DOCUMENTS_LOADED,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+    };
+    let before = loaded();
+    assert_eq!(
+        authenticate(&service, bounded.as_str(), &active).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        loaded() - before,
+        1,
+        "HTTP must load exactly one latest raw document"
+    );
+    let make_event = |pair: &Ed25519KeyPair| {
+        let mut event:CanonicalJsonObject=serde_json::from_value(json!({
+            "type":"m.room.message","sender":format!("@alice:{bounded}"),"room_id":format!("!room:{bounded}"),
+            "content":{"msgtype":"m.text","body":"bounded history"},"auth_events":[],"prev_events":[],"depth":1,"origin_server_ts":now
+        })).unwrap();
+        signatures::hash_and_sign_event(
+            bounded.as_str(),
+            pair,
+            &mut event,
+            &RoomVersionRules::V5.redaction,
+        )
+        .unwrap();
+        event
+    };
+    let before = loaded();
+    assert!(
+        verify_event(&make_event(&ancient), &RoomVersionId::V5)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        loaded() - before,
+        1,
+        "SQL key filter must find an old key without loading unrelated history"
+    );
+    let before = loaded();
+    assert!(
+        verify_event(&make_event(&active), &RoomVersionId::V5)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        loaded() - before,
+        data::misc::EVENT_KEY_DOCUMENT_BUDGET as usize
+    );
+    assert_ne!(
+        authenticate(&service, bounded.as_str(), &ancient).await,
+        StatusCode::OK,
+        "HTTP may not fall back to latest-containing-id"
+    );
+    let unknown = pair("unknown");
+    for index in 0..3 {
+        let mut raw = document(bounded.as_str(), &active, now + 60_000);
+        raw["org.example.irrelevant_nonce"] = json!(index);
+        raw = signed(raw, bounded.as_str(), &active);
+        *notary.response.lock().unwrap() = json!({"server_keys":[attest(raw)]});
+        assert_ne!(
+            authenticate(&service, bounded.as_str(), &unknown).await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        data::misc::verified_key_documents(bounded)
+            .await
+            .unwrap()
+            .len(),
+        count,
+        "unknown-key failures must not append irrelevant document variants"
+    );
     // A later document may omit historical keys; retain authenticated history.
     *notary.response.lock().unwrap() =
         json!({"server_keys":[attest(document(names[0],&replacement,now+120_000))]});

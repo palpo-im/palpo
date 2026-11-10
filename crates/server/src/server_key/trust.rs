@@ -4,10 +4,10 @@ use sha2::{Digest, Sha256};
 
 fn digest(raw: &serde_json::Value) -> AppResult<String> {
     let object: CanonicalJsonObject = serde_json::from_value(raw.clone())?;
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&object)?)
-    ))
+    Ok(Sha256::digest(serde_json::to_vec(&object)?)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 pub(super) async fn persist(
@@ -27,9 +27,26 @@ pub(super) async fn persist(
     Ok(())
 }
 
-pub(super) async fn cached(server: &ServerName) -> AppResult<Vec<(ServerSigningKeys, UnixMillis)>> {
+#[cfg(test)]
+pub(super) static RAW_DOCUMENTS_LOADED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn notaries() -> Vec<String> {
+    config::get()
+        .trusted_servers
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn checked_records(
+    server: &ServerName,
+    records: Vec<data::misc::VerifiedKeyDocument>,
+) -> AppResult<Vec<(ServerSigningKeys, UnixMillis, serde_json::Value)>> {
+    #[cfg(test)]
+    RAW_DOCUMENTS_LOADED.fetch_add(records.len(), std::sync::atomic::Ordering::Relaxed);
     let mut accepted = Vec::new();
-    for record in data::misc::verified_key_documents(server).await? {
+    for record in records {
         let trusted_source = match record.source.as_str() {
             "direct" => record.source_server == server.as_str(),
             "notary" => config::get()
@@ -46,23 +63,90 @@ pub(super) async fn cached(server: &ServerName) -> AppResult<Vec<(ServerSigningK
             continue;
         }
         if let Ok(keys) = origin(&record.key_data, server) {
-            accepted.push((keys, UnixMillis(record.validated_at as u64)));
+            accepted.push((
+                keys,
+                UnixMillis(record.validated_at as u64),
+                record.key_data,
+            ));
         }
     }
     Ok(accepted)
+}
+
+async fn cached_documents(
+    server: &ServerName,
+) -> AppResult<Vec<(ServerSigningKeys, UnixMillis, serde_json::Value)>> {
+    checked_records(
+        server,
+        data::misc::latest_verified_key_document(server, &notaries()).await?,
+    )
+}
+
+pub(super) async fn event_documents(
+    server: &ServerName,
+    id: &ServerSigningKeyId,
+    timestamp: UnixMillis,
+    enforce: bool,
+) -> AppResult<Vec<(ServerSigningKeys, UnixMillis)>> {
+    let timestamp = timestamp.0.min(i64::MAX as u64) as i64;
+    Ok(checked_records(
+        server,
+        data::misc::verified_event_key_documents(
+            server,
+            id.as_str(),
+            timestamp,
+            enforce,
+            &notaries(),
+        )
+        .await?,
+    )?
+    .into_iter()
+    .map(|(keys, at, _)| (keys, at))
+    .collect())
+}
+
+pub(super) async fn retirement(
+    server: &ServerName,
+    id: &ServerSigningKeyId,
+) -> AppResult<Option<UnixMillis>> {
+    Ok(
+        data::misc::verified_key_retirement(server, id.as_str(), &notaries())
+            .await?
+            .map(|value| UnixMillis(value.max(0) as u64)),
+    )
+}
+
+pub(super) async fn cached(server: &ServerName) -> AppResult<Vec<(ServerSigningKeys, UnixMillis)>> {
+    Ok(cached_documents(server)
+        .await?
+        .into_iter()
+        .map(|(keys, at, _)| (keys, at))
+        .collect())
+}
+
+pub(super) async fn cached_raw(server: &ServerName) -> AppResult<Option<serde_json::Value>> {
+    Ok(cached_documents(server)
+        .await?
+        .into_iter()
+        .next()
+        .map(|(_, _, raw)| raw))
 }
 
 pub(super) async fn request_key(
     server: &ServerName,
     id: &ServerSigningKeyId,
 ) -> AppResult<Option<VerifyKey>> {
-    let documents = cached(server).await?;
-    if documents
-        .iter()
-        .any(|(keys, _)| keys.old_verify_keys.contains_key(id))
-    {
+    if retirement(server, id).await?.is_some() {
         return Ok(None);
     }
+    latest_request_key(server, id).await
+}
+
+pub(super) async fn latest_request_key(
+    server: &ServerName,
+    id: &ServerSigningKeyId,
+) -> AppResult<Option<VerifyKey>> {
+    let documents = cached(server).await?;
     let Some((mut latest, fetched)) = documents.into_iter().next() else {
         return Ok(None);
     };
@@ -144,10 +228,23 @@ pub(super) fn origin(
     Ok(keys)
 }
 
+pub(super) fn relevant(
+    keys: &ServerSigningKeys,
+    requested: Option<&std::collections::BTreeSet<crate::core::OwnedServerSigningKeyId>>,
+) -> bool {
+    keys.verify_keys
+        .keys()
+        .chain(keys.old_verify_keys.keys())
+        .any(|id| requested.is_none_or(|ids| ids.contains(id)))
+}
+
 pub(super) async fn notary_documents(
     notary: &ServerName,
     response: serde_json::Value,
-    requested: &std::collections::BTreeSet<crate::core::OwnedServerName>,
+    requested: &BTreeMap<
+        crate::core::OwnedServerName,
+        Option<std::collections::BTreeSet<crate::core::OwnedServerSigningKeyId>>,
+    >,
 ) -> AppResult<Vec<ServerSigningKeys>> {
     let documents = response
         .get("server_keys")
@@ -158,7 +255,13 @@ pub(super) async fn notary_documents(
         .filter(|raw| {
             raw.get("server_name")
                 .and_then(|value| value.as_str())
-                .is_some_and(|name| requested.iter().any(|server| server.as_str() == name))
+                .is_some_and(|name| {
+                    requested.iter().any(|(server, ids)| {
+                        server.as_str() == name
+                            && serde_json::from_value::<ServerSigningKeys>((*raw).clone())
+                                .is_ok_and(|keys| relevant(&keys, ids.as_ref()))
+                    })
+                })
         })
         .collect();
     if scoped.is_empty() {
@@ -167,7 +270,7 @@ pub(super) async fn notary_documents(
     // The configured HTTPS endpoint authenticates this bootstrap. The key
     // document's self-signature alone does not establish a notary's identity.
     // Never bootstrap through notaries or reuse the unproven generic cache.
-    let mut bootstrap = super::server_request(notary).await?;
+    let (_, mut bootstrap) = super::request::fetch_server_document(notary).await?;
     let now = UnixMillis::now();
     validity::bound_cached_keys(&mut bootstrap, now);
     if bootstrap.valid_until_ts < now {

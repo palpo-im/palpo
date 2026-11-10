@@ -10,7 +10,11 @@ Batch notary requests go to the configured notary, with queried server names onl
 in the request body. GET and POST responses are restricted to the requested
 servers before any document is cached. Per the Matrix API, a response may contain
 additional key IDs for a requested server; documents are not edited to remove
-those keys, and callers select the specific requested ID.
+those keys, and callers select the specific requested ID. When looking up specific
+IDs, a document which contains none of them is irrelevant and is not persisted.
+Unknown-key authentication failures cannot append arbitrary nonce variants of
+unrelated documents. Bootstrap documents are checked once for that response and
+are not appended to the historical cache.
 
 Each nonempty, scoped notary response makes one additional direct HTTPS
 `/_matrix/key/v2/server` request to that configured notary. This bootstrap must
@@ -22,6 +26,10 @@ queried origin. Every accepted returned document must then have both a valid
 origin signature and that notary's attestation. Invalid documents in a mixed
 response are discarded individually. Unknown signed extension fields survive
 validation, caching and notary serialization.
+
+Notary publication reads and signs the original raw JSON body, preserving nested
+extensions inside current and old keys as well as top-level extension fields.
+Typed key projections are never used to reconstruct published signed bodies.
 
 The additional request adds network latency and consumes the existing federation
 permit budget. There is deliberately no unproven bootstrap cache shortcut or
@@ -55,8 +63,17 @@ an older current-key document cannot undo it. Legacy room versions continue to
 ignore key expiry according to their room-version rules. The active configured
 local key remains the authoritative current local key.
 
+Online HTTP and publication queries load at most one latest document overall,
+never the latest document merely containing the requested ID. Retirement uses an
+indexed aggregate returning one row. Event queries filter by server, key ID and
+the applicable timestamp window in PostgreSQL, then load and reverify at most
+eight raw candidates in total. Legacy room versions skip time/retirement filters.
+The selector index and raw document are written in one transaction and joined on
+the document ID; source/version metadata is not independently copied into the
+index. The offline full-history API is not used by authentication.
+
 This cache retains historical documents and does not install a pruning policy;
-capacity and query cost should be measured before defining one that preserves
+archival capacity should be measured before defining one that preserves
 historical verification. The legacy merge helper still recomposes its legacy
 index and signatures; that index is excluded from authentication and notary
 publication. Removing those obsolete APIs and designing archival/pruning policy
@@ -79,7 +96,10 @@ asserts actual POST routing, direct notary bootstrap, origin/notary signatures,
 mixed invalid response filtering, no unrelated cache writes, rejection of legacy
 unproven cache for HTTP and events, current-key HTTP success, retired-key HTTP
 rejection, historical event success, and resistance to retirement rollback by
-document replay. The existing key-expiry and programmable-notary regressions
+document replay. A 25-document authenticated history asserts actual loaded-document
+counts: one for HTTP, one for an old key filtered in SQL, and at most eight for a
+common event key. It also verifies failed unknown-key lookups do not append
+irrelevant document variants. The existing key-expiry and programmable-notary regressions
 remain enabled with genuinely signed fixtures.
 
 The tests are not a production performance benchmark, external notary deployment

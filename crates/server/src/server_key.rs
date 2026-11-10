@@ -127,6 +127,13 @@ pub async fn signing_keys_for(server: &ServerName) -> AppResult<ServerSigningKey
         .ok_or_else(|| AppError::public("no verified signing keys found for server"))
 }
 
+/// The verified signed body, without any projection through typed key structs.
+pub(crate) async fn signing_key_document_for(server: &ServerName) -> AppResult<serde_json::Value> {
+    trust::cached_raw(server)
+        .await?
+        .ok_or_else(|| AppError::public("no verified signing key document found"))
+}
+
 fn minimum_valid_ts() -> UnixMillis {
     let timepoint =
         timepoint_from_now(Duration::from_secs(3600)).expect("SystemTime should not overflow");
@@ -233,7 +240,12 @@ pub async fn get_verify_key(
             return Ok(VerifyKey::new(Base64::new(current.public_key().to_vec())));
         }
     }
-    if let Some(result) = trust::request_key(origin, key_id).await? {
+    if trust::retirement(origin, key_id).await?.is_some() {
+        return Err(AppError::public(
+            "retired key cannot authenticate HTTP requests",
+        ));
+    }
+    if let Some(result) = trust::latest_request_key(origin, key_id).await? {
         return Ok(result);
     }
 
@@ -258,7 +270,10 @@ async fn get_verify_key_from_notaries(
     key_id: &ServerSigningKeyId,
 ) -> AppResult<VerifyKey> {
     for notary in &crate::config::get().trusted_servers {
-        if let Ok(server_keys) = notary_request(notary, origin).await {
+        let requested = std::collections::BTreeSet::from([key_id.to_owned()]);
+        if let Ok(server_keys) =
+            request::notary_request_for(notary, origin, minimum_valid_ts(), Some(&requested)).await
+        {
             for server_key in server_keys {
                 if server_key.server_name != origin {
                     continue;
@@ -280,7 +295,11 @@ async fn get_verify_key_from_origin(
     origin: &ServerName,
     key_id: &ServerSigningKeyId,
 ) -> AppResult<VerifyKey> {
-    if let Ok(server_key) = server_request(origin).await {
+    let requested = std::collections::BTreeSet::from([key_id.to_owned()]);
+    if let Ok(server_key) = request::server_request_for(origin, Some(&requested)).await {
+        if !key_exists(&server_key, key_id) {
+            return Err(AppError::public("origin response lacks requested key"));
+        }
         add_signing_keys(server_key.clone()).await?;
         if let Some(result) = trust::request_key(origin, key_id).await? {
             return Ok(result);

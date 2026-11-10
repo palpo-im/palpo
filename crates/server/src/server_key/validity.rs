@@ -47,19 +47,16 @@ async fn cached_event_key(
     timestamp: UnixMillis,
     enforce: bool,
 ) -> AppResult<Option<VerifyKey>> {
-    let mut documents = trust::cached(origin).await?;
+    let retired_at = trust::retirement(origin, id).await?;
+    if enforce && retired_at.is_some_and(|expiry| timestamp >= expiry) {
+        return Ok(None);
+    }
+    let mut documents = trust::event_documents(origin, id, timestamp, enforce).await?;
     for (keys, fetched) in &mut documents {
         bound_cached_keys(keys, *fetched);
     }
     // An authenticated retirement applies to every historical copy, including
     // a later replay of an earlier document which still called the key current.
-    let retired_at = documents
-        .iter()
-        .filter_map(|(keys, _)| keys.old_verify_keys.get(id).map(|key| key.expired_ts))
-        .min();
-    if enforce && retired_at.is_some_and(|expiry| timestamp >= expiry) {
-        return Ok(None);
-    }
     Ok(documents
         .iter()
         .find_map(|(keys, _)| select_key(keys, id, timestamp, enforce)))
@@ -85,6 +82,15 @@ pub(super) async fn event_verify_key(
             return Ok(VerifyKey::new(Base64::new(current.public_key().to_vec())));
         }
     }
+    if enforce
+        && trust::retirement(origin, id)
+            .await?
+            .is_some_and(|expiry| timestamp >= expiry)
+    {
+        return Err(AppError::public(
+            "signing key was retired before the event timestamp",
+        ));
+    }
     if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
         return Ok(key);
     }
@@ -107,8 +113,9 @@ pub(super) async fn event_verify_key(
     {
         return Ok(key);
     }
+    let requested = std::collections::BTreeSet::from([id.to_owned()]);
     if !conf.only_query_trusted_key_servers
-        && let Ok(keys) = server_request(origin).await
+        && let Ok(keys) = super::request::server_request_for(origin, Some(&requested)).await
     {
         add_signing_keys(keys.clone()).await?;
         if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
@@ -133,7 +140,10 @@ async fn refresh_notaries(
     minimum: UnixMillis,
 ) -> AppResult<Option<VerifyKey>> {
     for notary in &config::get().trusted_servers {
-        if let Ok(documents) = super::request::notary_request_at(notary, origin, minimum).await {
+        let requested = std::collections::BTreeSet::from([id.to_owned()]);
+        if let Ok(documents) =
+            super::request::notary_request_for(notary, origin, minimum, Some(&requested)).await
+        {
             for keys in documents {
                 if keys.server_name != origin {
                     continue;
