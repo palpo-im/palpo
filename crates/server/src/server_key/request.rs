@@ -1,12 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use super::{GetUrlOrigin, minimum_valid_ts};
 use crate::AppResult;
 use crate::core::directory::QueryCriteria;
 use crate::core::federation::directory::{
-    RemoteServerKeysBatchReqBody, RemoteServerKeysBatchResBody, RemoteServerKeysReqArgs,
-    RemoteServerKeysResBody, ServerKeysResBody, remote_server_keys_batch_request,
+    RemoteServerKeysBatchReqBody, RemoteServerKeysReqArgs, remote_server_keys_batch_request,
     remote_server_keys_request, server_keys_request,
 };
 use crate::core::federation::discovery::ServerSigningKeys;
@@ -47,11 +46,26 @@ where
         .next_back()
         .cloned()
     {
-        let origin = batch.origin().await;
+        // The queried server is a body field, never the HTTP destination.
+        let origin = notary.origin().await;
+        let requested = server_keys.split_off(&batch);
+        let requested_servers = requested
+            .iter()
+            .map(|(server, keys)| {
+                (
+                    server.clone(),
+                    if keys.is_empty() {
+                        None
+                    } else {
+                        Some(keys.keys().cloned().collect::<BTreeSet<_>>())
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let request = remote_server_keys_batch_request(
             &origin,
             RemoteServerKeysBatchReqBody {
-                server_keys: server_keys.split_off(&batch),
+                server_keys: requested,
             },
         )?
         .into_inner();
@@ -65,11 +79,10 @@ where
 
         let response = crate::sending::send_federation_request(notary, request, None)
             .await?
-            .json::<RemoteServerKeysBatchResBody>()
-            .await?
-            .server_keys;
+            .json::<serde_json::Value>()
+            .await?;
 
-        results.extend(response);
+        results.extend(super::trust::notary_documents(notary, response, &requested_servers).await?);
     }
 
     Ok(results)
@@ -87,6 +100,15 @@ pub(super) async fn notary_request_at(
     target: &ServerName,
     minimum_valid_until_ts: crate::core::UnixMillis,
 ) -> AppResult<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send> {
+    notary_request_for(notary, target, minimum_valid_until_ts, None).await
+}
+
+pub(super) async fn notary_request_for(
+    notary: &ServerName,
+    target: &ServerName,
+    minimum_valid_until_ts: crate::core::UnixMillis,
+    requested_keys: Option<&BTreeSet<OwnedServerSigningKeyId>>,
+) -> AppResult<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send> {
     let request = remote_server_keys_request(
         &notary.origin().await,
         RemoteServerKeysReqArgs {
@@ -98,14 +120,33 @@ pub(super) async fn notary_request_at(
 
     let response = crate::sending::send_federation_request(notary, request, None)
         .await?
-        .json::<RemoteServerKeysResBody>()
-        .await?
-        .server_keys;
+        .json::<serde_json::Value>()
+        .await?;
 
-    Ok(response.into_iter())
+    let requested = BTreeMap::from([(target.to_owned(), requested_keys.cloned())]);
+    Ok(super::trust::notary_documents(notary, response, &requested)
+        .await?
+        .into_iter())
 }
 
 pub async fn server_request(target: &ServerName) -> AppResult<ServerSigningKeys> {
+    server_request_for(target, None).await
+}
+
+pub(super) async fn server_request_for(
+    target: &ServerName,
+    requested: Option<&BTreeSet<OwnedServerSigningKeyId>>,
+) -> AppResult<ServerSigningKeys> {
+    let (raw, keys) = fetch_server_document(target).await?;
+    if super::trust::relevant(&keys, requested) {
+        super::trust::persist(&raw, &keys, "direct", target).await?;
+    }
+    Ok(keys)
+}
+
+pub(super) async fn fetch_server_document(
+    target: &ServerName,
+) -> AppResult<(serde_json::Value, ServerSigningKeys)> {
     // Refuse to act as a notary for IP-literal server names. The Matrix
     // `server_name` grammar permits IP literals, but allowing them lets an
     // unauthenticated caller use the notary endpoints to probe arbitrary
@@ -123,16 +164,9 @@ pub async fn server_request(target: &ServerName) -> AppResult<ServerSigningKeys>
     let request = server_keys_request(&target.origin().await)?.into_inner();
     let server_signing_key = crate::sending::send_federation_request(target, request, None)
         .await?
-        .json::<ServerKeysResBody>()
-        .await?
-        .0;
+        .json::<serde_json::Value>()
+        .await?;
 
-    if server_signing_key.server_name != target {
-        tracing::warn!(  requested = ?target,
-            response = ?server_signing_key.server_name,
-            "Server responded with bogus server_name");
-        return Err(MatrixError::unknown("Server responded with bogus server_name").into());
-    }
-
-    Ok(server_signing_key)
+    let keys = super::trust::origin(&server_signing_key, target)?;
+    Ok((server_signing_key, keys))
 }

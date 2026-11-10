@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use tokio::time::{Instant, timeout_at};
 
-use super::{add_signing_keys, batch_notary_request, key_exists, server_request, verify_keys_for};
+use super::{add_signing_keys, batch_notary_request, key_exists, verify_keys_for};
 use crate::config;
 use crate::core::federation::discovery::ServerSigningKeys;
 use crate::core::serde::{CanonicalJsonObject, RawJson, RawJsonValue};
@@ -166,7 +166,13 @@ async fn acquire_origin(
     mut key_ids: Vec<OwnedServerSigningKeyId>,
     timeout: Instant,
 ) -> (OwnedServerName, Vec<OwnedServerSigningKeyId>) {
-    match timeout_at(timeout, server_request(&origin)).await {
+    let requested = key_ids.iter().cloned().collect();
+    match timeout_at(
+        timeout,
+        super::request::server_request_for(&origin, Some(&requested)),
+    )
+    .await
+    {
         Err(e) => tracing::warn!(?origin, "timed out: {e}"),
         Ok(Err(e)) => tracing::error!(?origin, "{e}"),
         Ok(Ok(server_keys)) => {
@@ -177,7 +183,9 @@ async fn acquire_origin(
                 "received server_keys"
             );
 
-            if let Err(e) = add_signing_keys(server_keys.clone()).await {
+            if key_ids.iter().any(|id| key_exists(&server_keys, id))
+                && let Err(e) = add_signing_keys(server_keys.clone()).await
+            {
                 error!(?origin, "failed to persist fetched signing keys: {e}");
             }
             retain_missing_key_ids(&mut key_ids, &server_keys);
@@ -219,6 +227,9 @@ where
 
 async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKeys) {
     let server = &server_keys.server_name;
+    if !missing.contains_key(server) {
+        return;
+    }
     if let Err(e) = add_signing_keys(server_keys.clone()).await {
         error!(?server, "failed to persist notary signing keys: {e}");
     }

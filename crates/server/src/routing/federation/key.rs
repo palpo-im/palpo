@@ -6,8 +6,7 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
 use crate::core::federation::directory::{
-    RemoteServerKeysBatchReqBody, RemoteServerKeysBatchResBody, RemoteServerKeysReqArgs,
-    RemoteServerKeysResBody, ServerKeysResBody,
+    RemoteServerKeysBatchReqBody, RemoteServerKeysReqArgs, ServerKeysResBody,
 };
 use crate::core::federation::discovery::{ServerSigningKeys, VerifyKey};
 use crate::core::serde::{Base64, CanonicalJsonObject};
@@ -40,10 +39,13 @@ pub fn router() -> Router {
 async fn fetch_signing_keys(
     server: &OwnedServerName,
     minimum_valid_until_ts: UnixMillis,
-) -> Option<ServerSigningKeys> {
+) -> Option<serde_json::Value> {
     // Try local cache first
-    if let Ok(cached) = crate::server_key::signing_keys_for(server).await
-        && cached.valid_until_ts >= minimum_valid_until_ts
+    if let Ok(cached) = crate::server_key::signing_key_document_for(server).await
+        && cached
+            .get("valid_until_ts")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|until| until >= minimum_valid_until_ts.0)
     {
         return Some(cached);
     }
@@ -54,12 +56,16 @@ async fn fetch_signing_keys(
             if let Err(e) = crate::server_key::add_signing_keys(keys.clone()).await {
                 warn!("failed to cache signing keys for {server}: {e}");
             }
-            Some(keys)
+            crate::server_key::signing_key_document_for(server)
+                .await
+                .ok()
         }
         Err(e) => {
             warn!("failed to fetch signing keys from {server}: {e}");
             // Fall back to whatever we have cached, even if expired
-            crate::server_key::signing_keys_for(server).await.ok()
+            crate::server_key::signing_key_document_for(server)
+                .await
+                .ok()
         }
     }
 }
@@ -67,12 +73,11 @@ async fn fetch_signing_keys(
 fn sign_server_keys_for_notary(
     notary: &ServerName,
     keypair: &Ed25519KeyPair,
-    server_keys: ServerSigningKeys,
-) -> AppResult<ServerSigningKeys> {
-    let buf: Vec<u8> = crate::core::serde::json_to_buf(&server_keys)?;
-    let mut object: CanonicalJsonObject = serde_json::from_slice(&buf)?;
+    server_keys: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    let mut object: CanonicalJsonObject = serde_json::from_value(server_keys)?;
     crate::core::signatures::sign_json(notary.as_str(), keypair, &mut object)?;
-    Ok(serde_json::from_slice(&serde_json::to_vec(&object)?)?)
+    Ok(serde_json::to_value(object)?)
 }
 
 /// `POST /_matrix/key/v2/query`
@@ -83,7 +88,7 @@ fn sign_server_keys_for_notary(
 async fn query_keys_batch(
     _aa: AuthArgs,
     body: JsonBody<RemoteServerKeysBatchReqBody>,
-) -> JsonResult<RemoteServerKeysBatchResBody> {
+) -> JsonResult<serde_json::Value> {
     let conf = config::get();
     let mut result_keys = Vec::new();
 
@@ -104,7 +109,7 @@ async fn query_keys_batch(
         }
     }
 
-    json_ok(RemoteServerKeysBatchResBody::new(result_keys))
+    json_ok(serde_json::json!({"server_keys":result_keys}))
 }
 
 /// `GET /_matrix/key/v2/query/{server_name}`
@@ -115,7 +120,7 @@ async fn query_keys_batch(
 async fn query_keys_from_server(
     _aa: AuthArgs,
     args: RemoteServerKeysReqArgs,
-) -> JsonResult<RemoteServerKeysResBody> {
+) -> JsonResult<serde_json::Value> {
     let conf = config::get();
     let mut result_keys = Vec::new();
 
@@ -127,7 +132,7 @@ async fn query_keys_from_server(
         )?);
     }
 
-    json_ok(RemoteServerKeysResBody::new(result_keys))
+    json_ok(serde_json::json!({"server_keys":result_keys}))
 }
 
 /// #GET /_matrix/key/v2/server
@@ -208,14 +213,41 @@ mod tests {
         let server_keys: ServerSigningKeys =
             serde_json::from_slice(&serde_json::to_vec(&object).unwrap()).unwrap();
 
-        let signed = sign_server_keys_for_notary(&notary, &notary_keypair, server_keys).unwrap();
+        let signed = sign_server_keys_for_notary(
+            &notary,
+            &notary_keypair,
+            serde_json::to_value(server_keys).unwrap(),
+        )
+        .unwrap();
         let notary_key_id: OwnedServerSigningKeyId =
             format!("ed25519:{}", notary_keypair.version())
                 .try_into()
                 .unwrap();
 
-        assert!(signed.signatures.contains_key(&origin));
-        assert!(signed.signatures.contains_key(&notary));
-        assert!(signed.signatures[&notary].contains_key(&notary_key_id));
+        assert!(signed["signatures"].get(origin.as_str()).is_some());
+        assert!(signed["signatures"].get(notary.as_str()).is_some());
+        assert!(
+            signed["signatures"][notary.as_str()]
+                .get(notary_key_id.as_str())
+                .is_some()
+        );
+        let public_keys = BTreeMap::from([
+            (
+                origin.to_string(),
+                BTreeMap::from([(
+                    format!("ed25519:{}", origin_keypair.version()),
+                    Base64::new(origin_keypair.public_key().to_vec()),
+                )]),
+            ),
+            (
+                notary.to_string(),
+                BTreeMap::from([(
+                    notary_key_id.to_string(),
+                    Base64::new(notary_keypair.public_key().to_vec()),
+                )]),
+            ),
+        ]);
+        let canonical = serde_json::from_value(serde_json::to_value(signed).unwrap()).unwrap();
+        crate::core::signatures::verify_json(&public_keys, &canonical).unwrap();
     }
 }

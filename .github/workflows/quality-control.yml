@@ -158,6 +158,7 @@ jobs:
             server_key::validity::tests::review_event_verification_enforces_cached_key_expiry
             server_key::validity::tests::review_local_retired_key_obeys_event_expiry_without_refresh
             server_key::validity::tests::review_event_cache_refreshes_from_programmable_notary
+            server_key::notary_tests::review_notary_routes_verify_attestations_and_separate_request_from_event_keys
             sending::tests::federation_send_with_one_permit_makes_progress_and_returns_permits
             user::pusher::tests::review_rejected_gateway_keys_only_remove_matching_pusher
             sending::delivery_tests::http_push_retries_failed_gateway_without_acknowledging_queue
@@ -171,6 +172,7 @@ jobs:
             sending::pdu_batch_tests::review_federation_pdu_batch_preserves_semantics_and_measures_queries
             sending::guard::selection_tests::review_outbound_windows_are_bounded_and_acknowledged_atomically
             sending::guard::selection_tests::review_outbound_scheduler_is_fair_under_slow_claim_and_ack
+            sending::guard::selection_tests::review_outbound_scheduler_preserves_wakeup_during_empty_probe
             observability::tests::review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows
             observability::tests::review_outbound_process_restart_preserves_requests_and_reports_recovery
             routing::capability_contract_tests::review_threepid_capabilities_and_rejections_match_routes

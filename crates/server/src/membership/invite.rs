@@ -2022,7 +2022,7 @@ mod tests {
             "ed25519:join_import".try_into().unwrap(),
             VerifyKey::from_bytes(signing_key.public_key().to_vec()),
         );
-        crate::server_key::add_signing_keys(keys).await.unwrap();
+        crate::server_key::seed_verified_keys(keys, &signing_key).await;
         let rules = crate::room::get_version_rules(&RoomVersionId::V10).unwrap();
         let mut resolved = CompressedState::new();
         let mut auth: Vec<OwnedEventId> = Vec::new();
@@ -3577,7 +3577,7 @@ mod tests {
             "ed25519:invite_review".try_into().unwrap(),
             VerifyKey::from_bytes(key.public_key().to_vec()),
         );
-        crate::server_key::add_signing_keys(keys).await.unwrap();
+        crate::server_key::seed_verified_keys(keys, &key).await;
         let mut json: CanonicalJsonObject = serde_json::from_value(json!({
             "type": "m.room.member", "room_id": room_id,
             "sender": "@inviter:invite-stream.example.org", "state_key": invitee,

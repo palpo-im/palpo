@@ -6,6 +6,9 @@ use crate::core::{OwnedServerName, ServerName, UnixMillis};
 use crate::schema::*;
 use crate::{DataResult, connect};
 
+mod verified_keys;
+pub use verified_keys::*;
+
 #[derive(Identifiable, Queryable, Insertable, Debug, Clone)]
 #[diesel(table_name = server_signing_keys, primary_key(server_id))]
 pub struct DbServerSigningKeys {
