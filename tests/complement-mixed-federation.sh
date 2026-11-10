@@ -127,13 +127,15 @@ run_direction() {
     fi
 
     set +o pipefail
+    # Restart/ACL cases change destination backoff and room state. Reusing their
+    # servers can delay later presence updates and membership events.
     env -C "$COMPLEMENT_SRC" \
         PALPO_IMAGE="$PALPO_IMAGE" \
         COMPLEMENT_BASE_IMAGE="$default_image" \
         COMPLEMENT_BASE_IMAGE_hs1="$hs1_image" \
         COMPLEMENT_BASE_IMAGE_hs2="$hs2_image" \
         COMPLEMENT_BASE_IMAGE_hs3="$hs1_image" \
-        COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
+        COMPLEMENT_ENABLE_DIRTY_RUNS=0 \
         COMPLEMENT_SHARE_ENV_PREFIX=PASS_ \
         PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite \
         go test -p=1 -parallel=1 "${go_test_args[@]}" -json "${test_packages[@]}" 2>&1 \
