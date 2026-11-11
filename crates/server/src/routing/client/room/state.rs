@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::json;
@@ -18,7 +18,6 @@ use crate::core::events::room::message::RoomMessageEventContent;
 use crate::core::identifiers::*;
 use crate::core::room::{RoomEventReqArgs, RoomTypingReqArgs};
 use crate::core::{Seqnum, UnixMillis};
-use crate::data::connect;
 use crate::data::schema::room_users;
 use crate::room::{state, timeline};
 use crate::utils::HtmlEscape;
@@ -41,7 +40,7 @@ async fn visible_state_until_sn(
             room_users::event_id,
             room_users::event_sn,
         ))
-        .first::<(String, OwnedEventId, Seqnum)>(&mut connect().await?)
+        .first::<(String, OwnedEventId, Seqnum)>(&mut crate::data::db())
         .await
         .optional()?;
     match membership

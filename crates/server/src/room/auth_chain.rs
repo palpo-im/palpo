@@ -4,12 +4,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use lru_cache::LruCache;
 
 use crate::core::Seqnum;
 use crate::core::identifiers::*;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::room::timeline;
 use crate::{AppResult, MatrixError};
@@ -33,7 +32,7 @@ where
         .filter(events::sn.eq_any(&chain_sns))
         .order_by(events::sn.asc())
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?;
     Ok(full_auth_chain)
 }
@@ -52,7 +51,7 @@ where
         .filter(events::id.eq_any(starting_event_ids.clone()))
         .filter(events::sn.is_not_null())
         .select((events::id, events::sn))
-        .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+        .load::<(OwnedEventId, Seqnum)>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect::<Vec<_>>();
@@ -142,7 +141,7 @@ async fn get_event_auth_chain(room_id: &RoomId, event_id: &EventId) -> AppResult
             .filter(events::sn.is_not_null())
             .filter(events::id.eq_any(pdu.auth_events.iter().map(|e| &**e)))
             .select((events::id, events::sn))
-            .load::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+            .load::<(OwnedEventId, Seqnum)>(&mut crate::data::db())
             .await?;
         for (auth_event_id, auth_event_sn) in auth_events {
             if found.insert(auth_event_sn) {
@@ -173,7 +172,7 @@ async fn get_cached_auth_chain(cache_key: &[Seqnum]) -> AppResult<Option<Arc<Vec
     let chain_sns = event_auth_chains::table
         .find(cache_key)
         .select(event_auth_chains::chain_sns)
-        .first::<Vec<Option<Seqnum>>>(&mut connect().await?)
+        .first::<Vec<Option<Seqnum>>>(&mut crate::data::db())
         .await
         .optional()?;
 
@@ -200,7 +199,7 @@ pub async fn cache_auth_chain(cache_key: Vec<Seqnum>, chain_sns: &[Seqnum]) -> A
         .on_conflict(event_auth_chains::cache_key)
         .do_update()
         .set(event_auth_chains::chain_sns.eq(chain_sns))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await
         .ok();
 

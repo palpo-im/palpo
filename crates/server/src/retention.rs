@@ -1,11 +1,10 @@
 //! Local MSC1763 content retention, with permanent expiry and preserved event graphs.
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 use serde_json::Value;
 
 use crate::core::events::room::retention::RoomRetentionEventContent as Policy;
 use crate::core::{EventId, OwnedEventId, OwnedRoomId, RoomId, UnixMillis};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppError, AppResult, MatrixError, config, room};
 
@@ -37,7 +36,7 @@ pub async fn was_expired(event_id: &EventId) -> AppResult<bool> {
         "SELECT EXISTS(SELECT 1 FROM event_retention_expired WHERE event_id = $1) AS value",
     )
     .bind::<diesel::sql_types::Text, _>(event_id.as_str())
-    .get_result::<Flag>(&mut connect().await?)
+    .get_result::<Flag>(&mut crate::data::db())
     .await?
     .value)
 }
@@ -59,7 +58,7 @@ async fn effective_policy_inner(room_id: &RoomId) -> AppResult<Policy> {
                 let json = event_datas::table
                     .find(event_id)
                     .select(event_datas::json_data)
-                    .first::<Value>(&mut connect().await?)
+                    .first::<Value>(&mut crate::data::db())
                     .await?;
                 // Invalid remote policy content must not compromise room operation.
                 // Treat it as an explicit policy with no bounds, then apply server limits.
@@ -119,7 +118,7 @@ async fn is_expired_inner(
             .filter(event_forward_extremities::room_id.eq(room_id))
             .filter(event_forward_extremities::event_id.eq(event_id)),
     ))
-    .get_result::<bool>(&mut connect().await?)
+    .get_result::<bool>(&mut crate::data::db())
     .await?;
     Ok(!terminal)
 }
@@ -156,12 +155,12 @@ async fn sanitize_json_inner(
         // Already-purged events need no repeated writes or index deletions.
         *json = diesel::sql_query("SELECT palpo_retention_scrub($1) AS value")
             .bind::<diesel::sql_types::Json, _>(&*json)
-            .get_result::<Sanitized>(&mut connect().await?)
+            .get_result::<Sanitized>(&mut crate::data::db())
             .await?
             .value;
         return Ok(());
     }
-    let mut conn = connect().await?;
+    let mut conn = crate::data::db();
     *json = conn.transaction::<_, AppError, _>(async |conn| {
         // Writers and the content guard lock the same event row. A re-fetched
         // federation event cannot overwrite a committed expiry marker.
@@ -243,7 +242,7 @@ pub async fn sweep() -> AppResult<()> {
             .order(events::sn.asc())
             .limit(200)
             .select((events::id, events::room_id, events::sn))
-            .load::<(OwnedEventId, OwnedRoomId, i64)>(&mut connect().await?)
+            .load::<(OwnedEventId, OwnedRoomId, i64)>(&mut crate::data::db())
             .await?;
         if batch.is_empty() {
             break;
@@ -253,7 +252,7 @@ pub async fn sweep() -> AppResult<()> {
             let json = event_datas::table
                 .find(&event_id)
                 .select(event_datas::json_data)
-                .first::<Value>(&mut connect().await?)
+                .first::<Value>(&mut crate::data::db())
                 .await
                 .optional()?;
             if let Some(mut json) = json

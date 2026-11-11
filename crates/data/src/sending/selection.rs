@@ -2,10 +2,11 @@
 
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Json, Nullable, Text};
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::RunQueryDsl;
 
+use crate::DataResult;
 use crate::core::identifiers::*;
-use crate::{DataResult, connect};
 
 /// `token = None` means the entire sequence number is confirmed. A token
 /// resumes strictly after that user in a partially delivered device tie.
@@ -47,7 +48,7 @@ pub async fn selector_positions(
         "SELECT kind, sn, token FROM outgoing_selector_cursors WHERE server_id = $1",
     )
     .bind::<Text, _>(server.as_str())
-    .load::<CursorRow>(&mut connect().await?)
+    .load::<CursorRow>(&mut crate::db())
     .await?;
     let mut device = SelectorPosition::complete(fallback);
     let mut receipt = device.clone();
@@ -124,7 +125,7 @@ pub async fn outgoing_device_changes(
     .bind::<BigInt, _>(position.sn)
     .bind::<Nullable<Text>, _>(position.token.as_deref())
     .bind::<BigInt, _>(limit as i64)
-    .load(&mut connect().await?)
+    .load(&mut crate::db())
     .await
     .map_err(Into::into)
 }
@@ -167,7 +168,7 @@ pub async fn outgoing_receipts(
     .bind::<BigInt, _>(since)
     .bind::<BigInt, _>(until)
     .bind::<BigInt, _>(limit as i64)
-    .load(&mut connect().await?)
+    .load(&mut crate::db())
     .await
     .map_err(Into::into)
 }

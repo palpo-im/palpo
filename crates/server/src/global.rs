@@ -6,10 +6,10 @@ use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use std::time::Instant;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use hickory_resolver::Resolver as HickoryResolver;
 use hickory_resolver::config::*;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use horme::RunQueryDsl;
 use salvo::oapi::ToSchema;
 use serde::Serialize;
 use tokio::sync::{Semaphore, broadcast};
@@ -207,8 +207,8 @@ pub(crate) async fn prepare_appservices(
             registration.sender_localpart, conf.server_name
         ))?;
         let mut conn = match database {
-            Some(database) => database.connect().await?,
-            None => connect().await?,
+            Some(database) => database.connect(),
+            None => connect(),
         };
         diesel::insert_into(appservice_registrations::table)
             .values(&db_registration)

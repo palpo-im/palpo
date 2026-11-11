@@ -1,13 +1,13 @@
 use std::fmt::Debug;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 pub use crate::core::sending::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 mod selection;
 pub use selection::*;
@@ -61,7 +61,7 @@ pub async fn get_edu_cursor(server: &ServerName) -> DataResult<Option<i64>> {
     outgoing_edu_cursors::table
         .filter(outgoing_edu_cursors::server_id.eq(server))
         .select(outgoing_edu_cursors::edu_sn)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -82,7 +82,7 @@ pub async fn initialize_edu_cursor(server: &ServerName, edu_sn: i64) -> DataResu
         ))
         .on_conflict(outgoing_edu_cursors::server_id)
         .do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -106,7 +106,7 @@ pub async fn advance_edu_cursor(server: &ServerName, edu_sn: i64) -> DataResult<
             )),
             outgoing_edu_cursors::updated_at.eq(now),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -117,7 +117,7 @@ pub async fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
         .filter(outgoing_requests::server_id.is_not_null())
         .select(outgoing_requests::server_id)
         .distinct()
-        .load::<Option<OwnedServerName>>(&mut connect().await?)
+        .load::<Option<OwnedServerName>>(&mut crate::db())
         .await?
         .into_iter()
         .flatten()
@@ -128,7 +128,7 @@ pub async fn get_all_destinations() -> DataResult<Vec<OwnedServerName>> {
 /// Check if a destination is known
 pub async fn is_destination_known(server: &ServerName) -> DataResult<bool> {
     let query = outgoing_requests::table.filter(outgoing_requests::server_id.eq(server));
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::db())?)
 }
 
 /// Get rooms shared with a destination
@@ -137,7 +137,7 @@ pub async fn get_destination_rooms(server: &ServerName) -> DataResult<Vec<OwnedR
     let rooms: Vec<OwnedRoomId> = room_joined_servers::table
         .filter(room_joined_servers::server_id.eq(server))
         .select(room_joined_servers::room_id)
-        .load(&mut connect().await?)
+        .load(&mut crate::db())
         .await?;
     Ok(rooms)
 }
@@ -158,7 +158,7 @@ pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> D
                 outgoing_requests::retry_count.eq(tries as i32),
                 outgoing_requests::last_failed_at.eq(Some(now)),
             ))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
         }
         OutgoingDestination::Appservice(id) => {
@@ -172,7 +172,7 @@ pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> D
                 outgoing_requests::retry_count.eq(tries as i32),
                 outgoing_requests::last_failed_at.eq(Some(now)),
             ))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
         }
         OutgoingDestination::Push { user_id, pushkey } => {
@@ -187,7 +187,7 @@ pub async fn persist_retry_state(dest: OutgoingDestination<'_>, tries: u32) -> D
                 outgoing_requests::retry_count.eq(tries as i32),
                 outgoing_requests::last_failed_at.eq(Some(now)),
             ))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
         }
     }
@@ -205,7 +205,7 @@ pub async fn reset_destination_retry(server: &ServerName) -> DataResult<()> {
         outgoing_requests::retry_count.eq(0),
         outgoing_requests::last_failed_at.eq(None::<i64>),
     ))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }

@@ -279,10 +279,9 @@ async fn remove_rejected_pusher(
 #[cfg(test)]
 mod tests {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use super::*;
-    use crate::data::connect;
     use crate::data::room::NewDbRoomUser;
     use crate::data::schema::*;
 
@@ -406,7 +405,7 @@ mod tests {
                 user_pushers::data
                     .eq(serde_json::json!({"url":"https://updated-in-place.example/notify"})),
             )
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         remove_rejected_pusher(
@@ -460,7 +459,7 @@ mod tests {
             .filter(user_pushers::pushkey.eq(pushkey))
             .order_by(user_pushers::user_id)
             .select(user_pushers::user_id)
-            .load::<String>(&mut connect().await.unwrap())
+            .load::<String>(&mut crate::data::db())
             .await
             .unwrap()
     }
@@ -528,7 +527,7 @@ mod tests {
                     state_data: None,
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }

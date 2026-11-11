@@ -462,14 +462,14 @@ mod tests {
             .unwrap();
         assert_eq!(stored.display_name.as_deref(), Some("edited"));
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
 
         use crate::data::schema::user_profiles;
         assert_eq!(
             user_profiles::table
                 .filter(user_profiles::user_id.eq(&profile.user_id))
                 .count()
-                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             1
@@ -480,7 +480,7 @@ mod tests {
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_a_repaired_profile_records_its_write_once() {
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
 
         use crate::core::UnixMillis;
         use crate::data;
@@ -520,7 +520,7 @@ mod tests {
         let changes = user_profile_changes::table
             .filter(user_profile_changes::user_id.eq(user_id.as_str()))
             .select(user_profile_changes::field)
-            .load::<String>(&mut data::connect().await.unwrap())
+            .load::<String>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(changes, vec!["org.example.pronouns".to_owned()]);

@@ -1,12 +1,12 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::client::filter::FilterDefinition;
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_filters)]
@@ -30,7 +30,7 @@ pub async fn get_filter(user_id: &UserId, filter_id: i64) -> DataResult<FilterDe
         .filter(user_filters::id.eq(filter_id))
         .filter(user_filters::user_id.eq(user_id))
         .select(user_filters::filter)
-        .first(&mut connect().await?)
+        .first(&mut crate::db())
         .await?;
     Ok(serde_json::from_value(filter)?)
 }
@@ -42,7 +42,7 @@ pub async fn create_filter(user_id: &UserId, filter: &FilterDefinition) -> DataR
             filter: serde_json::to_value(filter)?,
             created_at: UnixMillis::now(),
         })
-        .get_result::<DbUserFilter>(&mut connect().await?)
+        .get_result::<DbUserFilter>(&mut crate::db())
         .await?;
     Ok(filter.id)
 }

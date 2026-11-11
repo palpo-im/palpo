@@ -1,6 +1,6 @@
 use diesel::prelude::*;
-use diesel::result::Error as DieselError;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -61,7 +61,7 @@ pub async fn get_pdus_by_room(
 
     query
         .limit(limit)
-        .load(&mut connect().await?)
+        .load(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -75,7 +75,7 @@ pub async fn purge_room_history(room_id: &RoomId, before_ts: i64) -> DataResult<
     )
     .unwrap_or(UnixMillis::now());
 
-    let mut conn = connect().await?;
+    let mut conn = connect();
 
     // Collect event IDs and SNs to purge (skip state events)
     let to_purge: Vec<(String, i64)> = events::table
@@ -98,7 +98,7 @@ pub async fn purge_room_history(room_id: &RoomId, before_ts: i64) -> DataResult<
     // the transaction, a half-finished purge would leak event-relations
     // pointing at events that no longer exist, which then resurface as
     // hard-to-debug consistency errors on subsequent timeline reads.
-    conn.transaction::<_, DieselError, _>(async |conn| {
+    conn.transaction::<_, crate::DataError, _>(async |conn| {
         // Delete from related tables (no foreign key constraints, order doesn't matter)
         for chunk in event_ids.chunks(500) {
             diesel::delete(event_datas::table.filter(event_datas::event_id.eq_any(chunk)))
@@ -184,7 +184,7 @@ pub async fn get_pdu_by_timestamp(
     }
 
     query
-        .first(&mut connect().await?)
+        .first(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)

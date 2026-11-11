@@ -45,6 +45,7 @@ diesel = { workspace = true, features = [
     "numeric",
 ] }
 diesel-async = { workspace = true, features = ["postgres", "deadpool"] }
+horme = { workspace = true }
 diesel_migrations = { workspace = true }
 dotenvy = { workspace = true }
 fast32 = { workspace = true }

@@ -159,6 +159,15 @@ fn unhandled_client_message(e: &AppError, debug: bool) -> String {
     }
 }
 
+impl From<horme::Error> for AppError {
+    fn from(error: horme::Error) -> Self {
+        match error {
+            horme::Error::Query(error) => Self::Diesel(error),
+            error => Self::Pool(crate::data::PoolError::Acquire(error)),
+        }
+    }
+}
+
 fn expose_diesel_not_found(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::DELETE)
 }
@@ -327,6 +336,7 @@ mod tests {
 
     #[test]
     fn data_layer_not_found_is_preserved() {
+        assert!(AppError::from(horme::Error::Query(DieselError::NotFound)).is_not_found());
         assert!(
             AppError::Data(crate::data::DataError::Diesel(DieselError::NotFound)).is_not_found()
         );

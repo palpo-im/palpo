@@ -1,7 +1,8 @@
 //! Durable, single-use email proofs. Every state transition locks its row.
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use super::{DbUser, NewDbPassword, NewDbProfile, NewDbUser, NewDbUserThreepid};
 use crate::core::{MatrixError, UnixMillis, UserId};
@@ -64,9 +65,9 @@ pub async fn reserve(candidate: &EmailSession) -> DataResult<Option<String>> {
     // Cleanup before acquiring any recipient/row locks to preserve lock order.
     diesel::sql_query("DELETE FROM registration_email_sessions WHERE created_at < $1")
         .bind::<BigInt, _>(candidate.created_at - 86_400_000)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
-    connect().await?.transaction::<_,DataError,_>(async |conn| {
+    connect().transaction::<_,DataError,_>(async |conn| {
         lock_email(conn, &candidate.email).await?;
         let recent = diesel::sql_query("SELECT * FROM registration_email_sessions WHERE email = $1 AND created_at > $2 ORDER BY created_at DESC FOR UPDATE")
             .bind::<Text,_>(&candidate.email).bind::<BigInt,_>(candidate.created_at - 3_600_000)
@@ -98,12 +99,12 @@ pub async fn reserve(candidate: &EmailSession) -> DataResult<Option<String>> {
 
 pub async fn delivered(sid: &str, now: i64) -> DataResult<()> {
     diesel::sql_query("UPDATE registration_email_sessions SET sent_at = $1 WHERE sid = $2 AND consumed_at IS NULL")
-        .bind::<BigInt,_>(now).bind::<Text,_>(sid).execute(&mut connect().await?).await?;
+        .bind::<BigInt,_>(now).bind::<Text,_>(sid).execute(&mut crate::db()).await?;
     Ok(())
 }
 
 pub async fn verify(sid: &str, secret_hash: &str, code_hash: &str, now: i64) -> DataResult<bool> {
-    connect().await?.transaction::<_,DataError,_>(async |conn| {
+    connect().transaction::<_,DataError,_>(async |conn| {
         let row = diesel::sql_query("SELECT * FROM registration_email_sessions WHERE sid = $1 FOR UPDATE")
             .bind::<Text,_>(sid).get_result::<EmailSession>(conn).await.optional()?;
         let Some(row) = row else { return Ok(false) };
@@ -131,14 +132,14 @@ pub async fn claim(
     let updated = diesel::sql_query("UPDATE registration_email_sessions SET claimed_session = $1, claimed_user_id = $2 WHERE sid = $3 AND client_secret_hash = $4 AND consumed_at IS NULL AND verified_at > $5 AND (claimed_session IS NULL OR (claimed_session = $1 AND claimed_user_id = $2))")
         .bind::<Text,_>(session).bind::<Text,_>(user_id.as_str()).bind::<Text,_>(sid)
         .bind::<Text,_>(secret_hash).bind::<BigInt,_>(now-PROOF_LIFETIME_MS)
-        .execute(&mut connect().await?).await?;
+        .execute(&mut crate::db()).await?;
     Ok(updated == 1)
 }
 
 pub async fn is_claimed(sid: &str, secret_hash: &str, session: &str, now: i64) -> DataResult<bool> {
     Ok(diesel::sql_query("SELECT * FROM registration_email_sessions WHERE sid = $1 AND client_secret_hash = $2 AND claimed_session = $3 AND verified_at > $4 AND consumed_at IS NULL")
         .bind::<Text,_>(sid).bind::<Text,_>(secret_hash).bind::<Text,_>(session)
-        .bind::<BigInt,_>(now-PROOF_LIFETIME_MS).get_result::<EmailSession>(&mut connect().await?).await.optional()?.is_some())
+        .bind::<BigInt,_>(now-PROOF_LIFETIME_MS).get_result::<EmailSession>(&mut crate::db()).await.optional()?.is_some())
 }
 
 /// Insert, never upsert: a competing registration cannot replace a password.
@@ -149,7 +150,7 @@ pub async fn create_registered_user(
     email_session: Option<&str>,
     now: i64,
 ) -> DataResult<DbUser> {
-    connect().await?.transaction::<_,DataError,_>(async |conn| {
+    connect().transaction::<_,DataError,_>(async |conn| {
         let proof = if let Some(session) = email_session {
             let before = diesel::sql_query("SELECT * FROM registration_email_sessions WHERE claimed_session = $1")
                 .bind::<Text,_>(session).get_result::<EmailSession>(conn).await.optional()?.ok_or_else(invalid)?;
@@ -164,7 +165,7 @@ pub async fn create_registered_user(
             Some(row)
         } else { None };
         let user = diesel::insert_into(users::table).values(new_user).get_result::<DbUser>(conn).await
-            .map_err(|e| match e { diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation,_) => MatrixError::user_in_use("Desired user ID is already taken.").into(), e => DataError::from(e) })?;
+            .map_err(|e| match e { horme::Error::Query(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation,_)) => MatrixError::user_in_use("Desired user ID is already taken.").into(), e => DataError::from(e) })?;
         diesel::insert_into(user_profiles::table).values(NewDbProfile {
             user_id: new_user.id.clone(), room_id: None, display_name: Some(new_user.localpart.clone()), avatar_url: None, blurhash: None,
         }).execute(conn).await?;

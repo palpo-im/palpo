@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Json, Text};
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde_json::json;
 
 use super::batch::{CHUNK_SIZE, PduBatch};
@@ -34,7 +34,7 @@ async fn review_timeline_batch_preserves_events_and_bounds_storage_queries() {
             has_auth_chain_index: false,
             created_at: UnixMillis(1),
         })
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut connect())
         .await
         .unwrap();
     let mut ids = Vec::new();
@@ -57,7 +57,7 @@ async fn review_timeline_batch_preserves_events_and_bounds_storage_queries() {
             ) INSERT INTO event_datas(event_id,event_sn,room_id,json_data) VALUES ($1,$2,$3,$4)")
             .bind::<Text,_>(id.as_str()).bind::<BigInt,_>(i + 1)
             .bind::<Text,_>(room.as_str()).bind::<Json,_>(body)
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut connect()).await.unwrap();
         ids.push(id);
     }
     diesel::update(event_datas::table.find(&ids[0]))
@@ -65,7 +65,7 @@ async fn review_timeline_batch_preserves_events_and_bounds_storage_queries() {
             "transaction_user": "@owner:timeline-perf.test", "transaction_id": "perf-txn",
             "transaction_device": "PHONE"
         })))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut connect())
         .await
         .unwrap();
     let spy = SqlSpy::install().await;
@@ -152,7 +152,7 @@ async fn review_timeline_batch_preserves_events_and_bounds_storage_queries() {
         let mut stale = PduBatch::load(std::iter::once(&*ids[3])).await.unwrap();
         diesel::sql_query("INSERT INTO event_retention_expired(event_id,expired_at) VALUES ($1,1)")
             .bind::<Text, _>(ids[3].as_str())
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut connect())
             .await
             .unwrap();
         let expected = super::get_pdu(&ids[3]).await.unwrap();
@@ -170,11 +170,11 @@ async fn review_timeline_batch_preserves_events_and_bounds_storage_queries() {
     // unknown IDs retain the same not-found classification as the single loader.
     diesel::update(event_datas::table.find(&ids[1]))
         .set(event_datas::json_data.eq(json!({})))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut connect())
         .await
         .unwrap();
     diesel::delete(event_datas::table.find(&ids[2]))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut connect())
         .await
         .unwrap();
     let missing: OwnedEventId = "$absent:timeline-perf.test".try_into().unwrap();

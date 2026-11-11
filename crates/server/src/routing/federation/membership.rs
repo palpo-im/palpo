@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde_json::json;
@@ -456,7 +456,6 @@ async fn invite_user(
     // .map_err(|_| MatrixError::invalid_param("sender is not a user id"))?;
 
     connect()
-        .await?
         .transaction::<_, crate::AppError, _>(async |conn| {
             crate::data::user::lock_invite_user_write(conn, &invitee_id).await?;
             diesel::update(

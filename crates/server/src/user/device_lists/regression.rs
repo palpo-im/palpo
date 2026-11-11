@@ -2,12 +2,12 @@
 use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
 use crate::core::events::StateEventType;
 use crate::core::{OwnedEventId, RoomId, Seqnum, UserId};
 use crate::data::schema::*;
-use crate::data::{self, connect};
+use crate::data::{self};
 use crate::room::state::{self, CompressedEvent, StateDiff};
 
 async fn publish(room: &RoomId, frame: i64) -> Seqnum {
@@ -24,7 +24,7 @@ async fn publish(room: &RoomId, frame: i64) -> Seqnum {
             event_points::live_published_sn.eq(sn),
             event_points::live_published_frame_id.eq(frame),
         ))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     sn
@@ -64,7 +64,7 @@ pub(crate) async fn assert_large_custom_state_is_not_resolved(
     let fields: Vec<i64> = diesel::insert_into(room_state_fields::table)
         .values(fields)
         .returning(room_state_fields::id)
-        .get_results(&mut connect().await.unwrap())
+        .get_results(&mut crate::data::db())
         .await
         .unwrap();
     let appended: state::CompressedState = fields
@@ -76,7 +76,7 @@ pub(crate) async fn assert_large_custom_state_is_not_resolved(
         event_points::table
             .filter(event_points::event_sn.eq_any(&unavailable))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0,
@@ -86,7 +86,7 @@ pub(crate) async fn assert_large_custom_state_is_not_resolved(
         event_datas::table
             .filter(event_datas::event_sn.eq_any(&unavailable))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0,

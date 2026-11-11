@@ -71,7 +71,7 @@ pub(crate) async fn parse_cursor(
     // activity by its indexed sequence rather than comparing mutable state.
     let activity_id = {
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::{OptionalExtension as _, RunQueryDsl};
 
         use crate::data::schema::event_points;
 
@@ -81,7 +81,7 @@ pub(crate) async fn parse_cursor(
             .filter(event_points::room_id.eq(room))
             .filter(event_points::event_sn.eq(cursor.last_sn))
             .select(event_points::event_id)
-            .first::<OwnedEventId>(&mut data::connect().await?)
+            .first::<OwnedEventId>(&mut crate::data::db())
             .await
             .optional()?
     }

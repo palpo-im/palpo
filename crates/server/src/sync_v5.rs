@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,7 @@ async fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
         .distinct_on(event_points::room_id)
         .order_by((event_points::room_id.asc(), event_points::event_sn.desc()))
         .select((event_points::room_id, event_points::event_sn))
-        .load(&mut connect().await?)
+        .load(&mut crate::data::db())
         .await?;
 
     let last_sn: BTreeMap<&str, i64> = results.iter().map(|(r, sn)| (r.as_str(), *sn)).collect();
@@ -347,7 +347,7 @@ async fn read_connection(key: &ConnectionKey) -> DataResult<Option<SlidingSyncCa
             sliding_sync_connections::cache_data,
             sliding_sync_connections::version,
         ))
-        .first::<(serde_json::Value, i64)>(&mut connect().await?)
+        .first::<(serde_json::Value, i64)>(&mut crate::data::db())
         .await
         .optional()?;
     Ok(row.map(|(json, version)| {
@@ -364,7 +364,7 @@ async fn read_connection_version(key: &ConnectionKey) -> DataResult<Option<i64>>
         .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
         .filter(sliding_sync_connections::conn_id.eq(conn_id.as_deref().unwrap_or("")))
         .select(sliding_sync_connections::version)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -449,20 +449,16 @@ pub async fn cleanup_expired_connections() {
     let now = UnixMillis::now().get() as i64;
     let cutoff = now - CONNECTION_EXPIRY_MS;
 
-    let expired_rows: Vec<(String, String, String)> = match connect().await {
-        Ok(mut conn) => sliding_sync_connections::table
-            .filter(sliding_sync_connections::updated_at.lt(cutoff))
-            .select((
-                sliding_sync_connections::user_id,
-                sliding_sync_connections::device_id,
-                sliding_sync_connections::conn_id,
-            ))
-            .load::<(String, String, String)>(&mut conn)
-            .await
-            .ok(),
-        Err(_) => None,
-    }
-    .unwrap_or_default();
+    let expired_rows = sliding_sync_connections::table
+        .filter(sliding_sync_connections::updated_at.lt(cutoff))
+        .select((
+            sliding_sync_connections::user_id,
+            sliding_sync_connections::device_id,
+            sliding_sync_connections::conn_id,
+        ))
+        .load::<(String, String, String)>(&mut connect())
+        .await
+        .unwrap_or_default();
 
     let expired_keys: HashSet<(OwnedUserId, OwnedDeviceId, Option<String>)> = expired_rows
         .into_iter()
@@ -481,13 +477,11 @@ pub async fn cleanup_expired_connections() {
         .retain(|key, _entry| !expired_keys.contains(key));
 
     // Clean up database
-    if let Ok(mut conn) = connect().await {
-        let _ = diesel::delete(
-            sliding_sync_connections::table.filter(sliding_sync_connections::updated_at.lt(cutoff)),
-        )
-        .execute(&mut conn)
-        .await;
-    }
+    let _ = diesel::delete(
+        sliding_sync_connections::table.filter(sliding_sync_connections::updated_at.lt(cutoff)),
+    )
+    .execute(&mut connect())
+    .await;
 }
 
 /// Check if the connection is stale and has too many room updates,
@@ -514,17 +508,14 @@ async fn get_connection_updated_at(
     conn_id: &Option<String>,
 ) -> i64 {
     let conn_id_str = conn_id.as_deref().unwrap_or("");
-    let updated_at = match connect().await {
-        Ok(mut conn) => sliding_sync_connections::table
-            .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
-            .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
-            .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
-            .select(sliding_sync_connections::updated_at)
-            .first::<i64>(&mut conn)
-            .await
-            .ok(),
-        Err(_) => None,
-    };
+    let updated_at = sliding_sync_connections::table
+        .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+        .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+        .filter(sliding_sync_connections::conn_id.eq(conn_id_str))
+        .select(sliding_sync_connections::updated_at)
+        .first::<i64>(&mut crate::data::db())
+        .await
+        .ok();
     updated_at.unwrap_or(0)
 }
 
@@ -547,7 +538,7 @@ async fn write_connection(
     let (user_id, device_id, conn_id) = key;
     let cache_data = serde_json::to_value(cached)?;
     let now = UnixMillis::now().get() as i64;
-    let mut conn = connect().await?;
+    let mut conn = crate::data::db();
     let written = match cached.db_version {
         None => {
             diesel::sql_query(
@@ -1851,16 +1842,14 @@ pub async fn forget_sync_request_connection(
 
     // Also remove from database
     let conn_id_str = conn_id.as_deref().unwrap_or("");
-    if let Ok(mut db_conn) = connect().await {
-        let _ = diesel::delete(
-            sliding_sync_connections::table
-                .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
-                .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
-                .filter(sliding_sync_connections::conn_id.eq(conn_id_str)),
-        )
-        .execute(&mut db_conn)
-        .await;
-    }
+    let _ = diesel::delete(
+        sliding_sync_connections::table
+            .filter(sliding_sync_connections::user_id.eq(user_id.as_str()))
+            .filter(sliding_sync_connections::device_id.eq(device_id.as_str()))
+            .filter(sliding_sync_connections::conn_id.eq(conn_id_str)),
+    )
+    .execute(&mut connect())
+    .await;
 }
 /// load params from cache if body doesn't contain it, as long as it's allowed
 /// in some cases we may need to allow an empty list as an actual value
@@ -2384,7 +2373,7 @@ mod tests {
                 state_data: Some(json!([])),
                 created_at: UnixMillis::now(),
             })
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         data::user::set_data(
@@ -2467,7 +2456,7 @@ mod tests {
                         has_auth_chain_index: false,
                         created_at: UnixMillis::now(),
                     })
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 diesel::insert_into(room_users::table)
@@ -2488,7 +2477,7 @@ mod tests {
                         state_data: Some(json!([])),
                         created_at: UnixMillis::now(),
                     })
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 targets.push(room);
@@ -2652,7 +2641,7 @@ mod tests {
                 .filter(room_users::user_id.eq(&user))
                 .filter(room_users::room_id.eq(pending))
                 .select(room_invite_admissions::delivered_devices)
-                .first::<serde_json::Value>(&mut connect().await.unwrap())
+                .first::<serde_json::Value>(&mut crate::data::db())
                 .await
                 .unwrap();
             assert_eq!(devices["EARLY"], json!(early.until_sn));
@@ -2747,7 +2736,7 @@ mod tests {
                         has_auth_chain_index: false,
                         created_at: UnixMillis::now(),
                     })
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 diesel::insert_into(room_users::table)
@@ -2768,7 +2757,7 @@ mod tests {
                         state_data: Some(json!([])),
                         created_at: UnixMillis::now(),
                     })
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 targets.push(room);
@@ -2873,7 +2862,7 @@ mod tests {
                     room_users::room_id,
                     room_invite_admissions::delivered_devices,
                 ))
-                .load::<(OwnedRoomId, serde_json::Value)>(&mut connect().await.unwrap())
+                .load::<(OwnedRoomId, serde_json::Value)>(&mut crate::data::db())
                 .await
                 .unwrap();
             assert_eq!(delivered.len(), 3);
@@ -2996,7 +2985,7 @@ mod tests {
                         has_auth_chain_index: false,
                         created_at: UnixMillis::now(),
                     })
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 diesel::insert_into(room_users::table)
@@ -3017,7 +3006,7 @@ mod tests {
                         state_data: Some(json!([])),
                         created_at: UnixMillis::now(),
                     })
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 targets.push(room);
@@ -3072,23 +3061,23 @@ mod tests {
                 let mut replacement = room_users::table
                     .filter(room_users::user_id.eq(&recipient))
                     .filter(room_users::room_id.eq(&targets[0]))
-                    .first::<data::room::DbRoomUser>(&mut connect().await.unwrap())
+                    .first::<data::room::DbRoomUser>(&mut crate::data::db())
                     .await
                     .unwrap();
                 diesel::delete(room_users::table.find(replacement.id))
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
                 )
-                .get_result(&mut connect().await.unwrap())
+                .get_result(&mut crate::data::db())
                 .await
                 .unwrap();
                 replacement.event_sn = data::next_sn().await.unwrap();
                 diesel::insert_into(room_users::table)
                     .values(replacement)
-                    .execute(&mut connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 snapshot
@@ -3103,7 +3092,7 @@ mod tests {
                 )
                 .filter(room_users::user_id.eq(&recipient))
                 .select(room_users::room_id)
-                .load::<OwnedRoomId>(&mut connect().await.unwrap())
+                .load::<OwnedRoomId>(&mut crate::data::db())
                 .await
                 .unwrap()
                 .into_iter()
@@ -3160,7 +3149,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: UnixMillis::now(),
             })
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::insert_into(room_users::table).values(data::room::NewDbRoomUser {
@@ -3171,7 +3160,7 @@ mod tests {
             display_name: None, avatar_url: None,
             state_data: Some(json!([{"type": "m.room.name", "state_key": "", "sender": inviter, "content": {"name": "old"}}])),
             created_at: UnixMillis::now(),
-        }).execute(&mut connect().await.unwrap()).await.unwrap();
+        }).execute(&mut crate::data::db()).await.unwrap();
         let reserved_sn = data::next_sn().await.unwrap();
         let snapshot = crate::membership::invited_rooms_for_sync(
             &recipient,
@@ -3196,18 +3185,18 @@ mod tests {
         let mut replacement = room_users::table
             .filter(room_users::user_id.eq(&recipient))
             .filter(room_users::room_id.eq(&room))
-            .first::<data::room::DbRoomUser>(&mut connect().await.unwrap())
+            .first::<data::room::DbRoomUser>(&mut crate::data::db())
             .await
             .unwrap();
         let old_id = replacement.id;
         diesel::delete(room_users::table.find(old_id))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
             "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
         )
-        .get_result(&mut connect().await.unwrap())
+        .get_result(&mut crate::data::db())
         .await
         .unwrap();
         replacement.event_id = "$snapshot_new:example.org".try_into().unwrap();
@@ -3218,7 +3207,7 @@ mod tests {
         );
         diesel::insert_into(room_users::table)
             .values(replacement)
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let body: SyncEventsReqBody = serde_json::from_value(json!({})).unwrap();
@@ -3250,7 +3239,7 @@ mod tests {
             room_invite_admissions::table
                 .select(room_invite_admissions::room_user_id)
                 .filter(room_invite_admissions::room_user_id.eq(old_id))
-                .load::<i64>(&mut connect().await.unwrap())
+                .load::<i64>(&mut crate::data::db())
                 .await
                 .unwrap()
                 .is_empty()

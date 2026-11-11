@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
+use crate::DataResult;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 /// Whether `confirmed_user_id`'s membership was already lazily sent to this
 /// `(user, device, room)`.
@@ -20,7 +20,7 @@ pub async fn was_sent_before(
         .filter(lazy_load_deliveries::device_id.eq(device_id))
         .filter(lazy_load_deliveries::room_id.eq(room_id))
         .filter(lazy_load_deliveries::confirmed_user_id.eq(confirmed_user_id));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::db()).map_err(Into::into)
 }
 
 /// Record that each `confirmed_user_id` was lazily delivered to this
@@ -31,7 +31,7 @@ pub async fn mark_sent(
     room_id: &RoomId,
     confirmed_user_ids: HashSet<OwnedUserId>,
 ) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     for confirmed_user_id in confirmed_user_ids {
         diesel::insert_into(lazy_load_deliveries::table)
             .values((
@@ -55,7 +55,7 @@ pub async fn reset(user_id: &UserId, device_id: &DeviceId, room_id: &RoomId) -> 
             .filter(lazy_load_deliveries::device_id.eq(device_id))
             .filter(lazy_load_deliveries::room_id.eq(room_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }

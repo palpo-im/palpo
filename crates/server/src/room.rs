@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use serde::de::DeserializeOwned;
 
 use crate::appservice::RegistrationInfo;
@@ -26,9 +26,9 @@ use crate::core::room::{JoinRule, RoomType};
 use crate::core::room_version_rules::RoomVersionRules;
 use crate::core::state::events::RoomCreateEvent;
 use crate::core::{Seqnum, UnixMillis};
+use crate::data::diesel_exists;
 use crate::data::room::{DbRoomCurrent, NewDbRoom};
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
 use crate::{
     APPSERVICE_IN_ROOM_CACHE, AppError, AppResult, IsRemoteOrLocal, RoomMutexGuard, RoomMutexMap,
     SnPduEvent, config, data, membership, room, utils,
@@ -64,7 +64,7 @@ pub async fn lock_state(room_id: &RoomId) -> RoomMutexGuard {
 pub async fn create_room(new_room: NewDbRoom) -> AppResult<OwnedRoomId> {
     diesel::insert_into(rooms::table)
         .values(&new_room)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     Ok(new_room.id)
 }
@@ -89,7 +89,7 @@ pub async fn ensure_room(id: &RoomId, room_version_id: &RoomVersionId) -> AppRes
 pub async fn room_exists(room_id: &RoomId) -> AppResult<bool> {
     diesel_exists!(
         rooms::table.filter(rooms::id.eq(room_id)),
-        &mut connect().await?
+        &mut crate::data::db()
     )
     .map_err(Into::into)
 }
@@ -98,7 +98,7 @@ pub async fn get_room_sn(room_id: &RoomId) -> AppResult<Seqnum> {
     let room_sn = rooms::table
         .filter(rooms::id.eq(room_id))
         .select(rooms::sn)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await?;
     Ok(room_sn)
 }
@@ -108,7 +108,7 @@ pub async fn get_version(room_id: &RoomId) -> AppResult<RoomVersionId> {
     if let Some(room_version) = rooms::table
         .find(room_id)
         .select(rooms::version)
-        .first::<String>(&mut connect().await?)
+        .first::<String>(&mut crate::data::db())
         .await
         .optional()?
     {
@@ -124,7 +124,7 @@ pub async fn get_current_frame_id(room_id: &RoomId) -> AppResult<Option<i64>> {
     rooms::table
         .find(room_id)
         .select(rooms::state_frame_id)
-        .first(&mut connect().await?)
+        .first(&mut crate::data::db())
         .await
         .optional()
         .map(|v| v.flatten())
@@ -135,7 +135,7 @@ pub async fn is_disabled(room_id: &RoomId) -> AppResult<bool> {
     rooms::table
         .filter(rooms::id.eq(room_id))
         .select(rooms::disabled)
-        .first(&mut connect().await?)
+        .first(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -143,7 +143,7 @@ pub async fn is_disabled(room_id: &RoomId) -> AppResult<bool> {
 pub async fn disable_room(room_id: &RoomId, disabled: bool) -> AppResult<()> {
     diesel::update(rooms::table.filter(rooms::id.eq(room_id)))
         .set(rooms::disabled.eq(disabled))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await
         .map(|_| ())
         .map_err(Into::into)
@@ -159,7 +159,7 @@ pub async fn update_currents(room_id: &RoomId) -> AppResult<()> {
         None => 0,
     };
 
-    let mut conn = connect().await?;
+    let mut conn = crate::data::db();
     let membership_counts = room_users::table
         .filter(room_users::room_id.eq(room_id))
         .group_by((room_users::membership, room_users::user_server_id))
@@ -214,7 +214,7 @@ pub async fn update_joined_servers(room_id: &RoomId) -> AppResult<()> {
         .filter(room_users::membership.eq("join"))
         .select(room_users::user_id)
         .distinct()
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::data::db())
         .await?
         .into_iter()
         .map(|user_id| user_id.server_name().to_owned())
@@ -227,7 +227,7 @@ pub async fn update_joined_servers(room_id: &RoomId) -> AppResult<()> {
             .filter(room_joined_servers::room_id.eq(room_id))
             .filter(room_joined_servers::server_id.ne_all(&joined_servers)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
 
     for joined_server in joined_servers {
@@ -249,7 +249,7 @@ pub async fn get_our_real_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>>
     room_users::table
         .filter(room_users::room_id.eq(room_id))
         .select(room_users::user_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -283,7 +283,7 @@ pub async fn appservice_in_room(
             let user_ids = room_users::table
                 .filter(room_users::room_id.eq(room_id))
                 .select(room_users::user_id)
-                .load::<String>(&mut connect().await?)
+                .load::<String>(&mut crate::data::db())
                 .await?;
             user_ids
                 .iter()
@@ -303,7 +303,7 @@ pub async fn appservice_in_room(
 pub async fn is_room_exists(room_id: &RoomId) -> AppResult<bool> {
     diesel_exists!(
         rooms::table.filter(rooms::id.eq(room_id)).select(rooms::id),
-        &mut connect().await?
+        &mut crate::data::db()
     )
     .map_err(Into::into)
 }
@@ -376,13 +376,13 @@ pub async fn is_server_joined(server: &ServerName, room_id: &RoomId) -> AppResul
     let query = room_joined_servers::table
         .filter(room_joined_servers::room_id.eq(room_id))
         .filter(room_joined_servers::server_id.eq(server));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::data::db()).map_err(Into::into)
 }
 pub async fn joined_servers(room_id: &RoomId) -> AppResult<Vec<OwnedServerName>> {
     room_joined_servers::table
         .filter(room_joined_servers::room_id.eq(room_id))
         .select(room_joined_servers::server_id)
-        .load::<OwnedServerName>(&mut connect().await?)
+        .load::<OwnedServerName>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -390,7 +390,7 @@ pub async fn has_any_other_server(room_id: &RoomId, server: &ServerName) -> AppR
     let query = room_joined_servers::table
         .filter(room_joined_servers::room_id.eq(room_id))
         .filter(room_joined_servers::server_id.ne(server));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::data::db()).map_err(Into::into)
 }
 
 #[tracing::instrument(level = "trace")]
@@ -398,13 +398,13 @@ pub async fn lookup_servers(room_id: &RoomId) -> AppResult<Vec<OwnedServerName>>
     room_lookup_servers::table
         .filter(room_lookup_servers::room_id.eq(room_id))
         .select(room_lookup_servers::server_id)
-        .load::<OwnedServerName>(&mut connect().await?)
+        .load::<OwnedServerName>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
 
 pub async fn joined_member_count(room_id: &RoomId) -> AppResult<u64> {
-    let mut conn = connect().await?;
+    let mut conn = crate::data::db();
     let count = stats_room_currents::table
         .find(room_id)
         .select(stats_room_currents::joined_members)
@@ -432,7 +432,7 @@ pub async fn invited_member_count(room_id: &RoomId) -> AppResult<u64> {
     stats_room_currents::table
         .find(room_id)
         .select(stats_room_currents::invited_members)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .optional()
         .map(|c| c.unwrap_or_default() as u64)
@@ -457,7 +457,7 @@ pub async fn active_local_users_in_room(room_id: &RoomId) -> AppResult<Vec<Owned
 pub async fn list_banned_rooms() -> AppResult<Vec<OwnedRoomId>> {
     let room_ids = banned_rooms::table
         .select(banned_rooms::room_id)
-        .load(&mut connect().await?)
+        .load(&mut crate::data::db())
         .await?;
     Ok(room_ids)
 }
@@ -473,7 +473,7 @@ pub async fn get_state_users(
             .filter(room_users::room_id.eq(room_id))
             .filter(room_users::membership.eq(state.to_string()))
             .select(room_users::user_id)
-            .load(&mut connect().await?)
+            .load(&mut crate::data::db())
             .await
             .map_err(Into::into)
     } else {
@@ -481,7 +481,7 @@ pub async fn get_state_users(
             .filter(room_users::room_id.eq(room_id))
             .filter(room_users::membership.eq(state.to_string()))
             .select(room_users::user_id)
-            .load(&mut connect().await?)
+            .load(&mut crate::data::db())
             .await
             .map_err(Into::into)
     }
@@ -503,7 +503,7 @@ pub async fn participating_servers(
         room_joined_servers::table
             .filter(room_joined_servers::room_id.eq(room_id))
             .select(room_joined_servers::server_id)
-            .load(&mut connect().await?)
+            .load(&mut crate::data::db())
             .await
             .map_err(Into::into)
     } else {
@@ -511,7 +511,7 @@ pub async fn participating_servers(
             .filter(room_joined_servers::room_id.eq(room_id))
             .filter(room_joined_servers::server_id.ne(config::server_name()))
             .select(room_joined_servers::server_id)
-            .load(&mut connect().await?)
+            .load(&mut crate::data::db())
             .await
             .map_err(Into::into)
     }
@@ -545,14 +545,14 @@ pub async fn public_room_ids() -> AppResult<Vec<OwnedRoomId>> {
         .filter(rooms::is_public.eq(true))
         .select(rooms::id)
         .order_by(rooms::sn.desc())
-        .load(&mut connect().await?)
+        .load(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
 pub async fn all_room_ids() -> AppResult<Vec<OwnedRoomId>> {
     rooms::table
         .select(rooms::id)
-        .load(&mut connect().await?)
+        .load(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -817,7 +817,7 @@ pub async fn local_users_in_room(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>
         .filter(room_users::membership.eq(MembershipState::Join.as_str()))
         .filter(room_users::user_server_id.eq(&config::get().server_name))
         .select(room_users::user_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -829,7 +829,7 @@ pub async fn get_members(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
     room_users::table
         .filter(room_users::room_id.eq(room_id))
         .select(room_users::user_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -842,7 +842,7 @@ pub async fn get_members_limit(room_id: &RoomId, limit: i64) -> AppResult<Vec<Ow
         .filter(room_users::room_id.eq(room_id))
         .select(room_users::user_id)
         .limit(limit)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -858,7 +858,7 @@ pub async fn keys_changed_users(
             .filter(e2e_key_changes::occur_sn.ge(since_sn))
             .filter(e2e_key_changes::occur_sn.le(until_sn))
             .select(e2e_key_changes::user_id)
-            .load::<OwnedUserId>(&mut connect().await?)
+            .load::<OwnedUserId>(&mut crate::data::db())
             .await
             .map_err(Into::into)
     } else {
@@ -866,7 +866,7 @@ pub async fn keys_changed_users(
             .filter(e2e_key_changes::room_id.eq(room_id.as_str()))
             .filter(e2e_key_changes::occur_sn.ge(since_sn))
             .select(e2e_key_changes::user_id)
-            .load::<OwnedUserId>(&mut connect().await?)
+            .load::<OwnedUserId>(&mut crate::data::db())
             .await
             .map_err(Into::into)
     }
@@ -880,13 +880,13 @@ pub async fn ban_room(room_id: &RoomId, banned: bool) -> AppResult<()> {
                 banned_rooms::created_at.eq(UnixMillis::now()),
             ))
             .on_conflict_do_nothing()
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await
             .map(|_| ())
             .map_err(Into::into)
     } else {
         diesel::delete(banned_rooms::table.filter(banned_rooms::room_id.eq(room_id)))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await
             .map(|_| ())
             .map_err(Into::into)

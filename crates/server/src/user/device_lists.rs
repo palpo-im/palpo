@@ -3,13 +3,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::device::DeviceLists;
 use crate::core::events::StateEventType;
 use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::{OwnedEventId, OwnedRoomId, OwnedUserId, Seqnum, UserId};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppResult, MatrixError, room};
 
@@ -65,7 +64,7 @@ async fn sharing_before(
         .filter(room_users::user_id.eq(user))
         .select(room_users::room_id)
         .distinct()
-        .load::<crate::core::OwnedRoomId>(&mut connect().await?)
+        .load::<crate::core::OwnedRoomId>(&mut crate::data::db())
         .await?;
     for room_id in rooms {
         let frame = event_points::table
@@ -73,7 +72,7 @@ async fn sharing_before(
             .filter(event_points::live_published_sn.lt(boundary))
             .order(event_points::live_published_sn.desc())
             .select(event_points::live_published_frame_id)
-            .first::<Option<i64>>(&mut connect().await?)
+            .first::<Option<i64>>(&mut crate::data::db())
             .await
             .optional()?;
         let Some(frame) = frame else { continue };
@@ -104,7 +103,7 @@ async fn sharing_before(
                     .filter(
                         room_state_fields::event_ty.eq_any(["m.room.member", "m.room.encryption"]),
                     )
-                    .load::<crate::data::room::DbRoomStateField>(&mut connect().await?)
+                    .load::<crate::data::room::DbRoomStateField>(&mut crate::data::db())
                     .await?;
                 let members: HashMap<_, _> = fields
                     .into_iter()
@@ -138,7 +137,7 @@ async fn sharing_before(
                         event_datas::json_data,
                     ))
                     .load::<(Seqnum, crate::core::OwnedEventId, serde_json::Value)>(
-                        &mut connect().await?,
+                        &mut crate::data::db(),
                     )
                     .await?;
                 if bodies.len() != members.len() {

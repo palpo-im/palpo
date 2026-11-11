@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::prelude::*;
 use salvo::test::{RequestBuilder, ResponseExt, TestClient};
 use serde_json::{Value, json};
@@ -111,7 +111,7 @@ async fn publication(id: &EventId) -> Seqnum {
     data::schema::event_points::table
         .find(id)
         .select(data::schema::event_points::live_published_sn)
-        .first::<Option<Seqnum>>(&mut data::connect().await.unwrap())
+        .first::<Option<Seqnum>>(&mut crate::data::db())
         .await
         .unwrap()
         .unwrap()
@@ -635,7 +635,7 @@ async fn mixed_identity_windows(service: &Service, user: &UserId) {
     let stored = data::schema::events::table
         .find(&*history.event_id)
         .select(data::schema::events::stream_ordering)
-        .first::<Seqnum>(&mut data::connect().await.unwrap())
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .unwrap();
     assert_eq!(stored, -history.event_sn);

@@ -1,10 +1,10 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Debug, Clone)]
 #[diesel(table_name = user_passwords)]
@@ -28,7 +28,7 @@ pub async fn get_password_hash(user_id: &UserId) -> DataResult<String> {
         .filter(user_passwords::user_id.eq(user_id))
         .order_by(user_passwords::id.desc())
         .select(user_passwords::hash)
-        .first::<String>(&mut connect().await?)
+        .first::<String>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -41,11 +41,11 @@ pub async fn set_password_hash(user_id: &UserId, hash: &str) -> DataResult<()> {
             hash: hash.to_owned(),
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     diesel::update(users::table.find(user_id))
         .set(users::is_guest.eq(false))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     super::access_token::invalidate_user(user_id);
     Ok(())

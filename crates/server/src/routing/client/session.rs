@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use cookie::time::Duration as CookieDuration;
 use diesel::{ExpressionMethods, QueryDsl};
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use palpo_data::user::set_display_name;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -18,7 +18,6 @@ use crate::core::client::uiaa::{AuthFlow, AuthType, UiaaInfo, UserIdentifier};
 use crate::core::error::ErrorKind;
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::{DbUser, DbUserDevice, NewDbUser};
 use crate::exts::*;
@@ -296,7 +295,7 @@ async fn login(
                     .on_conflict(users::id)
                     .do_update()
                     .set(&new_user)
-                    .get_result::<DbUser>(&mut connect().await?)
+                    .get_result::<DbUser>(&mut crate::data::db())
                     .await?;
 
                 // Set initial user profile
@@ -571,7 +570,7 @@ async fn verify_delegated_login_token(
         .into());
     }
 
-    let mut conn = connect().await?;
+    let mut conn = crate::data::db();
     let mut user = users::table
         .find(expected_user_id)
         .first::<DbUser>(&mut conn)

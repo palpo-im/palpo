@@ -145,6 +145,37 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
+      - name: Database provider lifecycle regressions
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          # These tests own local one-connection pools and need no Palpo schema
+          # or process-global configuration. Pool/provider code has no feature gates.
+          database=palpo_provider_lifecycle
+          sudo -u postgres createdb -O palpo_test "$database"
+          # A substring filter can pass with zero matches; assert all five cases.
+          registered="$(cargo test --locked -p palpo-data --lib pool::tests:: -- --list --ignored)"
+          cases=(
+            one_connection_supports_nested_queries_and_concurrent_handles
+            failed_and_cancelled_queries_return_their_leases
+            transaction_helpers_share_one_lease_and_rollback_releases_it
+            snapshot_builder_preserves_isolation_and_releases_before_follow_up_queries
+            cancelling_transaction_releases_locks_without_a_later_checkout
+          )
+          for test in "${cases[@]}"; do
+            grep -Fx "pool::tests::$test: test" <<< "$registered"
+          done
+          PALPO_TEST_DATABASE_URL="postgres://palpo_test:palpo_test@localhost/$database" \
+            cargo test --locked -p palpo-data --lib pool::tests:: -- --ignored --test-threads=1
+
+      - name: Compile isolated review test binaries
+        timeout-minutes: 30
+        run: |
+          # Keep cold compilation outside the database regressions' runtime budget.
+          # These library targets and feature modes match the exact-case runs below.
+          cargo test --locked -p palpo --lib --no-run
+          cargo test --locked -p palpo --lib --all-features --no-run
+
       - name: Security, protocol and resource review regressions
         timeout-minutes: 30
         shell: bash

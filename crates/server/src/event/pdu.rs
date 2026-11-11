@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::to_raw_value;
@@ -1188,7 +1188,6 @@ impl PduBuilder {
         // make an outlier intentionally observable can join this transaction rather than
         // racing a separately committed event row.
         connect()
-            .await?
             .transaction::<_, AppError, _>(async |conn| {
                 db_event.save_with_conn(conn).await?;
                 event_data.save_with_conn(conn).await?;
@@ -1414,7 +1413,7 @@ impl PduBuilder {
                     .filter(event_forward_extremities::room_id.eq(room_id)),
             )
             .set(event_forward_extremities::room_id.eq(&pdu.room_id))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         }
 

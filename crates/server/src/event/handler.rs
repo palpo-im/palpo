@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use indexmap::IndexMap;
 use palpo_core::Direction;
 
@@ -22,9 +22,9 @@ use crate::core::serde::{CanonicalJsonObject, CanonicalJsonValue, JsonValue, can
 use crate::core::signatures::Verified;
 use crate::core::state::{Event, StateError, event_auth};
 use crate::core::{Seqnum, UnixMillis};
+use crate::data::diesel_exists;
 use crate::data::room::DbEvent;
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
 use crate::event::{OutlierPdu, PduEvent, SnPduEvent, handler};
 use crate::exts::*;
 use crate::room::state::{CompressedState, DeltaInfo, update_backward_extremities};
@@ -95,14 +95,14 @@ async fn process_incoming_pdu_inner(
 
     let event = events::table
         .filter(events::id.eq(event_id))
-        .first::<DbEvent>(&mut connect().await?)
+        .first::<DbEvent>(&mut crate::data::db())
         .await;
     if let Ok(event) = event {
         if !event.is_outlier {
             return Ok(());
         }
         if event.is_rejected || event.soft_failed {
-            if let Err(e) = diesel::delete(&event).execute(&mut connect().await?).await {
+            if let Err(e) = diesel::delete(&event).execute(&mut crate::data::db()).await {
                 warn!(
                     "failed to delete rejected/soft-failed event {}: {}",
                     event_id, e
@@ -110,14 +110,14 @@ async fn process_incoming_pdu_inner(
             }
             if let Err(e) =
                 diesel::delete(event_points::table.filter(event_points::event_id.eq(event_id)))
-                    .execute(&mut connect().await?)
+                    .execute(&mut crate::data::db())
                     .await
             {
                 warn!("failed to delete event_points for {}: {}", event_id, e);
             }
             if let Err(e) =
                 diesel::delete(event_datas::table.filter(event_datas::event_id.eq(event_id)))
-                    .execute(&mut connect().await?)
+                    .execute(&mut crate::data::db())
                     .await
             {
                 warn!("failed to delete event_datas for {}: {}", event_id, e);
@@ -126,7 +126,7 @@ async fn process_incoming_pdu_inner(
             // so a sticky row recorded against the old one would point at nothing.
             if let Err(e) =
                 diesel::delete(event_stickies::table.filter(event_stickies::event_id.eq(event_id)))
-                    .execute(&mut connect().await?)
+                    .execute(&mut crate::data::db())
                     .await
             {
                 warn!("failed to delete event_stickies for {}: {}", event_id, e);
@@ -325,7 +325,7 @@ pub(super) async fn process_pulled_pdu_with_pending_state(
             .filter(event_missings::room_id.eq(&pdu.room_id))
             .filter(event_missings::missing_id.eq(&pdu.event_id))
             .select(event_missings::event_id)
-            .load::<OwnedEventId>(&mut connect().await?)
+            .load::<OwnedEventId>(&mut crate::data::db())
             .await?;
         while !next_ids.is_empty() {
             let mut new_timlined_event_ids = Vec::new();
@@ -336,16 +336,16 @@ pub(super) async fn process_pulled_pdu_with_pending_state(
                         .filter(event_missings::event_id.eq(&next_id))
                         .filter(event_missings::missing_id.eq(&pdu.event_id)),
                 )
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
                 let query = event_missings::table.filter(event_missings::event_id.eq(&next_id));
-                if !diesel_exists!(query, &mut connect().await?)? {
+                if !diesel_exists!(query, &mut crate::data::db())? {
                     diesel::delete(
                         timeline_gaps::table
                             .filter(timeline_gaps::room_id.eq(&pdu.room_id))
                             .filter(timeline_gaps::event_id.eq(&next_id)),
                     )
-                    .execute(&mut connect().await?)
+                    .execute(&mut crate::data::db())
                     .await?;
 
                     // let query = event_phases::table
@@ -403,7 +403,7 @@ async fn process_to_outlier_pdu_inner(
             event_datas::event_sn,
             event_datas::json_data,
         ))
-        .first::<(OwnedRoomId, Seqnum, JsonValue)>(&mut connect().await?)
+        .first::<(OwnedRoomId, Seqnum, JsonValue)>(&mut crate::data::db())
         .await
         .optional()?
         && let Ok(val) = serde_json::from_value::<CanonicalJsonObject>(event_data.clone())

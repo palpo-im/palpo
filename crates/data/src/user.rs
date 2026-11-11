@@ -33,8 +33,8 @@ use std::mem;
 
 use diesel::dsl;
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
 pub use external_id::*;
+use horme::{OptionalExtension as _, RunQueryDsl};
 pub use presence::*;
 pub use registration_token::*;
 
@@ -138,7 +138,7 @@ pub async fn is_admin(user_id: &UserId) -> DataResult<bool> {
     users::table
         .filter(users::id.eq(user_id))
         .select(users::is_admin)
-        .first::<bool>(&mut connect().await?)
+        .first::<bool>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -150,7 +150,7 @@ pub async fn joined_rooms(user_id: &UserId) -> DataResult<Vec<OwnedRoomId>> {
         .distinct_on(room_users::room_id)
         .select((room_users::room_id, room_users::membership))
         .order_by((room_users::room_id.desc(), room_users::id.desc()))
-        .load::<(OwnedRoomId, String)>(&mut connect().await?)
+        .load::<(OwnedRoomId, String)>(&mut crate::db())
         .await?;
     Ok(room_memeberships
         .into_iter()
@@ -168,7 +168,7 @@ pub async fn ignored_users(user_id: &UserId) -> DataResult<Vec<OwnedUserId>> {
     user_ignores::table
         .filter(user_ignores::user_id.eq(user_id))
         .select(user_ignores::ignored_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -305,7 +305,6 @@ pub async fn invite_permission_snapshot(
     membership_action: Option<&str>,
 ) -> DataResult<InvitePermissionSnapshot> {
     connect()
-        .await?
         .build_transaction()
         .read_only()
         .repeatable_read()
@@ -512,7 +511,6 @@ pub async fn invite_sync_inventory(
     device_id: Option<&DeviceId>,
 ) -> DataResult<InviteSyncInventory> {
     connect()
-        .await?
         .build_transaction()
         .read_only()
         .repeatable_read()
@@ -711,7 +709,7 @@ pub async fn invited_rooms(
     let ingored_ids = user_ignores::table
         .filter(user_ignores::user_id.eq(user_id))
         .select(user_ignores::ignored_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::db())
         .await?;
     let list = room_users::table
         .filter(room_users::user_id.eq(user_id))
@@ -719,7 +717,7 @@ pub async fn invited_rooms(
         .filter(room_users::event_sn.ge(since_sn))
         .filter(room_users::sender_id.ne_all(&ingored_ids))
         .select((room_users::room_id, room_users::state_data))
-        .load::<(OwnedRoomId, Option<JsonValue>)>(&mut connect().await?)
+        .load::<(OwnedRoomId, Option<JsonValue>)>(&mut crate::db())
         .await?
         .into_iter()
         .filter_map(|(room_id, state_data)| {
@@ -740,7 +738,7 @@ pub async fn knocked_rooms(
         .filter(room_users::membership.eq("knock"))
         .filter(room_users::event_sn.ge(since_sn))
         .select((room_users::room_id, room_users::state_data))
-        .load::<(OwnedRoomId, Option<JsonValue>)>(&mut connect().await?)
+        .load::<(OwnedRoomId, Option<JsonValue>)>(&mut crate::db())
         .await?
         .into_iter()
         .filter_map(|(room_id, state_data)| {
@@ -755,7 +753,7 @@ pub async fn knocked_rooms(
 /// Check if a user has an account on this homeserver.
 pub async fn user_exists(user_id: &UserId) -> DataResult<bool> {
     let query = users::table.find(user_id);
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::db()).map_err(Into::into)
 }
 
 /// A missing optional profile must not make an active local account disappear.
@@ -764,13 +762,13 @@ pub async fn active_local_user_exists(user_id: &UserId) -> DataResult<bool> {
         .filter(users::id.eq(user_id))
         .filter(users::is_local.eq(true))
         .filter(users::deactivated_at.is_null());
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::db())?)
 }
 
 pub async fn get_user(user_id: &UserId) -> DataResult<DbUser> {
     users::table
         .find(user_id)
-        .first::<DbUser>(&mut connect().await?)
+        .first::<DbUser>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -782,7 +780,7 @@ pub async fn create_user(new_user: &NewDbUser) -> DataResult<DbUser> {
         .on_conflict(users::id)
         .do_update()
         .set(new_user)
-        .get_result::<DbUser>(&mut connect().await?)
+        .get_result::<DbUser>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -794,7 +792,7 @@ pub async fn mark_deactivated(user_id: &UserId) -> DataResult<()> {
     access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set(users::deactivated_at.eq(UnixMillis::now()))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -804,7 +802,7 @@ pub async fn mark_deactivated(user_id: &UserId) -> DataResult<()> {
 pub async fn count() -> DataResult<u64> {
     let count = user_passwords::table
         .select(dsl::count(user_passwords::user_id).aggregate_distinct())
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await?;
     Ok(count as u64)
 }
@@ -815,7 +813,7 @@ pub async fn count() -> DataResult<u64> {
 pub async fn list_local_users() -> DataResult<Vec<OwnedUserId>> {
     user_passwords::table
         .select(user_passwords::user_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -826,7 +824,7 @@ pub async fn display_name(user_id: &UserId) -> DataResult<Option<String>> {
         .filter(user_profiles::user_id.eq(user_id.as_str()))
         .filter(user_profiles::room_id.is_null())
         .select(user_profiles::display_name)
-        .first::<Option<String>>(&mut connect().await?)
+        .first::<Option<String>>(&mut crate::db())
         .await
         .optional()
         .map(Option::flatten)
@@ -845,7 +843,7 @@ pub async fn avatar_url(user_id: &UserId) -> DataResult<Option<OwnedMxcUri>> {
         .filter(user_profiles::user_id.eq(user_id.as_str()))
         .filter(user_profiles::room_id.is_null())
         .select(user_profiles::avatar_url)
-        .first::<Option<OwnedMxcUri>>(&mut connect().await?)
+        .first::<Option<OwnedMxcUri>>(&mut crate::db())
         .await
         .optional()
         .map(Option::flatten)
@@ -868,7 +866,7 @@ pub async fn blurhash(user_id: &UserId) -> DataResult<Option<String>> {
         .filter(user_profiles::user_id.eq(user_id.as_str()))
         .filter(user_profiles::room_id.is_null())
         .select(user_profiles::blurhash)
-        .first::<Option<String>>(&mut connect().await?)
+        .first::<Option<String>>(&mut crate::db())
         .await
         .optional()
         .map(Option::flatten)
@@ -879,7 +877,7 @@ pub async fn is_deactivated(user_id: &UserId) -> DataResult<bool> {
     let deactivated_at = users::table
         .filter(users::id.eq(user_id))
         .select(users::deactivated_at)
-        .first::<Option<UnixMillis>>(&mut connect().await?)
+        .first::<Option<UnixMillis>>(&mut crate::db())
         .await
         .optional()?
         .flatten();
@@ -890,7 +888,7 @@ pub async fn is_locked(user_id: &UserId) -> DataResult<bool> {
     let locked_at = users::table
         .filter(users::id.eq(user_id))
         .select(users::locked_at)
-        .first::<Option<UnixMillis>>(&mut connect().await?)
+        .first::<Option<UnixMillis>>(&mut crate::db())
         .await
         .optional()?
         .flatten();
@@ -901,7 +899,7 @@ pub async fn is_suspended(user_id: &UserId) -> DataResult<bool> {
     let suspended_at = users::table
         .filter(users::id.eq(user_id))
         .select(users::suspended_at)
-        .first::<Option<UnixMillis>>(&mut connect().await?)
+        .first::<Option<UnixMillis>>(&mut crate::db())
         .await
         .optional()?
         .flatten();
@@ -912,7 +910,7 @@ pub async fn is_guest(user_id: &UserId) -> DataResult<bool> {
     users::table
         .filter(users::id.eq(user_id))
         .select(users::is_guest)
-        .first::<bool>(&mut connect().await?)
+        .first::<bool>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -920,7 +918,7 @@ pub async fn is_guest(user_id: &UserId) -> DataResult<bool> {
 pub async fn set_guest(user_id: &UserId, is_guest: bool) -> DataResult<()> {
     diesel::update(users::table.find(user_id))
         .set(users::is_guest.eq(is_guest))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -930,7 +928,7 @@ pub async fn all_device_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceId>> 
     user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .select(user_devices::device_id)
-        .load::<OwnedDeviceId>(&mut connect().await?)
+        .load::<OwnedDeviceId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -958,7 +956,7 @@ pub async fn delete_access_tokens(user_id: &UserId) -> DataResult<()> {
     // authenticating in the window before the post-delete scan runs.
     access_token::invalidate_user(user_id);
     diesel::delete(user_access_tokens::table.filter(user_access_tokens::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -966,7 +964,7 @@ pub async fn delete_access_tokens(user_id: &UserId) -> DataResult<()> {
 
 pub async fn delete_refresh_tokens(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_refresh_tokens::table.filter(user_refresh_tokens::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -986,7 +984,7 @@ pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
     let device_ids = user_dehydrated_devices::table
         .filter(user_dehydrated_devices::user_id.eq(user_id))
         .select(user_dehydrated_devices::device_id)
-        .load::<OwnedDeviceId>(&mut connect().await?)
+        .load::<OwnedDeviceId>(&mut crate::db())
         .await?;
 
     for device_id in device_ids {
@@ -1003,7 +1001,7 @@ pub async fn delete_dehydrated_devices(user_id: &UserId) -> DataResult<()> {
     diesel::delete(
         user_dehydrated_devices::table.filter(user_dehydrated_devices::user_id.eq(user_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -1018,7 +1016,7 @@ pub async fn get_dehydrated_device(
             user_dehydrated_devices::device_id,
             user_dehydrated_devices::device_data,
         ))
-        .first::<(OwnedDeviceId, JsonValue)>(&mut connect().await?)
+        .first::<(OwnedDeviceId, JsonValue)>(&mut crate::db())
         .await
         .optional()?
     else {
@@ -1036,7 +1034,7 @@ pub async fn upsert_dehydrated_device(
     let current_device_id = user_dehydrated_devices::table
         .filter(user_dehydrated_devices::user_id.eq(user_id))
         .select(user_dehydrated_devices::device_id)
-        .first::<OwnedDeviceId>(&mut connect().await?)
+        .first::<OwnedDeviceId>(&mut crate::db())
         .await
         .optional()?;
 
@@ -1063,7 +1061,7 @@ pub async fn upsert_dehydrated_device(
             user_dehydrated_devices::device_id.eq(&new_device.device_id),
             user_dehydrated_devices::device_data.eq(&new_device.device_data),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -1108,14 +1106,14 @@ pub async fn deactivate(user_id: &UserId) -> DataResult<()> {
     access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set((users::deactivated_at.eq(UnixMillis::now()),))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
 
     diesel::delete(user_threepids::table.filter(user_threepids::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     diesel::delete(user_access_tokens::table.filter(user_access_tokens::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
 
@@ -1125,7 +1123,7 @@ pub async fn deactivate(user_id: &UserId) -> DataResult<()> {
 pub async fn reactivate(user_id: &UserId) -> DataResult<()> {
     diesel::update(users::table.find(user_id))
         .set(users::deactivated_at.eq::<Option<UnixMillis>>(None))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -1133,7 +1131,6 @@ pub async fn reactivate(user_id: &UserId) -> DataResult<()> {
 
 pub async fn set_ignored_users(user_id: &UserId, ignored_ids: &[OwnedUserId]) -> DataResult<()> {
     connect()
-        .await?
         .transaction::<_, DataError, _>(async |conn| {
             lock_invite_user_write(conn, user_id).await?;
             diesel::delete(user_ignores::table.filter(user_ignores::user_id.eq(user_id)))
@@ -1161,7 +1158,7 @@ pub async fn get_user_by_threepid(medium: &str, address: &str) -> DataResult<Opt
         .filter(user_threepids::medium.eq(medium))
         .filter(user_threepids::address.eq(address))
         .select(user_threepids::user_id)
-        .first::<OwnedUserId>(&mut connect().await?)
+        .first::<OwnedUserId>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -1186,7 +1183,7 @@ pub async fn get_threepids(user_id: &UserId) -> DataResult<Vec<ThreepidInfo>> {
             user_threepids::added_at,
             user_threepids::validated_at,
         ))
-        .load::<(String, String, UnixMillis, UnixMillis)>(&mut connect().await?)
+        .load::<(String, String, UnixMillis, UnixMillis)>(&mut crate::db())
         .await
         .map(|rows| {
             rows.into_iter()
@@ -1206,7 +1203,7 @@ pub async fn replace_threepids(
     user_id: &UserId,
     threepids: &[(String, String, Option<i64>, Option<i64>)],
 ) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     diesel::delete(user_threepids::table.filter(user_threepids::user_id.eq(user_id)))
         .execute(&mut conn)
         .await?;
@@ -1232,7 +1229,7 @@ pub async fn set_admin(user_id: &UserId, is_admin: bool) -> DataResult<()> {
     access_token::invalidate_user(user_id);
     diesel::update(users::table.find(user_id))
         .set(users::is_admin.eq(is_admin))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -1242,7 +1239,7 @@ pub async fn set_admin(user_id: &UserId, is_admin: bool) -> DataResult<()> {
 pub async fn set_shadow_banned(user_id: &UserId, shadow_banned: bool) -> DataResult<()> {
     diesel::update(users::table.find(user_id))
         .set(users::shadow_banned.eq(shadow_banned))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -1252,7 +1249,7 @@ pub async fn set_shadow_banned(user_id: &UserId, shadow_banned: bool) -> DataRes
 pub async fn set_user_type(user_id: &UserId, user_type: Option<&str>) -> DataResult<()> {
     diesel::update(users::table.find(user_id))
         .set(users::ty.eq(user_type))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     access_token::invalidate_user(user_id);
     Ok(())
@@ -1273,7 +1270,7 @@ pub async fn set_locked(
                 users::locked_at.eq(Some(UnixMillis::now())),
                 users::locked_by.eq(locker_id.map(|u| u.to_owned())),
             ))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
     } else {
         diesel::update(users::table.find(user_id))
@@ -1281,7 +1278,7 @@ pub async fn set_locked(
                 users::locked_at.eq::<Option<UnixMillis>>(None),
                 users::locked_by.eq::<Option<OwnedUserId>>(None),
             ))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
     }
     access_token::invalidate_user(user_id);
@@ -1296,12 +1293,12 @@ pub async fn set_suspended(user_id: &UserId, suspended: bool) -> DataResult<()> 
     if suspended {
         diesel::update(users::table.find(user_id))
             .set(users::suspended_at.eq(Some(UnixMillis::now())))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
     } else {
         diesel::update(users::table.find(user_id))
             .set(users::suspended_at.eq::<Option<UnixMillis>>(None))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
     }
     access_token::invalidate_user(user_id);
@@ -1384,10 +1381,7 @@ pub async fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i6
     }
 
     // Get total count with filters applied
-    let total: i64 = count_query
-        .count()
-        .get_result(&mut connect().await?)
-        .await?;
+    let total: i64 = count_query.count().get_result(&mut crate::db()).await?;
 
     // Apply ordering
     let dir_asc = filter.dir.as_ref().map(|d| d == "f").unwrap_or(true);
@@ -1444,7 +1438,7 @@ pub async fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i6
     let limit = filter.limit.unwrap_or(100).min(1000);
     query = query.limit(limit);
 
-    let users = query.load::<DbUser>(&mut connect().await?).await?;
+    let users = query.load::<DbUser>(&mut crate::db()).await?;
 
     Ok((users, total))
 }
@@ -1463,7 +1457,7 @@ pub async fn get_ratelimit(user_id: &UserId) -> DataResult<Option<RateLimitOverr
             user_ratelimit_override::messages_per_second,
             user_ratelimit_override::burst_count,
         ))
-        .first::<(Option<i32>, Option<i32>)>(&mut connect().await?)
+        .first::<(Option<i32>, Option<i32>)>(&mut crate::db())
         .await
         .optional()
         .map(|opt| {
@@ -1492,14 +1486,14 @@ pub async fn set_ratelimit(
             user_ratelimit_override::messages_per_second.eq(messages_per_second),
             user_ratelimit_override::burst_count.eq(burst_count),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
 
 pub async fn delete_ratelimit(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_ratelimit_override::table.find(user_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }

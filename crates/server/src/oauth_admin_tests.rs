@@ -1,5 +1,5 @@
 //! Run this test alone with an EMPTY, DEDICATED PALPO_TEST_DATABASE_URL.
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use palpo::core::{UnixMillis, UserId};
 use palpo::{config, data};
 use salvo::prelude::*;
@@ -157,7 +157,7 @@ async fn provision(localpart: &str, admin: bool) {
             appservice_id: None,
             created_at: UnixMillis::now(),
         })
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     diesel::insert_into(data::schema::user_devices::table)
@@ -171,7 +171,7 @@ async fn provision(localpart: &str, admin: bool) {
             last_seen_at: None,
             created_at: UnixMillis::now(),
         })
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     diesel::insert_into(data::schema::user_access_tokens::table)
@@ -181,7 +181,7 @@ async fn provision(localpart: &str, admin: bool) {
             format!("native-{localpart}"),
             None,
         ))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
 }

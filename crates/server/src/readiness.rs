@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
@@ -84,9 +84,8 @@ pub async fn check() -> Readiness {
     let pools = data::DIESEL_POOL.get().zip(data::COORDINATION_POOL.get());
     let database = if let Some((query, _)) = pools {
         probe(&DATABASE_PROBES, DATABASE_PROBE_TIMEOUT, async {
-            let mut connection = query.get().await.map_err(|_| ())?;
             diesel::sql_query("SELECT 1")
-                .execute(&mut connection)
+                .execute(&mut query.db())
                 .await
                 .map(|_| ())
                 .map_err(|_| ())

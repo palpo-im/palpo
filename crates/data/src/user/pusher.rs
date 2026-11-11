@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 use palpo_core::push::PusherIds;
 
 use crate::core::UnixMillis;
@@ -13,7 +13,7 @@ use crate::core::push::{
 };
 use crate::core::serde::{JsonValue, RawJson};
 use crate::schema::*;
-use crate::{DataError, DataResult, connect};
+use crate::{DataError, DataResult};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_pushers)]
@@ -96,7 +96,7 @@ pub async fn get_pusher_registration(
         .filter(user_pushers::user_id.eq(user_id))
         .filter(user_pushers::pushkey.eq(pushkey))
         .order_by(user_pushers::id.desc())
-        .first::<DbPusher>(&mut connect().await?)
+        .first::<DbPusher>(&mut crate::db())
         .await
         .optional()?;
     Ok(pusher)
@@ -106,7 +106,7 @@ pub async fn get_pushers(user_id: &UserId) -> DataResult<Vec<DbPusher>> {
     user_pushers::table
         .filter(user_pushers::user_id.eq(user_id))
         .order_by(user_pushers::id.desc())
-        .load::<DbPusher>(&mut connect().await?)
+        .load::<DbPusher>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -153,14 +153,14 @@ pub async fn get_push_keys(user_id: &UserId) -> DataResult<Vec<String>> {
     user_pushers::table
         .filter(user_pushers::user_id.eq(user_id))
         .select(user_pushers::pushkey)
-        .load::<String>(&mut connect().await?)
+        .load::<String>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
 
 pub async fn delete_user_pushers(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_pushers::table.filter(user_pushers::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -171,7 +171,7 @@ pub async fn delete_device_pushers(user_id: &UserId, device_id: &DeviceId) -> Da
             .filter(user_pushers::user_id.eq(user_id))
             .filter(user_pushers::device_id.eq(device_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -184,7 +184,7 @@ pub async fn delete_pusher(user_id: &UserId, app_id: &str, pushkey: &str) -> Dat
             .filter(user_pushers::pushkey.eq(pushkey))
             .filter(user_pushers::app_id.eq(app_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -205,7 +205,7 @@ pub async fn delete_rejected_pusher(registration: &DbPusher) -> DataResult<()> {
                     .bind::<diesel::sql_types::Jsonb, _>(&registration.data),
             ),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -217,7 +217,7 @@ pub async fn delete_rejected_pusher(registration: &DbPusher) -> DataResult<()> {
 /// are removed as well, as `POST /pushers/set` requires: a device that is now signed in to
 /// another account must stop receiving notifications for the previous one.
 pub async fn set_pusher(new_pusher: &NewDbPusher, append: bool) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     conn.transaction::<_, DataError, _>(async |conn| {
         let same_key = user_pushers::table
             .filter(user_pushers::app_id.eq(&new_pusher.app_id))

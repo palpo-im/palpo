@@ -30,7 +30,7 @@ pub(crate) struct SqlSpy {
 async fn all_connections() -> Vec<crate::data::PgPooledConnection> {
     let mut held = Vec::new();
     for _ in 0..crate::data::status().max_size {
-        held.push(crate::data::connect().await.unwrap());
+        held.push(crate::data::checkout().await.unwrap());
     }
     held
 }

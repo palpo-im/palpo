@@ -1,8 +1,8 @@
 use std::sync::{Mutex, OnceLock};
 
 use diesel::{Connection, PgConnection};
-use diesel_async::RunQueryDsl;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use horme::RunQueryDsl;
 use url::Url;
 
 extern crate tracing;
@@ -16,7 +16,7 @@ pub use crate::config::DbConfig;
 pub mod full_text_search;
 
 pub mod pool;
-pub use pool::{DieselPool, PgPooledConnection, PoolError};
+pub use pool::{Db, DieselPool, PgPooledConnection, PoolError};
 
 pub mod appservice;
 pub mod media;
@@ -55,9 +55,9 @@ pub struct PreparedDatabase {
 }
 
 impl PreparedDatabase {
-    /// Connect using the prepared query pool before publishing global pools.
-    pub async fn connect(&self) -> Result<PgPooledConnection, PoolError> {
-        self.queries.get().await
+    /// A lazy query provider usable before publishing the global pools.
+    pub fn connect(&self) -> Db {
+        self.queries.db()
     }
 
     /// Validate configuration, build lazy pools, and run migrations. Failures leave
@@ -157,12 +157,26 @@ pub fn migrate(config: &DbConfig) -> DataResult<()> {
     Ok(())
 }
 
-pub async fn connect() -> Result<PgPooledConnection, PoolError> {
+/// Create a provider which borrows a connection only while each query runs.
+pub fn db() -> Db {
+    DIESEL_POOL.get().expect("diesel pool should set").db()
+}
+
+/// Creating or retaining this handle never checks out a connection.
+/// Use it for ordinary queries and scoped transactions.
+pub fn connect() -> Db {
+    db()
+}
+
+/// Explicit session lease for SQL instrumentation and adversarial database tests.
+/// Ordinary business code uses [`connect`] or [`db`].
+#[doc(hidden)]
+pub async fn checkout() -> Result<PgPooledConnection, PoolError> {
     let wait = telemetry::QUERY_POOL_WAIT.start();
     let result = DIESEL_POOL
         .get()
         .expect("diesel pool should set")
-        .get()
+        .checkout()
         .await;
     wait.finish(result.is_ok());
     match result {
@@ -174,26 +188,13 @@ pub async fn connect() -> Result<PgPooledConnection, PoolError> {
     }
 }
 
-/// Get a connection reserved for operations which must hold a database lock while
-/// ordinary queries continue on the primary pool.
-///
-/// Both pools are carved out of `db.pool_size`; using this pool never increases the
-/// configured steady-state connection budget.
-pub async fn coordination_connect() -> Result<PgPooledConnection, PoolError> {
-    let wait = telemetry::COORDINATION_POOL_WAIT.start();
-    let result = COORDINATION_POOL
+/// A lazy provider backed by the reserved coordination pool. Its transactions
+/// hold a lock lease only for their callback, releasing it before follow-up work.
+pub fn coordination_connect() -> Db {
+    COORDINATION_POOL
         .get()
         .expect("diesel coordination pool should set")
-        .get()
-        .await;
-    wait.finish(result.is_ok());
-    match result {
-        Ok(conn) => Ok(conn),
-        Err(e) => {
-            tracing::error!("db coordination connect error: {e}");
-            Err(e)
-        }
-    }
+        .db()
 }
 /// Status of the query pool. The coordination pool is reported separately by
 /// [`coordination_status`].
@@ -270,13 +271,13 @@ fn maybe_append_url_param(url: &mut Url, key: &str, value: &str) {
 
 pub async fn next_sn() -> DataResult<Seqnum> {
     diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
-        .get_result::<Seqnum>(&mut connect().await?)
+        .get_result::<Seqnum>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
 pub async fn curr_sn() -> DataResult<Seqnum> {
     diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value from occur_sn_seq")
-        .get_result::<Seqnum>(&mut connect().await?)
+        .get_result::<Seqnum>(&mut crate::db())
         .await
         .map_err(Into::into)
 }

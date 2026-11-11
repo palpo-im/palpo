@@ -1,10 +1,10 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
+use crate::DataResult;
 use crate::core::Seqnum;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 /// Mark a user as typing until `timeout_at`, replacing any existing entry.
 pub async fn upsert_typing(
@@ -26,7 +26,7 @@ pub async fn upsert_typing(
             room_typings::timeout_at.eq(timeout_at),
             room_typings::occur_sn.eq(occur_sn),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -49,7 +49,7 @@ pub async fn stop_typing(
         room_typings::timeout_at.eq(now_ms),
         room_typings::occur_sn.eq(occur_sn),
     ))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -67,7 +67,7 @@ pub async fn delete_expired_typings(room_id: &RoomId, now_ms: i64) -> DataResult
             .filter(room_typings::room_id.eq(room_id))
             .filter(room_typings::timeout_at.lt(now_ms - TYPING_ROW_GRACE_MS)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -77,7 +77,7 @@ pub async fn last_typing_sn(room_id: &RoomId) -> DataResult<Seqnum> {
     let sn = room_typings::table
         .filter(room_typings::room_id.eq(room_id))
         .select(diesel::dsl::max(room_typings::occur_sn))
-        .first::<Option<Seqnum>>(&mut connect().await?)
+        .first::<Option<Seqnum>>(&mut crate::db())
         .await
         .unwrap_or(None)
         .unwrap_or_default();
@@ -90,7 +90,7 @@ pub async fn typing_user_ids(room_id: &RoomId, now_ms: i64) -> DataResult<Vec<Ow
         .filter(room_typings::room_id.eq(room_id))
         .filter(room_typings::timeout_at.ge(now_ms))
         .select(room_typings::user_id)
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }

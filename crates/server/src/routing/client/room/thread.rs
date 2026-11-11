@@ -44,7 +44,7 @@ pub(super) async fn list_threads(
 #[cfg(test)]
 mod private_cursor_tests {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
     use salvo::test::{RequestBuilder, ResponseExt, TestClient};
     use serde_json::{Value, json};
 
@@ -238,7 +238,7 @@ mod private_cursor_tests {
                 use crate::data::schema::event_points;
                 diesel::update(event_points::table.find(&id))
                     .set(event_points::thread_id.eq(None::<String>))
-                    .execute(&mut data::connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
             }

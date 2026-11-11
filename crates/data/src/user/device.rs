@@ -1,6 +1,6 @@
 use diesel::prelude::*;
-use diesel::result::Error as DieselError;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::client::device::Device;
 use crate::core::events::AnyToDeviceEvent;
@@ -98,7 +98,7 @@ const INBOX_BATCH_STREAM_LOCK_NAMESPACE: i32 = 1_346_456_656;
 /// Fence a large atomic delivery with one lock in the separate two-integer
 /// advisory-key space. All shared-database instances must adopt the shared
 /// fence below before enabling large batches during a coordinated upgrade.
-pub async fn lock_inbox_batch_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+pub async fn lock_inbox_batch_stream(conn: &mut AsyncPgConnection) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1, $2)")
         .bind::<diesel::sql_types::Integer, _>(INBOX_BATCH_STREAM_LOCK_NAMESPACE)
         .bind::<diesel::sql_types::Integer, _>(0)
@@ -124,7 +124,7 @@ pub async fn lock_inbox_stream(
     conn: &mut AsyncPgConnection,
     user_id: &UserId,
     device_id: &DeviceId,
-) -> Result<(), DieselError> {
+) -> horme::Result<()> {
     // Shared fencing retains ordinary inbox concurrency while excluding a
     // large atomic batch before the reader captures the global sequence.
     diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1, $2)")
@@ -146,8 +146,7 @@ pub async fn curr_sn_after_inbox_writes(
     device_id: &DeviceId,
 ) -> DataResult<Seqnum> {
     let curr_sn = connect()
-        .await?
-        .transaction::<_, DieselError, _>(async |conn| {
+        .transaction::<_, horme::Error, _>(async |conn| {
             lock_inbox_stream(conn, user_id, device_id).await?;
             diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT last_value FROM occur_sn_seq")
                 .get_result::<Seqnum>(conn)
@@ -194,7 +193,7 @@ pub async fn insert_device_metadata_if_missing(
         ))
         .on_conflict((user_devices::user_id, user_devices::device_id))
         .do_nothing()
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await
         .optional()?)
 }
@@ -213,7 +212,7 @@ pub async fn create_device(
             initial_device_display_name,
             last_seen_ip,
         ))
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await?;
 
     diesel::insert_into(user_access_tokens::table)
@@ -223,7 +222,7 @@ pub async fn create_device(
             token.to_owned(),
             None,
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(device)
 }
@@ -232,7 +231,7 @@ pub async fn get_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<Db
     user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(device_id))
-        .first::<DbUserDevice>(&mut connect().await?)
+        .first::<DbUserDevice>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -276,7 +275,7 @@ pub async fn update_device(
             .filter(user_devices::device_id.eq(device_id)),
     )
     .set(changes)
-    .get_result::<DbUserDevice>(&mut connect().await?)
+    .get_result::<DbUserDevice>(&mut crate::db())
     .await
     .map_err(Into::into)
 }
@@ -304,7 +303,7 @@ pub async fn update_device_metadata_if_present(
 pub async fn get_devices(user_id: &UserId) -> DataResult<Vec<DbUserDevice>> {
     user_devices::table
         .filter(user_devices::user_id.eq(user_id))
-        .load::<DbUserDevice>(&mut connect().await?)
+        .load::<DbUserDevice>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -313,14 +312,13 @@ pub async fn is_device_exists(user_id: &UserId, device_id: &DeviceId) -> DataRes
     let query = user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(device_id));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::db()).map_err(Into::into)
 }
 
 pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
     // Evict both before revocation and after commit/rollback.
     super::access_token::invalidate_user(user_id);
     let result = connect()
-        .await?
         .transaction::<_, DataError, _>(async |conn| {
             remove_device_on_connection(conn, user_id, device_id).await
         })
@@ -395,7 +393,6 @@ pub async fn remove_other_devices(
 ) -> DataResult<Vec<OwnedDeviceId>> {
     super::access_token::invalidate_user(user_id);
     let result = connect()
-        .await?
         .transaction::<_, DataError, _>(async |conn| {
             super::key::lock_key_change_user(conn, user_id).await?;
             let device_ids = user_devices::table
@@ -494,8 +491,7 @@ pub async fn set_refresh_token(
     ultimate_session_expires_at: u64,
 ) -> DataResult<i64> {
     let id = connect()
-        .await?
-        .transaction::<_, DieselError, _>(async |conn| {
+        .transaction::<_, horme::Error, _>(async |conn| {
             diesel::delete(
                 user_refresh_tokens::table
                     .filter(user_refresh_tokens::user_id.eq(user_id))
@@ -539,7 +535,7 @@ pub async fn set_access_token(
         .on_conflict((user_access_tokens::user_id, user_access_tokens::device_id))
         .do_update()
         .set(user_access_tokens::token.eq(token))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
 
     // The upsert replaces any token previously bound to this device, orphaning
@@ -561,7 +557,7 @@ pub async fn delete_access_tokens(user_id: &UserId, device_id: &DeviceId) -> Dat
             .filter(user_access_tokens::user_id.eq(user_id))
             .filter(user_access_tokens::device_id.eq(device_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     super::access_token::invalidate_user(user_id);
     Ok(())
@@ -573,7 +569,7 @@ pub async fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> Da
             .filter(user_refresh_tokens::user_id.eq(user_id))
             .filter(user_refresh_tokens::device_id.eq(device_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -597,7 +593,7 @@ pub async fn get_to_device_events(
 
     query
         .order(device_inboxes::occur_sn.asc())
-        .load::<DbDeviceInbox>(&mut connect().await?)
+        .load::<DbDeviceInbox>(&mut crate::db())
         .await?
         .into_iter()
         .map(|event| {
@@ -621,8 +617,7 @@ pub async fn to_device_events_from(
 ) -> DataResult<(Vec<(Seqnum, RawJson<AnyToDeviceEvent>)>, bool)> {
     let fetch_limit = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
     let mut rows = connect()
-        .await?
-        .transaction::<_, DieselError, _>(async |conn| {
+        .transaction::<_, horme::Error, _>(async |conn| {
             lock_inbox_stream(conn, user_id, device_id).await?;
 
             let mut query = device_inboxes::table
@@ -670,8 +665,7 @@ pub async fn add_to_device_event(
     let json_data = serde_json::to_value(&json)?;
 
     connect()
-        .await?
-        .transaction::<_, DieselError, _>(async |conn| {
+        .transaction::<_, horme::Error, _>(async |conn| {
             lock_inbox_stream(conn, target_user_id, target_device_id).await?;
             diesel::insert_into(device_inboxes::table)
                 .values(NewDbDeviceInbox {
@@ -699,7 +693,7 @@ pub async fn remove_to_device_events(
             .filter(device_inboxes::device_id.eq(device_id))
             .filter(device_inboxes::occur_sn.le(until_sn)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -710,7 +704,7 @@ pub async fn remove_all_to_device_events(user_id: &UserId, device_id: &DeviceId)
             .filter(device_inboxes::user_id.eq(user_id))
             .filter(device_inboxes::device_id.eq(device_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -724,8 +718,7 @@ pub async fn remove_to_device_events_unless_live(
     device_id: &DeviceId,
 ) -> DataResult<()> {
     connect()
-        .await?
-        .transaction::<_, DieselError, _>(async |conn| {
+        .transaction::<_, horme::Error, _>(async |conn| {
             lock_inbox_stream(conn, user_id, device_id).await?;
             diesel::sql_query("LOCK TABLE user_devices IN SHARE ROW EXCLUSIVE MODE")
                 .execute(conn)
@@ -758,7 +751,7 @@ pub async fn remove_to_device_events_unless_live(
 
 pub async fn remove_all_user_to_device_events(user_id: &UserId) -> DataResult<()> {
     diesel::delete(device_inboxes::table.filter(device_inboxes::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }

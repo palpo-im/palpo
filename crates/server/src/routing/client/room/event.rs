@@ -493,13 +493,13 @@ pub(super) async fn timestamp_to_event(
 #[cfg(test)]
 mod transaction_tests {
     use diesel::prelude::*;
-    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::SimpleAsyncConnection;
+    use horme::RunQueryDsl;
     use salvo::test::{RequestBuilder, ResponseExt, TestClient};
     use serde_json::Value;
 
     use super::*;
     use crate::core::UserId;
-    use crate::data::connect;
     use crate::data::schema::*;
 
     async fn request(service: &Service, request: RequestBuilder) -> (Option<StatusCode>, Value) {
@@ -594,7 +594,7 @@ mod transaction_tests {
                 room_joined_servers::server_id.eq("remote-redaction.example"),
                 room_joined_servers::occur_sn.eq(crate::data::next_sn().await.unwrap()),
             ))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let (status, message) = request(
@@ -632,10 +632,10 @@ mod transaction_tests {
         // write. Retrying must repair that obligation without a second event.
         let redaction = first.1["event_id"].as_str().unwrap();
         diesel::delete(outgoing_requests::table.filter(outgoing_requests::pdu_id.eq(redaction)))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
-        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_enqueue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind = 'normal' THEN RAISE EXCEPTION 'injected federation enqueue failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_enqueue BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q15_fail_enqueue();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_enqueue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind = 'normal' THEN RAISE EXCEPTION 'injected federation enqueue failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_enqueue BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q15_fail_enqueue();").await.unwrap();
         let failed_retry = request(&service, TestClient::put(&url).json(&json!({}))).await;
         assert_eq!(
             failed_retry.0,
@@ -643,7 +643,7 @@ mod transaction_tests {
             "receipt replay must propagate federation enqueue failure: {:?}",
             failed_retry.1
         );
-        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_enqueue ON outgoing_requests; DROP FUNCTION q15_fail_enqueue();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("DROP TRIGGER q15_fail_enqueue ON outgoing_requests; DROP FUNCTION q15_fail_enqueue();").await.unwrap();
         let (status, repaired) = request(&service, TestClient::put(&url).json(&json!({}))).await;
         assert_eq!(status, Some(StatusCode::OK), "{repaired}");
         assert_eq!(repaired["event_id"], redaction);
@@ -651,7 +651,7 @@ mod transaction_tests {
             .filter(outgoing_requests::pdu_id.eq(redaction))
             .filter(outgoing_requests::server_id.eq("remote-redaction.example"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -662,7 +662,7 @@ mod transaction_tests {
             .filter(events::room_id.eq(room))
             .filter(events::ty.eq("m.room.redaction"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -672,7 +672,7 @@ mod transaction_tests {
 
         // Simulate a failed receipt write after the event was published. Recovery
         // must use the persisted event's trusted metadata rather than append again.
-        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'recover' THEN RAISE EXCEPTION 'injected receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_receipt();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'recover' THEN RAISE EXCEPTION 'injected receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_receipt();").await.unwrap();
         let recovery_url = format!("http://localhost/rooms/{room}/redact/{target}/recover");
         let failed = request(&service, TestClient::put(&recovery_url).json(&json!({}))).await;
         assert_eq!(
@@ -685,11 +685,11 @@ mod transaction_tests {
             .filter(events::room_id.eq(room))
             .filter(events::ty.eq("m.room.redaction"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(before, 2);
-        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_receipt ON event_idempotents; DROP FUNCTION q15_fail_receipt();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("DROP TRIGGER q15_fail_receipt ON event_idempotents; DROP FUNCTION q15_fail_receipt();").await.unwrap();
         let (status, recovered) =
             request(&service, TestClient::put(&recovery_url).json(&json!({}))).await;
         assert_eq!(status, Some(StatusCode::OK), "{recovered}");
@@ -697,7 +697,7 @@ mod transaction_tests {
             .filter(events::room_id.eq(room))
             .filter(events::ty.eq("m.room.redaction"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -747,7 +747,7 @@ mod transaction_tests {
         )
         .await
         .unwrap();
-        connect().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_as_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'as-recover' THEN RAISE EXCEPTION 'injected AS receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_as_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_as_receipt();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("CREATE FUNCTION q15_fail_as_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.endpoint LIKE 'room/redact/%' AND NEW.txn_id = 'as-recover' THEN RAISE EXCEPTION 'injected AS receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q15_fail_as_receipt BEFORE INSERT ON event_idempotents FOR EACH ROW EXECUTE FUNCTION q15_fail_as_receipt();").await.unwrap();
         let as_url = format!("http://localhost/rooms/{room}/redact/{target}/as-recover");
         let (status, failed_as) = request_as(
             &service,
@@ -764,10 +764,10 @@ mod transaction_tests {
             .filter(events::room_id.eq(room))
             .filter(events::ty.eq("m.room.redaction"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
-        connect().await.unwrap().batch_execute("DROP TRIGGER q15_fail_as_receipt ON event_idempotents; DROP FUNCTION q15_fail_as_receipt();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("DROP TRIGGER q15_fail_as_receipt ON event_idempotents; DROP FUNCTION q15_fail_as_receipt();").await.unwrap();
         let (status, recovered_as) = request_as(
             &service,
             "redact-device-less",
@@ -779,7 +779,7 @@ mod transaction_tests {
             .filter(events::room_id.eq(room))
             .filter(events::ty.eq("m.room.redaction"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -789,7 +789,7 @@ mod transaction_tests {
         let metadata: Option<Value> = event_datas::table
             .filter(event_datas::event_id.eq(recovered_as["event_id"].as_str().unwrap()))
             .select(event_datas::internal_metadata)
-            .first(&mut connect().await.unwrap())
+            .first(&mut crate::data::db())
             .await
             .unwrap();
         let metadata = metadata.unwrap();

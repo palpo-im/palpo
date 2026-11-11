@@ -2,9 +2,9 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::identifiers::*;
@@ -93,7 +93,7 @@ pub async fn resolve_state(
                     .filter(events::id.eq_any(subgraph))
                     .filter(events::state_key.is_not_null())
                     .select(events::id)
-                    .load::<OwnedEventId>(&mut connect().await.ok()?)
+                    .load::<OwnedEventId>(&mut connect())
                     .await
                     .ok()?
                     .into_iter()
@@ -431,7 +431,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: UnixMillis(1000),
             })
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let mut alice = pdu(
@@ -603,7 +603,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: UnixMillis(1000),
             })
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         snapshot(&create, &[]).await;
@@ -638,7 +638,7 @@ mod tests {
         let current_frame = snapshot(&bob, &[&create, &join, &bob]).await;
         diesel::update(rooms::table.find(&create.room_id))
             .set(rooms::state_frame_id.eq(current_frame))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
 

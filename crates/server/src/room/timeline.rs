@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 use serde::Deserialize;
 
 use crate::core::Seqnum;
@@ -42,7 +42,7 @@ pub async fn first_pdu_in_room(room_id: &RoomId) -> AppResult<Option<PduEvent>> 
         .filter(event_datas::room_id.eq(room_id))
         .order(event_datas::event_sn.asc())
         .select(event_datas::event_id)
-        .first::<OwnedEventId>(&mut connect().await?)
+        .first::<OwnedEventId>(&mut crate::data::db())
         .await
         .optional()?;
     match event_id {
@@ -58,7 +58,7 @@ pub async fn last_event_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqn
         .filter(events::sn.is_not_null())
         .select(events::sn)
         .order(events::sn.desc())
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await?;
     Ok(event_sn)
 }
@@ -68,7 +68,7 @@ pub async fn get_pdu_json(event_id: &EventId) -> AppResult<Option<CanonicalJsonO
     let result = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
         .select((event_datas::room_id, event_datas::json_data))
-        .first::<(OwnedRoomId, JsonValue)>(&mut connect().await?)
+        .first::<(OwnedRoomId, JsonValue)>(&mut crate::data::db())
         .await
         .optional()?;
     let Some((room_id, json)) = result else {
@@ -128,7 +128,7 @@ pub(crate) async fn load_pdu_json_batch(event_ids: &[OwnedEventId]) -> AppResult
                 event_datas::room_id,
                 event_datas::json_data,
             ))
-            .load::<(OwnedEventId, OwnedRoomId, JsonValue)>(&mut connect().await?)
+            .load::<(OwnedEventId, OwnedRoomId, JsonValue)>(&mut crate::data::db())
             .await?;
         stored.extend(rows.into_iter().map(|(id, room, json)| (id, (room, json))));
     }
@@ -141,7 +141,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
         .filter(events::is_outlier.eq(false))
         .filter(events::id.eq(event_id))
         .select((events::sn, events::room_id, events::stream_ordering))
-        .first::<(Seqnum, OwnedRoomId, i64)>(&mut connect().await?)
+        .first::<(Seqnum, OwnedRoomId, i64)>(&mut crate::data::db())
         .await
         .optional()?
     else {
@@ -150,7 +150,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
     let json = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
         .select(event_datas::json_data)
-        .first::<JsonValue>(&mut connect().await?)
+        .first::<JsonValue>(&mut crate::data::db())
         .await
         .optional()?;
     let mut pdu = if let Some(json) = json {
@@ -176,7 +176,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
     if let Some(pdu) = pdu.as_mut() {
         let event = events::table
             .filter(events::id.eq(event_id))
-            .first::<DbEvent>(&mut connect().await?)
+            .first::<DbEvent>(&mut crate::data::db())
             .await?;
         pdu.is_outlier = event.is_outlier;
         pdu.soft_failed = event.soft_failed;
@@ -193,7 +193,7 @@ pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
 pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, CanonicalJsonObject)> {
     let event = events::table
         .filter(events::id.eq(event_id))
-        .first::<DbEvent>(&mut connect().await?)
+        .first::<DbEvent>(&mut crate::data::db())
         .await?;
     let (event_sn, room_id, json) = event_datas::table
         .filter(event_datas::event_id.eq(event_id))
@@ -202,7 +202,7 @@ pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, Cano
             event_datas::room_id,
             event_datas::json_data,
         ))
-        .first::<(Seqnum, OwnedRoomId, JsonValue)>(&mut connect().await?)
+        .first::<(Seqnum, OwnedRoomId, JsonValue)>(&mut crate::data::db())
         .await?;
     #[cfg(feature = "unstable-msc1763")]
     let mut json = json;
@@ -234,7 +234,7 @@ pub async fn get_may_missing_pdus(
         .filter(event_datas::room_id.eq(room_id))
         .filter(event_datas::event_id.eq_any(event_ids))
         .select(event_datas::event_id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?;
 
     let mut pdus = Vec::with_capacity(events.len());
@@ -250,15 +250,11 @@ pub async fn get_may_missing_pdus(
 }
 
 pub async fn has_pdu(event_id: &EventId) -> bool {
-    if let Ok(mut conn) = connect().await {
-        diesel_exists!(
-            event_datas::table.filter(event_datas::event_id.eq(event_id)),
-            &mut conn
-        )
-        .unwrap_or(false)
-    } else {
-        false
-    }
+    diesel_exists!(
+        event_datas::table.filter(event_datas::event_id.eq(event_id)),
+        &mut connect()
+    )
+    .unwrap_or(false)
 }
 
 /// Removes a pdu and creates a new one with the same id.
@@ -266,7 +262,7 @@ pub async fn has_pdu(event_id: &EventId) -> bool {
 pub async fn replace_pdu(event_id: &EventId, pdu_json: &CanonicalJsonObject) -> AppResult<()> {
     diesel::update(event_datas::table.filter(event_datas::event_id.eq(event_id)))
         .set(event_datas::json_data.eq(serde_json::to_value(pdu_json)?))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     // PDU_CACHE.lock().unwrap().remove(&(*pdu.event_id).to_owned());
 
@@ -376,7 +372,7 @@ pub async fn append_pdu(
     leaves.retain(|event_id| !pdu.prev_events.contains(event_id));
     if !diesel_exists!(
         event_edges::table.filter(event_edges::prev_id.eq(&pdu.event_id)),
-        &mut connect().await?
+        &mut crate::data::db()
     )? {
         // Only add the incoming event as a forward extremity if it is not already in the DB
         leaves.insert(pdu.event_id.clone());
@@ -646,7 +642,6 @@ pub async fn append_pdu(
     // promotion so feature branches can add derived visibility indexes here without
     // exposing a partially published event to another server process.
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             event_data.save_with_conn(conn).await?;
             crate::event::sticky::publish_live_frame_with_conn(conn, pdu, frame_id).await?;
@@ -938,13 +933,9 @@ pub(crate) async fn build_and_append_pdu_with_transaction(
     // Palpo processes serve the same database. Keep a transaction-scoped PostgreSQL lock
     // from the first current-state/prev-event read through timeline publication.
     //
-    // The coordination pool caps how many rooms can be in this section at once, so report
-    // exhaustion as such instead of letting a bare pool timeout reach the operator.
-    let mut fence = coordination_connect().await.map_err(|e| {
-        AppError::internal(format!(
-            "no coordination connection available to fence the event append for room {room_id}; raise db.coordination_pool_size (and db.pool_size with it) if this happens under normal load: {e}"
-        ))
-    })?;
+    // The coordination pool caps how many rooms can be in this section at once.
+    // The handle acquires its lease only for the scoped append transaction.
+    let mut fence = coordination_connect();
     let (pdu, appended) = fence
         .transaction::<_, AppError, _>(async |conn| {
             crate::data::room::timeline::lock_event_append(conn, room_id)
@@ -1141,7 +1132,6 @@ pub async fn redact_pdu(event_id: &EventId, reason: &PduEvent) -> AppResult<()> 
     pdu.redact(reason)?;
     let redacted_json = serde_json::to_value(to_canonical_object(&pdu)?)?;
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             diesel::update(event_datas::table.filter(event_datas::event_id.eq(event_id)))
                 .set(event_datas::json_data.eq(&redacted_json))
@@ -1171,7 +1161,7 @@ pub async fn is_event_next_to_backward_gap(event: &PduEvent) -> AppResult<bool> 
     let query = event_backward_extremities::table
         .filter(event_backward_extremities::room_id.eq(event.room_id()))
         .filter(event_backward_extremities::event_id.eq_any(event_ids));
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::data::db())?)
 }
 
 pub async fn is_event_next_to_forward_gap(event: &PduEvent) -> AppResult<bool> {
@@ -1180,7 +1170,7 @@ pub async fn is_event_next_to_forward_gap(event: &PduEvent) -> AppResult<bool> {
     let query = event_forward_extremities::table
         .filter(event_forward_extremities::room_id.eq(event.room_id()))
         .filter(event_forward_extremities::event_id.eq_any(event_ids));
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::data::db())?)
 }
 
 #[cfg(test)]

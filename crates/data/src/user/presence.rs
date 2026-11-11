@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::events::presence::{PresenceEvent, PresenceEventContent};
 use crate::core::identifiers::*;
@@ -97,7 +98,7 @@ pub async fn last_presence(user_id: &UserId) -> DataResult<PresenceEvent> {
 pub async fn maybe_last_presence(user_id: &UserId) -> DataResult<Option<PresenceEvent>> {
     let presence = user_presences::table
         .filter(user_presences::user_id.eq(user_id))
-        .first::<DbPresence>(&mut connect().await?)
+        .first::<DbPresence>(&mut crate::db())
         .await
         .optional()?;
     if let Some(data) = presence {
@@ -112,7 +113,7 @@ pub async fn presence_sn(user_id: &UserId) -> DataResult<Option<i64>> {
     user_presences::table
         .filter(user_presences::user_id.eq(user_id))
         .select(user_presences::occur_sn)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -129,7 +130,7 @@ pub async fn presence_user_ids_after(after: Option<&UserId>) -> DataResult<Vec<O
     query
         .order(user_presences::user_id)
         .limit(100)
-        .load(&mut connect().await?)
+        .load(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -163,7 +164,6 @@ pub async fn curr_sn_after_presence_writes(
     device: Option<(&UserId, &DeviceId)>,
 ) -> DataResult<i64> {
     connect()
-        .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             lock_presence_stream_shared(conn).await?;
             if let Some((user, device)) = device {
@@ -203,7 +203,6 @@ pub async fn restamp_presence_with_conn(
 /// Atomically replace presence and publish its new stream position.
 pub async fn set_presence(mut db_presence: NewDbPresence, force: bool) -> DataResult<bool> {
     connect()
-        .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             lock_presence_stream(conn).await?;
             let old_state = user_presences::table
@@ -251,7 +250,6 @@ pub async fn set_presence(mut db_presence: NewDbPresence, force: bool) -> DataRe
 /// skip it, and refreshes `updated_at` so rebuilt federation EDUs observe it at this time.
 pub async fn refresh_presence_for_profile(user_id: &UserId) -> DataResult<()> {
     connect()
-        .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             lock_presence_stream(conn).await?;
             let now = UnixMillis::now();
@@ -278,7 +276,7 @@ pub async fn refresh_presence_for_profile(user_id: &UserId) -> DataResult<()> {
 /// Removes the presence record for the given user from the database.
 pub async fn remove_presence(user_id: &UserId) -> DataResult<()> {
     diesel::delete(user_presences::table.filter(user_presences::user_id.eq(user_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -289,7 +287,7 @@ pub async fn presences_since(
 ) -> DataResult<HashMap<OwnedUserId, (i64, PresenceEvent)>> {
     let presences = user_presences::table
         .filter(user_presences::occur_sn.ge(since_sn))
-        .load::<DbPresence>(&mut connect().await?)
+        .load::<DbPresence>(&mut crate::db())
         .await?;
     let mut result = HashMap::new();
     for presence in presences {
@@ -314,7 +312,7 @@ pub async fn presences_between(
             user_presences::occur_sn.asc(),
             user_presences::user_id.asc(),
         ))
-        .load::<DbPresence>(&mut connect().await?)
+        .load::<DbPresence>(&mut crate::db())
         .await?;
     let mut result = Vec::with_capacity(presences.len());
     for presence in presences {
@@ -348,7 +346,7 @@ pub async fn presence_sns_between(
             user_presences::user_id.asc(),
         ))
         .select((user_presences::user_id, user_presences::occur_sn))
-        .load(&mut connect().await?)
+        .load(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -356,7 +354,7 @@ pub async fn presence_sns_between(
 // Unset online/unavailable presence to offline on startup
 pub async fn unset_all_presences() -> DataResult<()> {
     diesel::delete(user_presences::table)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }

@@ -1,13 +1,13 @@
 use std::fmt;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 
+use crate::DataResult;
 use crate::core::appservice::Registration;
 use crate::core::serde::JsonValue;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Insertable, Serialize, Deserialize, Clone)]
 #[diesel(table_name = appservice_registrations)]
@@ -151,7 +151,7 @@ impl TryFrom<DbRegistration> for Registration {
 pub async fn insert_registration(registration: &DbRegistration) -> DataResult<()> {
     diesel::insert_into(appservice_registrations::table)
         .values(registration)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -159,7 +159,7 @@ pub async fn insert_registration(registration: &DbRegistration) -> DataResult<()
 /// Delete an appservice registration by id.
 pub async fn delete_registration(id: &str) -> DataResult<()> {
     diesel::delete(appservice_registrations::table.find(id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -168,7 +168,7 @@ pub async fn delete_registration(id: &str) -> DataResult<()> {
 pub async fn set_disabled(id: &str, disabled: bool) -> DataResult<bool> {
     let affected = diesel::update(appservice_registrations::table.find(id))
         .set(appservice_registrations::disabled.eq(disabled))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(affected > 0)
 }
@@ -188,7 +188,7 @@ pub async fn update_url_if_unchanged(
     expected_url: Option<&str>,
     url: &str,
 ) -> DataResult<UpdateUrlResult> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     conn.transaction::<_, crate::DataError, _>(async |conn| {
         let existing = appservice_registrations::table
             .find(id)
@@ -219,7 +219,7 @@ pub async fn update_url_if_unchanged(
 /// Load every registration, including administratively disabled ones.
 pub async fn all_registrations() -> DataResult<Vec<DbRegistration>> {
     appservice_registrations::table
-        .load::<DbRegistration>(&mut connect().await?)
+        .load::<DbRegistration>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -228,7 +228,7 @@ pub async fn all_registrations() -> DataResult<Vec<DbRegistration>> {
 pub async fn enabled_registrations() -> DataResult<Vec<DbRegistration>> {
     appservice_registrations::table
         .filter(appservice_registrations::disabled.eq(false))
-        .load::<DbRegistration>(&mut connect().await?)
+        .load::<DbRegistration>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -237,7 +237,7 @@ pub async fn enabled_registrations() -> DataResult<Vec<DbRegistration>> {
 pub async fn find_registration(id: &str) -> DataResult<Option<DbRegistration>> {
     appservice_registrations::table
         .find(id)
-        .first::<DbRegistration>(&mut connect().await?)
+        .first::<DbRegistration>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)

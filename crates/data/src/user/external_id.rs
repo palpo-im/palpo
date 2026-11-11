@@ -1,10 +1,10 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Insertable, Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_external_ids)]
@@ -34,7 +34,7 @@ pub async fn get_user_by_external_id(
         .filter(user_external_ids::auth_provider.eq(auth_provider))
         .filter(user_external_ids::external_id.eq(external_id))
         .select(user_external_ids::user_id)
-        .first::<OwnedUserId>(&mut connect().await?)
+        .first::<OwnedUserId>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -44,7 +44,7 @@ pub async fn get_user_by_external_id(
 pub async fn get_external_ids_by_user(user_id: &UserId) -> DataResult<Vec<DbUserExternalId>> {
     user_external_ids::table
         .filter(user_external_ids::user_id.eq(user_id))
-        .load::<DbUserExternalId>(&mut connect().await?)
+        .load::<DbUserExternalId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -62,7 +62,7 @@ pub async fn record_external_id(
             user_id: user_id.to_owned(),
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -72,7 +72,7 @@ pub async fn replace_external_ids(
     user_id: &UserId,
     new_external_ids: &[(String, String)], // (auth_provider, external_id)
 ) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
 
     // Delete existing external IDs for this user
     diesel::delete(user_external_ids::table.filter(user_external_ids::user_id.eq(user_id)))
@@ -103,7 +103,7 @@ pub async fn delete_external_id(auth_provider: &str, external_id: &str) -> DataR
             .filter(user_external_ids::auth_provider.eq(auth_provider))
             .filter(user_external_ids::external_id.eq(external_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }

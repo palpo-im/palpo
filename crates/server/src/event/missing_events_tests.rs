@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::prelude::*;
 use salvo::test::{ResponseExt, TestClient};
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use crate::core::{
     OwnedDeviceId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UnixMillis, UserId,
 };
 use crate::data::schema::{event_datas, events};
-use crate::data::{self, connect};
+use crate::data::{self};
 use crate::event::PduEvent;
 use crate::event::fetching::{
     MissingEventsRecovery, fetch_and_process_missing_events, process_missing_events_response,
@@ -89,7 +89,7 @@ async fn assert_retry_without_storage(
         events::table
             .filter(events::id.eq(&id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0
@@ -98,7 +98,7 @@ async fn assert_retry_without_storage(
         event_datas::table
             .filter(event_datas::event_id.eq(&id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0
@@ -280,11 +280,11 @@ async fn recovery_cases() {
     let (orphan, ..) = orphan.save_to_database(false).await.unwrap();
     diesel::update(events::table.find(&orphan.event_id))
         .set((events::is_outlier.eq(false), events::soft_failed.eq(false)))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     diesel::delete(event_datas::table.filter(event_datas::event_id.eq(&orphan.event_id)))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     let recovery = response(&room_id, std::slice::from_ref(&orphan.event_id), vec![]).await;
@@ -359,7 +359,7 @@ async fn recovery_cases() {
                 events::is_rejected.eq(rejected),
                 events::soft_failed.eq(soft_failed),
             ))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -371,7 +371,7 @@ async fn recovery_cases() {
     }
     diesel::update(events::table.find(&first.event_id))
         .set((events::is_rejected.eq(false), events::soft_failed.eq(false)))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
 
@@ -571,7 +571,7 @@ async fn recovery_cases() {
         events::table
             .filter(events::id.eq(&imported_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0
@@ -580,7 +580,7 @@ async fn recovery_cases() {
         event_datas::table
             .filter(event_datas::event_id.eq(&imported_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0
@@ -896,7 +896,7 @@ async fn pending_state_cases() {
     );
     diesel::update(events::table.find(&gme.event_id))
         .set(events::is_rejected.eq(true))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     assert_eq!(

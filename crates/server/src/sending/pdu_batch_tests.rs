@@ -1,7 +1,7 @@
 //! Fixed-data PostgreSQL comparison of the old and batched federation loaders.
 use std::time::{Duration, Instant};
 
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -40,7 +40,7 @@ async fn room(version: &RoomVersionId) -> OwnedRoomId {
             has_auth_chain_index: false,
             created_at: UnixMillis::now(),
         })
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     id
@@ -61,7 +61,7 @@ async fn store(id: &EventId, room: &RoomId, body: &Value) {
             events::contains_url.eq(false),
             events::is_outlier.eq(false),
         ))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     data::room::DbEventData {
@@ -337,7 +337,7 @@ async fn run() {
             "INSERT INTO event_retention_expired (event_id,expired_at) VALUES ($1,0)",
         )
         .bind::<diesel::sql_types::Text, _>(expired.as_str())
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
         let ids = [expired.clone(), expired];

@@ -2,11 +2,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
 use crate::core::serde::{CanonicalJsonObject, RawJsonValue};
 use crate::core::{OwnedEventId, OwnedRoomId, RoomVersionId, ServerName};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AppError, AppResult, room};
 
@@ -31,7 +30,7 @@ async fn load_versions(room_ids: &BTreeSet<OwnedRoomId>, versions: &mut Versions
             rooms::table
                 .filter(rooms::id.eq_any(ids))
                 .select((rooms::id, rooms::version))
-                .load::<(OwnedRoomId, String)>(&mut connect().await?)
+                .load::<(OwnedRoomId, String)>(&mut crate::data::db())
                 .await
                 .map_err(AppError::from)
         }
@@ -92,7 +91,7 @@ pub(super) async fn prepare(
             events::table
                 .filter(events::id.eq_any(ids))
                 .select((events::id, events::room_id))
-                .load::<(OwnedEventId, OwnedRoomId)>(&mut connect().await?)
+                .load::<(OwnedEventId, OwnedRoomId)>(&mut crate::data::db())
                 .await
                 .map_err(AppError::from)
         }

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
@@ -11,7 +11,6 @@ use crate::core::events::StateEventType;
 use crate::core::events::room::join_rule::RoomJoinRulesEventContent;
 use crate::core::identifiers::*;
 use crate::core::room::JoinRule;
-use crate::data::connect;
 use crate::{AppResult, AuthArgs, DepotExt, JsonResult, data, hoops, json_ok, room};
 
 pub fn authed_router() -> Router {
@@ -81,7 +80,7 @@ async fn search_users(sender: &UserId, term: &str, limit: usize) -> AppResult<Se
         .bind::<diesel::sql_types::Text, _>(&after)
         .bind::<diesel::sql_types::Text, _>(format!("%{term}%"))
         .bind::<diesel::sql_types::BigInt, _>(SEARCH_BATCH_SIZE as i64)
-        .load::<DirectoryProfile>(&mut connect().await?)
+        .load::<DirectoryProfile>(&mut crate::data::db())
         .await?;
         if profiles.is_empty() {
             return Ok(SearchUsersResBody {
@@ -103,7 +102,7 @@ async fn search_users(sender: &UserId, term: &str, limit: usize) -> AppResult<Se
             ) AS current_memberships WHERE membership = 'join'",
         )
         .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&users)
-        .load::<DirectoryMembership>(&mut connect().await?)
+        .load::<DirectoryMembership>(&mut crate::data::db())
         .await?;
         let mut rooms_by_user: HashMap<String, Vec<OwnedRoomId>> = HashMap::new();
         for membership in memberships {
@@ -188,7 +187,7 @@ mod database_tests {
                     avatar_url: None,
                     blurhash: None,
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -219,7 +218,7 @@ mod database_tests {
                     state_data: None,
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -231,7 +230,7 @@ mod database_tests {
                 avatar_url: None,
                 blurhash: None,
             })
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let first = search_users(&sender, "directory fixture", 1).await.unwrap();

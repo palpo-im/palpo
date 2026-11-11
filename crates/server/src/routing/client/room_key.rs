@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
 use crate::core::client::backup::*;
 use crate::core::serde::RawJson;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::key_backup::{self, DbRoomKey, DbRoomKeysVersion};
 use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, empty_ok, hoops, json_ok};
@@ -62,7 +61,7 @@ async fn get_keys(
     let keys = e2e_room_keys::table
         .filter(e2e_room_keys::user_id.eq(authed.user_id()))
         .filter(e2e_room_keys::version.eq(version))
-        .load::<DbRoomKey>(&mut connect().await?)
+        .load::<DbRoomKey>(&mut crate::data::db())
         .await?;
     let mut rooms = BTreeMap::<_, RoomKeyBackup>::new();
     for key in keys {
@@ -98,7 +97,7 @@ async fn get_keys_for_room(
         .filter(e2e_room_keys::user_id.eq(authed.user_id()))
         .filter(e2e_room_keys::version.eq(args.version))
         .filter(e2e_room_keys::room_id.eq(&args.room_id))
-        .load::<DbRoomKey>(&mut connect().await?)
+        .load::<DbRoomKey>(&mut crate::data::db())
         .await?
         .into_iter()
         .map(|key| (key.session_id.clone(), key.into()))
@@ -120,7 +119,7 @@ async fn get_session_keys(
         .filter(e2e_room_keys::room_id.eq(&args.room_id))
         .filter(e2e_room_keys::session_id.eq(&args.session_id))
         // .select(e2e_room_keys::session_data)
-        .first::<DbRoomKey>(&mut connect().await?)
+        .first::<DbRoomKey>(&mut crate::data::db())
         .await
         .optional()?
         .ok_or(MatrixError::not_found(

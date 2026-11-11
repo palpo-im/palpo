@@ -1,11 +1,11 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 /// Database model for event reports
 #[derive(Identifiable, Queryable, Debug, Clone)]
@@ -100,7 +100,7 @@ pub async fn create_event_report(report: NewDbEventReport) -> DataResult<i64> {
     let result = diesel::insert_into(event_reports::table)
         .values(&report)
         .returning(event_reports::id)
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await?;
     Ok(result)
 }
@@ -127,7 +127,7 @@ pub async fn list_event_reports(
     // Get total count
     let total = count_query
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await?;
 
     // Apply ordering - default is backwards (newest first)
@@ -147,7 +147,7 @@ pub async fn list_event_reports(
     let limit = filter.limit.unwrap_or(100).min(1000);
     query = query.limit(limit);
 
-    let reports = query.load::<DbEventReport>(&mut connect().await?).await?;
+    let reports = query.load::<DbEventReport>(&mut crate::db()).await?;
 
     Ok((reports.into_iter().map(Into::into).collect(), total))
 }
@@ -156,7 +156,7 @@ pub async fn list_event_reports(
 pub async fn get_event_report(report_id: i64) -> DataResult<Option<DbEventReport>> {
     event_reports::table
         .find(report_id)
-        .first::<DbEventReport>(&mut connect().await?)
+        .first::<DbEventReport>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -169,7 +169,7 @@ pub async fn update_event_report_status(
 ) -> DataResult<Option<DbEventReport>> {
     diesel::update(event_reports::table.find(report_id))
         .set(event_reports::status.eq(status))
-        .get_result::<DbEventReport>(&mut connect().await?)
+        .get_result::<DbEventReport>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -179,7 +179,7 @@ pub async fn update_event_report_status(
 /// Returns true if deleted, false if not found
 pub async fn delete_event_report(report_id: i64) -> DataResult<bool> {
     let result = diesel::delete(event_reports::table.find(report_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(result > 0)
 }
@@ -188,7 +188,7 @@ pub async fn delete_event_report(report_id: i64) -> DataResult<bool> {
 pub async fn count_event_reports() -> DataResult<i64> {
     event_reports::table
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await
         .map_err(Into::into)
 }

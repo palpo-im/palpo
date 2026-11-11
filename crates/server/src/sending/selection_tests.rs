@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Json, Text};
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde_json::{Value, json};
 
 use super::*;
@@ -53,7 +53,7 @@ fn configure() {
 
 async fn execute(sql: &str) {
     diesel::sql_query(sql)
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
 }
@@ -62,7 +62,7 @@ async fn receipt(sn: i64, room: &str, user: &str, event: &str, ty: &str, data: V
     diesel::sql_query("INSERT INTO event_receipts (sn,ty,room_id,user_id,event_id,event_sn,json_data,receipt_at) VALUES ($1,$2,$3,$4,$5,$1,$6,0)")
         .bind::<BigInt,_>(sn).bind::<Text,_>(ty).bind::<Text,_>(room)
         .bind::<Text,_>(user).bind::<Text,_>(event).bind::<Json,_>(data)
-        .execute(&mut data::connect().await.unwrap()).await.unwrap();
+        .execute(&mut crate::data::db()).await.unwrap();
 }
 
 fn decoded(events: &[EduBuf]) -> Vec<Value> {
@@ -502,7 +502,7 @@ struct Count {
 
 async fn count(sql: &str) -> i64 {
     diesel::sql_query(sql)
-        .get_result::<Count>(&mut data::connect().await.unwrap())
+        .get_result::<Count>(&mut crate::data::db())
         .await
         .unwrap()
         .count
@@ -601,7 +601,7 @@ async fn review_outbound_scheduler_is_fair_under_slow_claim_and_ack() {
     execute("CREATE TRIGGER review_slow_claim BEFORE UPDATE ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION review_block_claim()").await;
     execute("CREATE FUNCTION review_block_ack() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.appservice_id='slow-ack' THEN PERFORM nextval('review_slow_ack_attempts'); PERFORM pg_advisory_xact_lock(7712); END IF; RETURN OLD; END $$").await;
     execute("CREATE TRIGGER review_slow_ack BEFORE DELETE ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION review_block_ack()").await;
-    let mut locks = data::connect().await.unwrap();
+    let mut locks = data::checkout().await.unwrap();
     diesel::sql_query("SELECT pg_advisory_lock(7711),pg_advisory_lock(7712)")
         .execute(&mut locks)
         .await
@@ -696,13 +696,13 @@ async fn review_outbound_scheduler_is_fair_under_slow_claim_and_ack() {
     // Cancel before a BEGIN batch completes, so Diesel has not yet increased
     // its recorded transaction depth. The batch holds a real table lock;
     // cleanup must not depend on checking the cancelled object out again.
-    let mut begin_lock = data::connect().await.unwrap();
+    let mut begin_lock = data::checkout().await.unwrap();
     diesel::sql_query("SELECT pg_advisory_lock(7713)")
         .execute(&mut begin_lock)
         .await
         .unwrap();
     let beginning = tokio::spawn(async {
-        let mut connection = TransactionConnection::new(data::connect().await.unwrap());
+        let mut connection = TransactionConnection::new(data::checkout().await.unwrap());
         diesel_async::AnsiTransactionManager::begin_transaction_sql(
             connection.connection(),
             "BEGIN; LOCK TABLE outgoing_requests IN ACCESS EXCLUSIVE MODE; SELECT pg_advisory_xact_lock(7713)",

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -47,7 +47,7 @@ pub(crate) async fn history_has_missing_predecessors(
         .filter(events::id.eq_any(prev_events))
         .filter(events::is_outlier.eq(false))
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect::<HashSet<_>>();
@@ -157,7 +157,7 @@ pub async fn backfill_if_required(
             .filter(event_backward_extremities::room_id.eq(room_id))
             .select(event_backward_extremities::event_id)
             .distinct()
-            .load(&mut connect().await?)
+            .load(&mut crate::data::db())
             .await?;
 
         let mut fill_from: Vec<OwnedEventId> = Vec::new();
@@ -402,7 +402,6 @@ pub(crate) async fn append_backfilled_pdu(
         format_version: None,
     };
     let promoted = connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             let (outlier, rejected) = events::table
                 .find(&pdu.event_id)
@@ -493,7 +492,7 @@ mod history_database_tests {
         event.is_rejected = rejected;
         event.soft_failed = rejected;
         event.rejection_reason = pdu.rejection_reason.clone();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         event.save_with_conn(&mut conn).await.unwrap();
         DbEventData {
             event_id: pdu.event_id.clone(),
@@ -520,7 +519,7 @@ mod history_database_tests {
         pdu.pdu.event_ty = "my.room.breaker".into();
         pdu.pdu.state_key = Some(state_key.to_owned());
         let json = crate::core::serde::to_canonical_object(&pdu.pdu).unwrap();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::update(events::table.find(&pdu.event_id))
             .set((
                 events::ty.eq(pdu.event_ty.to_string()),
@@ -578,7 +577,7 @@ mod history_database_tests {
             .filter(events::id.eq_any(&sentinel.prev_events))
             .filter(events::is_outlier.eq(false))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(old_known_count, 0);
@@ -593,7 +592,7 @@ mod history_database_tests {
         let gaps = timeline_gaps::table
             .filter(timeline_gaps::event_id.eq(&sentinel.event_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -650,7 +649,7 @@ mod history_database_tests {
         let gaps = timeline_gaps::table
             .filter(timeline_gaps::event_id.eq(&later.event_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -693,7 +692,7 @@ mod history_database_tests {
             .filter(events::id.eq_any(&join.prev_events))
             .filter(events::is_outlier.eq(false))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -730,7 +729,7 @@ mod history_database_tests {
             timeline_gaps::table
                 .filter(timeline_gaps::event_id.eq(&join.event_id))
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             0
@@ -745,7 +744,7 @@ mod history_database_tests {
         );
         diesel::update(events::table.find(&state.event_id))
             .set(events::soft_failed.eq(true))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         assert!(
@@ -755,7 +754,7 @@ mod history_database_tests {
         );
         diesel::update(events::table.find(&state.event_id))
             .set(events::soft_failed.eq(false))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
 
@@ -787,7 +786,7 @@ mod history_database_tests {
             timeline_gaps::table
                 .filter(timeline_gaps::event_id.eq(&later.event_id))
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             1

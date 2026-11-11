@@ -1,7 +1,7 @@
 //! Endpoints for handling keys for end-to-end encryption
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
@@ -10,7 +10,6 @@ use crate::core::federation::key::{
     ClaimKeysReqBody, ClaimKeysResBody, QueryKeysReqBody, QueryKeysResBody,
 };
 use crate::core::identifiers::*;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AuthArgs, CjsonResult, DepotExt, JsonResult, cjson_ok, data, json_ok};
 
@@ -77,7 +76,7 @@ async fn get_devices(
     let devices_and_names = user_devices::table
         .filter(user_devices::user_id.eq(&user_id))
         .select((user_devices::device_id, user_devices::display_name))
-        .load::<(OwnedDeviceId, Option<String>)>(&mut connect().await?)
+        .load::<(OwnedDeviceId, Option<String>)>(&mut crate::data::db())
         .await?;
     for (device_id, display_name) in devices_and_names {
         // A login creates its device before uploading identity keys. It must

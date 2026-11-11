@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use palpo_core::Seqnum;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -21,7 +21,6 @@ use crate::core::federation::query::{
 };
 use crate::core::identifiers::*;
 use crate::core::state::Event;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::DbProfile;
 use crate::event::{BatchToken, PduBuilder, SnPduEvent};
@@ -99,7 +98,7 @@ pub(super) async fn get_members(
                             .filter(events::is_rejected.eq(false))
                             .filter(events::stream_ordering.ge(0))
                             .select(event_points::live_published_sn)
-                            .first::<Option<Seqnum>>(&mut connect().await?)
+                            .first::<Option<Seqnum>>(&mut crate::data::db())
                             .await?
                             .ok_or_else(|| {
                                 MatrixError::not_found("leave publication is not found")
@@ -130,7 +129,7 @@ pub(super) async fn get_members(
                         .filter(event_points::frame_id.is_not_null())
                         .order(event_points::frame_id.desc())
                         .select(event_points::frame_id)
-                        .first::<Option<i64>>(&mut connect().await?)
+                        .first::<Option<i64>>(&mut crate::data::db())
                         .await?
                         .unwrap_or_default()
                 }

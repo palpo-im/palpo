@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 
 use crate::core::events::TimelineEventType;
 use crate::core::identifiers::*;
@@ -148,13 +148,13 @@ impl OutlierPdu {
                         events::soft_failed.eq(true),
                         events::rejection_reason.eq(&pdu.rejection_reason),
                     ))
-                    .execute(&mut connect().await?)
+                    .execute(&mut crate::data::db())
                     .await?;
                 // A refused event is never promoted, so its sticky window can go too.
                 diesel::delete(
                     event_stickies::table.filter(event_stickies::event_id.eq(&pdu.event_id)),
                 )
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
             }
             return Ok((
@@ -194,7 +194,6 @@ impl OutlierPdu {
         // An outlier becomes queryable as soon as its JSON row commits. Keep metadata and
         // JSON together so feature-specific outlier indexes can share this transaction.
         let (is_rejected, rejection_reason) = connect()
-            .await?
             .transaction::<_, AppError, _>(async |conn| {
                 // Create the row before locking it so the lock below always has one to
                 // take. A concurrent replay of the same event serialises against this
@@ -353,7 +352,7 @@ impl OutlierPdu {
         let query = events::table
             .filter(events::id.eq_any(&self.pdu.auth_events))
             .filter(events::is_rejected.eq(true));
-        Ok(diesel_exists!(query, &mut connect().await?)?)
+        Ok(diesel_exists!(query, &mut crate::data::db())?)
     }
     pub async fn process_pulled(
         mut self,

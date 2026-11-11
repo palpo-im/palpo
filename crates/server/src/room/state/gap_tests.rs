@@ -1,12 +1,12 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::prelude::*;
 use salvo::test::{RequestBuilder, ResponseExt, TestClient};
 use serde_json::{Value, json};
 
 use crate::core::{OwnedDeviceId, OwnedRoomId, RoomId, RoomVersionId, UnixMillis, UserId};
 use crate::data::schema::{event_backward_extremities, events, timeline_gaps};
-use crate::data::{self, connect};
+use crate::data::{self};
 use crate::event::SnPduEvent;
 use crate::room::{self, timeline};
 use crate::{AppError, PduBuilder, config};
@@ -64,7 +64,7 @@ async fn gap_count(event: &SnPduEvent) -> i64 {
         .filter(timeline_gaps::room_id.eq(&event.room_id))
         .filter(timeline_gaps::event_sn.eq(event.event_sn))
         .count()
-        .get_result::<i64>(&mut connect().await.unwrap())
+        .get_result::<i64>(&mut crate::data::db())
         .await
         .unwrap()
 }
@@ -149,7 +149,7 @@ async fn recovery() {
         // A joining server can have the signed predecessor only as an outlier.
         diesel::update(events::table.find(&predecessor.event_id))
             .set(events::is_outlier.eq(true))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
     }
@@ -177,7 +177,7 @@ async fn recovery() {
             .filter(timeline_gaps::room_id.eq(&latest.room_id))
             .filter(timeline_gaps::event_sn.eq(latest.event_sn))
             .select(timeline_gaps::event_id)
-            .first::<crate::core::OwnedEventId>(&mut connect().await.unwrap())
+            .first::<crate::core::OwnedEventId>(&mut crate::data::db())
             .await
             .unwrap(),
         latest.event_id
@@ -226,7 +226,7 @@ async fn recovery() {
             .filter(event_backward_extremities::room_id.eq(&latest.room_id))
             .filter(event_backward_extremities::event_id.eq(&latest.event_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0
@@ -265,7 +265,7 @@ async fn recovery() {
     // Only the documented idempotency key is ignored. Other PostgreSQL errors
     // must still reach the caller instead of being swallowed as a retry.
     diesel::sql_query("ALTER TABLE timeline_gaps ADD CONSTRAINT gap_regression_error CHECK (event_id <> '$gap-propagated-db-error')")
-        .execute(&mut connect().await.unwrap()).await.unwrap();
+        .execute(&mut crate::data::db()).await.unwrap();
     let mut invalid = latest.clone();
     invalid.pdu.event_id = "$gap-propagated-db-error".try_into().unwrap();
     invalid.event_sn = 9_000_000_000;
@@ -279,7 +279,7 @@ async fn recovery() {
         )))
     ));
     diesel::sql_query("ALTER TABLE timeline_gaps DROP CONSTRAINT gap_regression_error")
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
 }

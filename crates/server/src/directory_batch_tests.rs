@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Json, Text};
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -74,7 +74,7 @@ async fn event(room: &RoomId, kind: &str, key: &str, content: Value) -> (OwnedEv
     .bind::<Text, _>(&sender)
     .bind::<Text, _>(key)
     .bind::<Json, _>(&body)
-    .execute(&mut data::connect().await.unwrap())
+    .execute(&mut crate::data::db())
     .await
     .unwrap();
     (id, sn)
@@ -107,7 +107,7 @@ async fn frame(
 async fn point_room(room: &RoomId, frame: Option<i64>) {
     diesel::update(rooms::table.find(room))
         .set(rooms::state_frame_id.eq(frame))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
 }
@@ -125,7 +125,7 @@ async fn seed(index: usize, fields: &[i64], custom: &[i64]) -> Fixture {
             has_auth_chain_index: false,
             created_at: UnixMillis(1_700_000_000_000),
         })
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     let mut create = json!({"room_version":"11"});
@@ -234,7 +234,7 @@ async fn seed(index: usize, fields: &[i64], custom: &[i64]) -> Fixture {
                 stats_room_currents::room_id.eq(&room),
                 stats_room_currents::joined_members.eq(count),
             ))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
     } else {
@@ -254,7 +254,7 @@ async fn seed(index: usize, fields: &[i64], custom: &[i64]) -> Fixture {
                 user_server_id, sender_id, membership, created_at) VALUES ($1,$2,$3,$4,$5,$4,$6,1700000000000)")
                 .bind::<Text, _>(id.as_str()).bind::<BigInt, _>(sn).bind::<Text, _>(room.as_str())
                 .bind::<Text, _>(&user).bind::<Text, _>(ORIGIN).bind::<Text, _>(membership)
-                .execute(&mut data::connect().await.unwrap()).await.unwrap();
+                .execute(&mut crate::data::db()).await.unwrap();
         }
     }
     Fixture {
@@ -532,14 +532,14 @@ async fn faults(fields: &[i64], custom: &[i64]) {
     .await;
     diesel::update(room_state_deltas::table.find(fixtures[1].frame))
         .set(room_state_deltas::parent_id.eq(cyclic))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     // A current delta with a foreign parent is incomplete, even if its own
     // projected fields would otherwise suffice to produce a directory entry.
     diesel::update(room_state_deltas::table.find(fixtures[2].frame))
         .set(room_state_deltas::parent_id.eq(fixtures[0].frame))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     let mut invalid: Vec<u8> = fixtures[3]
@@ -550,11 +550,11 @@ async fn faults(fields: &[i64], custom: &[i64]) {
     invalid.push(0);
     diesel::update(room_state_deltas::table.find(fixtures[3].frame))
         .set(room_state_deltas::appended.eq(invalid))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     diesel::delete(event_datas::table.find(&fixtures[4].create_id))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     // Frame ID points directly at another room's otherwise healthy state.

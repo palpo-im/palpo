@@ -1,12 +1,11 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use salvo::oapi::extract::{PathParam, QueryParam};
 use salvo::prelude::*;
 
 use crate::core::client::uiaa::AuthType;
 use crate::core::identifiers::{OwnedDeviceId, OwnedUserId};
 use crate::core::serde::JsonValue;
-use crate::data::connect;
 use crate::data::schema::user_uiaa_datas;
 use crate::{AuthArgs, MatrixError, config};
 
@@ -94,7 +93,7 @@ async fn load_uiaa_info_by_session(
             user_uiaa_datas::device_id,
             user_uiaa_datas::uiaa_info,
         ))
-        .first::<(OwnedUserId, OwnedDeviceId, JsonValue)>(&mut connect().await?)
+        .first::<(OwnedUserId, OwnedDeviceId, JsonValue)>(&mut crate::data::db())
         .await
         .optional()?;
     let Some((user_id, device_id, uiaa_info)) = record else {

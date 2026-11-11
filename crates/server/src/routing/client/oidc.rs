@@ -1342,7 +1342,7 @@ async fn create_or_get_user(
     oidc_config: &crate::config::OidcConfig,
 ) -> AppResult<DbUser> {
     use diesel::prelude::*;
-    use diesel_async::{AsyncConnection, RunQueryDsl};
+    use horme::{OptionalExtension as _, RunQueryDsl};
 
     use crate::core::identifiers::UserId;
     use crate::data::connect;
@@ -1364,7 +1364,6 @@ async fn create_or_get_user(
     };
 
     connect()
-        .await?
         .transaction::<_, AppError, _>(async move |conn| {
             let mut user = users::table
                 .filter(users::id.eq(&parsed_user_id))
@@ -1449,9 +1448,8 @@ async fn create_or_get_user(
 /// - Proper database transaction handling
 async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResult<String> {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
-    use crate::data::connect;
     use crate::data::schema::*;
 
     let parsed_device_id: OwnedDeviceId = device_id.into();
@@ -1473,7 +1471,7 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
         .on_conflict((user_devices::user_id, user_devices::device_id))
         .do_update()
         .set(user_devices::last_seen_at.eq(Some(UnixMillis::now())))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await
         .map_err(|e| MatrixError::unknown(format!("Failed to create/update device: {}", e)))?;
 
@@ -1494,7 +1492,7 @@ async fn create_access_token_for_user(user: &DbUser, device_id: &str) -> AppResu
 
     diesel::insert_into(user_access_tokens::table)
         .values(&new_access_token)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await
         .map_err(|e| MatrixError::unknown(format!("Failed to create access token: {}", e)))?;
 

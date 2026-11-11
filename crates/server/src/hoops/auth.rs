@@ -3,7 +3,7 @@ use std::iter::FromIterator;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 use salvo::http::headers::HeaderMapExt;
 use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
@@ -263,7 +263,7 @@ async fn auth_by_delegated_token(
     // User should already be provisioned by the auth service via MAS admin endpoints
     let mut user = users::table
         .find(&user_id)
-        .first::<DbUser>(&mut connect().await?)
+        .first::<DbUser>(&mut crate::data::db())
         .await
         .map_err(|_| MatrixError::unknown_token("User not found (not yet provisioned?)", true))?;
     crate::user::ensure_account_usable(&user)?;
@@ -272,7 +272,7 @@ async fn auth_by_delegated_token(
     let user_device = user_devices::table
         .filter(user_devices::user_id.eq(&user_id))
         .filter(user_devices::device_id.eq(&device_id))
-        .first::<DbUserDevice>(&mut connect().await?)
+        .first::<DbUserDevice>(&mut crate::data::db())
         .await
         .map_err(|_| MatrixError::unknown_token("Device not found (not yet provisioned?)", true))?;
 
@@ -308,7 +308,7 @@ async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) ->
     // Try to get existing user
     if let Some(user) = users::table
         .find(user_id)
-        .first::<DbUser>(&mut connect().await?)
+        .first::<DbUser>(&mut crate::data::db())
         .await
         .optional()?
     {
@@ -329,7 +329,6 @@ async fn get_or_create_appservice_user(user_id: &UserId, appservice_id: &str) ->
     };
 
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             // The upsert locks the user row until this transaction commits. Concurrent
             // first requests for the same virtual user therefore serialize before the
@@ -380,7 +379,7 @@ async fn resolve_appservice_device(
     let device = user_devices::table
         .filter(user_devices::user_id.eq(user_id))
         .filter(user_devices::device_id.eq(&device_id))
-        .first::<DbUserDevice>(&mut connect().await?)
+        .first::<DbUserDevice>(&mut crate::data::db())
         .await
         .optional()?;
     device.map(Some).ok_or_else(|| {
@@ -652,7 +651,7 @@ mod tests {
                     last_seen_at: None,
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }

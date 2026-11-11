@@ -1,5 +1,21 @@
 # Upgrading Palpo
 
+## Query-scoped connection leases
+
+Building from source now requires Rust 1.96 or newer for Horme 0.4. Ordinary
+queries acquire connections only during execution; transactions and coordination
+locks retain their explicit connection scopes. The configured total connection
+budget and query/coordination split are unchanged. No database migration or
+coordinated deployment is required for this change. See
+[database connection lifetimes](development/database.md) for embedding and query
+helper guidance.
+
+Embedding code must remove `.await?` from `connect()` and
+`PreparedDatabase::connect()`; they now return a lightweight provider directly.
+`coordination_connect()` follows the same rule. Pass the handle to Horme queries
+or use its transaction methods. Physical-session instrumentation opts into the
+explicit `checkout().await` API instead.
+
 ## Commit-safe device-list sync positions
 
 Upgrade all homeserver nodes that publish key changes or issue sync cursors

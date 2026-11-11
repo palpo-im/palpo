@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use diesel::QueryableByName;
 use diesel::sql_types::{Array, BigInt, Bool, Json, Jsonb, Text};
-use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
+use horme::RunQueryDsl;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -193,7 +193,7 @@ async fn plans(observed: &[String], now: u64, size: usize) {
     let latest = diesel::sql_query(format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {LATEST}"))
         .bind::<Text, _>(server.as_str())
         .bind::<Array<Text>, _>(&notaries)
-        .get_result::<Plan>(&mut data::connect().await.unwrap())
+        .get_result::<Plan>(&mut data::connect())
         .await
         .unwrap();
     for (case, id) in [
@@ -206,7 +206,7 @@ async fn plans(observed: &[String], now: u64, size: usize) {
             .bind::<Text, _>(id)
             .bind::<BigInt, _>(now as i64)
             .bind::<Bool, _>(true)
-            .get_result::<Plan>(&mut data::connect().await.unwrap())
+            .get_result::<Plan>(&mut data::connect())
             .await
             .unwrap();
         println!(
@@ -220,7 +220,7 @@ async fn plans(observed: &[String], now: u64, size: usize) {
     .bind::<Text, _>(server.as_str())
     .bind::<Array<Text>, _>(&notaries)
     .bind::<Text, _>("ed25519:retired")
-    .get_result::<Plan>(&mut data::connect().await.unwrap())
+    .get_result::<Plan>(&mut data::connect())
     .await
     .unwrap();
     println!(
@@ -258,7 +258,7 @@ struct Storage {
 
 async fn storage(size: usize) {
     let value = diesel::sql_query("SELECT pg_table_size('verified_server_key_documents')::bigint AS document_table_bytes, pg_indexes_size('verified_server_key_documents')::bigint AS document_index_bytes, pg_table_size('verified_server_key_versions')::bigint AS version_table_bytes, pg_indexes_size('verified_server_key_versions')::bigint AS version_index_bytes")
-        .get_result::<Storage>(&mut data::connect().await.unwrap()).await.unwrap();
+        .get_result::<Storage>(&mut data::connect()).await.unwrap();
     println!(
         "T06_HISTORY_STORAGE {}",
         json!({"documents":size,"document_table_bytes":value.document_table_bytes,"document_index_bytes":value.document_index_bytes,"version_table_bytes":value.version_table_bytes,"version_index_bytes":value.version_index_bytes,"scope":"whole relations in dedicated fixture database, including PostgreSQL page overhead"})
@@ -268,14 +268,14 @@ async fn storage(size: usize) {
 async fn snapshot() -> Value {
     diesel::sql_query(SNAPSHOT)
         .bind::<Text, _>(SERVER)
-        .get_result::<Snapshot>(&mut data::connect().await.unwrap())
+        .get_result::<Snapshot>(&mut data::connect())
         .await
         .unwrap()
         .snapshot
 }
 
 async fn restore(archive: &Value) -> AppResult<()> {
-    let mut connection = data::connect().await.unwrap();
+    let mut connection = data::connect();
     connection.transaction::<_,crate::AppError,_>(async |conn| {
         diesel::sql_query("DELETE FROM verified_server_key_documents WHERE server_id=$1")
             .bind::<Text,_>(SERVER).execute(conn).await?;
@@ -323,14 +323,15 @@ async fn review_verified_history_capacity_and_snapshot_restore() {
         for index in prior_size..size {
             seed(index, now, &active, &ancient, &retired).await;
         }
-        data::connect()
-            .await
-            .unwrap()
-            .batch_execute(
-                "ANALYZE verified_server_key_documents; ANALYZE verified_server_key_versions",
-            )
-            .await
-            .unwrap();
+        for table in [
+            "verified_server_key_documents",
+            "verified_server_key_versions",
+        ] {
+            diesel::sql_query(format!("ANALYZE {table}"))
+                .execute(&mut data::connect())
+                .await
+                .unwrap();
+        }
         let spy = SqlSpy::install().await;
         let mut timings: [Vec<Duration>; 5] = std::array::from_fn(|_| Vec::new());
         let mut counts: [Vec<usize>; 5] = std::array::from_fn(|_| Vec::new());

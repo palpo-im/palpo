@@ -1,10 +1,9 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
 use crate::AppResult;
 use crate::core::Seqnum;
 use crate::core::identifiers::*;
-use crate::data::connect;
 use crate::data::room::NewDbEventPushAction;
 use crate::data::schema::*;
 
@@ -16,13 +15,13 @@ pub async fn increment_notification_counts(
     let (room_id, thread_id) = event_points::table
         .find(event_id)
         .select((event_points::room_id, event_points::thread_id))
-        .first::<(OwnedRoomId, Option<OwnedEventId>)>(&mut connect().await?)
+        .first::<(OwnedRoomId, Option<OwnedEventId>)>(&mut crate::data::db())
         .await?;
 
     let stream_ordering = events::table
         .find(event_id)
         .select(events::stream_ordering)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .unwrap_or(1);
 
@@ -38,7 +37,7 @@ pub async fn increment_notification_counts(
                 event_push_summaries::notification_count
                     .eq(event_push_summaries::notification_count + 1),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?
         } else {
             diesel::update(
@@ -51,7 +50,7 @@ pub async fn increment_notification_counts(
                 event_push_summaries::notification_count
                     .eq(event_push_summaries::notification_count + 1),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?
         };
         if rows == 0 {
@@ -64,7 +63,7 @@ pub async fn increment_notification_counts(
                     event_push_summaries::thread_id.eq(&thread_id),
                     event_push_summaries::stream_ordering.eq(stream_ordering),
                 ))
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
         }
     }
@@ -79,7 +78,7 @@ pub async fn increment_notification_counts(
             .set(
                 event_push_summaries::highlight_count.eq(event_push_summaries::highlight_count + 1),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?
         } else {
             diesel::update(
@@ -91,7 +90,7 @@ pub async fn increment_notification_counts(
             .set(
                 event_push_summaries::highlight_count.eq(event_push_summaries::highlight_count + 1),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?
         };
         if rows == 0 {
@@ -104,7 +103,7 @@ pub async fn increment_notification_counts(
                     event_push_summaries::thread_id.eq(&thread_id),
                     event_push_summaries::stream_ordering.eq(stream_ordering),
                 ))
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
         }
     }
@@ -124,12 +123,12 @@ pub async fn upsert_push_action(
     let (event_sn, thread_id) = event_points::table
         .find(event_id)
         .select((event_points::event_sn, event_points::thread_id))
-        .first::<(Seqnum, Option<OwnedEventId>)>(&mut connect().await?)
+        .first::<(Seqnum, Option<OwnedEventId>)>(&mut crate::data::db())
         .await?;
     let (topological_ordering, stream_ordering) = events::table
         .find(event_id)
         .select((events::topological_ordering, events::stream_ordering))
-        .first::<(i64, i64)>(&mut connect().await?)
+        .first::<(i64, i64)>(&mut crate::data::db())
         .await?;
 
     crate::data::room::event::upsert_push_action(&NewDbEventPushAction {
@@ -165,7 +164,7 @@ pub async fn remove_actions_until(
                 .filter(event_push_actions::thread_id.eq(thread_id))
                 .filter(event_push_actions::event_sn.le(event_sn)),
         )
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     } else {
         diesel::delete(
@@ -174,7 +173,7 @@ pub async fn remove_actions_until(
                 .filter(event_push_actions::room_id.eq(room_id))
                 .filter(event_push_actions::event_sn.le(event_sn)),
         )
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     }
     Ok(())
@@ -186,7 +185,7 @@ pub async fn remove_actions_for_room(user_id: &UserId, room_id: &RoomId) -> AppR
             .filter(event_push_actions::user_id.eq(user_id))
             .filter(event_push_actions::room_id.eq(room_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     Ok(())
 }
@@ -197,7 +196,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
         .filter(event_push_actions::room_id.eq(room_id))
         .select(event_push_actions::thread_id)
         .distinct()
-        .load::<Option<OwnedEventId>>(&mut connect().await?)
+        .load::<Option<OwnedEventId>>(&mut crate::data::db())
         .await?
         .into_iter()
         .flatten()
@@ -209,7 +208,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
             .filter(event_push_actions::thread_id.is_not_null())
             .filter(event_push_actions::thread_id.ne_all(&thread_ids)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     diesel::delete(
         event_push_summaries::table
@@ -218,7 +217,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
             .filter(event_push_summaries::thread_id.is_not_null())
             .filter(event_push_summaries::thread_id.ne_all(&thread_ids)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     // Get the latest stream_ordering for this room's push actions
     let latest_stream_ordering: i64 = event_push_actions::table
@@ -227,7 +226,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
         .filter(event_push_actions::stream_ordering.is_not_null())
         .order(event_push_actions::stream_ordering.desc())
         .select(event_push_actions::stream_ordering)
-        .first::<Option<i64>>(&mut connect().await?)
+        .first::<Option<i64>>(&mut crate::data::db())
         .await
         .ok()
         .flatten()
@@ -241,17 +240,17 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
         let notification_count = query
             .filter(event_push_actions::notify.eq(true))
             .count()
-            .get_result::<i64>(&mut connect().await?)
+            .get_result::<i64>(&mut crate::data::db())
             .await?;
         let highlight_count = query
             .filter(event_push_actions::highlight.eq(true))
             .count()
-            .get_result::<i64>(&mut connect().await?)
+            .get_result::<i64>(&mut crate::data::db())
             .await?;
         let unread_count = query
             .filter(event_push_actions::unread.eq(true))
             .count()
-            .get_result::<i64>(&mut connect().await?)
+            .get_result::<i64>(&mut crate::data::db())
             .await?;
 
         let rows = diesel::update(
@@ -265,7 +264,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
             event_push_summaries::highlight_count.eq(highlight_count),
             event_push_summaries::unread_count.eq(unread_count),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
         if rows == 0 {
             diesel::insert_into(event_push_summaries::table)
@@ -278,7 +277,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
                     event_push_summaries::unread_count.eq(unread_count),
                     event_push_summaries::stream_ordering.eq(latest_stream_ordering),
                 ))
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
         }
     }
@@ -290,17 +289,17 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
     let notification_count = query
         .filter(event_push_actions::notify.eq(true))
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::data::db())
         .await?;
     let highlight_count = query
         .filter(event_push_actions::highlight.eq(true))
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::data::db())
         .await?;
     let unread_count = query
         .filter(event_push_actions::unread.eq(true))
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::data::db())
         .await?;
 
     let rows = diesel::update(
@@ -314,7 +313,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
         event_push_summaries::highlight_count.eq(highlight_count),
         event_push_summaries::unread_count.eq(unread_count),
     ))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     if rows == 0 {
         diesel::insert_into(event_push_summaries::table)
@@ -326,7 +325,7 @@ pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppRe
                 event_push_summaries::unread_count.eq(unread_count),
                 event_push_summaries::stream_ordering.eq(latest_stream_ordering),
             ))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
     }
     Ok(())

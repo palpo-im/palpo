@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::{DeviceId, TransactionId, UnixMillis, UserId};
@@ -36,7 +36,7 @@ pub async fn add_scoped_txn_id(
             created_at: UnixMillis::now(),
             endpoint: endpoint.to_owned(),
         })
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -54,7 +54,7 @@ pub async fn txn_id_exists(
             .filter(event_idempotents::device_id.eq(device_id))
             .filter(event_idempotents::txn_id.eq(txn_id))
             .select(event_idempotents::event_id);
-        diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+        diesel_exists!(query, &mut crate::db()).map_err(Into::into)
     } else {
         let query = event_idempotents::table
             .filter(event_idempotents::endpoint.eq(""))
@@ -62,7 +62,7 @@ pub async fn txn_id_exists(
             .filter(event_idempotents::device_id.is_null())
             .filter(event_idempotents::txn_id.eq(txn_id))
             .select(event_idempotents::event_id);
-        diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+        diesel_exists!(query, &mut crate::db()).map_err(Into::into)
     }
 }
 
@@ -100,7 +100,7 @@ pub async fn get_scoped_event_id(
     }
     query
         .select(event_idempotents::event_id)
-        .first::<Option<OwnedEventId>>(&mut connect().await?)
+        .first::<Option<OwnedEventId>>(&mut crate::db())
         .await
         .optional()
         .map(|v| v.flatten())
@@ -120,7 +120,7 @@ pub async fn get_event_device(
         .filter(event_datas::event_id.eq(event_id))
         .filter(event_datas::room_id.eq(room_id))
         .select(event_datas::internal_metadata)
-        .first::<Option<serde_json::Value>>(&mut connect().await?)
+        .first::<Option<serde_json::Value>>(&mut crate::db())
         .await
         .optional()?
         .flatten();
@@ -146,7 +146,7 @@ pub async fn get_event_device(
         .filter(event_idempotents::room_id.eq(room_id))
         .filter(event_idempotents::event_id.eq(event_id))
         .select(event_idempotents::device_id)
-        .first::<Option<OwnedDeviceId>>(&mut connect().await?)
+        .first::<Option<OwnedDeviceId>>(&mut crate::db())
         .await
         .optional()
         .map(|v| v.flatten())
@@ -161,7 +161,6 @@ pub async fn commit_to_device_transaction(
     outgoing: &[crate::sending::NewDbOutgoingRequest],
 ) -> DataResult<bool> {
     connect()
-        .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             let inserted = diesel::insert_into(event_idempotents::table)
                 .values(receipt)
@@ -240,7 +239,7 @@ pub async fn find_published_transaction_event(
     .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(device_id.map(DeviceId::as_str))
     .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(redacts.map(EventId::as_str))
     .bind::<diesel::sql_types::Text, _>(endpoint)
-    .get_result::<Event>(&mut connect().await?).await.optional()?.map(|event| event.event_id))
+    .get_result::<Event>(&mut crate::db()).await.optional()?.map(|event| event.event_id))
 }
 
 #[cfg(test)]
@@ -258,7 +257,7 @@ mod bulk_tests {
         .unwrap();
         crate::init(&config).unwrap();
         async fn counts() -> (i64, i64, i64) {
-            let mut conn = connect().await.unwrap();
+            let mut conn = crate::connect();
             (
                 device_inboxes::table
                     .count()
@@ -327,7 +326,7 @@ mod bulk_tests {
         assert_eq!(counts().await, (17_000, 23_000, 1));
 
         diesel::sql_query("ALTER TABLE outgoing_requests ADD CONSTRAINT reject_late_chunk CHECK (kind <> 'reject_late_chunk')")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::db()).await.unwrap();
         let mut second_receipt = receipt;
         second_receipt.txn_id = "bulk-retry".into();
         let mut failed_outgoing = outgoing;
@@ -367,7 +366,7 @@ mod bulk_tests {
                     let waiting = diesel::sql_query("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=1346456656::oid AND objid=$1::oid AND objsubid=2 AND mode=$2 AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())) AS waiting")
                         .bind::<diesel::sql_types::Integer,_>(slot)
                         .bind::<diesel::sql_types::Text,_>(mode)
-                        .get_result::<Waiting>(&mut connect().await.unwrap()).await.unwrap();
+                        .get_result::<Waiting>(&mut crate::db()).await.unwrap();
                     if waiting.waiting { break; }
                     tokio::task::yield_now().await;
                 }
@@ -378,7 +377,7 @@ mod bulk_tests {
         let probe_inboxes = inboxes[..64].to_vec();
         let probe_user = probe_inboxes[0].user_id.clone();
         let probe_device = probe_inboxes[0].device_id.clone();
-        let mut reader_conn = connect().await.unwrap();
+        let mut reader_conn = crate::checkout().await.unwrap();
         diesel::sql_query("BEGIN")
             .execute(&mut reader_conn)
             .await
@@ -405,10 +404,10 @@ mod bulk_tests {
         // Pause a real insertion after allocation but before commit. A sync
         // must wait even though the large writer holds no individual locks.
         diesel::sql_query("CREATE FUNCTION pause_bulk_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.json_data->>'barrier'='true' THEN PERFORM pg_advisory_xact_lock(1346456656,17); END IF; RETURN NEW; END $$")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::db()).await.unwrap();
         diesel::sql_query("CREATE TRIGGER pause_bulk_insert BEFORE INSERT ON device_inboxes FOR EACH ROW EXECUTE FUNCTION pause_bulk_insert()")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
-        let mut controller = connect().await.unwrap();
+            .execute(&mut crate::db()).await.unwrap();
+        let mut controller = crate::checkout().await.unwrap();
         diesel::sql_query("BEGIN")
             .execute(&mut controller)
             .await

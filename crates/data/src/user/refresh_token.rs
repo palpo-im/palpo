@@ -1,10 +1,10 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_refresh_tokens)]
@@ -61,7 +61,7 @@ pub async fn get_refresh_token_expires_at(
         .filter(user_refresh_tokens::device_id.eq(device_id))
         .filter(user_refresh_tokens::token.eq(token))
         .select(user_refresh_tokens::expires_at)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)

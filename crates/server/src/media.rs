@@ -8,14 +8,13 @@ use std::cmp;
 use std::num::Saturating;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 pub use preview::*;
 pub use remote::*;
 
 use crate::core::http_headers::ContentDisposition;
 use crate::core::media::ResizeMethod;
 use crate::core::{Mxc, OwnedMxcUri, ServerName, UnixMillis, UserId};
-use crate::data::connect;
 use crate::data::media::{DbThumbnail, NewDbThumbnail};
 use crate::data::schema::*;
 use crate::{AppResult, config, data, storage};
@@ -175,7 +174,7 @@ pub async fn delete_old_local_media(
         .filter(media_metadatas::created_at.lt(UnixMillis(before_ts as u64)))
         .filter(media_metadatas::file_size.gt(size_gt))
         .select(media_metadatas::media_id)
-        .load::<String>(&mut connect().await?)
+        .load::<String>(&mut crate::data::db())
         .await?;
     delete_media_by_ids(server_name, &media_ids).await
 }
@@ -185,7 +184,7 @@ pub async fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64)
         .filter(media_metadatas::origin_server.ne(local_server))
         .filter(media_metadatas::created_at.lt(UnixMillis(before_ts as u64)))
         .select((media_metadatas::origin_server, media_metadatas::media_id))
-        .load::<(crate::core::OwnedServerName, String)>(&mut connect().await?)
+        .load::<(crate::core::OwnedServerName, String)>(&mut crate::data::db())
         .await?;
     let mut deleted = 0;
     for (origin, media_id) in originals {
@@ -196,7 +195,7 @@ pub async fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64)
     let thumbnails = media_thumbnails::table
         .filter(media_thumbnails::origin_server.ne(local_server))
         .filter(media_thumbnails::created_at.lt(UnixMillis(before_ts as u64)))
-        .load::<data::media::DbThumbnail>(&mut connect().await?)
+        .load::<data::media::DbThumbnail>(&mut crate::data::db())
         .await?;
     for thumbnail in thumbnails {
         coordination::with_lock(&thumbnail.origin_server, &thumbnail.media_id, async {
@@ -214,7 +213,7 @@ pub async fn purge_remote_media_cache(local_server: &ServerName, before_ts: i64)
                 storage::delete(&media_storage_key(&thumbnail.origin_server, &legacy_id)).await?;
             }
             diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
             Ok(())
         })
@@ -263,7 +262,7 @@ pub fn validate_thumbnail_dimensions(width: u32, height: u32) -> AppResult<()> {
 pub async fn get_all_mxcs() -> AppResult<Vec<OwnedMxcUri>> {
     let mxcs = media_metadatas::table
         .select((media_metadatas::origin_server, media_metadatas::media_id))
-        .load::<(String, String)>(&mut connect().await?)
+        .load::<(String, String)>(&mut crate::data::db())
         .await?
         .into_iter()
         .map(|(origin_server, media_id)| {
@@ -353,7 +352,7 @@ async fn validate_cached_thumbnail(
         }
         // Only NotFound invalidates metadata. Permission/network errors propagate above.
         diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(thumbnail.id)))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         Ok(None)
     })
@@ -418,7 +417,7 @@ async fn publish_thumbnail_locked(
             .filter(media_thumbnails::width.eq(record.width))
             .filter(media_thumbnails::height.eq(record.height))
             .filter(media_thumbnails::resize_method.eq(&record.resize_method))
-            .first::<DbThumbnail>(&mut connect().await?)
+            .first::<DbThumbnail>(&mut crate::data::db())
             .await
             .optional()?;
         if let Some(existing) = existing {
@@ -428,14 +427,14 @@ async fn publish_thumbnail_locked(
             }
             // Heal an exact-key winner left by an older interrupted publication.
             diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(existing.id)))
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
         }
         // Reserve the ID without publishing metadata until the object exists.
         let id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
             "SELECT nextval(pg_get_serial_sequence('media_thumbnails', 'id'))",
         )
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::data::db())
         .await?;
         let key = storage::thumbnail_key(storage_origin, &record.media_id, id);
         operator.write(&key, bytes.to_vec()).await?;
@@ -443,7 +442,7 @@ async fn publish_thumbnail_locked(
             .values((media_thumbnails::id.eq(id), &record))
             .on_conflict_do_nothing()
             .returning(media_thumbnails::id)
-            .get_result::<i64>(&mut connect().await?)
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .optional()?;
         if let Some(id) = inserted {
@@ -544,7 +543,7 @@ mod thumbnail_publication_tests {
         assert_eq!(left.unwrap(), next);
         assert_eq!(right.unwrap(), next);
         diesel::delete(media_thumbnails::table.filter(media_thumbnails::id.eq(next)))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
     }
@@ -575,7 +574,7 @@ mod thumbnail_publication_tests {
         let missing_id = diesel::insert_into(media_thumbnails::table)
             .values(&record)
             .returning(media_thumbnails::id)
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         let valid_id = publish_thumbnail_with_operator(
@@ -707,7 +706,7 @@ mod deletion_tests {
                 created_at: UnixMillis::now(),
             })
             .returning(media_thumbnails::id)
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         let original = storage::media_key("_", &media_id);
@@ -831,7 +830,7 @@ mod deletion_tests {
                         created_at: UnixMillis::now(),
                     })
                     .returning(media_thumbnails::id)
-                    .get_result::<i64>(&mut connect().await?)
+                    .get_result::<i64>(&mut crate::data::db())
                     .await?;
                 let thumbnail_key = storage::thumbnail_key("_", &write_id, id);
                 write_operator

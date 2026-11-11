@@ -1,12 +1,11 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 
 use super::batch::{CHUNK_SIZE, PduBatch};
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
 use crate::core::identifiers::*;
 use crate::core::{Direction, Seqnum};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::BatchToken;
 use crate::{AppResult, SnPduEvent, data, utils};
@@ -141,7 +140,7 @@ async fn load_pdus_with_publication_bound(
             events::table
                 .filter(events::room_id.eq(room_id))
                 .select(diesel::dsl::max(events::sn))
-                .first::<Option<Seqnum>>(&mut connect().await?)
+                .first::<Option<Seqnum>>(&mut crate::data::db())
                 .await?
         };
         match max_in_room {
@@ -234,7 +233,7 @@ async fn load_pdus_with_publication_bound(
                 .offset(offset)
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn, position))
-                .load::<(OwnedEventId, Seqnum, Seqnum)>(&mut connect().await?)
+                .load::<(OwnedEventId, Seqnum, Seqnum)>(&mut crate::data::db())
                 .await?
                 .into_iter()
                 .collect()
@@ -245,7 +244,7 @@ async fn load_pdus_with_publication_bound(
                 .order(position.clone().desc())
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn, position))
-                .load::<(OwnedEventId, Seqnum, Seqnum)>(&mut connect().await?)
+                .load::<(OwnedEventId, Seqnum, Seqnum)>(&mut crate::data::db())
                 .await?
                 .into_iter()
                 .collect()

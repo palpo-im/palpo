@@ -6,7 +6,7 @@ resolver = "3"
 version = "0.5.0"
 authors = ["Chrislearn Young <chris@acroidea.com>"]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.96"
 description = """
 Matrix server implementation
 """
@@ -49,6 +49,7 @@ date_header = "1.0.5"
 deadpool = { version = "0.13" }
 diesel = { version = "2.3.10" }
 diesel-async = { version = "0.9.1" }
+horme = { version = "0.4.0", features = ["postgres"] }
 # diesel_full_text_search = { version = "2.2.0" }
 diesel_migrations = "2.3.2"
 dotenvy = "0.15.7"

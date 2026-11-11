@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
 use crate::core::serde::JsonValue;
 use crate::core::{EventId, OwnedEventId, OwnedRoomId, Seqnum};
@@ -64,7 +64,7 @@ pub(super) async fn load_one(event_id: &EventId) -> AppResult<SnPduEvent> {
         .inner_join(event_datas::table.on(event_datas::event_id.eq(events::id)))
         .filter(events::id.eq(event_id))
         .select(StoredPdu::as_select())
-        .first(&mut data::connect().await?)
+        .first(&mut data::connect())
         .await?;
     row.into_pdu().await
 }
@@ -82,7 +82,7 @@ impl PduBatch {
             .inner_join(event_datas::table.on(event_datas::event_id.eq(events::id)))
             .filter(events::id.eq_any(ids))
             .select(StoredPdu::as_select())
-            .load(&mut data::connect().await?)
+            .load(&mut data::connect())
             .await?;
         Ok(Self(
             rows.into_iter()

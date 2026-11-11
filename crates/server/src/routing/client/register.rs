@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use palpo_core::presence::PresenceState;
 use salvo::oapi::extract::{JsonBody, QueryParam};
 use salvo::prelude::*;
@@ -14,9 +14,9 @@ use crate::core::events::push_rules::PushRulesEventContent;
 use crate::core::identifiers::*;
 use crate::core::push::Ruleset;
 use crate::core::serde::JsonValue;
+use crate::data::diesel_exists;
 use crate::data::schema::*;
 use crate::data::user::NewDbPresence;
-use crate::data::{connect, diesel_exists};
 use crate::exts::*;
 use crate::{
     AppError, AuthArgs, DEVICE_ID_LENGTH, EmptyResult, JsonResult, MatrixError,
@@ -539,7 +539,7 @@ async fn available(
 
     // Check if username is creative enough
     let query = users::table.find(&user_id);
-    if diesel_exists!(query, &mut connect().await?)? {
+    if diesel_exists!(query, &mut crate::data::db())? {
         return Err(MatrixError::user_in_use("Desired user ID is already taken.").into());
     }
 
@@ -667,7 +667,7 @@ mod dummy_registration_tests {
         user_uiaa_datas::table
             .filter(user_uiaa_datas::session.eq(session))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap()
     }
@@ -675,7 +675,7 @@ mod dummy_registration_tests {
     async fn expire_session(session: &str) {
         diesel::sql_query("UPDATE user_uiaa_datas SET request_body = jsonb_set(request_body, '{palpo.registration,expires_at}', '0'::jsonb) WHERE session = $1")
             .bind::<diesel::sql_types::Text,_>(session)
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
     }
 
     async fn assert_registration_continuation(service: &Service) {
@@ -687,7 +687,7 @@ mod dummy_registration_tests {
         let stored: Value = user_uiaa_datas::table
             .filter(user_uiaa_datas::session.eq(session))
             .select(user_uiaa_datas::request_body)
-            .first::<Option<Value>>(&mut connect().await.unwrap())
+            .first::<Option<Value>>(&mut crate::data::db())
             .await
             .unwrap()
             .unwrap();
@@ -804,13 +804,13 @@ mod dummy_registration_tests {
         let mut info: Value = user_uiaa_datas::table
             .filter(user_uiaa_datas::session.eq(session))
             .select(user_uiaa_datas::uiaa_info)
-            .first(&mut connect().await.unwrap())
+            .first(&mut crate::data::db())
             .await
             .unwrap();
         info["flows"] = json!([{"stages":["m.login.registration_token"]}]);
         diesel::update(user_uiaa_datas::table.filter(user_uiaa_datas::session.eq(session)))
             .set(user_uiaa_datas::uiaa_info.eq(info))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let (status, error) = register_request(service, json!({"username":"changed-policy", "auth":{"type":"m.login.dummy", "session":session}})).await;

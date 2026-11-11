@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
 use crate::AppResult;
 use crate::core::Seqnum;
 use crate::core::identifiers::*;
-use crate::data::connect;
 
 #[derive(Debug, diesel::QueryableByName)]
 struct WatchSnapshot {
@@ -71,7 +70,7 @@ async fn load_watch_snapshot(
     .bind::<diesel::sql_types::Text, _>(user_id.as_str())
     .bind::<diesel::sql_types::Text, _>(device_id.as_str())
     .bind::<diesel::sql_types::Bool, _>(profiles)
-    .get_result(&mut connect().await?).await.map_err(Into::into)
+    .get_result(&mut crate::data::db()).await.map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -141,14 +140,14 @@ mod database_tests {
         let user: OwnedUserId = "@watch:example.org".try_into().unwrap();
         let device: &DeviceId = "WATCH".into();
         diesel::sql_query("INSERT INTO room_users (event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) VALUES ('$watch-member',1,'!watch:example.org','@watch:example.org','example.org','@watch:example.org','join',0),('$watch-peer',2,'!watch:example.org','@peer:example.org','example.org','@peer:example.org','join',0)")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         let mut previous = load_watch_snapshot(&user, device, true).await.unwrap();
         assert!(!previous.has_updates_since(&previous));
         // A different device's inbox and an unrelated profile are irrelevant.
         diesel::sql_query("INSERT INTO device_inboxes(user_id,device_id,json_data,created_at) VALUES ('@watch:example.org','OTHER','{}',0)")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         diesel::sql_query("INSERT INTO user_profile_changes(occur_sn,user_id,field,value,removed) VALUES (900,'@stranger:example.org','displayname','\"unrelated\"',false)")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         assert!(
             !load_watch_snapshot(&user, device, true)
                 .await
@@ -166,7 +165,7 @@ mod database_tests {
             "INSERT INTO room_users(event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) VALUES ('$watch-new',80,'!new:example.org','@watch:example.org','example.org','@watch:example.org','join',0)",
         ] {
             diesel::sql_query(sql)
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
             let current = load_watch_snapshot(&user, device, true).await.unwrap();
@@ -186,7 +185,7 @@ mod database_tests {
         );
         // Events in other rooms and events not yet promoted to the timeline do not wake.
         diesel::sql_query("INSERT INTO event_points(event_id,event_sn,room_id,frame_id,live_published_sn,live_published_frame_id) VALUES ('$watch-outside',1000,'!outside:example.org',1,1000,1),('$watch-outlier',1001,'!watch:example.org',NULL,NULL,NULL),('$watch-cached',1002,'!watch:example.org',1,NULL,NULL)")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         assert!(
             !load_watch_snapshot(&user, device, true)
                 .await
