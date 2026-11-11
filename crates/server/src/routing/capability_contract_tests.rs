@@ -253,9 +253,10 @@ impl Handler for Peer {
         _ctrl: &mut FlowCtrl,
     ) {
         assert_eq!(req.method(), Method::GET);
-        assert!(
-            !req.headers().contains_key("authorization"),
-            "client auth headers must not be forwarded"
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            format!("Bearer {HS_TOKEN}").as_str(),
+            "the AS must receive its dedicated credential instead of client auth"
         );
         assert!(
             req.payload().await.unwrap().is_empty(),

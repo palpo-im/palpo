@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod capability_contract_tests;
+#[cfg(test)]
+mod thirdparty_peer_tests;
 
 mod admin;
 mod appservice;

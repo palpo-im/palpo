@@ -16,7 +16,6 @@ use tokio::sync::{Semaphore, broadcast};
 
 use crate::appservice::DbRegistration;
 use crate::core::appservice::Registration;
-use crate::core::federation::discovery::{OldVerifyKey, ServerSigningKeys};
 use crate::core::identifiers::*;
 use crate::core::serde::Base64;
 use crate::core::{Seqnum, UnixMillis};
@@ -266,84 +265,6 @@ pub(crate) async fn prepare_appservices(
     }
     Ok(appservices)
 }
-
-pub async fn add_signing_key_from_trusted_server(
-    from_server: &ServerName,
-    new_keys: ServerSigningKeys,
-) -> AppResult<SigningKeys> {
-    let key_data = crate::data::misc::signing_keys_data(from_server).await?;
-
-    let prev_keys: Option<ServerSigningKeys> = key_data.map(serde_json::from_value).transpose()?;
-
-    if let Some(mut prev_keys) = prev_keys {
-        let ServerSigningKeys {
-            verify_keys,
-            old_verify_keys,
-            ..
-        } = new_keys;
-
-        prev_keys.verify_keys.extend(verify_keys);
-        prev_keys.old_verify_keys.extend(old_verify_keys);
-        prev_keys.valid_until_ts = new_keys.valid_until_ts;
-
-        crate::data::misc::upsert_signing_keys(from_server, serde_json::to_value(&prev_keys)?)
-            .await?;
-        Ok(prev_keys.into())
-    } else {
-        crate::data::misc::upsert_signing_keys(from_server, serde_json::to_value(&new_keys)?)
-            .await?;
-        Ok(new_keys.into())
-    }
-}
-pub async fn add_signing_key_from_origin(
-    origin: &ServerName,
-    new_keys: ServerSigningKeys,
-) -> AppResult<SigningKeys> {
-    let key_data = crate::data::misc::signing_keys_data(origin).await?;
-
-    let prev_keys: Option<ServerSigningKeys> = key_data.map(serde_json::from_value).transpose()?;
-
-    if let Some(mut prev_keys) = prev_keys {
-        let ServerSigningKeys {
-            verify_keys,
-            old_verify_keys,
-            ..
-        } = new_keys;
-
-        // Moving `verify_keys` no longer present to `old_verify_keys`
-        for (key_id, key) in prev_keys.verify_keys {
-            if !verify_keys.contains_key(&key_id) {
-                prev_keys
-                    .old_verify_keys
-                    .insert(key_id, OldVerifyKey::new(prev_keys.valid_until_ts, key.key));
-            }
-        }
-
-        prev_keys.verify_keys = verify_keys;
-        prev_keys.old_verify_keys.extend(old_verify_keys);
-        prev_keys.valid_until_ts = new_keys.valid_until_ts;
-
-        crate::data::misc::upsert_signing_keys(origin, serde_json::to_value(&prev_keys)?).await?;
-        Ok(prev_keys.into())
-    } else {
-        crate::data::misc::upsert_signing_keys(origin, serde_json::to_value(&new_keys)?).await?;
-        Ok(new_keys.into())
-    }
-}
-
-// /// This returns an empty `Ok(None)` when there are no keys found for the server.
-// pub fn signing_keys_for(origin: &ServerName) -> AppResult<Option<SigningKeys>> {
-//     let key_data = server_signing_keys::table
-//         .filter(server_signing_keys::server_id.eq(origin))
-//         .select(server_signing_keys::key_data)
-//         .first::<JsonValue>(&mut connect()?)
-//         .optional()?;
-//     if let Some(key_data) = key_data {
-//         Ok(serde_json::from_value(key_data).map(Option::Some)?)
-//     } else {
-//         Ok(None)
-//     }
-// }
 
 /// Filters the key map of multiple servers down to keys that should be accepted given the expiry
 /// time, room version, and timestamp of the paramters

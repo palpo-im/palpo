@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use tokio::time::{Instant, timeout_at};
 
-use super::{add_signing_keys, batch_notary_request, key_exists, verify_keys_for};
+use super::{batch_notary_request, key_exists, verify_keys_for};
 use crate::config;
 use crate::core::federation::discovery::ServerSigningKeys;
 use crate::core::serde::{CanonicalJsonObject, RawJson, RawJsonValue};
@@ -183,11 +183,6 @@ async fn acquire_origin(
                 "received server_keys"
             );
 
-            if key_ids.iter().any(|id| key_exists(&server_keys, id))
-                && let Err(e) = add_signing_keys(server_keys.clone()).await
-            {
-                error!(?origin, "failed to persist fetched signing keys: {e}");
-            }
             retain_missing_key_ids(&mut key_ids, &server_keys);
         }
     }
@@ -216,7 +211,7 @@ where
             Err(e) => error!("failed to contact notary {notary:?}: {e}"),
             Ok(results) => {
                 for server_keys in results {
-                    acquire_notary_result(&mut missing, server_keys).await;
+                    acquire_notary_result(&mut missing, server_keys);
                 }
             }
         }
@@ -225,15 +220,11 @@ where
     missing
 }
 
-async fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKeys) {
+fn acquire_notary_result(missing: &mut Batch, server_keys: ServerSigningKeys) {
     let server = &server_keys.server_name;
     if !missing.contains_key(server) {
         return;
     }
-    if let Err(e) = add_signing_keys(server_keys.clone()).await {
-        error!(?server, "failed to persist notary signing keys: {e}");
-    }
-
     if let Some(key_ids) = missing.get_mut(server) {
         retain_missing_key_ids(key_ids, &server_keys);
         if key_ids.is_empty() {
