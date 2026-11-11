@@ -55,6 +55,7 @@ pub struct ProtocolInstance {
     ///
     /// See [matrix-spec#833](https://github.com/matrix-org/matrix-spec/issues/833).
     #[cfg(feature = "unstable-unspecified")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instance_id: String,
 }
 

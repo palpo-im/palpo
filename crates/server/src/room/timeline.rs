@@ -25,6 +25,9 @@ use crate::{
 };
 
 mod backfill;
+mod batch;
+#[cfg(test)]
+mod batch_tests;
 pub(crate) mod publication;
 pub mod stream;
 pub mod topolo;
@@ -184,34 +187,7 @@ pub async fn get_non_outlier_pdu(event_id: &EventId) -> AppResult<Option<SnPduEv
 }
 
 pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
-    let event = events::table
-        .filter(events::id.eq(event_id))
-        .first::<DbEvent>(&mut crate::data::db())
-        .await?;
-    let (event_sn, room_id, json) = event_datas::table
-        .filter(event_datas::event_id.eq(event_id))
-        .select((
-            event_datas::event_sn,
-            event_datas::room_id,
-            event_datas::json_data,
-        ))
-        .first::<(Seqnum, OwnedRoomId, JsonValue)>(&mut crate::data::db())
-        .await?;
-    #[cfg(feature = "unstable-msc1763")]
-    let mut json = json;
-    #[cfg(feature = "unstable-msc1763")]
-    crate::retention::sanitize_json(event_id, &room_id, &mut json).await?;
-    let mut pdu = PduEvent::from_json_value(&room_id, event_id, json)
-        .map_err(|_e| AppError::internal("invalid pdu in db"))?;
-    pdu.rejection_reason = event.rejection_reason;
-    pdu.load_client_metadata().await?;
-    Ok(SnPduEvent {
-        pdu,
-        event_sn,
-        is_outlier: event.is_outlier,
-        soft_failed: event.soft_failed,
-        is_backfill: event.stream_ordering < 0,
-    })
+    batch::load_one(event_id).await
 }
 
 pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, CanonicalJsonObject)> {

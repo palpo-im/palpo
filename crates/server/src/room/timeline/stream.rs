@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use horme::RunQueryDsl;
 use indexmap::IndexMap;
 
+use super::batch::{CHUNK_SIZE, PduBatch};
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
 use crate::core::identifiers::*;
 use crate::core::{Direction, Seqnum};
@@ -261,59 +262,69 @@ async fn load_pdus_with_publication_bound(
                 break;
             };
         }
-        for (event_id, event_sn, _) in events {
-            match super::get_pdu(&event_id).await {
-                Ok(mut pdu) => {
-                    #[cfg(feature = "unstable-msc1763")]
-                    if crate::retention::is_expired(
-                        &pdu.event_id,
-                        &pdu.room_id,
-                        pdu.state_key.as_deref(),
-                        pdu.origin_server_ts,
-                    )
-                    .await?
-                    {
-                        continue;
-                    }
-                    if let Some(user_id) = user_id {
-                        let visible = pdu.user_can_see(user_id).await;
-                        let visible = if publication_window.is_some() {
-                            visible?
-                        } else {
-                            visible.unwrap_or(false)
-                        };
-                        if !visible {
+        'page: for chunk in events.chunks(CHUNK_SIZE) {
+            // Preserve the ordered per-event error path if prefetch fails.
+            let mut batch = PduBatch::load(chunk.iter().map(|(id, ..)| id.as_ref()))
+                .await
+                .ok();
+            for (event_id, event_sn, _) in chunk {
+                let loaded = match &mut batch {
+                    Some(batch) => batch.take(event_id).await,
+                    None => super::get_pdu(event_id).await,
+                };
+                match loaded {
+                    Ok(mut pdu) => {
+                        #[cfg(feature = "unstable-msc1763")]
+                        if crate::retention::is_expired(
+                            &pdu.event_id,
+                            &pdu.room_id,
+                            pdu.state_key.as_deref(),
+                            pdu.origin_server_ts,
+                        )
+                        .await?
+                        {
                             continue;
                         }
-                    }
-                    if let Some(ignored_users) = &ignored_users
-                        && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
-                    {
-                        continue;
-                    }
-                    if let Some(user_id) = user_id {
-                        if pdu.sender != user_id {
-                            pdu.remove_sender_only_unsigned()?;
+                        if let Some(user_id) = user_id {
+                            let visible = pdu.user_can_see(user_id).await;
+                            let visible = if publication_window.is_some() {
+                                visible?
+                            } else {
+                                visible.unwrap_or(false)
+                            };
+                            if !visible {
+                                continue;
+                            }
                         }
-                        let membership = pdu.add_unsigned_membership(user_id).await;
-                        if publication_window.is_some() {
-                            membership?;
+                        if let Some(ignored_users) = &ignored_users
+                            && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
+                        {
+                            continue;
+                        }
+                        if let Some(user_id) = user_id {
+                            if pdu.sender != user_id {
+                                pdu.remove_sender_only_unsigned()?;
+                            }
+                            let membership = pdu.add_unsigned_membership(user_id).await;
+                            if publication_window.is_some() {
+                                membership?;
+                            }
+                        }
+                        let _ = pdu.add_age();
+                        list.insert(*event_sn, pdu);
+                        if list.len() >= limit {
+                            break 'page;
                         }
                     }
-                    let _ = pdu.add_age();
-                    list.insert(event_sn, pdu);
-                    if list.len() >= limit {
-                        break;
+                    Err(e) => {
+                        if publication_window.is_some() && !e.is_not_found() {
+                            return Err(e);
+                        }
+                        warn!(
+                            "load_pdus: failed to get_pdu for event {} sn={} in room {}: {}",
+                            event_id, event_sn, room_id, e
+                        );
                     }
-                }
-                Err(e) => {
-                    if publication_window.is_some() && !e.is_not_found() {
-                        return Err(e);
-                    }
-                    warn!(
-                        "load_pdus: failed to get_pdu for event {} sn={} in room {}: {}",
-                        event_id, event_sn, room_id, e
-                    );
                 }
             }
         }

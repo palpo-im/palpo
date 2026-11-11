@@ -1,7 +1,9 @@
 use diesel::sql_types::{Array, BigInt, Bool, Integer, Jsonb, Nullable, Text};
 use horme::RunQueryDsl;
 
-use super::*;
+use crate::DataResult;
+use crate::core::serde::JsonValue;
+use crate::core::{ServerName, UnixMillis};
 
 #[derive(diesel::QueryableByName)]
 pub struct VerifiedKeyDocument {

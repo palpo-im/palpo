@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use horme::RunQueryDsl;
 use indexmap::IndexMap;
 
+use super::batch::{CHUNK_SIZE, PduBatch};
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
 use crate::core::identifiers::*;
 use crate::core::{Direction, Seqnum};
@@ -361,32 +362,42 @@ async fn load_pdus_selected(
         let count = events.len();
         offset += count as i64;
 
-        for (event_id, event_sn, _) in events {
-            let loaded = match super::get_pdu(&event_id).await {
-                Err(error) if publication_window.is_some() && !error.is_not_found() => {
-                    return Err(error);
-                }
-                result => result,
-            };
-            if let Ok(mut pdu) = loaded {
-                if let Some(user_id) = user_id {
-                    if !pdu.user_can_see(user_id).await? {
-                        continue;
+        'page: for chunk in events.chunks(CHUNK_SIZE) {
+            // Preserve the ordered per-event error path if prefetch fails.
+            let mut batch = PduBatch::load(chunk.iter().map(|(id, ..)| id.as_ref()))
+                .await
+                .ok();
+            for (event_id, event_sn, _) in chunk {
+                let loaded = match &mut batch {
+                    Some(batch) => batch.take(event_id).await,
+                    None => super::get_pdu(event_id).await,
+                };
+                let loaded = match loaded {
+                    Err(error) if publication_window.is_some() && !error.is_not_found() => {
+                        return Err(error);
                     }
-                    if let Some(ignored_users) = &ignored_users
-                        && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
-                    {
-                        continue;
+                    result => result,
+                };
+                if let Ok(mut pdu) = loaded {
+                    if let Some(user_id) = user_id {
+                        if !pdu.user_can_see(user_id).await? {
+                            continue;
+                        }
+                        if let Some(ignored_users) = &ignored_users
+                            && crate::event::is_ignored_pdu_by_ignored_users(&pdu, ignored_users)
+                        {
+                            continue;
+                        }
+                        if pdu.sender != user_id {
+                            pdu.remove_sender_only_unsigned()?;
+                        }
+                        pdu.add_unsigned_membership(user_id).await?;
                     }
-                    if pdu.sender != user_id {
-                        pdu.remove_sender_only_unsigned()?;
+                    pdu.add_age()?;
+                    list.insert(*event_sn, pdu);
+                    if list.len() >= limit {
+                        break 'page;
                     }
-                    pdu.add_unsigned_membership(user_id).await?;
-                }
-                pdu.add_age()?;
-                list.insert(event_sn, pdu);
-                if list.len() >= limit {
-                    break;
                 }
             }
         }

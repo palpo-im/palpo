@@ -52,14 +52,9 @@ async fn fetch_signing_keys(
 
     // Cache miss or expired — fetch from origin server
     match crate::server_key::server_request(server).await {
-        Ok(keys) => {
-            if let Err(e) = crate::server_key::add_signing_keys(keys.clone()).await {
-                warn!("failed to cache signing keys for {server}: {e}");
-            }
-            crate::server_key::signing_key_document_for(server)
-                .await
-                .ok()
-        }
+        Ok(_) => crate::server_key::signing_key_document_for(server)
+            .await
+            .ok(),
         Err(e) => {
             warn!("failed to fetch signing keys from {server}: {e}");
             // Fall back to whatever we have cached, even if expired

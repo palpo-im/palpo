@@ -175,7 +175,6 @@ pub(crate) async fn seed(mut keys: ServerSigningKeys, pair: &signatures::Ed25519
     persist(&raw, &checked, "direct", &keys.server_name)
         .await
         .unwrap();
-    add_signing_keys(checked).await.unwrap();
 }
 
 pub(super) fn signature(
