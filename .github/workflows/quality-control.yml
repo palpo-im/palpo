@@ -169,6 +169,7 @@ jobs:
             sending::guard::readiness_tests::review_readiness_http_tracks_pool_and_sender_recovery_without_breaking_liveness
             routing::client::key::key_changes_tests::review_keys_changes_tracks_shared_encrypted_membership_windows
             directory::tests::review_public_rooms_filters_networks_and_bidirectional_pages
+            room::timeline::batch_tests::review_timeline_batch_preserves_events_and_bounds_storage_queries
             directory::batch_tests::review_public_directory_batching_preserves_pages_and_measures_queries
             sending::pdu_batch_tests::review_federation_pdu_batch_preserves_semantics_and_measures_queries
             sending::guard::selection_tests::review_outbound_windows_are_bounded_and_acknowledged_atomically

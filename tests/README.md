@@ -64,3 +64,10 @@ disposable `.test` server. The check creates a private room and changes only tha
 room's membership profiles, then leaves the room. Its report includes the
 tested binary's SHA-256 and each check's result, without credentials. Keep the
 binary unchanged for the run. This regression covers Matrix membership and sync.
+
+## Performance probes
+
+`performance_load.py` measures real loopback HTTP history, sync and optional
+message writes against a disposable Palpo server and PostgreSQL. See
+[the performance guide](../docs/development/performance-load-testing.md) for
+fixture preparation, before/after runs, telemetry and measurement limits.
