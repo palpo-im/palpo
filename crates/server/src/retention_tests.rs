@@ -484,7 +484,10 @@ async fn purge_queue_and_search_pages() {
     }
     assert!(was_expired(&ids[0]).await.unwrap());
     // Save the original event row/payload, then exercise the real administrative purge.
-    let mut conn = crate::data::connect();
+    // The saved rows live in session-local temporary tables while the real
+    // purge runs through other query leases. Keep this fixture on one physical
+    // session; an ordinary provider may choose a different session per query.
+    let mut conn = crate::data::checkout().await.unwrap();
     diesel::sql_query(
         "CREATE TEMP TABLE retention_saved_events AS SELECT * FROM events WHERE id = $1",
     )
