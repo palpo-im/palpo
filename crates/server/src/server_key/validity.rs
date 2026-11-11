@@ -118,10 +118,9 @@ pub(super) async fn event_verify_key(
         && super::request::server_request_for(origin, Some(&requested))
             .await
             .is_ok()
+        && let Some(key) = cached_event_key(origin, id, timestamp, enforce).await?
     {
-        if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
-            return Ok(key);
-        }
+        return Ok(key);
     }
     if !conf.query_trusted_key_servers_first
         && let Some(key) = refresh_notaries(origin, id, timestamp, enforce, minimum).await?
