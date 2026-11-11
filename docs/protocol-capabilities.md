@@ -38,10 +38,11 @@ full behavior remain separate work.
 | Third-party network room-directory publication | `directory/list/appservice/{network_id}/{room_id}` remains explicitly unsupported. | No publication interoperability established here. Public-room network selection has separate directory tests; it does not create a third-party directory. |
 
 The third-party lookup handlers retain best-effort aggregation across AS peers.
-This regression uses one successful peer; partial upstream failures, conflicting
-protocol metadata, duplicate results, transport deadlines and many-peer admission
-are outside its evidence. Protocol metadata with non-empty instance lists and
-provider-specific field semantics also need separate fixtures.
+The additional [peer regression](development/thirdparty-peer-queries.md) checks
+one healthy bridge alongside HTTP status and malformed JSON failures, including
+standard nonempty protocol instances and dedicated Bearer credentials. Conflicting
+usable metadata, duplicate mappings, transport deadlines, many-peer admission and
+provider-specific field semantics still need separate coverage.
 
 ## Authenticated capability inventory
 

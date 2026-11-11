@@ -115,12 +115,12 @@ pub(super) async fn event_verify_key(
     }
     let requested = std::collections::BTreeSet::from([id.to_owned()]);
     if !conf.only_query_trusted_key_servers
-        && let Ok(keys) = super::request::server_request_for(origin, Some(&requested)).await
+        && super::request::server_request_for(origin, Some(&requested))
+            .await
+            .is_ok()
+        && let Some(key) = cached_event_key(origin, id, timestamp, enforce).await?
     {
-        add_signing_keys(keys.clone()).await?;
-        if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
-            return Ok(key);
-        }
+        return Ok(key);
     }
     if !conf.query_trusted_key_servers_first
         && let Some(key) = refresh_notaries(origin, id, timestamp, enforce, minimum).await?
@@ -141,18 +141,12 @@ async fn refresh_notaries(
 ) -> AppResult<Option<VerifyKey>> {
     for notary in &config::get().trusted_servers {
         let requested = std::collections::BTreeSet::from([id.to_owned()]);
-        if let Ok(documents) =
+        if let Ok(mut documents) =
             super::request::notary_request_for(notary, origin, minimum, Some(&requested)).await
+            && documents.next().is_some()
+            && let Some(key) = cached_event_key(origin, id, timestamp, enforce).await?
         {
-            for keys in documents {
-                if keys.server_name != origin {
-                    continue;
-                }
-                add_signing_keys(keys.clone()).await?;
-                if let Some(key) = cached_event_key(origin, id, timestamp, enforce).await? {
-                    return Ok(Some(key));
-                }
-            }
+            return Ok(Some(key));
         }
     }
     Ok(None)

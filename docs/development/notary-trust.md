@@ -74,12 +74,29 @@ index. The offline full-history API is not used by authentication.
 
 This cache retains historical documents and does not install a pruning policy;
 archival capacity should be measured before defining one that preserves
-historical verification. The legacy merge helper still recomposes its legacy
-index and signatures; that index is excluded from authentication and notary
-publication. Removing those obsolete APIs and designing archival/pruning policy
-are separate follow-up work. No automatic import or destruction of old data is
-included. Rollback drops the new cache table, retains legacy rows, and requires
-fresh verification when upgrading again.
+historical verification. Production retrieval and publication never read or
+write `server_signing_keys`: the obsolete merged-cache helpers have been removed.
+The old table and every existing row remain intact; there is no migration,
+backfill, deletion, or automatic promotion of those records. Only explicit
+test-fixture SQL accesses the old table to exercise upgrade isolation.
+Archival/pruning policy remains separate work. Rolling back to an older binary
+can resume that binary's legacy writes; upgrading again still requires verified
+retrieval rather than treating those merged records as trusted documents.
+
+## Source API cleanup
+
+Embedding code which called the following obsolete, source-less cache APIs must
+stop doing so: root `add_signing_key_from_origin`,
+`add_signing_key_from_trusted_server`, `server_key::verify_key_exists`, and data
+`misc::{DbServerSigningKeys,signing_keys_data,signing_keys_record,upsert_signing_keys}`.
+These APIs had no repository production callers outside the removed legacy
+write path. A name such as “trusted server” did not validate a signed document or
+establish provenance. They have no direct replacement for importing arbitrary
+keys; normal HTTP/event verification fetches and validates documents using the
+configured trust policy. `verify_keys_for` and `signing_keys_for` remain available
+for their existing prefetch and administrator inspection callers, backed by
+verified documents. They are not substitutes for timestamp-aware event or
+current-key HTTP verification.
 
 ## Regression coverage and evidence
 
@@ -96,7 +113,12 @@ asserts actual POST routing, direct notary bootstrap, origin/notary signatures,
 mixed invalid response filtering, no unrelated cache writes, rejection of legacy
 unproven cache for HTTP and events, current-key HTTP success, retired-key HTTP
 rejection, historical event success, and resistance to retirement rollback by
-document replay. A 25-document authenticated history asserts actual loaded-document
+document replay. After seeding an unproven legacy row, the test installs and
+checks a PostgreSQL trigger rejecting every legacy INSERT, UPDATE and DELETE.
+The real notary and direct-origin transports, request authentication, historical
+event validation and raw notary publication continue under that trigger; the
+unproven row survives unchanged and fetched servers never enter the old cache.
+A 25-document authenticated history asserts actual loaded-document
 counts: one for HTTP, one for an old key filtered in SQL, and at most eight for a
 common event key. It also verifies failed unknown-key lookups do not append
 irrelevant document variants. The existing key-expiry and programmable-notary regressions

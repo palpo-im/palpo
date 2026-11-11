@@ -158,9 +158,20 @@ async fn run() {
 
     // An upgrade must not silently promote the old, source-less merged cache.
     let legacy: &ServerName = "legacy.example".try_into().unwrap();
-    data::misc::upsert_signing_keys(legacy, document(legacy.as_str(), &outsider, now + 60_000))
+    legacy_fixture::store(legacy, document(legacy.as_str(), &outsider, now + 60_000))
         .await
         .unwrap();
+    // Every following origin/notary lookup must succeed independently of the
+    // retained old table. An attempted INSERT, UPDATE or DELETE now fails.
+    legacy_fixture::reject_writes().await.unwrap();
+    assert!(
+        legacy_fixture::store(
+            "blocked-write.example".try_into().unwrap(),
+            document("blocked-write.example", &outsider, now + 60_000)
+        )
+        .await
+        .is_err()
+    );
     assert!(get_verify_key(legacy, key_id).await.is_err());
     let mut legacy_event: CanonicalJsonObject=serde_json::from_value(json!({
         "type":"m.room.message","sender":"@alice:legacy.example","room_id":"!room:legacy.example",
@@ -178,12 +189,7 @@ async fn run() {
             .await
             .is_err()
     );
-    assert!(
-        data::misc::signing_keys_record(legacy)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(legacy_fixture::document(legacy).await.unwrap().is_some());
 
     // Distinct TLS peers prove the POST really reaches the configured notary,
     // not the queried origin, even in trusted-only mode.
@@ -208,12 +214,7 @@ async fn run() {
             .iter()
             .any(|(method, path)| method == "POST" && path == "/_matrix/key/v2/query")
     );
-    assert!(
-        data::misc::signing_keys_record(origin_id)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(legacy_fixture::document(origin_id).await.unwrap().is_none());
     let preserved = signing_key_document_for(origin_id).await.unwrap();
     assert_eq!(
         preserved["org.example.signed_extension"]["preserved_for_verification"],
@@ -263,13 +264,13 @@ async fn run() {
     )
     .unwrap();
     assert!(
-        data::misc::signing_keys_record("outsider.example".try_into().unwrap())
+        legacy_fixture::document("outsider.example".try_into().unwrap())
             .await
             .unwrap()
             .is_none()
     );
     assert!(
-        data::misc::signing_keys_record("victim.example".try_into().unwrap())
+        legacy_fixture::document("victim.example".try_into().unwrap())
             .await
             .unwrap()
             .is_none()
@@ -301,7 +302,7 @@ async fn run() {
         StatusCode::OK
     );
     assert!(
-        data::misc::signing_keys_record("other.example".try_into().unwrap())
+        legacy_fixture::document("other.example".try_into().unwrap())
             .await
             .unwrap()
             .is_none()
@@ -343,12 +344,8 @@ async fn run() {
     )
     .await;
     for (index, server) in requested.iter().enumerate() {
-        assert_eq!(
-            data::misc::signing_keys_record(server)
-                .await
-                .unwrap()
-                .is_some(),
-            index == 0,
+        assert!(
+            legacy_fixture::document(server).await.unwrap().is_none(),
             "{server}"
         );
         assert_eq!(
@@ -385,12 +382,7 @@ async fn run() {
                 .await
                 .is_err()
         );
-        assert!(
-            data::misc::signing_keys_record(fresh)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(legacy_fixture::document(fresh).await.unwrap().is_none());
         assert!(
             data::misc::verified_key_documents(fresh)
                 .await
@@ -569,7 +561,34 @@ async fn run() {
         StatusCode::OK
     );
     assert!(verify_event(&historical, &RoomVersionId::V5).await.is_ok());
+    assert!(origin.requests.lock().unwrap().is_empty());
+    // Also exercise a successful direct-origin fetch and HTTP key selection
+    // while legacy writes are rejected. The configured notary-only policy
+    // controls automatic lookup, not this explicit transport helper.
+    let direct = pair("direct");
+    *origin.bootstrap.lock().unwrap() = document(&origin_name, &direct, now + 90_000);
+    let direct_id = std::collections::BTreeSet::from(["ed25519:direct".try_into().unwrap()]);
+    request::server_request_for(origin_id, Some(&direct_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        authenticate(&service, &origin_name, &direct).await,
+        StatusCode::OK
+    );
+    assert!(legacy_fixture::document(origin_id).await.unwrap().is_none());
+    assert!(
+        origin
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(method, path)| method == "GET" && path == "/_matrix/key/v2/server")
+    );
+    assert!(
+        legacy_fixture::document(legacy).await.unwrap().is_some(),
+        "unproven legacy rows must remain intact"
+    );
     println!(
-        "T03 two TLS peers: origin requests=0; notary POST and direct bootstrap observed; mixed cache accepted=1/rejected=4; current HTTP accepted, retired HTTP rejected, historical V5 accepted"
+        "T03 two TLS peers: notary POST and direct bootstrap observed before explicit direct-origin GET; mixed cache accepted=1/rejected=4; current HTTP accepted, retired HTTP rejected, historical V5 accepted; legacy writes rejected throughout"
     );
 }

@@ -1,7 +1,9 @@
 use diesel::sql_types::{Array, BigInt, Bool, Integer, Jsonb, Nullable, Text};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 
-use super::*;
+use crate::core::serde::JsonValue;
+use crate::core::{ServerName, UnixMillis};
+use crate::{DataResult, connect};
 
 #[derive(diesel::QueryableByName)]
 pub struct VerifiedKeyDocument {

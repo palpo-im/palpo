@@ -4,7 +4,7 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
 use crate::core::third_party::*;
-use crate::{AuthArgs, JsonResult, json_ok, sending};
+use crate::{AppError, AppResult, AuthArgs, JsonResult, json_ok};
 
 pub fn authed_router() -> Router {
     Router::with_path("thirdparty")
@@ -27,6 +27,38 @@ fn appservice_get_request(base_url: &str, path: &str) -> Result<reqwest::Request
     let url = reqwest::Url::parse(&format!("{base_url}/_matrix/app/v1/thirdparty/{path}"))
         .map_err(|e| crate::AppError::public(format!("invalid appservice URL: {e}")))?;
     Ok(reqwest::Request::new(reqwest::Method::GET, url))
+}
+
+/// These requests carry the destination AS's credentials, never the client's.
+/// Keep the legacy query token added by send_request for older bridges, while
+/// providing the Bearer header required since AS specification v1.4.
+async fn query<T>(
+    registration: crate::core::appservice::Registration,
+    mut request: reqwest::Request,
+) -> AppResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut authorization =
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", registration.hs_token))
+            .map_err(|_| AppError::public("Invalid application-service credential"))?;
+    authorization.set_sensitive(true);
+    request
+        .headers_mut()
+        .insert(reqwest::header::AUTHORIZATION, authorization);
+    let response = crate::appservice::send_request(registration, request).await?;
+    // A failing peer can return a syntactically valid success-shaped body.
+    // Status must be accepted before that body contributes discovery results.
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(AppError::public(format!(
+            "Application-service query returned HTTP {}",
+            response.status()
+        )));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| error.without_url().into())
 }
 
 /// Percent-encode a string for use in a URL query parameter.
@@ -55,12 +87,7 @@ async fn protocols(_aa: AuthArgs) -> JsonResult<ProtocolsResBody> {
             let Ok(request) = appservice_get_request(base_url, &path) else {
                 continue;
             };
-            match sending::send_appservice_request::<Protocol>(
-                appservice.registration.clone(),
-                request,
-            )
-            .await
-            {
+            match query::<Protocol>(appservice.registration.clone(), request).await {
                 Ok(proto) => {
                     result.insert(protocol_id.clone(), proto);
                 }
@@ -96,12 +123,14 @@ async fn get_protocol(_aa: AuthArgs, protocol: PathParam<String>) -> JsonResult<
         };
 
         let path = format!("protocol/{protocol_id}");
-        let request = appservice_get_request(base_url, &path)?;
-        let protocol_data =
-            sending::send_appservice_request::<Protocol>(appservice.registration.clone(), request)
-                .await?;
-
-        return json_ok(ProtocolResBody::new(protocol_data));
+        let Ok(request) = appservice_get_request(base_url, &path) else {
+            continue;
+        };
+        match query::<Protocol>(appservice.registration.clone(), request).await {
+            Ok(protocol_data) => return json_ok(ProtocolResBody::new(protocol_data)),
+            Err(error) => debug!(appservice_id = %appservice.registration.id, %error,
+                "Failed to fetch protocol; trying another application service"),
+        }
     }
 
     Err(crate::MatrixError::not_found("Protocol not found").into())
@@ -129,12 +158,7 @@ async fn locations(_aa: AuthArgs, req: &mut Request) -> JsonResult<LocationsResB
         let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
-        match sending::send_appservice_request::<Vec<Location>>(
-            appservice.registration.clone(),
-            request,
-        )
-        .await
-        {
+        match query::<Vec<Location>>(appservice.registration.clone(), request).await {
             Ok(locs) => result.extend(locs),
             Err(e) => {
                 debug!(
@@ -184,12 +208,7 @@ async fn protocol_locations(
                     .filter(|(key, _)| key.as_ref() != "access_token"),
             );
         }
-        match sending::send_appservice_request::<Vec<Location>>(
-            appservice.registration.clone(),
-            request,
-        )
-        .await
-        {
+        match query::<Vec<Location>>(appservice.registration.clone(), request).await {
             Ok(locs) => result.extend(locs),
             Err(e) => {
                 debug!(
@@ -228,12 +247,7 @@ async fn users(_aa: AuthArgs, req: &mut Request) -> JsonResult<UsersResBody> {
         let Ok(request) = appservice_get_request(base_url, &path) else {
             continue;
         };
-        match sending::send_appservice_request::<Vec<User>>(
-            appservice.registration.clone(),
-            request,
-        )
-        .await
-        {
+        match query::<Vec<User>>(appservice.registration.clone(), request).await {
             Ok(user_list) => result.extend(user_list),
             Err(e) => {
                 debug!(
@@ -283,12 +297,7 @@ async fn protocol_users(
                     .filter(|(key, _)| key.as_ref() != "access_token"),
             );
         }
-        match sending::send_appservice_request::<Vec<User>>(
-            appservice.registration.clone(),
-            request,
-        )
-        .await
-        {
+        match query::<Vec<User>>(appservice.registration.clone(), request).await {
             Ok(user_list) => result.extend(user_list),
             Err(e) => {
                 debug!(

@@ -75,32 +75,6 @@ fn cached_key_horizon_is_anchored_to_fetch_time() {
     );
 }
 
-#[test]
-fn rotated_keys_do_not_inherit_the_replacement_validity() {
-    let pair = pair();
-    let keys = document(&pair, 100);
-    let replacement = ServerSigningKeys::new("remote.example".try_into().unwrap(), UnixMillis(900));
-    let merged = merge_signing_keys_for_storage(Some(keys), replacement);
-    assert!(
-        select_key(
-            &merged,
-            "ed25519:test".try_into().unwrap(),
-            UnixMillis(200),
-            true
-        )
-        .is_none()
-    );
-    assert!(
-        select_key(
-            &merged,
-            "ed25519:test".try_into().unwrap(),
-            UnixMillis(99),
-            true
-        )
-        .is_some()
-    );
-}
-
 #[tokio::test]
 #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
 async fn review_event_verification_enforces_cached_key_expiry() {
@@ -224,10 +198,10 @@ async fn review_event_verification_enforces_cached_key_expiry() {
             .is_ok()
     );
     assert!(
-        data::misc::signing_keys_record(remote)
+        super::super::legacy_fixture::document(remote)
             .await
             .unwrap()
-            .is_some()
+            .is_none()
     );
 }
 
