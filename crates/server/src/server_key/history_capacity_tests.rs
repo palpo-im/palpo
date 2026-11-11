@@ -63,7 +63,7 @@ async fn seed(
     keys.verify_keys
         .insert("ed25519:active".try_into().unwrap(), public.clone());
     keys.verify_keys.insert(
-        format!("ed25519:history-{index:04}").try_into().unwrap(),
+        format!("ed25519:history_{index:04}").try_into().unwrap(),
         public,
     );
     if index == 0 {
