@@ -159,6 +159,7 @@ jobs:
             server_key::validity::tests::review_local_retired_key_obeys_event_expiry_without_refresh
             server_key::validity::tests::review_event_cache_refreshes_from_programmable_notary
             server_key::notary_tests::review_notary_routes_verify_attestations_and_separate_request_from_event_keys
+            server_key::history_capacity_tests::review_verified_history_capacity_and_snapshot_restore
             sending::tests::federation_send_with_one_permit_makes_progress_and_returns_permits
             user::pusher::tests::review_rejected_gateway_keys_only_remove_matching_pusher
             sending::delivery_tests::http_push_retries_failed_gateway_without_acknowledging_queue
@@ -178,6 +179,7 @@ jobs:
             observability::tests::review_outbound_process_restart_preserves_requests_and_reports_recovery
             routing::capability_contract_tests::review_threepid_capabilities_and_rejections_match_routes
             routing::capability_contract_tests::review_thirdparty_queries_track_live_appservice_disable
+            routing::thirdparty_peer_tests::review_thirdparty_queries_isolate_failed_peers_and_preserve_instances
             routing::federation::tests::review_onbind_respects_disabled_federation
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )
